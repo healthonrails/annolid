@@ -17,7 +17,10 @@ import pycocotools.mask as mask_utils
 
 from annolid.segmentation.SAM.sam3 import agent_video_orchestrator
 from annolid.segmentation.SAM.sam3 import adapter as sam3_adapter
-from annolid.segmentation.SAM.sam3.session import Sam3SessionManager
+from annolid.segmentation.SAM.sam3.session import (
+    BoundaryPromptBundle,
+    Sam3SessionManager,
+)
 from annolid.segmentation.SAM.sam3.video_window_inference import _iter_video_windows
 from annolid.segmentation.SAM.sam3.window_refresh import (
     compute_mid_window_refresh_index,
@@ -217,6 +220,50 @@ def test_global_track_assignment_survives_window_stride_gap() -> None:
 
     assert outputs["out_obj_ids"].tolist() == [1]
     assert session._global_track_next_id == 2
+
+
+def test_boundary_box_only_reseed_keeps_existing_global_id() -> None:
+    session = Sam3SessionManager.__new__(Sam3SessionManager)
+    session.sliding_window_size = 4
+    session.sliding_window_stride = 4
+    session._global_track_next_id = 2
+    session._global_track_last_box = {
+        1: np.asarray([0.2, 0.2, 0.4, 0.4], dtype=float),
+    }
+    session._global_track_last_seen_frame = {1: 3}
+    session._global_track_history = {
+        1: deque([np.asarray([0.2, 0.2, 0.4, 0.4], dtype=float)], maxlen=4),
+    }
+    session._global_track_obj_ptr = {}
+    session._session_local_to_global_ids = {}
+    session._active_global_match_session_id = None
+    session.boundary_mask_match_iou_threshold = 0.2
+
+    outputs = session._map_outputs_to_global_ids_from_boundary_bundle_at_frame(
+        {
+            "out_obj_ids": np.asarray([1], dtype=np.int64),
+            "out_boxes_xywh": np.asarray([[0.2, 0.2, 0.4, 0.4]], dtype=np.float32),
+            "out_binary_masks": np.asarray([], dtype=object),
+        },
+        frame_idx=4,
+        boundary_bundle=BoundaryPromptBundle(
+            boxes=[[0.2, 0.2, 0.4, 0.4]],
+            box_labels=[1],
+            mask_inputs=[],
+            mask_labels=[],
+            track_ids=[1],
+            label_hints=["mouse_1"],
+        ),
+        allowed_gids={1},
+        session_id="new-window",
+    )
+
+    assert outputs["out_obj_ids"].tolist() == [1]
+    assert session._global_track_next_id == 2
+    assert session._session_local_to_global_ids == {1: 1}
+    assert outputs["global_id_assignments"][0]["local_id"] == 1
+    assert outputs["global_id_assignments"][0]["global_id"] == 1
+    assert outputs["global_id_assignments"][0]["score"] == pytest.approx(1.0)
 
 
 def test_global_track_assignment_uses_one_to_one_matching_for_ambiguous_pairs() -> None:

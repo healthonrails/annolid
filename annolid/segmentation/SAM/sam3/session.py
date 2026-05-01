@@ -1874,7 +1874,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             if iou_threshold is None
             else iou_threshold
         )
-        if boundary_bundle is None or not boundary_bundle.mask_inputs or not boundary_bundle.track_ids:
+        if boundary_bundle is None or not boundary_bundle.track_ids:
             return self._map_outputs_to_global_ids_at_frame(
                 outputs,
                 frame_idx=frame_idx,
@@ -1890,7 +1890,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         obj_ids = outputs.get("out_obj_ids", [])
         boxes = outputs.get("out_boxes_xywh", [])
         masks = outputs.get("out_binary_masks", [])
-        if boxes is None or masks is None:
+        if boxes is None:
             return self._map_outputs_to_global_ids_at_frame(
                 outputs,
                 frame_idx=frame_idx,
@@ -1901,10 +1901,13 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             )
         try:
             boxes_arr = np.asarray(boxes, dtype=float)
-            masks_arr = np.asarray(masks, dtype=object)
         except Exception:
             return outputs
-        if len(boxes_arr) != len(obj_ids) or len(masks_arr) != len(obj_ids):
+        try:
+            masks_arr = np.asarray(masks, dtype=object)
+        except Exception:
+            masks_arr = np.asarray([], dtype=object)
+        if len(boxes_arr) != len(obj_ids):
             return self._map_outputs_to_global_ids_at_frame(
                 outputs,
                 frame_idx=frame_idx,
@@ -1914,16 +1917,36 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 session_id=session_id,
             )
 
-        allowed_set = {int(v) for v in allowed_gids} if allowed_gids is not None else None
-        reference_items: List[Tuple[int, np.ndarray]] = []
-        for track_id, mask in zip(boundary_bundle.track_ids, boundary_bundle.mask_inputs):
+        allowed_set = (
+            {int(v) for v in allowed_gids} if allowed_gids is not None else None
+        )
+        reference_items: List[
+            Tuple[int, Optional[np.ndarray], Optional[np.ndarray]]
+        ] = []
+        boundary_masks = list(boundary_bundle.mask_inputs or [])
+        boundary_boxes = list(boundary_bundle.boxes or [])
+        for ref_idx, track_id in enumerate(boundary_bundle.track_ids):
             gid = int(track_id)
             if allowed_set is not None and gid not in allowed_set:
                 continue
-            arr = np.asarray(mask, dtype=np.uint8)
-            if arr.ndim != 2 or not arr.any():
+            mask_arr: Optional[np.ndarray] = None
+            if ref_idx < len(boundary_masks):
+                arr = np.asarray(boundary_masks[ref_idx], dtype=np.uint8)
+                if arr.ndim == 2 and arr.any():
+                    mask_arr = arr
+            box_arr: Optional[np.ndarray] = None
+            if ref_idx < len(boundary_boxes):
+                try:
+                    arr_box = np.asarray(
+                        boundary_boxes[ref_idx], dtype=float
+                    ).reshape(-1)
+                    if arr_box.shape == (4,) and np.all(np.isfinite(arr_box)):
+                        box_arr = arr_box
+                except Exception:
+                    box_arr = None
+            if mask_arr is None and box_arr is None:
                 continue
-            reference_items.append((gid, arr))
+            reference_items.append((gid, mask_arr, box_arr))
         if not reference_items:
             return self._map_outputs_to_global_ids_at_frame(
                 outputs,
@@ -1935,13 +1958,29 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             )
 
         detection_indices: List[int] = []
-        detection_masks: List[np.ndarray] = []
-        for det_idx, mask in enumerate(masks_arr.tolist()):
-            arr = np.asarray(mask, dtype=np.uint8)
-            if arr.ndim != 2 or not arr.any():
+        detection_masks: List[Optional[np.ndarray]] = []
+        detection_boxes: List[Optional[np.ndarray]] = []
+        masks_list = masks_arr.tolist()
+        for det_idx in range(len(obj_ids)):
+            mask_arr = None
+            if det_idx < len(masks_list):
+                arr = np.asarray(masks_list[det_idx], dtype=np.uint8)
+                if arr.ndim == 2 and arr.any():
+                    mask_arr = arr
+            box_arr = None
+            try:
+                arr_box = np.asarray(boxes_arr[det_idx], dtype=float).reshape(
+                    -1
+                )
+                if arr_box.shape == (4,) and np.all(np.isfinite(arr_box)):
+                    box_arr = arr_box
+            except Exception:
+                box_arr = None
+            if mask_arr is None and box_arr is None:
                 continue
             detection_indices.append(int(det_idx))
-            detection_masks.append(arr)
+            detection_masks.append(mask_arr)
+            detection_boxes.append(box_arr)
         if not detection_indices:
             return self._map_outputs_to_global_ids_at_frame(
                 outputs,
@@ -1952,11 +1991,34 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 session_id=session_id,
             )
 
-        iou_matrix = np.zeros((len(detection_masks), len(reference_items)), dtype=float)
-        for det_pos, det_mask in enumerate(detection_masks):
-            for ref_pos, (_, ref_mask) in enumerate(reference_items):
-                iou_matrix[det_pos, ref_pos] = self._mask_iou(det_mask, ref_mask)
-        if iou_matrix.size == 0:
+        score_matrix = np.zeros(
+            (len(detection_indices), len(reference_items)), dtype=float
+        )
+        for det_pos, det_idx in enumerate(detection_indices):
+            det_mask = detection_masks[det_pos]
+            det_box = detection_boxes[det_pos]
+            for ref_pos, (gid, ref_mask, ref_box) in enumerate(reference_items):
+                score = 0.0
+                if det_mask is not None and ref_mask is not None:
+                    score = self._mask_iou(det_mask, ref_mask)
+                if score <= 0.0 and det_box is not None and ref_box is not None:
+                    score = self._bbox_iou_xywh(det_box, ref_box)
+                if score <= 0.0:
+                    try:
+                        if int(obj_ids[det_idx]) == int(gid):
+                            score = 1.0
+                    except Exception:
+                        pass
+                if (
+                    score <= 0.0
+                    and det_mask is None
+                    and ref_mask is None
+                    and len(detection_indices) == len(reference_items)
+                ):
+                    if det_pos == ref_pos:
+                        score = 1.0
+                score_matrix[det_pos, ref_pos] = float(score)
+        if score_matrix.size == 0:
             return self._map_outputs_to_global_ids_at_frame(
                 outputs,
                 frame_idx=frame_idx,
@@ -1966,7 +2028,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 session_id=session_id,
             )
 
-        row_ind, col_ind = linear_sum_assignment(1.0 - iou_matrix)
+        row_ind, col_ind = linear_sum_assignment(1.0 - score_matrix)
         local_to_global = getattr(self, "_session_local_to_global_ids", {})
         self._session_local_to_global_ids = local_to_global
         mapped: List[Optional[int]] = [None] * len(obj_ids)
@@ -1978,7 +2040,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         for det_pos, ref_pos in zip(row_ind, col_ind):
             if det_pos >= len(detection_indices) or ref_pos >= len(reference_items):
                 continue
-            score = float(iou_matrix[det_pos, ref_pos])
+            score = float(score_matrix[det_pos, ref_pos])
             if score < float(iou_threshold):
                 continue
             det_idx = detection_indices[det_pos]
@@ -3555,6 +3617,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                 local_mask_counts: Dict[int, int] = {}
                 boundary_empty_skips = 0
                 local_drift_rejections = 0
+                window_allowed_gids: Optional[set[int]] = None
 
                 shift = compute_window_reuse_shift(
                     previous_window_end_idx=previous_window_end_idx,
@@ -3599,6 +3662,18 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                         frame_height=float(frame_h),
                         source_frame_idx=int(previous_window_end_idx) - 1,
                     )
+                    expected_track_ids = self._expected_track_ids_for_frame(
+                        int(start_idx),
+                        max_gap=self._track_match_max_gap(),
+                    )
+                    allowed_track_ids = {
+                        int(track_id) for track_id in expected_track_ids
+                    }
+                    allowed_track_ids.update(
+                        int(track_id) for track_id in boundary_bundle.track_ids
+                    )
+                    if allowed_track_ids:
+                        window_allowed_gids = allowed_track_ids
 
                 def _seed_frame(
                     local_frame_idx: int,
@@ -3629,15 +3704,34 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                             box_labels_to_seed = list(labels)
                             mask_inputs_to_seed = list(mask_inputs)
                             mask_labels_to_seed = list(mask_labels)
-                            if include_boundary_prompts and boundary_bundle and boundary_bundle.boxes:
-                                boxes_to_seed = list(boundary_bundle.boxes) + boxes_to_seed
-                                box_labels_to_seed = list(boundary_bundle.box_labels) + box_labels_to_seed
-                                mask_inputs_to_seed = list(boundary_bundle.mask_inputs) + mask_inputs_to_seed
-                                mask_labels_to_seed = list(boundary_bundle.mask_labels) + mask_labels_to_seed
-                                label_hints = list(boundary_bundle.label_hints) + label_hints
+                            if (
+                                include_boundary_prompts
+                                and boundary_bundle
+                                and boundary_bundle.boxes
+                            ):
+                                boxes_to_seed = (
+                                    list(boundary_bundle.boxes) + boxes_to_seed
+                                )
+                                box_labels_to_seed = (
+                                    list(boundary_bundle.box_labels)
+                                    + box_labels_to_seed
+                                )
+                                mask_inputs_to_seed = (
+                                    list(boundary_bundle.mask_inputs)
+                                    + mask_inputs_to_seed
+                                )
+                                mask_labels_to_seed = (
+                                    list(boundary_bundle.mask_labels)
+                                    + mask_labels_to_seed
+                                )
+                                label_hints = (
+                                    list(boundary_bundle.label_hints) + label_hints
+                                )
                             seed_mask_count = self._apply_seed_prompts(
                                 frame_idx=int(prompt_frame_idx),
-                                output_frame_idx=int(window_start_idx + int(prompt_frame_idx)),
+                                output_frame_idx=int(
+                                    window_start_idx + int(prompt_frame_idx)
+                                ),
                                 session_id=session_id,
                                 boxes=boxes_to_seed,
                                 labels=box_labels_to_seed,
@@ -3656,8 +3750,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                                 if include_boundary_prompts
                                 else None,
                                 boundary_allowed_gids=(
-                                    set(int(v) for v in boundary_bundle.track_ids)
-                                    if include_boundary_prompts and boundary_bundle
+                                    window_allowed_gids
+                                    if include_boundary_prompts
                                     else None
                                 ),
                                 boundary_max_new_ids=None,
@@ -3682,7 +3776,11 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                         mask_inputs_to_seed: List[object] = []
                         mask_labels_to_seed: List[int] = []
                         label_hints: List[str] = []
-                        if include_boundary_prompts and boundary_bundle and boundary_bundle.boxes:
+                        if (
+                            include_boundary_prompts
+                            and boundary_bundle
+                            and boundary_bundle.boxes
+                        ):
                             boxes_to_seed = list(boundary_bundle.boxes)
                             box_labels_to_seed = list(boundary_bundle.box_labels)
                             mask_inputs_to_seed = list(boundary_bundle.mask_inputs)
@@ -3709,8 +3807,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                             if include_boundary_prompts
                             else None,
                             boundary_allowed_gids=(
-                                set(int(v) for v in boundary_bundle.track_ids)
-                                if include_boundary_prompts and boundary_bundle
+                                window_allowed_gids
+                                if include_boundary_prompts
                                 else None
                             ),
                             boundary_max_new_ids=None,
@@ -3726,7 +3824,11 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                         mask_inputs_to_seed = []
                         mask_labels_to_seed = []
                         label_hints = []
-                        if include_boundary_prompts and boundary_bundle and boundary_bundle.boxes:
+                        if (
+                            include_boundary_prompts
+                            and boundary_bundle
+                            and boundary_bundle.boxes
+                        ):
                             boxes_to_seed = list(boundary_bundle.boxes)
                             box_labels_to_seed = list(boundary_bundle.box_labels)
                             mask_inputs_to_seed = list(boundary_bundle.mask_inputs)
@@ -3753,8 +3855,8 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                             if include_boundary_prompts
                             else None,
                             boundary_allowed_gids=(
-                                set(int(v) for v in boundary_bundle.track_ids)
-                                if include_boundary_prompts and boundary_bundle
+                                window_allowed_gids
+                                if include_boundary_prompts
                                 else None
                             ),
                             boundary_max_new_ids=None,
@@ -3781,7 +3883,9 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                     masks_written = 0
                     max_track = max(
                         1,
-                        int(segment_end_local_exclusive) - int(segment_start_local_idx) - 1,
+                        int(segment_end_local_exclusive)
+                        - int(segment_start_local_idx)
+                        - 1,
                     )
                     for result in self._predictor.propagate_in_video(
                         session_id=session_id,
@@ -3793,10 +3897,36 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
                         local_frame = int(result.get("frame_index", 0))
                         global_frame = window_start_idx + local_frame
                         outputs = result.get("outputs", {}) or {}
-                        outputs = self._map_outputs_to_global_ids_at_frame(
-                            outputs,
-                            frame_idx=global_frame,
+                        expected_track_ids = self._expected_track_ids_for_frame(
+                            int(global_frame),
+                            max_gap=self._track_match_max_gap(),
                         )
+                        if (
+                            self._output_candidate_mask_count(outputs) == 0
+                            and expected_track_ids
+                        ):
+                            outputs = self._recent_track_outputs_for_ids(
+                                expected_track_ids,
+                                frame_idx=int(global_frame),
+                            )
+                            if outputs:
+                                logger.info(
+                                    "SAM3 reused recent accepted masks for annotated frame=%s after empty propagation outputs (tracks=%s).",
+                                    int(global_frame),
+                                    len(expected_track_ids),
+                                )
+                        if window_allowed_gids:
+                            outputs = self._map_outputs_to_global_ids_at_frame(
+                                outputs,
+                                frame_idx=global_frame,
+                                allowed_gids=window_allowed_gids,
+                                allow_new_ids=True,
+                            )
+                        else:
+                            outputs = self._map_outputs_to_global_ids_at_frame(
+                                outputs,
+                                frame_idx=global_frame,
+                            )
                         drift_before = int(getattr(self, "_drift_rejections_total", 0))
                         masks_in_frame, _ = self._handle_frame_outputs(
                             frame_idx=global_frame,
