@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import builtins
 import urllib.error
@@ -13,6 +14,7 @@ import pytest
 from annolid.core.agent.bus import MessageBus, OutboundMessage
 from annolid.core.agent.channels import (
     ChannelManager,
+    DiscordChannel,
     EmailChannel,
     SlackChannel,
     TelegramChannel,
@@ -65,6 +67,159 @@ def test_telegram_channel_allowlist_and_ingest() -> None:
     asyncio.run(_run())
 
 
+def test_telegram_channel_extracts_video_media_from_metadata_when_media_missing() -> (
+    None
+):
+    async def _run() -> None:
+        bus = MessageBus()
+        channel = TelegramChannel({}, bus)
+        ok = await channel.ingest(
+            sender_id="alice",
+            chat_id="chat1",
+            content="",
+            metadata={
+                "attachments": [
+                    {
+                        "url": "https://example.com/clip.mp4",
+                        "mime_type": "video/mp4",
+                    }
+                ]
+            },
+        )
+        assert ok is True
+        inbound = await bus.consume_inbound(timeout_s=0.2)
+        assert inbound.media == ["https://example.com/clip.mp4"]
+        assert inbound.content == "[video message]"
+        assert inbound.metadata.get("has_media") is True
+        assert inbound.metadata.get("media_type") == "video"
+
+    asyncio.run(_run())
+
+
+def test_discord_channel_extracts_generic_media_from_metadata_when_media_missing() -> (
+    None
+):
+    async def _run() -> None:
+        bus = MessageBus()
+        channel = DiscordChannel({}, bus)
+        ok = await channel.ingest(
+            sender_id="alice",
+            chat_id="chat1",
+            content="",
+            metadata={"media_urls": ["https://example.com/image.png"]},
+        )
+        assert ok is True
+        inbound = await bus.consume_inbound(timeout_s=0.2)
+        assert inbound.media == ["https://example.com/image.png"]
+        assert inbound.content == "[media message]"
+        assert inbound.metadata.get("has_media") is True
+
+    asyncio.run(_run())
+
+
+def test_channel_ingest_drops_disallowed_mime_attachments_from_metadata() -> None:
+    async def _run() -> None:
+        bus = MessageBus()
+        channel = TelegramChannel({}, bus)
+        ok = await channel.ingest(
+            sender_id="alice",
+            chat_id="chat1",
+            content="",
+            metadata={
+                "attachments": [
+                    {"url": "https://example.com/ok.mp4", "mime_type": "video/mp4"},
+                    {
+                        "url": "https://example.com/bad.bin",
+                        "mime_type": "application/x-msdownload",
+                    },
+                ]
+            },
+        )
+        assert ok is True
+        inbound = await bus.consume_inbound(timeout_s=0.2)
+        assert inbound.media == ["https://example.com/ok.mp4"]
+        assert inbound.metadata.get("media_dropped_count") == 1
+        assert inbound.content == "[video message]"
+
+    asyncio.run(_run())
+
+
+def test_channel_ingest_caps_number_of_videos_from_metadata() -> None:
+    async def _run() -> None:
+        bus = MessageBus()
+        channel = TelegramChannel({}, bus)
+        attachments = [
+            {"url": f"https://example.com/v{i}.mp4", "mime_type": "video/mp4"}
+            for i in range(6)
+        ]
+        ok = await channel.ingest(
+            sender_id="alice",
+            chat_id="chat1",
+            content="",
+            metadata={"attachments": attachments},
+        )
+        assert ok is True
+        inbound = await bus.consume_inbound(timeout_s=0.2)
+        assert len(inbound.media) == 4
+        assert inbound.media[0].endswith("v0.mp4")
+        assert inbound.media[-1].endswith("v3.mp4")
+        assert inbound.metadata.get("media_dropped_count") == 2
+        assert inbound.metadata.get("media_type") == "video"
+
+    asyncio.run(_run())
+
+
+def test_channel_ingest_drops_oversized_data_url_video_from_metadata(
+    monkeypatch,
+) -> None:
+    async def _run() -> None:
+        bus = MessageBus()
+        channel = TelegramChannel({}, bus)
+        monkeypatch.setattr(TelegramChannel, "_MAX_VIDEO_BYTES", 16)
+        payload = base64.b64encode(b"x" * 32).decode("ascii")
+        data_url = f"data:video/mp4;base64,{payload}"
+        ok = await channel.ingest(
+            sender_id="alice",
+            chat_id="chat1",
+            content="",
+            metadata={
+                "attachments": [{"data_url": data_url, "mime_type": "video/mp4"}]
+            },
+        )
+        assert ok is True
+        inbound = await bus.consume_inbound(timeout_s=0.2)
+        assert inbound.media == []
+        assert inbound.metadata.get("media_dropped_count") == 1
+        assert inbound.content == ""
+
+    asyncio.run(_run())
+
+
+def test_channel_ingest_accepts_small_data_url_video_from_metadata(monkeypatch) -> None:
+    async def _run() -> None:
+        bus = MessageBus()
+        channel = TelegramChannel({}, bus)
+        monkeypatch.setattr(TelegramChannel, "_MAX_VIDEO_BYTES", 128)
+        payload = base64.b64encode(b"tiny-video").decode("ascii")
+        data_url = f"data:video/mp4;base64,{payload}"
+        ok = await channel.ingest(
+            sender_id="alice",
+            chat_id="chat1",
+            content="",
+            metadata={
+                "attachments": [{"data_url": data_url, "mime_type": "video/mp4"}]
+            },
+        )
+        assert ok is True
+        inbound = await bus.consume_inbound(timeout_s=0.2)
+        assert inbound.media == [data_url]
+        assert inbound.metadata.get("has_media") is True
+        assert inbound.metadata.get("media_type") == "video"
+        assert inbound.content == "[video message]"
+
+    asyncio.run(_run())
+
+
 def test_slack_strip_bot_mention() -> None:
     bus = MessageBus()
     ch = SlackChannel({"bot_user_id": "U123"}, bus)
@@ -98,6 +253,40 @@ def test_channel_manager_dispatches_outbound() -> None:
                 await dispatch_task
             except asyncio.CancelledError:
                 pass
+
+    asyncio.run(_run())
+
+
+def test_telegram_channel_send_callback_normalizes_metadata_video_attachment() -> None:
+    async def _run() -> None:
+        bus = MessageBus()
+        seen: list[OutboundMessage] = []
+
+        async def _send(msg: OutboundMessage) -> None:
+            seen.append(msg)
+
+        channel = TelegramChannel({}, bus, send_callback=_send)
+        await channel.send(
+            OutboundMessage(
+                channel="telegram",
+                chat_id="c1",
+                content="",
+                metadata={
+                    "attachments": [
+                        {
+                            "url": "https://example.com/demo.mp4",
+                            "mime_type": "video/mp4",
+                        }
+                    ]
+                },
+            )
+        )
+        assert len(seen) == 1
+        sent = seen[0]
+        assert sent.media == ["https://example.com/demo.mp4"]
+        assert sent.content == "[video message]"
+        assert sent.metadata.get("has_media") is True
+        assert sent.metadata.get("media_type") == "video"
 
     asyncio.run(_run())
 

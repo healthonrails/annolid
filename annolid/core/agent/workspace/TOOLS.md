@@ -77,6 +77,7 @@ Safety notes:
 - `video_sample_frames(path, output_dir?, mode?, step?, target_fps?, indices?, start_frame?, max_frames?, overwrite?)`
 - `video_segment(path, output_path?, start_frame?, end_frame?, start_sec?, end_sec?, overwrite?)`
 - `video_process_segments(path, segments, output_dir?, overwrite?)`
+- `video_ffmpeg_process(path, output_path?, operation?, output_dir?, max_frames?, frame_rate?, crf?, preset?, audio_codec?, overwrite?)`
 - `sam3_agent_video_track(video_path, agent_prompt, window_size?, stride?, output_dir?, summary_filename?, checkpoint_path?, propagation_direction?, device?, agent_det_thresh?, score_threshold_detection?, new_det_thresh?, max_num_objects?, multiplex_count?, compile_model?, offload_video_to_cpu?, use_explicit_window_reseed?, boundary_mask_match_iou_threshold?, allow_private_state_mutation?, max_generations?, debug?, dry_run?)`
   - Runs SAM3 Agent on each window's key frame, then propagates masks through the window with overlap-aware session carry-over.
   - Writes a JSON run summary to `output_dir` when provided, or to a default `<video_stem>_sam3_agent/` workspace folder.

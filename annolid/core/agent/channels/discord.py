@@ -38,7 +38,8 @@ class DiscordChannel(BaseChannel):
     async def send(self, msg: OutboundMessage) -> None:
         if self._send_callback is None:
             return
-        ret = self._send_callback(msg)
+        normalized = self.normalize_outbound_message(msg)
+        ret = self._send_callback(normalized)
         if asyncio.iscoroutine(ret):
             await ret
 
