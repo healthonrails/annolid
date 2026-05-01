@@ -40,6 +40,7 @@ _WRAPPED_GUI_TOOL_SPECS: Tuple[Tuple[str, str], ...] = (
     ("score_aggression_bouts_callback", "score_aggression_bouts"),
     ("behavior_catalog_callback", "behavior_catalog"),
     ("analyze_tracking_stats_callback", "analyze_tracking_stats"),
+    ("correct_tracking_ndjson_callback", "correct_tracking_ndjson"),
     ("start_realtime_stream_callback", "start_realtime_stream"),
     ("stop_realtime_stream_callback", "stop_realtime_stream"),
     ("get_realtime_status_callback", "get_realtime_status"),

@@ -4204,6 +4204,9 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
         analyze_tracking_stats_callback=lambda **kwargs: _mark(
             "analyze_tracking_stats", kwargs
         ),
+        correct_tracking_ndjson_callback=lambda **kwargs: _mark(
+            "correct_tracking_ndjson", kwargs
+        ),
         start_realtime_stream_callback=lambda **kwargs: _mark(
             "start_realtime_stream", kwargs
         ),
@@ -4294,6 +4297,7 @@ def test_register_annolid_gui_tools_and_context_payload() -> None:
     assert registry.has("gui_process_video_behaviors")
     assert registry.has("gui_score_aggression_bouts")
     assert registry.has("gui_analyze_tracking_stats")
+    assert registry.has("gui_correct_tracking_ndjson")
     assert registry.has("gui_start_realtime_stream")
     assert registry.has("gui_stop_realtime_stream")
     assert registry.has("gui_get_realtime_status")

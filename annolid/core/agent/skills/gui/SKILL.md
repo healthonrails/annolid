@@ -45,7 +45,7 @@ Best practices:
 
 - `gui_open_video`, `gui_set_frame`, `gui_track_next_frames`
 - `gui_set_ai_text_prompt`, `gui_run_ai_text_segmentation`
-- `gui_segment_track_video`, `gui_label_behavior_segments`
+- `gui_segment_track_video`, `gui_correct_tracking_ndjson`, `gui_label_behavior_segments`
 - `gui_start_realtime_stream`, `gui_stop_realtime_stream`
 - `gui_get_realtime_status`, `gui_list_realtime_models`, `gui_list_realtime_logs`
 - `gui_list_logs`, `gui_open_log_folder`, `gui_remove_log_folder`
@@ -55,7 +55,8 @@ Best practices:
 1. Open video and set frame explicitly before segmentation/tracking.
 2. Keep prompts short and object-specific for segmentation.
 3. Use `gui_segment_track_video` for integrated open+segment(+track) flows.
-4. Stop realtime stream explicitly when finished.
+4. Use `gui_correct_tracking_ndjson` when a tracking NDJSON needs frame-level correction from SAM3-agent artifacts or temporal repair after occlusion.
+5. Stop realtime stream explicitly when finished.
 
 ### Behavior Annotation and Labeling
 

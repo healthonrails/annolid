@@ -114,6 +114,12 @@ Safety notes:
 - `gui_segment_track_video(path, text_prompt, mode?, use_countgd?, model_name?, to_frame?)`
   - Uses the legacy GroundingDINO+SAM workflow for non-SAM3 models.
   - When `model_name` is `SAM3` and `mode="track"`, the GUI backend routes to `sam3_agent_video_track` instead.
+- `gui_correct_tracking_ndjson(ndjson_path, source_ndjson_path?, output_ndjson_path?, video_path?, agent_prompt?, run_sam3_agent?, window_size?, stride?, replace_only_empty_shapes?, allow_append_new_frames?, replace_all_shapes?, temporal_repair?, start_frame?, expected_instance_count?, max_gap_frames?, max_match_distance?)`
+  - Corrects Annolid tracking NDJSON by frame from a SAM3-agent output NDJSON or a provided source NDJSON.
+  - Defaults to replacing only frames whose target record has empty `shapes`; pass `replace_only_empty_shapes=false` to update propagated shapes in non-empty frames while preserving unrelated shapes.
+  - Pass `replace_all_shapes=true` only when the source frame should fully replace target frame shapes.
+  - Pass `temporal_repair=true` with `expected_instance_count` after an occlusion-prone `start_frame` to fill short missing-shape gaps and correct likely ID switches by centroid continuity.
+  - In-place writes are limited to the writable workspace; use `output_ndjson_path` to write a corrected copy.
 - `gui_label_behavior_segments(path?, behavior_labels?, use_defined_behavior_list?, segment_mode?, segment_frames?, segment_seconds?, sample_frames_per_segment?, frames_per_grid?, max_segments?, subject?, overwrite_existing?, llm_profile?, llm_provider?, llm_model?, video_description?, instance_count?, experiment_context?, behavior_definitions?, focus_points?)`
   - Saves timeline labels and exports `<video_stem>_timestamps.csv` automatically.
   - Writes a segment-level labeling log to `<video_stem>_behavior_segment_labels.json`.

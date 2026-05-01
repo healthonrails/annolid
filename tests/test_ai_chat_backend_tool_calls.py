@@ -2141,6 +2141,7 @@ def test_direct_handler_sam3_track_uses_fallback_wrapper() -> None:
     task = StreamingChatTask("hi", widget=None)
     handlers = task._direct_command_handlers()
     assert handlers["sam3_agent_video_track"] == task._tool_gui_sam3_agent_video_track
+    assert handlers["correct_tracking_ndjson"] == task._tool_gui_correct_tracking_ndjson
 
 
 def test_ollama_llm_callable_reprobes_tools_when_prompt_needs_tools(

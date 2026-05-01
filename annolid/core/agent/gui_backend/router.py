@@ -62,6 +62,7 @@ async def execute_direct_gui_command(
     process_video_behaviors: Callable[..., Any],
     score_aggression_bouts: Callable[..., Any],
     sam3_agent_video_track: Callable[..., Any],
+    correct_tracking_ndjson: Callable[..., Any],
     behavior_catalog: Callable[..., Any],
     start_realtime_stream: Callable[..., Any],
     stop_realtime_stream: Callable[[], Any],
@@ -251,6 +252,54 @@ async def execute_direct_gui_command(
                 f"{Path(basename).name if basename else 'the selected video'}."
             )
         return str(payload.get("error") or "Failed to start SAM3 tracking.")
+
+    if name == "correct_tracking_ndjson":
+        payload = await _run(
+            correct_tracking_ndjson,
+            ndjson_path=str(args.get("ndjson_path") or args.get("path") or ""),
+            source_ndjson_path=str(args.get("source_ndjson_path") or ""),
+            output_ndjson_path=str(args.get("output_ndjson_path") or ""),
+            video_path=str(args.get("video_path") or ""),
+            agent_prompt=str(args.get("agent_prompt") or args.get("text_prompt") or ""),
+            run_sam3_agent=bool(args.get("run_sam3_agent", False)),
+            window_size=int(args.get("window_size") or 5),
+            stride=(
+                int(args.get("stride"))
+                if args.get("stride") not in (None, "")
+                else None
+            ),
+            replace_only_empty_shapes=bool(args.get("replace_only_empty_shapes", True)),
+            allow_append_new_frames=bool(args.get("allow_append_new_frames", False)),
+            replace_all_shapes=bool(args.get("replace_all_shapes", False)),
+            temporal_repair=bool(args.get("temporal_repair", False)),
+            start_frame=int(args.get("start_frame") or 0),
+            expected_instance_count=(
+                int(args.get("expected_instance_count"))
+                if args.get("expected_instance_count") not in (None, "")
+                else None
+            ),
+            max_gap_frames=int(args.get("max_gap_frames") or 5),
+            max_match_distance=float(args.get("max_match_distance") or 80.0),
+        )
+        if payload.get("ok"):
+            output_path = str(payload.get("output_ndjson_path") or "").strip()
+            replaced = int(payload.get("replaced_frames") or 0)
+            missing = int(payload.get("missing_shapes_filled") or 0)
+            switches = int(payload.get("id_switches_corrected") or 0)
+            parts = [
+                (
+                    f"Corrected tracking NDJSON: {output_path}."
+                    if output_path
+                    else "Corrected tracking NDJSON."
+                ),
+                f"Replaced frames: {replaced}.",
+            ]
+            if missing:
+                parts.append(f"Filled missing shapes: {missing}.")
+            if switches:
+                parts.append(f"Corrected ID switches: {switches}.")
+            return " ".join(parts)
+        return str(payload.get("error") or "Failed to correct tracking NDJSON.")
 
     if name == "label_behavior_segments":
         payload = await _run(

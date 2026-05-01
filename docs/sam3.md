@@ -81,6 +81,12 @@ sam3_agent_video_track(
 
 When the settings look right, rerun with `dry_run=false`.
 
+If a saved tracking NDJSON already exists and you need to fill missed shapes or
+repair short occlusion/ID-switch errors, use
+[Tracking Correction with SAM3 Agent and Annolid Bot](tutorials/tracking_correction_with_sam3_bot.md).
+That workflow can merge SAM3 agent artifacts into an existing NDJSON and write a
+reviewable corrected copy.
+
 ### Output artifacts
 
 The tool returns a JSON summary and writes the same summary to disk.

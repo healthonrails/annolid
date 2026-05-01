@@ -36,6 +36,7 @@ from .function_gui_threejs import (
     GuiOpenThreeJsTool,
 )
 from .function_gui_video import (
+    GuiCorrectTrackingNdjsonTool,
     GuiAnalyzeTrackingStatsTool,
     GuiCheckStreamSourceTool,
     GuiGetRealtimeStatusTool,
@@ -125,6 +126,7 @@ def register_annolid_gui_tools(
     score_aggression_bouts_callback: Optional[ActionCallback] = None,
     behavior_catalog_callback: Optional[ActionCallback] = None,
     analyze_tracking_stats_callback: Optional[ActionCallback] = None,
+    correct_tracking_ndjson_callback: Optional[ActionCallback] = None,
     start_realtime_stream_callback: Optional[ActionCallback] = None,
     stop_realtime_stream_callback: Optional[ActionCallback] = None,
     get_realtime_status_callback: Optional[ActionCallback] = None,
@@ -252,6 +254,11 @@ def register_annolid_gui_tools(
     registry.register(
         GuiAnalyzeTrackingStatsTool(
             analyze_tracking_stats_callback=analyze_tracking_stats_callback
+        )
+    )
+    registry.register(
+        GuiCorrectTrackingNdjsonTool(
+            correct_tracking_ndjson_callback=correct_tracking_ndjson_callback
         )
     )
     registry.register(

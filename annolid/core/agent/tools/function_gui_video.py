@@ -414,6 +414,52 @@ class GuiAnalyzeTrackingStatsTool(FunctionTool):
         return await _run_callback(self._analyze_tracking_stats_callback, **kwargs)
 
 
+class GuiCorrectTrackingNdjsonTool(FunctionTool):
+    def __init__(
+        self, correct_tracking_ndjson_callback: Optional[ActionCallback] = None
+    ):
+        self._correct_tracking_ndjson_callback = correct_tracking_ndjson_callback
+
+    @property
+    def name(self) -> str:
+        return "gui_correct_tracking_ndjson"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Correct tracking results in an Annolid NDJSON file using SAM3-agent "
+            "artifacts or a provided source NDJSON."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "ndjson_path": {"type": "string", "minLength": 1},
+                "source_ndjson_path": {"type": "string"},
+                "output_ndjson_path": {"type": "string"},
+                "video_path": {"type": "string"},
+                "agent_prompt": {"type": "string"},
+                "run_sam3_agent": {"type": "boolean"},
+                "window_size": {"type": "integer", "minimum": 1},
+                "stride": {"type": "integer", "minimum": 1},
+                "replace_only_empty_shapes": {"type": "boolean"},
+                "allow_append_new_frames": {"type": "boolean"},
+                "replace_all_shapes": {"type": "boolean"},
+                "temporal_repair": {"type": "boolean"},
+                "start_frame": {"type": "integer", "minimum": 0},
+                "expected_instance_count": {"type": "integer", "minimum": 1},
+                "max_gap_frames": {"type": "integer", "minimum": 0},
+                "max_match_distance": {"type": "number", "minimum": 0.0},
+            },
+            "required": ["ndjson_path"],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        return await _run_callback(self._correct_tracking_ndjson_callback, **kwargs)
+
+
 class GuiStartRealtimeStreamTool(FunctionTool):
     def __init__(self, start_realtime_stream_callback: Optional[ActionCallback] = None):
         self._start_realtime_stream_callback = start_realtime_stream_callback

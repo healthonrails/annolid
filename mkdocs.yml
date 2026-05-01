@@ -100,6 +100,7 @@ nav:
       - Realtime Wireless Camera Detection (GUI): tutorials/realtime_wireless_camera_detection.md
       - Video Processing with FFmpeg: tutorials/video_ffmpeg_processing.md
       - Segment-based Batch Tracking: tutorials/segment-based-batch-tracking.md
+      - Tracking Correction with SAM3 Bot: tutorials/tracking_correction_with_sam3_bot.md
       - Behavior Agent User Guide: behavior_agent_user_guide.md
       - Draw Zones Quickstart (GUI): tutorials/draw_zones_quickstart.md
       - Zone Analysis Workflow: tutorials/zone_analysis_workflow.md

@@ -182,6 +182,9 @@ from annolid.services.chat_shape_files import (
 from annolid.services.chat_tracking_stats import (
     analyze_chat_tracking_stats_tool as gui_analyze_chat_tracking_stats_tool,
 )
+from annolid.services.chat_tracking_correction import (
+    correct_chat_tracking_ndjson_tool as gui_correct_tracking_ndjson_tool,
+)
 from annolid.gui.realtime_launch import build_realtime_launch_payload
 from annolid.services.chat_runtime import (
     build_chat_pdf_search_roots,
@@ -1326,6 +1329,7 @@ class StreamingChatTask(QRunnable):
                 "score_aggression_bouts": self._tool_gui_score_aggression_bouts,
                 "behavior_catalog": self._tool_gui_behavior_catalog,
                 "analyze_tracking_stats": self._tool_gui_analyze_tracking_stats,
+                "correct_tracking_ndjson": self._tool_gui_correct_tracking_ndjson,
                 "start_realtime_stream": self._tool_gui_start_realtime_stream,
                 "stop_realtime_stream": self._tool_gui_stop_realtime_stream,
                 "get_realtime_status": self._tool_gui_get_realtime_status,
@@ -2530,6 +2534,7 @@ class StreamingChatTask(QRunnable):
             "track_next_frames": self._tool_gui_track_next_frames,
             "segment_track_video": self._tool_gui_segment_track_video,
             "sam3_agent_video_track": self._tool_gui_sam3_agent_video_track,
+            "correct_tracking_ndjson": self._tool_gui_correct_tracking_ndjson,
             "label_behavior_segments": self._tool_gui_label_behavior_segments,
             "process_video_behaviors": self._tool_gui_process_video_behaviors,
             "score_aggression_bouts": self._tool_gui_score_aggression_bouts,
@@ -3923,6 +3928,47 @@ class StreamingChatTask(QRunnable):
             top_k=top_k,
             include_plots=include_plots,
             default_root_dir=initial_root,
+        )
+
+    def _tool_gui_correct_tracking_ndjson(
+        self,
+        *,
+        ndjson_path: str,
+        source_ndjson_path: str = "",
+        output_ndjson_path: str = "",
+        video_path: str = "",
+        agent_prompt: str = "",
+        run_sam3_agent: bool = False,
+        window_size: int = 5,
+        stride: Optional[int] = None,
+        replace_only_empty_shapes: bool = True,
+        allow_append_new_frames: bool = False,
+        replace_all_shapes: bool = False,
+        temporal_repair: bool = False,
+        start_frame: int = 0,
+        expected_instance_count: Optional[int] = None,
+        max_gap_frames: int = 5,
+        max_match_distance: float = 80.0,
+    ) -> Dict[str, Any]:
+        return gui_correct_tracking_ndjson_tool(
+            ndjson_path=ndjson_path,
+            source_ndjson_path=source_ndjson_path,
+            output_ndjson_path=output_ndjson_path,
+            video_path=video_path,
+            agent_prompt=agent_prompt,
+            run_sam3_agent=run_sam3_agent,
+            window_size=window_size,
+            stride=stride,
+            replace_only_empty_shapes=replace_only_empty_shapes,
+            allow_append_new_frames=allow_append_new_frames,
+            replace_all_shapes=replace_all_shapes,
+            temporal_repair=temporal_repair,
+            start_frame=start_frame,
+            expected_instance_count=expected_instance_count,
+            max_gap_frames=max_gap_frames,
+            max_match_distance=max_match_distance,
+            allowed_dir=Path(self.workspace),
+            allowed_read_roots=self._vcs_read_roots(),
         )
 
     def _get_widget_action_result(self, action_name: str) -> Dict[str, Any]:
