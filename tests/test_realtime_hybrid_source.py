@@ -146,6 +146,34 @@ def test_hybrid_source_network_local_attempts_recovery_before_reset() -> None:
     assert local.disconnect_calls == 0
 
 
+def test_hybrid_source_connect_can_fail_without_raising() -> None:
+    cfg = Config(camera_index="http://camera.local/img/video.mjpeg")
+    src = HybridVideoSource(cfg, RecordingStateManager(cfg))
+    src.remote = _FakeRemote(connect_ok=False)  # type: ignore[assignment]
+    src.local = _FakeLocal(connect_ok=False)  # type: ignore[assignment]
+
+    ok = asyncio.run(src.connect(raise_on_failure=False))
+
+    assert ok is False
+    assert src.state == SourceState.DISCONNECTED
+
+
+def test_hybrid_source_disconnected_get_frame_retries_without_raising() -> None:
+    cfg = Config(camera_index="http://camera.local/img/video.mjpeg")
+    cfg.local_reconnect_cooldown = 0.0
+    src = HybridVideoSource(cfg, RecordingStateManager(cfg))
+    src.remote = _FakeRemote(connect_ok=False)  # type: ignore[assignment]
+    src.local = _FakeLocal(connect_ok=False)  # type: ignore[assignment]
+    src.state = SourceState.DISCONNECTED
+    src._next_local_reconnect_time = 0.0
+
+    frame = asyncio.run(src.get_frame())
+
+    assert frame is None
+    assert src.state == SourceState.DISCONNECTED
+    assert src.local.connect_calls >= 1
+
+
 def test_perception_shutdown_releases_publisher_after_stop_request() -> None:
     cfg = Config(camera_index=0)
     process = PerceptionProcess(cfg)

@@ -1012,7 +1012,7 @@ class HybridVideoSource:
         except Exception:
             return True
 
-    async def connect(self):
+    async def connect(self, *, raise_on_failure: bool = True) -> bool:
         """Initialize connection with fallback strategy."""
         async with self._state_lock:
             if self._prefer_local_only:
@@ -1029,7 +1029,7 @@ class HybridVideoSource:
                         "reconnect_local_success",
                         source=str(self.config.camera_index),
                     )
-                    return
+                    return True
                 self.state = SourceState.DISCONNECTED
                 self._emit_status(
                     "reconnect_local_failed",
@@ -1040,10 +1040,16 @@ class HybridVideoSource:
                     f"local={self.local.last_error}" if self.local.last_error else ""
                 )
                 if detail_text:
-                    raise RuntimeError(
-                        f"Failed to connect to any video source ({detail_text})"
-                    )
-                raise RuntimeError("Failed to connect to any video source")
+                    message = f"Failed to connect to any video source ({detail_text})"
+                    if raise_on_failure:
+                        raise RuntimeError(message)
+                    logger.warning(message)
+                    return False
+                message = "Failed to connect to any video source"
+                if raise_on_failure:
+                    raise RuntimeError(message)
+                logger.warning(message)
+                return False
 
             # Try remote first
             self.state = SourceState.TRYING_REMOTE
@@ -1052,7 +1058,7 @@ class HybridVideoSource:
                 self.state = SourceState.USING_REMOTE
                 logger.info("Connected to remote source")
                 self._emit_status("reconnect_remote_success", source="remote")
-                return
+                return True
             self._emit_status(
                 "reconnect_remote_failed",
                 source="remote",
@@ -1073,7 +1079,7 @@ class HybridVideoSource:
                     "reconnect_local_success",
                     source=str(self.config.camera_index),
                 )
-                return
+                return True
 
             # Last-resort hard fallback: force camera index 0 and retry once.
             if str(
@@ -1098,7 +1104,7 @@ class HybridVideoSource:
                         "reconnect_local_success",
                         source="0",
                     )
-                    return
+                    return True
 
             self.state = SourceState.DISCONNECTED
             self._emit_status(
@@ -1113,10 +1119,16 @@ class HybridVideoSource:
                 details.append(f"local={self.local.last_error}")
             detail_text = "; ".join(details)
             if detail_text:
-                raise RuntimeError(
-                    f"Failed to connect to any video source ({detail_text})"
-                )
-            raise RuntimeError("Failed to connect to any video source")
+                message = f"Failed to connect to any video source ({detail_text})"
+                if raise_on_failure:
+                    raise RuntimeError(message)
+                logger.warning(message)
+                return False
+            message = "Failed to connect to any video source"
+            if raise_on_failure:
+                raise RuntimeError(message)
+            logger.warning(message)
+            return False
 
     async def get_frame(self) -> Optional[Tuple[np.ndarray, Dict[str, Any]]]:
         """Get frame with automatic fallback and recovery."""
@@ -1196,20 +1208,20 @@ class HybridVideoSource:
             if now < self._next_local_reconnect_time:
                 return None
             self._next_local_reconnect_time = now + self._local_reconnect_cooldown
-            async with self._state_lock:
-                if self.state == SourceState.TRYING_LOCAL:
+            if self.state == SourceState.TRYING_LOCAL:
+                async with self._state_lock:
                     if await self.local.connect():
                         self.state = SourceState.USING_LOCAL
                     else:
                         self.state = SourceState.DISCONNECTED
-                elif self.state == SourceState.DISCONNECTED:
-                    logger.info("Attempting to recover connection...")
-                    self._emit_status(
-                        "reconnect_attempt",
-                        source=str(self.config.camera_index),
-                        reason="disconnected",
-                    )
-                    await self.connect()
+            elif self.state == SourceState.DISCONNECTED:
+                logger.info("Attempting to recover connection...")
+                self._emit_status(
+                    "reconnect_attempt",
+                    source=str(self.config.camera_index),
+                    reason="disconnected",
+                )
+                await self.connect(raise_on_failure=False)
 
         return None
 
@@ -1904,8 +1916,9 @@ class PerceptionProcess:
         # Initialize publisher
         await self.publisher.bind()
 
-        # Initialize video source
-        await self.video_source.connect()
+        # Initialize video source. Keep process alive on startup failures so
+        # get_frame() can continue reconnection attempts.
+        await self.video_source.connect(raise_on_failure=False)
         logger.info("Setup complete")
 
     async def run(self):
