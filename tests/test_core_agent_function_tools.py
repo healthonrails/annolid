@@ -58,10 +58,12 @@ from annolid.core.agent.tools.function_builtin import (
     OpenPdfTool,
     ReadFileTool,
     RenameFileTool,
+    WebFetchTool,
     WebSearchTool,
     WriteFileTool,
     register_nanobot_style_tools,
 )
+from annolid.core.agent.tools import web as web_tools
 from annolid.core.agent.tools.function_video import (
     VideoInfoTool,
     VideoListInferenceModelsTool,
@@ -2783,7 +2785,9 @@ def test_web_search_tool_scrapling_fetchers_class_api(monkeypatch) -> None:
     result = asyncio.run(tool.execute(query="annolid", backend="scrapling"))
     assert "Results for: annolid" in result
     assert "Example Docs" in result
-    assert str(called.get("url") or "").startswith("https://duckduckgo.com/html/?q=")
+    assert str(called.get("url") or "").startswith(
+        "https://html.duckduckgo.com/html/?q="
+    )
 
 
 def test_web_search_tool_returns_no_results_when_scrapling_empty(monkeypatch) -> None:
@@ -2830,6 +2834,96 @@ def test_web_search_tool_parse_deduplicates_and_normalizes_duck_links() -> None:
     assert len(rows) == 1
     assert rows[0]["title"] == "First"
     assert rows[0]["url"] == "https://example.com/doc"
+
+
+def test_web_search_tool_parses_duckduckgo_snippets() -> None:
+    html = """
+    <html><body>
+      <a class="result__a" href="https://example.com/doc">Example Title</a>
+      <a class="result__snippet">Useful <b>summary</b> text.</a>
+    </body></html>
+    """
+    rows = WebSearchTool._parse_duckduckgo_results(html, count=3)
+    assert rows[0]["description"] == "Useful summary text."
+
+
+def test_web_search_tool_coerces_string_count(monkeypatch) -> None:
+    captured: dict[str, int] = {}
+    tool = WebSearchTool(api_key="")
+
+    async def _fake_scrapling(*, query: str, count: int):
+        del query
+        captured["count"] = count
+        return [
+            {
+                "title": "One",
+                "url": "https://example.org/one",
+                "description": "",
+            }
+        ]
+
+    monkeypatch.setattr(tool, "_search_with_scrapling", _fake_scrapling)
+    result = asyncio.run(tool.execute(query="annolid", count="2"))
+    assert captured["count"] == 2
+    assert "One" in result
+
+
+def test_web_fetch_tool_cleans_url_marks_untrusted_and_blocks_private_redirect(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(web_tools, "_resolved_ips", lambda hostname: set())
+
+    class _FakeResponse:
+        status_code = 200
+        headers = {"content-type": "text/html; charset=utf-8"}
+        url = "https://example.org/page"
+        text = "<html><title>Example</title><body>Hello <b>Annolid</b></body></html>"
+
+        def json(self):
+            return {}
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class _RedirectResponse(_FakeResponse):
+        url = "http://127.0.0.1/private"
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs):
+            del args, kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+        async def get(self, url, headers=None):
+            del headers
+            assert url == "https://example.org/page"
+            return _FakeResponse()
+
+    class _RedirectClient(_FakeClient):
+        async def get(self, url, headers=None):
+            del url, headers
+            return _RedirectResponse()
+
+    fake_httpx = types.SimpleNamespace(AsyncClient=_FakeClient)
+    monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
+
+    tool = WebFetchTool()
+    result = asyncio.run(tool.execute(url=" `https://example.org/page` "))
+    payload = json.loads(result)
+    assert payload["url"] == "https://example.org/page"
+    assert payload["title"] == "Example"
+    assert payload["untrusted"] is True
+    assert "Hello\nAnnolid" in payload["text"]
+
+    monkeypatch.setattr(fake_httpx, "AsyncClient", _RedirectClient)
+    redirected = json.loads(asyncio.run(tool.execute(url="https://example.org/page")))
+    assert "Final URL validation failed" in redirected["error"]
+    assert redirected["finalUrl"] == "http://127.0.0.1/private"
 
 
 def test_cron_tool_add_list_remove(tmp_path: Path) -> None:
