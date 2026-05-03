@@ -17,6 +17,7 @@ The panel now has two tabs:
 
 - Choose a preset YOLO model from **Preset**, or
 - Select **Custom…** and browse to your own `*.pt`, `*.onnx`, `*.engine`, or `*.mlpackage` model.
+- Enable **View only (no detection or inference)** when you only want to watch a camera or video stream. In this mode Annolid does not load a model, run detections, send bot detection reports, or save detection-triggered clips.
 
 ### 2. Enter camera source
 
@@ -66,7 +67,7 @@ This records only when detections match the target classes.
 
 - Click **Start Realtime** to launch
 - Check status text for errors or runtime state
-- Click **Stop** to end realtime inference
+- Click **Stop** to end realtime inference or viewing
 
 ## Recommended Wireless Camera Preset
 

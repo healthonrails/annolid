@@ -125,6 +125,27 @@ async function boot() {
     controls.target.set(0, 0, 0);
     controls.update();
 
+    window.annolidZoomView = (factor = 1.0) => {
+      const zoomFactor = Math.min(10.0, Math.max(0.1, Number(factor) || 1.0));
+      const target = controls && controls.target ? controls.target : new THREE.Vector3(0, 0, 0);
+      const offset = camera.position.clone().sub(target);
+      const currentDistance = Math.max(0.05, offset.length());
+      const nextDistance = Math.min(10000, Math.max(0.05, currentDistance / zoomFactor));
+      offset.setLength(nextDistance);
+      camera.position.copy(target).add(offset);
+      camera.updateProjectionMatrix();
+      if (controls) controls.update();
+    };
+
+    window.annolidResetView = () => {
+      camera.position.set(0, 0, 3);
+      if (controls) {
+        controls.target.set(0, 0, 0);
+        controls.update();
+      }
+      camera.updateProjectionMatrix();
+    };
+
     let realtimeEnabled = true;
 
     // --- Toolbar Interaction ---
@@ -3949,6 +3970,7 @@ async function boot() {
 
     // --- Real-time Video and Pose Integration ---
     let videoPlane, videoTexture, videoCanvas, videoCtx;
+    let realtimeVideoAspect = 0;
     let realtimeFrameSeq = 0;
     const poseGroup = new THREE.Group();
     scene.add(poseGroup);
@@ -4117,9 +4139,14 @@ async function boot() {
             videoPlane.material.needsUpdate = true;
           }
 
-          // Adjust plane size to maintain aspect ratio
+          // Adjust plane size only when the source aspect changes. Reapplying
+          // transforms on every streamed frame causes visible jitter in
+          // embedded WebEngine builds.
           const aspect = img.width / Math.max(1, img.height);
-          videoPlane.scale.set(aspect * 10, 10, 1);
+          if (Math.abs(aspect - realtimeVideoAspect) > 0.0001) {
+            videoPlane.scale.set(aspect * 10, 10, 1);
+            realtimeVideoAspect = aspect;
+          }
           videoPlane.visible = true;
         };
         img.src = `data:image/jpeg;base64,${base64Frame}`;

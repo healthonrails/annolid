@@ -9,6 +9,7 @@ class Config:
     """Lightweight realtime configuration shared by GUI and perception process."""
 
     camera_index: Union[int, str] = 0
+    camera_id: str = "camera0"
     server_address: str = "localhost"
     server_port: int = 5002
     model_base_name: str = "yolo11n-seg.pt"
@@ -32,6 +33,7 @@ class Config:
     frame_encoding: str = "jpg"
     frame_quality: int = 80
     publish_annotated_frames: bool = False
+    viewer_only: bool = False
     enable_segmentation: bool = True
     mask_confidence_threshold: float = 0.5
     mask_encoding: str = "rle"

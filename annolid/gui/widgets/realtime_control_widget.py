@@ -91,12 +91,23 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         )
         browse_model_btn = QtWidgets.QPushButton(self.tr("Browse…"))
         browse_model_btn.clicked.connect(self._browse_model_file)
+        self._browse_model_btn = browse_model_btn
+        self.viewer_only_check = QtWidgets.QCheckBox(
+            self.tr("View only (no detection or inference)")
+        )
+        self.viewer_only_check.setToolTip(
+            self.tr(
+                "Open the camera or video stream and show frames without loading a model."
+            )
+        )
+        self.viewer_only_check.toggled.connect(self._on_viewer_only_toggled)
 
         model_layout.addWidget(QtWidgets.QLabel(self.tr("Preset")), 0, 0)
         model_layout.addWidget(self.model_combo, 0, 1, 1, 2)
         model_layout.addWidget(QtWidgets.QLabel(self.tr("Model Path")), 1, 0)
         model_layout.addWidget(self.model_path_edit, 1, 1)
         model_layout.addWidget(browse_model_btn, 1, 2)
+        model_layout.addWidget(self.viewer_only_check, 2, 0, 1, 3)
         model_group.setCheckable(True)
         model_group.setChecked(True)
         self._attach_collapsible_group(model_group)
@@ -463,6 +474,7 @@ class RealtimeControlWidget(QtWidgets.QWidget):
                 )
             )
         )
+        self.viewer_only_check.setChecked(bool(defaults.get("viewer_only", False)))
         self.enable_eye_control.setChecked(
             bool(defaults.get("enable_eye_control", False))
         )
@@ -553,6 +565,7 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         )
         self._on_gdrive_auto_upload_toggled(self.gdrive_auto_upload_check.isChecked())
         self._update_blink_controls()
+        self._on_viewer_only_toggled(self.viewer_only_check.isChecked())
 
     # UI slots
     def _on_model_combo_changed(self, index: int):
@@ -568,6 +581,12 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         self._update_blink_controls()
 
     def _update_blink_controls(self) -> None:
+        if self.viewer_only_check.isChecked():
+            self.classify_eye_blinks.setChecked(False)
+            self.classify_eye_blinks.setEnabled(False)
+            self.blink_ear_threshold_spin.setEnabled(False)
+            self.blink_min_frames_spin.setEnabled(False)
+            return
         model_text = str(self.model_path_edit.text() or "").strip().lower()
         is_face_model = (
             "mediapipe_face" in model_text or "face_landmarker" in model_text
@@ -617,12 +636,19 @@ class RealtimeControlWidget(QtWidgets.QWidget):
             self.log_path_edit.setText(directory)
 
     def _on_publish_frames_toggled(self, checked: bool):
+        if self.viewer_only_check.isChecked():
+            self.publish_frames_check.setChecked(True)
+            self.publish_annotated_check.setChecked(False)
+            self.publish_annotated_check.setEnabled(False)
+            return
         self.publish_annotated_check.setEnabled(checked)
         if not checked:
             self.publish_annotated_check.setChecked(False)
 
     def _on_bot_report_toggled(self, checked: bool):
-        enabled = self.bot_report_check.isChecked()
+        enabled = (
+            self.bot_report_check.isChecked() and not self.viewer_only_check.isChecked()
+        )
         self.bot_report_interval_spin.setEnabled(enabled)
         self.bot_report_watch_labels_edit.setEnabled(enabled)
         self.bot_email_report_check.setEnabled(enabled)
@@ -631,7 +657,10 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         self.bot_email_min_interval_spin.setEnabled(email_enabled)
 
     def _on_detection_segment_toggled(self, checked: bool):
-        enabled = self.save_detection_segments_check.isChecked()
+        enabled = (
+            self.save_detection_segments_check.isChecked()
+            and not self.viewer_only_check.isChecked()
+        )
         self.detection_segment_targets_edit.setEnabled(enabled)
         self.detection_segment_output_dir_edit.setEnabled(enabled)
         self.detection_segment_prebuffer_spin.setEnabled(enabled)
@@ -640,10 +669,38 @@ class RealtimeControlWidget(QtWidgets.QWidget):
         self.detection_segment_max_duration_spin.setEnabled(enabled)
 
     def _on_gdrive_auto_upload_toggled(self, checked: bool):
-        enabled = bool(checked)
+        enabled = bool(checked) and not self.viewer_only_check.isChecked()
         self.gdrive_auto_upload_delay_spin.setEnabled(enabled)
         self.gdrive_remote_folder_edit.setEnabled(enabled)
         self.gdrive_skip_existing_check.setEnabled(enabled)
+
+    def _on_viewer_only_toggled(self, checked: bool) -> None:
+        self.model_combo.setEnabled(not checked)
+        self.model_path_edit.setEnabled(not checked)
+        self._browse_model_btn.setEnabled(not checked)
+        self.targets_edit.setEnabled(not checked)
+        self.confidence_spin.setEnabled(not checked)
+        self.enable_eye_control.setEnabled(not checked)
+        self.enable_hand_control.setEnabled(not checked)
+        self.log_check.setEnabled(not checked)
+        self.publish_frames_check.setChecked(True)
+        self.publish_frames_check.setEnabled(not checked)
+        if checked:
+            self.publish_annotated_check.setChecked(False)
+            self.classify_eye_blinks.setChecked(False)
+            self.bot_report_check.setChecked(False)
+            self.bot_email_report_check.setChecked(False)
+            self.save_detection_segments_check.setChecked(False)
+            self.gdrive_auto_upload_check.setChecked(False)
+            self.log_check.setChecked(False)
+        self._on_publish_frames_toggled(self.publish_frames_check.isChecked())
+        self._on_log_toggled(self.log_check.isChecked() and not checked)
+        self._on_bot_report_toggled(self.bot_report_check.isChecked())
+        self._on_detection_segment_toggled(
+            self.save_detection_segments_check.isChecked()
+        )
+        self._on_gdrive_auto_upload_toggled(self.gdrive_auto_upload_check.isChecked())
+        self._update_blink_controls()
 
     def set_google_auth_status(self, text: str) -> None:
         self.gdrive_auth_status_label.setText(
@@ -705,12 +762,16 @@ class RealtimeControlWidget(QtWidgets.QWidget):
             return
 
         self.set_running(True)
-        self.set_status_text(self.tr("Starting realtime inference…"))
+        if config.viewer_only:
+            self.set_status_text(self.tr("Starting realtime viewer…"))
+        else:
+            self.set_status_text(self.tr("Starting realtime inference…"))
         self.start_requested.emit(config, extras)
 
     def _build_runtime_config(self) -> Tuple[RealtimeConfig, dict]:
         selected_data = self.model_combo.currentData()
-        if isinstance(selected_data, ModelConfig):
+        viewer_only = self.viewer_only_check.isChecked()
+        if isinstance(selected_data, ModelConfig) and not viewer_only:
             unavailable_reason = get_model_unavailable_reason(selected_data)
             if unavailable_reason:
                 raise ValueError(
@@ -720,8 +781,10 @@ class RealtimeControlWidget(QtWidgets.QWidget):
                 )
 
         model_path = self.model_path_edit.text().strip()
-        if not model_path:
+        if not model_path and not viewer_only:
             raise ValueError(self.tr("Please select a YOLO model file."))
+        if viewer_only and not model_path:
+            model_path = "viewer_only"
 
         publisher = self.publisher_edit.text().strip() or "tcp://*:5555"
         subscriber = self.subscriber_edit.text().strip() or "tcp://127.0.0.1:5555"
@@ -749,6 +812,7 @@ class RealtimeControlWidget(QtWidgets.QWidget):
             max_fps=float(self.max_fps_spin.value()),
             publish_frames=self.publish_frames_check.isChecked(),
             publish_annotated_frames=self.publish_annotated_check.isChecked(),
+            viewer_only=viewer_only,
             rtsp_transport=str(self.rtsp_transport_combo.currentData() or "auto"),
             bot_report_enabled=self.bot_report_check.isChecked(),
             bot_report_interval_sec=float(self.bot_report_interval_spin.value()),

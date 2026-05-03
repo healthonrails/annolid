@@ -89,3 +89,27 @@ def test_build_realtime_launch_payload_includes_detection_segment_config() -> No
     assert cfg.detection_segment_postbuffer_sec == 2.5
     assert cfg.detection_segment_min_duration_sec == 0.5
     assert cfg.detection_segment_max_duration_sec == 30.0
+
+
+def test_build_realtime_launch_payload_viewer_only_disables_inference_outputs() -> None:
+    cfg, extras = build_realtime_launch_payload(
+        camera_source=0,
+        model_name="",
+        viewer_only=True,
+        publish_frames=False,
+        publish_annotated_frames=True,
+        bot_report_enabled=True,
+        bot_email_report=True,
+        save_detection_segments=True,
+        gdrive_auto_upload_enabled=True,
+    )
+
+    assert cfg.viewer_only is True
+    assert cfg.publish_frames is True
+    assert cfg.publish_annotated_frames is False
+    assert cfg.save_detection_segments is False
+    assert extras["viewer_only"] is True
+    assert extras["bot_report_enabled"] is False
+    assert extras["bot_email_report"] is False
+    assert extras["save_detection_segments"] is False
+    assert extras["gdrive_auto_upload_enabled"] is False

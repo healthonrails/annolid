@@ -864,6 +864,8 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
 
     def _step_zoom(self, delta: int) -> None:
         self.setZoom(max(1, min(1000, self.zoomWidget.value() + int(delta))))
+        if self._apply_threejs_toolbar_zoom(delta):
+            return
         if self._has_renderable_image() and hasattr(self, "paintCanvas"):
             self.paintCanvas()
 
@@ -874,6 +876,8 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
     def setZoomToOriginal(self) -> None:
         self.zoomMode = self.MANUAL_ZOOM
         self.setZoom(100)
+        if self._reset_threejs_toolbar_view():
+            return
         if self._has_renderable_image() and hasattr(self, "paintCanvas"):
             self.paintCanvas()
 
@@ -884,6 +888,8 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         self.actions.fitWidth.setChecked(
             False if enabled else self.actions.fitWidth.isChecked()
         )
+        if enabled and self._reset_threejs_toolbar_view():
+            return
         if self._has_renderable_image():
             self.adjustScale()
             hook = getattr(self, "_onFitModeApplied", None)
@@ -900,6 +906,8 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         self.actions.fitWindow.setChecked(
             False if enabled else self.actions.fitWindow.isChecked()
         )
+        if enabled and self._reset_threejs_toolbar_view():
+            return
         if self._has_renderable_image():
             self.adjustScale()
             hook = getattr(self, "_onFitModeApplied", None)
@@ -960,6 +968,37 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
             return getattr(self, "large_image_backend", None) is not None
         image = getattr(self, "image", None)
         return image is not None and hasattr(image, "isNull") and not image.isNull()
+
+    def _active_threejs_viewer(self):
+        stack = getattr(self, "_viewer_stack", None)
+        manager = getattr(self, "threejs_manager", None)
+        if stack is None or manager is None:
+            return None
+        viewer = manager.viewer_widget() if hasattr(manager, "viewer_widget") else None
+        if viewer is None or stack.currentWidget() is not viewer:
+            return None
+        return viewer
+
+    def _apply_threejs_toolbar_zoom(self, delta: int) -> bool:
+        viewer = self._active_threejs_viewer()
+        if viewer is None:
+            return False
+        zoom_view = getattr(viewer, "zoom_view", None)
+        if not callable(zoom_view):
+            return False
+        factor = 1.15 if int(delta) > 0 else 1.0 / 1.15
+        zoom_view(factor)
+        return True
+
+    def _reset_threejs_toolbar_view(self) -> bool:
+        viewer = self._active_threejs_viewer()
+        if viewer is None:
+            return False
+        reset_view = getattr(viewer, "reset_view", None)
+        if not callable(reset_view):
+            return False
+        reset_view()
+        return True
 
     def brightnessContrast(self, _value=False):
         # Hook for subclasses. AnnolidWindow overrides this with runtime conversion.

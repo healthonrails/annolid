@@ -401,6 +401,26 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
         )
         self._web_view.page().runJavaScript(js_code)
 
+    def zoom_view(self, factor: float) -> None:
+        """Apply toolbar zoom to the embedded Three.js camera."""
+        if self._web_view is None:
+            return
+        try:
+            value = max(0.1, min(10.0, float(factor)))
+        except Exception:
+            value = 1.0
+        self._web_view.page().runJavaScript(
+            f"if (window.annolidZoomView) window.annolidZoomView({value});"
+        )
+
+    def reset_view(self) -> None:
+        """Reset the embedded Three.js camera for toolbar fit/original actions."""
+        if self._web_view is None:
+            return
+        self._web_view.page().runJavaScript(
+            "if (window.annolidResetView) window.annolidResetView();"
+        )
+
     def set_eye_control(self, enabled: bool) -> None:
         """Dynamically enable/disable eye control in the JS viewer."""
         if self._web_view is None:

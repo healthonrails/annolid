@@ -31,10 +31,16 @@ class CoreInteractionMixin:
         self.canvas.updateGeometry()
         if getattr(self, "_viewer_stack", None) is not None:
             self._viewer_stack.updateGeometry()
-            if not getattr(self, "isPlaying", False):
+            if (
+                not getattr(self, "isPlaying", False)
+                or getattr(self, "video_loader", None) is not None
+            ):
                 self._viewer_stack.adjustSize()
         else:
-            if not getattr(self, "isPlaying", False):
+            if (
+                not getattr(self, "isPlaying", False)
+                or getattr(self, "video_loader", None) is not None
+            ):
                 self.canvas.adjustSize()
         self.canvas.update()
 

@@ -580,9 +580,16 @@ class DreamMemoryManager:
 
         metrics: List[Dict[str, Any]] = []
         max_recall = 1
+        recency_reference: Optional[datetime] = None
         for value in items.values():
             if isinstance(value, dict):
                 max_recall = max(max_recall, int(value.get("recall_count", 0)))
+                seen = _parse_iso(str(value.get("last_seen") or ""))
+                if seen is not None:
+                    if seen.tzinfo is None:
+                        seen = seen.replace(tzinfo=timezone.utc)
+                    if recency_reference is None or seen > recency_reference:
+                        recency_reference = seen
 
         for candidate_id, record in items.items():
             if not isinstance(record, dict):
@@ -603,7 +610,10 @@ class DreamMemoryManager:
             relevance = min(1.0, relevance_sum / float(max(1, recall_count)))
             query_diversity = min(1.0, len(unique_queries) / 5.0)
             consolidation = min(1.0, len(days) / 4.0)
-            recency = self._recency_score(str(record.get("last_seen") or ""))
+            recency = self._recency_score(
+                str(record.get("last_seen") or ""),
+                reference=recency_reference,
+            )
             conceptual_richness = self._concept_richness(snippet)
             phase_boost = self._phase_boost(candidate_id, phase_signals)
 
@@ -961,13 +971,18 @@ class DreamMemoryManager:
         return min(1.0, unique / 10.0)
 
     @staticmethod
-    def _recency_score(last_seen: str) -> float:
+    def _recency_score(
+        last_seen: str, *, reference: Optional[datetime] = None
+    ) -> float:
         dt = _parse_iso(last_seen)
         if dt is None:
             return 0.2
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
-        age_seconds = max(0.0, (datetime.now(timezone.utc) - dt).total_seconds())
+        reference_dt = reference or datetime.now(timezone.utc)
+        if reference_dt.tzinfo is None:
+            reference_dt = reference_dt.replace(tzinfo=timezone.utc)
+        age_seconds = max(0.0, (reference_dt - dt).total_seconds())
         age_days = age_seconds / 86400.0
         return math.exp(-age_days / 7.0)
 

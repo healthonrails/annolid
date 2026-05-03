@@ -1620,8 +1620,9 @@ class DetectionSegmentRecorder:
 class DetectionPublisher:
     """ZMQ publisher for detection results."""
 
-    def __init__(self, address: str):
+    def __init__(self, address: str, camera_id: str = "camera0"):
         self.address = address
+        self.camera_id = str(camera_id or "camera0")
         self.context = zmq.asyncio.Context()
         self.socket = self.context.socket(zmq.PUB)
         self.socket.setsockopt(zmq.LINGER, 0)
@@ -1655,16 +1656,22 @@ class DetectionPublisher:
     async def publish_detection(self, detection: DetectionResult):
         """Publish a detection result."""
         try:
+            payload = detection.to_dict()
+            metadata = dict(payload.get("metadata") or {})
+            metadata.setdefault("camera_id", self.camera_id)
+            payload["metadata"] = metadata
             await self.socket.send_string("detections", flags=zmq.SNDMORE)
-            await self.socket.send_json(detection.to_dict())
+            await self.socket.send_json(payload)
         except Exception as e:
             logger.error(f"Failed to publish detection: {e}")
 
     async def publish_status(self, status: Dict[str, Any]):
         """Publish system status."""
         try:
+            payload = dict(status or {})
+            payload.setdefault("camera_id", self.camera_id)
             await self.socket.send_string("status", flags=zmq.SNDMORE)
-            await self.socket.send_json(status)
+            await self.socket.send_json(payload)
         except Exception as e:
             logger.error(f"Failed to publish status: {e}")
 
@@ -1678,6 +1685,7 @@ class DetectionPublisher:
         """Publish an encoded frame with associated metadata."""
         try:
             payload_metadata = dict(metadata or {})
+            payload_metadata.setdefault("camera_id", self.camera_id)
             buffer_bytes = b""
 
             if frame is not None:
@@ -1748,7 +1756,7 @@ class PerceptionProcess:
 
         # Auto-enable pose mode for known pose models
         model_name_lower = str(self.config.model_base_name).lower()
-        if "pose" in model_name_lower:
+        if not self.config.viewer_only and "pose" in model_name_lower:
             self.config.enable_pose = True
 
         if self.config.enable_pose and self.config.enable_segmentation:
@@ -1764,7 +1772,10 @@ class PerceptionProcess:
         self.video_source = HybridVideoSource(config, self.recording_manager)
         self.metrics = PerformanceMetrics()
         self.segment_recorder = DetectionSegmentRecorder(config)
-        self.publisher = DetectionPublisher(config.publisher_address)
+        self.publisher = DetectionPublisher(
+            config.publisher_address,
+            camera_id=str(getattr(config, "camera_id", "") or "camera0"),
+        )
         self.running = True
         self._shutdown_event = asyncio.Event()
         self._shutdown_complete = False
@@ -1901,17 +1912,20 @@ class PerceptionProcess:
 
         configure_ultralytics_cache()
 
-        # Verify model exists or download
-        model_ref = str(resolve_weight_path(self.config.model_base_name))
-        model_path = Path(model_ref)
-        if (
-            not (model_path.is_file() or model_path.is_dir())
-            and "mediapipe" not in model_ref.lower()
-        ):
-            logger.info(
-                f"Model '{model_path}' not found locally, attempting Ultralytics resolution..."
-            )
-            await asyncio.to_thread(YOLO, model_ref)
+        if not self.config.viewer_only:
+            # Verify model exists or download
+            model_ref = str(resolve_weight_path(self.config.model_base_name))
+            model_path = Path(model_ref)
+            if (
+                not (model_path.is_file() or model_path.is_dir())
+                and "mediapipe" not in model_ref.lower()
+            ):
+                logger.info(
+                    f"Model '{model_path}' not found locally, attempting Ultralytics resolution..."
+                )
+                await asyncio.to_thread(YOLO, model_ref)
+        else:
+            logger.info("Viewer-only mode enabled; skipping model setup.")
 
         # Initialize publisher
         await self.publisher.bind()
@@ -1925,6 +1939,9 @@ class PerceptionProcess:
         """Main processing loop with recording state awareness."""
         await self.setup()
         frame_interval = 1.0 / self.config.max_fps
+        if self.config.viewer_only:
+            await self._run_viewer_only_loop(frame_interval)
+            return
 
         async with self._model_context() as model:
             self.model = model
@@ -1945,6 +1962,9 @@ class PerceptionProcess:
                     metadata = dict(metadata or {})
                     metadata.setdefault("capture_timestamp", time.time())
                     metadata["frame_index"] = self._frame_index
+                    metadata["camera_id"] = str(
+                        getattr(self.config, "camera_id", "") or "camera0"
+                    )
 
                     # Check if we should process this frame based on recording state
                     processing_active = self.recording_manager.should_process_frames()
@@ -2030,6 +2050,7 @@ class PerceptionProcess:
                             {
                                 "frame_index": metadata["frame_index"],
                                 "capture_timestamp": metadata.get("capture_timestamp"),
+                                "camera_id": metadata.get("camera_id"),
                                 "source": metadata.get("source"),
                                 "recording_state": self.recording_manager.state.name,
                                 "processing": processing_active,
@@ -2049,6 +2070,66 @@ class PerceptionProcess:
                 # Frame rate limiting
                 elapsed = time.time() - loop_start
                 await asyncio.sleep(max(0, frame_interval - elapsed))
+
+    async def _run_viewer_only_loop(self, frame_interval: float) -> None:
+        """Publish raw frames without loading or running a perception model."""
+        while self.running and not self._shutdown_event.is_set():
+            loop_start = time.time()
+            try:
+                await self._publish_source_status_events()
+                frame_data = await self.video_source.get_frame()
+                await self._publish_source_status_events()
+                if not frame_data:
+                    await asyncio.sleep(0.1)
+                    continue
+
+                frame, metadata = frame_data
+                metadata = dict(metadata or {})
+                metadata.setdefault("capture_timestamp", time.time())
+                metadata["frame_index"] = self._frame_index
+                metadata["camera_id"] = str(
+                    getattr(self.config, "camera_id", "") or "camera0"
+                )
+
+                self.metrics.record_frame(0.0, 0)
+                if self.metrics.should_report():
+                    report = self.metrics.generate_report(
+                        self.video_source.state.name,
+                        self.recording_manager.state.name,
+                    )
+                    logger.info(f"Performance: {json.dumps(report)}")
+                    await self.publisher.publish_status(
+                        {
+                            "event": "performance_report",
+                            **report,
+                            "timestamp": time.time(),
+                        }
+                    )
+
+                if self.config.publish_frames:
+                    await self.publisher.publish_frame(
+                        frame,
+                        {
+                            "frame_index": metadata["frame_index"],
+                            "capture_timestamp": metadata.get("capture_timestamp"),
+                            "camera_id": metadata.get("camera_id"),
+                            "source": metadata.get("source"),
+                            "recording_state": self.recording_manager.state.name,
+                            "processing": False,
+                            "viewer_only": True,
+                            "detection_count": 0,
+                            "inference_ms": 0.0,
+                        },
+                        encoding=self.config.frame_encoding,
+                        quality=self.config.frame_quality,
+                    )
+                self._frame_index += 1
+            except Exception as e:
+                logger.error(f"Viewer-only processing error: {e}", exc_info=True)
+                self.metrics.record_error()
+
+            elapsed = time.time() - loop_start
+            await asyncio.sleep(max(0, frame_interval - elapsed))
 
     async def _publish_source_status_events(self) -> None:
         pop_fn = getattr(self.video_source, "pop_status_events", None)
@@ -2547,6 +2628,11 @@ def create_config_from_args() -> Config:
     parser.add_argument("--max-fps", type=float, default=30.0, help="Maximum FPS")
     parser.add_argument("--visualize", action="store_true", help="Enable visualization")
     parser.add_argument(
+        "--viewer-only",
+        action="store_true",
+        help="Publish raw frames without loading a model or running inference.",
+    )
+    parser.add_argument(
         "--publish-annotated",
         action="store_true",
         help="Publish annotated frames instead of raw frames",
@@ -2612,10 +2698,11 @@ def create_config_from_args() -> Config:
         int(args.camera_index) if args.camera_index.isdigit() else args.camera_index
     )
 
-    is_pose_model = "pose" in args.model.lower()
+    is_pose_model = False if args.viewer_only else "pose" in args.model.lower()
 
     return Config(
         camera_index=camera_index,
+        camera_id="camera0",
         server_address=args.server_address,
         server_port=args.server_port,
         model_base_name=args.model,
@@ -2626,12 +2713,15 @@ def create_config_from_args() -> Config:
         frame_height=args.height,
         max_fps=args.max_fps,
         visualize=args.visualize,
-        publish_annotated_frames=args.publish_annotated,
+        publish_annotated_frames=False if args.viewer_only else args.publish_annotated,
+        viewer_only=bool(args.viewer_only),
         pause_on_recording_stop=not args.continue_on_stop,
         recording_state_timeout=args.recording_timeout,
         enable_segmentation=not is_pose_model,
         enable_pose=is_pose_model,
-        save_detection_segments=bool(args.save_detection_segments),
+        save_detection_segments=False
+        if args.viewer_only
+        else bool(args.save_detection_segments),
         detection_segment_targets=list(args.detection_segment_targets or []),
         detection_segment_output_dir=str(args.detection_segment_output_dir or ""),
         detection_segment_prebuffer_sec=max(

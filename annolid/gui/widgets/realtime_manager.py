@@ -51,6 +51,7 @@ class RealtimeManager(QtCore.QObject):
         self.window = window
         self.realtime_perception_worker = None
         self.realtime_subscriber_worker = None
+        self._multi_camera_workers: Dict[str, Dict[str, Any]] = {}
         self.realtime_running = False
         self._realtime_connect_address = None
         self._realtime_shapes: List[Shape] = []
@@ -168,6 +169,27 @@ class RealtimeManager(QtCore.QObject):
             self.realtime_subscriber_worker = None
         if not bool(extras.get("suppress_control_dock", False)):
             self.show_control_dialog()
+        multi_camera_sessions = extras.get("multi_camera_sessions")
+        if multi_camera_sessions:
+            try:
+                self.start_multi_camera_realtime_inference(list(multi_camera_sessions))
+            except Exception as exc:
+                logger.error(
+                    "Failed to start realtime multi-camera inference: %s",
+                    exc,
+                    exc_info=True,
+                )
+                QtWidgets.QMessageBox.critical(
+                    self.window,
+                    self.window.tr("Realtime Inference"),
+                    self.window.tr("Unable to start multi-camera realtime: %s")
+                    % str(exc),
+                )
+                self.realtime_control_widget.set_running(False)
+                self.realtime_control_widget.set_status_text(
+                    self.window.tr("Failed to start multi-camera realtime.")
+                )
+            return
         if self.realtime_perception_worker is not None:
             QtWidgets.QMessageBox.information(
                 self.window,
@@ -372,21 +394,95 @@ class RealtimeManager(QtCore.QObject):
         self.realtime_subscriber_worker.error.connect(self._on_realtime_error)
         self.realtime_subscriber_worker.start()
 
-        viewer_type = extras.get("viewer_type", "pyqt")
-        if viewer_type == "threejs":
-            threejs_manager = getattr(self.window, "threejs_manager", None)
-            if threejs_manager:
-                viewer = threejs_manager.ensure_threejs_viewer()
-                if viewer:
-                    viewer.init_viewer(
-                        enable_eye_control=extras.get("enable_eye_control", False),
-                        enable_hand_control=extras.get("enable_hand_control", False),
-                    )
-                self.window._set_active_view("threejs")
-        else:
-            self.window._set_active_view("canvas")
+        self._activate_realtime_viewer(str(extras.get("viewer_type", "pyqt")), extras)
+
+    def start_multi_camera_realtime_inference(
+        self, sessions: List[Tuple["RealtimeConfig", Dict[str, Any]]]
+    ) -> None:
+        """Start one perception/subscriber worker pair per configured camera."""
+        if not sessions:
+            raise ValueError("No realtime camera sessions were provided.")
+        if self.realtime_perception_worker is not None or self._multi_camera_workers:
+            raise RuntimeError("A realtime session is already running.")
+
+        checked_ports: set[Tuple[str, int]] = set()
+        for realtime_config, _extras in sessions:
+            publisher = str(realtime_config.publisher_address or "")
+            if not publisher:
+                continue
+            host, port = self._resolve_tcp_endpoint(publisher)
+            endpoint = (host, port)
+            if endpoint in checked_ports:
+                raise RuntimeError(f"Duplicate realtime publisher port: {port}")
+            checked_ports.add(endpoint)
+            if self._is_tcp_port_in_use(
+                host, port
+            ) and not self._wait_for_tcp_port_release(host, port, timeout_sec=6.0):
+                raise RuntimeError(f"Publisher port {port} is already in use.")
+
+        self.show_control_dialog()
+        self.realtime_control_widget.set_running(True)
+        self.realtime_running = True
+        self._multi_camera_workers = {}
+        self._realtime_shapes = []
+        self._realtime_connect_address = None
+
+        for idx, (realtime_config, extras) in enumerate(sessions):
+            camera_id = str(
+                extras.get("camera_id")
+                or getattr(realtime_config, "camera_id", "")
+                or f"camera{idx}"
+            )
+            realtime_config.camera_id = camera_id
+            resolved_model = self._resolve_model_path(realtime_config.model_base_name)
+            if resolved_model is not None and self._validate_model_file(resolved_model):
+                realtime_config.model_base_name = str(resolved_model)
+
+            subscriber_address = str(
+                extras.get("subscriber_address") or "tcp://127.0.0.1:5555"
+            )
+            perception_worker = PerceptionProcessWorker(
+                config=realtime_config,
+                parent=self.window,
+            )
+            subscriber_worker = RealtimeSubscriberWorker(subscriber_address)
+            perception_worker.error.connect(self._on_realtime_error)
+            perception_worker.stopped.connect(
+                lambda camera_id=camera_id: self._on_multi_camera_worker_stopped(
+                    camera_id
+                )
+            )
+            subscriber_worker.frame_received.connect(self._on_realtime_frame)
+            subscriber_worker.status_received.connect(self._on_realtime_status)
+            subscriber_worker.error.connect(self._on_realtime_error)
+            self._multi_camera_workers[camera_id] = {
+                "perception": perception_worker,
+                "subscriber": subscriber_worker,
+                "config": realtime_config,
+                "extras": dict(extras or {}),
+            }
+
+        for session in self._multi_camera_workers.values():
+            session["perception"].start()
+            session["subscriber"].start()
+
+        self._last_realtime_model_name = ", ".join(
+            str(cfg.model_base_name or "") for cfg, _extras in sessions
+        )
+        self._last_realtime_camera_source = ", ".join(
+            f"{getattr(cfg, 'camera_id', 'camera')}: {cfg.camera_index}"
+            for cfg, _extras in sessions
+        )
+        message = self.window.tr(
+            "Realtime multi-camera inference started: %d cameras"
+        ) % len(sessions)
+        self.window.statusBar().showMessage(message)
+        self.realtime_control_widget.set_status_text(message)
 
     def stop_realtime_inference(self):
+        if self._multi_camera_workers:
+            self._stop_multi_camera_realtime_inference()
+            return
         if self.realtime_perception_worker is None and not self.realtime_running:
             self.realtime_control_widget.set_running(False)
             self.realtime_control_widget.set_status_text(
@@ -418,6 +514,29 @@ class RealtimeManager(QtCore.QObject):
                 return
             self.realtime_perception_worker = None
 
+        self._finalize_realtime_shutdown()
+
+    def _stop_multi_camera_realtime_inference(self) -> None:
+        self.realtime_control_widget.set_stopping()
+        self.realtime_control_widget.set_status_text(
+            self.window.tr("Stopping realtime multi-camera inference…")
+        )
+        for camera_id, session in list(self._multi_camera_workers.items()):
+            subscriber = session.get("subscriber")
+            if subscriber is not None:
+                with contextlib.suppress(Exception):
+                    subscriber.stop()
+                    subscriber.wait(500)
+            worker = session.get("perception")
+            if worker is not None:
+                with contextlib.suppress(Exception):
+                    worker.request_stop()
+                if not worker.wait(5000):
+                    logger.warning(
+                        "Realtime perception worker for %s did not stop gracefully.",
+                        camera_id,
+                    )
+        self._multi_camera_workers.clear()
         self._finalize_realtime_shutdown()
 
     # ------------------------------------------------------------------ Helpers
@@ -472,6 +591,45 @@ class RealtimeManager(QtCore.QObject):
                 shown_waiting = True
             time.sleep(0.2)
         return not self._is_tcp_port_in_use(host, port)
+
+    def _activate_realtime_viewer(
+        self, viewer_type: str, extras: Dict[str, Any]
+    ) -> None:
+        viewer = str(viewer_type or "pyqt").strip().lower()
+        if viewer != "threejs":
+            self.window._set_active_view("canvas")
+            return
+
+        threejs_manager = getattr(self.window, "threejs_manager", None)
+        if threejs_manager is None:
+            ensure_threejs = getattr(self.window, "ensure_threejs_manager", None)
+            if callable(ensure_threejs):
+                try:
+                    threejs_manager = ensure_threejs()
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to initialize Three.js realtime viewer: %s", exc
+                    )
+                    threejs_manager = None
+
+        if threejs_manager is None:
+            logger.warning(
+                "Three.js realtime viewer unavailable; falling back to canvas."
+            )
+            self.window._set_active_view("canvas")
+            return
+
+        try:
+            viewer_widget = threejs_manager.ensure_threejs_viewer()
+            if viewer_widget:
+                viewer_widget.init_viewer(
+                    enable_eye_control=extras.get("enable_eye_control", False),
+                    enable_hand_control=extras.get("enable_hand_control", False),
+                )
+            self.window._set_active_view("threejs")
+        except Exception as exc:
+            logger.warning("Failed to activate Three.js realtime viewer: %s", exc)
+            self.window._set_active_view("canvas")
 
     def _resolve_model_path(self, model_name: str) -> Optional[Path]:
         """Find a local model file to avoid network downloads."""
@@ -1009,6 +1167,21 @@ class RealtimeManager(QtCore.QObject):
             transformed.append(payload)
         return transformed
 
+    def _active_realtime_threejs_viewer(self):
+        threejs_manager = getattr(self.window, "threejs_manager", None)
+        if threejs_manager is None:
+            return None
+        viewer_widget = getattr(threejs_manager, "viewer_widget", None)
+        if not callable(viewer_widget):
+            return None
+        viewer = viewer_widget()
+        if viewer is None:
+            return None
+        is_visible = getattr(viewer, "isVisible", None)
+        if callable(is_visible) and not bool(is_visible()):
+            return None
+        return viewer
+
     # ------------------------------------------------------------------ slots
     @QtCore.Slot(object, dict, list)
     def _on_realtime_frame(self, qimage, metadata, detections):
@@ -1020,25 +1193,31 @@ class RealtimeManager(QtCore.QObject):
             effective_detections
         )
         shapes = []
+        threejs_viewer = self._active_realtime_threejs_viewer()
         if qimage is not None:
-            pixmap = QtGui.QPixmap.fromImage(qimage)
-            self.window.canvas.loadPixmap(pixmap, clear_shapes=False)
+            width = int(qimage.width())
+            height = int(qimage.height())
             shapes = self._convert_detections_to_shapes(
-                effective_detections, pixmap.width(), pixmap.height()
+                effective_detections, width, height
             )
-            if hasattr(self.window.canvas, "setRealtimeShapes"):
-                self.window.canvas.setRealtimeShapes(shapes)
+            if threejs_viewer is None:
+                if not qimage.isNull():
+                    self.window.image = qimage.copy()
+                    self.window._active_image_view = "canvas"
+                pixmap = QtGui.QPixmap.fromImage(qimage)
+                self.window.canvas.loadPixmap(pixmap, clear_shapes=False)
+                paint_canvas = getattr(self.window, "paintCanvas", None)
+                if callable(paint_canvas):
+                    paint_canvas()
+                if hasattr(self.window.canvas, "setRealtimeShapes"):
+                    self.window.canvas.setRealtimeShapes(shapes)
             self._realtime_shapes = shapes
         else:
             # Metadata-only update (e.g. for Eye Control in Three.js)
             self._realtime_shapes = []
 
-        # If Three.js viewer is visible, send the data there too
-        threejs_manager = getattr(self.window, "threejs_manager", None)
-        if threejs_manager:
-            viewer = threejs_manager.viewer_widget()
-            if viewer and viewer.isVisible():
-                viewer.update_realtime_data(qimage, effective_detections)
+        if threejs_viewer is not None:
+            threejs_viewer.update_realtime_data(qimage, effective_detections)
 
         if self.realtime_log_fp:
             try:
@@ -1068,7 +1247,8 @@ class RealtimeManager(QtCore.QObject):
 
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
-                "Realtime detections for frame %s: %d",
+                "Realtime detections for camera %s frame %s: %d",
+                metadata.get("camera_id", "camera0"),
                 metadata.get("frame_index"),
                 len(effective_detections),
             )
@@ -1076,14 +1256,23 @@ class RealtimeManager(QtCore.QObject):
         self.window.canvas.update()
 
         frame_index = metadata.get("frame_index")
+        camera_id = str(metadata.get("camera_id") or "camera0")
         detection_count = len(shapes)
         self.window.statusBar().showMessage(
-            self.window.tr("Realtime frame %s — detections: %d")
-            % (frame_index if frame_index is not None else "?", detection_count)
+            self.window.tr("Realtime %s frame %s — detections: %d")
+            % (
+                camera_id,
+                frame_index if frame_index is not None else "?",
+                detection_count,
+            )
         )
         self.realtime_control_widget.set_status_text(
-            self.window.tr("Frame %s — detections: %d")
-            % (frame_index if frame_index is not None else "?", detection_count)
+            self.window.tr("%s frame %s — detections: %d")
+            % (
+                camera_id,
+                frame_index if frame_index is not None else "?",
+                detection_count,
+            )
         )
 
         now_ts = time.time()
@@ -1119,6 +1308,7 @@ class RealtimeManager(QtCore.QObject):
         if not isinstance(status, dict):
             return
         event_name = status.get("event") or "status"
+        camera_id = str(status.get("camera_id") or "").strip()
         if str(event_name) == "detection_segment_saved":
             saved_path = str(status.get("path") or "").strip()
             if saved_path and self._gdrive_auto_upload_enabled:
@@ -1177,6 +1367,8 @@ class RealtimeManager(QtCore.QObject):
                 event_name,
                 status.get("recording_state", status.get("message", "")),
             )
+        if camera_id:
+            message = f"[{camera_id}] {message}"
         self.window.statusBar().showMessage(message)
         self.realtime_control_widget.set_status_text(message)
 
@@ -1301,6 +1493,17 @@ class RealtimeManager(QtCore.QObject):
         self.realtime_perception_worker = None
         self._finalize_realtime_shutdown()
 
+    def _on_multi_camera_worker_stopped(self, camera_id: str) -> None:
+        session = self._multi_camera_workers.get(str(camera_id))
+        if session is not None:
+            session["perception"] = None
+        if self._multi_camera_workers and all(
+            item.get("perception") is None
+            for item in self._multi_camera_workers.values()
+        ):
+            self._multi_camera_workers.clear()
+            self._finalize_realtime_shutdown()
+
     # ------------------------------------------------------------------ teardown
     def _shutdown_realtime_subscriber(self):
         if self.realtime_subscriber_worker is not None:
@@ -1310,6 +1513,13 @@ class RealtimeManager(QtCore.QObject):
 
     def _finalize_realtime_shutdown(self):
         self._shutdown_realtime_subscriber()
+        for session in list(self._multi_camera_workers.values()):
+            subscriber = session.get("subscriber")
+            if subscriber is not None:
+                with contextlib.suppress(Exception):
+                    subscriber.stop()
+                    subscriber.wait(500)
+        self._multi_camera_workers.clear()
         self.realtime_running = False
         self.realtime_perception_worker = None
         self._classify_eye_blinks = False
