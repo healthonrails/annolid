@@ -16,6 +16,7 @@ from annolid.utils.files import (
     get_frame_number_from_json,
 )
 from annolid.utils.logger import logger
+from annolid.utils.zone_shapes import is_zone_shape_payload
 from annolid.utils.shapes import sample_grid_in_polygon
 from annolid.utils.annotation_compat import shape_to_mask
 
@@ -153,6 +154,8 @@ class BasePointTracker(ABC):
     ) -> list[list[float]]:
         processed_queries = []
         for shape in shapes:
+            if is_zone_shape_payload(shape):
+                continue
             label = shape.get("label")
             shape_type = str(shape.get("shape_type") or "").strip().lower()
             if shape_type == "point" and shape.get("points"):

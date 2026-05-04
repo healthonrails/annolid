@@ -452,6 +452,13 @@ def test_manual_seed_loader_uses_png_json_pair_and_ignores_store(
                         "shape_type": "rectangle",
                         "flags": {},
                     },
+                    {
+                        "label": "arena_region",
+                        "points": [[22, 1], [30, 1], [30, 8], [22, 8]],
+                        "group_id": 14,
+                        "shape_type": "polygon",
+                        "flags": {"semantic_type": "zone", "zone_kind": "chamber"},
+                    },
                 ],
             }
         ),

@@ -32,6 +32,7 @@ from annolid.utils.image_adjustments import (
     compute_brightness_contrast_linear_transform,
 )
 from annolid.utils.logger import logger
+from annolid.utils.zone_shapes import is_zone_shape_payload
 from annolid.motion.optical_flow import (
     compute_optical_flow,
     optical_flow_compute_kwargs,
@@ -2115,17 +2116,7 @@ class CutieCoreVideoProcessor:
             points = shape.get("points") or []
             if len(points) < 3:
                 continue
-
-            label_text = (shape.get("label") or "").lower()
-            description_text = (shape.get("description") or "").lower()
-            if "zone" in label_text or "zone" in description_text:
-                continue
-
-            flags = shape.get("flags") or {}
-            if any(
-                str(flag_key).lower() == "zone" and bool(flag_val)
-                for flag_key, flag_val in flags.items()
-            ):
+            if is_zone_shape_payload(shape):
                 continue
 
             filtered_shapes.append(shape)

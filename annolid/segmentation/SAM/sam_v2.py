@@ -24,6 +24,7 @@ from hydra import initialize_config_module
 from hydra.core.global_hydra import GlobalHydra
 from annolid.utils.files import find_manual_seed_json_files
 from annolid.utils.annotation_compat import shape_to_mask
+from annolid.utils.zone_shapes import is_zone_shape_payload
 
 # Enable CPU fallback for unsupported MPS ops
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
@@ -655,6 +656,8 @@ def load_manual_seed_annotations_from_video(video_path):
         next_obj_id = 1
         for shape in shapes:
             if not isinstance(shape, dict):
+                continue
+            if is_zone_shape_payload(shape):
                 continue
             shape_type = str(shape.get("shape_type", "")).strip().lower()
             label = str(shape.get("label", "") or "").strip()

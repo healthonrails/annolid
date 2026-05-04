@@ -56,6 +56,75 @@ def test_count_tracking_instances_uses_only_active_seed_labels() -> None:
     assert processor._count_tracking_instances([_seed(0)]) == 1
 
 
+def test_shapes_to_mask_skips_zone_flagged_shapes(tmp_path: Path) -> None:
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    label_json = tmp_path / "seed_000000000.json"
+    label_json.write_text(
+        json.dumps(
+            {
+                "shapes": [
+                    {
+                        "label": "arena_region",
+                        "shape_type": "polygon",
+                        "description": "",
+                        "flags": {"semantic_type": "zone", "zone_kind": "chamber"},
+                        "points": [[1, 1], [20, 1], [20, 20], [1, 20]],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    mask, label_map = processor.shapes_to_mask(str(label_json), (24, 24, 3))
+    assert mask is None
+    assert label_map == {"_background_": 0}
+
+
+def test_shapes_to_mask_keeps_polygons_with_boolean_zone_metadata(
+    tmp_path: Path,
+) -> None:
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    label_json = tmp_path / "seed_000000000.json"
+    label_json.write_text(
+        json.dumps(
+            {
+                "shapes": [
+                    {
+                        "label": "mouse",
+                        "shape_type": "polygon",
+                        "description": "manual",
+                        "flags": {
+                            "semantic_type": True,
+                            "shape_category": True,
+                            "zone_kind": True,
+                            "zone_label": True,
+                        },
+                        "points": [[1, 1], [20, 1], [20, 20], [1, 20]],
+                    },
+                    {
+                        "label": "teaball",
+                        "shape_type": "polygon",
+                        "description": "manual",
+                        "flags": {
+                            "semantic_type": True,
+                            "shape_category": True,
+                            "zone_kind": True,
+                            "zone_label": True,
+                        },
+                        "points": [[22, 22], [30, 22], [30, 30], [22, 30]],
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    mask, label_map = processor.shapes_to_mask(str(label_json), (40, 40, 3))
+    assert mask is not None
+    assert label_map == {"_background_": 0, "mouse": 1, "teaball": 2}
+
+
 class _DummyCache:
     def __init__(self, bbox):
         self._bbox = bbox

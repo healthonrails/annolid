@@ -56,6 +56,9 @@ class AnnolidLabelDialog(QtWidgets.QDialog):
         group_widget.setLayout(group_row)
         form.addRow("Group ID", group_widget)
 
+        self._zone_checkbox = QtWidgets.QCheckBox("Zone type", self)
+        form.addRow("Type", self._zone_checkbox)
+
         # Flags section: created dynamically in popUp.
         self._flags_box = QtWidgets.QGroupBox("Flags", self)
         self._flags_layout = QtWidgets.QGridLayout(self._flags_box)
@@ -115,7 +118,7 @@ class AnnolidLabelDialog(QtWidgets.QDialog):
         self._flags_box.setVisible(True)
 
         # Grid: two columns, stable ordering.
-        names = sorted(flags.keys())
+        names = sorted(name for name in flags.keys() if str(name) != "zone")
         for idx, name in enumerate(names):
             cb = QtWidgets.QCheckBox(str(name), self._flags_box)
             cb.setChecked(bool(flags.get(name)))
@@ -154,6 +157,8 @@ class AnnolidLabelDialog(QtWidgets.QDialog):
 
         self.edit.setText(text)
         self._description.setText(str(description or ""))
+        inferred_zone = ("zone" in text.strip().lower()) or bool(flags_in.get("zone"))
+        self._zone_checkbox.setChecked(inferred_zone)
 
         if group_id is None:
             self._group_enabled.setChecked(False)
@@ -179,5 +184,21 @@ class AnnolidLabelDialog(QtWidgets.QDialog):
             int(self._group_spin.value()) if self._group_enabled.isChecked() else None
         )
         out_flags = self._get_flags()
+        label_implies_zone = "zone" in out_text.lower()
+        is_zone_shape = self._zone_checkbox.isChecked() or label_implies_zone
+        if is_zone_shape:
+            out_flags["zone"] = True
+            out_flags["semantic_type"] = "zone"
+            out_flags["shape_category"] = "zone"
+            out_flags.setdefault("zone_kind", "custom")
+        else:
+            for key in (
+                "zone",
+                "semantic_type",
+                "shape_category",
+                "zone_kind",
+                "zone_label",
+            ):
+                out_flags.pop(key, None)
 
         return out_text, out_flags, out_group, out_desc

@@ -163,7 +163,58 @@ def test_zone_popup_hides_flags_for_zone_authoring(monkeypatch) -> None:
     assert description == "north chamber"
     assert group_id is None
     assert dialog._flags_box.isVisible() is False
-    assert flags["zone_kind"] is True
+    assert "zone_kind" not in flags
+    assert "zone" not in flags
+
+
+def test_label_popup_zone_checkbox_sets_zone_flags(monkeypatch) -> None:
+    _ensure_qapp()
+    parent = QtWidgets.QWidget()
+    dialog = AnnolidLabelDialog(parent=parent, config={})
+
+    def _accept_with_zone():
+        dialog._zone_checkbox.setChecked(True)
+        return QtWidgets.QDialog.Accepted
+
+    monkeypatch.setattr(dialog, "exec_", _accept_with_zone)
+
+    text, flags, group_id, description = dialog.popUp(
+        "region_a",
+        flags={},
+        group_id=None,
+        description="",
+        show_flags=True,
+    )
+
+    assert text == "region_a"
+    assert group_id is None
+    assert description == ""
+    assert flags["zone"] is True
+    assert flags["semantic_type"] == "zone"
+    assert flags["shape_category"] == "zone"
+    assert flags["zone_kind"] == "custom"
+
+
+def test_label_popup_label_with_zone_text_sets_zone_flags(monkeypatch) -> None:
+    _ensure_qapp()
+    parent = QtWidgets.QWidget()
+    dialog = AnnolidLabelDialog(parent=parent, config={})
+    monkeypatch.setattr(dialog, "exec_", lambda: QtWidgets.QDialog.Accepted)
+
+    text, flags, group_id, description = dialog.popUp(
+        "north_zone",
+        flags={},
+        group_id=None,
+        description="",
+        show_flags=True,
+    )
+
+    assert text == "north_zone"
+    assert group_id is None
+    assert description == ""
+    assert flags["zone"] is True
+    assert flags["semantic_type"] == "zone"
+    assert flags["shape_category"] == "zone"
 
 
 def _build_zone_shape(label: str = "left_zone") -> Shape:

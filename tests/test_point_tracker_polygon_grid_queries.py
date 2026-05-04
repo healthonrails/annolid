@@ -82,3 +82,21 @@ def test_polygon_grid_empty_sampling_falls_back_to_centroid(monkeypatch) -> None
 
     assert len(queries) == 1
     assert tracker.point_labels == ["teaball"]
+
+
+def test_polygon_zone_shapes_are_skipped_from_tracking_queries() -> None:
+    tracker = _make_tracker(track_polygon_grid_points=True)
+    shapes = [
+        {
+            "label": "region_a",
+            "shape_type": "polygon",
+            "points": [[20, 20], [120, 20], [120, 120], [20, 120]],
+            "flags": {"semantic_type": "zone", "zone_kind": "chamber"},
+            "description": "",
+        }
+    ]
+
+    queries = tracker._process_shapes(shapes, frame_number=5)
+
+    assert queries == []
+    assert tracker.point_labels == []

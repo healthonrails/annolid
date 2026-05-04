@@ -12,6 +12,7 @@ from annolid.gui.shape import MaskShape, Shape  # For saving annotations
 from annolid.annotation.keypoints import save_labels  # For saving annotations
 from annolid.utils.annotation_compat import shapes_to_label
 from annolid.utils.logger import logger
+from annolid.utils.zone_shapes import is_zone_shape_payload
 
 # Optional: For flow and visualization if kept here
 from annolid.motion.optical_flow import (
@@ -134,11 +135,7 @@ class SegmentedCutieExecutor:
                 for s in shapes_from_json
                 if s.get("shape_type") == "polygon"
                 and len(s.get("points", [])) >= 3
-                and "zone"
-                not in (
-                    (s.get("description", "") or "").lower()
-                    + (s.get("label", "") or "").lower()
-                )
+                and not is_zone_shape_payload(s)
             ]
             if not valid_shapes:
                 logger.warning(
