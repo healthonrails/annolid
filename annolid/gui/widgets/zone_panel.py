@@ -597,17 +597,24 @@ class ZonePanelWidget(QtWidgets.QWidget):
         parent = getattr(self, "_owner_window", None) or self.parent()
         if parent is None:
             return
-        parent._display_zones_on_all_frames = bool(enabled)
-        settings = getattr(parent, "settings", None)
-        if settings is not None and hasattr(settings, "setValue"):
-            try:
-                settings.setValue("zones/display_on_all_frames", bool(enabled))
-            except Exception:
-                pass
-        current_frame = int(getattr(parent, "frame_number", 0) or 0)
-        frame_setter = getattr(parent, "set_frame_number", None)
-        if callable(frame_setter) and int(getattr(parent, "num_frames", 0) or 0) > 0:
-            frame_setter(current_frame)
+        toggler = getattr(parent, "toggleDisplayZonesOnAllFrames", None)
+        if callable(toggler):
+            toggler(bool(enabled))
+        else:
+            parent._display_zones_on_all_frames = bool(enabled)
+            settings = getattr(parent, "settings", None)
+            if settings is not None and hasattr(settings, "setValue"):
+                try:
+                    settings.setValue("zones/display_on_all_frames", bool(enabled))
+                except Exception:
+                    pass
+            current_frame = int(getattr(parent, "frame_number", 0) or 0)
+            frame_setter = getattr(parent, "set_frame_number", None)
+            if (
+                callable(frame_setter)
+                and int(getattr(parent, "num_frames", 0) or 0) > 0
+            ):
+                frame_setter(current_frame)
         status = (
             "Showing saved zones on all frames."
             if enabled

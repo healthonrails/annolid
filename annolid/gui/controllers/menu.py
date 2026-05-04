@@ -1448,6 +1448,10 @@ class MenuController:
         view_sections = [
             (self._docks_menu.menuAction(),),
             (
+                w.actions.displayZonesAllFrames,
+                w.actions.keepPrevMode,
+            ),
+            (
                 w.toggle_web_view_action,
                 actions["toggle_pose_edges"],
                 actions["toggle_pose_bbox_display"],
@@ -2002,6 +2006,27 @@ class MenuController:
             self._set_checked_safely(
                 "toggle_threejs_view_action", self._is_threejs_view_active()
             )
+            keep_prev_action = getattr(self._window.actions, "keepPrevMode", None)
+            if isinstance(keep_prev_action, QtWidgets.QAction):
+                keep_prev_action.blockSignals(True)
+                try:
+                    keep_prev_action.setChecked(
+                        bool(getattr(self._window, "_config", {}).get("keep_prev"))
+                    )
+                finally:
+                    keep_prev_action.blockSignals(False)
+
+            zones_action = getattr(self._window.actions, "displayZonesAllFrames", None)
+            if isinstance(zones_action, QtWidgets.QAction):
+                zones_action.blockSignals(True)
+                try:
+                    zones_action.setChecked(
+                        bool(
+                            getattr(self._window, "_display_zones_on_all_frames", True)
+                        )
+                    )
+                finally:
+                    zones_action.blockSignals(False)
         except Exception:
             return
 

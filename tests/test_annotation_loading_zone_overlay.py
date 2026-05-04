@@ -837,6 +837,87 @@ def test_tracking_fallback_applies_even_when_frame_image_exists_without_json(
     assert host.loaded_shapes == []
 
 
+def test_load_predict_shapes_promotes_manual_zone_json_for_cross_frame_overlay(
+    monkeypatch, tmp_path: Path
+) -> None:
+    class _FakeLabelFile:
+        def __init__(self, path, is_video_frame=True):  # noqa: ARG002
+            self.path = str(path)
+            self.flags = {}
+            self.caption = ""
+            self.shapes = [
+                _fake_shape_payload(label="mouse"),
+                build_zone_shape(
+                    "right_chamber",
+                    [[10, 10], [30, 10], [30, 30], [10, 30]],
+                    zone_kind="chamber",
+                ),
+            ]
+
+        def get_caption(self):
+            return ""
+
+    monkeypatch.setattr(annotation_loading_module, "LabelFile", _FakeLabelFile)
+
+    class _OverlayPredictHost(AnnotationLoadingMixin):
+        def __init__(self) -> None:
+            self._config = {"label_flags": {}}
+            self.canvas = _CanvasStub()
+            self.caption_widget = None
+            self.frame_number = 0
+            self.video_results_folder = None
+            self.annotation_dir = None
+            self._pred_res_folder_suffix = "_tracking_results_labelme"
+            self._df = None
+            self.labelFile = None
+            self.loaded_shapes = []
+            self.zone_path = None
+            self.video_file = None
+            self.filename = None
+            self._display_zones_on_all_frames = True
+
+        def update_flags_from_file(self, _label_file) -> None:
+            return None
+
+        def add_highlighted_mark(self, *_args, **_kwargs) -> None:
+            return None
+
+        def _apply_timeline_caption_if_available(self, *_args, **_kwargs) -> bool:
+            return False
+
+        def loadShapes(self, shapes, replace=True):  # noqa: ARG002
+            self.loaded_shapes = list(shapes or [])
+
+    host = _OverlayPredictHost()
+    frame0_png = tmp_path / "session_000000000.png"
+    frame0_png.write_bytes(b"")
+    frame0_json = frame0_png.with_suffix(".json")
+    frame0_json.write_text(
+        json.dumps(
+            {
+                "shapes": [
+                    _fake_shape_payload(label="mouse"),
+                    build_zone_shape(
+                        "right_chamber",
+                        [[10, 10], [30, 10], [30, 30], [10, 30]],
+                        zone_kind="chamber",
+                    ),
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    host.loadPredictShapes(0, str(frame0_png))
+
+    assert host.zone_path == str(frame0_json)
+
+    frame1_png = tmp_path / "session_000000001.png"
+    frame1_png.write_bytes(b"")
+    zones = host._persistent_zone_shapes_for_frame(frame1_png)
+    assert any(shape.label == "right_chamber" for shape in zones)
+
+
 def test_annotation_store_has_frame_rechecks_stale_negative_cache(
     tmp_path: Path,
 ) -> None:

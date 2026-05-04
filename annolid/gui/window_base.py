@@ -574,6 +574,12 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
             shortcut=self._shortcut("toggle_keep_prev_mode"),
         )
         self.actions.keepPrevMode.setIcon(self._icon("keep_prev.svg"))
+        self.actions.displayZonesAllFrames = self._mk_action(
+            self.tr("Show Zones On All Frames"),
+            self.toggleDisplayZonesOnAllFrames,
+            checkable=True,
+            checked=bool(getattr(self, "_display_zones_on_all_frames", True)),
+        )
         self.actions.zoomIn = self._mk_action(
             self.tr("Zoom In"),
             lambda: self._step_zoom(+10),
@@ -1068,6 +1074,26 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         self._config["keep_prev"] = enabled
         if getattr(self.actions, "keepPrevMode", None) is not None:
             self.actions.keepPrevMode.setChecked(enabled)
+
+    def toggleDisplayZonesOnAllFrames(self, value=False):
+        enabled = bool(value)
+        self._display_zones_on_all_frames = enabled
+        settings = getattr(self, "settings", None)
+        if settings is not None and hasattr(settings, "setValue"):
+            try:
+                settings.setValue("zones/display_on_all_frames", enabled)
+            except Exception:
+                pass
+        action = getattr(self.actions, "displayZonesAllFrames", None)
+        if action is not None:
+            action.blockSignals(True)
+            try:
+                action.setChecked(enabled)
+            finally:
+                action.blockSignals(False)
+        frame_setter = getattr(self, "set_frame_number", None)
+        if callable(frame_setter) and int(getattr(self, "num_frames", 0) or 0) > 0:
+            frame_setter(int(getattr(self, "frame_number", 0) or 0))
 
     def toggleActions(self, value: bool) -> None:
         enabled = bool(value)

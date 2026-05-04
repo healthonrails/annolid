@@ -2467,6 +2467,8 @@ class AnnotationLoadingMixin:
                 self.labelFile = label_file
                 self.canvas.setBehaviorText(None)
                 frame_shapes = self._materialize_label_shapes(label_file.shapes)
+                if any(is_zone_shape(shape) for shape in frame_shapes):
+                    self.zone_path = str(candidate)
                 if persistent_zone_shapes:
                     frame_shapes = self._merge_persistent_zones_into_shapes(
                         frame_shapes,
