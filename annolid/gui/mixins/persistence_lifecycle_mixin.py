@@ -613,6 +613,11 @@ class PersistenceLifecycleMixin:
             )
 
         if deleted_files or store_removed:
+            clear_annotation_caches = getattr(
+                self, "_clear_frame_annotation_caches", None
+            )
+            if callable(clear_annotation_caches):
+                clear_annotation_caches()
             logger.info(
                 "%s future prediction JSON(s) removed and %s store record(s) pruned.",
                 deleted_files,

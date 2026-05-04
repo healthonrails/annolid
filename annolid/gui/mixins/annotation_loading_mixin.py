@@ -2065,6 +2065,22 @@ class AnnotationLoadingMixin:
         while len(cache) > int(self._FRAME_LABEL_CACHE_MAX_ENTRIES):
             cache.popitem(last=False)
 
+    def _clear_frame_annotation_caches(self) -> None:
+        for cache_key in (
+            self._FRAME_LABEL_CACHE_KEY,
+            self._FRAME_STORE_HAS_FRAME_CACHE_KEY,
+            self._FRAME_LABEL_SOURCE_INDEX_CACHE_KEY,
+            self._TRACKING_SHAPE_CACHE_KEY,
+        ):
+            cache = getattr(self, cache_key, None)
+            if hasattr(cache, "clear"):
+                try:
+                    cache.clear()
+                except Exception:
+                    setattr(self, cache_key, None)
+            else:
+                setattr(self, cache_key, None)
+
     def _enqueue_neighbor_label_prefetch(
         self, frame_number: int, frame_path: Optional[Path]
     ) -> None:
@@ -2419,12 +2435,26 @@ class AnnotationLoadingMixin:
         frame_path = Path(filename) if filename else None
         persistent_zone_shapes = self._persistent_zone_shapes_for_frame(frame_path)
         label_candidates = self._iter_frame_label_candidates(frame_number, frame_path)
-        sparse_candidate = self._resolve_sparse_frame_label_candidate(
-            int(frame_number),
-            frame_path,
-            label_candidates,
-        )
+        sparse_candidate = None
+        forced_start_frame = getattr(self, "_prediction_forced_start_frame", None)
+        allow_sparse_fallback = True
+        try:
+            if forced_start_frame is not None and int(frame_number) >= int(
+                forced_start_frame
+            ):
+                allow_sparse_fallback = False
+        except Exception:
+            allow_sparse_fallback = True
+
+        if allow_sparse_fallback:
+            sparse_candidate = self._resolve_sparse_frame_label_candidate(
+                int(frame_number),
+                frame_path,
+                label_candidates,
+            )
+        sparse_label_candidate = None
         if sparse_candidate is not None and sparse_candidate not in label_candidates:
+            sparse_label_candidate = sparse_candidate
             label_candidates = [*label_candidates, sparse_candidate]
 
         seen_candidates: set[Path] = set()
@@ -2471,6 +2501,13 @@ class AnnotationLoadingMixin:
                 self.labelFile = label_file
                 self.canvas.setBehaviorText(None)
                 frame_shapes = self._materialize_label_shapes(label_file.shapes)
+                if (
+                    sparse_label_candidate is not None
+                    and candidate == sparse_label_candidate
+                ):
+                    frame_shapes = [
+                        shape for shape in frame_shapes if not is_zone_shape(shape)
+                    ]
                 if any(is_zone_shape(shape) for shape in frame_shapes):
                     self.zone_path = str(candidate)
                 if persistent_zone_shapes:

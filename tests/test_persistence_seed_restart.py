@@ -32,12 +32,16 @@ class _DummyWindow(PersistenceLifecycleMixin):
         self.last_known_predicted_frame = -1
         self.prediction_start_timestamp = 0.0
         self._prediction_forced_start_frame = None
+        self.annotation_caches_cleared = 0
 
     def _scan_prediction_folder(self, *_args, **_kwargs) -> None:
         return None
 
     def tr(self, text: str) -> str:
         return text
+
+    def _clear_frame_annotation_caches(self) -> None:
+        self.annotation_caches_cleared += 1
 
 
 class _DummyDeleteFlowWindow(_DummyWindow):
@@ -183,6 +187,7 @@ def test_delete_all_future_predictions_preserves_manual_seed_pairs(
     assert store.last_after_call is None
     assert store.last_range_call == (11, 11, {12})
     assert window._prediction_forced_start_frame == 11
+    assert window.annotation_caches_cleared == 1
     payload = json.loads(stats_path.read_text(encoding="utf-8"))
     frame_stats = payload.get("frame_stats", {})
     assert "11" not in frame_stats

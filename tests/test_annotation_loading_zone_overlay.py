@@ -707,6 +707,39 @@ def test_load_predict_shapes_uses_latest_previous_manual_frame_when_exact_missin
     assert host.loaded_shapes[0].label == "from_prev_manual"
 
 
+def test_load_predict_shapes_filters_zones_from_previous_manual_frame_when_exact_missing(
+    monkeypatch, tmp_path: Path
+) -> None:
+    class _FakeLabelFile:
+        def __init__(self, _path, is_video_frame=True):  # noqa: ARG002
+            self.shapes = [
+                _fake_shape_payload(label="from_prev_manual"),
+                build_zone_shape(
+                    "left_chamber",
+                    [[10, 10], [30, 10], [30, 30], [10, 30]],
+                    zone_kind="chamber",
+                ),
+            ]
+            self.flags = {}
+            self.caption = ""
+
+        def get_caption(self):
+            return ""
+
+    monkeypatch.setattr(annotation_loading_module, "LabelFile", _FakeLabelFile)
+
+    host = _PredictHost()
+    current_png = tmp_path / "session_000000500.png"
+    current_png.write_bytes(b"")
+    prev_png = tmp_path / "session_000000000.png"
+    prev_png.write_bytes(b"")
+    prev_png.with_suffix(".json").write_text("{}", encoding="utf-8")
+
+    host.loadPredictShapes(500, str(current_png))
+
+    assert [shape.label for shape in host.loaded_shapes] == ["from_prev_manual"]
+
+
 def test_load_predict_shapes_uses_latest_previous_store_frame_when_exact_missing(
     tmp_path: Path,
 ) -> None:
@@ -731,6 +764,37 @@ def test_load_predict_shapes_uses_latest_previous_store_frame_when_exact_missing
 
     assert len(host.loaded_shapes) == 1
     assert host.loaded_shapes[0].label == "from_prev_store"
+
+
+def test_load_predict_shapes_skips_sparse_fallback_after_forced_restart_hint(
+    monkeypatch, tmp_path: Path
+) -> None:
+    class _FakeLabelFile:
+        calls: list[str] = []
+
+        def __init__(self, path, is_video_frame=True):  # noqa: ARG002
+            type(self).calls.append(str(path))
+            self.shapes = [_fake_shape_payload(label="from_prev_manual")]
+            self.flags = {}
+            self.caption = ""
+
+        def get_caption(self):
+            return ""
+
+    monkeypatch.setattr(annotation_loading_module, "LabelFile", _FakeLabelFile)
+
+    host = _PredictHost()
+    host._prediction_forced_start_frame = 1
+    current_png = tmp_path / "session_000000500.png"
+    current_png.write_bytes(b"")
+    prev_png = tmp_path / "session_000000000.png"
+    prev_png.write_bytes(b"")
+    prev_png.with_suffix(".json").write_text("{}", encoding="utf-8")
+
+    host.loadPredictShapes(500, str(current_png))
+
+    assert _FakeLabelFile.calls == []
+    assert host.loaded_shapes == []
 
 
 def test_load_predict_shapes_materializes_store_shapes_without_mask_key(
