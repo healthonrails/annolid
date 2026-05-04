@@ -129,6 +129,37 @@ def test_persistent_zone_shapes_load_from_zone_json_file(tmp_path: Path) -> None
     assert zones[0].flags["semantic_type"] == "zone"
 
 
+def test_persistent_zone_shapes_load_from_any_manual_png_json_pair(
+    tmp_path: Path,
+) -> None:
+    host = _ZoneOverlayHost()
+    frame_png = tmp_path / "session_000000005.png"
+    frame_png.write_bytes(b"")
+
+    (tmp_path / "session_000000000.png").write_bytes(b"")
+    (tmp_path / "session_000000000.json").write_text(
+        json.dumps({"shapes": [_fake_shape_payload(label="mouse")]}),
+        encoding="utf-8",
+    )
+    (tmp_path / "session_000000005.json").write_text(
+        json.dumps(
+            {
+                "shapes": [
+                    build_zone_shape(
+                        "late_zone",
+                        [[5, 5], [15, 5], [15, 15], [5, 15]],
+                        zone_kind="chamber",
+                    )
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    zones = host._persistent_zone_shapes_for_frame(frame_png)
+    assert any(shape.label == "late_zone" for shape in zones)
+
+
 def _fake_shape_payload(label: str = "subject") -> dict:
     return {
         "label": label,

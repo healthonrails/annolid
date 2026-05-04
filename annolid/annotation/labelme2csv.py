@@ -9,6 +9,11 @@ from annolid.utils.annotation_compat import shape_to_mask
 from annolid.utils.shapes import masks_to_bboxes, polygon_center
 from annolid.annotation.masks import binary_mask_to_coco_rle
 from annolid.annotation.timestamps import convert_frame_number_to_time
+from annolid.postprocessing.zone_schema import (
+    load_zone_shapes,
+    zone_shape_covers_point,
+)
+from annolid.utils.zone_shapes import is_zone_shape_payload
 from annolid.utils.annotation_store import (
     AnnotationStore,
     AnnotationStoreError,
@@ -129,6 +134,62 @@ def _video_frame_count(video_path: Path | None) -> int | None:
     return frame_count if frame_count > 0 else None
 
 
+def _resolve_tracked_zone_specs(
+    json_folder_path: Path,
+    json_files: list[str],
+) -> tuple[list, list[str]]:
+    zone_specs = []
+    zone_columns: list[str] = []
+
+    zone_file_candidate = (
+        json_folder_path.parent / f"{json_folder_path.name}_zones.json"
+    )
+    if zone_file_candidate.exists():
+        try:
+            zone_data = read_json_file(str(zone_file_candidate))
+            zone_specs = load_zone_shapes(zone_data)
+        except Exception:
+            zone_specs = []
+
+    if not zone_specs:
+        for file_name in json_files:
+            frame_json = json_folder_path / file_name
+            # Only treat explicit manual frame labels as zone sources when
+            # there is a matching PNG+JSON pair.
+            if not frame_json.with_suffix(".png").exists():
+                continue
+            try:
+                payload = read_json_file(str(frame_json))
+            except Exception:
+                continue
+            if not payload:
+                continue
+            specs = load_zone_shapes(payload)
+            if specs:
+                zone_specs = specs
+                break
+
+    seen: dict[str, int] = {}
+    for spec in zone_specs:
+        base = str(spec.display_label or spec.label or "zone").strip() or "zone"
+        count = seen.get(base, 0) + 1
+        seen[base] = count
+        zone_columns.append(base if count == 1 else f"{base}_{count}")
+
+    return zone_specs, zone_columns
+
+
+def _zone_occupancy_flags(zone_specs, cx: float, cy: float) -> list[int]:
+    flags: list[int] = []
+    for spec in zone_specs:
+        try:
+            inside = zone_shape_covers_point(spec, (float(cx), float(cy)))
+        except Exception:
+            inside = False
+        flags.append(1 if inside else 0)
+    return flags
+
+
 def _existing_csv_covers_all_frames(csv_path: Path, required_frames: set[int]) -> bool:
     if not csv_path.exists() or not required_frames:
         return False
@@ -168,6 +229,7 @@ def convert_json_to_csv(
     tracked_csv_file=None,
     fps=None,
     force_rewrite_tracking_csv=False,
+    include_tracking_output=True,
 ):
     """
     Convert JSON files in a folder to annolid CSV format file.
@@ -260,53 +322,8 @@ def convert_json_to_csv(
     tracked_seen_frames = set()
     tracked_rows_to_append = []
     wrote_new_tracked_rows = False
-    tracked_header = [
-        "frame_number",
-        "instance_name",
-        "cx",
-        "cy",
-        "motion_index",
-        "timestamps",
-    ]
     fps_value = _normalize_fps(fps)
     video_fps_checked = False
-    if tracked_csv_file:
-        tracked_path = Path(tracked_csv_file)
-        if tracked_path.exists():
-            try:
-                with tracked_path.open(
-                    "r", newline="", encoding="utf-8"
-                ) as existing_fh:
-                    reader = csv.reader(existing_fh)
-                    header = next(reader, [])
-                    frame_idx = (
-                        header.index("frame_number") if "frame_number" in header else -1
-                    )
-                    name_idx = (
-                        header.index("instance_name")
-                        if "instance_name" in header
-                        else -1
-                    )
-                    if frame_idx >= 0:
-                        for row in reader:
-                            if frame_idx >= len(row):
-                                continue
-                            raw_frame = str(row[frame_idx]).strip()
-                            if not raw_frame:
-                                continue
-                            try:
-                                parsed_frame = int(float(raw_frame))
-                            except ValueError:
-                                continue
-                            tracked_seen_frames.add(parsed_frame)
-                            if name_idx < 0 or name_idx >= len(row):
-                                continue
-                            raw_name = str(row[name_idx]).strip()
-                            if not raw_name:
-                                continue
-                            tracked_seen.add((parsed_frame, raw_name))
-            except OSError:
-                pass
 
     json_folder_path = Path(json_folder)
     video_path_for_bounds = _find_video_for_json_folder(json_folder_path)
@@ -322,6 +339,57 @@ def convert_json_to_csv(
     if not json_files:
         return f"No annotation files found in {json_folder}."
 
+    zone_specs, zone_columns = _resolve_tracked_zone_specs(json_folder_path, json_files)
+    tracked_header = [
+        "frame_number",
+        "instance_name",
+        "cx",
+        "cy",
+        "motion_index",
+        "timestamps",
+        *zone_columns,
+    ]
+
+    tracked_path = Path(tracked_csv_file) if tracked_csv_file else None
+    force_tracked_rewrite = False
+    if tracked_path is not None and tracked_path.exists():
+        try:
+            with tracked_path.open("r", newline="", encoding="utf-8") as existing_fh:
+                reader = csv.reader(existing_fh)
+                existing_header = next(reader, [])
+                if existing_header != tracked_header:
+                    force_tracked_rewrite = True
+                frame_idx = (
+                    existing_header.index("frame_number")
+                    if "frame_number" in existing_header
+                    else -1
+                )
+                name_idx = (
+                    existing_header.index("instance_name")
+                    if "instance_name" in existing_header
+                    else -1
+                )
+                if frame_idx >= 0 and not force_tracked_rewrite:
+                    for row in reader:
+                        if frame_idx >= len(row):
+                            continue
+                        raw_frame = str(row[frame_idx]).strip()
+                        if not raw_frame:
+                            continue
+                        try:
+                            parsed_frame = int(float(raw_frame))
+                        except ValueError:
+                            continue
+                        tracked_seen_frames.add(parsed_frame)
+                        if name_idx < 0 or name_idx >= len(row):
+                            continue
+                        raw_name = str(row[name_idx]).strip()
+                        if not raw_name:
+                            continue
+                        tracked_seen.add((parsed_frame, raw_name))
+        except OSError:
+            pass
+
     required_frames = {
         frame
         for frame in (_extract_frame_number_from_json_name(name) for name in json_files)
@@ -332,10 +400,15 @@ def convert_json_to_csv(
     missing_tracked_frames = set()
     should_collect_tracked_rows = False
     if tracked_csv_file:
-        missing_tracked_frames = required_frames - tracked_seen_frames
+        if force_tracked_rewrite:
+            missing_tracked_frames = set(required_frames)
+            tracked_seen.clear()
+            tracked_seen_frames.clear()
+        else:
+            missing_tracked_frames = required_frames - tracked_seen_frames
         should_collect_tracked_rows = bool(missing_tracked_frames)
-    should_write_tracking_csv = bool(force_rewrite_tracking_csv) or (
-        not csv_already_complete
+    should_write_tracking_csv = bool(include_tracking_output) and (
+        bool(force_rewrite_tracking_csv) or (not csv_already_complete)
     )
     if not should_write_tracking_csv and not tracked_csv_file:
         _report_progress(100)
@@ -422,6 +495,7 @@ def convert_json_to_csv(
             for shape in shapes:
                 if not isinstance(shape, dict):
                     continue
+                is_zone_shape = is_zone_shape_payload(shape)
                 shape_type = (shape.get("shape_type") or "").lower()
                 instance_name = _shape_instance_name(shape, shape_type=shape_type)
                 points = shape.get("points") or []
@@ -462,7 +536,7 @@ def convert_json_to_csv(
                                 tracking_id,
                             ]
                         )
-                    if should_track_frame and instance_name:
+                    if should_track_frame and instance_name and not is_zone_shape:
                         motion_index = shape.get("motion_index")
                         if motion_index is None:
                             description = shape.get("description") or ""
@@ -491,6 +565,7 @@ def convert_json_to_csv(
                                     cy,
                                     motion_index,
                                     timestamp_value,
+                                    *_zone_occupancy_flags(zone_specs, cx, cy),
                                 ]
                             )
                         continue
@@ -521,7 +596,7 @@ def convert_json_to_csv(
                                 tracking_id,
                             ]
                         )
-                    if should_track_frame and instance_name:
+                    if should_track_frame and instance_name and not is_zone_shape:
                         motion_index = shape.get("motion_index")
                         if motion_index is None:
                             description = shape.get("description") or ""
@@ -550,6 +625,7 @@ def convert_json_to_csv(
                                     y,
                                     motion_index,
                                     timestamp_value,
+                                    *_zone_occupancy_flags(zone_specs, x, y),
                                 ]
                             )
                         continue
@@ -580,7 +656,7 @@ def convert_json_to_csv(
                                     tracking_id,
                                 ]
                             )
-                        if should_track_frame and instance_name:
+                        if should_track_frame and instance_name and not is_zone_shape:
                             motion_index = shape.get("motion_index")
                             if motion_index is None:
                                 description = shape.get("description") or ""
@@ -619,6 +695,9 @@ def convert_json_to_csv(
                                     stored_cy,
                                     motion_index,
                                     timestamp_value,
+                                    *_zone_occupancy_flags(
+                                        zone_specs, stored_cx, stored_cy
+                                    ),
                                 ]
                             )
             num_processed_files += 1
@@ -632,8 +711,12 @@ def convert_json_to_csv(
                 pass
 
     if tracked_csv_file and tracked_rows_to_append:
-        tracked_path = Path(tracked_csv_file)
-        file_exists = tracked_path.exists() and tracked_path.stat().st_size > 0
+        assert tracked_path is not None
+        file_exists = (
+            tracked_path.exists()
+            and tracked_path.stat().st_size > 0
+            and not force_tracked_rewrite
+        )
         try:
             with tracked_path.open(
                 "a" if file_exists else "w", newline="", encoding="utf-8"

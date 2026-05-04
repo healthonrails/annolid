@@ -157,6 +157,10 @@ class AnnotationLoadingMixin:
         _append(zone_file_for_source(getattr(self, "filename", None)))
         if frame_path is not None:
             _append(zone_file_for_source(frame_path))
+            manual_pair_jsons = sorted(frame_path.parent.glob("*.json"))
+            for json_path in manual_pair_jsons:
+                if json_path.with_suffix(".png").exists():
+                    _append(json_path)
         return [path for path in candidates if path.exists() and path.is_file()]
 
     def _load_zone_payloads_from_file(self, zone_file: Path) -> list[dict]:
