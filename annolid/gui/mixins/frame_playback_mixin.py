@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Optional
 
 import pandas as pd
-from qtpy import QtGui
+from qtpy import QtCore, QtGui
 
 from annolid.gui.shape import Shape
 from annolid.utils.logger import logger
@@ -25,6 +25,39 @@ class FramePlaybackMixin:
             self.startPlaying()
             if hasattr(self, "_set_play_button_state"):
                 self._set_play_button_state(True)
+
+    def _sync_frame_jump_input(self, frame_number: int) -> None:
+        frame_jump = getattr(self, "frameJumpInput", None)
+        if frame_jump is None:
+            return
+        try:
+            with QtCore.QSignalBlocker(frame_jump):
+                frame_jump.setValue(int(frame_number))
+        except Exception:
+            try:
+                previous = frame_jump.blockSignals(True)
+                frame_jump.setValue(int(frame_number))
+                frame_jump.blockSignals(previous)
+            except Exception:
+                pass
+
+    def _sync_seekbar_value(self, frame_number: int) -> None:
+        seekbar = getattr(self, "seekbar", None)
+        if seekbar is None:
+            return
+        try:
+            with QtCore.QSignalBlocker(seekbar):
+                seekbar.setValue(int(frame_number))
+        except Exception:
+            try:
+                previous = seekbar.blockSignals(True)
+                seekbar.setValue(int(frame_number))
+                seekbar.blockSignals(previous)
+            except Exception:
+                try:
+                    seekbar.setValue(int(frame_number))
+                except Exception:
+                    pass
 
     def _on_frame_loaded(self, frame_idx: int, qimage: QtGui.QImage) -> None:
         """Render frame updates with a bounded-lag tolerance during playback.
@@ -78,6 +111,8 @@ class FramePlaybackMixin:
         if frame_number >= self.num_frames or frame_number < 0:
             return
         self.frame_number = frame_number
+        self._sync_frame_jump_input(frame_number)
+        self._sync_seekbar_value(frame_number)
         if getattr(self, "timeline_panel", None) is not None:
             self.timeline_panel.set_current_frame(frame_number)
         self._update_audio_playhead(frame_number)

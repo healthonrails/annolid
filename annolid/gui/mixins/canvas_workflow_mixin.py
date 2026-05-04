@@ -38,6 +38,9 @@ class CanvasWorkflowMixin:
         self.filename = str(filename)
         self.image = qimage
         self.imageData = qimage
+        sync_frame_jump = getattr(self, "_sync_frame_jump_input", None)
+        if callable(sync_frame_jump):
+            sync_frame_jump(int(frame_number))
         if self._config["keep_prev"]:
             prev_shapes = self.canvas.shapes
         pixmap = QtGui.QPixmap.fromImage(qimage)

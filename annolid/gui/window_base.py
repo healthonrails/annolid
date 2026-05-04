@@ -1504,7 +1504,13 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
             pass
 
     def _clear_status_bar_media_controls(self) -> None:
-        for attr_name in ("seekbar", "playButton", "saveButton"):
+        for attr_name in (
+            "seekbar",
+            "playButton",
+            "saveButton",
+            "frameJumpInput",
+            "frameJumpLabel",
+        ):
             widget = getattr(self, attr_name, None)
             if widget is None:
                 continue
@@ -1516,6 +1522,21 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         self._seekbar_owner = None
         self._play_button_owner = None
         self._large_image_seekbar_drag_active = False
+
+    def _create_frame_jump_input(
+        self, *, minimum: int, maximum: int, value: int
+    ) -> QtWidgets.QSpinBox:
+        frame_jump = QtWidgets.QSpinBox(self)
+        frame_jump.setRange(int(minimum), int(maximum))
+        frame_jump.setValue(int(value))
+        frame_jump.setAlignment(QtCore.Qt.AlignCenter)
+        frame_jump.setToolTip("Jump to frame/page")
+        frame_jump.setStatusTip(frame_jump.toolTip())
+        frame_jump.setFixedWidth(88)
+        jump_handler = getattr(self, "jump_to_frame", None)
+        if callable(jump_handler):
+            frame_jump.editingFinished.connect(jump_handler)
+        return frame_jump
 
     def _on_large_image_seekbar_pressed(self, *_args) -> None:
         self._large_image_seekbar_drag_active = True
@@ -1542,12 +1563,12 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         page_count = max(1, int(getattr(backend, "get_page_count", lambda: 1)() or 1))
         self._clear_status_bar_media_controls()
         seekbar = VideoSlider()
+        if hasattr(seekbar, "setFrameInputVisible"):
+            seekbar.setFrameInputVisible(False)
         seekbar.setMinimum(0)
         seekbar.setMaximum(page_count - 1)
         seekbar.setEnabled(True)
         seekbar.resizeEvent()
-        if hasattr(self, "jump_to_frame"):
-            seekbar.input_value.returnPressed.connect(self.jump_to_frame)
         if hasattr(self, "keyPressEvent"):
             seekbar.keyPress.connect(self.keyPressEvent)
         if hasattr(self, "keyReleaseEvent"):
@@ -1560,8 +1581,18 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         if callable(toggle_play):
             play_button.clicked.connect(toggle_play)
         self.statusBar().addPermanentWidget(play_button)
+        frame_jump_label = QtWidgets.QLabel("Frame:", self)
+        self.statusBar().addPermanentWidget(frame_jump_label)
+        frame_jump = self._create_frame_jump_input(
+            minimum=0,
+            maximum=page_count - 1,
+            value=int(getattr(backend, "get_current_page", lambda: 0)() or 0),
+        )
+        self.statusBar().addPermanentWidget(frame_jump)
         self.statusBar().addPermanentWidget(seekbar, stretch=1)
         self.playButton = play_button
+        self.frameJumpLabel = frame_jump_label
+        self.frameJumpInput = frame_jump
         self.seekbar = seekbar
         self._play_button_owner = "large_image_stack"
         self._seekbar_owner = "large_image_stack"
@@ -1678,6 +1709,13 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
             try:
                 with QtCore.QSignalBlocker(seekbar):
                     seekbar.setValue(target)
+            except Exception:
+                pass
+        frame_jump = getattr(self, "frameJumpInput", None)
+        if frame_jump is not None:
+            try:
+                with QtCore.QSignalBlocker(frame_jump):
+                    frame_jump.setValue(int(target))
             except Exception:
                 pass
         self._syncLargeImageDocument()

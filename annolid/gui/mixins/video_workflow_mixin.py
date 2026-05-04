@@ -151,19 +151,20 @@ class VideoWorkflowMixin:
                 self.statusBar().removeWidget(self.seekbar)
             if self.playButton:
                 self.statusBar().removeWidget(self.playButton)
+            if getattr(self, "frameJumpInput", None):
+                self.statusBar().removeWidget(self.frameJumpInput)
             if self.saveButton:
                 self.statusBar().removeWidget(self.saveButton)
             self.seekbar = VideoSlider()
             self.behavior_controller.attach_slider(self.seekbar)
-            self.seekbar.input_value.returnPressed.connect(self.jump_to_frame)
+            if hasattr(self.seekbar, "setFrameInputVisible"):
+                self.seekbar.setFrameInputVisible(False)
             self.seekbar.keyPress.connect(self.keyPressEvent)
             self.seekbar.keyRelease.connect(self.keyReleaseEvent)
             logger.info(f"Working on video:{self.video_file}.")
             logger.info(f"FPS: {self.fps}, Total number of frames: {self.num_frames}")
 
-            self.seekbar.valueChanged.connect(
-                lambda f: self.set_frame_number(self.seekbar.value())
-            )
+            self.seekbar.valueChanged.connect(lambda f: self.set_frame_number(int(f)))
 
             self.seekbar.setMinimum(0)
             self.seekbar.setMaximum(self.num_frames - 1)
@@ -177,9 +178,17 @@ class VideoWorkflowMixin:
                 )
             )
             self.playButton.clicked.connect(self.togglePlay)
+            self.frameJumpLabel = QtWidgets.QLabel("Frame:", self)
+            self.frameJumpInput = self._create_frame_jump_input(
+                minimum=0,
+                maximum=self.num_frames - 1,
+                value=int(self.frame_number or 0),
+            )
             self.saveButton = QtWidgets.QPushButton("Save Timestamps", self)
             self.saveButton.clicked.connect(self.saveTimestampList)
             self.statusBar().addPermanentWidget(self.playButton)
+            self.statusBar().addPermanentWidget(self.frameJumpLabel)
+            self.statusBar().addPermanentWidget(self.frameJumpInput)
             self.statusBar().addPermanentWidget(self.seekbar, stretch=1)
             self.statusBar().addPermanentWidget(self.saveButton)
             _log_step("setup_seekbar_controls")

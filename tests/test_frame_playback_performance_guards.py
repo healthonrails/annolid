@@ -24,6 +24,22 @@ class _DummyCaptionWidget:
         self.paths.append(str(path))
 
 
+class _DummyFrameControl:
+    def __init__(self) -> None:
+        self.value = 0
+        self.blocked = False
+        self.block_history: list[bool] = []
+
+    def setValue(self, value: int) -> None:
+        self.value = int(value)
+
+    def blockSignals(self, blocked: bool) -> bool:
+        previous = self.blocked
+        self.blocked = bool(blocked)
+        self.block_history.append(bool(blocked))
+        return previous
+
+
 class _PlaybackHost(FramePlaybackMixin):
     def __init__(self) -> None:
         self.num_frames = 1000
@@ -40,6 +56,8 @@ class _PlaybackHost(FramePlaybackMixin):
         self.step_size = 1
         self.rendered_frames: list[int] = []
         self._prediction_session_active = False
+        self.frameJumpInput = None
+        self.seekbar = None
 
     def _update_audio_playhead(self, _frame_number: int) -> None:
         return
@@ -74,6 +92,17 @@ def test_set_frame_number_updates_embedding_when_not_playing() -> None:
 
     host.set_frame_number(11)
     assert host.embedding_updates == 1
+
+
+def test_set_frame_number_syncs_frame_controls() -> None:
+    host = _PlaybackHost()
+    host.frameJumpInput = _DummyFrameControl()
+    host.seekbar = _DummyFrameControl()
+
+    host.set_frame_number(12)
+
+    assert host.frameJumpInput.value == 12
+    assert host.seekbar.value == 12
 
 
 def test_on_frame_loaded_allows_small_lag_while_playing() -> None:

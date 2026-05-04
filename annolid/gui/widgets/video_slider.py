@@ -266,6 +266,7 @@ class VideoSlider(QtWidgets.QGraphicsView):
         self.input_value.editingFinished.connect(self.updateValueFromInput)
         self.input_value.move(2, 2)
         self._sync_input_validator_range()
+        self._frame_input_visible = True
 
     # Methods to match API for QSlider
 
@@ -1062,6 +1063,13 @@ class VideoSlider(QtWidgets.QGraphicsView):
         """
         self._get_val_tooltip = tooltip_callable
 
+    def setFrameInputVisible(self, visible: bool) -> None:
+        self._frame_input_visible = bool(visible)
+        try:
+            self.input_value.setVisible(self._frame_input_visible)
+        except Exception:
+            pass
+
     def _update_cursor_for_event(self, event):
         if event.modifiers() == QtCore.Qt.ShiftModifier:
             self.setCursor(QtCore.Qt.CrossCursor)
@@ -1164,8 +1172,8 @@ class VideoSlider(QtWidgets.QGraphicsView):
         self.mouseMoved.emit(scenePos.x(), scenePos.y())
         self.mousePressed.emit(scenePos.x(), scenePos.y())
 
-        # Update input text value with slider's current value
-        self.input_value.setText(str(self._val_main))
+        if bool(getattr(self, "_frame_input_visible", True)):
+            self.input_value.setText(str(self._val_main))
 
     def mouseMoveEvent(self, event):
         """Override method to emit mouseMoved signal on drag."""

@@ -29,8 +29,15 @@ class NavigationWorkflowMixin:
 
     def jump_to_frame(self):
         """Jump to the specified frame number."""
+        raw_input_text = ""
         try:
-            input_frame_number = int(self.seekbar.input_value.text())
+            frame_jump_input = getattr(self, "frameJumpInput", None)
+            if frame_jump_input is not None:
+                input_frame_number = int(frame_jump_input.value())
+                raw_input_text = str(input_frame_number)
+            else:
+                raw_input_text = str(self.seekbar.input_value.text())
+                input_frame_number = int(raw_input_text)
             if (
                 hasattr(self, "_has_large_image_page_navigation")
                 and self._has_large_image_page_navigation()
@@ -58,13 +65,11 @@ class NavigationWorkflowMixin:
                     f"{input_frame_number} is out of range.",
                 )
         except ValueError:
-            logger.info(
-                f"Invalid input: {self.seekbar.input_value.text()} is not a valid frame number."
-            )
+            logger.info(f"Invalid input: {raw_input_text} is not a valid frame number.")
             QtWidgets.QMessageBox.warning(
                 self,
                 "Invalid Input",
-                f"'{self.seekbar.input_value.text()}' is not a valid frame number.",
+                f"'{raw_input_text}' is not a valid frame number.",
             )
         except Exception as e:
             logger.error(f"Error while jumping to frame: {e}")
