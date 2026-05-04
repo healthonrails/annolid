@@ -52,7 +52,13 @@ class ShapePropagationDialog(QtWidgets.QDialog):
         # Now includes "Define Proximity Event" as an additional action.
         self.action_combo = QtWidgets.QComboBox(self)
         self.action_combo.addItems(
-            ["Propagate", "Rename & Propagate", "Delete", "Define Proximity Event"]
+            [
+                "Propagate",
+                "Rename & Propagate",
+                "Switch Labels",
+                "Delete",
+                "Define Proximity Event",
+            ]
         )
         self.action_combo.currentIndexChanged.connect(self.update_action_fields)
 
@@ -73,13 +79,25 @@ class ShapePropagationDialog(QtWidgets.QDialog):
         self.frame_spin.lineEdit().setPlaceholderText(str(default_future_frame))
 
         self.rename_widget = QtWidgets.QWidget(self)
-        rename_layout = QtWidgets.QHBoxLayout(self.rename_widget)
+        rename_layout = QtWidgets.QGridLayout(self.rename_widget)
         rename_layout.setContentsMargins(0, 0, 0, 0)
         self.rename_label = QtWidgets.QLabel("Rename to:", self.rename_widget)
         self.rename_line = QtWidgets.QLineEdit(self.rename_widget)
         self.rename_line.setPlaceholderText("New label")
-        rename_layout.addWidget(self.rename_label)
-        rename_layout.addWidget(self.rename_line, 1)
+        self.label_switch_combo = QtWidgets.QComboBox(self.rename_widget)
+        self.label_switch_combo.setEditable(False)
+        self.label_switch_combo.addItem("Select shape label", "")
+        for label in self._available_shape_labels():
+            self.label_switch_combo.addItem(label, label)
+        self.label_switch_combo.currentIndexChanged.connect(
+            self._switch_rename_label_from_combo
+        )
+        rename_layout.addWidget(self.rename_label, 0, 0)
+        rename_layout.addWidget(self.rename_line, 0, 1)
+        rename_layout.addWidget(
+            QtWidgets.QLabel("Switch to shape label:", self.rename_widget), 1, 0
+        )
+        rename_layout.addWidget(self.label_switch_combo, 1, 1)
         self.rename_widget.hide()
 
         # --- New UI Elements for "Define Proximity Event" ---
@@ -161,7 +179,7 @@ class ShapePropagationDialog(QtWidgets.QDialog):
     def update_action_fields(self):
         """Toggle the visibility of input fields based on the selected action."""
         current_action = self.action_combo.currentText().lower()
-        rename_action = current_action == "rename & propagate"
+        rename_action = current_action in {"rename & propagate", "switch labels"}
         if current_action == "define proximity event":
             self.frame_spin_label.hide()
             self.frame_spin.hide()
@@ -178,6 +196,74 @@ class ShapePropagationDialog(QtWidgets.QDialog):
         if isinstance(shape, dict):
             return str(shape.get("label", "") or "").strip()
         return str(getattr(shape, "label", "") or "").strip()
+
+    @staticmethod
+    def _append_unique_label(labels, value) -> None:
+        label = str(value or "").strip()
+        if label and label not in labels:
+            labels.append(label)
+
+    def _available_shape_labels(self) -> list[str]:
+        labels: list[str] = []
+        selected_shape = None
+        try:
+            selected_shape = (
+                self.canvas.selectedShapes[0]
+                if getattr(self.canvas, "selectedShapes", None)
+                else None
+            )
+        except Exception:
+            selected_shape = None
+
+        for shape in getattr(self.canvas, "shapes", []) or []:
+            if shape is selected_shape:
+                continue
+            self._append_unique_label(labels, self._shape_label(shape))
+
+        uniq_label_list = getattr(self.main_window, "uniqLabelList", None)
+        if uniq_label_list is not None:
+            try:
+                for idx in range(uniq_label_list.count()):
+                    item = uniq_label_list.item(idx)
+                    if item is None:
+                        continue
+                    label = item.data(QtCore.Qt.UserRole)
+                    if label is None:
+                        label = item.text()
+                    self._append_unique_label(labels, label)
+            except Exception:
+                logger.debug(
+                    "Failed to collect labels from the unique label list.",
+                    exc_info=True,
+                )
+
+        label_dialog = getattr(self.main_window, "labelDialog", None)
+        for value in getattr(label_dialog, "_history", []) or []:
+            self._append_unique_label(labels, value)
+        config = getattr(label_dialog, "_config", {}) or {}
+        for value in config.get("labels") or []:
+            self._append_unique_label(labels, value)
+
+        return labels
+
+    def _switch_rename_label_from_combo(self, _index) -> None:
+        label = self.label_switch_combo.currentData()
+        if label:
+            self.rename_line.setText(str(label))
+
+    def _find_selected_label_switch_target(self, selected_shape, new_label: str):
+        selected_shapes = list(getattr(self.canvas, "selectedShapes", []) or [])
+        if selected_shape not in selected_shapes or len(selected_shapes) < 2:
+            return None
+        selected_label = self._shape_label(selected_shape)
+        if not new_label or new_label == selected_label:
+            return None
+        for shape in selected_shapes:
+            if shape is selected_shape:
+                continue
+            if self._shape_label(shape) == new_label:
+                return shape
+        return None
 
     @staticmethod
     def _shape_type(shape):
@@ -245,6 +331,10 @@ class ShapePropagationDialog(QtWidgets.QDialog):
         return max(self.current_frame + 1, min(future_seeds) - 1)
 
     def _allocate_group_id(self):
+        allocated = self._allocate_group_ids(1)
+        return allocated[0] if allocated else 0
+
+    def _allocate_group_ids(self, count: int) -> list[int]:
         candidates = []
         for shape in getattr(self.canvas, "shapes", []) or []:
             group_id = self._shape_group_id(shape)
@@ -255,8 +345,10 @@ class ShapePropagationDialog(QtWidgets.QDialog):
             except Exception:
                 continue
         if not candidates:
-            return 0
-        return max(candidates) + 1
+            start = 0
+        else:
+            start = max(candidates) + 1
+        return list(range(start, start + max(0, int(count))))
 
     def _find_label_list_item_for_shape(self, shape):
         label_list = getattr(self.main_window, "labelList", None)
@@ -709,6 +801,12 @@ class ShapePropagationDialog(QtWidgets.QDialog):
         )
 
     def _restore_shape_state(self, restore_shape_state) -> None:
+        if isinstance(restore_shape_state, dict) and isinstance(
+            restore_shape_state.get("states"), list
+        ):
+            for state in restore_shape_state.get("states", []):
+                self._restore_shape_state(state)
+            return
         if not isinstance(restore_shape_state, dict):
             return
         shape = restore_shape_state.get("shape")
@@ -914,6 +1012,37 @@ class ShapePropagationDialog(QtWidgets.QDialog):
         self._save_shape_file(label_file, lf)
         return updated
 
+    def _switch_matching_shape_labels_in_label_file(
+        self,
+        lf,
+        label_file,
+        *,
+        original_label,
+        original_group_id,
+        new_label,
+        new_group_id,
+    ):
+        updated = 0
+        updated_shapes = []
+        for shape in lf.shapes:
+            shape_label = self._shape_label(shape)
+            if shape_label == original_label:
+                updated_shapes.append(
+                    self._update_shape_record(shape, new_label, new_group_id)
+                )
+                updated += 1
+            elif shape_label == new_label:
+                updated_shapes.append(
+                    self._update_shape_record(shape, original_label, original_group_id)
+                )
+                updated += 1
+            else:
+                updated_shapes.append(shape)
+        if updated:
+            lf.shapes = updated_shapes
+            self._save_shape_file(label_file, lf)
+        return updated
+
     def compute_centroid(self, shape):
         """Compute the centroid of a shape (works for object or dict with 'points')."""
         if isinstance(shape, dict):
@@ -1052,6 +1181,7 @@ class ShapePropagationDialog(QtWidgets.QDialog):
         current_label_file: str,
         original_frame: int,
         frame_label_files,
+        label_switch=None,
         stop_event=None,
     ):
         frame_numbers = [
@@ -1079,23 +1209,38 @@ class ShapePropagationDialog(QtWidgets.QDialog):
         )
         if stop_event is not None and stop_event.is_set():
             canceled = True
-        if not canceled and action == "rename & propagate":
+        if not canceled and action in {"rename & propagate", "switch labels"}:
             current_lf = self._load_existing_label_file(current_label_file)
             if current_lf is not None:
-                self._rename_matching_shapes_in_label_file(
-                    current_lf,
-                    current_label_file,
-                    reference_shape,
-                    new_label,
-                    new_group_id,
-                )
+                if isinstance(label_switch, dict):
+                    self._switch_matching_shape_labels_in_label_file(
+                        current_lf,
+                        current_label_file,
+                        original_label=label_switch["original_label"],
+                        original_group_id=label_switch["original_group_id"],
+                        new_label=new_label,
+                        new_group_id=new_group_id,
+                    )
+                else:
+                    self._rename_matching_shapes_in_label_file(
+                        current_lf,
+                        current_label_file,
+                        reference_shape,
+                        new_label,
+                        new_group_id,
+                    )
             else:
                 logger.warning(
-                    "Rename & propagate skipped current frame %s because no existing annotation record was found.",
+                    "Shape action '%s' skipped current frame %s because no existing annotation record was found.",
+                    action,
                     original_frame,
                 )
 
-        final_updated_frame = original_frame if action == "rename & propagate" else None
+        final_updated_frame = (
+            original_frame
+            if action in {"rename & propagate", "switch labels"}
+            else None
+        )
         try:
             for frame, label_file in frame_label_files:
                 if stop_event is not None and stop_event.is_set():
@@ -1152,14 +1297,24 @@ class ShapePropagationDialog(QtWidgets.QDialog):
                         if not replaced:
                             updated_shapes.append(new_shape_dict)
                         shapes = updated_shapes
-                elif action == "rename & propagate":
-                    self._rename_matching_shapes_in_label_file(
-                        lf,
-                        label_file,
-                        reference_shape,
-                        new_label,
-                        new_group_id,
-                    )
+                elif action in {"rename & propagate", "switch labels"}:
+                    if isinstance(label_switch, dict):
+                        self._switch_matching_shape_labels_in_label_file(
+                            lf,
+                            label_file,
+                            original_label=label_switch["original_label"],
+                            original_group_id=label_switch["original_group_id"],
+                            new_label=new_label,
+                            new_group_id=new_group_id,
+                        )
+                    else:
+                        self._rename_matching_shapes_in_label_file(
+                            lf,
+                            label_file,
+                            reference_shape,
+                            new_label,
+                            new_group_id,
+                        )
                     shapes = lf.shapes
                     frame_saved = True
                 elif action == "delete":
@@ -1258,12 +1413,14 @@ class ShapePropagationDialog(QtWidgets.QDialog):
                 # User decided not to delete, so exit the method.
                 return
 
-        if action in ["propagate", "rename & propagate", "delete"]:
+        if action in ["propagate", "rename & propagate", "switch labels", "delete"]:
             new_label = self.rename_line.text().strip()
-            if action == "rename & propagate":
+            if action in {"rename & propagate", "switch labels"}:
                 if not new_label:
                     QtWidgets.QMessageBox.warning(
-                        self, "Missing Input", "Please enter a new label name."
+                        self,
+                        "Missing Input",
+                        "Please choose a target shape label to switch/rename.",
                     )
                     return
                 validate_label = getattr(main_window, "validateLabel", None)
@@ -1288,13 +1445,56 @@ class ShapePropagationDialog(QtWidgets.QDialog):
             ]
             new_group_id = self._shape_group_id(selected_shape)
             restore_shape_state = None
-            if action == "rename & propagate":
+            label_switch = None
+            if action in {"rename & propagate", "switch labels"}:
+                original_label = self._shape_label(selected_shape)
+                original_group_id = new_group_id
+                label_switch_target = self._find_selected_label_switch_target(
+                    selected_shape, new_label
+                )
                 restore_shape_state = {
                     "shape": selected_shape,
-                    "label": self._shape_label(selected_shape),
-                    "group_id": self._shape_group_id(selected_shape),
+                    "label": original_label,
+                    "group_id": original_group_id,
                 }
-                if new_group_id is None:
+                if action == "switch labels" and label_switch_target is None:
+                    QtWidgets.QMessageBox.warning(
+                        self,
+                        "Switch Requires Two Shapes",
+                        "Select exactly two shapes with different labels, then choose the other label.",
+                    )
+                    return
+                if label_switch_target is not None:
+                    target_original_label = self._shape_label(label_switch_target)
+                    target_original_group_id = self._shape_group_id(label_switch_target)
+                    missing_group_count = int(original_group_id is None) + int(
+                        target_original_group_id is None
+                    )
+                    allocated_group_ids = self._allocate_group_ids(missing_group_count)
+                    if original_group_id is None:
+                        original_group_id = allocated_group_ids.pop(0)
+                    if target_original_group_id is None:
+                        target_original_group_id = allocated_group_ids.pop(0)
+
+                    new_group_id = target_original_group_id
+                    label_switch = {
+                        "original_label": original_label,
+                        "original_group_id": original_group_id,
+                    }
+                    restore_shape_state = {
+                        "states": [
+                            restore_shape_state,
+                            {
+                                "shape": label_switch_target,
+                                "label": target_original_label,
+                                "group_id": self._shape_group_id(label_switch_target),
+                            },
+                        ]
+                    }
+                    label_switch_target.label = original_label
+                    label_switch_target.group_id = original_group_id
+                    self._refresh_current_shape_views(label_switch_target)
+                elif new_group_id is None and action == "rename & propagate":
                     new_group_id = self._allocate_group_id()
                 selected_shape.label = new_label
                 selected_shape.group_id = new_group_id
@@ -1312,11 +1512,12 @@ class ShapePropagationDialog(QtWidgets.QDialog):
                     current_label_file=current_label_file,
                     original_frame=original_frame,
                     frame_label_files=frame_label_files,
+                    label_switch=label_switch,
                     stop_event=stop_event,
                 )
 
             frame_count = len(frame_label_files)
-            if action == "rename & propagate":
+            if action in {"rename & propagate", "switch labels"}:
                 frame_count += 1
             if self._should_run_shape_action_in_background(frame_count):
                 self.apply_btn.setEnabled(False)

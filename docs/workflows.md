@@ -18,6 +18,10 @@ Practical notes:
 
 - Direct video labeling is supported; frame extraction is optional, not mandatory.
 - Use stable instance labels when cross-frame identity matters.
+- When using shape propagation, `Rename & Propagate` can switch a selected
+  shape to another existing shape label from the dialog. If two shapes with
+  different labels are selected, Annolid swaps those labels across the
+  propagation range instead of renaming both identities to one label.
 - Review overlap, occlusion, and high-motion segments before scaling to long runs.
 
 ## 2. Annolid Bot Workflow

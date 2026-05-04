@@ -390,6 +390,154 @@ def test_shape_dialog_rename_and_propagate_uses_identity_and_assigns_group_id(
     assert not any(shape["label"] == "stim_2" for shape in future_shapes)
 
 
+def test_shape_dialog_can_switch_to_existing_shape_label_during_propagation(
+    monkeypatch, tmp_path
+):
+    _ensure_qapp()
+
+    from annolid.gui.window_base import AnnolidLabelListItem
+    from annolid.gui.widgets.shape_dialog import ShapePropagationDialog
+
+    current_png = tmp_path / "video_000000000.png"
+    future_png = tmp_path / "video_000000001.png"
+    current_json = current_png.with_suffix(".json")
+    future_json = future_png.with_suffix(".json")
+
+    current_shape = _square("stim_2", dx=0.0, dy=0.0)
+    resident_shape = _square("resident", dx=40.0, dy=40.0)
+    _write_label_file(current_json, [_shape_payload("stim_2")])
+    _write_label_file(future_json, [_shape_payload("stim_2", dx=0.5, dy=0.5)])
+
+    canvas = type("Canvas", (), {})()
+    canvas.shapes = [current_shape, resident_shape]
+    canvas.selectedShapes = [current_shape]
+    canvas.update = lambda: None
+
+    window = _DummyMainWindow({0: current_png, 1: future_png})
+    window.canvas = canvas
+    window.labelList.addItem(AnnolidLabelListItem("stim_2", current_shape))
+    window.labelList.addItem(AnnolidLabelListItem("resident", resident_shape))
+
+    dialog = ShapePropagationDialog(canvas, window, current_frame=0, max_frame=1)
+    dialog.shape_list.setCurrentRow(0)
+    dialog.action_combo.setCurrentText("Rename & Propagate")
+
+    label_index = dialog.label_switch_combo.findData("resident")
+    assert label_index >= 0
+    dialog.label_switch_combo.setCurrentIndex(label_index)
+    assert dialog.rename_line.text() == "resident"
+
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox, "information", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", lambda *args, **kwargs: None)
+
+    dialog.do_action()
+
+    assert _load_shapes(current_json)[0]["label"] == "resident"
+    assert _load_shapes(future_json)[0]["label"] == "resident"
+
+
+def test_shape_dialog_switch_labels_action_swaps_two_selected_labels(
+    monkeypatch, tmp_path
+):
+    _ensure_qapp()
+
+    from annolid.gui.window_base import AnnolidLabelListItem
+    from annolid.gui.widgets.shape_dialog import ShapePropagationDialog
+
+    current_png = tmp_path / "video_000000000.png"
+    future_png = tmp_path / "video_000000001.png"
+    current_json = current_png.with_suffix(".json")
+    future_json = future_png.with_suffix(".json")
+
+    selected_shape = _square("stim_2", dx=0.0, dy=0.0)
+    switch_target = _square("resident", dx=40.0, dy=40.0)
+    _write_label_file(
+        current_json,
+        [
+            _shape_payload("stim_2", dx=0.0, dy=0.0),
+            _shape_payload("resident", dx=40.0, dy=40.0),
+        ],
+    )
+    _write_label_file(
+        future_json,
+        [
+            _shape_payload("stim_2", dx=1.0, dy=1.0),
+            _shape_payload("resident", dx=41.0, dy=41.0),
+        ],
+    )
+
+    canvas = type("Canvas", (), {})()
+    canvas.shapes = [selected_shape, switch_target]
+    canvas.selectedShapes = [selected_shape, switch_target]
+    canvas.update = lambda: None
+
+    window = _DummyMainWindow({0: current_png, 1: future_png})
+    window.canvas = canvas
+    window.labelList.addItem(AnnolidLabelListItem("stim_2", selected_shape))
+    window.labelList.addItem(AnnolidLabelListItem("resident", switch_target))
+
+    dialog = ShapePropagationDialog(canvas, window, current_frame=0, max_frame=1)
+    dialog.shape_list.setCurrentRow(0)
+    dialog.action_combo.setCurrentText("Switch Labels")
+    dialog.label_switch_combo.setCurrentIndex(
+        dialog.label_switch_combo.findData("resident")
+    )
+
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox, "information", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(QtWidgets.QMessageBox, "warning", lambda *args, **kwargs: None)
+
+    dialog.do_action()
+
+    assert [shape["label"] for shape in _load_shapes(current_json)] == [
+        "resident",
+        "stim_2",
+    ]
+    assert [shape["label"] for shape in _load_shapes(future_json)] == [
+        "resident",
+        "stim_2",
+    ]
+    assert selected_shape.label == "resident"
+    assert switch_target.label == "stim_2"
+
+
+def test_label_instances_menu_emits_switch_for_two_selected_shapes(monkeypatch):
+    _ensure_qapp()
+
+    from annolid.gui.window_base import AnnolidLabelListItem, AnnolidLabelListWidget
+
+    widget = AnnolidLabelListWidget()
+    try:
+        shape_a = _square("a")
+        shape_b = _square("b", dx=20.0, dy=20.0)
+        item_a = AnnolidLabelListItem("a", shape_a)
+        item_b = AnnolidLabelListItem("b", shape_b)
+        widget.addItem(item_a)
+        widget.addItem(item_b)
+        item_a.setSelected(True)
+        item_b.setSelected(True)
+
+        switched = []
+        widget.shapesSwitchRequested.connect(lambda shapes: switched.append(shapes))
+
+        def _fake_exec(self, _global_pos):
+            for action in self.actions():
+                if "switch selected shape labels" in (action.text() or "").lower():
+                    return action
+            return None
+
+        monkeypatch.setattr(QtWidgets.QMenu, "exec_", _fake_exec)
+        widget._show_delete_menu(QtCore.QPoint(0, 0))
+
+        assert len(switched) == 1
+        assert {id(s) for s in switched[0]} == {id(shape_a), id(shape_b)}
+    finally:
+        widget.close()
+
+
 def test_shape_dialog_propagate_rectangle_preserves_other_future_shapes(
     monkeypatch, tmp_path
 ):

@@ -94,3 +94,36 @@ def test_canvas_context_menu_shows_shape_actions_with_icons_when_selected():
         assert not delete.icon().isNull()
     finally:
         w.close()
+
+
+def test_canvas_context_menu_shows_switch_labels_for_two_selected_shapes():
+    _ensure_qapp()
+    from annolid.gui.app import AnnolidWindow
+
+    w = AnnolidWindow(config={})
+    try:
+        img = QtGui.QImage(100, 80, QtGui.QImage.Format_RGB32)
+        img.fill(QtGui.QColor(120, 120, 120))
+        w.image_to_canvas(img, "dummy.png", 0)
+
+        shape_a = _mk_polygon("a")
+        shape_b = _mk_polygon("b")
+        shape_b.points = [
+            QtCore.QPointF(40.0, 10.0),
+            QtCore.QPointF(65.0, 10.0),
+            QtCore.QPointF(65.0, 35.0),
+            QtCore.QPointF(40.0, 35.0),
+        ]
+        w.canvas.shapes = [shape_a, shape_b]
+        w.canvas.selectShapes([shape_a, shape_b])
+
+        menu = w.canvas._build_context_menu(w)
+        switch_action = _find_action(menu, "switch selected shape labels")
+        assert switch_action is not None
+
+        called = []
+        w.switchSelectedShapeLabels = lambda: called.append(True)
+        switch_action.trigger()
+        assert called == [True]
+    finally:
+        w.close()

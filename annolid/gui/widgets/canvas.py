@@ -1794,6 +1794,16 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
                     lambda: self.propagateSelectedShapeFromCanvas()
                 )
                 menu.addAction(propagate_action)
+                if len(selected_shapes) == 2:
+                    switch_labels_action = QtWidgets.QAction(
+                        self._icon("edit_polygons.svg"),
+                        "Switch Selected Shape Labels",
+                        menu,
+                    )
+                    switch_labels_action.triggered.connect(
+                        lambda: self.switchSelectedShapeLabelsFromCanvas()
+                    )
+                    menu.addAction(switch_labels_action)
 
             if actions is not None:
                 if selected_shapes:
@@ -1888,6 +1898,11 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
         main_window = self.window()  # Assumes top-level window is AnnolidWindow
         if hasattr(main_window, "propagateSelectedShape"):
             main_window.propagateSelectedShape()
+
+    def switchSelectedShapeLabelsFromCanvas(self):
+        main_window = self.window()
+        if hasattr(main_window, "switchSelectedShapeLabels"):
+            main_window.switchSelectedShapeLabels()
 
     def mousePressEvent(self, ev):
         if QT5:

@@ -372,6 +372,35 @@ class LabelPanelMixin:
             except Exception:
                 pass
 
+        def on_shapes_switch_requested(shapes: list[Shape]) -> None:
+            shape_list = [s for s in (shapes or []) if s is not None]
+            if len(shape_list) != 2:
+                return
+            try:
+                self._noSelectionSlot = True
+                self.canvas.selectShapes(shape_list)
+                selected_ids = {id(s) for s in shape_list}
+                with QtCore.QSignalBlocker(self.labelList):
+                    for idx in range(self.labelList.count()):
+                        it = self.labelList.item(idx)
+                        try:
+                            shape = (
+                                it.shape()
+                                if isinstance(it, AnnolidLabelListItem)
+                                else None
+                            )
+                            it.setSelected(
+                                shape is not None and id(shape) in selected_ids
+                            )
+                        except Exception:
+                            continue
+            finally:
+                self._noSelectionSlot = False
+            try:
+                self.switchSelectedShapeLabels()
+            except Exception:
+                pass
+
         with warnings.catch_warnings():
             warnings.filterwarnings(
                 "ignore", category=RuntimeWarning, message="Failed to disconnect.*"
@@ -388,11 +417,16 @@ class LabelPanelMixin:
                 self.labelList.shapesDeleteRequested.disconnect()
             except Exception:
                 pass
+            try:
+                self.labelList.shapesSwitchRequested.disconnect()
+            except Exception:
+                pass
 
         try:
             self.labelList.shapeVisibilityChanged.connect(on_shape_visibility_changed)
             self.labelList.shapeDeleteRequested.connect(on_shape_delete_requested)
             self.labelList.shapesDeleteRequested.connect(on_shapes_delete_requested)
+            self.labelList.shapesSwitchRequested.connect(on_shapes_switch_requested)
         except Exception:
             pass
 
@@ -659,6 +693,51 @@ class LabelPanelMixin:
             self.statusBar().showMessage("Shape propagation completed.")
         else:
             self.statusBar().showMessage("Shape propagation canceled.")
+
+    def switchSelectedShapeLabels(self):
+        from annolid.gui.widgets.shape_dialog import ShapePropagationDialog
+
+        selected_shapes = list(getattr(self.canvas, "selectedShapes", []) or [])
+        if len(selected_shapes) != 2:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Select Two Shapes",
+                "Please select exactly two shapes with different labels first.",
+            )
+            return
+        if str(selected_shapes[0].label) == str(selected_shapes[1].label):
+            QtWidgets.QMessageBox.information(
+                self,
+                "Different Labels Required",
+                "Selected shapes must have different labels to switch.",
+            )
+            return
+
+        selected_shape = selected_shapes[0]
+        target_shape = selected_shapes[1]
+        current_frame = self.frame_number
+        max_frame = self.num_frames - 1
+
+        dialog = ShapePropagationDialog(
+            self.canvas, self, current_frame, max_frame, parent=self
+        )
+        self._select_shape_row_in_propagation_dialog(dialog, selected_shape)
+        dialog.action_combo.setCurrentText("Switch Labels")
+        target_idx = dialog.label_switch_combo.findData(str(target_shape.label))
+        if target_idx >= 0:
+            dialog.label_switch_combo.setCurrentIndex(target_idx)
+        else:
+            dialog.rename_line.setText(str(target_shape.label))
+
+        result = dialog.exec_()
+        if getattr(dialog, "background_action_started", False):
+            self.statusBar().showMessage(
+                "Label switch propagation running in background."
+            )
+        elif result == QtWidgets.QDialog.Accepted:
+            self.statusBar().showMessage("Label switch propagation completed.")
+        else:
+            self.statusBar().showMessage("Label switch propagation canceled.")
 
     def editLabel(self, item=None):
         if item and not isinstance(item, AnnolidLabelListItem):

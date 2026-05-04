@@ -102,6 +102,7 @@ class AnnolidLabelListWidget(QtWidgets.QListWidget):
     shapeVisibilityChanged = QtCore.Signal(object, bool)
     shapeDeleteRequested = QtCore.Signal(object)
     shapesDeleteRequested = QtCore.Signal(object)
+    shapesSwitchRequested = QtCore.Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -202,12 +203,17 @@ class AnnolidLabelListWidget(QtWidgets.QListWidget):
             return
 
         menu = QtWidgets.QMenu(self)
+        switch_action = None
+        if len(selected_shapes) == 2:
+            switch_action = menu.addAction(self.tr("Switch selected shape labels"))
         if len(selected_shapes) > 1:
             delete_action = menu.addAction(self.tr("Delete selected shapes"))
         else:
             delete_action = menu.addAction(self.tr("Delete shape"))
         chosen = menu.exec_(global_pos)
-        if chosen is delete_action:
+        if switch_action is not None and chosen is switch_action:
+            self.shapesSwitchRequested.emit(selected_shapes)
+        elif chosen is delete_action:
             if len(selected_shapes) > 1:
                 self.shapesDeleteRequested.emit(selected_shapes)
             else:
