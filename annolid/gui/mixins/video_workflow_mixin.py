@@ -147,14 +147,23 @@ class VideoWorkflowMixin:
                         pass
             self._configure_audio_for_video(self.video_file, self.fps, eager=False)
             _log_step("ui_timeline_caption_audio")
-            if self.seekbar:
-                self.statusBar().removeWidget(self.seekbar)
-            if self.playButton:
-                self.statusBar().removeWidget(self.playButton)
-            if getattr(self, "frameJumpInput", None):
-                self.statusBar().removeWidget(self.frameJumpInput)
-            if self.saveButton:
-                self.statusBar().removeWidget(self.saveButton)
+            clear_media_controls = getattr(
+                self, "_clear_status_bar_media_controls", None
+            )
+            if callable(clear_media_controls):
+                clear_media_controls()
+            else:
+                for attr_name in (
+                    "seekbar",
+                    "playButton",
+                    "frameJumpLabel",
+                    "frameJumpInput",
+                    "saveButton",
+                ):
+                    widget = getattr(self, attr_name, None)
+                    if widget is not None:
+                        self.statusBar().removeWidget(widget)
+                        setattr(self, attr_name, None)
             self.seekbar = VideoSlider()
             self.behavior_controller.attach_slider(self.seekbar)
             if hasattr(self.seekbar, "setFrameInputVisible"):
