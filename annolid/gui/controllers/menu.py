@@ -581,9 +581,9 @@ class MenuController:
             },
             {
                 "name": "convert_csv",
-                "text": w.tr("&Save CSV"),
+                "text": w.tr("&Export Tracking CSV(s)"),
                 "slot": w.convert_labelme_json_to_csv,
-                "tip": w.tr("Save CSV"),
+                "tip": w.tr("Export tracking CSV files from LabelMe JSON predictions"),
             },
             {
                 "name": "extract_shape_keypoints",
