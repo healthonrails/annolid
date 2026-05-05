@@ -155,8 +155,11 @@ class CutieCoreVideoProcessor:
         self._optical_flow_kwargs = optical_flow_compute_kwargs(
             self._optical_flow_settings
         )
-        self.auto_missing_instance_recovery = kwargs.get(
-            "auto_missing_instance_recovery", False
+        self.auto_missing_instance_recovery = bool(
+            kwargs.get(
+                "auto_missing_instance_recovery",
+                kwargs.get("auto_recovery_missing_instances", False),
+            )
         )
         self.auto_fill_missing_instances = bool(
             kwargs.get("auto_fill_missing_instances", False)
@@ -585,7 +588,7 @@ class CutieCoreVideoProcessor:
         return payload
 
     def _flush_tracking_stats(self, force: bool = False) -> None:
-        if not getattr(self, "_tracking_stats_dirty", False):
+        if not force and not getattr(self, "_tracking_stats_dirty", False):
             return
         if (
             not force
@@ -796,6 +799,7 @@ class CutieCoreVideoProcessor:
         frame_stats = stats.setdefault("frame_stats", {})
         key = str(normalized_frame)
         entry = frame_stats.get(key)
+        had_persisted_entry = isinstance(entry, dict)
         if not isinstance(entry, dict):
             entry = {}
         before = dict(entry)
@@ -839,8 +843,12 @@ class CutieCoreVideoProcessor:
         entry["last_updated"] = datetime.utcnow().isoformat() + "Z"
         entry["frame"] = normalized_frame
 
-        if before != entry:
-            frame_stats[key] = entry
+        persist_entry = self._is_manual_or_abnormal_frame_stat(entry)
+        if before != entry and (persist_entry or had_persisted_entry):
+            if persist_entry:
+                frame_stats[key] = entry
+            else:
+                frame_stats.pop(key, None)
             self._tracking_stats_dirty = True
             self._tracking_stats_pending_updates = int(
                 getattr(self, "_tracking_stats_pending_updates", 0)
@@ -1794,8 +1802,9 @@ class CutieCoreVideoProcessor:
                 png_exists=Path(filename).with_suffix(".png").exists(),
                 store_record_exists=True,
             )
-            self._recompute_tracking_stats_summary(self._load_tracking_stats())
-            self._flush_tracking_stats(force=False)
+            if bool(getattr(self, "_tracking_stats_dirty", False)):
+                self._recompute_tracking_stats_summary(self._load_tracking_stats())
+                self._flush_tracking_stats(force=False)
         return label_list
 
     def _sanitize_full_frame_artifact(
@@ -2971,8 +2980,24 @@ class CutieCoreVideoProcessor:
                             )
 
                             if missing_instances:
+                                recovery_enabled = bool(
+                                    getattr(
+                                        self,
+                                        "auto_missing_instance_recovery",
+                                        False,
+                                    )
+                                )
+                                fill_enabled = bool(
+                                    getattr(self, "auto_fill_missing_instances", False)
+                                )
+                                suffix = (
+                                    " after recovery/fill"
+                                    if recovery_enabled or fill_enabled
+                                    else ""
+                                )
                                 logger.info(
-                                    "Missing instances after recovery/fill at frame %s: %s",
+                                    "Missing instances%s at frame %s: %s",
+                                    suffix,
                                     current_frame_index,
                                     ", ".join(
                                         str(instance)

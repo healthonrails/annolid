@@ -40,6 +40,24 @@ def _seed(frame_index: int) -> SeedFrame:
     )
 
 
+def test_cutie_processor_accepts_gui_missing_recovery_alias(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setattr(
+        CutieCoreVideoProcessor,
+        "_initialize_model",
+        lambda self: (object(), types.SimpleNamespace(amp=False)),
+    )
+    monkeypatch.setattr(cutie_predict, "get_device", lambda: "cpu")
+
+    processor = CutieCoreVideoProcessor(
+        str(tmp_path / "clip.mp4"),
+        auto_recovery_missing_instances=True,
+    )
+
+    assert processor.auto_missing_instance_recovery is True
+
+
 def test_count_tracking_instances_uses_only_active_seed_labels() -> None:
     processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
     processor._seed_segment_lookup = {
@@ -1486,6 +1504,11 @@ def test_save_annotation_updates_prediction_tracking_stats(
         frame_shape=(4, 4, 3),
         shape_notes={},
     )
+    cached_payload = processor._load_tracking_stats()
+    assert cached_payload["frame_stats"] == {}
+    assert processor._tracking_stats_dirty is False
+    assert processor._tracking_stats_pending_updates == 0
+
     processor._flush_tracking_stats(force=True)
 
     stats_path = results_dir / f"{results_dir.name}_tracking_stats.json"
