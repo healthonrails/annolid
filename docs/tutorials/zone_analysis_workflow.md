@@ -43,9 +43,10 @@ Annolid now supports three related outputs:
 
 1. Start Annolid and load the video you want to annotate.
 2. Move to the frame that best represents the arena layout.
-3. Open **Video Tools → Zones**.
+3. Draw shapes directly on canvas and mark them as zones in the label popup using **Zone type**.
+4. Optional: open **Video Tools → Zones** for presets, inventory management, and zone JSON save/load.
 
-The Zone Dock uses the current Annolid canvas. You draw directly on the loaded video frame, not in a separate blank editor.
+Zone authoring uses the current Annolid canvas. You draw directly on the loaded video frame, not in a separate blank editor.
 
 ## Step 2: Create a Zone Layout
 

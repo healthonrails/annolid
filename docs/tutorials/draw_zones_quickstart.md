@@ -5,8 +5,8 @@ Use this guide when you want to draw and manage zones quickly on a loaded frame.
 ## Before You Start
 
 1. Open Annolid.
-2. Load your video (or image) and move to a representative frame.
-3. Open **Video Tools → Zones**.
+2. Load your video (or image) and move to a representative seed frame (commonly frame `0`).
+3. Optional: open **Video Tools → Zones** if you want zone inventory/defaults/presets while editing.
 
 If no frame is loaded, the zone panel will stay read-only.
 
@@ -16,12 +16,24 @@ Use Annolid's existing canvas drawing tools:
 
 1. Choose a draw mode from the main Annolid toolbar or canvas context menu.
 2. Draw any shape(s) on the live frame.
-3. In **Video Tools → Zones**, select a shape from **Zone Inventory**.
-4. In **Zone Details**, click **Use as Zone**.
+3. Name the shape in the label dialog and enable zone classification:
+   - mark **Zone type** in the label dialog, or
+   - use a zone label name such as `left_zone`, `right_chamber`, `tube_zone`.
+4. Save the shape.
+5. Optional: in **Video Tools → Zones**, review/edit zone semantics from **Zone Inventory** and **Zone Details**.
 
 The Zone Dock no longer duplicates draw controls; it focuses on classification and zone metadata management.
 If your label/description includes zone words (for example `zone`, `chamber`, `doorway`, `tube`, `passage`), Annolid will recognize it as a zone candidate (`zone (keyword)`) in the inventory.
 Defined zones are displayed across all video frames so you can navigate and annotate without redrawing zone boundaries on each frame.
+
+## Show Zones Across Frames
+
+Use **View → Show Zones On All Frames**:
+
+- enabled: zone overlays remain visible on every frame.
+- disabled: zone overlays are hidden on non-local frames unless explicitly saved on that frame.
+
+This toggle only affects zone overlays. It does not duplicate non-zone instance polygons across frames.
 
 ## Set Good Defaults First
 
@@ -46,7 +58,7 @@ In **Zone Inventory**:
 
 Useful actions for the selected zone:
 
-- **Use as Zone**: convert the selected annotation shape into a zone.
+- **Use as Zone**: convert an existing non-zone annotation into a zone.
 - **Apply Zone Details**: save label/metadata edits on an already classified zone.
 - **Use Selected as Defaults**: copy current zone semantics for future drawings.
 - **Duplicate**: clone zone + semantics (offset slightly for immediate editing).
@@ -80,7 +92,7 @@ If you want one included in social metrics, add social tags or set `include_in_s
 
 - Drawing before setting defaults, then having to retag every zone manually.
 - Saving zones from the wrong frame/layout.
-- Forgetting to click **Use as Zone** after drawing shapes.
+- Forgetting to enable **Zone type** in the label dialog when creating zone shapes.
 - Reusing one zone JSON across sessions with different crops or geometry.
 
 ## Next Step
@@ -88,3 +100,4 @@ If you want one included in social metrics, add social tags or set `include_in_s
 After drawing and saving zones, run:
 
 - **Video Tools → Zone Analysis** for zone metrics and assay/social summaries.
+- **Convert → Save CSV** with `Generate *_tracked.csv` enabled to include one zone-occupancy column per zone label (`1` if center is inside, `0` if outside).

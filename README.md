@@ -112,7 +112,8 @@ For advanced users, Docker, Conda, or manual Pip installation, please see the [D
   ```
 - Pick between Ollama, OpenAI GPT, or Google Gemini for caption chat features by opening the caption panel and clicking `Configure…` next to the model selector. API keys are stored in `~/.annolid/llm_settings.json`.
 - Open **AI & Models → Annolid Bot…** to launch a dedicated right-side WhatsApp-style multimodal chat dock (streaming chat, local `openai/whisper-tiny` speech-to-text for Talk/Record, voice talk/read controls, and one-click canvas/window sharing).
-- Open **Video Tools → Zones** to draw chamber layouts, generate a 3x3 preset, and save explicit zone shapes on the current frame.
+- Draw shapes on a seed frame (commonly frame `0`) and mark them as zones directly in the label popup by enabling **Zone type** (or by using zone keywords in labels). Use **Video Tools → Zones** when you want bulk zone management, presets, or zone JSON save/load.
+- Use **View → Show Zones On All Frames** to control whether saved zone overlays are displayed across the full timeline.
 - Open **Video Tools → Zone Analysis** to export legacy place-preference CSVs, generic zone metrics, or a profile-aware assay summary for Phase 1 / Phase 2 workflows. See [Zone Analysis](docs/zone_analysis.md) and [Zone Analysis Workflow](docs/tutorials/zone_analysis_workflow.md).
 - For behavior scoring with shared behavior names across Flags, Timeline, and Annolid Bot (including timeline needle dragging and 1s segment labeling prompts), see [Behavior labeling with Timeline, Flags, and Annolid Bot](docs/tutorials/behavior_timeline_flags_bot.md).
 - The behavior tutorial includes a prompt cookbook for structured context fields (`video description`, `instances`, `experiment context`, `behavior definitions`, `focus points`) and free-form aggression-bout examples.

@@ -104,7 +104,8 @@ You can still:
 ## GUI Entry Points
 
 - **Video Tools → Zones**
-  - open the zone dock and draw/edit zones on the current frame
+  - optionally open the zone dock to manage/edit zones on the current frame
+  - zone shapes can also be created directly on canvas and marked in the label popup via **Zone type**
   - use the **Define Zones** tab to review frame context and the current zone inventory
   - use the **Zone Details** tab to edit the selected zone label, kind, phase, access state, and barrier-adjacent behavior
   - use the **Metrics** tab to preview zone area plus the occupancy, dwell, entry, transition, and barrier metrics that the selected zone will influence

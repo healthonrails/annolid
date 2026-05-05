@@ -250,6 +250,9 @@ Notes:
 
 - Frames with no masks are still materialized as valid JSON with an empty `shapes` list.
 - CSV files contain object rows. A frame with zero detections will not necessarily have a row in `*_tracked.csv`.
+- If zone shapes are defined and saved from manual LabelMe JSON (including any valid `png+json` seed pair in the video folder), `*_tracked.csv` includes one additional column per zone label:
+  - `1` when an instance center is inside that zone on that row.
+  - `0` when an instance center is outside that zone on that row.
 
 ## Runtime knobs
 
