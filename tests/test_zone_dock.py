@@ -286,6 +286,7 @@ def test_zone_panel_applies_selected_zone_metadata() -> None:
     panel.phase_combo.setCurrentText("phase_2")
     panel.occupant_combo.setCurrentText("stim")
     panel.access_combo.setCurrentText("blocked")
+    panel.zone_group_edit.setText("chamber")
     panel.tags_edit.setText("social, mesh")
     panel.barrier_adjacent_checkbox.setChecked(True)
     panel._apply_selected_zone_details()
@@ -296,6 +297,7 @@ def test_zone_panel_applies_selected_zone_metadata() -> None:
     assert zone.flags["phase"] == "phase_2"
     assert zone.flags["occupant_role"] == "stim"
     assert zone.flags["access_state"] == "blocked"
+    assert zone.flags["zone_group"] == "chamber"
     assert zone.flags["barrier_adjacent"] is True
     assert zone.flags["tags"] == ["social", "mesh"]
     assert panel.selected_zone_value.text() == "social_left"
@@ -327,10 +329,12 @@ def test_zone_panel_updates_area_and_default_preview() -> None:
     panel.default_phase_combo.setCurrentText("phase_2")
     panel.default_occupant_combo.setCurrentText("stim")
     panel.default_access_combo.setCurrentText("tethered")
+    panel.default_zone_group_edit.setText("tether")
     panel._publish_zone_defaults()
 
     assert "kind 'doorway'" in panel.selected_metric_summary.text()
     assert window._zone_authoring_defaults["flags"]["zone_kind"] == "doorway"
+    assert window._zone_authoring_defaults["flags"]["zone_group"] == "tether"
 
 
 def test_zone_panel_uses_scroll_areas_for_compact_layout() -> None:
@@ -453,3 +457,67 @@ def test_zone_panel_toggle_show_zones_all_frames_updates_owner_state() -> None:
     assert window._display_zones_on_all_frames is False
     assert window._set_frame_number_calls == [0]
     assert "only when present on the current frame" in panel.status_label.text()
+
+
+def test_zone_panel_saves_zone_policy_json(tmp_path) -> None:
+    _ensure_qapp()
+    window = _DummyWindow()
+    left = _build_zone_shape("chamber_D")
+    left.flags["zone_group"] = "chamber"
+    south = _build_zone_shape("chamber_south")
+    south.flags["zone_group"] = "chamber"
+    window.canvas.shapes = [left, south]
+
+    panel = _build_test_panel(window)
+    panel.refresh_from_current_canvas()
+    panel._zone_policy_file_path = tmp_path / "session_zones_policy.json"
+    panel.policy_instance_edit.setText("stim_D")
+    panel.policy_rule_name_edit.setText("stim_D_legal_chamber")
+    panel._set_combo_text(panel.policy_group_combo, "chamber")
+    panel.policy_mode_combo.setCurrentText("force_one")
+    panel.policy_zones_edit.setText("chamber_D")
+
+    panel.add_zone_policy_rule()
+    assert panel.save_zone_policy_file() is True
+
+    payload = panel._zone_policy_file_path.read_text(encoding="utf-8")
+    assert '"instance_name": "stim_D"' in payload
+    assert '"zone_group": "chamber"' in payload
+    assert '"zone":' not in payload
+    assert '"zones": [' in payload
+
+
+def test_zone_panel_loads_zone_policy_json(tmp_path) -> None:
+    _ensure_qapp()
+    window = _DummyWindow()
+    panel = _build_test_panel(window)
+    policy_path = tmp_path / "policy.json"
+    policy_path.write_text(
+        """
+        {
+          "instance_policies": [
+            {
+              "instance_name": "stim_D",
+              "rules": [
+                {
+                  "name": "stim_D_legal_chamber",
+                  "zone_group": "chamber",
+                  "mode": "force_one",
+                  "zone": "chamber_D"
+                }
+              ]
+            }
+          ]
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    panel.load_zone_policy_file(str(policy_path))
+
+    assert panel.policy_rule_table.rowCount() == 1
+    rule = panel.policy_rule_table.item(0, 0).data(QtCore.Qt.UserRole)
+    assert rule["instance_name"] == "stim_D"
+    assert rule["zone_group"] == "chamber"
+    assert rule["mode"] == "force_one"
+    assert rule["zones"] == ["chamber_D"]

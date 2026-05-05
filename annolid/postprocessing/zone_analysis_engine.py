@@ -283,6 +283,27 @@ class GenericZoneEngine:
         _, _, spec = min(matches, key=lambda item: (item[0], item[1]))
         return spec.display_label
 
+    def _zone_columns_for_dataframe(self, dataframe: pd.DataFrame) -> dict[str, str]:
+        columns = {str(column) for column in dataframe.columns}
+        mapping: dict[str, str] = {}
+        seen: dict[str, int] = {}
+        for spec in self.zone_specs:
+            base = str(spec.display_label or spec.label or "zone").strip() or "zone"
+            count = seen.get(base, 0) + 1
+            seen[base] = count
+            candidate = base if count == 1 else f"{base}_{count}"
+            if candidate in columns:
+                mapping[spec.display_label] = candidate
+        return mapping
+
+    def _primary_zone_label(self, zone_labels: set[str]) -> str | None:
+        if not zone_labels:
+            return None
+        for _, spec in self._ordered_zone_specs:
+            if spec.display_label in zone_labels:
+                return spec.display_label
+        return sorted(zone_labels)[0]
+
     def _prepare_instance_dataframe(
         self, dataframe: pd.DataFrame, instance_label: str
     ) -> pd.DataFrame:
@@ -302,22 +323,35 @@ class GenericZoneEngine:
 
     def _iter_observations(
         self, dataframe: pd.DataFrame, instance_label: str
-    ) -> Iterable[tuple[int, str | None]]:
+    ) -> Iterable[tuple[int, set[str]]]:
         instance_df = self._prepare_instance_dataframe(dataframe, instance_label)
         if instance_df.empty:
             return []
         frame_col = _frame_column(instance_df)
-        if self.point_columns is not None:
-            x_col, y_col = self.point_columns
-            if x_col not in instance_df.columns or y_col not in instance_df.columns:
+        zone_columns = self._zone_columns_for_dataframe(instance_df)
+        use_zone_columns = bool(zone_columns)
+        if not use_zone_columns:
+            if self.point_columns is not None:
+                x_col, y_col = self.point_columns
+                if x_col not in instance_df.columns or y_col not in instance_df.columns:
+                    x_col, y_col = _shape_point_columns(instance_df)
+            else:
                 x_col, y_col = _shape_point_columns(instance_df)
         else:
-            x_col, y_col = _shape_point_columns(instance_df)
-        observations: list[tuple[int, str | None]] = []
+            x_col = y_col = ""
+        observations: list[tuple[int, set[str]]] = []
         for index, row in instance_df.iterrows():
             frame = _safe_int(row[frame_col]) if frame_col else _safe_int(index)
-            zone_label = self._resolve_zone_label(row[x_col], row[y_col])
-            observations.append((frame, zone_label))
+            if use_zone_columns:
+                zone_labels = {
+                    label
+                    for label, column in zone_columns.items()
+                    if column in row.index and _is_truthy(row[column])
+                }
+            else:
+                zone_label = self._resolve_zone_label(row[x_col], row[y_col])
+                zone_labels = {zone_label} if zone_label is not None else set()
+            observations.append((frame, zone_labels))
         return observations
 
     def analyze_instance(
@@ -335,89 +369,75 @@ class GenericZoneEngine:
         aggregate_occupancy_frames: Counter[str] = Counter()
         aggregate_entry_counts: Counter[str] = Counter()
 
+        active_zone_segments: dict[str, tuple[int, int, int]] = {}
         current_zone: str | None = None
-        current_start_frame: int | None = None
-        current_end_frame: int | None = None
-        current_frame_count = 0
         prev_frame: int | None = None
 
-        def finalize_current_segment() -> None:
-            nonlocal \
-                current_zone, \
-                current_start_frame, \
-                current_end_frame, \
-                current_frame_count
-            if (
-                current_zone is None
-                or current_start_frame is None
-                or current_end_frame is None
-            ):
+        def finalize_zone_segment(zone_label: str) -> None:
+            segment = active_zone_segments.pop(zone_label, None)
+            if segment is None:
                 return
+            start_frame, end_frame, frame_count = segment
             segments.append(
                 ZoneVisit(
-                    zone_label=current_zone,
-                    start_frame=current_start_frame,
-                    end_frame=current_end_frame,
-                    frame_count=current_frame_count,
+                    zone_label=zone_label,
+                    start_frame=start_frame,
+                    end_frame=end_frame,
+                    frame_count=frame_count,
                 )
             )
-            dwell_frames[current_zone] += current_frame_count
-            current_zone = None
-            current_start_frame = None
-            current_end_frame = None
-            current_frame_count = 0
+            dwell_frames[zone_label] += frame_count
 
-        for frame, zone_label in observations:
-            if zone_label is None:
+        def finalize_all_segments() -> None:
+            for zone_label in list(active_zone_segments.keys()):
+                finalize_zone_segment(zone_label)
+
+        for frame, zone_labels in observations:
+            if not zone_labels:
                 outside_frames += 1
             else:
-                occupancy_frames[zone_label] += 1
-                if zone_label in self._barrier_zone_labels:
-                    barrier_adjacent_frames += 1
-                for key, labels in self._aggregate_zone_groups.items():
-                    if zone_label in labels:
-                        aggregate_occupancy_frames[key] += 1
+                for zone_label in sorted(zone_labels):
+                    occupancy_frames[zone_label] += 1
+                    if zone_label in self._barrier_zone_labels:
+                        barrier_adjacent_frames += 1
+                    for key, labels in self._aggregate_zone_groups.items():
+                        if zone_label in labels:
+                            aggregate_occupancy_frames[key] += 1
 
             gap_break = prev_frame is not None and frame - prev_frame > 1
+            if gap_break:
+                finalize_all_segments()
 
-            if current_zone is None:
-                if zone_label is not None:
-                    current_zone = zone_label
-                    current_start_frame = frame
-                    current_end_frame = frame
-                    current_frame_count = 1
+            for zone_label in list(active_zone_segments.keys()):
+                if zone_label not in zone_labels:
+                    finalize_zone_segment(zone_label)
+
+            for zone_label in sorted(zone_labels):
+                if zone_label not in active_zone_segments:
+                    active_zone_segments[zone_label] = (frame, frame, 1)
                     entry_counts[zone_label] += 1
                     for key, labels in self._aggregate_zone_groups.items():
                         if zone_label in labels:
                             aggregate_entry_counts[key] += 1
                     if zone_label not in first_entry_frames:
                         first_entry_frames[zone_label] = frame
-                prev_frame = frame
-                continue
+                else:
+                    start_frame, _, frame_count = active_zone_segments[zone_label]
+                    active_zone_segments[zone_label] = (
+                        start_frame,
+                        frame,
+                        frame_count + 1,
+                    )
 
-            if gap_break or zone_label != current_zone:
-                previous_zone = current_zone
-                finalize_current_segment()
-                if zone_label is not None:
-                    if not gap_break and previous_zone != zone_label:
-                        transition_counts[previous_zone][zone_label] += 1
-                    current_zone = zone_label
-                    current_start_frame = frame
-                    current_end_frame = frame
-                    current_frame_count = 1
-                    entry_counts[zone_label] += 1
-                    for key, labels in self._aggregate_zone_groups.items():
-                        if zone_label in labels:
-                            aggregate_entry_counts[key] += 1
-                    if zone_label not in first_entry_frames:
-                        first_entry_frames[zone_label] = frame
-            else:
-                current_end_frame = frame
-                current_frame_count += 1
+            primary_zone = self._primary_zone_label(zone_labels)
+            if current_zone is not None and primary_zone != current_zone:
+                if primary_zone is not None and not gap_break:
+                    transition_counts[current_zone][primary_zone] += 1
+            current_zone = primary_zone
 
             prev_frame = frame
 
-        finalize_current_segment()
+        finalize_all_segments()
 
         return ZoneAnalysisResult(
             instance_name=instance_label,

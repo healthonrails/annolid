@@ -23,6 +23,9 @@ from annolid.postprocessing.zone_schema import (
     zone_shape_bounds,
     zone_shape_distance_to_point,
 )
+from annolid.postprocessing.zone_occupancy_policy import (
+    apply_zone_occupancy_policy_file,
+)
 
 
 class TrackingResultsAnalyzer:
@@ -42,7 +45,14 @@ class TrackingResultsAnalyzer:
         zone_data (dict): Dictionary containing zone information loaded from the zone JSON file.
     """
 
-    def __init__(self, video_path, zone_file=None, fps=None, assay_profile=None):
+    def __init__(
+        self,
+        video_path,
+        zone_file=None,
+        fps=None,
+        assay_profile=None,
+        zone_policy_file=None,
+    ):
         """
         Initialize the TrackingResultsAnalyzer.
 
@@ -58,6 +68,7 @@ class TrackingResultsAnalyzer:
             self.video_path.parent / f"{self.video_path.stem}_tracked.csv"
         )
         self.zone_file = Path(zone_file) if zone_file else None
+        self.zone_policy_file = Path(zone_policy_file) if zone_policy_file else None
         self.fps = fps
         self.assay_profile: ZoneAssayProfile = resolve_assay_profile(assay_profile)
         if fps is None:
@@ -72,6 +83,22 @@ class TrackingResultsAnalyzer:
         """Read tracking and tracked CSV files into DataFrames."""
         self.tracking_df = pd.read_csv(self.tracking_csv)
         self.tracked_df = pd.read_csv(self.tracked_csv)
+        self._apply_zone_policy_to_tracked_dataframe()
+
+    def _apply_zone_policy_to_tracked_dataframe(self) -> None:
+        if self.zone_policy_file is None:
+            self.zone_policy_audit_df = pd.DataFrame()
+            return
+        if not hasattr(self, "tracked_df") or self.tracked_df is None:
+            self.zone_policy_audit_df = pd.DataFrame()
+            return
+        result = apply_zone_occupancy_policy_file(
+            self.tracked_df,
+            self.zone_specs,
+            self.zone_policy_file,
+        )
+        self.tracked_df = result.dataframe
+        self.zone_policy_audit_df = result.audit
 
     def merge_and_calculate_distance(self):
         """Merge tracking and tracked dataframes based on
@@ -898,6 +925,35 @@ class TrackingResultsAnalyzer:
             "Saving zone metrics data to %s using profile %s",
             output_path,
             profile.name,
+        )
+        return str(output_path)
+
+    def save_zone_corrected_tracked_csv(
+        self,
+        output_csv=None,
+        audit_csv=None,
+    ) -> str:
+        if output_csv is None:
+            output_csv = self.video_path.parent / (
+                f"{self.video_path.stem}_tracked_zone_corrected.csv"
+            )
+        output_path = Path(output_csv)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        self.read_csv_files()
+        self.tracked_df.to_csv(output_path, index=False)
+
+        audit_df = getattr(self, "zone_policy_audit_df", pd.DataFrame())
+        if audit_csv is None:
+            audit_csv = output_path.with_name(
+                f"{output_path.stem}_audit{output_path.suffix}"
+            )
+        audit_path = Path(audit_csv)
+        audit_path.parent.mkdir(parents=True, exist_ok=True)
+        audit_df.to_csv(audit_path, index=False)
+        logger.info(
+            "Saving zone-corrected tracked CSV to %s and audit to %s",
+            output_path,
+            audit_path,
         )
         return str(output_path)
 

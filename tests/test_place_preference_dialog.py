@@ -23,7 +23,7 @@ def test_latency_reference_parser_rejects_float_strings() -> None:
 
 def test_mode_specs_cover_all_exports() -> None:
     specs = TrackingAnalyzerDialog._build_mode_specs()
-    assert len(specs) == 4
+    assert len(specs) == 5
 
     by_key = {str(spec["key"]): spec for spec in specs}
     assert set(by_key.keys()) == {
@@ -31,12 +31,17 @@ def test_mode_specs_cover_all_exports() -> None:
         "zone_metrics",
         "assay_summary",
         "social_summary",
+        "zone_corrected_tracked_csv",
     }
     assert by_key["legacy_csv"]["method"] == "save_all_instances_zone_time_to_csv"
     assert by_key["legacy_csv"]["assay_profile"] == "generic"
     assert by_key["zone_metrics"]["method"] == "save_zone_metrics_to_csv"
     assert by_key["assay_summary"]["method"] == "save_assay_summary_report"
     assert by_key["social_summary"]["method"] == "save_social_summary_report"
+    assert (
+        by_key["zone_corrected_tracked_csv"]["method"]
+        == "save_zone_corrected_tracked_csv"
+    )
     assert by_key["social_summary"]["requires_latency"] is True
 
 
@@ -55,10 +60,12 @@ def test_dialog_prefills_from_context_and_enables_run() -> None:
     dialog = TrackingAnalyzerDialog(
         video_path="/tmp/session.mp4",
         zone_path="/tmp/session_zones.json",
+        zone_policy_path="/tmp/session_zones_policy.json",
         fps=29.97,
     )
     assert dialog.video_path_edit.text() == "/tmp/session.mp4"
     assert dialog.zone_path_edit.text() == "/tmp/session_zones.json"
+    assert dialog.zone_policy_path_edit.text() == "/tmp/session_zones_policy.json"
     assert dialog.fps_edit.text() == "29.97"
     assert dialog.run_export_button.isEnabled() is True
 

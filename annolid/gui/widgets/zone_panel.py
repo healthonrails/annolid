@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -43,7 +44,9 @@ class ZonePanelWidget(QtWidgets.QWidget):
             if zone_path
             else zone_file_for_source(self._current_source())
         )
+        self._zone_policy_file_path = self._default_policy_path()
         self._dirty = False
+        self._policy_dirty = False
         self._syncing_selection = False
         self._selected_shape = None
         self._preset_available = False
@@ -244,6 +247,7 @@ class ZonePanelWidget(QtWidgets.QWidget):
         self.tabs = QtWidgets.QTabWidget(container)
         self.tabs.addTab(self._build_define_tab(), "Define Zones")
         self.tabs.addTab(self._build_details_tab(), "Zone Details")
+        self.tabs.addTab(self._build_policy_tab(), "Zone Policies")
         self.tabs.addTab(self._build_metrics_tab(), "Metrics")
         root.addWidget(self.tabs, 1)
 
@@ -269,6 +273,9 @@ class ZonePanelWidget(QtWidgets.QWidget):
             lambda *_: self._publish_zone_defaults()
         )
         self.default_tags_edit.editingFinished.connect(self._publish_zone_defaults)
+        self.default_zone_group_edit.editingFinished.connect(
+            self._publish_zone_defaults
+        )
         self.default_barrier_checkbox.toggled.connect(
             lambda *_: self._publish_zone_defaults()
         )
@@ -382,6 +389,8 @@ class ZonePanelWidget(QtWidgets.QWidget):
         )
         self.tags_edit = QtWidgets.QLineEdit()
         self.tags_edit.setPlaceholderText("comma,separated,tags")
+        self.zone_group_edit = QtWidgets.QLineEdit()
+        self.zone_group_edit.setPlaceholderText("occupancy group, e.g. chamber")
         self.barrier_adjacent_checkbox = QtWidgets.QCheckBox(
             "Force barrier-adjacent metric for this zone"
         )
@@ -392,6 +401,7 @@ class ZonePanelWidget(QtWidgets.QWidget):
         selected_layout.addRow("Phase", self.phase_combo)
         selected_layout.addRow("Occupant role", self.occupant_combo)
         selected_layout.addRow("Access state", self.access_combo)
+        selected_layout.addRow("Zone group", self.zone_group_edit)
         selected_layout.addRow("Tags", self.tags_edit)
         selected_layout.addRow("", self.barrier_adjacent_checkbox)
 
@@ -440,6 +450,10 @@ class ZonePanelWidget(QtWidgets.QWidget):
         )
         self.default_tags_edit = QtWidgets.QLineEdit()
         self.default_tags_edit.setPlaceholderText("comma,separated,tags")
+        self.default_zone_group_edit = QtWidgets.QLineEdit()
+        self.default_zone_group_edit.setPlaceholderText(
+            "default group for mutually exclusive zones"
+        )
         self.default_barrier_checkbox = QtWidgets.QCheckBox(
             "Mark new zones as barrier-adjacent"
         )
@@ -447,9 +461,118 @@ class ZonePanelWidget(QtWidgets.QWidget):
         defaults_layout.addRow("Phase", self.default_phase_combo)
         defaults_layout.addRow("Occupant role", self.default_occupant_combo)
         defaults_layout.addRow("Access state", self.default_access_combo)
+        defaults_layout.addRow("Zone group", self.default_zone_group_edit)
         defaults_layout.addRow("Tags", self.default_tags_edit)
         defaults_layout.addRow("", self.default_barrier_checkbox)
         layout.addWidget(defaults_box)
+
+        scroll.setWidget(page)
+        return scroll
+
+    def _build_policy_tab(self) -> QtWidgets.QWidget:
+        scroll = QtWidgets.QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        page = QtWidgets.QWidget(scroll)
+        layout = QtWidgets.QVBoxLayout(page)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(8)
+
+        file_box = QtWidgets.QGroupBox("Policy File", page)
+        file_layout = QtWidgets.QFormLayout(file_box)
+        self.policy_path_label = QtWidgets.QLabel("")
+        self.policy_path_label.setWordWrap(True)
+        self.policy_status_label = QtWidgets.QLabel(
+            "Policies change zone membership columns for exports without moving centroids or rewriting JSON annotations."
+        )
+        self.policy_status_label.setWordWrap(True)
+        self.policy_status_label.setProperty("zoneHint", True)
+        policy_file_row = QtWidgets.QHBoxLayout()
+        self.load_policy_button = QtWidgets.QPushButton("Load Policy JSON")
+        self.load_policy_button.clicked.connect(self.open_zone_policy_file)
+        self.save_policy_button = QtWidgets.QPushButton("Save Policy JSON")
+        self.save_policy_button.clicked.connect(self.save_zone_policy_file_as)
+        policy_file_row.addWidget(self.load_policy_button)
+        policy_file_row.addWidget(self.save_policy_button)
+        file_layout.addRow("Target", self.policy_path_label)
+        file_layout.addRow("Behavior", self.policy_status_label)
+        file_layout.addRow("Actions", policy_file_row)
+        layout.addWidget(file_box)
+
+        rule_box = QtWidgets.QGroupBox("Rule Builder", page)
+        rule_layout = QtWidgets.QFormLayout(rule_box)
+        self.policy_instance_edit = QtWidgets.QLineEdit()
+        self.policy_instance_edit.setPlaceholderText("tracked instance, e.g. stim_D")
+        self.policy_rule_name_edit = QtWidgets.QLineEdit()
+        self.policy_rule_name_edit.setPlaceholderText("optional rule name")
+        self.policy_group_combo = QtWidgets.QComboBox()
+        self.policy_group_combo.setEditable(True)
+        self.policy_mode_combo = QtWidgets.QComboBox()
+        self.policy_mode_combo.addItems(
+            [
+                "force_one",
+                "preserve_if_inside",
+                "allow_only",
+                "prefer",
+                "force_all",
+                "deny",
+            ]
+        )
+        self.policy_zones_edit = QtWidgets.QLineEdit()
+        self.policy_zones_edit.setPlaceholderText("zone labels, comma separated")
+        self.policy_start_frame_spin = QtWidgets.QSpinBox()
+        self.policy_start_frame_spin.setRange(-1, 2147483647)
+        self.policy_start_frame_spin.setSpecialValueText("Any")
+        self.policy_start_frame_spin.setValue(-1)
+        self.policy_end_frame_spin = QtWidgets.QSpinBox()
+        self.policy_end_frame_spin.setRange(-1, 2147483647)
+        self.policy_end_frame_spin.setSpecialValueText("Any")
+        self.policy_end_frame_spin.setValue(-1)
+        frame_row = QtWidgets.QHBoxLayout()
+        frame_row.addWidget(QtWidgets.QLabel("Start"))
+        frame_row.addWidget(self.policy_start_frame_spin)
+        frame_row.addWidget(QtWidgets.QLabel("End"))
+        frame_row.addWidget(self.policy_end_frame_spin)
+        self.add_policy_rule_button = QtWidgets.QPushButton("Add Rule")
+        self.add_policy_rule_button.clicked.connect(self.add_zone_policy_rule)
+        self.remove_policy_rule_button = QtWidgets.QPushButton("Remove Selected Rule")
+        self.remove_policy_rule_button.clicked.connect(
+            self.remove_selected_zone_policy_rule
+        )
+        rule_actions = QtWidgets.QHBoxLayout()
+        rule_actions.addWidget(self.add_policy_rule_button)
+        rule_actions.addWidget(self.remove_policy_rule_button)
+        rule_layout.addRow("Instance", self.policy_instance_edit)
+        rule_layout.addRow("Rule name", self.policy_rule_name_edit)
+        rule_layout.addRow("Zone group", self.policy_group_combo)
+        rule_layout.addRow("Mode", self.policy_mode_combo)
+        rule_layout.addRow("Zones", self.policy_zones_edit)
+        rule_layout.addRow("Frames", frame_row)
+        rule_layout.addRow("Actions", rule_actions)
+        layout.addWidget(rule_box)
+
+        self.policy_rule_table = QtWidgets.QTableWidget(0, 6, page)
+        self.policy_rule_table.setHorizontalHeaderLabels(
+            ["Instance", "Rule", "Group", "Mode", "Zones", "Frames"]
+        )
+        self.policy_rule_table.horizontalHeader().setStretchLastSection(True)
+        self.policy_rule_table.horizontalHeader().setSectionResizeMode(
+            QtWidgets.QHeaderView.ResizeToContents
+        )
+        self.policy_rule_table.horizontalHeader().setSectionResizeMode(
+            4, QtWidgets.QHeaderView.Stretch
+        )
+        self.policy_rule_table.verticalHeader().setVisible(False)
+        self.policy_rule_table.setSelectionBehavior(
+            QtWidgets.QAbstractItemView.SelectRows
+        )
+        self.policy_rule_table.setSelectionMode(
+            QtWidgets.QAbstractItemView.SingleSelection
+        )
+        self.policy_rule_table.setEditTriggers(
+            QtWidgets.QAbstractItemView.NoEditTriggers
+        )
+        layout.addWidget(self.policy_rule_table, 1)
 
         scroll.setWidget(page)
         return scroll
@@ -559,6 +682,14 @@ class ZonePanelWidget(QtWidgets.QWidget):
     def _update_save_target_label(self) -> None:
         target = str(self._zone_file_path) if self._zone_file_path else "(not set)"
         self.save_target_label.setText(target)
+        policy_target = (
+            str(self._zone_policy_file_path)
+            if self._zone_policy_file_path
+            else "(not set)"
+        )
+        policy_label = getattr(self, "policy_path_label", None)
+        if policy_label is not None:
+            policy_label.setText(policy_target)
 
     def _current_source(self) -> str:
         parent = getattr(self, "_owner_window", None) or self.parent()
@@ -644,6 +775,9 @@ class ZonePanelWidget(QtWidgets.QWidget):
         )
         if extra_flags:
             defaults["flags"].update(extra_flags)
+        zone_group = self.default_zone_group_edit.text().strip()
+        if zone_group:
+            defaults["flags"]["zone_group"] = zone_group
         setattr(parent, "_zone_authoring_defaults", defaults)
         self._update_metrics_preview()
 
@@ -753,10 +887,13 @@ class ZonePanelWidget(QtWidgets.QWidget):
             return
         if self._zone_file_path is None:
             self._zone_file_path = zone_file_for_source(self._current_source())
+        if self._zone_policy_file_path is None:
+            self._zone_policy_file_path = self._default_policy_path()
         self._update_source_label()
         self._update_save_target_label()
         self.canvas.setEditing(True)
         self._refresh_shape_list()
+        self._refresh_policy_zone_choices()
         self._set_status("Canvas ready for zone editing.")
         self._publish_zone_defaults()
         self._update_stats()
@@ -808,7 +945,290 @@ class ZonePanelWidget(QtWidgets.QWidget):
         self._set_status(f"Loaded {len(shapes)} zone(s) from {filename}.")
         self._dirty = False
         self._zone_file_path = Path(filename)
+        parent = getattr(self, "_owner_window", None) or self.parent()
+        if parent is not None:
+            setattr(parent, "zone_path", str(self._zone_file_path))
+        if self._zone_policy_file_path is None:
+            self._zone_policy_file_path = self._default_policy_path()
         self._update_save_target_label()
+        self._refresh_policy_zone_choices()
+
+    # ------------------------------------------------------------------ #
+    # Zone occupancy policy authoring
+    # ------------------------------------------------------------------ #
+    def _default_policy_path(self) -> Path | None:
+        source = self._current_source() or self._current_canvas_image_path()
+        zone_path = zone_file_for_source(source)
+        if zone_path is None:
+            return None
+        return zone_path.with_name(f"{zone_path.stem}_policy.json")
+
+    def _zone_policy_rows(self) -> list[dict]:
+        rules: list[dict] = []
+        table = getattr(self, "policy_rule_table", None)
+        if table is None:
+            return rules
+        for row in range(table.rowCount()):
+            item = table.item(row, 0)
+            if item is None:
+                continue
+            rule = item.data(QtCore.Qt.UserRole)
+            if isinstance(rule, dict):
+                rules.append(dict(rule))
+        return rules
+
+    def _zone_policy_payload(self) -> dict:
+        grouped: dict[str, list[dict]] = {}
+        for rule in self._zone_policy_rows():
+            instance_name = str(rule.pop("instance_name", "") or "").strip()
+            if not instance_name:
+                continue
+            grouped.setdefault(instance_name, []).append(rule)
+        return {
+            "version": 1,
+            "instance_policies": [
+                {"instance_name": instance_name, "rules": rules}
+                for instance_name, rules in grouped.items()
+            ],
+        }
+
+    def _flatten_policy_payload(self, payload: dict) -> list[dict]:
+        rows: list[dict] = []
+        blocks = payload.get("instance_policies", payload.get("rules", []))
+        if isinstance(blocks, dict):
+            blocks = [blocks]
+        for block in list(blocks or []):
+            if not isinstance(block, dict):
+                continue
+            nested = block.get("rules")
+            rules = list(nested or [block])
+            for rule in rules:
+                if not isinstance(rule, dict):
+                    continue
+                merged = dict(block)
+                merged.update(rule)
+                instance_name = str(
+                    merged.get("instance_name") or merged.get("instance") or ""
+                ).strip()
+                if not instance_name:
+                    continue
+                zones = merged.get("zones", merged.get("allowed_zones", None))
+                if zones is None and merged.get("zone") is not None:
+                    zones = [merged.get("zone")]
+                if isinstance(zones, str):
+                    zones = [zones]
+                cleaned = {
+                    "instance_name": instance_name,
+                    "name": str(merged.get("name") or "").strip(),
+                    "zone_group": str(
+                        merged.get("zone_group") or merged.get("group") or ""
+                    ).strip(),
+                    "mode": str(merged.get("mode") or "").strip(),
+                    "zones": [str(zone) for zone in list(zones or []) if str(zone)],
+                }
+                for key in ("start_frame", "end_frame"):
+                    if merged.get(key, None) is not None:
+                        cleaned[key] = int(merged[key])
+                rows.append(cleaned)
+        return rows
+
+    def _add_zone_policy_table_row(self, rule: dict) -> None:
+        table = self.policy_rule_table
+        row = table.rowCount()
+        table.insertRow(row)
+        frames = []
+        if "start_frame" in rule:
+            frames.append(f"start={rule['start_frame']}")
+        if "end_frame" in rule:
+            frames.append(f"end={rule['end_frame']}")
+        values = [
+            str(rule.get("instance_name") or ""),
+            str(rule.get("name") or ""),
+            str(rule.get("zone_group") or ""),
+            str(rule.get("mode") or ""),
+            ", ".join(str(zone) for zone in rule.get("zones") or []),
+            ", ".join(frames) if frames else "Any",
+        ]
+        for column, value in enumerate(values):
+            item = QtWidgets.QTableWidgetItem(value)
+            item.setFlags(item.flags() & ~QtCore.Qt.ItemIsEditable)
+            if column == 0:
+                item.setData(QtCore.Qt.UserRole, dict(rule))
+            table.setItem(row, column, item)
+
+    def _refresh_policy_zone_choices(self) -> None:
+        group_combo = getattr(self, "policy_group_combo", None)
+        if group_combo is None:
+            return
+        current_group = group_combo.currentText().strip()
+        groups: list[str] = []
+        labels: list[str] = []
+        for shape in self.canvas.shapes or []:
+            if not is_zone_shape(shape):
+                continue
+            flags = dict(getattr(shape, "flags", {}) or {})
+            label = str(getattr(shape, "label", "") or "").strip()
+            group = str(flags.get("zone_group") or flags.get("zone_kind") or "").strip()
+            if label and label not in labels:
+                labels.append(label)
+            if group and group not in groups:
+                groups.append(group)
+        group_combo.blockSignals(True)
+        try:
+            group_combo.clear()
+            group_combo.addItems(groups or ["chamber", "tether", "interaction"])
+            if current_group:
+                self._set_combo_text(group_combo, current_group)
+        finally:
+            group_combo.blockSignals(False)
+        zones_edit = getattr(self, "policy_zones_edit", None)
+        if zones_edit is not None:
+            zones_edit.setPlaceholderText(
+                "zone labels, comma separated"
+                if not labels
+                else f"zone labels, e.g. {', '.join(labels[:3])}"
+            )
+
+    def add_zone_policy_rule(self) -> None:
+        instance_name = self.policy_instance_edit.text().strip()
+        mode = self.policy_mode_combo.currentText().strip()
+        zone_group = self.policy_group_combo.currentText().strip()
+        zones = [
+            part.strip()
+            for part in self.policy_zones_edit.text().split(",")
+            if part.strip()
+        ]
+        if not instance_name:
+            QtWidgets.QMessageBox.warning(
+                self, "Missing instance", "Enter the tracked instance name."
+            )
+            return
+        if not mode:
+            QtWidgets.QMessageBox.warning(self, "Missing mode", "Choose a rule mode.")
+            return
+        modes_requiring_zones = {
+            "force_one",
+            "force_all",
+            "deny",
+            "allow_only",
+            "preserve_if_inside",
+            "prefer",
+        }
+        if mode in modes_requiring_zones and not zones:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Missing zone",
+                "Enter at least one zone label for this rule mode.",
+            )
+            return
+        rule = {
+            "instance_name": instance_name,
+            "name": self.policy_rule_name_edit.text().strip()
+            or f"{instance_name}_{mode}",
+            "zone_group": zone_group,
+            "mode": mode,
+            "zones": zones,
+        }
+        if self.policy_start_frame_spin.value() >= 0:
+            rule["start_frame"] = int(self.policy_start_frame_spin.value())
+        if self.policy_end_frame_spin.value() >= 0:
+            rule["end_frame"] = int(self.policy_end_frame_spin.value())
+        self._add_zone_policy_table_row(rule)
+        self._policy_dirty = True
+        self._set_status(f"Added zone policy rule '{rule['name']}'.")
+
+    def remove_selected_zone_policy_rule(self) -> None:
+        table = self.policy_rule_table
+        rows = sorted({index.row() for index in table.selectedIndexes()}, reverse=True)
+        for row in rows:
+            table.removeRow(row)
+        if rows:
+            self._policy_dirty = True
+            self._set_status("Removed selected zone policy rule.")
+
+    def open_zone_policy_file(self) -> None:
+        filename, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Open Zone Occupancy Policy JSON",
+            str(self._zone_policy_file_path or Path.home()),
+            "JSON Files (*.json)",
+        )
+        if filename:
+            self.load_zone_policy_file(filename)
+
+    def load_zone_policy_file(self, filename: str) -> None:
+        try:
+            with Path(filename).open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Load failed", str(exc))
+            return
+        if not isinstance(payload, dict):
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Load failed",
+                "Zone occupancy policy must be a JSON object.",
+            )
+            return
+        self.policy_rule_table.setRowCount(0)
+        for rule in self._flatten_policy_payload(payload):
+            self._add_zone_policy_table_row(rule)
+        self._zone_policy_file_path = Path(filename)
+        self._policy_dirty = False
+        parent = getattr(self, "_owner_window", None) or self.parent()
+        if parent is not None:
+            setattr(parent, "zone_policy_path", str(self._zone_policy_file_path))
+        self._update_save_target_label()
+        self._set_status(
+            f"Loaded {self.policy_rule_table.rowCount()} zone policy rule(s)."
+        )
+
+    def save_zone_policy_file_as(self) -> None:
+        filename, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Save Zone Occupancy Policy JSON",
+            str(
+                self._zone_policy_file_path
+                or self._default_policy_path()
+                or Path.home()
+            ),
+            "JSON Files (*.json)",
+        )
+        if not filename:
+            return
+        self._zone_policy_file_path = Path(filename)
+        self._update_save_target_label()
+        self.save_zone_policy_file()
+
+    def save_zone_policy_file(self) -> bool:
+        if self._zone_policy_file_path is None:
+            self._zone_policy_file_path = self._default_policy_path()
+        if self._zone_policy_file_path is None:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Missing path",
+                "Choose a file name for the zone occupancy policy JSON.",
+            )
+            return False
+        payload = self._zone_policy_payload()
+        self._zone_policy_file_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            self._zone_policy_file_path.write_text(
+                json.dumps(payload, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(self, "Save failed", str(exc))
+            return False
+        self._policy_dirty = False
+        self._update_save_target_label()
+        parent = getattr(self, "_owner_window", None) or self.parent()
+        if parent is not None:
+            setattr(parent, "zone_policy_path", str(self._zone_policy_file_path))
+        self._set_status(
+            f"Saved {len(self._zone_policy_rows())} zone policy rule(s) to {self._zone_policy_file_path}."
+        )
+        return True
 
     # ------------------------------------------------------------------ #
     # Shape lifecycle
@@ -834,6 +1254,7 @@ class ZonePanelWidget(QtWidgets.QWidget):
                 str(flags.get("phase") or ""),
                 str(flags.get("occupant_role") or ""),
                 str(flags.get("access_state") or ""),
+                str(flags.get("zone_group") or ""),
                 str(getattr(shape, "shape_type", "") or ""),
                 ", ".join(str(tag or "") for tag in (flags.get("tags") or [])),
             ]
@@ -1229,6 +1650,7 @@ class ZonePanelWidget(QtWidgets.QWidget):
             self.zone_label_edit,
             self.zone_description_edit,
             self.tags_edit,
+            self.zone_group_edit,
             self.zone_kind_combo,
             self.phase_combo,
             self.occupant_combo,
@@ -1242,6 +1664,7 @@ class ZonePanelWidget(QtWidgets.QWidget):
                 self.zone_label_edit.setText("")
                 self.zone_description_edit.setText("")
                 self.tags_edit.setText("")
+                self.zone_group_edit.setText("")
                 self._set_combo_text(self.zone_kind_combo, "custom")
                 self._set_combo_text(self.phase_combo, "custom")
                 self._set_combo_text(self.occupant_combo, "unknown")
@@ -1260,6 +1683,14 @@ class ZonePanelWidget(QtWidgets.QWidget):
                 if is_zone_shape(shape):
                     self.tags_edit.setText(
                         ", ".join(str(tag) for tag in flags.get("tags") or [])
+                    )
+                    self.zone_group_edit.setText(
+                        str(
+                            flags.get("zone_group")
+                            or flags.get("occupancy_group")
+                            or flags.get("zone_kind")
+                            or ""
+                        )
                     )
                     self._set_combo_text(
                         self.zone_kind_combo,
@@ -1299,6 +1730,9 @@ class ZonePanelWidget(QtWidgets.QWidget):
                     zone_state = self._shape_zone_state(shape)
                 else:
                     self.tags_edit.setText(self.default_tags_edit.text().strip())
+                    self.zone_group_edit.setText(
+                        self.default_zone_group_edit.text().strip()
+                    )
                     self._set_combo_text(
                         self.zone_kind_combo,
                         self.default_zone_kind_combo.currentText().strip() or "custom",
@@ -1321,7 +1755,9 @@ class ZonePanelWidget(QtWidgets.QWidget):
                     zone_state = "not_zone"
                 self.selected_summary_label.setText(
                     f"Editing '{shape.label or '(unnamed)'}' | {self._zone_area_text(shape)} | "
-                    f"state={zone_state} | kind={flags.get('zone_kind', 'custom')} | phase={flags.get('phase', 'custom')}"
+                    f"state={zone_state} | kind={flags.get('zone_kind', 'custom')} | "
+                    f"group={flags.get('zone_group', flags.get('zone_kind', 'custom'))} | "
+                    f"phase={flags.get('phase', 'custom')}"
                 )
         finally:
             for widget in widgets:
@@ -1348,6 +1784,11 @@ class ZonePanelWidget(QtWidgets.QWidget):
                 self.zone_kind_combo.currentText().strip(), self._existing_labels()
             )
         extra_flags = dict(getattr(shape, "flags", {}) or {})
+        zone_group = self.zone_group_edit.text().strip()
+        if zone_group:
+            extra_flags["zone_group"] = zone_group
+        else:
+            extra_flags.pop("zone_group", None)
         if self.barrier_adjacent_checkbox.isChecked():
             extra_flags["barrier_adjacent"] = True
         else:
@@ -1368,6 +1809,7 @@ class ZonePanelWidget(QtWidgets.QWidget):
         self.canvas.storeShapes()
         self.canvas.update()
         self._refresh_shape_list(select_shape=shape)
+        self._refresh_policy_zone_choices()
         self._mark_dirty()
         self._set_status(f"Updated zone '{shape.label}'.")
         self._sync_selected_fields()
@@ -1404,6 +1846,9 @@ class ZonePanelWidget(QtWidgets.QWidget):
         self.default_tags_edit.setText(
             ", ".join(str(tag) for tag in flags.get("tags") or [])
         )
+        self.default_zone_group_edit.setText(
+            str(flags.get("zone_group") or flags.get("zone_kind") or "")
+        )
         self.default_barrier_checkbox.setChecked(bool(flags.get("barrier_adjacent")))
         self._publish_zone_defaults()
         self._set_status(
@@ -1430,8 +1875,12 @@ class ZonePanelWidget(QtWidgets.QWidget):
             for shape in shapes:
                 flags = getattr(shape, "flags", {}) or {}
                 zone_state = self._shape_zone_state(shape)
+                group = str(flags.get("zone_group") or flags.get("zone_kind") or "-")
                 item = QtWidgets.QListWidgetItem(
-                    f"{shape.label or '(unnamed)'}  |  {zone_state}  |  {flags.get('zone_kind', '-') if is_zone_shape(shape) else '-'}  |  {self._zone_area_text(shape)}"
+                    f"{shape.label or '(unnamed)'}  |  {zone_state}  |  "
+                    f"{flags.get('zone_kind', '-') if is_zone_shape(shape) else '-'}  |  "
+                    f"group={group if is_zone_shape(shape) else '-'}  |  "
+                    f"{self._zone_area_text(shape)}"
                 )
                 item.setData(QtCore.Qt.UserRole, shape)
                 if (
@@ -1458,6 +1907,7 @@ class ZonePanelWidget(QtWidgets.QWidget):
             )
         self._sync_selected_fields()
         self._update_stats()
+        self._refresh_policy_zone_choices()
 
     def _update_action_states(self) -> None:
         has_selection = self._selected_shape is not None
@@ -1587,6 +2037,9 @@ class ZonePanelWidget(QtWidgets.QWidget):
 
         self._dirty = False
         self._set_status(f"Saved {len(shapes)} zone(s) to {self._zone_file_path}.")
+        parent = getattr(self, "_owner_window", None) or self.parent()
+        if parent is not None:
+            setattr(parent, "zone_path", str(self._zone_file_path))
         return True
 
     # ------------------------------------------------------------------ #

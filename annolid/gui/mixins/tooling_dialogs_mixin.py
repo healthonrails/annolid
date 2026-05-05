@@ -567,6 +567,8 @@ class ToolingDialogsMixin:
             parent=self,
             video_path=str(getattr(self, "video_file", "") or "").strip() or None,
             zone_path=str(getattr(self, "zone_path", "") or "").strip() or None,
+            zone_policy_path=str(getattr(self, "zone_policy_path", "") or "").strip()
+            or None,
             fps=getattr(self, "fps", None),
         )
         place_preference_analyze_widget.setModal(False)

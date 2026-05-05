@@ -29,6 +29,7 @@ class _ZoneExportWorker(QtCore.QObject):
         assay_profile: str,
         export_method_name: str,
         latency_reference_frame: int | None,
+        zone_policy_path: str | None,
     ) -> None:
         super().__init__()
         self._video_path = str(video_path)
@@ -37,6 +38,7 @@ class _ZoneExportWorker(QtCore.QObject):
         self._assay_profile = str(assay_profile)
         self._export_method_name = str(export_method_name)
         self._latency_reference_frame = latency_reference_frame
+        self._zone_policy_path = zone_policy_path
         self._cancel_requested = False
 
     @QtCore.Slot()
@@ -54,6 +56,7 @@ class _ZoneExportWorker(QtCore.QObject):
                 zone_file=self._zone_path,
                 fps=self._fps,
                 assay_profile=self._assay_profile,
+                zone_policy_file=self._zone_policy_path,
             )
             if self._cancel_requested:
                 self.canceled.emit()
@@ -80,6 +83,7 @@ class TrackingAnalyzerDialog(QDialog):
         *,
         video_path: str | None = None,
         zone_path: str | None = None,
+        zone_policy_path: str | None = None,
         fps: float | None = None,
     ):
         super().__init__(parent)
@@ -97,7 +101,12 @@ class TrackingAnalyzerDialog(QDialog):
 
         self._build_ui()
         self._bind_live_updates()
-        self._prefill_from_context(video_path=video_path, zone_path=zone_path, fps=fps)
+        self._prefill_from_context(
+            video_path=video_path,
+            zone_path=zone_path,
+            zone_policy_path=zone_policy_path,
+            fps=fps,
+        )
         self._update_profile_hint()
         self._update_mode_hint()
         self._update_mode_button_state()
@@ -141,6 +150,15 @@ class TrackingAnalyzerDialog(QDialog):
                 "description": "Adds latency, door proximity, and pairwise centroid-neighbor metrics.",
                 "assay_profile": "selected",
                 "requires_latency": True,
+            },
+            {
+                "key": "zone_corrected_tracked_csv",
+                "title": "Zone-Corrected Tracked CSV",
+                "method": "save_zone_corrected_tracked_csv",
+                "status_prefix": "Zone-corrected tracked CSV export",
+                "description": "Applies an optional zone occupancy policy without changing JSON or centroids.",
+                "assay_profile": "selected",
+                "requires_latency": False,
             },
         ]
 
@@ -309,6 +327,16 @@ class TrackingAnalyzerDialog(QDialog):
         zone_row.addWidget(self.zone_path_button)
         zone_row.addWidget(self.autodetect_zone_button)
 
+        self.zone_policy_path_edit = QtWidgets.QLineEdit()
+        self.zone_policy_path_edit.setPlaceholderText(
+            "Optional: select a zone occupancy policy JSON"
+        )
+        self.zone_policy_path_button = QtWidgets.QPushButton("Browse")
+        self.zone_policy_path_button.clicked.connect(self.browse_zone_policy)
+        zone_policy_row = QtWidgets.QHBoxLayout()
+        zone_policy_row.addWidget(self.zone_policy_path_edit, 1)
+        zone_policy_row.addWidget(self.zone_policy_path_button)
+
         self.fps_edit = QtWidgets.QLineEdit()
         self.fps_edit.setPlaceholderText("Optional FPS (default 30)")
         self.fps_edit.setValidator(QtGui.QDoubleValidator(0.0, 1200.0, 3, self))
@@ -323,6 +351,7 @@ class TrackingAnalyzerDialog(QDialog):
 
         session_form.addRow("Video", video_row)
         session_form.addRow("Zone JSON", zone_row)
+        session_form.addRow("Zone policy", zone_policy_row)
         session_form.addRow("FPS", self.fps_edit)
         session_form.addRow("Latency reference", self.latency_reference_edit)
         content_layout.addWidget(session_box)
@@ -431,6 +460,14 @@ class TrackingAnalyzerDialog(QDialog):
             self.zone_path_edit.setText(filename)
             self._set_status(f"Using zone file: {filename}")
 
+    def browse_zone_policy(self):
+        filename, _ = QFileDialog.getOpenFileName(
+            self, "Select Zone Occupancy Policy JSON", "", "JSON Files (*.json)"
+        )
+        if filename:
+            self.zone_policy_path_edit.setText(filename)
+            self._set_status(f"Using zone occupancy policy: {filename}")
+
     def _bind_live_updates(self) -> None:
         self.video_path_edit.textChanged.connect(self._update_mode_button_state)
         self.video_path_edit.textChanged.connect(
@@ -439,6 +476,7 @@ class TrackingAnalyzerDialog(QDialog):
             )
         )
         self.zone_path_edit.textChanged.connect(self._update_mode_button_state)
+        self.zone_policy_path_edit.textChanged.connect(self._update_mode_button_state)
 
     def _set_status(self, message: str, *, busy: bool = False) -> None:
         self.status_label.setText(str(message or ""))
@@ -456,35 +494,54 @@ class TrackingAnalyzerDialog(QDialog):
                 self.output_mode_combo.setCurrentIndex(index)
                 break
 
-    def _owner_session_context(self) -> tuple[str | None, str | None, float | None]:
+    def _owner_session_context(
+        self,
+    ) -> tuple[str | None, str | None, str | None, float | None]:
         owner = self._owner_window
         if owner is None:
-            return (None, None, None)
+            return (None, None, None, None)
         video_path = str(getattr(owner, "video_file", "") or "").strip() or None
         zone_path = str(getattr(owner, "zone_path", "") or "").strip() or None
+        zone_policy_path = (
+            str(getattr(owner, "zone_policy_path", "") or "").strip() or None
+        )
         fps_value = getattr(owner, "fps", None)
         try:
             fps = float(fps_value) if fps_value else None
         except Exception:
             fps = None
-        return (video_path, zone_path, fps)
+        return (video_path, zone_path, zone_policy_path, fps)
 
     def _prefill_from_context(
         self,
         *,
         video_path: str | None,
         zone_path: str | None,
+        zone_policy_path: str | None,
         fps: float | None,
     ) -> None:
         resolved_video = str(video_path or "").strip() or None
         resolved_zone = str(zone_path or "").strip() or None
+        resolved_zone_policy = str(zone_policy_path or "").strip() or None
         resolved_fps = fps
-        if not resolved_video or not resolved_zone or not resolved_fps:
-            owner_video, owner_zone, owner_fps = self._owner_session_context()
+        if (
+            not resolved_video
+            or not resolved_zone
+            or not resolved_zone_policy
+            or not resolved_fps
+        ):
+            (
+                owner_video,
+                owner_zone,
+                owner_zone_policy,
+                owner_fps,
+            ) = self._owner_session_context()
             if not resolved_video:
                 resolved_video = owner_video
             if not resolved_zone:
                 resolved_zone = owner_zone
+            if not resolved_zone_policy:
+                resolved_zone_policy = owner_zone_policy
             if not resolved_fps:
                 resolved_fps = owner_fps
         if resolved_video:
@@ -493,13 +550,15 @@ class TrackingAnalyzerDialog(QDialog):
                 preferred_zone_file=resolved_zone, preferred_fps=resolved_fps
             )
             self._set_status("Loaded open session context for zone analysis.")
+            if resolved_zone_policy:
+                self.zone_policy_path_edit.setText(resolved_zone_policy)
         else:
             self._set_status("Select a video to begin zone analysis.")
         if not resolved_video:
             self.use_session_button.setEnabled(bool(self._owner_window is not None))
 
     def apply_session_context(self) -> None:
-        video_path, zone_path, fps = self._owner_session_context()
+        video_path, zone_path, zone_policy_path, fps = self._owner_session_context()
         if not video_path:
             self._set_status("No open video in the main window.", busy=False)
             return
@@ -507,6 +566,8 @@ class TrackingAnalyzerDialog(QDialog):
         self._refresh_input_defaults_from_video(
             preferred_zone_file=zone_path, preferred_fps=fps
         )
+        if zone_policy_path:
+            self.zone_policy_path_edit.setText(zone_policy_path)
         self._set_status("Applied open video/session zone settings.")
 
     def _update_mode_button_state(self, *args) -> None:
@@ -630,6 +691,7 @@ class TrackingAnalyzerDialog(QDialog):
     def _build_analyzer(self, assay_profile=None):
         video_path = self.video_path_edit.text().strip()
         zone_path = self.zone_path_edit.text().strip() or None
+        zone_policy_path = self.zone_policy_path_edit.text().strip() or None
         fps_text = self.fps_edit.text().strip()
         fps = float(fps_text) if fps_text else None
         selected_profile = (
@@ -644,6 +706,7 @@ class TrackingAnalyzerDialog(QDialog):
             zone_file=zone_path,
             fps=fps,
             assay_profile=selected_profile,
+            zone_policy_file=zone_policy_path,
         )
 
     def _build_export_job(
@@ -655,6 +718,7 @@ class TrackingAnalyzerDialog(QDialog):
     ) -> dict[str, object]:
         video_path = self.video_path_edit.text().strip()
         zone_path = self.zone_path_edit.text().strip() or None
+        zone_policy_path = self.zone_policy_path_edit.text().strip() or None
         fps_text = self.fps_edit.text().strip()
         fps = float(fps_text) if fps_text else None
         if not video_path:
@@ -667,6 +731,7 @@ class TrackingAnalyzerDialog(QDialog):
             "assay_profile": str(profile),
             "export_method_name": str(export_method_name),
             "latency_reference_frame": latency_reference_frame,
+            "zone_policy_path": zone_policy_path,
         }
 
     @staticmethod
@@ -772,6 +837,7 @@ class TrackingAnalyzerDialog(QDialog):
                 zone_file=job["zone_path"],
                 fps=job["fps"],
                 assay_profile=str(job["assay_profile"]),
+                zone_policy_file=job["zone_policy_path"],
             )
             export_method = getattr(analyzer, str(job["export_method_name"]))
             self._set_status(f"{status_prefix}: running export…", busy=True)
@@ -879,6 +945,7 @@ class TrackingAnalyzerDialog(QDialog):
             assay_profile=str(job["assay_profile"]),
             export_method_name=str(job["export_method_name"]),
             latency_reference_frame=job["latency_reference_frame"],
+            zone_policy_path=job["zone_policy_path"],
         )
         worker.moveToThread(thread)
         thread.started.connect(worker.run)

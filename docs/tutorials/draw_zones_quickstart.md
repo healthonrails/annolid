@@ -43,10 +43,16 @@ In **Zone Details → Defaults for New Zones**, set:
 - `phase`
 - `occupant_role`
 - `access_state`
+- `zone_group` when zones are mutually exclusive within one scoring concept
 - optional tags
 
 Every new zone you draw will inherit these values, which avoids repetitive editing.
 When you mark a selected shape as a zone, these defaults are applied unless you override them in the selected-zone form.
+
+Use `zone_group` to separate overlapping concepts. For example, chamber zones can
+use `zone_group=chamber`, while tether-reach zones can use
+`zone_group=tether`. This lets one frame count as both a chamber occupancy and a
+tether occupancy when that is the intended analysis.
 
 ## Manage Zones Efficiently
 
@@ -74,6 +80,30 @@ Recommended naming:
 - `video_stem_zones.json`
 
 The file stays LabelMe-compatible and can be reloaded with **Load Zone JSON**.
+
+## Define Zone Occupancy Policies
+
+Use **Zone Policies** in the Zone Dock when a known prior should correct zone
+membership for a tracked instance without moving centroids. A typical example is
+a stimulus animal that is known to remain in `chamber_D` even when transparent
+walls make its centroid overlap another chamber boundary.
+
+1. Enter the tracked instance name, such as `stim_D`.
+2. Choose the zone group, such as `chamber`.
+3. Choose a mode:
+   - `force_one`: exactly one listed zone is active in the group.
+   - `preserve_if_inside`: keep listed zones only when the raw membership is already inside.
+   - `allow_only`: clear all group zones except the listed zones.
+   - `prefer`: if multiple group zones are active, keep the first listed active zone.
+   - `force_all`: set listed zones active.
+   - `deny`: set listed zones inactive.
+4. Enter one or more zone labels.
+5. Click **Add Rule**, then **Save Policy JSON**.
+
+The saved policy JSON can be selected in **Video Tools → Zone Analysis** for
+**Zone-Corrected Tracked CSV** or other policy-aware zone exports. The correction
+changes only zone columns and writes an audit CSV; it does not rewrite the
+manual label JSON files.
 
 ## Practical Patterns
 

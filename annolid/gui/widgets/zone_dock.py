@@ -69,6 +69,25 @@ class ZoneDockWidget(QtWidgets.QDockWidget):
             ):
                 event.ignore()
                 return
+        if bool(getattr(self._zone_panel, "_policy_dirty", False)):
+            reply = QtWidgets.QMessageBox.question(
+                self,
+                "Unsaved policy changes",
+                "Save zone occupancy policy changes before closing the dock?",
+                QtWidgets.QMessageBox.Yes
+                | QtWidgets.QMessageBox.No
+                | QtWidgets.QMessageBox.Cancel,
+                QtWidgets.QMessageBox.Yes,
+            )
+            if reply == QtWidgets.QMessageBox.Cancel:
+                event.ignore()
+                return
+            if (
+                reply == QtWidgets.QMessageBox.Yes
+                and not self._zone_panel.save_zone_policy_file()
+            ):
+                event.ignore()
+                return
         try:
             self._zone_panel._clear_zone_defaults()
         except Exception:

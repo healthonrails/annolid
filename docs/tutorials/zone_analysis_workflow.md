@@ -26,7 +26,7 @@ flowchart LR
 
 ## What You Get
 
-Annolid now supports three related outputs:
+Annolid supports these related outputs:
 
 - **Legacy place-preference CSV**
   - Keeps the historical one-column-per-zone export.
@@ -34,6 +34,9 @@ Annolid now supports three related outputs:
 - **Generic zone metrics CSV**
   - Adds occupancy, dwell time, entry counts, transition counts, and barrier-adjacent time.
   - Works with any valid saved zone set.
+- **Zone-corrected tracked CSV**
+  - Applies a zone occupancy policy without moving centroids or rewriting JSON.
+  - Writes an audit CSV describing every changed zone membership row.
 - **Assay summary Markdown + CSV**
   - Explains which zones were used.
   - Shows which phase rules were applied.
@@ -80,6 +83,7 @@ For a chamber-based vole assay:
 Each saved zone shape should carry explicit semantics:
 
 - `zone_kind`
+- `zone_group`
 - `phase`
 - `occupant_role`
 - `access_state`
@@ -93,6 +97,10 @@ For example:
 - connecting tubes (neutral transit): `zone_kind=connector_tube` and/or `occupant_role=neutral`
 
 Use the Zone Details defaults to prefill classification metadata, then classify selected canvas shapes as zones so you do not need to hand-edit JSON.
+Use `zone_group` to identify mutually exclusive zones within the same scoring
+concept. For example, chambers should usually share `zone_group=chamber`; a
+tether reach area can use `zone_group=tether` even when it overlaps chamber
+geometry.
 
 ## Step 4: Save the Zone File
 
@@ -109,8 +117,11 @@ The zone dock now separates authoring into three views:
 - **Define Zones**
   - review the current frame, target JSON path, and every zone already on the canvas
 - **Zone Details**
-  - edit the selected zone label, description, kind, phase, occupant role, access state, tags, and barrier-adjacent flag
+  - edit the selected zone label, description, kind, group, phase, occupant role, access state, tags, and barrier-adjacent flag
   - reuse a tuned zone as the default template for the next zones you draw
+- **Zone Policies**
+  - define instance-specific zone occupancy rules such as force, allow, prefer, or deny
+  - save a policy JSON that can be selected during zone analysis
 - **Metrics**
   - preview zone area and see which downstream metrics the selected zone will affect before you run analysis
 
@@ -118,6 +129,8 @@ The zone dock now separates authoring into three views:
 
 Open **Video Tools → Zone Analysis**.
 If a video is already open in Annolid, the dialog now pre-fills the current video path, FPS, and a best-match zone JSON candidate.
+If you saved a policy from the Zone Dock, the policy path is also carried into
+the analysis dialog.
 
 Pick the assay profile:
 
@@ -150,6 +163,7 @@ flowchart TD
 ```
 
 - Use **Generic** when you want the raw zone set without phase filtering.
+- Use **Zone-Corrected Tracked CSV** when camera projection or transparent-wall overlap requires known-prior zone scoring.
 - Use **Phase 1** when some chambers or connections are blocked by mesh.
 - Use **Phase 2** when the arena is fully open.
 - Use **Export Assay Summary** when you want a report that explains the chosen zones and phase rules in plain language.
@@ -178,6 +192,41 @@ Use the same saved zone file for both phases if the physical layout is shared.
   - summaries reflect direct interactions across the full arena
 
 The assay summary report lists the selected profile, the included zones, the blocked zones, and the computed metrics so the output is self-documenting.
+
+## Zone Occupancy Policy Example
+
+Use a policy when an instance has a known legal zone that should override
+ambiguous centroid-based zone membership. The policy changes only zone columns in
+the exported CSV; raw centroid coordinates and JSON annotations remain unchanged.
+
+```json
+{
+  "instance_policies": [
+    {
+      "instance_name": "stim_D",
+      "rules": [
+        {
+          "name": "stim_D_always_chamber_D",
+          "zone_group": "chamber",
+          "mode": "force_one",
+          "zone": "chamber_D"
+        },
+        {
+          "name": "stim_D_tether_raw_membership",
+          "zone_group": "tether",
+          "mode": "preserve_if_inside",
+          "allowed_zones": ["tether_D"]
+        }
+      ]
+    }
+  ]
+}
+```
+
+For overlapping zones, assign separate groups such as `chamber` and `tether` so
+Annolid can correct chamber occupancy without erasing valid tether occupancy.
+The same policy can be built from **Video Tools → Zones → Zone Policies**:
+choose the instance, group, mode, and zone labels, then save the policy JSON.
 
 ## Practical Workflow for Vole Assays
 
