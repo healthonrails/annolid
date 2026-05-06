@@ -103,6 +103,8 @@ class AnnolidLabelListWidget(QtWidgets.QListWidget):
     shapeDeleteRequested = QtCore.Signal(object)
     shapesDeleteRequested = QtCore.Signal(object)
     shapesSwitchRequested = QtCore.Signal(object)
+    labelColorChangeRequested = QtCore.Signal(str)
+    labelColorResetRequested = QtCore.Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -210,6 +212,24 @@ class AnnolidLabelListWidget(QtWidgets.QListWidget):
             delete_action = menu.addAction(self.tr("Delete selected shapes"))
         else:
             delete_action = menu.addAction(self.tr("Delete shape"))
+        labels = sorted(
+            {
+                str(getattr(shape, "label", "") or "").strip()
+                for shape in selected_shapes
+                if str(getattr(shape, "label", "") or "").strip()
+            },
+            key=lambda value: value.lower(),
+        )
+        color_actions = {}
+        reset_color_actions = {}
+        if labels:
+            menu.addSeparator()
+            for label in labels:
+                action = menu.addAction(self.tr("Change color for '%s'") % label)
+                color_actions[action] = label
+                reset_color_actions[
+                    menu.addAction(self.tr("Reset color for '%s'") % label)
+                ] = label
         chosen = menu.exec_(global_pos)
         if switch_action is not None and chosen is switch_action:
             self.shapesSwitchRequested.emit(selected_shapes)
@@ -218,10 +238,17 @@ class AnnolidLabelListWidget(QtWidgets.QListWidget):
                 self.shapesDeleteRequested.emit(selected_shapes)
             else:
                 self.shapeDeleteRequested.emit(selected_shapes[0])
+        elif chosen in color_actions:
+            self.labelColorChangeRequested.emit(color_actions[chosen])
+        elif chosen in reset_color_actions:
+            self.labelColorResetRequested.emit(reset_color_actions[chosen])
 
 
 class AnnolidUniqLabelListWidget(QtWidgets.QListWidget):
     """Label summary list with helper methods used by AnnolidWindow (LabelMe-style)."""
+
+    labelColorChangeRequested = QtCore.Signal(str)
+    labelColorResetRequested = QtCore.Signal(str)
 
     def findItemByLabel(self, label: str):
         target = str(label or "")
@@ -250,6 +277,29 @@ class AnnolidUniqLabelListWidget(QtWidgets.QListWidget):
         except Exception:
             pass
         item.setText(str(text or ""))
+
+    def contextMenuEvent(
+        self, event: QtGui.QContextMenuEvent
+    ) -> None:  # pragma: no cover
+        item = self.itemAt(event.pos())
+        if item is None:
+            return
+        label = str(item.data(QtCore.Qt.UserRole) or "").strip()
+        if not label:
+            return
+        if not item.isSelected():
+            self.clearSelection()
+            item.setSelected(True)
+
+        menu = QtWidgets.QMenu(self)
+        change_action = menu.addAction(self.tr("Change color for '%s'") % label)
+        reset_action = menu.addAction(self.tr("Reset color for '%s'") % label)
+        chosen = menu.exec_(self.viewport().mapToGlobal(event.pos()))
+        if chosen is change_action:
+            self.labelColorChangeRequested.emit(label)
+        elif chosen is reset_action:
+            self.labelColorResetRequested.emit(label)
+        event.accept()
 
 
 class AnnolidToolButton(QtWidgets.QToolButton):

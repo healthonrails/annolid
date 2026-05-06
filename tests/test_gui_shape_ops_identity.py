@@ -538,6 +538,35 @@ def test_label_instances_menu_emits_switch_for_two_selected_shapes(monkeypatch):
         widget.close()
 
 
+def test_label_instances_menu_emits_label_color_change(monkeypatch):
+    _ensure_qapp()
+
+    from annolid.gui.window_base import AnnolidLabelListItem, AnnolidLabelListWidget
+
+    widget = AnnolidLabelListWidget()
+    try:
+        shape = _square("mouse_1")
+        item = AnnolidLabelListItem("mouse_1", shape)
+        widget.addItem(item)
+        item.setSelected(True)
+
+        labels = []
+        widget.labelColorChangeRequested.connect(lambda label: labels.append(label))
+
+        def _fake_exec(self, _global_pos):
+            for action in self.actions():
+                if "change color for 'mouse_1'" in (action.text() or "").lower():
+                    return action
+            return None
+
+        monkeypatch.setattr(QtWidgets.QMenu, "exec_", _fake_exec)
+        widget._show_delete_menu(QtCore.QPoint(0, 0))
+
+        assert labels == ["mouse_1"]
+    finally:
+        widget.close()
+
+
 def test_shape_dialog_propagate_rectangle_preserves_other_future_shapes(
     monkeypatch, tmp_path
 ):

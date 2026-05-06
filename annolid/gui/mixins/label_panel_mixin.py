@@ -49,6 +49,64 @@ class LabelPanelMixin:
             except Exception:
                 pass
 
+    def _refresh_label_colors_for_label(self, label: str) -> None:
+        label = str(label or "").strip()
+        if not label:
+            return
+        shapes = [
+            shape
+            for shape in getattr(self.canvas, "shapes", []) or []
+            if str(getattr(shape, "label", "") or "").strip() == label
+        ]
+        self._refresh_label_list_items_for_shapes(shapes)
+        self._rebuild_unique_label_list()
+        self._refresh_shape_views()
+
+        timeline_panel = getattr(self, "timeline_panel", None)
+        if timeline_panel is not None:
+            try:
+                timeline_panel.update()
+            except Exception:
+                pass
+
+    def _choose_label_color(self, label: str) -> None:
+        label = str(label or "").strip()
+        if not label:
+            return
+        current_rgb = self._get_rgb_by_label(label)
+        current = QtGui.QColor(*current_rgb)
+        color = QtWidgets.QColorDialog.getColor(
+            current,
+            self,
+            self.tr("Choose color for '%s'") % label,
+        )
+        if not color.isValid():
+            return
+        if self._set_label_color_override(label, color):
+            self._refresh_label_colors_for_label(label)
+            try:
+                self.statusBar().showMessage(
+                    self.tr("Updated color for label '%s'.") % label, 3000
+                )
+            except Exception:
+                pass
+
+    def _reset_label_color(self, label: str) -> None:
+        label = str(label or "").strip()
+        if not label:
+            return
+        changed = self._reset_label_color_override(label)
+        self._refresh_label_colors_for_label(label)
+        try:
+            message = (
+                self.tr("Reset color for label '%s'.") % label
+                if changed
+                else self.tr("Label '%s' already uses its default color.") % label
+            )
+            self.statusBar().showMessage(message, 3000)
+        except Exception:
+            pass
+
     def _label_list_item_for_shape(self, shape):
         if shape is None:
             return None
@@ -421,12 +479,34 @@ class LabelPanelMixin:
                 self.labelList.shapesSwitchRequested.disconnect()
             except Exception:
                 pass
+            try:
+                self.labelList.labelColorChangeRequested.disconnect()
+            except Exception:
+                pass
+            try:
+                self.labelList.labelColorResetRequested.disconnect()
+            except Exception:
+                pass
+            try:
+                self.uniqLabelList.labelColorChangeRequested.disconnect()
+            except Exception:
+                pass
+            try:
+                self.uniqLabelList.labelColorResetRequested.disconnect()
+            except Exception:
+                pass
 
         try:
             self.labelList.shapeVisibilityChanged.connect(on_shape_visibility_changed)
             self.labelList.shapeDeleteRequested.connect(on_shape_delete_requested)
             self.labelList.shapesDeleteRequested.connect(on_shapes_delete_requested)
             self.labelList.shapesSwitchRequested.connect(on_shapes_switch_requested)
+            self.labelList.labelColorChangeRequested.connect(self._choose_label_color)
+            self.labelList.labelColorResetRequested.connect(self._reset_label_color)
+            self.uniqLabelList.labelColorChangeRequested.connect(
+                self._choose_label_color
+            )
+            self.uniqLabelList.labelColorResetRequested.connect(self._reset_label_color)
         except Exception:
             pass
 

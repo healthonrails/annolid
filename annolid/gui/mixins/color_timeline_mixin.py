@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from typing import List, Optional, Tuple
 
 import imgviz
@@ -30,10 +31,103 @@ def _hex_to_rgb(color: str) -> Optional[Tuple[int, int, int]]:
     return None
 
 
+def _normalize_rgb(value) -> Optional[Tuple[int, int, int]]:
+    if isinstance(value, QtGui.QColor):
+        if value.isValid():
+            return (int(value.red()), int(value.green()), int(value.blue()))
+        return None
+    if isinstance(value, str):
+        return _hex_to_rgb(value)
+    if isinstance(value, (list, tuple)) and len(value) >= 3:
+        try:
+            rgb = tuple(max(0, min(255, int(v))) for v in value[:3])
+        except (TypeError, ValueError):
+            return None
+        return rgb
+    return None
+
+
+def _rgb_to_hex(rgb: Tuple[int, int, int]) -> str:
+    r, g, b = _normalize_rgb(rgb) or (0, 255, 0)
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
 class ColorTimelineMixin:
     """Label color and timeline behavior catalog helpers."""
 
+    LABEL_COLOR_OVERRIDES_KEY = "labels/color_overrides_json"
+
+    def _load_label_color_overrides_from_settings(self) -> None:
+        settings = getattr(self, "settings", None)
+        if settings is None:
+            return
+        raw = ""
+        try:
+            raw = settings.value(self.LABEL_COLOR_OVERRIDES_KEY, "", type=str) or ""
+        except Exception:
+            raw = ""
+        overrides = {}
+        if raw:
+            try:
+                payload = json.loads(raw)
+            except (TypeError, ValueError):
+                payload = {}
+            if isinstance(payload, dict):
+                for label, color in payload.items():
+                    rgb = _normalize_rgb(color)
+                    if str(label or "").strip() and rgb is not None:
+                        overrides[str(label)] = rgb
+        self._config.setdefault("label_color_overrides", {})
+        self._config["label_color_overrides"] = overrides
+
+    def _persist_label_color_overrides(self) -> None:
+        settings = getattr(self, "settings", None)
+        if settings is None:
+            return
+        overrides = dict(self._config.get("label_color_overrides") or {})
+        payload = {
+            str(label): _rgb_to_hex(rgb)
+            for label, rgb in sorted(
+                overrides.items(), key=lambda item: item[0].lower()
+            )
+            if str(label or "").strip() and _normalize_rgb(rgb) is not None
+        }
+        try:
+            settings.setValue(self.LABEL_COLOR_OVERRIDES_KEY, json.dumps(payload))
+            settings.sync()
+        except Exception:
+            pass
+
+    def _set_label_color_override(self, label: str, color) -> bool:
+        label = str(label or "").strip()
+        rgb = _normalize_rgb(color)
+        if not label or rgb is None:
+            return False
+        overrides = dict(self._config.get("label_color_overrides") or {})
+        overrides[label] = rgb
+        self._config["label_color_overrides"] = overrides
+        self._persist_label_color_overrides()
+        return True
+
+    def _reset_label_color_override(self, label: str) -> bool:
+        label = str(label or "").strip()
+        if not label:
+            return False
+        overrides = dict(self._config.get("label_color_overrides") or {})
+        if label not in overrides:
+            return False
+        overrides.pop(label, None)
+        self._config["label_color_overrides"] = overrides
+        self._persist_label_color_overrides()
+        return True
+
     def _get_rgb_by_label(self, label):
+        label = str(label or "").strip()
+        overrides = self._config.get("label_color_overrides") or {}
+        rgb = _normalize_rgb(overrides.get(label))
+        if rgb is not None:
+            return rgb
+
         schema = getattr(self, "project_schema", None)
         if schema is not None:
             behavior = schema.behavior_map().get(label)
@@ -55,7 +149,7 @@ class ColorTimelineMixin:
 
         config = self._config
         if config.get("shape_color") == "auto":
-            normalized_label = label.strip().lower()
+            normalized_label = label.lower()
             hash_digest = hashlib.md5(normalized_label.encode("utf-8")).hexdigest()
             hash_int = int(hash_digest, 16)
             shift_offset = config.get("shift_auto_shape_color", 0)
@@ -70,9 +164,14 @@ class ColorTimelineMixin:
             and config.get("label_colors")
             and label in config["label_colors"]
         ):
-            return config["label_colors"][label]
+            rgb = _normalize_rgb(config["label_colors"][label])
+            if rgb is not None:
+                return rgb
         elif config.get("default_shape_color"):
-            return config["default_shape_color"]
+            rgb = _normalize_rgb(config["default_shape_color"])
+            if rgb is not None:
+                return rgb
+        return (0, 255, 0)
 
     def _timeline_behavior_catalog(self) -> List[str]:
         behaviors: set[str] = set()

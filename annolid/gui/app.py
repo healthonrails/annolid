@@ -139,6 +139,7 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         self.here = Path(__file__).resolve().parent
         self.settings_manager = SettingsManager("Annolid", "Annolid")
         self.settings = self.settings_manager.qt_settings
+        self._load_label_color_overrides_from_settings()
         ui_settings = self.settings_manager.get_ui_settings()
         pose_settings = self.settings_manager.get_pose_settings()
         self._agent_mode_enabled = bool(ui_settings.get("agent_mode", True))
