@@ -83,6 +83,86 @@ After deleting generated outputs:
 
 If you only need to retrack one video, load that video directly from the toolbar/Video Manager and run tracking for that video only. This avoids reprocessing videos that are already correct.
 
+## 10. Stop When an Animal Is Lost
+
+To make CUTIE tracking stop when an expected animal disappears:
+
+1. Open **Advanced Parameters** before starting tracking.
+2. Enable **Automatic Pause on Error Detection**.
+3. Start tracking from a frame where all expected instances are labeled.
+
+When this option is enabled, Annolid checks the tracked instances against the
+seeded instances. If a seeded animal is missing from the prediction output,
+tracking pauses at that frame so you can review the image, correct or add the
+missing instance, save the annotation, and continue from that point.
+
+This is a tracking safety check, not a biological event detector. It detects
+missing tracked instances in the annotation output. It does not prove the animal
+left the arena or became invisible for a specific scientific reason.
+
+Do not use `T_max` for this purpose. `T_max` controls tracker memory/window
+behavior; it is not the "stop when lost" setting.
+
+## 11. Repair Missing Sections Without Starting Over
+
+You usually do not need to delete all predictions and start over if only a few
+sections are missing.
+
+Use one of these workflows:
+
+- If tracking paused at the first bad frame, correct the missing animal on that
+  frame, save the annotation, then continue tracking from there.
+- If the saved NDJSON has empty frames, use Annolid Bot tracking correction with
+  `replace_only_empty_shapes=true` to fill only frames that currently have no
+  shapes.
+- If the problem is a short occlusion gap or likely ID switch, use temporal
+  repair with `temporal_repair=true`, `expected_instance_count`,
+  `max_gap_frames`, and `max_match_distance`.
+- If drift or identity corruption is widespread, do a full retrack using the
+  cleanup steps in the previous section.
+
+For the SAM3-assisted correction workflow, see
+[Tracking Correction with SAM3 Bot](tracking_correction_with_sam3_bot.md). Write
+repairs to a new NDJSON first, review the result, then replace the original only
+after the corrected file is verified.
+
+## 12. Overnight Runs and Computer Sleep
+
+Annolid does not currently wrap long tracking jobs in an operating-system sleep
+prevention command. On macOS or Windows, a sleeping computer pauses CPU/GPU work
+and can make an overnight run look like it barely progressed.
+
+Before a long run:
+
+- Keep the computer plugged in.
+- On macOS, use System Settings to prevent automatic sleep while the display is
+  off when that option is available.
+- On Windows, use **Settings → System → Power & battery → Screen and sleep** and
+  set plugged-in sleep to **Never** for the duration of the run.
+- Do not close the laptop lid unless the machine is configured to keep running
+  when the lid is closed.
+- Prefer running one GPU-heavy tracking job at a time unless each job has a
+  separate GPU or machine.
+
+If launching Annolid from a macOS terminal, you can keep the Mac awake for the
+whole process:
+
+```bash
+source .venv/bin/activate
+caffeinate -dimsu annolid
+```
+
+To keep the Mac awake while an already running Annolid process continues, find
+the process ID and attach `caffeinate` to it:
+
+```bash
+pgrep -fl annolid
+caffeinate -dimsu -w <PID>
+```
+
+The display may still turn off. The important part is preventing system sleep
+while tracking is running.
+
 ## Tips
 
 - If the dialog reports a missing annotation, open that frame in the main window, save the polygon (`Ctrl+S`), then re-open the Segment Editor.
