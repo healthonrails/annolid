@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import os
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -10,6 +11,28 @@ from qtpy import QtWidgets
 import yaml
 from annolid.utils.annotation_compat import shape_to_mask
 from annolid.utils.logger import logger
+
+
+@dataclass(frozen=True)
+class Sam3RuntimeOptions:
+    propagation_direction: str
+    max_frame_num_to_track: Optional[int]
+    device: Optional[str]
+    score_threshold_detection: Optional[float]
+    new_det_thresh: Optional[float]
+    sliding_window_size: int
+    sliding_window_stride: Optional[int]
+    compile_model: bool
+    offload_video_to_cpu: bool
+    use_explicit_window_reseed: bool
+    boundary_mask_match_iou_threshold: float
+    allow_private_state_mutation: bool
+    max_num_objects: int
+    multiplex_count: int
+    agent_det_thresh: Optional[float]
+    agent_window_size: int
+    agent_stride: Optional[int]
+    agent_output_dir: Optional[str]
 
 
 class Sam3Manager:
@@ -63,6 +86,208 @@ class Sam3Manager:
                 return str(pt_files[0])
             return None
         return None
+
+    @staticmethod
+    def _parse_optional_int(value, *, default: Optional[int] = None) -> Optional[int]:
+        if value is None or value == "":
+            return default
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _parse_optional_float(
+        value,
+        *,
+        default: Optional[float] = None,
+    ) -> Optional[float]:
+        if value is None or value == "":
+            return default
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _parse_bool(value, default: bool) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"1", "true", "yes", "y", "on"}:
+                return True
+            if lowered in {"0", "false", "no", "n", "off"}:
+                return False
+        return default
+
+    @staticmethod
+    def _pick(override, configured):
+        return override if override is not None else configured
+
+    @staticmethod
+    def _normalized_rect_from_points(p1, p2) -> tuple[float, float, float, float]:
+        x1, y1 = float(p1.x()), float(p1.y())
+        x2, y2 = float(p2.x()), float(p2.y())
+        left, right = sorted((x1, x2))
+        top, bottom = sorted((y1, y2))
+        return left, top, right, bottom
+
+    def _runtime_options(self, base_config: Dict[str, Any]) -> Sam3RuntimeOptions:
+        sam3_cfg = dict((base_config or {}).get("sam3", {}) or {})
+        agent_cfg = dict(sam3_cfg.get("agent", {}) or {})
+
+        score_threshold_detection = self._parse_optional_float(
+            self._pick(
+                getattr(self, "score_threshold_detection", None),
+                sam3_cfg.get("score_threshold_detection"),
+            )
+        )
+        new_det_thresh = self._parse_optional_float(
+            self._pick(
+                getattr(self, "new_det_thresh", None),
+                sam3_cfg.get("new_det_thresh"),
+            )
+        )
+        max_frame_num_to_track = self._parse_optional_int(
+            self._pick(
+                getattr(self, "max_frame_num_to_track", None),
+                sam3_cfg.get("max_frame_num_to_track"),
+            )
+        )
+        sliding_window_size = self._parse_optional_int(
+            self._pick(
+                getattr(self, "sliding_window_size", None),
+                sam3_cfg.get("sliding_window_size"),
+            ),
+            default=5,
+        )
+        sliding_window_size = max(1, int(sliding_window_size or 5))
+        sliding_window_stride = self._parse_optional_int(
+            self._pick(
+                getattr(self, "sliding_window_stride", None),
+                sam3_cfg.get("sliding_window_stride"),
+            )
+        )
+        max_num_objects = self._parse_optional_int(
+            self._pick(
+                getattr(self, "max_num_objects", None),
+                sam3_cfg.get("max_num_objects"),
+            ),
+            default=16,
+        )
+        multiplex_count = self._parse_optional_int(
+            self._pick(
+                getattr(self, "multiplex_count", None),
+                sam3_cfg.get("multiplex_count"),
+            ),
+            default=16,
+        )
+        boundary_iou = self._parse_optional_float(
+            self._pick(
+                getattr(self, "boundary_mask_match_iou_threshold", None),
+                sam3_cfg.get("boundary_mask_match_iou_threshold"),
+            ),
+            default=0.2,
+        )
+        propagation_direction = str(
+            self._pick(
+                getattr(self, "propagation_direction", None),
+                sam3_cfg.get("propagation_direction", "both"),
+            )
+            or "both"
+        )
+        device = self._pick(
+            getattr(self, "device_override", None),
+            sam3_cfg.get("device"),
+        )
+        device = str(device).strip() if device else None
+
+        compile_model = self._parse_bool(
+            self._pick(
+                getattr(self, "compile_model", None),
+                sam3_cfg.get("compile_model"),
+            ),
+            False,
+        )
+        offload_video_to_cpu = self._parse_bool(
+            self._pick(
+                getattr(self, "offload_video_to_cpu", None),
+                sam3_cfg.get("offload_video_to_cpu"),
+            ),
+            True,
+        )
+        use_explicit_window_reseed = self._parse_bool(
+            self._pick(
+                getattr(self, "use_explicit_window_reseed", None),
+                sam3_cfg.get("use_explicit_window_reseed"),
+            ),
+            True,
+        )
+        allow_private_state_mutation = self._parse_bool(
+            self._pick(
+                getattr(self, "allow_private_state_mutation", None),
+                sam3_cfg.get("allow_private_state_mutation"),
+            ),
+            False,
+        )
+
+        agent_det_thresh = self._parse_optional_float(
+            self._pick(
+                getattr(self, "agent_det_thresh", None),
+                agent_cfg.get("det_thresh"),
+            ),
+            default=score_threshold_detection,
+        )
+        agent_window_size = self._parse_optional_int(
+            self._pick(
+                getattr(self, "agent_window_size", None),
+                agent_cfg.get("window_size"),
+            ),
+            default=sliding_window_size,
+        )
+        agent_window_size = max(1, int(agent_window_size or sliding_window_size))
+        agent_stride = self._parse_optional_int(
+            self._pick(getattr(self, "agent_stride", None), agent_cfg.get("stride")),
+            default=sliding_window_stride,
+        )
+        agent_output_dir = self._pick(
+            getattr(self, "agent_output_dir", None),
+            agent_cfg.get("output_dir"),
+        )
+        if isinstance(agent_output_dir, str):
+            agent_output_dir = agent_output_dir.strip() or None
+
+        return Sam3RuntimeOptions(
+            propagation_direction=propagation_direction,
+            max_frame_num_to_track=max_frame_num_to_track,
+            device=device,
+            score_threshold_detection=score_threshold_detection,
+            new_det_thresh=new_det_thresh,
+            sliding_window_size=sliding_window_size,
+            sliding_window_stride=sliding_window_stride,
+            compile_model=compile_model,
+            offload_video_to_cpu=offload_video_to_cpu,
+            use_explicit_window_reseed=use_explicit_window_reseed,
+            boundary_mask_match_iou_threshold=float(boundary_iou or 0.2),
+            allow_private_state_mutation=allow_private_state_mutation,
+            max_num_objects=max(
+                1,
+                int(16 if max_num_objects is None else max_num_objects),
+            ),
+            multiplex_count=max(
+                1,
+                int(16 if multiplex_count is None else multiplex_count),
+            ),
+            agent_det_thresh=agent_det_thresh,
+            agent_window_size=agent_window_size,
+            agent_stride=agent_stride,
+            agent_output_dir=agent_output_dir,
+        )
 
     def close_session(self) -> None:
         """Best-effort close of any active SAM3 session."""
@@ -359,10 +584,11 @@ class Sam3Manager:
         for shape in canvas.shapes:
             if shape.shape_type == "rectangle" and len(shape.points) == 2:
                 p1, p2 = shape.points
-                x1, y1 = p1.x(), p1.y()
-                x2, y2 = p2.x(), p2.y()
+                x1, y1, x2, y2 = self._normalized_rect_from_points(p1, p2)
                 w = x2 - x1
                 h = y2 - y1
+                if w <= 0 or h <= 0:
+                    continue
                 boxes_abs.append([x1, y1, w, h])
                 box_labels.append(1)
             elif shape.shape_type == "polygon" and shape.points:
@@ -463,8 +689,9 @@ class Sam3Manager:
 
             if shape.shape_type == "rectangle" and len(shape.points) == 2:
                 p1, p2 = shape.points
-                x1, y1 = float(p1.x()), float(p1.y())
-                x2, y2 = float(p2.x()), float(p2.y())
+                x1, y1, x2, y2 = self._normalized_rect_from_points(p1, p2)
+                if x2 <= x1 or y2 <= y1:
+                    continue
                 if image_h and image_w:
                     try:
                         mask = shape_to_mask(
@@ -559,11 +786,10 @@ class Sam3Manager:
         if not canvas_annotations:
             return list(annotations or [])
 
-        def _annotation_key(ann: dict) -> tuple[int, int, str]:
+        def _annotation_key(ann: dict) -> tuple[int, int]:
             return (
                 int(ann.get("ann_frame_idx", -1)),
                 int(ann.get("obj_id", 0)),
-                str(ann.get("type", "")),
             )
 
         canvas_keys = set()
@@ -656,232 +882,25 @@ class Sam3Manager:
             )
             return None
 
-        sam3_cfg = dict((self.window._config or {}).get("sam3", {}) or {})
-        propagation_direction = sam3_cfg.get("propagation_direction", "both")
-        max_frame_num_to_track = sam3_cfg.get("max_frame_num_to_track")
-        device_override = sam3_cfg.get("device")
-        score_threshold_detection = sam3_cfg.get("score_threshold_detection")
-        new_det_thresh = sam3_cfg.get("new_det_thresh")
-        sliding_window_size = sam3_cfg.get("sliding_window_size", 5)
-        sliding_window_stride = sam3_cfg.get("sliding_window_stride")
-        compile_model_cfg = sam3_cfg.get("compile_model", False)
-        offload_video_to_cpu_cfg = sam3_cfg.get("offload_video_to_cpu", True)
-        use_explicit_window_reseed_cfg = sam3_cfg.get(
-            "use_explicit_window_reseed", True
-        )
-        boundary_mask_match_iou_threshold_cfg = sam3_cfg.get(
-            "boundary_mask_match_iou_threshold", 0.2
-        )
-        allow_private_state_mutation_cfg = sam3_cfg.get(
-            "allow_private_state_mutation", False
-        )
-        max_num_objects_cfg = sam3_cfg.get("max_num_objects", 16)
-        multiplex_count_cfg = sam3_cfg.get("multiplex_count", 16)
-        agent_cfg = sam3_cfg.get("agent", {}) or {}
-        agent_det_thresh_cfg = agent_cfg.get("det_thresh")
-        agent_window_size_cfg = agent_cfg.get("window_size")
-        agent_stride_cfg = agent_cfg.get("stride")
-        agent_output_dir_cfg = agent_cfg.get("output_dir")
-        try:
-            if isinstance(max_frame_num_to_track, str):
-                max_frame_num_to_track = int(max_frame_num_to_track)
-        except Exception:
-            max_frame_num_to_track = None
-        for name, val in (
-            ("score_threshold_detection", score_threshold_detection),
-            ("new_det_thresh", new_det_thresh),
-            ("sliding_window_size", sliding_window_size),
-            ("agent_det_thresh_cfg", agent_det_thresh_cfg),
-        ):
-            try:
-                if name == "sliding_window_size":
-                    parsed = int(val) if isinstance(val, str) else int(val)
-                elif name == "agent_det_thresh_cfg":
-                    parsed = float(val) if val is not None else None
-                else:
-                    if isinstance(val, str):
-                        parsed = float(val)
-                    elif val is None:
-                        parsed = None
-                    else:
-                        parsed = float(val)
-                if name == "score_threshold_detection":
-                    score_threshold_detection = parsed
-                elif name == "new_det_thresh":
-                    new_det_thresh = parsed
-                elif name == "sliding_window_size":
-                    sliding_window_size = parsed
-                else:
-                    agent_det_thresh_cfg = parsed
-            except Exception:
-                if name == "score_threshold_detection":
-                    score_threshold_detection = None
-                elif name == "new_det_thresh":
-                    new_det_thresh = None
-                elif name == "sliding_window_size":
-                    sliding_window_size = 5
-                else:
-                    agent_det_thresh_cfg = None
-
-        def _parse_bool(value, default: bool) -> bool:
-            if value is None:
-                return default
-            if isinstance(value, bool):
-                return value
-            if isinstance(value, (int, float)):
-                return bool(value)
-            if isinstance(value, str):
-                lowered = value.strip().lower()
-                if lowered in {"1", "true", "yes", "y", "on"}:
-                    return True
-                if lowered in {"0", "false", "no", "n", "off"}:
-                    return False
-            return default
-
-        compile_model_override = getattr(self, "compile_model", None)
-        offload_video_to_cpu_override = getattr(self, "offload_video_to_cpu", None)
-        use_explicit_window_reseed_override = getattr(
-            self, "use_explicit_window_reseed", None
-        )
-        allow_private_state_mutation_override = getattr(
-            self, "allow_private_state_mutation", None
-        )
-        boundary_mask_match_iou_threshold_override = getattr(
-            self, "boundary_mask_match_iou_threshold", None
-        )
-        score_threshold_detection_override = getattr(
-            self, "score_threshold_detection", None
-        )
-        new_det_thresh_override = getattr(self, "new_det_thresh", None)
-        propagation_direction_override = getattr(self, "propagation_direction", None)
-        max_frame_num_to_track_override = getattr(self, "max_frame_num_to_track", None)
-        device_override_override = getattr(self, "device_override", None)
-        sliding_window_size_override = getattr(self, "sliding_window_size", None)
-        sliding_window_stride_override = getattr(self, "sliding_window_stride", None)
-        max_num_objects_override = getattr(self, "max_num_objects", None)
-        multiplex_count_override = getattr(self, "multiplex_count", None)
-        agent_det_thresh_override = getattr(self, "agent_det_thresh", None)
-        agent_window_size_override = getattr(self, "agent_window_size", None)
-        agent_stride_override = getattr(self, "agent_stride", None)
-        agent_output_dir_override = getattr(self, "agent_output_dir", None)
-
-        compile_model = _parse_bool(
-            compile_model_override
-            if compile_model_override is not None
-            else compile_model_cfg,
-            False,
-        )
-        offload_video_to_cpu = _parse_bool(
-            offload_video_to_cpu_override
-            if offload_video_to_cpu_override is not None
-            else offload_video_to_cpu_cfg,
-            True,
-        )
-        use_explicit_window_reseed = _parse_bool(
-            use_explicit_window_reseed_override
-            if use_explicit_window_reseed_override is not None
-            else use_explicit_window_reseed_cfg,
-            True,
-        )
-        allow_private_state_mutation = _parse_bool(
-            allow_private_state_mutation_override
-            if allow_private_state_mutation_override is not None
-            else allow_private_state_mutation_cfg,
-            False,
-        )
-        try:
-            boundary_mask_match_iou_threshold = (
-                float(boundary_mask_match_iou_threshold_override)
-                if boundary_mask_match_iou_threshold_override is not None
-                else float(boundary_mask_match_iou_threshold_cfg)
-            )
-        except Exception:
-            boundary_mask_match_iou_threshold = 0.2
-        if score_threshold_detection_override is not None:
-            score_threshold_detection = score_threshold_detection_override
-        if new_det_thresh_override is not None:
-            new_det_thresh = new_det_thresh_override
-        if score_threshold_detection is None:
-            score_threshold_detection = score_threshold_detection_override
-        if new_det_thresh is None:
-            new_det_thresh = new_det_thresh_override
-        try:
-            if isinstance(sliding_window_stride, str):
-                sliding_window_stride = int(sliding_window_stride)
-        except Exception:
-            sliding_window_stride = None
-        try:
-            if isinstance(agent_window_size_cfg, str):
-                agent_window_size_cfg = int(agent_window_size_cfg)
-        except Exception:
-            agent_window_size_cfg = None
-        try:
-            if isinstance(agent_stride_cfg, str):
-                agent_stride_cfg = int(agent_stride_cfg)
-        except Exception:
-            agent_stride_cfg = None
-        try:
-            if isinstance(max_num_objects_cfg, str):
-                max_num_objects_cfg = int(max_num_objects_cfg)
-            else:
-                max_num_objects_cfg = int(max_num_objects_cfg)
-        except Exception:
-            max_num_objects_cfg = 16
-        try:
-            if isinstance(multiplex_count_cfg, str):
-                multiplex_count_cfg = int(multiplex_count_cfg)
-            else:
-                multiplex_count_cfg = int(multiplex_count_cfg)
-        except Exception:
-            multiplex_count_cfg = 16
-        if propagation_direction_override:
-            propagation_direction = propagation_direction_override
-        if max_frame_num_to_track_override is not None:
-            max_frame_num_to_track = max_frame_num_to_track_override
-        if device_override_override:
-            device_override = device_override_override
-        if sliding_window_size_override is not None:
-            sliding_window_size = sliding_window_size_override
-        if sliding_window_stride_override is not None:
-            sliding_window_stride = sliding_window_stride_override
-        max_num_objects = (
-            max_num_objects_override
-            if max_num_objects_override is not None
-            else max_num_objects_cfg
-        )
-        multiplex_count = (
-            multiplex_count_override
-            if multiplex_count_override is not None
-            else multiplex_count_cfg
-        )
-        agent_det_thresh = (
-            agent_det_thresh_override
-            if agent_det_thresh_override is not None
-            else agent_det_thresh_cfg
-            if agent_det_thresh_cfg is not None
-            else score_threshold_detection
-        )
-        agent_window_size = (
-            agent_window_size_override
-            if agent_window_size_override is not None
-            else agent_window_size_cfg
-            if agent_window_size_cfg is not None
-            else sliding_window_size
-        )
-        agent_stride = (
-            agent_stride_override
-            if agent_stride_override is not None
-            else agent_stride_cfg
-            if agent_stride_cfg is not None
-            else sliding_window_stride
-        )
-        agent_output_dir = (
-            agent_output_dir_override
-            if agent_output_dir_override is not None
-            else agent_output_dir_cfg
-        )
-        if isinstance(agent_output_dir, str):
-            agent_output_dir = agent_output_dir.strip() or None
+        options = self._runtime_options(getattr(self.window, "_config", {}) or {})
+        propagation_direction = options.propagation_direction
+        max_frame_num_to_track = options.max_frame_num_to_track
+        device_override = options.device
+        score_threshold_detection = options.score_threshold_detection
+        new_det_thresh = options.new_det_thresh
+        sliding_window_size = options.sliding_window_size
+        sliding_window_stride = options.sliding_window_stride
+        compile_model = options.compile_model
+        offload_video_to_cpu = options.offload_video_to_cpu
+        use_explicit_window_reseed = options.use_explicit_window_reseed
+        boundary_mask_match_iou_threshold = options.boundary_mask_match_iou_threshold
+        allow_private_state_mutation = options.allow_private_state_mutation
+        max_num_objects = options.max_num_objects
+        multiplex_count = options.multiplex_count
+        agent_det_thresh = options.agent_det_thresh
+        agent_window_size = options.agent_window_size
+        agent_stride = options.agent_stride
+        agent_output_dir = options.agent_output_dir
 
         if not annotations:
             annotations = canvas_ann

@@ -204,6 +204,40 @@ def test_canvas_prompt_extraction_preserves_polygons_and_group_ids() -> None:
     assert point_ann["labels"] == [1, 0]
 
 
+def test_canvas_prompt_extraction_normalizes_reversed_rectangles() -> None:
+    manager = Sam3Manager.__new__(Sam3Manager)
+    manager.window = SimpleNamespace(
+        frame_number=2,
+        canvas=SimpleNamespace(
+            shapes=[
+                _Shape(
+                    shape_type="rectangle",
+                    points=[_Point(30, 50), _Point(10, 20)],
+                    label="mouse",
+                    group_id=5,
+                ),
+            ]
+        ),
+    )
+
+    prompts = manager.extract_prompts_from_canvas()
+    annotations = manager._canvas_prompts_to_annotations(
+        frame_idx=2,
+        id_to_labels={},
+    )
+
+    assert prompts["boxes_abs"] == [[10.0, 20.0, 20.0, 30.0]]
+    assert annotations == [
+        {
+            "type": "box",
+            "ann_frame_idx": 2,
+            "box": [10.0, 20.0, 30.0, 50.0],
+            "labels": [5],
+            "obj_id": 5,
+        }
+    ]
+
+
 def test_canvas_polygon_prefers_mask_annotation_when_frame_image_available() -> None:
     manager = Sam3Manager.__new__(Sam3Manager)
     manager.window = SimpleNamespace(
@@ -352,9 +386,15 @@ def test_build_video_processor_merges_live_canvas_seed_frame(
     assert kwargs["allow_private_state_mutation"] is True
 
 
-def test_merge_canvas_annotations_overrides_only_matching_prompt_key() -> None:
+def test_merge_canvas_annotations_overrides_matching_frame_object_pair() -> None:
     saved = [
         {"type": "box", "ann_frame_idx": 42, "box": [0, 0, 10, 10], "obj_id": 1},
+        {
+            "type": "mask",
+            "ann_frame_idx": 42,
+            "mask": np.ones((2, 2), dtype=np.uint8),
+            "obj_id": 1,
+        },
         {"type": "box", "ann_frame_idx": 42, "box": [5, 5, 12, 12], "obj_id": 2},
         {"type": "box", "ann_frame_idx": 7, "box": [2, 2, 6, 6], "obj_id": 3},
     ]
@@ -365,6 +405,12 @@ def test_merge_canvas_annotations_overrides_only_matching_prompt_key() -> None:
     merged = Sam3Manager._merge_canvas_annotations(saved, canvas)
 
     assert len(merged) == 3
+    assert not any(
+        int(ann["ann_frame_idx"]) == 42
+        and int(ann["obj_id"]) == 1
+        and ann["type"] == "mask"
+        for ann in merged
+    )
     assert any(
         int(ann["ann_frame_idx"]) == 42 and int(ann["obj_id"]) == 2 for ann in merged
     )
@@ -377,6 +423,57 @@ def test_merge_canvas_annotations_overrides_only_matching_prompt_key() -> None:
     assert any(
         int(ann["ann_frame_idx"]) == 7 and int(ann["obj_id"]) == 3 for ann in merged
     )
+
+
+def test_runtime_options_coerce_config_and_manager_overrides() -> None:
+    manager = Sam3Manager.__new__(Sam3Manager)
+    manager.device_override = "cpu"
+    manager.sliding_window_size = 9
+    manager.agent_output_dir = "  "
+
+    options = manager._runtime_options(
+        {
+            "sam3": {
+                "score_threshold_detection": "0.45",
+                "new_det_thresh": "bad",
+                "max_frame_num_to_track": "120",
+                "device": "cuda",
+                "sliding_window_size": "5",
+                "sliding_window_stride": "4",
+                "compile_model": "yes",
+                "offload_video_to_cpu": "no",
+                "use_explicit_window_reseed": "false",
+                "boundary_mask_match_iou_threshold": "0.31",
+                "allow_private_state_mutation": "true",
+                "max_num_objects": "0",
+                "multiplex_count": "3",
+                "agent": {
+                    "det_thresh": None,
+                    "window_size": "7",
+                    "stride": "6",
+                    "output_dir": "/tmp/sam3",
+                },
+            }
+        }
+    )
+
+    assert options.score_threshold_detection == 0.45
+    assert options.new_det_thresh is None
+    assert options.max_frame_num_to_track == 120
+    assert options.device == "cpu"
+    assert options.sliding_window_size == 9
+    assert options.sliding_window_stride == 4
+    assert options.compile_model is True
+    assert options.offload_video_to_cpu is False
+    assert options.use_explicit_window_reseed is False
+    assert options.boundary_mask_match_iou_threshold == 0.31
+    assert options.allow_private_state_mutation is True
+    assert options.max_num_objects == 1
+    assert options.multiplex_count == 3
+    assert options.agent_det_thresh == 0.45
+    assert options.agent_window_size == 7
+    assert options.agent_stride == 6
+    assert options.agent_output_dir is None
 
 
 def test_dialog_defaults_keep_agent_output_dir_disabled_by_default() -> None:
