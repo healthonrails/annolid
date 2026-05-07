@@ -93,7 +93,7 @@ class CutieCoreVideoProcessor:
     _MD5 = "a6071de6136982e396851903ab4c083a"
     _DISCOVERED_SEEDS_CACHE: Dict[str, List[SeedFrame]] = {}
     _TRACKING_STATS_VERSION = 4
-    _TRACKING_STATS_FLUSH_INTERVAL = 25
+    _TRACKING_STATS_FLUSH_INTERVAL = 100
 
     def _configure_frame_preprocessing(self, *, brightness: Any, contrast: Any) -> None:
         (
@@ -230,6 +230,20 @@ class CutieCoreVideoProcessor:
         except Exception:
             pass
         return False
+
+    @staticmethod
+    def _format_missing_instance_message(
+        missing_count: int,
+        frame_index: int,
+        missing_labels: Iterable[str],
+    ) -> str:
+        verb = "is" if int(missing_count) == 1 else "are"
+        noun = "instance" if int(missing_count) == 1 else "instances"
+        labels = ", ".join(str(label) for label in missing_labels)
+        return (
+            f"There {verb} {int(missing_count)} missing {noun} in the current frame ({int(frame_index)}).\n\n"
+            f"Missing or occluded: {labels}"
+        )
 
     @staticmethod
     def _normalize_tracking_scalar(value: Any, default: float = 0.0) -> float:
@@ -599,6 +613,7 @@ class CutieCoreVideoProcessor:
         payload = self._load_tracking_stats()
         payload["updated_at"] = datetime.utcnow().isoformat() + "Z"
         persist_payload = self._build_tracking_stats_persist_payload(payload)
+        payload["summary"] = dict(persist_payload.get("summary", {}))
         path = self._tracking_stats_path()
         tmp_path = path.with_suffix(path.suffix + ".tmp")
         try:
@@ -800,6 +815,18 @@ class CutieCoreVideoProcessor:
         key = str(normalized_frame)
         entry = frame_stats.get(key)
         had_persisted_entry = isinstance(entry, dict)
+        if not had_persisted_entry:
+            source_name = str(source or "")
+            missing_labels = list(missing_instance_labels or [])
+            unresolved_labels = list(unresolved_missing_instance_labels or [])
+            has_missing_update = (
+                int(missing_instance_count or 0) > 0
+                or int(unresolved_missing_instance_count or 0) > 0
+                or bool(missing_labels)
+                or bool(unresolved_labels)
+            )
+            if source_name in {"", "prediction"} and not has_missing_update:
+                return
         if not isinstance(entry, dict):
             entry = {}
         before = dict(entry)
@@ -1832,7 +1859,6 @@ class CutieCoreVideoProcessor:
                 store_record_exists=True,
             )
             if bool(getattr(self, "_tracking_stats_dirty", False)):
-                self._recompute_tracking_stats_summary(self._load_tracking_stats())
                 self._flush_tracking_stats(force=False)
         return label_list
 
@@ -2929,18 +2955,10 @@ class CutieCoreVideoProcessor:
                         if missing_instances:
                             initial_missing_instances = set(missing_instances)
                             missing_count = int(expected_instance_count - len(mask_dict))
-                            verb = "is" if missing_count == 1 else "are"
-                            noun = "instance" if missing_count == 1 else "instances"
-                            message = (
-                                f"There {verb} {missing_count} missing {noun} in the current frame ({current_frame_index}).\n\n"
-                                f"Missing or occluded: {', '.join(str(instance) for instance in missing_instances)}"
-                            )
-                            message_with_index = (
-                                message + delimiter + str(current_frame_index)
-                            )
                             missing_key = tuple(
                                 sorted(str(instance) for instance in missing_instances)
                             )
+                            message: Optional[str] = None
                             if missing_key == last_missing_key:
                                 missing_streak += 1
                             else:
@@ -2960,6 +2978,9 @@ class CutieCoreVideoProcessor:
                                         ", ".join(missing_key),
                                     )
                                     suppressed_missing_logs = 0
+                                message = self._format_missing_instance_message(
+                                    missing_count, current_frame_index, missing_key
+                                )
                                 logger.info(message)
                             else:
                                 suppressed_missing_logs += 1
@@ -3024,16 +3045,24 @@ class CutieCoreVideoProcessor:
                                     if recovery_enabled or fill_enabled
                                     else ""
                                 )
-                                logger.info(
-                                    "Missing instances%s at frame %s: %s",
-                                    suffix,
-                                    current_frame_index,
-                                    ", ".join(
-                                        str(instance)
-                                        for instance in sorted(missing_instances)
-                                    ),
+                                missing_labels_text = ", ".join(
+                                    str(instance)
+                                    for instance in sorted(missing_instances)
                                 )
-                                if pred_worker is not None:
+                                if should_log_missing:
+                                    logger.info(
+                                        "Missing instances%s at frame %s: %s",
+                                        suffix,
+                                        current_frame_index,
+                                        missing_labels_text,
+                                )
+                                if pred_worker is not None and should_log_missing:
+                                    if message is None:
+                                        message = self._format_missing_instance_message(
+                                            missing_count,
+                                            current_frame_index,
+                                            missing_key,
+                                        )
                                     missing_payload = {
                                         "event": "missing_instance",
                                         "frame": int(current_frame_index),
@@ -3060,6 +3089,15 @@ class CutieCoreVideoProcessor:
                                 )
                             )
                             if should_pause_for_missing_instances:
+                                if message is None:
+                                    message = self._format_missing_instance_message(
+                                        missing_count,
+                                        current_frame_index,
+                                        missing_key,
+                                    )
+                                message_with_index = (
+                                    message + delimiter + str(current_frame_index)
+                                )
                                 self._save_annotation_with_notes(
                                     filename,
                                     mask_dict,

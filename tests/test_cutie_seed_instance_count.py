@@ -912,6 +912,10 @@ def test_process_segment_suppresses_repetitive_missing_instance_logs(
         if "There is 1 missing instance in the current frame" in msg
     ]
     assert len(repetitive_missing_logs) == 1
+    per_frame_missing_logs = [
+        msg for msg in log_messages if "Missing instances at frame" in msg
+    ]
+    assert len(per_frame_missing_logs) == 1
 
 
 def test_process_segment_skips_persist_for_already_labeled_frames(
