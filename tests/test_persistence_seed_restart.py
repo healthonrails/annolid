@@ -32,6 +32,7 @@ class _DummyWindow(PersistenceLifecycleMixin):
         self.last_known_predicted_frame = -1
         self.prediction_start_timestamp = 0.0
         self._prediction_forced_start_frame = None
+        self._prediction_forced_end_frame = None
         self.annotation_caches_cleared = 0
 
     def _scan_prediction_folder(self, *_args, **_kwargs) -> None:
@@ -187,6 +188,7 @@ def test_delete_all_future_predictions_preserves_manual_seed_pairs(
     assert store.last_after_call is None
     assert store.last_range_call == (11, 11, {12})
     assert window._prediction_forced_start_frame == 11
+    assert window._prediction_forced_end_frame == 11
     assert window.annotation_caches_cleared == 1
     payload = json.loads(stats_path.read_text(encoding="utf-8"))
     frame_stats = payload.get("frame_stats", {})
@@ -213,6 +215,28 @@ def test_delete_all_future_predictions_sets_restart_hint_even_without_removals(
     window.deleteAllFuturePredictions()
 
     assert window._prediction_forced_start_frame == 28
+    assert window._prediction_forced_end_frame is None
+
+
+def test_delete_all_future_predictions_does_not_bound_empty_seed_gap(
+    tmp_path: Path, monkeypatch
+) -> None:
+    folder = tmp_path / "video_results"
+    folder.mkdir(parents=True, exist_ok=True)
+    for frame in (10, 11):
+        (folder / f"video_results_{frame:09d}.json").write_text("{}", encoding="utf-8")
+        (folder / f"video_results_{frame:09d}.png").write_text("seed", encoding="utf-8")
+    window = _DummyWindow(folder, frame_number=10)
+    monkeypatch.setattr(
+        persistence_mod.AnnotationStore,
+        "for_frame_path",
+        lambda _p: _DummyStore(),
+    )
+
+    window.deleteAllFuturePredictions()
+
+    assert window._prediction_forced_start_frame == 11
+    assert window._prediction_forced_end_frame is None
 
 
 def test_delete_all_future_predictions_without_future_seed_deletes_all_future(
@@ -260,6 +284,7 @@ def test_delete_all_future_predictions_without_future_seed_deletes_all_future(
     assert (folder / "video_results_000000013.json").exists() is False
     assert store.last_after_call == (10, {10})
     assert store.last_range_call is None
+    assert window._prediction_forced_end_frame is None
     payload = json.loads(stats_path.read_text(encoding="utf-8"))
     frame_stats = payload.get("frame_stats", {})
     assert "10" in frame_stats

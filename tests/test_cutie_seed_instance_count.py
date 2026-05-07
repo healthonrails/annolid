@@ -309,6 +309,18 @@ def test_resolve_start_frame_for_seed_backfill_keeps_requested_when_covered() ->
     assert resolved == 99
 
 
+def test_resolve_start_frame_for_seed_backfill_uses_nearest_gap_seed() -> None:
+    intervals = CutieCoreVideoProcessor._build_frame_intervals(
+        set(range(0, 100)) | set(range(200, 250))
+    )
+    resolved = CutieCoreVideoProcessor._resolve_start_frame_for_seed_backfill(
+        requested_start_frame=250,
+        seed_frame_indices=[0, 100, 200, 250],
+        labeled_intervals=intervals,
+    )
+    assert resolved == 100
+
+
 def test_json_has_manual_seed_content_accepts_parseable_json(tmp_path) -> None:
     json_path = tmp_path / "seed.json"
     payload = {

@@ -32,6 +32,23 @@ def test_cutie_start_keeps_frame_zero_bootstrap_for_single_seed() -> None:
     assert start == 0
 
 
+def test_cutie_end_uses_video_end_by_default() -> None:
+    end = PredictionExecutionMixin._resolve_cutie_end_frame_for_run(
+        current_end_frame=60,
+        num_frames=1000,
+    )
+    assert end == 999
+
+
+def test_cutie_end_honors_forced_repair_bound() -> None:
+    end = PredictionExecutionMixin._resolve_cutie_end_frame_for_run(
+        current_end_frame=999,
+        num_frames=1000,
+        forced_end_frame=250,
+    )
+    assert end == 250
+
+
 def test_sam3_start_uses_first_manual_seed_plus_one() -> None:
     start = PredictionExecutionMixin._resolve_sam3_start_frame_from_seed_state(
         current_start_frame=0,

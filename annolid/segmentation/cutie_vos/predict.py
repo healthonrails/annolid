@@ -1403,6 +1403,27 @@ class CutieCoreVideoProcessor:
             cur_end = max(cur_end, nxt_end)
 
     @staticmethod
+    def _first_uncovered_frame(
+        intervals: List[Tuple[int, int]], start: int, end: int
+    ) -> Optional[int]:
+        """Return the first frame in [start, end] not covered by intervals."""
+        if start > end:
+            return None
+        target = int(start)
+        for interval_start, interval_end in intervals:
+            interval_start = int(interval_start)
+            interval_end = int(interval_end)
+            if interval_end < target:
+                continue
+            if interval_start > target:
+                return target
+            if interval_start <= target <= interval_end:
+                target = interval_end + 1
+                if target > end:
+                    return None
+        return target if target <= end else None
+
+    @staticmethod
     def _segment_already_completed(
         segment: SeedSegment,
         resolved_end: int,
@@ -1432,8 +1453,8 @@ class CutieCoreVideoProcessor:
         """Adjust CUTIE start frame when there are unlabeled gaps between seeds.
 
         If a user requests prediction from a later seed but earlier ranges between
-        seeds are not covered by existing annotations, restart from the earliest
-        seed so missing frames are backfilled.
+        seeds are not covered by existing annotations, restart from the nearest
+        seed that can backfill the first uncovered gap.
         """
         try:
             requested = max(0, int(requested_start_frame))
@@ -1458,18 +1479,26 @@ class CutieCoreVideoProcessor:
         if target_end < earliest_seed:
             return requested
 
-        if CutieCoreVideoProcessor._range_fully_covered(
+        first_gap = CutieCoreVideoProcessor._first_uncovered_frame(
             labeled_intervals, earliest_seed, target_end
-        ):
+        )
+        if first_gap is None:
             return requested
 
+        restart_seed = earliest_seed
+        for seed in normalized_seeds:
+            if seed > first_gap:
+                break
+            restart_seed = int(seed)
+
         logger.info(
-            "Detected missing predictions between seed frame %s and requested "
-            "start frame %s; restarting from earliest seed.",
-            earliest_seed,
+            "Detected missing predictions from frame %s before requested start "
+            "frame %s; restarting from seed frame %s.",
+            first_gap,
             requested,
+            restart_seed,
         )
-        return earliest_seed
+        return restart_seed
 
     def initialize_video_writer(
         self, output_video_path, frame_width, frame_height, fps=30

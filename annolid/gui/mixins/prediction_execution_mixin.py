@@ -50,6 +50,19 @@ class PredictionExecutionMixin:
         return start
 
     @staticmethod
+    def _resolve_cutie_end_frame_for_run(
+        current_end_frame: int,
+        num_frames: int,
+        forced_end_frame: int | None = None,
+    ) -> int:
+        """Resolve CUTIE run end, honoring bounded repair runs when present."""
+        last_frame = max(0, int(num_frames) - 1)
+        if forced_end_frame is not None:
+            return min(max(0, int(forced_end_frame)), last_frame)
+        _ = current_end_frame
+        return last_frame
+
+    @staticmethod
     def _resolve_sam3_start_frame_from_seed_state(
         current_start_frame: int,
         first_manual_seed: int,
@@ -731,12 +744,20 @@ class PredictionExecutionMixin:
             inference_end_frame = None
             inference_skip_existing = True
             forced_start_frame = getattr(self, "_prediction_forced_start_frame", None)
+            forced_end_frame = getattr(self, "_prediction_forced_end_frame", None)
             has_forced_start = forced_start_frame is not None
+            has_forced_end = forced_end_frame is not None
             if has_forced_start:
                 try:
                     inference_start_frame = max(0, int(forced_start_frame))
                 except Exception:
                     has_forced_start = False
+            if has_forced_end:
+                try:
+                    forced_end_frame = max(0, int(forced_end_frame))
+                except Exception:
+                    forced_end_frame = None
+                    has_forced_end = False
             is_point_tracking_model = bool(
                 self._is_cotracker_model(model_name, model_weight)
                 or self._is_cowtracker_model(model_name, model_weight)
@@ -871,7 +892,11 @@ class PredictionExecutionMixin:
                 # CUTIE already processes seed-defined segments sequentially inside a
                 # single run. Avoid GUI-level chunk restarts that make progress look
                 # stalled and repeatedly restart from earlier seeds.
-                end_frame = self.num_frames - 1
+                end_frame = self._resolve_cutie_end_frame_for_run(
+                    int(end_frame),
+                    int(self.num_frames),
+                    int(forced_end_frame) if has_forced_end else None,
+                )
             if self._is_cotracker_model(model_name, model_weight):
                 # CoTracker can stream windows efficiently to the end of the video.
                 end_frame = self.num_frames - 1
@@ -1010,6 +1035,7 @@ class PredictionExecutionMixin:
                     )
             # Forced restart is a one-shot hint set by prediction cleanup actions.
             self._prediction_forced_start_frame = None
+            self._prediction_forced_end_frame = None
             logger.info("Prediction started from frame: %s", int(watch_start_frame))
             self.stepSizeWidget.predict_button.setText("Stop")
             self.stepSizeWidget.predict_button.setStyleSheet(

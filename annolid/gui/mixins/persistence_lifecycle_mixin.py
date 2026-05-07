@@ -523,8 +523,10 @@ class PersistenceLifecycleMixin:
             # Keep a one-shot hint so the next prediction run starts at N+1 and
             # treats frame N as the latest seed context.
             self._prediction_forced_start_frame = max(0, int(self.frame_number) + 1)
+            self._prediction_forced_end_frame = None
         except Exception:
             self._prediction_forced_start_frame = None
+            self._prediction_forced_end_frame = None
 
         deleted_files = 0
         seed_frames = sorted(self._collect_seed_frames(prediction_folder))
@@ -535,6 +537,11 @@ class PersistenceLifecycleMixin:
         )
         delete_start = int(self.frame_number) + 1
         delete_end = int(next_seed) - 1 if next_seed is not None else None
+        if delete_end is not None and int(delete_end) >= int(delete_start):
+            try:
+                self._prediction_forced_end_frame = int(delete_end)
+            except Exception:
+                self._prediction_forced_end_frame = None
 
         logger.info(f"Scanning for future predictions in: {prediction_folder}")
         if next_seed is not None:
