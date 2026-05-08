@@ -95,6 +95,7 @@ class CutieCoreVideoProcessor:
     _DISCOVERED_SEEDS_CACHE: Dict[str, List[SeedFrame]] = {}
     _TRACKING_STATS_VERSION = 4
     _TRACKING_STATS_FLUSH_INTERVAL = 100
+    _PRIOR_REFERENCE_SEED_LIMIT = 3
 
     def _configure_frame_preprocessing(self, *, brightness: Any, contrast: Any) -> None:
         (
@@ -1979,6 +1980,147 @@ class CutieCoreVideoProcessor:
         growth_ratio = current_ratio / max(previous_ratio, 1.0 / frame_area)
         return growth_ratio >= 1.35
 
+    @staticmethod
+    def _is_frame_sized_mask(mask: np.ndarray, frame_area: float) -> bool:
+        """Return True when a binary mask covers almost the whole frame."""
+        if frame_area <= 0:
+            return False
+        mask_bool = np.asarray(mask).astype(bool)
+        if mask_bool.ndim != 2 or not mask_bool.any():
+            return False
+        if float(np.count_nonzero(mask_bool)) / max(float(frame_area), 1.0) < 0.97:
+            return False
+        return bool(
+            mask_bool[0, :].any()
+            and mask_bool[-1, :].any()
+            and mask_bool[:, 0].any()
+            and mask_bool[:, -1].any()
+        )
+
+    def _tracking_collapse_artifact_labels(
+        self,
+        mask_dict: Dict[str, np.ndarray],
+        missing_instances: Set[str],
+        frame_area: float,
+    ) -> List[str]:
+        """Detect CUTIE collapse: multiple missing labels plus frame-sized output."""
+        if len(missing_instances) < 2:
+            return []
+        artifact_labels: List[str] = []
+        for label, mask in (mask_dict or {}).items():
+            if self._is_frame_sized_mask(mask, frame_area):
+                artifact_labels.append(str(label))
+        return sorted(artifact_labels)
+
+    def _fill_tracking_collapse_from_recent_masks(
+        self,
+        mask_dict: Dict[str, np.ndarray],
+        labels: Iterable[str],
+        seed_segment: Optional[SeedSegment] = None,
+    ) -> Tuple[Dict[str, np.ndarray], Dict[str, str]]:
+        """Use recent good masks for labels involved in a collapse frame."""
+        recovered: Dict[str, np.ndarray] = {}
+        notes: Dict[str, str] = {}
+        seed_masks: Dict[str, np.ndarray] = {}
+        if seed_segment is not None:
+            seed_masks = self._build_seed_mask_dict(
+                seed_segment, {str(item) for item in labels}
+            )
+        for label in sorted(str(item) for item in labels):
+            prev_mask = self._recent_instance_masks.get(label)
+            if prev_mask is None:
+                seed_mask = seed_masks.get(label)
+                if seed_mask is None:
+                    continue
+                seed_mask = np.asarray(seed_mask).astype(bool)
+                if seed_mask.ndim != 2 or not seed_mask.any():
+                    continue
+                recovered[label] = seed_mask.copy()
+                source_seed = seed_segment.seed.frame_index if seed_segment.seed else None
+                if source_seed is None:
+                    notes[label] = "filled_from_seed_mask(cutie_collapse)"
+                else:
+                    notes[label] = f"filled_from_seed_mask(frame={source_seed}, cutie_collapse)"
+            else:
+                prev_mask = np.asarray(prev_mask).astype(bool)
+                if prev_mask.ndim != 2 or not prev_mask.any():
+                    continue
+                prev_frame = self._recent_instance_mask_frames.get(label)
+                recovered[label] = prev_mask.copy()
+                if prev_frame is None:
+                    notes[label] = "filled_from_previous_available_instance_mask(cutie_collapse)"
+                else:
+                    notes[label] = (
+                        "filled_from_previous_available_instance_mask"
+                        f"(frame={prev_frame}, cutie_collapse)"
+                    )
+        mask_dict.update(recovered)
+        return recovered, notes
+
+    def _reset_cutie_memory_after_collapse(
+        self,
+        frame,
+        mask_dict: Dict[str, np.ndarray],
+        labels_dict: Dict[str, int],
+        active_ids: List[int],
+        seed_frames: Optional[List[SeedFrame]],
+        seed_segment_lookup: Optional[Dict[int, SeedSegment]],
+        current_frame_index: int,
+        end_frame: int,
+    ) -> bool:
+        """Reset CUTIE memory from seed references and recovered current masks."""
+        try:
+            self.processor = InferenceCore(self.cutie, cfg=self.cfg)
+            self._committed_seed_frames.clear()
+            _labels_dict = self.commit_masks_into_permanent_memory(
+                int(current_frame_index),
+                labels_dict,
+                seed_frames=seed_frames,
+                seed_segment_lookup=seed_segment_lookup,
+                segment_end=end_frame,
+            )
+            labels_dict.update(_labels_dict)
+            recovered_global = np.zeros(frame.shape[:2], dtype=np.int32)
+            for label, global_id in labels_dict.items():
+                if label == "_background_":
+                    continue
+                mask = mask_dict.get(str(label))
+                if mask is None:
+                    continue
+                mask_bool = np.asarray(mask).astype(bool)
+                if mask_bool.shape != recovered_global.shape or not mask_bool.any():
+                    continue
+                recovered_global[mask_bool] = int(global_id)
+            mask_tensor, reset_active_ids = self._build_object_mask_tensor(
+                recovered_global
+            )
+            if mask_tensor is None or not reset_active_ids:
+                return False
+            self._register_active_objects(reset_active_ids)
+            mask_tensor = mask_tensor.to(self.device)
+            frame_torch = image_to_torch(frame, device=self.device)
+            self.processor.step(
+                frame_torch,
+                mask_tensor,
+                objects=reset_active_ids,
+                idx_mask=False,
+                force_permanent=True,
+            )
+            active_ids[:] = list(reset_active_ids)
+            logger.info(
+                "Reset CUTIE memory at frame %s using %s recovered instance mask(s).",
+                current_frame_index,
+                len(reset_active_ids),
+            )
+            return True
+        except Exception:
+            logger.warning(
+                "Failed to reset CUTIE memory after collapse at frame %s.",
+                current_frame_index,
+                exc_info=True,
+            )
+            return False
+
     def _is_suspicious_mask_jump(
         self, label: str, mask: np.ndarray, frame_area: float
     ) -> bool:
@@ -2463,12 +2605,13 @@ class CutieCoreVideoProcessor:
                         self.video_name, self.video_folder
                     )
 
-                for seed in candidate_seeds:
-                    if seed.frame_index <= frame_number:
-                        continue
+                reference_seeds = self._reference_seed_frames_for_segment(
+                    int(frame_number),
+                    candidate_seeds,
+                    segment_end=segment_end,
+                )
+                for seed in reference_seeds:
                     if seed.frame_index in self._committed_seed_frames:
-                        continue
-                    if segment_end is not None and seed.frame_index > segment_end:
                         continue
 
                     segment = None
@@ -2522,6 +2665,53 @@ class CutieCoreVideoProcessor:
                     )
 
                 return labels_dict
+
+    @classmethod
+    def _reference_seed_frames_for_segment(
+        cls,
+        frame_number: int,
+        seed_frames: Iterable[SeedFrame],
+        segment_end: Optional[int] = None,
+        prior_limit: Optional[int] = None,
+    ) -> List[SeedFrame]:
+        """Return bounded seed references to commit for a segment start.
+
+        Short CUTIE repairs commonly skip already-labeled spans and begin from a
+        later seed. Keep a few recent prior seed masks in permanent memory so
+        the resumed segment has stable object references without replaying all
+        skipped frames. Future seeds inside the same segment preserve the
+        existing reference behavior.
+        """
+        normalized = sorted(
+            {
+                int(seed.frame_index): seed
+                for seed in (seed_frames or [])
+                if seed is not None and int(seed.frame_index) >= 0
+            }.values(),
+            key=lambda seed: int(seed.frame_index),
+        )
+        current = max(0, int(frame_number))
+        limit = (
+            cls._PRIOR_REFERENCE_SEED_LIMIT
+            if prior_limit is None
+            else max(0, int(prior_limit))
+        )
+        prior = [seed for seed in normalized if int(seed.frame_index) < current]
+        nonzero_prior = [seed for seed in prior if int(seed.frame_index) > 0]
+        if nonzero_prior:
+            prior = nonzero_prior
+        selected_prior = prior[-limit:] if limit > 0 else []
+
+        future: List[SeedFrame] = []
+        for seed in normalized:
+            seed_frame = int(seed.frame_index)
+            if seed_frame <= current:
+                continue
+            if segment_end is not None and seed_frame > int(segment_end):
+                continue
+            future.append(seed)
+
+        return [*selected_prior, *future]
 
     def _run_segments(
         self,
@@ -3063,6 +3253,59 @@ class CutieCoreVideoProcessor:
                                     missing_instances = (
                                         instance_names - set(mask_dict.keys())
                                     )
+                            collapse_artifact_labels = (
+                                self._tracking_collapse_artifact_labels(
+                                    mask_dict,
+                                    initial_missing_instances,
+                                    float(frame.shape[0] * frame.shape[1]),
+                                )
+                            )
+                            collapse_missing_instances = set(missing_instances)
+                            collapse_reset = False
+                            if collapse_artifact_labels:
+                                collapse_labels = set(collapse_artifact_labels) | set(
+                                    initial_missing_instances
+                                )
+                                collapse_filled, collapse_notes = (
+                                    self._fill_tracking_collapse_from_recent_masks(
+                                        mask_dict,
+                                        collapse_labels,
+                                        seed_segment=segment,
+                                    )
+                                )
+                                if collapse_filled:
+                                    shape_notes_for_frame.update(collapse_notes)
+                                    missing_instances = (
+                                        instance_names - set(mask_dict.keys())
+                                    )
+                                    if not missing_instances:
+                                        collapse_reset = (
+                                            self._reset_cutie_memory_after_collapse(
+                                                frame,
+                                                mask_dict,
+                                                labels_dict,
+                                                active_ids,
+                                                seed_frames,
+                                                seed_segment_lookup,
+                                                current_frame_index,
+                                                end_frame,
+                                            )
+                                        )
+                                logger.warning(
+                                    "CUTIE tracking collapse detected at frame %s: "
+                                    "missing=%s frame_sized=%s; %s.",
+                                    current_frame_index,
+                                    ", ".join(
+                                        sorted(
+                                            str(instance)
+                                            for instance in initial_missing_instances
+                                        )
+                                    ),
+                                    ", ".join(collapse_artifact_labels),
+                                    "recovered from seed/recent masks and continuing"
+                                    if collapse_reset
+                                    else "unable to fully recover; stopping for reseed",
+                                )
                             self._update_tracking_frame_stat(
                                 current_frame_index,
                                 source="prediction",
@@ -3133,7 +3376,11 @@ class CutieCoreVideoProcessor:
                                         pass
 
                             should_pause_for_missing_instances = bool(
-                                self._should_pause_for_missing_instances(
+                                (
+                                    collapse_artifact_labels
+                                    and not collapse_reset
+                                )
+                                or self._should_pause_for_missing_instances(
                                     missing_instances,
                                     has_occlusion=has_occlusion,
                                 )
@@ -3144,6 +3391,22 @@ class CutieCoreVideoProcessor:
                                         missing_count,
                                         current_frame_index,
                                         missing_key,
+                                    )
+                                if collapse_artifact_labels:
+                                    collapse_missing_text = ", ".join(
+                                        sorted(
+                                            str(instance)
+                                            for instance in collapse_missing_instances
+                                        )
+                                    )
+                                    collapse_artifact_text = ", ".join(
+                                        collapse_artifact_labels
+                                    )
+                                    message = (
+                                        "CUTIE tracking collapse detected in frame "
+                                        f"({current_frame_index}).\n\n"
+                                        f"Missing or occluded: {collapse_missing_text}\n"
+                                        f"Frame-sized artifact: {collapse_artifact_text}"
                                     )
                                 message_with_index = (
                                     message + delimiter + str(current_frame_index)
@@ -3395,11 +3658,16 @@ class CutieCoreVideoProcessor:
             seed for seed in valid_seed_frames if seed.frame_index >= start_frame
         ]
 
-        # Include the nearest earlier seed so CUTIE can propagate through the gap
-        # before the first later seed (e.g., seeds at 0 and 100 with start at 1).
+        # Include recent earlier seeds so skipped completed spans still provide
+        # stable CUTIE references for short repair segments.
         if prior_seeds:
-            nearest_prior_seed = prior_seeds[-1]
-            selected = [nearest_prior_seed, *later_seeds]
+            nonzero_prior_seeds = [
+                seed for seed in prior_seeds if int(seed.frame_index) > 0
+            ]
+            if nonzero_prior_seeds:
+                prior_seeds = nonzero_prior_seeds
+            selected_prior_seeds = prior_seeds[-self._PRIOR_REFERENCE_SEED_LIMIT :]
+            selected = [*selected_prior_seeds, *later_seeds]
             # Deduplicate while preserving order.
             deduped = []
             seen = set()
@@ -3409,8 +3677,9 @@ class CutieCoreVideoProcessor:
                 seen.add(seed.frame_index)
                 deduped.append(seed)
             logger.info(
-                "Using nearest earlier seed at frame %s for start_frame %s.",
-                nearest_prior_seed.frame_index,
+                "Using %s earlier seed reference(s), nearest at frame %s, for start_frame %s.",
+                len(selected_prior_seeds),
+                selected_prior_seeds[-1].frame_index,
                 start_frame,
             )
             return deduped

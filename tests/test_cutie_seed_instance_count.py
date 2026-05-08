@@ -248,7 +248,7 @@ def test_select_seed_frames_uses_nearest_prior_for_multi_seed_start() -> None:
     }
 
     selected = processor._select_seed_frames_for_start(start_frame=301)
-    assert [seed.frame_index for seed in selected] == [300]
+    assert [seed.frame_index for seed in selected] == [100, 200, 300]
 
 
 def test_select_seed_frames_prefers_nearest_prior_seed_without_frame_zero_anchor() -> (
@@ -285,6 +285,91 @@ def test_select_seed_frames_prefers_nearest_prior_seed_without_frame_zero_anchor
 
     selected = processor._select_seed_frames_for_start(start_frame=150)
     assert [seed.frame_index for seed in selected] == [100, 200]
+
+
+def test_reference_seed_frames_for_segment_keeps_recent_prior_and_future() -> None:
+    seeds = [_seed(0), _seed(100), _seed(200), _seed(300), _seed(400), _seed(500)]
+
+    selected = CutieCoreVideoProcessor._reference_seed_frames_for_segment(
+        frame_number=350,
+        seed_frames=seeds,
+        segment_end=450,
+    )
+
+    assert [seed.frame_index for seed in selected] == [100, 200, 300, 400]
+
+
+def test_reference_seed_frames_for_segment_can_disable_prior_references() -> None:
+    seeds = [_seed(0), _seed(100), _seed(200), _seed(300)]
+
+    selected = CutieCoreVideoProcessor._reference_seed_frames_for_segment(
+        frame_number=250,
+        seed_frames=seeds,
+        segment_end=350,
+        prior_limit=0,
+    )
+
+    assert [seed.frame_index for seed in selected] == [300]
+
+
+def test_commit_masks_into_permanent_memory_commits_prior_references(
+    monkeypatch,
+) -> None:
+    class _DummyCommittedMask:
+        def to(self, _device):
+            return self
+
+    class _DummyProcessor:
+        def __init__(self):
+            self.calls = []
+
+        def step(self, _frame, _mask, *, objects, **_kwargs):
+            self.calls.append(list(objects))
+            return None
+
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    processor.cfg = types.SimpleNamespace(amp=False)
+    processor.device = "cpu"
+    processor.video_name = "clip.mp4"
+    processor.video_folder = Path("clip")
+    processor._seed_frames = [_seed(100), _seed(200), _seed(300), _seed(400)]
+    processor._seed_segment_lookup = {
+        frame: SeedSegment(
+            seed=_seed(frame),
+            start_frame=frame,
+            end_frame=None,
+            mask=np.array([[1, 0], [0, 0]], dtype=np.int32),
+            labels_map={"_background_": 0, "mouse": 1},
+            active_labels=["mouse"],
+        )
+        for frame in [100, 200, 300, 400]
+    }
+    processor._committed_seed_frames = set()
+    processor.processor = _DummyProcessor()
+    processor._apply_inference_brightness_contrast = lambda frame: frame
+    processor._build_object_mask_tensor = lambda _mask: (_DummyCommittedMask(), [1])
+    processor._register_active_objects = lambda _ids: None
+
+    monkeypatch.setattr(
+        cutie_predict.cv2,
+        "imread",
+        lambda _path: np.zeros((2, 2, 3), dtype=np.uint8),
+    )
+    monkeypatch.setattr(
+        cutie_predict, "image_to_torch", lambda frame, device=None: frame
+    )
+
+    labels = processor.commit_masks_into_permanent_memory(
+        350,
+        {"_background_": 0},
+        seed_frames=processor._seed_frames,
+        seed_segment_lookup=processor._seed_segment_lookup,
+        segment_end=450,
+    )
+
+    assert labels == {"_background_": 0, "mouse": 1}
+    assert processor._committed_seed_frames == {100, 200, 300, 400}
+    assert processor.processor.calls == [[1], [1], [1], [1]]
 
 
 def test_resolve_start_frame_for_seed_backfill_restarts_from_zero_when_gap_exists() -> (
@@ -917,6 +1002,145 @@ def test_process_segment_keeps_occlusion_mode_when_automatic_pause_disabled(
     assert message == "Stop at frame:\n#0"
     assert saved_masks["labels"] == {"mouse"}
     assert saved_masks["notes"] == {}
+
+
+def test_process_segment_recovers_multi_instance_collapse_with_frame_sized_artifact(
+    monkeypatch,
+) -> None:
+    class _DummyInferenceCore:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def step(self, *_args, **_kwargs):
+            # One object expands to the whole frame while two expected objects vanish.
+            return np.ones((4, 4), dtype=np.int32)
+
+    class _DummyCap:
+        def __init__(self):
+            self._done = False
+            self._pos = 0
+
+        def get(self, _prop):
+            return self._pos
+
+        def set(self, _prop, value):
+            self._pos = int(value)
+
+        def isOpened(self):
+            return not self._done
+
+        def read(self):
+            if self._done:
+                return False, None
+            self._done = True
+            return True, np.zeros((4, 4, 3), dtype=np.uint8)
+
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    processor.cutie = object()
+    processor.cfg = types.SimpleNamespace(amp=False)
+    processor.device = "cpu"
+    processor.video_folder = Path("clip")
+    processor.label_registry = {
+        "_background_": 0,
+        "stim_left": 1,
+        "stim_right": 2,
+        "subject": 3,
+    }
+    processor._global_label_names = {}
+    processor.compute_optical_flow = False
+    processor.auto_missing_instance_recovery = False
+    processor.auto_fill_missing_instances = False
+    processor.continue_on_missing_instances = True
+    processor.debug = False
+    processor._optical_flow_kwargs = {}
+    processor.optical_flow_backend = "farneback"
+    processor._last_saved_instance_masks = {}
+    processor._committed_seed_frames = set()
+    processor._flow_hsv = None
+    processor._should_stop = lambda _worker=None: False
+    processor.commit_masks_into_permanent_memory = lambda *_args, **_kwargs: {
+        "_background_": 0,
+        "stim_left": 1,
+        "stim_right": 2,
+        "subject": 3,
+    }
+    processor._build_object_mask_tensor = lambda _mask: (
+        torch.zeros((3, 4, 4), dtype=torch.float32),
+        [1, 2, 3],
+    )
+    processor._register_active_objects = lambda _ids: None
+    processor._update_tracking_frame_stat = lambda *_args, **_kwargs: None
+
+    prior_masks = {
+        "stim_left": np.eye(4, dtype=bool),
+        "stim_right": np.fliplr(np.eye(4, dtype=bool)),
+        "subject": np.array(
+            [
+                [False, False, False, False],
+                [False, True, True, False],
+                [False, True, True, False],
+                [False, False, False, False],
+            ],
+            dtype=bool,
+        ),
+    }
+    processor._recent_instance_masks = {
+        label: mask.copy() for label, mask in prior_masks.items()
+    }
+    processor._recent_instance_mask_frames = {label: 41 for label in prior_masks}
+
+    saved = {}
+
+    def _capture_save(_filename, mask_dict, _shape, shape_notes=None):
+        saved["labels"] = set(mask_dict)
+        saved["masks"] = {label: mask.copy() for label, mask in mask_dict.items()}
+        saved["notes"] = dict(shape_notes or {})
+        processor._last_saved_instance_masks = saved["masks"]
+
+    processor._save_annotation_with_notes = _capture_save
+    processor._update_recent_instance_masks = lambda *_args, **_kwargs: None
+
+    monkeypatch.setattr(cutie_predict, "InferenceCore", _DummyInferenceCore)
+    monkeypatch.setattr(
+        cutie_predict, "image_to_torch", lambda frame, device=None: frame
+    )
+    monkeypatch.setattr(cutie_predict, "torch_prob_to_numpy_mask", lambda pred: pred)
+
+    segment = SeedSegment(
+        seed=_seed(42),
+        start_frame=42,
+        end_frame=42,
+        mask=np.array(
+            [
+                [1, 0, 0, 2],
+                [0, 1, 2, 0],
+                [0, 3, 3, 0],
+                [2, 0, 0, 1],
+            ],
+            dtype=np.int32,
+        ),
+        labels_map={
+            "_background_": 0,
+            "stim_left": 1,
+            "stim_right": 2,
+            "subject": 3,
+        },
+        active_labels=["stim_left", "stim_right", "subject"],
+    )
+
+    message, should_halt = processor._process_segment(
+        cap=_DummyCap(),
+        segment=segment,
+        end_frame=42,
+        fps=5.0,
+    )
+
+    assert should_halt is False
+    assert message == "Stop at frame:\n#42"
+    assert saved["labels"] == {"stim_left", "stim_right", "subject"}
+    for label, expected_mask in prior_masks.items():
+        assert np.array_equal(saved["masks"][label], expected_mask)
+        assert "cutie_collapse" in saved["notes"][label]
 
 
 def test_process_segment_suppresses_repetitive_missing_instance_logs(
