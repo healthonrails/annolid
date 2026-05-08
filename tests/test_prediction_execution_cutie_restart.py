@@ -49,6 +49,20 @@ def test_cutie_end_honors_forced_repair_bound() -> None:
     assert end == 250
 
 
+def test_tracking_processor_cache_key_is_stable_for_kwarg_order() -> None:
+    key_a = PredictionExecutionMixin._tracking_processor_cache_key(
+        "/tmp/clip.mp4",
+        "cutie",
+        {"results_folder": "/tmp/clip", "t_max_value": 5},
+    )
+    key_b = PredictionExecutionMixin._tracking_processor_cache_key(
+        "/tmp/clip.mp4",
+        "cutie",
+        {"t_max_value": 5, "results_folder": "/tmp/clip"},
+    )
+    assert key_a == key_b
+
+
 def test_sam3_start_uses_first_manual_seed_plus_one() -> None:
     start = PredictionExecutionMixin._resolve_sam3_start_frame_from_seed_state(
         current_start_frame=0,

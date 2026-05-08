@@ -103,6 +103,18 @@ class PredictionExecutionMixin:
         return ("cutie" in active) and ("cotracker" not in active)
 
     @staticmethod
+    def _tracking_processor_cache_key(
+        video_path: str,
+        model_name: str | None,
+        processor_kwargs: dict,
+    ) -> tuple:
+        """Build a stable key for reusing heavyweight tracking processors."""
+        normalized_kwargs = tuple(
+            sorted((str(key), repr(value)) for key, value in processor_kwargs.items())
+        )
+        return (str(video_path), str(model_name or ""), normalized_kwargs)
+
+    @staticmethod
     def _is_cutie_missing_instance_message(message: str | None) -> bool:
         text = str(message or "").lower()
         return "missing instance" in text or "missing or occluded" in text
@@ -696,11 +708,30 @@ class PredictionExecutionMixin:
                 if self._is_cutie_tracking_model(model_name):
                     processor_kwargs.update(self._cutie_brightness_contrast_kwargs())
                 try:
-                    self.video_processor = build_tracking_video_processor(
-                        video_path=self.video_file,
-                        model_name=model_name,
-                        **processor_kwargs,
+                    processor_cache_key = self._tracking_processor_cache_key(
+                        self.video_file,
+                        model_name,
+                        processor_kwargs,
                     )
+                    can_reuse_cutie_processor = (
+                        self._is_cutie_tracking_model(model_name)
+                        and getattr(self, "_tracking_processor_cache_key_value", None)
+                        == processor_cache_key
+                        and getattr(self, "video_processor", None) is not None
+                        and hasattr(self.video_processor, "process_video_frames")
+                    )
+                    if can_reuse_cutie_processor:
+                        logger.info(
+                            "Reusing CUTIE tracking processor for video '%s'.",
+                            self.video_file,
+                        )
+                    else:
+                        self.video_processor = build_tracking_video_processor(
+                            video_path=self.video_file,
+                            model_name=model_name,
+                            **processor_kwargs,
+                        )
+                        self._tracking_processor_cache_key_value = processor_cache_key
                 except Exception as exc:
                     logger.error(
                         "Failed to initialize tracking model '%s': %s",
@@ -889,9 +920,10 @@ class PredictionExecutionMixin:
             else:
                 end_frame = (int(inference_start_frame) - 1) + to_frame * self.step_size
             if self._is_cutie_tracking_model(model_name):
-                # CUTIE already processes seed-defined segments sequentially inside a
-                # single run. Avoid GUI-level chunk restarts that make progress look
-                # stalled and repeatedly restart from earlier seeds.
+                # CUTIE processes seed-defined segments sequentially inside a
+                # single run. Run to video end by default so the tracking CSV is
+                # produced only after full-video completion; explicit repair
+                # actions may provide a tighter forced end.
                 end_frame = self._resolve_cutie_end_frame_for_run(
                     int(end_frame),
                     int(self.num_frames),

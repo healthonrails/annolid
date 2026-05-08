@@ -1215,15 +1215,19 @@ class MaskShape(MultipoinstShape):
         mask = np.asarray(self.mask)
         if mask.ndim != 2:
             mask = mask[..., 0]
-        mask_uint8 = mask.astype(bool).astype(np.uint8) * 255
+        if mask.dtype == np.bool_:
+            mask_uint8 = mask.astype(np.uint8, copy=False)
+        else:
+            mask_uint8 = (mask > 0).astype(np.uint8)
         if not mask_uint8.any():
             return []
 
         # Crop to the non-zero region to reduce contour/morphology work.
-        nonzero = cv2.findNonZero(mask_uint8)
-        if nonzero is None:
+        # boundingRect accepts a binary image directly and avoids materializing
+        # the full list of foreground points for every CUTIE frame.
+        x, y, w, h = cv2.boundingRect(mask_uint8)
+        if w <= 0 or h <= 0:
             return []
-        x, y, w, h = cv2.boundingRect(nonzero)
         pad = 2  # accounts for the 5x5 morphology kernel radius
         height, width = mask_uint8.shape[:2]
         x0 = max(0, x - pad)
@@ -1265,9 +1269,6 @@ class MaskShape(MultipoinstShape):
         scale = float(self.scale) if getattr(self, "scale", 1) else 1.0
         merged_contour = merged_contour / scale
 
-        # Close the contour by duplicating its first point at the end.
-        merged_contour = np.concatenate([merged_contour, merged_contour[:1, :]], axis=0)
-
         # Create a Shape object from the merged contour
         shape = Shape(
             shape_type="polygon",
@@ -1278,8 +1279,11 @@ class MaskShape(MultipoinstShape):
         )
         # Preserve any metadata stored on the mask (e.g., detection scores, track ids).
         shape.other_data = dict(self.other_data)
-        for x, y in merged_contour:
-            shape.addPoint(QtCore.QPointF(x, y))
+        shape.points = [QtCore.QPointF(float(x), float(y)) for x, y in merged_contour]
+        shape.point_labels = [1] * len(shape.points)
+        shape.shared_vertex_ids = [""] * len(shape.points)
+        shape.shared_edge_ids = [""] * len(shape.points)
+        shape.close()
         self.points = shape.points
         shapes.append(shape)
         return shapes

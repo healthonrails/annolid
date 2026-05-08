@@ -1,5 +1,6 @@
 import unittest
 import numpy as np
+from annolid.gui.shape import MaskShape
 from annolid.utils.shapes import extract_flow_points_in_mask
 
 
@@ -36,6 +37,23 @@ class TestExtractFlowPointsInMask(unittest.TestCase):
             mask, flow, num_points=4, min_magnitude=1.0
         )
         self.assertEqual(result.shape, (4, 2))
+
+
+def test_mask_shape_to_polygons_uses_empty_shared_ids_for_inferred_points():
+    mask = np.zeros((24, 32), dtype=bool)
+    mask[5:18, 7:21] = True
+
+    mask_shape = MaskShape(label="subject")
+    mask_shape.setScaleMask(1, mask)
+
+    [polygon] = mask_shape.toPolygons(epsilon=1.0)
+
+    assert polygon.isClosed()
+    assert len(polygon.points) >= 3
+    assert polygon.points[0] != polygon.points[-1]
+    assert polygon.point_labels == [1] * len(polygon.points)
+    assert polygon.shared_vertex_ids == [""] * len(polygon.points)
+    assert polygon.shared_edge_ids == [""] * len(polygon.points)
 
 
 if __name__ == "__main__":

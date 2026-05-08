@@ -56,8 +56,9 @@ https://github.com/hkchengrex/Cutie/tree/main
 
 
 def find_mask_center_opencv(mask):
-    # Convert boolean mask to integer mask (0 for background, 255 for foreground)
-    mask_int = mask.astype(np.uint8) * 255
+    # Convert boolean mask to integer mask (0 for background, 1 for foreground).
+    # Scaling to 255 is unnecessary for centroid moments and adds work per mask.
+    mask_int = np.asarray(mask).astype(np.uint8, copy=False)
 
     # Calculate the moments of the binary image
     moments = cv2.moments(mask_int)
@@ -2260,6 +2261,49 @@ class CutieCoreVideoProcessor:
         return seed_masks
 
     @staticmethod
+    def _tmp_to_global_ids_from_processor(
+        processor,
+        fallback_global_ids: Iterable[int],
+    ) -> Dict[int, int]:
+        """Return CUTIE temporary-id to stable object-id mapping.
+
+        CUTIE prediction masks use ObjectManager temporary ids. Those ids are
+        usually equal to the local active-id order for a single seed, but diverge
+        once extra seed references are committed into permanent memory. Always
+        prefer ObjectManager so saved labels remain tied to stable global ids.
+        """
+        tmp_to_global: Dict[int, int] = {}
+        try:
+            object_manager = getattr(processor, "object_manager", None)
+            tmp_id_to_obj = getattr(object_manager, "tmp_id_to_obj", {})
+            if isinstance(tmp_id_to_obj, dict):
+                for tmp_id, obj in tmp_id_to_obj.items():
+                    obj_id = getattr(obj, "id", None)
+                    if obj_id is None:
+                        continue
+                    tmp_to_global[int(tmp_id)] = int(obj_id)
+        except Exception:
+            tmp_to_global = {}
+
+        if tmp_to_global:
+            return tmp_to_global
+
+        return {
+            int(local_idx): int(global_id)
+            for local_idx, global_id in enumerate(fallback_global_ids or [], start=1)
+        }
+
+    @staticmethod
+    def _local_prediction_to_global_mask(
+        prediction: np.ndarray,
+        tmp_to_global_ids: Dict[int, int],
+    ) -> np.ndarray:
+        global_mask = np.zeros_like(prediction, dtype=np.int32)
+        for tmp_id, global_id in tmp_to_global_ids.items():
+            global_mask[prediction == int(tmp_id)] = int(global_id)
+        return global_mask
+
+    @staticmethod
     def _map_local_prediction_to_global(
         prediction: np.ndarray, active_global_ids: List[int]
     ) -> np.ndarray:
@@ -2693,9 +2737,6 @@ class CutieCoreVideoProcessor:
             value_to_label_names.update(self._global_label_names)
         instance_names = set(segment.active_labels)
         expected_instance_count = len(instance_names)
-        local_to_global = np.zeros(len(active_ids) + 1, dtype=np.int32)
-        for local_idx, global_id in enumerate(active_ids, start=1):
-            local_to_global[local_idx] = int(global_id)
 
         current_frame_index = segment.start_frame
         prev_frame = None
@@ -2867,23 +2908,30 @@ class CutieCoreVideoProcessor:
                     if prediction is None:
                         global_prediction = mask.copy()
                         mask_dict = {}
-                        for global_id in active_ids:
+                        for global_id in sorted(int(obj_id) for obj_id in active_ids):
                             global_mask = global_prediction == int(global_id)
                             if not global_mask.any():
                                 continue
                             label_name = value_to_label_names.get(
                                 int(global_id), str(global_id)
                             )
+                            if label_name not in instance_names:
+                                continue
                             mask_dict[label_name] = global_mask
                     else:
+                        tmp_to_global_ids = self._tmp_to_global_ids_from_processor(
+                            self.processor, active_ids
+                        )
                         mask_dict = {}
-                        for local_idx, global_id in enumerate(active_ids, start=1):
-                            local_mask = prediction == local_idx
+                        for tmp_id, global_id in sorted(tmp_to_global_ids.items()):
+                            local_mask = prediction == int(tmp_id)
                             if not local_mask.any():
                                 continue
                             label_name = value_to_label_names.get(
                                 int(global_id), str(global_id)
                             )
+                            if label_name not in instance_names:
+                                continue
                             mask_dict[label_name] = local_mask
 
                         global_prediction = None
@@ -2891,7 +2939,9 @@ class CutieCoreVideoProcessor:
                             self.debug
                             and current_frame_index % max(1, visualize_every) == 0
                         ):
-                            global_prediction = local_to_global[prediction]
+                            global_prediction = self._local_prediction_to_global_mask(
+                                prediction, tmp_to_global_ids
+                            )
 
                     if self.compute_optical_flow and prev_frame is not None:
                         backend_val = str(self.optical_flow_backend).lower()
@@ -3132,7 +3182,12 @@ class CutieCoreVideoProcessor:
 
                     if recording:
                         if global_prediction is None:
-                            global_prediction = local_to_global[prediction]
+                            tmp_to_global_ids = self._tmp_to_global_ids_from_processor(
+                                self.processor, active_ids
+                            )
+                            global_prediction = self._local_prediction_to_global_mask(
+                                prediction, tmp_to_global_ids
+                            )
                         self._mask = global_prediction > 0
                         visualization = overlay_davis(frame, global_prediction)
                         if self._flow_hsv is not None:
@@ -3155,7 +3210,12 @@ class CutieCoreVideoProcessor:
                         and current_frame_index % max(1, visualize_every) == 0
                     ):
                         if global_prediction is None:
-                            global_prediction = local_to_global[prediction]
+                            tmp_to_global_ids = self._tmp_to_global_ids_from_processor(
+                                self.processor, active_ids
+                            )
+                            global_prediction = self._local_prediction_to_global_mask(
+                                prediction, tmp_to_global_ids
+                            )
                         self.save_color_id_mask(frame, global_prediction, filename)
 
                     if self.compute_optical_flow:
