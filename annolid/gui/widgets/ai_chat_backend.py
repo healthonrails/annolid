@@ -3429,6 +3429,22 @@ class StreamingChatTask(QRunnable):
             ),
         )
 
+    def _resolve_behavior_labeling_llm_route(
+        self,
+        *,
+        llm_provider: str = "",
+        llm_model: str = "",
+    ) -> tuple[str, str]:
+        active_provider = str(self.provider or "").strip()
+        active_model = str(self.model or "").strip()
+        requested_provider = str(llm_provider or "").strip()
+        requested_model = str(llm_model or "").strip()
+        if active_provider and requested_provider != active_provider:
+            requested_provider = active_provider
+        if active_model and requested_model != active_model:
+            requested_model = active_model
+        return requested_provider, requested_model
+
     def _tool_gui_label_behavior_segments(
         self,
         *,
@@ -3452,6 +3468,11 @@ class StreamingChatTask(QRunnable):
         behavior_definitions: str = "",
         focus_points: str = "",
     ) -> Dict[str, Any]:
+        llm_provider, llm_model = self._resolve_behavior_labeling_llm_route(
+            llm_provider=llm_provider,
+            llm_model=llm_model,
+        )
+
         def _normalize_instance_count(value: Any) -> Optional[int]:
             try:
                 parsed = int(value)
@@ -3650,6 +3671,11 @@ class StreamingChatTask(QRunnable):
         run_tracking: bool = True,
         run_behavior_labeling: bool = True,
     ) -> Dict[str, Any]:
+        llm_provider, llm_model = self._resolve_behavior_labeling_llm_route(
+            llm_provider=llm_provider,
+            llm_model=llm_model,
+        )
+
         def _normalize_instance_count(value: Any) -> Optional[int]:
             try:
                 parsed = int(value)

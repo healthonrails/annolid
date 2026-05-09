@@ -161,10 +161,10 @@ def _extract_frames_per_grid(text: str) -> int | None:
     if not raw:
         return None
     patterns = (
-        r"\b(?P<value>\d+)\s+frames?\s+per\s+grid(?:\s+frame)?\b",
-        r"\bframes?\s+per\s+grid(?:\s+frame)?\s*(?:=|:)?\s*(?P<value>\d+)\b",
-        r"\bgrid(?:\s+frame)?\s+frames?\s*(?:=|:)?\s*(?P<value>\d+)\b",
-        r"\bsample\s+(?P<value>\d+)\s+frames?\s+per\s+segment\b",
+        r"(?<!\w)[\"'`]?(?P<value>\d+)[\"'`]?\s+frames?\s+per\s+grid(?:\s+frame)?\b",
+        r"\bframes?\s+per\s+grid(?:\s+frame)?\s*(?:=|:)?\s*[\"'`]?(?P<value>\d+)[\"'`]?\b",
+        r"\bgrid(?:\s+frame)?\s+frames?\s*(?:=|:)?\s*[\"'`]?(?P<value>\d+)[\"'`]?\b",
+        r"\bsample\s+[\"'`]?(?P<value>\d+)[\"'`]?\s+frames?\s+per\s+segment\b",
     )
     for pattern in patterns:
         match = re.search(pattern, raw, flags=re.IGNORECASE)

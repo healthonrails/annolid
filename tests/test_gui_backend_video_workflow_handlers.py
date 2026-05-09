@@ -143,6 +143,59 @@ def test_label_behavior_segments_tool_uses_seconds_from_fps(monkeypatch) -> None
     assert payload["visual_input_mode"] == "frame_grid"
 
 
+def test_label_behavior_segments_tool_recovers_fixed_interval_model_call(
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(workflow, "_video_total_frames", lambda _path: 45000)
+    monkeypatch.setattr(workflow, "_video_fps", lambda _path: 70.0)
+
+    payload = workflow.label_behavior_segments_tool(
+        path="fly.mp4",
+        behavior_labels=["still", "walk"],
+        use_defined_behavior_list=True,
+        segment_mode="fixed_interval",
+        segment_frames=9,
+        segment_seconds=None,
+        sample_frames_per_segment=4,
+        max_segments=120,
+        subject="Agent",
+        overwrite_existing=False,
+        llm_profile="",
+        llm_provider="nvidia",
+        llm_model="gpt-4o-mini",
+        resolve_video_path=lambda _path: Path("/tmp/fly.mp4"),
+        invoke_label_behavior=lambda _vpath,
+        _labels,
+        _use_defined,
+        mode,
+        frames,
+        seconds,
+        samples,
+        max_seg,
+        *_: (
+            captured.update(
+                {
+                    "mode": mode,
+                    "segment_frames": frames,
+                    "segment_seconds": seconds,
+                    "samples": samples,
+                    "max_segments": max_seg,
+                }
+            )
+            or True
+        ),
+        get_action_result=lambda _name: {},
+    )
+
+    assert payload["ok"] is True
+    assert captured["mode"] == "uniform"
+    assert int(captured["segment_frames"]) == 70
+    assert float(captured["segment_seconds"]) == 1.0
+    assert int(captured["samples"]) == 9
+    assert int(captured["max_segments"]) == 643
+
+
 def test_label_behavior_segments_tool_forwards_behavior_context(monkeypatch) -> None:
     captured: dict[str, object] = {}
 

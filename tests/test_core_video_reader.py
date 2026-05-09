@@ -6,6 +6,7 @@ import pytest
 
 from annolid.core.media.video import (
     CV2Video,
+    build_frame_grid_image,
     build_segment_frame_grid,
     sample_segment_frame_indices,
 )
@@ -81,3 +82,24 @@ def test_build_segment_frame_grid_returns_metadata(tmp_path: Path):
     assert result.columns == 3
     assert result.image.shape[:2] == (24, 96)
     assert result.metadata()["frames"][0]["frame_index"] == 1
+
+
+def test_build_frame_grid_annotation_header_does_not_cover_video_pixels():
+    frame = np.full((24, 32, 3), 255, dtype=np.uint8)
+
+    image, rows, columns = build_frame_grid_image(
+        [frame],
+        frame_indices=[140],
+        timestamps_sec=[2.0],
+        columns=1,
+        tile_width=32,
+        tile_height=24,
+        annotate=True,
+        annotation_position="header",
+    )
+
+    assert rows == 1
+    assert columns == 1
+    assert image.shape[:2] == (46, 32)
+    assert np.any(image[:22] != 255)
+    assert np.all(image[22:] == 255)

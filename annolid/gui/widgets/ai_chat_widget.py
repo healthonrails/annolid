@@ -4039,12 +4039,11 @@ class AIChatWidget(QtWidgets.QWidget):
             return defined_labels
 
         defined_lookup = {label.lower(): label for label in defined_labels}
-        intersection: List[str] = []
+        resolved: List[str] = []
         for label in normalized_explicit:
             mapped = defined_lookup.get(label.lower())
-            if mapped:
-                intersection.append(mapped)
-        return self._normalize_behavior_labels(intersection or defined_labels)
+            resolved.append(mapped or label)
+        return self._normalize_behavior_labels(resolved)
 
     @staticmethod
     def _behavior_ranges_from_events(events: List[object]) -> List[Dict[str, Any]]:
@@ -4425,6 +4424,33 @@ class AIChatWidget(QtWidgets.QWidget):
             return True
         return False
 
+    @staticmethod
+    def _behavior_label_provider_request_interval(provider: str, model: str) -> float:
+        provider_text = str(provider or "").strip().lower()
+        model_text = str(model or "").strip().lower()
+        if not provider_text or provider_text in {"ollama", "local"}:
+            return 0.0
+        if provider_text == "nvidia" or "kimi" in model_text:
+            return 1.0
+        return 0.5
+
+    @staticmethod
+    def _behavior_label_rate_limit_backoff_seconds(exc: Exception) -> Optional[float]:
+        text = str(exc or "").lower()
+        if (
+            "429" not in text
+            and "rate limit" not in text
+            and "too many request" not in text
+        ):
+            return None
+        match = re.search(r"retry[-\s]?after[=: ]+(\d+(?:\.\d+)?)", text)
+        if match:
+            try:
+                return max(1.0, min(60.0, float(match.group(1))))
+            except Exception:
+                pass
+        return 8.0
+
     def _save_behavior_timestamps_csv(self, host: object) -> Dict[str, Any]:
         behavior_controller = getattr(host, "behavior_controller", None)
         if behavior_controller is None:
@@ -4583,6 +4609,12 @@ class AIChatWidget(QtWidgets.QWidget):
             provider=requested_provider,
             model=requested_model,
         )
+        request_interval_seconds = self._behavior_label_provider_request_interval(
+            requested_provider,
+            requested_model,
+        )
+        last_request_at = 0.0
+        rate_limit_backoffs = 0
         if route_to_caption_profile:
             logger.info(
                 "Behavior segment routing to caption profile for image labeling "
@@ -4596,6 +4628,8 @@ class AIChatWidget(QtWidgets.QWidget):
                 adapter = stack.enter_context(
                     LLMChatAdapter(
                         profile="caption",
+                        provider=requested_provider or None,
+                        model=requested_model or None,
                         persist=False,
                     )
                 )
@@ -4624,6 +4658,7 @@ class AIChatWidget(QtWidgets.QWidget):
                         sample_count=max(1, int(sample_frames_per_segment)),
                         tile_width=224,
                         annotate=True,
+                        annotation_position="header",
                     )
                     image_path = save_rgb_image(
                         grid.image,
@@ -4651,36 +4686,95 @@ class AIChatWidget(QtWidgets.QWidget):
                     )
                     retry_prompt = self._behavior_label_retry_prompt(prompt, labels)
                     system_prompt = self._behavior_grid_system_prompt(labels)
-                    attempts: List[Dict[str, Any]] = [
-                        {
-                            "name": "json_with_image",
-                            "text": prompt,
-                            "params": {
-                                "temperature": 0.0,
-                                "max_tokens": 180,
-                                "system_prompt": system_prompt,
-                                "response_format": {"type": "json_object"},
+                    if route_to_caption_profile:
+                        attempts: List[Dict[str, Any]] = [
+                            {
+                                "name": "caption_profile_with_image",
+                                "text": prompt,
+                                "params": {
+                                    "temperature": 0.0,
+                                    "max_tokens": 180,
+                                    "system_prompt": system_prompt,
+                                },
+                            }
+                        ]
+                    else:
+                        attempts = [
+                            {
+                                "name": "json_with_image",
+                                "text": prompt,
+                                "params": {
+                                    "temperature": 0.0,
+                                    "max_tokens": 180,
+                                    "system_prompt": system_prompt,
+                                    "response_format": {"type": "json_object"},
+                                },
                             },
-                        },
-                        {
-                            "name": "plain_with_image",
-                            "text": prompt,
-                            "params": {
-                                "temperature": 0.0,
-                                "max_tokens": 180,
-                                "system_prompt": system_prompt,
+                            {
+                                "name": "plain_with_image",
+                                "text": prompt,
+                                "params": {
+                                    "temperature": 0.0,
+                                    "max_tokens": 180,
+                                    "system_prompt": system_prompt,
+                                },
                             },
-                        },
-                        {
-                            "name": "repair_with_image",
-                            "text": retry_prompt,
-                            "params": {
-                                "temperature": 0.0,
-                                "max_tokens": 180,
-                                "use_annolid_bot_system": False,
+                            {
+                                "name": "repair_with_image",
+                                "text": retry_prompt,
+                                "params": {
+                                    "temperature": 0.0,
+                                    "max_tokens": 180,
+                                    "use_annolid_bot_system": False,
+                                },
                             },
-                        },
-                    ]
+                        ]
+
+                    def _predict_with_rate_limit(
+                        local_adapter: LLMChatAdapter,
+                        *,
+                        attempt_name: str,
+                        text: str,
+                        params: Dict[str, Any],
+                    ):
+                        nonlocal last_request_at, rate_limit_backoffs
+                        for retry_index in range(2):
+                            if stop_event is not None and bool(stop_event.is_set()):
+                                raise RuntimeError("Behavior labeling cancelled.")
+                            elapsed = time.monotonic() - last_request_at
+                            wait_seconds = max(
+                                0.0, float(request_interval_seconds) - elapsed
+                            )
+                            if wait_seconds > 0:
+                                time.sleep(wait_seconds)
+                            try:
+                                response = local_adapter.predict(
+                                    ModelRequest(
+                                        task="caption",
+                                        image_path=str(image_path),
+                                        text=str(text or "").strip(),
+                                        params=dict(params or {}),
+                                    )
+                                )
+                                last_request_at = time.monotonic()
+                                return response
+                            except Exception as exc:
+                                last_request_at = time.monotonic()
+                                backoff = (
+                                    self._behavior_label_rate_limit_backoff_seconds(exc)
+                                )
+                                if backoff is None or retry_index >= 1:
+                                    raise
+                                rate_limit_backoffs += 1
+                                logger.warning(
+                                    "Behavior segment attempt '%s' hit rate limit for frames %s-%s; backing off %.1fs.",
+                                    attempt_name,
+                                    start_frame,
+                                    end_frame,
+                                    backoff,
+                                )
+                                time.sleep(backoff)
+                        raise RuntimeError("Behavior labeling request retry failed.")
 
                     raw = ""
                     parsed: Dict[str, Any] = {}
@@ -4692,13 +4786,11 @@ class AIChatWidget(QtWidgets.QWidget):
                         attempt_name = str(attempt.get("name") or "").strip()
                         used_attempt_name = attempt_name or used_attempt_name
                         try:
-                            resp = adapter.predict(
-                                ModelRequest(
-                                    task="caption",
-                                    image_path=str(image_path),
-                                    text=str(attempt.get("text") or "").strip(),
-                                    params=dict(attempt.get("params") or {}),
-                                )
+                            resp = _predict_with_rate_limit(
+                                adapter,
+                                attempt_name=attempt_name,
+                                text=str(attempt.get("text") or "").strip(),
+                                params=dict(attempt.get("params") or {}),
                             )
                         except Exception as exc:
                             logger.info(
@@ -4731,22 +4823,25 @@ class AIChatWidget(QtWidgets.QWidget):
                     if not label and not route_to_caption_profile:
                         if caption_rescue_adapter is None:
                             caption_rescue_adapter = stack.enter_context(
-                                LLMChatAdapter(profile="caption", persist=False)
+                                LLMChatAdapter(
+                                    profile="caption",
+                                    provider=requested_provider or None,
+                                    model=requested_model or None,
+                                    persist=False,
+                                )
                             )
                         rescue_attempt_name = "rescue_caption_profile"
                         used_attempt_name = rescue_attempt_name
                         try:
-                            rescue_resp = caption_rescue_adapter.predict(
-                                ModelRequest(
-                                    task="caption",
-                                    image_path=str(image_path),
-                                    text=str(retry_prompt or "").strip(),
-                                    params={
-                                        "temperature": 0.0,
-                                        "max_tokens": 180,
-                                        "use_annolid_bot_system": False,
-                                    },
-                                )
+                            rescue_resp = _predict_with_rate_limit(
+                                caption_rescue_adapter,
+                                attempt_name=rescue_attempt_name,
+                                text=str(retry_prompt or "").strip(),
+                                params={
+                                    "temperature": 0.0,
+                                    "max_tokens": 180,
+                                    "use_annolid_bot_system": False,
+                                },
                             )
                             rescue_raw = str(
                                 rescue_resp.text
@@ -4834,6 +4929,8 @@ class AIChatWidget(QtWidgets.QWidget):
                         "model_attempt": used_attempt_name,
                         "empty_attempts": int(empty_attempts),
                         "description_source": description_source,
+                        "request_interval_seconds": float(request_interval_seconds),
+                        "rate_limit_backoffs": int(rate_limit_backoffs),
                     }
                     if route_to_caption_profile:
                         visual_evidence["model_routed_profile"] = "caption"
@@ -4944,6 +5041,24 @@ class AIChatWidget(QtWidgets.QWidget):
         self._behavior_label_run_context = {}
         self._behavior_label_worker = None
         self._behavior_label_thread = None
+
+    def _stop_behavior_label_worker(self, *, wait_ms: int = 3000) -> None:
+        worker = getattr(self, "_behavior_label_worker", None)
+        thread = getattr(self, "_behavior_label_thread", None)
+        if worker is not None:
+            try:
+                worker._stop()
+            except RuntimeError:
+                pass
+        if thread is not None and thread.isRunning():
+            if not thread.wait(max(0, int(wait_ms))):
+                logger.warning(
+                    "Behavior labeling thread did not stop within %sms.", wait_ms
+                )
+
+    def closeEvent(self, event) -> None:
+        self._stop_behavior_label_worker(wait_ms=5000)
+        super().closeEvent(event)
 
     def _behavior_label_timestamp_provider(self, host: object):
         def _timestamp_provider(frame: int) -> Optional[float]:
@@ -6670,6 +6785,10 @@ class AIChatWidget(QtWidgets.QWidget):
             if mode == "uniform" and segment_seconds > 0.0 and fps > 0.0:
                 segment_frames = max(1, int(round(segment_seconds * fps)))
             sample_frames_per_segment = max(1, int(sample_frames_per_segment))
+            behavior_request_interval = self._behavior_label_provider_request_interval(
+                str(llm_provider or ""),
+                str(llm_model or ""),
+            )
 
             intervals: List[Dict[str, Any]] = []
             if mode == "timeline":
@@ -6709,6 +6828,7 @@ class AIChatWidget(QtWidgets.QWidget):
                     "segment_seconds": float(segment_seconds),
                     "sample_frames_per_segment": int(sample_frames_per_segment),
                     "visual_input_mode": "frame_grid",
+                    "request_interval_seconds": float(behavior_request_interval),
                     "use_defined_behavior_list": bool(use_defined_behavior_list),
                     "labels_used": labels,
                     "video_description": str(video_description or "").strip(),
@@ -6731,6 +6851,7 @@ class AIChatWidget(QtWidgets.QWidget):
                 "segment_seconds": float(segment_seconds),
                 "sample_frames_per_segment": int(sample_frames_per_segment),
                 "visual_input_mode": "frame_grid",
+                "request_interval_seconds": float(behavior_request_interval),
                 "evaluated_segments": int(len(intervals)),
                 "processed_segments": 0,
                 "skipped_segments": 0,
@@ -6745,7 +6866,7 @@ class AIChatWidget(QtWidgets.QWidget):
                 "focus_points": str(focus_points or "").strip(),
             }
 
-            thread = QtCore.QThread(self)
+            thread = QtCore.QThread()
             worker = FlexibleWorker(
                 self._run_behavior_segment_vlm_worker,
                 video_path=str(resolved_video_path),

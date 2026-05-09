@@ -292,17 +292,23 @@ def build_frame_grid_image(
     tile_width: int = 224,
     tile_height: int | None = None,
     annotate: bool = True,
+    annotation_position: str = "overlay",
 ) -> tuple[np.ndarray, int, int]:
     """Stack RGB frames into a deterministic tiled RGB grid."""
     if not frames_rgb:
         raise ValueError("At least one frame is required to build a frame grid.")
     tile_w = max(16, int(tile_width))
+    annotation_mode = str(annotation_position or "overlay").strip().lower()
+    if annotation_mode not in {"overlay", "header"}:
+        annotation_mode = "overlay"
+    annotation_h = 22 if annotate and annotation_mode == "header" else 0
     if tile_height is None:
         first = frames_rgb[0]
         height, width = first.shape[:2]
-        tile_h = max(16, int(round(tile_w * (float(height) / float(width)))))
+        content_h = max(16, int(round(tile_w * (float(height) / float(width)))))
     else:
-        tile_h = max(16, int(tile_height))
+        content_h = max(16, int(tile_height))
+    tile_h = content_h + annotation_h
 
     tile_count = len(frames_rgb)
     cols = int(columns or math.ceil(math.sqrt(tile_count)))
@@ -317,15 +323,26 @@ def build_frame_grid_image(
         tile = _resize_frame_to_tile(
             frame,
             tile_width=tile_w,
-            tile_height=tile_h,
+            tile_height=content_h,
         )
         if annotate:
+            if annotation_mode == "header":
+                annotated_tile = np.zeros((tile_h, tile_w, 3), dtype=np.uint8)
+                annotated_tile[annotation_h : annotation_h + content_h, 0:tile_w] = tile
+                tile = annotated_tile
             frame_index = int(frame_indices[idx]) if idx < len(frame_indices) else idx
             timestamp = timestamps[idx] if idx < len(timestamps) else None
             label = f"f{frame_index}"
             if timestamp is not None:
                 label = f"{label} {float(timestamp):.2f}s"
-            cv2.rectangle(tile, (0, 0), (min(tile_w - 1, 150), 22), (0, 0, 0), -1)
+            if annotation_mode == "overlay":
+                cv2.rectangle(
+                    tile,
+                    (0, 0),
+                    (min(tile_w - 1, 150), min(tile_h - 1, 22)),
+                    (0, 0, 0),
+                    -1,
+                )
             cv2.putText(
                 tile,
                 label,
@@ -354,6 +371,7 @@ def build_segment_frame_grid(
     tile_width: int = 224,
     tile_height: int | None = None,
     annotate: bool = True,
+    annotation_position: str = "overlay",
 ) -> SegmentFrameGridResult:
     """Sample a video segment and stack frames into one RGB image grid."""
     video = CV2Video(video_file)
@@ -396,6 +414,7 @@ def build_segment_frame_grid(
         tile_width=tile_width,
         tile_height=tile_height,
         annotate=annotate,
+        annotation_position=annotation_position,
     )
     tile_h = int(image.shape[0] // rows)
     tile_w = int(image.shape[1] // cols)

@@ -184,13 +184,25 @@ def label_behavior_segments_tool(
     elif isinstance(behavior_labels, str):
         labels = [p.strip() for p in behavior_labels.split(",") if p.strip()]
 
-    mode_norm = str(segment_mode or "timeline").strip().lower()
+    raw_mode_norm = str(segment_mode or "timeline").strip().lower()
+    fixed_interval_mode = raw_mode_norm in {
+        "fixed",
+        "fixed_interval",
+        "fixed-interval",
+        "interval",
+    }
+    mode_norm = raw_mode_norm
+    if fixed_interval_mode:
+        mode_norm = "uniform"
     if mode_norm not in {"timeline", "uniform"}:
         return {"ok": False, "error": "segment_mode must be 'timeline' or 'uniform'"}
     frames = max(1, int(segment_frames))
     seconds = float(segment_seconds) if segment_seconds is not None else 0.0
     if seconds < 0.0:
         seconds = 0.0
+    if fixed_interval_mode and seconds <= 0.0 and 1 <= frames <= 16:
+        sample_frames_per_segment = max(int(sample_frames_per_segment or 0), frames)
+        seconds = 1.0
     try:
         instance_count_value = (
             int(instance_count) if instance_count is not None else None
@@ -208,6 +220,8 @@ def label_behavior_segments_tool(
             frames = max(1, int(round(seconds * video_fps)))
         total_frames = _video_total_frames(resolved_video)
         if total_frames > 1:
+            if fixed_interval_mode and int(max_segments or 0) == 120:
+                max_seg = max(1, int((total_frames + frames - 1) // frames))
             # For short clips, avoid collapsing to a single uniform segment
             # when defaults (segment_frames=60) exceed video length.
             if frames >= total_frames:

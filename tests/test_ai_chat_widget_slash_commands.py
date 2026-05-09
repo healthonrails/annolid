@@ -662,6 +662,73 @@ def test_labels_from_schema_flags_includes_timeline_behaviors(monkeypatch) -> No
             widget.close()
 
 
+def test_behavior_label_resolution_preserves_explicit_defined_list(monkeypatch) -> None:
+    _ensure_qapp()
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.load_llm_settings",
+        lambda: {
+            "provider": "ollama",
+            "last_models": {"ollama": "test-model"},
+            "ollama": {"preferred_models": ["test-model"]},
+        },
+    )
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.ProviderRegistry.available_providers",
+        lambda self: ["ollama"],
+    )
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.ProviderRegistry.labels",
+        lambda self: {"ollama": "Ollama"},
+    )
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.ProviderRegistry.current_provider",
+        lambda self: "ollama",
+    )
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.ProviderRegistry.available_models",
+        lambda self, provider: ["test-model"],
+    )
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.ProviderRegistry.resolve_initial_model",
+        lambda self, provider, available_models: "test-model",
+    )
+    monkeypatch.setattr(
+        AIChatWidget,
+        "_load_session_history_into_bubbles",
+        lambda self, session_id: None,
+    )
+    monkeypatch.setattr(AIChatWidget, "_update_model_selector", lambda self: None)
+    monkeypatch.setattr(AIChatWidget, "_refresh_header_chips", lambda self: None)
+    monkeypatch.setattr(
+        AIChatWidget, "_load_quick_actions_from_settings", lambda self: None
+    )
+
+    widget = None
+    widget = AIChatWidget()
+    try:
+        monkeypatch.setattr(
+            widget,
+            "_labels_from_schema_or_flags",
+            lambda: ["walking", "grooming", "rearing"],
+        )
+
+        labels = widget._resolve_segment_label_candidates(
+            ["still", "walk", "front groom", "back groom", "abdomen move"],
+            use_defined_behavior_list=True,
+        )
+
+        assert labels == [
+            "still",
+            "walk",
+            "front groom",
+            "back groom",
+            "abdomen move",
+        ]
+    finally:
+        if widget is not None:
+            widget.close()
+
+
 def test_behavior_label_preview_applies_incremental_updates(monkeypatch) -> None:
     _ensure_qapp()
     monkeypatch.setattr(
@@ -1137,6 +1204,7 @@ def test_behavior_segment_vlm_worker_routes_known_non_vision_model_to_caption_pr
         writer.release()
 
     init_kwargs = []
+    requests = []
 
     class _FakeAdapter:
         def __init__(self, **kwargs):
@@ -1149,6 +1217,7 @@ def test_behavior_segment_vlm_worker_routes_known_non_vision_model_to_caption_pr
             return None
 
         def predict(self, request):
+            requests.append(request)
             return ModelResponse(
                 task="caption",
                 output={
@@ -1185,7 +1254,16 @@ def test_behavior_segment_vlm_worker_routes_known_non_vision_model_to_caption_pr
     assert prediction["visual_evidence"]["model_routed_profile"] == "caption"
     assert prediction["visual_evidence"]["requested_provider"] == "nvidia"
     assert prediction["visual_evidence"]["requested_model"] == "moonshotai/kimi-k2.5"
+    assert (
+        prediction["visual_evidence"]["model_attempt"] == "caption_profile_with_image"
+    )
+    assert prediction["visual_evidence"]["request_interval_seconds"] == 1.0
+    assert len(requests) == 1
     assert any(str(item.get("profile") or "") == "caption" for item in init_kwargs)
+    assert any(str(item.get("provider") or "") == "nvidia" for item in init_kwargs)
+    assert any(
+        str(item.get("model") or "") == "moonshotai/kimi-k2.5" for item in init_kwargs
+    )
 
 
 def test_behavior_segment_vlm_worker_caption_profile_rescue_after_empty_primary(

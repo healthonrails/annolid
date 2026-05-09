@@ -1215,6 +1215,22 @@ def test_gui_label_behavior_segments_json_payload_includes_context_fields(
     assert default_payload["ok"] is True
     assert captured_kwargs["sample_frames_per_segment"] == 4
 
+    captured_kwargs.clear()
+    task.provider = "nvidia"
+    task.model = "moonshotai/kimi-k2.6"
+    active_model_payload = task._tool_gui_label_behavior_segments(
+        path=str(video_file),
+        behavior_labels=["still", "walk"],
+        segment_mode="fixed_interval",
+        segment_frames=9,
+        llm_provider="nvidia",
+        llm_model="gpt-4o-mini",
+    )
+    assert active_model_payload["ok"] is True
+    assert captured_kwargs["llm_provider"] == "nvidia"
+    assert captured_kwargs["llm_model"] == "moonshotai/kimi-k2.6"
+    assert captured_kwargs["segment_mode"] == "fixed_interval"
+
 
 def test_gui_process_video_behaviors_forwards_to_service(monkeypatch) -> None:
     import annolid.gui.widgets.ai_chat_backend as backend
@@ -3407,6 +3423,29 @@ def test_parse_direct_gui_command_variants() -> None:
     ]
     assert parsed_defined_label_use_case["args"]["use_defined_behavior_list"] is True
     assert parsed_defined_label_use_case["args"]["segment_seconds"] == 1.0
+
+    parsed_fly_defined_label_use_case = task._parse_direct_gui_command(
+        "label behavior in /Users/chenyang/Downloads/head_fixed_fly/videos/2019_06_26_fly2.mp4 "
+        "with labels still, walk, front groom, back groom, and abdomen move from defined list every 1s "
+        "with '9 frames per grid'"
+    )
+    assert parsed_fly_defined_label_use_case["name"] == "label_behavior_segments"
+    assert (
+        parsed_fly_defined_label_use_case["args"]["path"]
+        == "/Users/chenyang/Downloads/head_fixed_fly/videos/2019_06_26_fly2.mp4"
+    )
+    assert parsed_fly_defined_label_use_case["args"]["behavior_labels"] == [
+        "still",
+        "walk",
+        "front groom",
+        "back groom",
+        "abdomen move",
+    ]
+    assert (
+        parsed_fly_defined_label_use_case["args"]["use_defined_behavior_list"] is True
+    )
+    assert parsed_fly_defined_label_use_case["args"]["segment_seconds"] == 1.0
+    assert parsed_fly_defined_label_use_case["args"]["sample_frames_per_segment"] == 9
 
     parsed_process = task._parse_direct_gui_command(
         "process video behaviors in mouse.mp4 behaviors: walking, rearing "

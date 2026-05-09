@@ -195,7 +195,10 @@ class GuiLabelBehaviorSegmentsTool(FunctionTool):
                     "items": {"type": "string", "minLength": 1},
                 },
                 "use_defined_behavior_list": {"type": "boolean"},
-                "segment_mode": {"type": "string", "enum": ["timeline", "uniform"]},
+                "segment_mode": {
+                    "type": "string",
+                    "enum": ["timeline", "uniform", "fixed_interval"],
+                },
                 "segment_frames": {"type": "integer", "minimum": 1},
                 "segment_seconds": {"type": "number", "minimum": 0.0},
                 "sample_frames_per_segment": {
@@ -208,8 +211,6 @@ class GuiLabelBehaviorSegmentsTool(FunctionTool):
                 "subject": {"type": "string"},
                 "overwrite_existing": {"type": "boolean"},
                 "llm_profile": {"type": "string"},
-                "llm_provider": {"type": "string"},
-                "llm_model": {"type": "string"},
                 "video_description": {"type": "string"},
                 "instance_count": {"type": "integer", "minimum": 1},
                 "experiment_context": {"type": "string"},
@@ -303,7 +304,10 @@ class GuiProcessVideoBehaviorsTool(FunctionTool):
                     "items": {"type": "string", "minLength": 1},
                 },
                 "use_defined_behavior_list": {"type": "boolean"},
-                "segment_mode": {"type": "string", "enum": ["timeline", "uniform"]},
+                "segment_mode": {
+                    "type": "string",
+                    "enum": ["timeline", "uniform", "fixed_interval"],
+                },
                 "segment_frames": {"type": "integer", "minimum": 1},
                 "segment_seconds": {"type": "number", "minimum": 0.0},
                 "sample_frames_per_segment": {
@@ -316,8 +320,6 @@ class GuiProcessVideoBehaviorsTool(FunctionTool):
                 "subject": {"type": "string"},
                 "overwrite_existing": {"type": "boolean"},
                 "llm_profile": {"type": "string"},
-                "llm_provider": {"type": "string"},
-                "llm_model": {"type": "string"},
                 "video_description": {"type": "string"},
                 "instance_count": {"type": "integer", "minimum": 1},
                 "experiment_context": {"type": "string"},
