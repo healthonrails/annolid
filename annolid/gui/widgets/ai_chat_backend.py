@@ -1356,6 +1356,7 @@ class StreamingChatTask(QRunnable):
                 "generate_annolid_tutorial": self._tool_gui_generate_annolid_tutorial,
                 "self_update": self._tool_gui_self_update,
                 "open_track_dialog": self._tool_gui_open_track_dialog,
+                "open_behavior_dialog": self._tool_gui_open_behavior_dialog,
             },
         )
 
@@ -2570,6 +2571,7 @@ class StreamingChatTask(QRunnable):
             "cron": self._tool_gui_cron,
             "dream_memory": self._tool_gui_dream_memory,
             "open_track_dialog": self._tool_gui_open_track_dialog,
+            "open_behavior_dialog": self._tool_gui_open_behavior_dialog,
             "list_dir": self._tool_gui_list_dir,
             "read_file": self._tool_gui_read_file,
             "exec_command": self._tool_gui_exec_command,
@@ -2593,6 +2595,12 @@ class StreamingChatTask(QRunnable):
         if widget is None:
             return {"ok": False, "error": "Guided track dialog is unavailable."}
         return self._invoke_widget_json_slot("bot_open_track_slash_dialog")
+
+    def _tool_gui_open_behavior_dialog(self) -> Dict[str, Any]:
+        widget = self.widget
+        if widget is None:
+            return {"ok": False, "error": "Guided behavior dialog is unavailable."}
+        return self._invoke_widget_json_slot("bot_open_behavior_slash_dialog")
 
     @staticmethod
     def _looks_like_local_access_refusal(text: str) -> bool:
@@ -3458,6 +3466,7 @@ class StreamingChatTask(QRunnable):
         frames_per_grid: Optional[int] = None,
         max_segments: int = 120,
         subject: str = "Agent",
+        subject_term: str = "",
         overwrite_existing: bool = False,
         llm_profile: str = "",
         llm_provider: str = "",
@@ -3499,6 +3508,7 @@ class StreamingChatTask(QRunnable):
             experiment_context_text: str,
             behavior_definitions_text: str,
             focus_points_text: str,
+            subject_term_text: str,
         ) -> bool:
             json_payload = json.dumps(
                 {
@@ -3527,6 +3537,7 @@ class StreamingChatTask(QRunnable):
                         behavior_definitions_text or ""
                     ).strip(),
                     "focus_points": str(focus_points_text or "").strip(),
+                    "subject_term": str(subject_term_text or "").strip(),
                 }
             )
             json_result = self._invoke_widget_json_slot(
@@ -3600,6 +3611,7 @@ class StreamingChatTask(QRunnable):
             experiment_context=experiment_context,
             behavior_definitions=behavior_definitions,
             focus_points=focus_points,
+            subject_term=subject_term,
             resolve_video_path=self._resolve_video_path_for_gui_tool,
             invoke_label_behavior=lambda resolved_path,
             labels,
@@ -3618,7 +3630,8 @@ class StreamingChatTask(QRunnable):
             instance_count_value,
             experiment_context_text,
             behavior_definitions_text,
-            focus_points_text: _invoke_label_behavior_slot(
+            focus_points_text,
+            subject_term_text: _invoke_label_behavior_slot(
                 resolved_path=resolved_path,
                 labels=labels,
                 use_defined=bool(use_defined),
@@ -3637,6 +3650,7 @@ class StreamingChatTask(QRunnable):
                 experiment_context_text=str(experiment_context_text or ""),
                 behavior_definitions_text=str(behavior_definitions_text or ""),
                 focus_points_text=str(focus_points_text or ""),
+                subject_term_text=str(subject_term_text or ""),
             ),
             get_action_result=self._get_widget_action_result,
         )
@@ -3659,6 +3673,7 @@ class StreamingChatTask(QRunnable):
         frames_per_grid: Optional[int] = None,
         max_segments: int = 120,
         subject: str = "Agent",
+        subject_term: str = "",
         overwrite_existing: bool = False,
         llm_profile: str = "",
         llm_provider: str = "",
@@ -3702,6 +3717,7 @@ class StreamingChatTask(QRunnable):
             experiment_context_text: str,
             behavior_definitions_text: str,
             focus_points_text: str,
+            subject_term_text: str,
         ) -> bool:
             json_payload = json.dumps(
                 {
@@ -3730,6 +3746,7 @@ class StreamingChatTask(QRunnable):
                         behavior_definitions_text or ""
                     ).strip(),
                     "focus_points": str(focus_points_text or "").strip(),
+                    "subject_term": str(subject_term_text or "").strip(),
                 }
             )
             json_result = self._invoke_widget_json_slot(
@@ -3801,6 +3818,7 @@ class StreamingChatTask(QRunnable):
             experiment_context=experiment_context,
             behavior_definitions=behavior_definitions,
             focus_points=focus_points,
+            subject_term=subject_term,
             run_tracking=run_tracking,
             run_behavior_labeling=run_behavior_labeling,
             resolve_video_path=self._resolve_video_path_for_gui_tool,
@@ -3835,7 +3853,8 @@ class StreamingChatTask(QRunnable):
             instance_count_value,
             experiment_context_text,
             behavior_definitions_text,
-            focus_points_text: _invoke_label_behavior_slot(
+            focus_points_text,
+            subject_term_text: _invoke_label_behavior_slot(
                 resolved_path=resolved_path,
                 labels=labels,
                 use_defined=bool(use_defined),
@@ -3854,6 +3873,7 @@ class StreamingChatTask(QRunnable):
                 experiment_context_text=str(experiment_context_text or ""),
                 behavior_definitions_text=str(behavior_definitions_text or ""),
                 focus_points_text=str(focus_points_text or ""),
+                subject_term_text=str(subject_term_text or ""),
             ),
             get_action_result=self._get_widget_action_result,
         )

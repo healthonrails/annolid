@@ -121,11 +121,12 @@ Safety notes:
   - Pass `replace_all_shapes=true` only when the source frame should fully replace target frame shapes.
   - Pass `temporal_repair=true` with `expected_instance_count` after an occlusion-prone `start_frame` to fill short missing-shape gaps and correct likely ID switches by centroid continuity.
   - In-place writes are limited to the writable workspace; use `output_ndjson_path` to write a corrected copy.
-- `gui_label_behavior_segments(path?, behavior_labels?, use_defined_behavior_list?, segment_mode?, segment_frames?, segment_seconds?, sample_frames_per_segment?, frames_per_grid?, max_segments?, subject?, overwrite_existing?, llm_profile?, llm_provider?, llm_model?, video_description?, instance_count?, experiment_context?, behavior_definitions?, focus_points?)`
+- `gui_label_behavior_segments(path?, behavior_labels?, use_defined_behavior_list?, segment_mode?, segment_frames?, segment_seconds?, sample_frames_per_segment?, frames_per_grid?, max_segments?, subject?, subject_term?, overwrite_existing?, llm_profile?, video_description?, instance_count?, experiment_context?, behavior_definitions?, focus_points?)`
   - Saves timeline labels and exports `<video_stem>_timestamps.csv` automatically.
   - Writes a segment-level labeling log to `<video_stem>_behavior_segment_labels.json`.
   - Set `use_defined_behavior_list=true` to force model outputs to your schema/flags behavior list.
   - For fixed-duration windows, set `segment_mode="uniform"` and pass `segment_seconds` (for example `1.0` for 1-second segments).
+  - Use `subject_term` for the organism or visible subject named in the model prompt (for example `fly`); `subject` remains the exported timeline subject.
   - `sample_frames_per_segment` controls how many frames are sampled into each segment frame grid; default is 4. `frames_per_grid` is accepted as a user-facing alias.
   - Use `video_description`, `instance_count`, `experiment_context`, `behavior_definitions`, and `focus_points` to guide model labeling behavior for specific experimental protocols.
 - `gui_start_realtime_stream(camera_source?, model_name?, target_behaviors?, confidence_threshold?, viewer_type?, classify_eye_blinks?, blink_ear_threshold?, blink_min_consecutive_frames?)`

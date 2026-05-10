@@ -17,6 +17,7 @@ from annolid.gui.widgets.ai_chat_widget import _ChatBubble
 from annolid.gui.widgets.ai_chat_widget import _extract_slash_selection_state
 from annolid.gui.widgets.ai_chat_widget import _symbol_text
 from annolid.gui.widgets.ai_chat_widget import AIChatWidget
+from annolid.gui.widgets.behavior_slash_dialog import BehaviorSlashDialog
 from annolid.gui.widgets.track_slash_dialog import TrackSlashDialog
 from annolid.gui.widgets.track_slash_dialog import build_track_slash_command
 
@@ -124,6 +125,17 @@ def test_parse_direct_gui_command_routes_capabilities_command() -> None:
     assert command == {"name": "open_agent_capabilities", "args": {}}
 
 
+def test_parse_direct_gui_command_routes_behavior_dialog() -> None:
+    command = parse_direct_gui_command("/behavior")
+
+    assert command == {"name": "open_behavior_dialog", "args": {}}
+
+    command_with_context = parse_direct_gui_command(
+        "/behavior labels still, walk from defined list"
+    )
+    assert command_with_context == {"name": "open_behavior_dialog", "args": {}}
+
+
 def test_build_track_slash_command_uses_structured_gui_fields() -> None:
     command = build_track_slash_command(
         {
@@ -219,6 +231,217 @@ def test_track_slash_dialog_shows_bot_model_hint() -> None:
         assert "SAM3 will reuse the current bot provider/model" in hint
     finally:
         dialog.deleteLater()
+
+
+def test_behavior_slash_dialog_collects_model_labels_and_prompt(tmp_path: Path) -> None:
+    _ensure_qapp()
+    video_path = tmp_path / "assay.mp4"
+    video_path.write_bytes(b"fake")
+    dialog = BehaviorSlashDialog(
+        None,
+        video_path=str(video_path),
+        labels=["still", "walk", "walk"],
+        providers=["nvidia", "ollama"],
+        provider_models={"nvidia": ["vision-model"], "ollama": ["local-model"]},
+        selected_provider="nvidia",
+        selected_model="vision-model",
+        segment_seconds=1.0,
+        frames_per_grid=9,
+        max_segments=25,
+        subject_term="fly",
+        video_description="Head-fixed fly assay.",
+        behavior_definitions="front groom: foreleg grooming",
+        focus_points="legs and abdomen",
+    )
+    try:
+        values = dialog.values()
+    finally:
+        dialog.deleteLater()
+
+    assert values["video_path"] == str(video_path)
+    assert values["behavior_labels"] == ["still", "walk"]
+    assert values["llm_provider"] == "nvidia"
+    assert values["llm_model"] == "vision-model"
+    assert values["segment_seconds"] == 1.0
+    assert values["sample_frames_per_segment"] == 9
+    assert values["max_segments"] == 25
+    assert values["subject_term"] == "fly"
+    assert "Head-fixed fly" in values["video_description"]
+    assert "front groom" in values["behavior_definitions"]
+    assert "abdomen" in values["focus_points"]
+
+
+def test_behavior_slash_defaults_use_active_video_labels_and_bot_model(
+    monkeypatch,
+) -> None:
+    _ensure_qapp()
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.load_llm_settings",
+        lambda: {
+            "provider": "nvidia",
+            "last_models": {"nvidia": "vision-model"},
+            "nvidia": {"preferred_models": ["vision-model"]},
+        },
+    )
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.ProviderRegistry.available_providers",
+        lambda self: ["nvidia"],
+    )
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.ProviderRegistry.labels",
+        lambda self: {"nvidia": "NVIDIA"},
+    )
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.ProviderRegistry.current_provider",
+        lambda self: "nvidia",
+    )
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.ProviderRegistry.available_models",
+        lambda self, provider: ["vision-model"],
+    )
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.ProviderRegistry.resolve_initial_model",
+        lambda self, provider, available_models: "vision-model",
+    )
+    monkeypatch.setattr(
+        AIChatWidget,
+        "_load_session_history_into_bubbles",
+        lambda self, session_id: None,
+    )
+    monkeypatch.setattr(AIChatWidget, "_update_model_selector", lambda self: None)
+    monkeypatch.setattr(AIChatWidget, "_refresh_header_chips", lambda self: None)
+    monkeypatch.setattr(
+        AIChatWidget, "_load_quick_actions_from_settings", lambda self: None
+    )
+    monkeypatch.setattr(
+        AIChatWidget,
+        "_labels_from_schema_or_flags",
+        lambda self: ["still", "walk"],
+    )
+
+    widget = AIChatWidget()
+    try:
+        host = QtWidgets.QWidget()
+        host.video_file = "/tmp/fly.mp4"  # type: ignore[attr-defined]
+        widget.host_window_widget = host
+        widget.selected_provider = "nvidia"
+        widget.selected_model = "vision-model"
+
+        defaults = widget._behavior_slash_defaults()
+    finally:
+        widget.deleteLater()
+
+    assert defaults["video_path"] == "/tmp/fly.mp4"
+    assert defaults["labels"] == ["still", "walk"]
+    assert defaults["providers"] == ["nvidia"]
+    assert defaults["provider_models"] == {"nvidia": ["vision-model"]}
+    assert defaults["selected_provider"] == "nvidia"
+    assert defaults["selected_model"] == "vision-model"
+    assert defaults["frames_per_grid"] == 9
+
+
+def test_behavior_slash_dialog_acceptance_queues_labeling(monkeypatch) -> None:
+    _ensure_qapp()
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.load_llm_settings",
+        lambda: {
+            "provider": "nvidia",
+            "last_models": {"nvidia": "vision-model"},
+            "nvidia": {"preferred_models": ["vision-model"]},
+        },
+    )
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.ProviderRegistry.available_providers",
+        lambda self: ["nvidia"],
+    )
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.ProviderRegistry.labels",
+        lambda self: {"nvidia": "NVIDIA"},
+    )
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.ProviderRegistry.current_provider",
+        lambda self: "nvidia",
+    )
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.ProviderRegistry.available_models",
+        lambda self, provider: ["vision-model"],
+    )
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.ProviderRegistry.resolve_initial_model",
+        lambda self, provider, available_models: "vision-model",
+    )
+    monkeypatch.setattr(
+        AIChatWidget,
+        "_load_session_history_into_bubbles",
+        lambda self, session_id: None,
+    )
+    monkeypatch.setattr(AIChatWidget, "_update_model_selector", lambda self: None)
+    monkeypatch.setattr(AIChatWidget, "_refresh_header_chips", lambda self: None)
+    monkeypatch.setattr(
+        AIChatWidget, "_load_quick_actions_from_settings", lambda self: None
+    )
+    monkeypatch.setattr(
+        AIChatWidget,
+        "_labels_from_schema_or_flags",
+        lambda self: ["still", "walk"],
+    )
+
+    class _AcceptedDialog:
+        def __init__(self, *args, **kwargs):
+            self.kwargs = kwargs
+
+        def exec_(self):
+            return QtWidgets.QDialog.Accepted
+
+        def values(self):
+            return {
+                "video_path": "/tmp/fly.mp4",
+                "behavior_labels": ["still", "walk", "front groom"],
+                "llm_provider": "nvidia",
+                "llm_model": "vision-model",
+                "segment_seconds": 1.0,
+                "sample_frames_per_segment": 9,
+                "max_segments": 50,
+                "subject_term": "fly",
+                "video_description": "Head-fixed fly assay.",
+                "behavior_definitions": "front groom: foreleg grooming",
+                "focus_points": "legs and abdomen",
+                "overwrite_existing": False,
+            }
+
+    monkeypatch.setattr(ai_chat_widget_module, "BehaviorSlashDialog", _AcceptedDialog)
+
+    widget = AIChatWidget()
+    captured = {}
+    model_route = {}
+    try:
+        widget.set_provider_and_model = (  # type: ignore[method-assign]
+            lambda provider, model: model_route.update(
+                {"provider": provider, "model": model}
+            )
+        )
+        widget.bot_label_behavior_segments = (  # type: ignore[method-assign]
+            lambda **kwargs: captured.update(kwargs)
+        )
+
+        widget.bot_open_behavior_slash_dialog()
+    finally:
+        widget.deleteLater()
+
+    assert model_route == {"provider": "nvidia", "model": "vision-model"}
+    assert captured["video_path"] == "/tmp/fly.mp4"
+    assert captured["behavior_labels_csv"] == "still, walk, front groom"
+    assert captured["use_defined_behavior_list"] is True
+    assert captured["segment_mode"] == "uniform"
+    assert captured["segment_seconds"] == 1.0
+    assert captured["sample_frames_per_segment"] == 9
+    assert captured["max_segments"] == 50
+    assert captured["llm_provider"] == "nvidia"
+    assert captured["llm_model"] == "vision-model"
+    assert captured["subject_term"] == "fly"
+    assert "Head-fixed fly" in captured["video_description"]
+    assert "front groom" in captured["behavior_definitions"]
+    assert "abdomen" in captured["focus_points"]
 
 
 def test_extract_label_from_model_text_accepts_behavior_alias_keys() -> None:
@@ -709,7 +932,7 @@ def test_behavior_label_resolution_preserves_explicit_defined_list(monkeypatch) 
         monkeypatch.setattr(
             widget,
             "_labels_from_schema_or_flags",
-            lambda: ["walking", "grooming", "rearing"],
+            lambda: ["walking", "grooming", "rearing", "STILL"],
         )
 
         labels = widget._resolve_segment_label_candidates(
@@ -1266,6 +1489,152 @@ def test_behavior_segment_vlm_worker_routes_known_non_vision_model_to_caption_pr
     )
 
 
+def test_behavior_segment_vlm_worker_infers_fly_subject_from_video_path(
+    monkeypatch, tmp_path: Path
+) -> None:
+    video_dir = tmp_path / "head_fixed_fly" / "videos"
+    video_dir.mkdir(parents=True)
+    video_path = video_dir / "2019_06_26_fly2.avi"
+    writer = cv2.VideoWriter(
+        str(video_path),
+        cv2.VideoWriter_fourcc(*"MJPG"),
+        10.0,
+        (64, 48),
+    )
+    assert writer.isOpened()
+    try:
+        for idx in range(8):
+            frame = np.zeros((48, 64, 3), dtype=np.uint8)
+            frame[..., 1] = idx * 20
+            writer.write(frame)
+    finally:
+        writer.release()
+
+    requests = []
+
+    class _FakeAdapter:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def predict(self, request):
+            requests.append(request)
+            return ModelResponse(
+                task="caption",
+                output={
+                    "text": (
+                        '{"label":"still","classification":"still",'
+                        '"confidence":0.91,"description":"fly remains still"}'
+                    )
+                },
+                text=(
+                    '{"label":"still","classification":"still",'
+                    '"confidence":0.91,"description":"fly remains still"}'
+                ),
+            )
+
+    import annolid.core.models.adapters.llm_chat as llm_chat
+
+    monkeypatch.setattr(llm_chat, "LLMChatAdapter", _FakeAdapter)
+
+    widget = AIChatWidget.__new__(AIChatWidget)
+    result = widget._run_behavior_segment_vlm_worker(
+        video_path=str(video_path),
+        intervals=[{"start_frame": 0, "end_frame": 7, "subject": None}],
+        labels=["still", "walk"],
+        sample_frames_per_segment=3,
+        llm_profile="",
+        llm_provider="",
+        llm_model="",
+    )
+
+    assert result["skipped_segments"] == 0
+    assert "the fly" in requests[0].text
+    assert "the mouse" not in requests[0].text
+    assert result["predictions"][0]["visual_evidence"]["subject_term"] == "fly"
+
+
+def test_behavior_segment_vlm_worker_pauses_after_rate_limit(
+    monkeypatch, tmp_path: Path
+) -> None:
+    video_path = tmp_path / "fly.avi"
+    writer = cv2.VideoWriter(
+        str(video_path),
+        cv2.VideoWriter_fourcc(*"MJPG"),
+        10.0,
+        (64, 48),
+    )
+    assert writer.isOpened()
+    try:
+        for idx in range(16):
+            frame = np.zeros((48, 64, 3), dtype=np.uint8)
+            frame[..., 1] = idx * 10
+            writer.write(frame)
+    finally:
+        writer.release()
+
+    requests = []
+
+    class _FakeAdapter:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def predict(self, request):
+            requests.append(request)
+            raise RuntimeError("Error code: 429 - Too Many Requests")
+
+    import annolid.core.models.adapters.llm_chat as llm_chat
+
+    monkeypatch.setattr(llm_chat, "LLMChatAdapter", _FakeAdapter)
+    monkeypatch.setattr(
+        AIChatWidget, "_sleep_with_stop", staticmethod(lambda *_: False)
+    )
+
+    widget = AIChatWidget.__new__(AIChatWidget)
+    result = widget._run_behavior_segment_vlm_worker(
+        video_path=str(video_path),
+        intervals=[
+            {"start_frame": 0, "end_frame": 7, "subject": None},
+            {"start_frame": 8, "end_frame": 15, "subject": None},
+        ],
+        labels=["still", "walk"],
+        sample_frames_per_segment=3,
+        llm_profile="",
+        llm_provider="nvidia",
+        llm_model="moonshotai/kimi-k2.5",
+    )
+
+    assert result["rate_limited"] is True
+    assert result["skipped_segments"] == 1
+    assert result["predictions"] == []
+    assert "rate limit" in result["error"].lower()
+    assert len(requests) == 1
+
+
+def test_behavior_subject_term_prefers_message_hint_over_generic_path() -> None:
+    widget = AIChatWidget.__new__(AIChatWidget)
+
+    assert (
+        widget._infer_behavior_subject_term(
+            "/tmp/generic_recording.avi",
+            None,
+            explicit_subject_term="fly",
+        )
+        == "fly"
+    )
+
+
 def test_behavior_segment_vlm_worker_caption_profile_rescue_after_empty_primary(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -1451,3 +1820,68 @@ def test_behavior_segment_log_saves_classification_and_description(
     assert payload["predictions"][1]["description"] == ""
     assert payload["predictions"][1]["grid_image_path"].endswith("grid2.png")
     assert "segment frames 10-19" in payload["predictions"][1]["grid_frame_description"]
+
+
+def test_load_resumable_behavior_segment_predictions_filters_allowed_labels(
+    tmp_path: Path,
+) -> None:
+    video_path = tmp_path / "fly.mp4"
+    video_path.write_bytes(b"fake")
+    log_path = tmp_path / "fly_behavior_segment_labels.json"
+    log_path.write_text(
+        json.dumps(
+            {
+                "segment_frames": 70,
+                "segment_seconds": 1.0,
+                "sample_frames_per_segment": 9,
+                "predictions": [
+                    {
+                        "start_frame": 0,
+                        "end_frame": 69,
+                        "label": "still",
+                        "confidence": 0.9,
+                    },
+                    {
+                        "start_frame": 70,
+                        "end_frame": 139,
+                        "label": "walking",
+                        "confidence": 0.8,
+                    },
+                    {
+                        "start_frame": "bad",
+                        "end_frame": 209,
+                        "label": "walk",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    widget = AIChatWidget.__new__(AIChatWidget)
+    result = widget._load_resumable_behavior_segment_predictions(
+        str(video_path),
+        labels=["still", "walk"],
+        segment_frames=70,
+        segment_seconds=1.0,
+        sample_frames_per_segment=9,
+    )
+
+    assert result["ok"] is True
+    assert result["path"] == str(log_path)
+    assert result["predictions"] == [
+        {
+            "start_frame": 0,
+            "end_frame": 69,
+            "subject": None,
+            "label": "still",
+            "classification": "still",
+            "confidence": 0.9,
+            "description": "",
+            "model_description": "",
+            "description_source": "",
+            "grid_image_path": "",
+            "grid_frame_description": "",
+            "aggression_sub_events": {},
+        }
+    ]

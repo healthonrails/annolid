@@ -142,6 +142,7 @@ def label_behavior_segments_tool(
     experiment_context: str = "",
     behavior_definitions: str = "",
     focus_points: str = "",
+    subject_term: str = "",
     resolve_video_path: Callable[[str], Optional[Path]],
     invoke_label_behavior: Callable[
         [
@@ -160,6 +161,7 @@ def label_behavior_segments_tool(
             str,
             str,
             Optional[int],
+            str,
             str,
             str,
             str,
@@ -250,6 +252,7 @@ def label_behavior_segments_tool(
         str(experiment_context or ""),
         str(behavior_definitions or ""),
         str(focus_points or ""),
+        str(subject_term or ""),
     )
     if not ok:
         return {"ok": False, "error": "Failed to queue behavior labeling action"}
@@ -301,6 +304,9 @@ def label_behavior_segments_tool(
             "focus_points": str(
                 widget_result.get("focus_points") or focus_points or ""
             ),
+            "subject_term": str(
+                widget_result.get("subject_term") or subject_term or ""
+            ),
             "timestamps_csv": str(widget_result.get("timestamps_csv") or ""),
             "timestamps_rows": int(widget_result.get("timestamps_rows") or 0),
             "behavior_log_json": str(widget_result.get("behavior_log_json") or ""),
@@ -321,6 +327,7 @@ def label_behavior_segments_tool(
         "experiment_context": str(experiment_context or ""),
         "behavior_definitions": str(behavior_definitions or ""),
         "focus_points": str(focus_points or ""),
+        "subject_term": str(subject_term or ""),
     }
 
 
@@ -349,6 +356,7 @@ def process_video_behaviors_tool(
     experiment_context: str = "",
     behavior_definitions: str = "",
     focus_points: str = "",
+    subject_term: str = "",
     run_tracking: bool,
     run_behavior_labeling: bool,
     resolve_video_path: Callable[[str], Optional[Path]],
@@ -370,6 +378,7 @@ def process_video_behaviors_tool(
             str,
             str,
             Optional[int],
+            str,
             str,
             str,
             str,
@@ -447,6 +456,7 @@ def process_video_behaviors_tool(
             experiment_context=experiment_context,
             behavior_definitions=behavior_definitions,
             focus_points=focus_points,
+            subject_term=subject_term,
             resolve_video_path=resolve_once,
             invoke_label_behavior=invoke_label_behavior,
             get_action_result=get_action_result,

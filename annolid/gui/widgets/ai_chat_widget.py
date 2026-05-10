@@ -48,14 +48,27 @@ from annolid.services import (
     describe_agent_capabilities,
     matches_slash_completion_search,
 )
-from annolid.behavior import prompting as behavior_prompting
 from annolid.behavior.event_utils import (
     aggregate_aggression_bout_summary,
     aggression_sub_event_schema,
     infer_aggression_sub_event_counts_from_text,
     parse_aggression_sub_event_counts,
 )
-from annolid.core.media.video import build_segment_frame_grid, save_rgb_image
+from annolid.behavior.segment_labeling import (
+    behavior_label_provider_request_interval,
+    behavior_label_rate_limit_backoff_seconds,
+    behavior_grid_output_path,
+    behavior_grid_segment_label,
+    behavior_grid_system_prompt,
+    behavior_label_retry_prompt,
+    behavior_segment_labeling_log_path,
+    infer_behavior_subject_term,
+    is_likely_non_vision_model,
+    load_resumable_behavior_segment_predictions,
+    normalize_behavior_segment_prediction_for_log,
+    run_behavior_segment_vlm_worker,
+    summarize_frame_grid_motion,
+)
 from annolid.datasets.labelme_collection import default_label_index_path
 from annolid.gui.realtime_launch import (
     build_realtime_launch_payload,
@@ -76,6 +89,7 @@ from annolid.gui.widgets.ai_chat_zulip import (
     missing_zulip_config_fields,
 )
 from annolid.gui.widgets.citation_manager_widget import CitationManagerDialog
+from annolid.gui.widgets.behavior_slash_dialog import BehaviorSlashDialog
 from annolid.gui.widgets.llm_settings_dialog import LLMSettingsDialog
 from annolid.gui.widgets.provider_registry import ProviderRegistry
 from annolid.gui.widgets.provider_runtime_sync import (
@@ -2358,6 +2372,10 @@ class AIChatWidget(QtWidgets.QWidget):
             self._hide_slash_completion_ui()
             self.bot_open_track_slash_dialog()
             return
+        if action == "open_behavior_dialog":
+            self._hide_slash_completion_ui()
+            self.bot_open_behavior_slash_dialog()
+            return
         context = dict(getattr(self, "_slash_completion_context_state", {}) or {})
         token_start = int(context.get("token_start") or 0)
         token_end = int(context.get("token_end") or 0)
@@ -4037,13 +4055,7 @@ class AIChatWidget(QtWidgets.QWidget):
             return normalized_explicit
         if not normalized_explicit:
             return defined_labels
-
-        defined_lookup = {label.lower(): label for label in defined_labels}
-        resolved: List[str] = []
-        for label in normalized_explicit:
-            mapped = defined_lookup.get(label.lower())
-            resolved.append(mapped or label)
-        return self._normalize_behavior_labels(resolved)
+        return normalized_explicit
 
     @staticmethod
     def _behavior_ranges_from_events(events: List[object]) -> List[Dict[str, Any]]:
@@ -4228,121 +4240,12 @@ class AIChatWidget(QtWidgets.QWidget):
         frames = [int(round(start + (idx * step))) for idx in range(count)]
         return sorted(set(max(start, min(end, frame)) for frame in frames))
 
-    @staticmethod
-    def _behavior_grid_segment_label(
-        *,
-        start_frame: int,
-        end_frame: int,
-        frame_indices: List[int],
-        fps: float,
-    ) -> str:
-        from annolid.behavior.timeline_sampling import format_hhmmss
-
-        tiles = ", ".join(f"f{int(frame)}" for frame in frame_indices)
-        fps_value = float(fps or 0.0)
-        if fps_value > 0.0:
-            start_time = format_hhmmss(float(start_frame) / fps_value)
-            end_time = format_hhmmss(float(end_frame) / fps_value)
-            time_text = f" (time {start_time}-{end_time})"
-        else:
-            time_text = ""
-        return (
-            f"segment frames {int(start_frame)}-{int(end_frame)}{time_text}. "
-            "The provided image is one chronological frame grid for this segment; "
-            f"read tiles left-to-right, top-to-bottom ({tiles})."
-        )
-
-    @staticmethod
-    def _behavior_grid_output_path(
-        *,
-        video_path: str,
-        segment_index: int,
-        start_frame: int,
-        end_frame: int,
-    ) -> Path:
-        source_path = Path(video_path)
-        output_dir = source_path.parent / f"{source_path.stem}_behavior_segment_grids"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        return output_dir / (
-            f"{source_path.stem}_segment_{int(segment_index):06d}"
-            f"_frames_{int(start_frame)}_{int(end_frame)}.png"
-        )
-
-    @staticmethod
-    def _behavior_label_retry_prompt(prompt: str, labels: List[str]) -> str:
-        labels_text = ", ".join(str(label) for label in labels)
-        return "\n".join(
-            [
-                str(prompt or "").strip(),
-                "",
-                "Your previous response was empty or did not include a valid label.",
-                f"Choose exactly one label from this list: {labels_text}.",
-                'Return JSON only: {"label":"<one label exactly as listed>","classification":"<same label>","confidence":0.0,"description":"observable evidence from the frame grid"}.',
-                "Do not return an empty message. Do not use a label outside the list.",
-            ]
-        )
-
-    @staticmethod
-    def _behavior_grid_system_prompt(labels: List[str]) -> str:
-        labels_text = ", ".join(str(label) for label in labels if str(label).strip())
-        return "\n".join(
-            [
-                "You are Annolid Bot.",
-                "Analyze chronological frame-grid images for behavior labeling.",
-                "You must ground output in visible evidence from the grid tiles.",
-                f"Allowed labels: {labels_text}",
-                "Classification must be exactly one allowed label.",
-                "Always include a short behavior description.",
-            ]
-        )
-
-    @staticmethod
-    def _summarize_frame_grid_motion(
-        grid_image: Any,
-        *,
-        rows: int,
-        columns: int,
-        tile_width: int,
-        tile_height: int,
-        frame_count: int,
-    ) -> Dict[str, Any]:
-        if frame_count < 2:
-            return {"motion_score": 0.0, "mean_delta": 0.0, "pair_count": 0}
-        try:
-            import cv2  # type: ignore
-        except Exception:
-            return {"motion_score": 0.0, "mean_delta": 0.0, "pair_count": 0}
-
-        tiles = []
-        limit = min(int(frame_count), int(rows) * int(columns))
-        for idx in range(limit):
-            row = idx // int(columns)
-            col = idx % int(columns)
-            y0 = row * int(tile_height)
-            x0 = col * int(tile_width)
-            tile = grid_image[y0 : y0 + int(tile_height), x0 : x0 + int(tile_width)]
-            if tile is None or getattr(tile, "size", 0) <= 0:
-                continue
-            # Ignore the annotation strip at the top of each tile.
-            crop = tile[min(24, max(0, int(tile_height) - 1)) :, :]
-            if getattr(crop, "size", 0) <= 0:
-                crop = tile
-            gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
-            gray = cv2.resize(gray, (64, 64), interpolation=cv2.INTER_AREA)
-            tiles.append(gray)
-        if len(tiles) < 2:
-            return {"motion_score": 0.0, "mean_delta": 0.0, "pair_count": 0}
-        diffs = [
-            float(cv2.absdiff(tiles[idx - 1], tiles[idx]).mean())
-            for idx in range(1, len(tiles))
-        ]
-        motion_score = max(diffs) if diffs else 0.0
-        mean_delta = (sum(diffs) / len(diffs)) if diffs else 0.0
-        return {
-            "motion_score": motion_score,
-            "mean_delta": mean_delta,
-            "pair_count": len(diffs),
-        }
+    _infer_behavior_subject_term = staticmethod(infer_behavior_subject_term)
+    _behavior_grid_segment_label = staticmethod(behavior_grid_segment_label)
+    _behavior_grid_output_path = staticmethod(behavior_grid_output_path)
+    _behavior_label_retry_prompt = staticmethod(behavior_label_retry_prompt)
+    _behavior_grid_system_prompt = staticmethod(behavior_grid_system_prompt)
+    _summarize_frame_grid_motion = staticmethod(summarize_frame_grid_motion)
 
     @staticmethod
     def _select_label_by_motion_affinity(
@@ -4408,48 +4311,25 @@ class AIChatWidget(QtWidgets.QWidget):
             f"(motion_score={motion_score:.2f}, mean_delta={mean_delta:.2f})."
         )
 
+    _is_likely_non_vision_model = staticmethod(is_likely_non_vision_model)
+    _behavior_label_provider_request_interval = staticmethod(
+        behavior_label_provider_request_interval
+    )
+    _behavior_label_rate_limit_backoff_seconds = staticmethod(
+        behavior_label_rate_limit_backoff_seconds
+    )
+
     @staticmethod
-    def _is_likely_non_vision_model(*, provider: str, model: str) -> bool:
-        provider_text = str(provider or "").strip().lower()
-        model_text = str(model or "").strip().lower()
-        if not model_text:
+    def _sleep_with_stop(stop_event: object, seconds: float) -> bool:
+        wait_seconds = max(0.0, float(seconds or 0.0))
+        if wait_seconds <= 0.0:
             return False
-        known_text_only_tokens = (
-            "kimi-k2.5",
-            "kimi-k2",
-        )
-        if any(token in model_text for token in known_text_only_tokens):
-            return True
-        if provider_text == "nvidia" and "moonshotai/kimi-k2.5" in model_text:
-            return True
+        if stop_event is not None:
+            waiter = getattr(stop_event, "wait", None)
+            if callable(waiter):
+                return bool(waiter(wait_seconds))
+        time.sleep(wait_seconds)
         return False
-
-    @staticmethod
-    def _behavior_label_provider_request_interval(provider: str, model: str) -> float:
-        provider_text = str(provider or "").strip().lower()
-        model_text = str(model or "").strip().lower()
-        if not provider_text or provider_text in {"ollama", "local"}:
-            return 0.0
-        if provider_text == "nvidia" or "kimi" in model_text:
-            return 1.0
-        return 0.5
-
-    @staticmethod
-    def _behavior_label_rate_limit_backoff_seconds(exc: Exception) -> Optional[float]:
-        text = str(exc or "").lower()
-        if (
-            "429" not in text
-            and "rate limit" not in text
-            and "too many request" not in text
-        ):
-            return None
-        match = re.search(r"retry[-\s]?after[=: ]+(\d+(?:\.\d+)?)", text)
-        if match:
-            try:
-                return max(1.0, min(60.0, float(match.group(1))))
-            except Exception:
-                pass
-        return 8.0
 
     def _save_behavior_timestamps_csv(self, host: object) -> Dict[str, Any]:
         behavior_controller = getattr(host, "behavior_controller", None)
@@ -4496,7 +4376,7 @@ class AIChatWidget(QtWidgets.QWidget):
                 f"{video_path.stem}_behavior_segment_labels.json"
             )
             normalized_predictions = [
-                self._normalize_behavior_segment_prediction_for_log(pred)
+                normalize_behavior_segment_prediction_for_log(pred)
                 for pred in predictions
             ]
             aggression_summary = aggregate_aggression_bout_summary(
@@ -4530,52 +4410,15 @@ class AIChatWidget(QtWidgets.QWidget):
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 
-    @staticmethod
-    def _normalize_behavior_segment_prediction_for_log(
-        prediction: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        label = str(
-            prediction.get("label") or prediction.get("classification") or ""
-        ).strip()
-        classification = str(
-            prediction.get("classification") or prediction.get("label") or label
-        ).strip()
-        normalized: Dict[str, Any] = {
-            "start_frame": int(prediction.get("start_frame") or 0),
-            "end_frame": int(
-                prediction.get("end_frame") or prediction.get("start_frame") or 0
-            ),
-            "subject": prediction.get("subject"),
-            "label": label,
-            "classification": classification,
-            "confidence": float(prediction.get("confidence") or 0.0),
-            "description": str(prediction.get("description") or "").strip(),
-            "model_description": str(prediction.get("model_description") or "").strip(),
-            "description_source": str(
-                prediction.get("description_source") or ""
-            ).strip(),
-            "grid_image_path": str(prediction.get("grid_image_path") or "").strip(),
-            "grid_frame_description": str(
-                prediction.get("grid_frame_description") or ""
-            ).strip(),
-            "aggression_sub_events": parse_aggression_sub_event_counts(
-                prediction.get("aggression_sub_events")
-                or prediction.get("sub_events")
-                or prediction.get("subevents")
-            ),
-        }
-        visual_evidence = prediction.get("visual_evidence")
-        if isinstance(visual_evidence, dict):
-            normalized["visual_evidence"] = dict(visual_evidence)
-            if not normalized["grid_image_path"]:
-                normalized["grid_image_path"] = str(
-                    visual_evidence.get("grid_image_path") or ""
-                ).strip()
-            if not normalized["grid_frame_description"]:
-                normalized["grid_frame_description"] = str(
-                    visual_evidence.get("grid_frame_description") or ""
-                ).strip()
-        return normalized
+    _behavior_segment_labeling_log_path = staticmethod(
+        behavior_segment_labeling_log_path
+    )
+    _load_resumable_behavior_segment_predictions = staticmethod(
+        load_resumable_behavior_segment_predictions
+    )
+    _normalize_behavior_segment_prediction_for_log = staticmethod(
+        normalize_behavior_segment_prediction_for_log
+    )
 
     def _run_behavior_segment_vlm_worker(
         self,
@@ -4592,430 +4435,30 @@ class AIChatWidget(QtWidgets.QWidget):
         experiment_context: str = "",
         behavior_definitions: str = "",
         focus_points: str = "",
+        subject_term: str = "",
         stop_event=None,
         pred_worker=None,
     ) -> Dict[str, Any]:
-        from annolid.core.models.adapters.llm_chat import LLMChatAdapter
-        from annolid.core.models.base import ModelRequest
-
-        predictions: List[Dict[str, Any]] = []
-        skipped_segments = 0
-        fps = self._infer_video_fps(video_path)
-
-        requested_profile = str(llm_profile or "").strip()
-        requested_provider = str(llm_provider or "").strip()
-        requested_model = str(llm_model or "").strip()
-        route_to_caption_profile = self._is_likely_non_vision_model(
-            provider=requested_provider,
-            model=requested_model,
+        return run_behavior_segment_vlm_worker(
+            video_path=video_path,
+            intervals=intervals,
+            labels=labels,
+            sample_frames_per_segment=sample_frames_per_segment,
+            llm_profile=llm_profile,
+            llm_provider=llm_provider,
+            llm_model=llm_model,
+            fps=self._infer_video_fps(video_path),
+            prediction_parser=self._extract_prediction_from_model_text,
+            sleep_func=self._sleep_with_stop,
+            video_description=video_description,
+            instance_count=instance_count,
+            experiment_context=experiment_context,
+            behavior_definitions=behavior_definitions,
+            focus_points=focus_points,
+            subject_term=subject_term,
+            stop_event=stop_event,
+            pred_worker=pred_worker,
         )
-        request_interval_seconds = self._behavior_label_provider_request_interval(
-            requested_provider,
-            requested_model,
-        )
-        last_request_at = 0.0
-        rate_limit_backoffs = 0
-        if route_to_caption_profile:
-            logger.info(
-                "Behavior segment routing to caption profile for image labeling "
-                "because selected model appears non-vision provider=%s model=%s",
-                requested_provider,
-                requested_model,
-            )
-
-        with contextlib.ExitStack() as stack:
-            if route_to_caption_profile:
-                adapter = stack.enter_context(
-                    LLMChatAdapter(
-                        profile="caption",
-                        provider=requested_provider or None,
-                        model=requested_model or None,
-                        persist=False,
-                    )
-                )
-            else:
-                adapter = stack.enter_context(
-                    LLMChatAdapter(
-                        profile=requested_profile or None,
-                        provider=requested_provider or None,
-                        model=requested_model or None,
-                        persist=False,
-                    )
-                )
-            caption_rescue_adapter: Optional[LLMChatAdapter] = None
-            total = max(1, len(intervals))
-            for idx, item in enumerate(intervals, start=1):
-                if stop_event is not None and bool(stop_event.is_set()):
-                    break
-                start_frame = int(item["start_frame"])
-                end_frame = int(item["end_frame"])
-                progress_value = int((idx * 100) / total)
-                try:
-                    grid = build_segment_frame_grid(
-                        video_path,
-                        start_frame=start_frame,
-                        end_frame=end_frame,
-                        sample_count=max(1, int(sample_frames_per_segment)),
-                        tile_width=224,
-                        annotate=True,
-                        annotation_position="header",
-                    )
-                    image_path = save_rgb_image(
-                        grid.image,
-                        self._behavior_grid_output_path(
-                            video_path=video_path,
-                            segment_index=idx,
-                            start_frame=start_frame,
-                            end_frame=end_frame,
-                        ),
-                    )
-                    segment_text = self._behavior_grid_segment_label(
-                        start_frame=start_frame,
-                        end_frame=end_frame,
-                        frame_indices=list(grid.frame_indices),
-                        fps=float(fps),
-                    )
-                    prompt = behavior_prompting.build_behavior_classification_prompt(
-                        behavior_labels=labels,
-                        segment_label=segment_text,
-                        video_description=video_description,
-                        instance_count=instance_count,
-                        experiment_context=experiment_context,
-                        behavior_definitions=behavior_definitions,
-                        focus_points=focus_points,
-                    )
-                    retry_prompt = self._behavior_label_retry_prompt(prompt, labels)
-                    system_prompt = self._behavior_grid_system_prompt(labels)
-                    if route_to_caption_profile:
-                        attempts: List[Dict[str, Any]] = [
-                            {
-                                "name": "caption_profile_with_image",
-                                "text": prompt,
-                                "params": {
-                                    "temperature": 0.0,
-                                    "max_tokens": 180,
-                                    "system_prompt": system_prompt,
-                                },
-                            }
-                        ]
-                    else:
-                        attempts = [
-                            {
-                                "name": "json_with_image",
-                                "text": prompt,
-                                "params": {
-                                    "temperature": 0.0,
-                                    "max_tokens": 180,
-                                    "system_prompt": system_prompt,
-                                    "response_format": {"type": "json_object"},
-                                },
-                            },
-                            {
-                                "name": "plain_with_image",
-                                "text": prompt,
-                                "params": {
-                                    "temperature": 0.0,
-                                    "max_tokens": 180,
-                                    "system_prompt": system_prompt,
-                                },
-                            },
-                            {
-                                "name": "repair_with_image",
-                                "text": retry_prompt,
-                                "params": {
-                                    "temperature": 0.0,
-                                    "max_tokens": 180,
-                                    "use_annolid_bot_system": False,
-                                },
-                            },
-                        ]
-
-                    def _predict_with_rate_limit(
-                        local_adapter: LLMChatAdapter,
-                        *,
-                        attempt_name: str,
-                        text: str,
-                        params: Dict[str, Any],
-                    ):
-                        nonlocal last_request_at, rate_limit_backoffs
-                        for retry_index in range(2):
-                            if stop_event is not None and bool(stop_event.is_set()):
-                                raise RuntimeError("Behavior labeling cancelled.")
-                            elapsed = time.monotonic() - last_request_at
-                            wait_seconds = max(
-                                0.0, float(request_interval_seconds) - elapsed
-                            )
-                            if wait_seconds > 0:
-                                time.sleep(wait_seconds)
-                            try:
-                                response = local_adapter.predict(
-                                    ModelRequest(
-                                        task="caption",
-                                        image_path=str(image_path),
-                                        text=str(text or "").strip(),
-                                        params=dict(params or {}),
-                                    )
-                                )
-                                last_request_at = time.monotonic()
-                                return response
-                            except Exception as exc:
-                                last_request_at = time.monotonic()
-                                backoff = (
-                                    self._behavior_label_rate_limit_backoff_seconds(exc)
-                                )
-                                if backoff is None or retry_index >= 1:
-                                    raise
-                                rate_limit_backoffs += 1
-                                logger.warning(
-                                    "Behavior segment attempt '%s' hit rate limit for frames %s-%s; backing off %.1fs.",
-                                    attempt_name,
-                                    start_frame,
-                                    end_frame,
-                                    backoff,
-                                )
-                                time.sleep(backoff)
-                        raise RuntimeError("Behavior labeling request retry failed.")
-
-                    raw = ""
-                    parsed: Dict[str, Any] = {}
-                    label = ""
-                    used_attempt_name = ""
-                    empty_attempts = 0
-                    model_description = ""
-                    for attempt in attempts:
-                        attempt_name = str(attempt.get("name") or "").strip()
-                        used_attempt_name = attempt_name or used_attempt_name
-                        try:
-                            resp = _predict_with_rate_limit(
-                                adapter,
-                                attempt_name=attempt_name,
-                                text=str(attempt.get("text") or "").strip(),
-                                params=dict(attempt.get("params") or {}),
-                            )
-                        except Exception as exc:
-                            logger.info(
-                                "Behavior segment attempt '%s' failed for frames %s-%s: %s",
-                                attempt_name,
-                                start_frame,
-                                end_frame,
-                                exc,
-                            )
-                            continue
-                        raw = str(
-                            resp.text or (resp.output or {}).get("text") or ""
-                        ).strip()
-                        if not raw:
-                            empty_attempts += 1
-                            logger.info(
-                                "Behavior segment attempt '%s' returned empty text for frames %s-%s.",
-                                attempt_name,
-                                start_frame,
-                                end_frame,
-                            )
-                            continue
-                        parsed = self._extract_prediction_from_model_text(raw, labels)
-                        label = str(parsed.get("label") or "").strip()
-                        model_description = str(parsed.get("description") or "").strip()
-                        if label:
-                            if attempt_name == "repair_with_image":
-                                parsed.setdefault("fallback_reason", "repair_prompt")
-                            break
-                    if not label and not route_to_caption_profile:
-                        if caption_rescue_adapter is None:
-                            caption_rescue_adapter = stack.enter_context(
-                                LLMChatAdapter(
-                                    profile="caption",
-                                    provider=requested_provider or None,
-                                    model=requested_model or None,
-                                    persist=False,
-                                )
-                            )
-                        rescue_attempt_name = "rescue_caption_profile"
-                        used_attempt_name = rescue_attempt_name
-                        try:
-                            rescue_resp = _predict_with_rate_limit(
-                                caption_rescue_adapter,
-                                attempt_name=rescue_attempt_name,
-                                text=str(retry_prompt or "").strip(),
-                                params={
-                                    "temperature": 0.0,
-                                    "max_tokens": 180,
-                                    "use_annolid_bot_system": False,
-                                },
-                            )
-                            rescue_raw = str(
-                                rescue_resp.text
-                                or (rescue_resp.output or {}).get("text")
-                                or ""
-                            ).strip()
-                            if not rescue_raw:
-                                empty_attempts += 1
-                                logger.info(
-                                    "Behavior segment attempt '%s' returned empty text for frames %s-%s.",
-                                    rescue_attempt_name,
-                                    start_frame,
-                                    end_frame,
-                                )
-                            else:
-                                parsed = self._extract_prediction_from_model_text(
-                                    rescue_raw, labels
-                                )
-                                label = str(parsed.get("label") or "").strip()
-                                model_description = str(
-                                    parsed.get("description") or ""
-                                ).strip()
-                                if label:
-                                    parsed.setdefault(
-                                        "fallback_reason", "caption_profile_rescue"
-                                    )
-                        except Exception as exc:
-                            logger.info(
-                                "Behavior segment attempt '%s' failed for frames %s-%s: %s",
-                                rescue_attempt_name,
-                                start_frame,
-                                end_frame,
-                                exc,
-                            )
-                    motion_summary = self._summarize_frame_grid_motion(
-                        grid.image,
-                        rows=int(grid.rows),
-                        columns=int(grid.columns),
-                        tile_width=int(grid.tile_width),
-                        tile_height=int(grid.tile_height),
-                        frame_count=len(grid.frame_indices),
-                    )
-                    motion_score = float(motion_summary.get("motion_score") or 0.0)
-                    if not label:
-                        raw_preview = raw[:240].replace("\n", " ")
-                        raise RuntimeError(
-                            "Model response did not contain a label from the defined "
-                            f"list {labels!r}. Raw response: {raw_preview!r}"
-                        )
-                    classification_raw = str(
-                        parsed.get("classification") or parsed.get("label") or label
-                    ).strip()
-                    label_lookup = {
-                        str(candidate).strip().casefold(): str(candidate).strip()
-                        for candidate in labels
-                        if str(candidate).strip()
-                    }
-                    normalized_classification = label_lookup.get(
-                        classification_raw.casefold(), label
-                    )
-                    parsed["classification"] = normalized_classification
-                    description = str(parsed.get("description") or "").strip()
-                    fallback_reason = str(parsed.get("fallback_reason") or "").strip()
-                    if not description:
-                        raw_preview = raw[:240].replace("\n", " ")
-                        raise RuntimeError(
-                            "Model response did not include a non-empty description. "
-                            f"Raw response: {raw_preview!r}"
-                        )
-                    if not model_description:
-                        model_description = description
-                    description_source = "model"
-                    parsed["description"] = description
-                    parsed["model_description"] = model_description
-                    parsed["description_source"] = description_source
-                    visual_evidence = {
-                        "type": "frame_grid",
-                        "grid_image_path": str(image_path),
-                        "grid_frame_description": segment_text,
-                        "frame_indices": list(grid.frame_indices),
-                        "rows": int(grid.rows),
-                        "columns": int(grid.columns),
-                        "tile_width": int(grid.tile_width),
-                        "tile_height": int(grid.tile_height),
-                        "model_attempt": used_attempt_name,
-                        "empty_attempts": int(empty_attempts),
-                        "description_source": description_source,
-                        "request_interval_seconds": float(request_interval_seconds),
-                        "rate_limit_backoffs": int(rate_limit_backoffs),
-                    }
-                    if route_to_caption_profile:
-                        visual_evidence["model_routed_profile"] = "caption"
-                        if requested_provider:
-                            visual_evidence["requested_provider"] = requested_provider
-                        if requested_model:
-                            visual_evidence["requested_model"] = requested_model
-                    if fallback_reason:
-                        visual_evidence["fallback_reason"] = fallback_reason
-                    if parsed.get("motion_score") is not None:
-                        visual_evidence["motion_score"] = float(
-                            parsed.get("motion_score") or 0.0
-                        )
-                    elif motion_summary:
-                        visual_evidence["motion_score"] = motion_score
-                    if motion_summary.get("mean_delta") is not None:
-                        visual_evidence["mean_delta"] = float(
-                            motion_summary.get("mean_delta") or 0.0
-                        )
-                    predictions.append(
-                        {
-                            "start_frame": start_frame,
-                            "end_frame": end_frame,
-                            "subject": item.get("subject"),
-                            "label": label,
-                            "classification": str(
-                                parsed.get("classification") or label
-                            ).strip(),
-                            "confidence": float(parsed.get("confidence") or 0.0),
-                            "description": str(parsed.get("description") or "").strip(),
-                            "model_description": str(
-                                parsed.get("model_description") or ""
-                            ).strip(),
-                            "description_source": str(
-                                parsed.get("description_source") or "model"
-                            ).strip(),
-                            "grid_image_path": str(image_path),
-                            "grid_frame_description": segment_text,
-                            "aggression_sub_events": parse_aggression_sub_event_counts(
-                                parsed.get("aggression_sub_events")
-                                or parsed.get("sub_events")
-                                or parsed.get("subevents")
-                            ),
-                            "visual_evidence": visual_evidence,
-                        }
-                    )
-                    if pred_worker is not None:
-                        pred_worker.report_preview(
-                            {
-                                "index": int(idx),
-                                "total": int(total),
-                                "status": "labeled",
-                                "progress": int(progress_value),
-                                "prediction": dict(predictions[-1]),
-                            }
-                        )
-                        pred_worker.report_progress(progress_value)
-                except Exception as exc:
-                    skipped_segments += 1
-                    logger.warning(
-                        "Behavior segment grid labeling skipped frames %s-%s: %s",
-                        start_frame,
-                        end_frame,
-                        exc,
-                    )
-                    if pred_worker is not None:
-                        pred_worker.report_preview(
-                            {
-                                "index": int(idx),
-                                "total": int(total),
-                                "start_frame": int(start_frame),
-                                "end_frame": int(end_frame),
-                                "status": "skipped",
-                                "progress": int(progress_value),
-                                "error": str(exc),
-                            }
-                        )
-                        pred_worker.report_progress(progress_value)
-
-        return {
-            "predictions": predictions,
-            "skipped_segments": int(skipped_segments),
-            "processed_segments": int(len(intervals)),
-            "cancelled": bool(stop_event is not None and stop_event.is_set()),
-        }
 
     def _infer_video_fps(self, video_path: str) -> float:
         """Resolve a stable FPS value for segment-label prompts and logs."""
@@ -5039,6 +4482,8 @@ class AIChatWidget(QtWidgets.QWidget):
 
     def _clear_behavior_label_run_context(self) -> None:
         self._behavior_label_run_context = {}
+
+    def _clear_behavior_label_thread_refs(self) -> None:
         self._behavior_label_worker = None
         self._behavior_label_thread = None
 
@@ -5055,9 +4500,19 @@ class AIChatWidget(QtWidgets.QWidget):
                 logger.warning(
                     "Behavior labeling thread did not stop within %sms.", wait_ms
                 )
+                raise TimeoutError("Behavior labeling thread is still running.")
+        if thread is not None and not thread.isRunning():
+            self._clear_behavior_label_thread_refs()
 
     def closeEvent(self, event) -> None:
-        self._stop_behavior_label_worker(wait_ms=5000)
+        try:
+            self._stop_behavior_label_worker(wait_ms=5000)
+        except TimeoutError:
+            event.ignore()
+            self.status_label.setText(
+                "Behavior labeling is stopping. Close again after it finishes."
+            )
+            return
         super().closeEvent(event)
 
     def _behavior_label_timestamp_provider(self, host: object):
@@ -5280,14 +4735,32 @@ class AIChatWidget(QtWidgets.QWidget):
             return
 
         status = str(payload.get("status") or "").strip().lower()
-        context["processed_segments"] = int(payload.get("index") or 0)
+        context["processed_segments"] = int(context.get("processed_offset") or 0) + int(
+            payload.get("index") or 0
+        )
         context["skipped_segments"] = int(context.get("skipped_segments") or 0)
-        if status == "skipped":
-            context["skipped_segments"] = int(context["skipped_segments"]) + 1
-            progress_value = max(0, min(100, int(payload.get("progress") or 0)))
-            self.status_label.setText(
-                f"Skipped segment {context['processed_segments']}/{context.get('evaluated_segments')}; {progress_value}% complete."
+        evaluated_for_progress = int(context.get("evaluated_segments") or 0)
+        if evaluated_for_progress > 0:
+            progress_value = int(
+                (int(context.get("processed_segments") or 0) * 100)
+                / evaluated_for_progress
             )
+            progress_value = max(0, min(100, progress_value))
+        else:
+            progress_value = max(0, min(100, int(payload.get("progress") or 0)))
+        if status in {"skipped", "rate_limited"}:
+            context["skipped_segments"] = int(context["skipped_segments"]) + 1
+            if status == "rate_limited":
+                context["rate_limited"] = True
+                context["rate_limit_error"] = str(payload.get("error") or "")
+                self.status_label.setText(
+                    "Behavior labeling paused after provider rate limit; "
+                    f"{progress_value}% complete."
+                )
+            else:
+                self.status_label.setText(
+                    f"Skipped segment {context['processed_segments']}/{context.get('evaluated_segments')}; {progress_value}% complete."
+                )
             self._save_behavior_segment_progress(force_timestamps=False)
             return
 
@@ -5303,7 +4776,6 @@ class AIChatWidget(QtWidgets.QWidget):
         save_result = self._save_behavior_segment_progress(force_timestamps=False)
         behavior_log_result = dict(save_result.get("behavior_log_result") or {})
 
-        progress_value = max(0, min(100, int(payload.get("progress") or 0)))
         total = int(context.get("evaluated_segments") or 0)
         self.status_label.setText(
             f"Labeled segment {context['processed_segments']}/{max(1, total)} as '{normalized_prediction['label']}' ({progress_value}%)."
@@ -5318,6 +4790,12 @@ class AIChatWidget(QtWidgets.QWidget):
                 "labeled_segments": len(context.get("predictions") or []),
                 "evaluated_segments": int(context.get("evaluated_segments") or 0),
                 "skipped_segments": int(context.get("skipped_segments") or 0),
+                "resumed_segments": int(context.get("resumed_segments") or 0),
+                "remaining_segments": max(
+                    0,
+                    int(context.get("evaluated_segments") or 0)
+                    - int(context.get("resumed_segments") or 0),
+                ),
                 "segment_frames": int(context.get("segment_frames") or 1),
                 "segment_seconds": float(context.get("segment_seconds") or 0.0),
                 "sample_frames_per_segment": int(
@@ -5375,20 +4853,54 @@ class AIChatWidget(QtWidgets.QWidget):
             )
             self.status_label.setText("Behavior labeling cancelled.")
             return
+        if bool(payload.get("rate_limited")):
+            context["rate_limited"] = True
+            context["rate_limit_error"] = str(
+                payload.get("error")
+                or context.get("rate_limit_error")
+                or "Provider rate limit reached."
+            )
 
         predictions = list(context.get("predictions") or [])
-        if not predictions:
-            fallback_predictions = list(payload.get("predictions") or [])
-            if fallback_predictions:
-                for pred in fallback_predictions:
+        fallback_predictions = list(payload.get("predictions") or [])
+        if fallback_predictions:
+            existing_ranges = {
+                (
+                    int(pred.get("start_frame") or -1),
+                    int(pred.get("end_frame") or -1),
+                )
+                for pred in predictions
+            }
+            for pred in fallback_predictions:
+                try:
+                    pred_range = (
+                        int(pred.get("start_frame") or -1),
+                        int(pred.get("end_frame") or -1),
+                    )
+                except Exception:
+                    pred_range = (-1, -1)
+                if pred_range not in existing_ranges:
                     normalized_prediction = self._commit_behavior_label_prediction(
                         context, pred
                     )
                     if normalized_prediction is not None:
                         predictions.append(normalized_prediction)
-                context["predictions"] = predictions
+                        existing_ranges.add(pred_range)
+            context["predictions"] = predictions
 
         if not predictions:
+            if bool(context.get("rate_limited")):
+                error_text = str(
+                    context.get("rate_limit_error") or "Provider rate limit reached."
+                )
+                self._set_bot_action_result(
+                    "label_behavior_segments",
+                    {"ok": False, "rate_limited": True, "error": error_text},
+                )
+                self.status_label.setText(
+                    "Behavior labeling paused after provider rate limit."
+                )
+                return
             self._set_bot_action_result(
                 "label_behavior_segments",
                 {
@@ -5422,42 +4934,53 @@ class AIChatWidget(QtWidgets.QWidget):
             return
 
         behavior_log_result = dict(save_result.get("behavior_log_result") or {})
-        self._set_bot_action_result(
-            "label_behavior_segments",
-            {
-                "ok": True,
-                "mode": str(context.get("mode") or "uniform"),
-                "queued": False,
-                "in_progress": False,
-                "labeled_segments": len(predictions),
-                "evaluated_segments": int(context.get("evaluated_segments") or 0),
-                "skipped_segments": int(context.get("skipped_segments") or 0),
-                "segment_frames": int(context.get("segment_frames") or 1),
-                "segment_seconds": float(context.get("segment_seconds") or 0.0),
-                "sample_frames_per_segment": int(
-                    context.get("sample_frames_per_segment") or 4
-                ),
-                "visual_input_mode": str(
-                    context.get("visual_input_mode") or "frame_grid"
-                ),
-                "use_defined_behavior_list": bool(
-                    context.get("use_defined_behavior_list", True)
-                ),
-                "labels_used": list(context.get("labels") or []),
-                "video_description": str(context.get("video_description") or ""),
-                "instance_count": context.get("instance_count"),
-                "experiment_context": str(context.get("experiment_context") or ""),
-                "behavior_definitions": str(context.get("behavior_definitions") or ""),
-                "focus_points": str(context.get("focus_points") or ""),
-                "timestamps_csv": str(timestamp_result.get("path") or ""),
-                "timestamps_rows": int(timestamp_result.get("rows") or 0),
-                "behavior_log_json": str(behavior_log_result.get("path") or ""),
-                "behavior_log_rows": int(behavior_log_result.get("rows") or 0),
-            },
-        )
+        action_payload = {
+            "ok": True,
+            "mode": str(context.get("mode") or "uniform"),
+            "queued": False,
+            "in_progress": False,
+            "labeled_segments": len(predictions),
+            "evaluated_segments": int(context.get("evaluated_segments") or 0),
+            "skipped_segments": int(context.get("skipped_segments") or 0),
+            "resumed_segments": int(context.get("resumed_segments") or 0),
+            "remaining_segments": max(
+                0,
+                int(context.get("evaluated_segments") or 0)
+                - int(context.get("resumed_segments") or 0),
+            ),
+            "segment_frames": int(context.get("segment_frames") or 1),
+            "segment_seconds": float(context.get("segment_seconds") or 0.0),
+            "sample_frames_per_segment": int(
+                context.get("sample_frames_per_segment") or 4
+            ),
+            "visual_input_mode": str(context.get("visual_input_mode") or "frame_grid"),
+            "use_defined_behavior_list": bool(
+                context.get("use_defined_behavior_list", True)
+            ),
+            "labels_used": list(context.get("labels") or []),
+            "video_description": str(context.get("video_description") or ""),
+            "instance_count": context.get("instance_count"),
+            "experiment_context": str(context.get("experiment_context") or ""),
+            "behavior_definitions": str(context.get("behavior_definitions") or ""),
+            "focus_points": str(context.get("focus_points") or ""),
+            "timestamps_csv": str(timestamp_result.get("path") or ""),
+            "timestamps_rows": int(timestamp_result.get("rows") or 0),
+            "behavior_log_json": str(behavior_log_result.get("path") or ""),
+            "behavior_log_rows": int(behavior_log_result.get("rows") or 0),
+        }
+        if bool(context.get("rate_limited")):
+            action_payload["rate_limited"] = True
+            action_payload["warning"] = str(
+                context.get("rate_limit_error") or "Provider rate limit reached."
+            )
+        self._set_bot_action_result("label_behavior_segments", action_payload)
         timestamps_name = Path(str(timestamp_result.get("path") or "")).name
         behavior_log_name = Path(str(behavior_log_result.get("path") or "")).name
-        if behavior_log_name:
+        if bool(context.get("rate_limited")):
+            self.status_label.setText(
+                f"Labeled {len(predictions)} segment(s) before provider rate limit; saved progress."
+            )
+        elif behavior_log_name:
             self.status_label.setText(
                 f"Labeled {len(predictions)} segment(s); saved {timestamps_name} and {behavior_log_name}."
             )
@@ -6171,6 +5694,111 @@ class AIChatWidget(QtWidgets.QWidget):
         self._set_bot_action_result("open_track_dialog", payload)
         self.status_label.setText("Prepared guided /track command.")
 
+    def _behavior_slash_defaults(self) -> Dict[str, Any]:
+        host = self.host_window_widget or self.window()
+        active_video_path = str(getattr(host, "video_file", "") or "").strip()
+        provider_names = list(getattr(self, "available_providers", []) or [])
+        selected_provider = str(getattr(self, "selected_provider", "") or "").strip()
+        if selected_provider and selected_provider not in provider_names:
+            provider_names.append(selected_provider)
+        provider_models: Dict[str, List[str]] = {}
+        providers = getattr(self, "_providers", None)
+        for provider in provider_names:
+            try:
+                provider_models[provider] = [
+                    str(model or "").strip()
+                    for model in providers.available_models(provider)
+                    if str(model or "").strip()
+                ]
+            except Exception:
+                provider_models[provider] = []
+        selected_model = str(getattr(self, "selected_model", "") or "").strip()
+        if selected_provider:
+            models = provider_models.setdefault(selected_provider, [])
+            if selected_model and selected_model not in models:
+                models.append(selected_model)
+        labels = self._labels_from_schema_or_flags()
+        return {
+            "video_path": active_video_path,
+            "labels": labels,
+            "providers": provider_names,
+            "provider_models": provider_models,
+            "selected_provider": selected_provider,
+            "selected_model": selected_model,
+            "segment_seconds": 1.0,
+            "frames_per_grid": 9,
+            "max_segments": 120,
+        }
+
+    @QtCore.Slot()
+    def bot_open_behavior_slash_dialog(self) -> None:
+        defaults = self._behavior_slash_defaults()
+        dialog = BehaviorSlashDialog(
+            self,
+            video_path=str(defaults.get("video_path") or ""),
+            labels=list(defaults.get("labels") or []),
+            providers=list(defaults.get("providers") or []),
+            provider_models=dict(defaults.get("provider_models") or {}),
+            selected_provider=str(defaults.get("selected_provider") or ""),
+            selected_model=str(defaults.get("selected_model") or ""),
+            segment_seconds=float(defaults.get("segment_seconds") or 1.0),
+            frames_per_grid=int(defaults.get("frames_per_grid") or 9),
+            max_segments=int(defaults.get("max_segments") or 120),
+        )
+        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+            self._set_bot_action_result(
+                "open_behavior_dialog",
+                {"ok": False, "cancelled": True},
+            )
+            self.status_label.setText("Behavior setup canceled.")
+            return
+
+        values = dialog.values()
+        provider = str(values.get("llm_provider") or "").strip()
+        model = str(values.get("llm_model") or "").strip()
+        if provider and model:
+            try:
+                self.set_provider_and_model(provider, model)
+            except Exception:
+                logger.debug("Could not sync behavior model route.", exc_info=True)
+
+        labels = list(values.get("behavior_labels") or [])
+        self.bot_label_behavior_segments(
+            video_path=str(values.get("video_path") or ""),
+            behavior_labels_csv=", ".join(str(label) for label in labels),
+            use_defined_behavior_list=True,
+            segment_mode="uniform",
+            segment_frames=60,
+            segment_seconds=float(values.get("segment_seconds") or 1.0),
+            sample_frames_per_segment=int(values.get("sample_frames_per_segment") or 9),
+            max_segments=int(values.get("max_segments") or 120),
+            subject="Agent",
+            overwrite_existing=bool(values.get("overwrite_existing", False)),
+            llm_profile="",
+            llm_provider=provider,
+            llm_model=model,
+            video_description=str(values.get("video_description") or ""),
+            instance_count=0,
+            experiment_context="",
+            behavior_definitions=str(values.get("behavior_definitions") or ""),
+            focus_points=str(values.get("focus_points") or ""),
+            subject_term=str(values.get("subject_term") or ""),
+        )
+        payload = {
+            "ok": True,
+            "opened": True,
+            "queued": True,
+            "video_path": str(values.get("video_path") or ""),
+            "behavior_labels": labels,
+            "llm_provider": provider,
+            "llm_model": model,
+            "segment_seconds": float(values.get("segment_seconds") or 1.0),
+            "sample_frames_per_segment": int(
+                values.get("sample_frames_per_segment") or 9
+            ),
+        }
+        self._set_bot_action_result("open_behavior_dialog", payload)
+
     @QtCore.Slot()
     def bot_send_chat_prompt(self) -> None:
         if self.is_streaming_chat:
@@ -6694,6 +6322,7 @@ class AIChatWidget(QtWidgets.QWidget):
         experiment_context: str = "",
         behavior_definitions: str = "",
         focus_points: str = "",
+        subject_term: str = "",
     ) -> None:
         host = self.host_window_widget or self.window()
         open_video = getattr(host, "openVideo", None)
@@ -6813,8 +6442,117 @@ class AIChatWidget(QtWidgets.QWidget):
             if not intervals:
                 raise RuntimeError("No segments available for labeling.")
 
+            evaluated_segments = int(len(intervals))
+            resumed_predictions: List[Dict[str, Any]] = []
+            resume_log_path = ""
+            if not bool(overwrite_existing):
+                resume_payload = self._load_resumable_behavior_segment_predictions(
+                    str(resolved_video_path),
+                    labels=list(labels),
+                    segment_frames=int(segment_frames),
+                    segment_seconds=float(segment_seconds),
+                    sample_frames_per_segment=int(sample_frames_per_segment),
+                )
+                resume_log_path = str(resume_payload.get("path") or "")
+                resumed_predictions = list(resume_payload.get("predictions") or [])
+                if resumed_predictions:
+                    current_ranges = {
+                        (
+                            int(item.get("start_frame") or -1),
+                            int(item.get("end_frame") or -1),
+                        )
+                        for item in intervals
+                    }
+                    resumed_predictions = [
+                        pred
+                        for pred in resumed_predictions
+                        if (
+                            int(pred.get("start_frame") or -1),
+                            int(pred.get("end_frame") or -1),
+                        )
+                        in current_ranges
+                    ]
+                    existing_ranges = {
+                        (
+                            int(pred.get("start_frame") or -1),
+                            int(pred.get("end_frame") or -1),
+                        )
+                        for pred in resumed_predictions
+                    }
+                    intervals = [
+                        item
+                        for item in intervals
+                        if (
+                            int(item.get("start_frame") or -1),
+                            int(item.get("end_frame") or -1),
+                        )
+                        not in existing_ranges
+                    ]
+
             if bool(overwrite_existing):
                 behavior_controller.clear_behavior_data()
+
+            if not intervals and resumed_predictions:
+                self._behavior_label_run_context = {
+                    "host": host,
+                    "behavior_controller": behavior_controller,
+                    "mode": mode,
+                    "labels": list(labels),
+                    "segment_frames": int(segment_frames),
+                    "segment_seconds": float(segment_seconds),
+                    "sample_frames_per_segment": int(sample_frames_per_segment),
+                    "visual_input_mode": "frame_grid",
+                    "request_interval_seconds": float(behavior_request_interval),
+                    "evaluated_segments": evaluated_segments,
+                    "processed_segments": int(len(resumed_predictions)),
+                    "skipped_segments": 0,
+                    "predictions": list(resumed_predictions),
+                    "use_defined_behavior_list": bool(use_defined_behavior_list),
+                    "default_subject": str(subject or "").strip() or None,
+                    "timestamp_provider": self._behavior_label_timestamp_provider(host),
+                    "video_description": str(video_description or "").strip(),
+                    "instance_count": normalized_instance_count,
+                    "experiment_context": str(experiment_context or "").strip(),
+                    "behavior_definitions": str(behavior_definitions or "").strip(),
+                    "focus_points": str(focus_points or "").strip(),
+                    "subject_term": str(subject_term or "").strip(),
+                    "resumed_segments": int(len(resumed_predictions)),
+                    "resume_log_json": resume_log_path,
+                }
+                save_result = self._save_behavior_segment_progress(
+                    force_timestamps=True
+                )
+                self._behavior_label_run_context = {}
+                behavior_log_result = dict(save_result.get("behavior_log_result") or {})
+                timestamp_result = dict(save_result.get("timestamp_result") or {})
+                self._set_bot_action_result(
+                    "label_behavior_segments",
+                    {
+                        "ok": True,
+                        "queued": False,
+                        "in_progress": False,
+                        "mode": mode,
+                        "labeled_segments": int(len(resumed_predictions)),
+                        "evaluated_segments": evaluated_segments,
+                        "skipped_segments": 0,
+                        "resumed_segments": int(len(resumed_predictions)),
+                        "remaining_segments": 0,
+                        "segment_frames": int(segment_frames),
+                        "segment_seconds": float(segment_seconds),
+                        "sample_frames_per_segment": int(sample_frames_per_segment),
+                        "visual_input_mode": "frame_grid",
+                        "use_defined_behavior_list": bool(use_defined_behavior_list),
+                        "labels_used": labels,
+                        "timestamps_csv": str(timestamp_result.get("path") or ""),
+                        "timestamps_rows": int(timestamp_result.get("rows") or 0),
+                        "behavior_log_json": str(behavior_log_result.get("path") or ""),
+                        "behavior_log_rows": int(behavior_log_result.get("rows") or 0),
+                    },
+                )
+                self.status_label.setText(
+                    f"Behavior labeling already complete for {len(resumed_predictions)} segment(s); skipped model calls."
+                )
+                return
 
             self._set_bot_action_result(
                 "label_behavior_segments",
@@ -6823,7 +6561,9 @@ class AIChatWidget(QtWidgets.QWidget):
                     "queued": True,
                     "in_progress": True,
                     "mode": mode,
-                    "evaluated_segments": len(intervals),
+                    "evaluated_segments": evaluated_segments,
+                    "resumed_segments": int(len(resumed_predictions)),
+                    "remaining_segments": int(len(intervals)),
                     "segment_frames": int(segment_frames),
                     "segment_seconds": float(segment_seconds),
                     "sample_frames_per_segment": int(sample_frames_per_segment),
@@ -6836,10 +6576,11 @@ class AIChatWidget(QtWidgets.QWidget):
                     "experiment_context": str(experiment_context or "").strip(),
                     "behavior_definitions": str(behavior_definitions or "").strip(),
                     "focus_points": str(focus_points or "").strip(),
+                    "subject_term": str(subject_term or "").strip(),
                 },
             )
             self.status_label.setText(
-                f"Queued behavior labeling for {len(intervals)} segment(s). Running in background..."
+                f"Queued behavior labeling for {len(intervals)} remaining segment(s); skipped {len(resumed_predictions)} existing segment(s)."
             )
 
             self._behavior_label_run_context = {
@@ -6852,10 +6593,11 @@ class AIChatWidget(QtWidgets.QWidget):
                 "sample_frames_per_segment": int(sample_frames_per_segment),
                 "visual_input_mode": "frame_grid",
                 "request_interval_seconds": float(behavior_request_interval),
-                "evaluated_segments": int(len(intervals)),
-                "processed_segments": 0,
+                "evaluated_segments": evaluated_segments,
+                "processed_segments": int(len(resumed_predictions)),
+                "processed_offset": int(len(resumed_predictions)),
                 "skipped_segments": 0,
-                "predictions": [],
+                "predictions": list(resumed_predictions),
                 "use_defined_behavior_list": bool(use_defined_behavior_list),
                 "default_subject": str(subject or "").strip() or None,
                 "timestamp_provider": self._behavior_label_timestamp_provider(host),
@@ -6864,6 +6606,9 @@ class AIChatWidget(QtWidgets.QWidget):
                 "experiment_context": str(experiment_context or "").strip(),
                 "behavior_definitions": str(behavior_definitions or "").strip(),
                 "focus_points": str(focus_points or "").strip(),
+                "subject_term": str(subject_term or "").strip(),
+                "resumed_segments": int(len(resumed_predictions)),
+                "resume_log_json": resume_log_path,
             }
 
             thread = QtCore.QThread()
@@ -6881,6 +6626,7 @@ class AIChatWidget(QtWidgets.QWidget):
                 experiment_context=str(experiment_context or "").strip(),
                 behavior_definitions=str(behavior_definitions or "").strip(),
                 focus_points=str(focus_points or "").strip(),
+                subject_term=str(subject_term or "").strip(),
             )
             worker.moveToThread(thread)
             thread.started.connect(worker.run, QtCore.Qt.QueuedConnection)
@@ -6897,6 +6643,7 @@ class AIChatWidget(QtWidgets.QWidget):
             worker.finished_signal.connect(
                 worker.deleteLater, QtCore.Qt.QueuedConnection
             )
+            thread.finished.connect(self._clear_behavior_label_thread_refs)
             thread.finished.connect(thread.deleteLater)
 
             self._behavior_label_worker = worker
@@ -6959,6 +6706,7 @@ class AIChatWidget(QtWidgets.QWidget):
             experiment_context=str(payload.get("experiment_context") or ""),
             behavior_definitions=str(payload.get("behavior_definitions") or ""),
             focus_points=str(payload.get("focus_points") or ""),
+            subject_term=str(payload.get("subject_term") or ""),
         )
 
     @QtCore.Slot(

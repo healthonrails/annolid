@@ -42,7 +42,7 @@ def test_build_behavior_classification_prompt_requires_defined_labels_and_json()
         segment_label="00:00:00-00:00:01",
     )
     assert "You are an animal behavior observer." in prompt
-    assert "Describe what the mouse is doing during 00:00:00-00:00:01." in prompt
+    assert "Describe what the animal is doing during 00:00:00-00:00:01." in prompt
     assert "Use only the visual evidence from this one segment." in prompt
     assert "Write 2–4 sentences that are concise but detailed." in prompt
     assert "- walking" in prompt
@@ -78,11 +78,18 @@ def test_build_behavior_classification_prompt_includes_optional_context():
 def test_build_segment_observation_sentence_with_and_without_segment() -> None:
     assert (
         behavior_prompting.build_segment_observation_sentence("00:00:00-00:00:01")
-        == "Describe what the mouse is doing during 00:00:00-00:00:01. Use only the visual evidence from this one segment."
+        == "Describe what the animal is doing during 00:00:00-00:00:01. Use only the visual evidence from this one segment."
     )
     assert (
         behavior_prompting.build_segment_observation_sentence(None)
-        == "Describe what the mouse is doing at this moment."
+        == "Describe what the animal is doing at this moment."
+    )
+    assert (
+        behavior_prompting.build_segment_observation_sentence(
+            "00:00:00-00:00:01",
+            subject_term="fly",
+        )
+        == "Describe what the fly is doing during 00:00:00-00:00:01. Use only the visual evidence from this one segment."
     )
 
 

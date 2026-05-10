@@ -1196,6 +1196,7 @@ def test_gui_label_behavior_segments_json_payload_includes_context_fields(
         experiment_context="Resident intruder assay.",
         behavior_definitions="Aggression bout includes slap in face and run away.",
         focus_points="Count bouts and initiator.",
+        subject_term="fly",
     )
     assert payload["ok"] is True
     assert captured_kwargs["sample_frames_per_segment"] == 5
@@ -1204,6 +1205,7 @@ def test_gui_label_behavior_segments_json_payload_includes_context_fields(
     assert captured_kwargs["experiment_context"] == "Resident intruder assay."
     assert "slap in face" in str(captured_kwargs["behavior_definitions"])
     assert "Count bouts" in str(captured_kwargs["focus_points"])
+    assert captured_kwargs["subject_term"] == "fly"
 
     captured_kwargs.clear()
     default_payload = task._tool_gui_label_behavior_segments(
@@ -3425,14 +3427,14 @@ def test_parse_direct_gui_command_variants() -> None:
     assert parsed_defined_label_use_case["args"]["segment_seconds"] == 1.0
 
     parsed_fly_defined_label_use_case = task._parse_direct_gui_command(
-        "label behavior in /Users/chenyang/Downloads/head_fixed_fly/videos/2019_06_26_fly2.mp4 "
+        "label behavior in /tmp/annolid_fly_videos/fly2.mp4 "
         "with labels still, walk, front groom, back groom, and abdomen move from defined list every 1s "
         "with '9 frames per grid'"
     )
     assert parsed_fly_defined_label_use_case["name"] == "label_behavior_segments"
     assert (
         parsed_fly_defined_label_use_case["args"]["path"]
-        == "/Users/chenyang/Downloads/head_fixed_fly/videos/2019_06_26_fly2.mp4"
+        == "/tmp/annolid_fly_videos/fly2.mp4"
     )
     assert parsed_fly_defined_label_use_case["args"]["behavior_labels"] == [
         "still",
@@ -3446,6 +3448,48 @@ def test_parse_direct_gui_command_variants() -> None:
     )
     assert parsed_fly_defined_label_use_case["args"]["segment_seconds"] == 1.0
     assert parsed_fly_defined_label_use_case["args"]["sample_frames_per_segment"] == 9
+
+    parsed_fly_defined_label_without_with = task._parse_direct_gui_command(
+        "label behavior in /tmp/annolid_fly_videos/fly3.mp4 "
+        "labels still, walk, front groom, back groom, and abdomen move from defined list every 1s "
+        "with 9 frames per grid"
+    )
+    assert parsed_fly_defined_label_without_with["name"] == "label_behavior_segments"
+    assert parsed_fly_defined_label_without_with["args"]["behavior_labels"] == [
+        "still",
+        "walk",
+        "front groom",
+        "back groom",
+        "abdomen move",
+    ]
+    assert (
+        parsed_fly_defined_label_without_with["args"]["use_defined_behavior_list"]
+        is True
+    )
+    assert (
+        parsed_fly_defined_label_without_with["args"]["sample_frames_per_segment"] == 9
+    )
+
+    parsed_message_subject_use_case = task._parse_direct_gui_command(
+        "label fly behavior in /tmp/generic_recording.mp4 "
+        "with labels still, walk subject term: fly every 1s with 9 frames per grid"
+    )
+    assert parsed_message_subject_use_case["name"] == "label_behavior_segments"
+    assert (
+        parsed_message_subject_use_case["args"]["path"] == "/tmp/generic_recording.mp4"
+    )
+    assert parsed_message_subject_use_case["args"]["behavior_labels"] == [
+        "still",
+        "walk",
+    ]
+    assert parsed_message_subject_use_case["args"]["subject_term"] == "fly"
+    assert parsed_message_subject_use_case["args"]["sample_frames_per_segment"] == 9
+
+    parsed_subject_colon_use_case = task._parse_direct_gui_command(
+        "label behavior in /tmp/generic_recording.mp4 "
+        "with labels still, walk subject: fly every 1s"
+    )
+    assert parsed_subject_colon_use_case["args"]["subject_term"] == "fly"
 
     parsed_process = task._parse_direct_gui_command(
         "process video behaviors in mouse.mp4 behaviors: walking, rearing "
@@ -4686,6 +4730,10 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
             )
         ),
     }
+    task._tool_gui_open_behavior_dialog = lambda: {  # type: ignore[method-assign]
+        "ok": True,
+        "queued": True,
+    }
     task._tool_gui_generate_annolid_tutorial = lambda **kwargs: {  # type: ignore[method-assign]
         "ok": True,
         "tutorial": (
@@ -4786,6 +4834,9 @@ def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) 
 
     out_track = asyncio.run(task._execute_direct_gui_command("track to frame 60"))
     assert "Started tracking to frame 60." == out_track
+
+    out_behavior = asyncio.run(task._execute_direct_gui_command("/behavior"))
+    assert "Started guided behavior labeling." == out_behavior
 
     out_process = asyncio.run(
         task._execute_direct_gui_command(

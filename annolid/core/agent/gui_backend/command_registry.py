@@ -205,6 +205,14 @@ def _parse_track_command(text: str) -> Dict[str, Any]:
     return {"name": "segment_track_video", "args": payload}
 
 
+def _parse_behavior_command(text: str) -> Dict[str, Any]:
+    trimmed = str(text or "").strip()
+    lowered = trimmed.lower()
+    if lowered != "/behavior" and not lowered.startswith("/behavior "):
+        return {}
+    return {"name": "open_behavior_dialog", "args": {}}
+
+
 def _parse_slash_command_action_args(raw: str, slash: str) -> Dict[str, str]:
     trimmed = str(raw or "").strip()
     slash_lower = str(slash or "").strip().lower()
@@ -393,6 +401,17 @@ def _parse_dream_restore_command(text: str) -> Dict[str, Any]:
 
 
 DIRECT_SLASH_COMMAND_SPECS: Tuple[SlashCommandSpec, ...] = (
+    SlashCommandSpec(
+        name="behavior",
+        aliases=("behavior",),
+        display="/behavior",
+        description="Open guided behavior segment labeling",
+        insert="",
+        kind="action",
+        action="open_behavior_dialog",
+        examples=("'/behavior'",),
+        parser=_parse_behavior_command,
+    ),
     SlashCommandSpec(
         name="dreaming",
         aliases=("dreaming",),

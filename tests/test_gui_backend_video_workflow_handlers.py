@@ -218,6 +218,7 @@ def test_label_behavior_segments_tool_forwards_behavior_context(monkeypatch) -> 
         experiment_context="Resident intruder protocol.",
         behavior_definitions="Aggression bout includes slap in face and run away.",
         focus_points="Count bouts and fight initiation.",
+        subject_term="fly",
         resolve_video_path=lambda _path: Path("/tmp/mouse.mp4"),
         invoke_label_behavior=lambda *_args: (
             captured.update(
@@ -227,6 +228,7 @@ def test_label_behavior_segments_tool_forwards_behavior_context(monkeypatch) -> 
                     "experiment_context": _args[15],
                     "behavior_definitions": _args[16],
                     "focus_points": _args[17],
+                    "subject_term": _args[18],
                 }
             )
             or True
@@ -240,8 +242,10 @@ def test_label_behavior_segments_tool_forwards_behavior_context(monkeypatch) -> 
     assert payload["experiment_context"] == "Resident intruder protocol."
     assert "slap in face" in payload["behavior_definitions"]
     assert "fight initiation" in payload["focus_points"]
+    assert payload["subject_term"] == "fly"
     assert captured["video_description"] == "Two mice in arena."
     assert captured["instance_count"] == 2
+    assert captured["subject_term"] == "fly"
 
 
 def test_behavior_catalog_tool_returns_widget_result(monkeypatch) -> None:

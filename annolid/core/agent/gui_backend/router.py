@@ -94,6 +94,7 @@ async def execute_direct_gui_command(
     automation_schedule: Callable[..., Any],
     cron: Callable[..., Any],
     open_track_dialog: Callable[[], Any] | None = None,
+    open_behavior_dialog: Callable[[], Any] | None = None,
     open_agent_capabilities: Callable[[], Any] | None = None,
     list_dir: Callable[..., Any],
     read_file: Callable[..., Any],
@@ -321,6 +322,7 @@ async def execute_direct_gui_command(
             ),
             max_segments=int(args.get("max_segments") or 120),
             subject=str(args.get("subject") or "Agent"),
+            subject_term=str(args.get("subject_term") or ""),
             overwrite_existing=bool(args.get("overwrite_existing", False)),
             llm_profile=str(args.get("llm_profile") or ""),
             llm_provider=str(args.get("llm_provider") or ""),
@@ -378,6 +380,7 @@ async def execute_direct_gui_command(
             ),
             max_segments=int(args.get("max_segments") or 120),
             subject=str(args.get("subject") or "Agent"),
+            subject_term=str(args.get("subject_term") or ""),
             overwrite_existing=bool(args.get("overwrite_existing", False)),
             llm_profile=str(args.get("llm_profile") or ""),
             llm_provider=str(args.get("llm_provider") or ""),
@@ -1077,6 +1080,18 @@ async def execute_direct_gui_command(
                 "Prepared guided /track command. Review the prompt, then press Enter."
             )
         return "Track setup canceled."
+
+    if name == "open_behavior_dialog":
+        payload = await _run(open_behavior_dialog) if open_behavior_dialog else {}
+        if isinstance(payload, dict):
+            if payload.get("ok"):
+                return "Started guided behavior labeling."
+            if payload.get("cancelled"):
+                return "Behavior setup canceled."
+            return str(payload.get("error") or "Failed to open behavior labeling form.")
+        if payload:
+            return f"Behavior labeling form result: {payload}."
+        return "Failed to open behavior labeling form."
 
     if name == "open_agent_capabilities":
         payload = await _run(open_agent_capabilities) if open_agent_capabilities else {}

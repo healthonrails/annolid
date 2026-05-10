@@ -209,6 +209,14 @@ class GuiLabelBehaviorSegmentsTool(FunctionTool):
                 "frames_per_grid": {"type": "integer", "minimum": 1, "default": 4},
                 "max_segments": {"type": "integer", "minimum": 1},
                 "subject": {"type": "string"},
+                "subject_term": {
+                    "type": "string",
+                    "description": (
+                        "Organism or subject term used in model prompts "
+                        "(for example fly, zebrafish, mouse). This does not "
+                        "change the exported timeline subject."
+                    ),
+                },
                 "overwrite_existing": {"type": "boolean"},
                 "llm_profile": {"type": "string"},
                 "video_description": {"type": "string"},
@@ -318,6 +326,14 @@ class GuiProcessVideoBehaviorsTool(FunctionTool):
                 "frames_per_grid": {"type": "integer", "minimum": 1, "default": 4},
                 "max_segments": {"type": "integer", "minimum": 1},
                 "subject": {"type": "string"},
+                "subject_term": {
+                    "type": "string",
+                    "description": (
+                        "Organism or subject term used in model prompts "
+                        "(for example fly, zebrafish, mouse). This does not "
+                        "change the exported timeline subject."
+                    ),
+                },
                 "overwrite_existing": {"type": "boolean"},
                 "llm_profile": {"type": "string"},
                 "video_description": {"type": "string"},

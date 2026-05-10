@@ -297,6 +297,7 @@ def _extract_focus_points_fallback(text: str) -> str:
 
 
 def _extract_behavior_context_args(text: str) -> Dict[str, Any]:
+    subject_term = _extract_behavior_subject_term(text)
     video_description = _extract_context_value(
         text,
         keys=["video description", "video context", "video"],
@@ -318,6 +319,8 @@ def _extract_behavior_context_args(text: str) -> Dict[str, Any]:
     if not focus_points:
         focus_points = _extract_focus_points_fallback(text)
     payload: Dict[str, Any] = {}
+    if subject_term:
+        payload["subject_term"] = subject_term
     if video_description:
         payload["video_description"] = video_description
     instance_count = _extract_instance_count(text)
@@ -332,10 +335,77 @@ def _extract_behavior_context_args(text: str) -> Dict[str, Any]:
     return payload
 
 
+def _extract_behavior_subject_term(text: str) -> str:
+    raw = str(text or "")
+    if not raw:
+        return ""
+
+    def _clean(value: str) -> str:
+        cleaned = _strip_wrapping_quotes(
+            _strip_trailing_punctuation(str(value or "").strip())
+        )
+        cleaned = re.split(
+            r"\b(?:with\s+labels?|labels?|every|timeline|uniform|"
+            r"from\s+defined\s+list|from\s+schema|video(?:\s+description)?|"
+            r"instances?|experiment(?:s|al)?(?:\s+context)?|"
+            r"(?:behavior|behaviour)\s+definitions?|definitions?|"
+            r"focus(?:\s+points?)?)\b",
+            cleaned,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0].strip(" :;,.")
+        if not cleaned:
+            return ""
+        if cleaned.lower() in {"agent", "subject", "subject 1", "video", "behavior"}:
+            return ""
+        return cleaned
+
+    explicit = re.search(
+        r"\b(?:subject\s+term|subject|organism|species|animal)"
+        r"\s*(?::|=|\bis\b)\s*(?P<value>[A-Za-z][A-Za-z0-9 _-]{0,48})",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if explicit is not None:
+        value = _clean(explicit.group("value"))
+        if value:
+            return value
+
+    pre_behavior = re.search(
+        r"\blabel\s+(?P<value>[A-Za-z][A-Za-z0-9_-]{1,32})"
+        r"\s+(?:behaviors?|behaviours?)\b",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if pre_behavior is not None:
+        value = _clean(pre_behavior.group("value"))
+        if value:
+            return value
+
+    behavior_of = re.search(
+        r"\b(?:behaviors?|behaviours?)\s+of\s+(?:the\s+)?"
+        r"(?P<value>[A-Za-z][A-Za-z0-9_-]{1,32})\b",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if behavior_of is not None:
+        value = _clean(behavior_of.group("value"))
+        if value:
+            return value
+
+    return ""
+
+
 def _split_behavior_labels(text: str) -> list[str]:
     labels_text = str(text or "").strip()
     labels_text = re.split(
-        r"\b(?:every|timeline|uniform|overwrite|replace|from\s+defined\s+list|from\s+schema|from\s+flags|video(?:\s+description)?|instances?|experiment(?:s|al)?(?:\s+context)?|(?:behavior|behaviour)\s+definitions?|definitions?|focus(?:\s+points?)?)\b",
+        r"\b(?:every|timeline|uniform|overwrite|replace|"
+        r"from\s+defined\s+list|from\s+schema|from\s+flags|"
+        r"subject\s+term|subject|organism|species|animal|"
+        r"video(?:\s+description)?|instances?|"
+        r"experiment(?:s|al)?(?:\s+context)?|"
+        r"(?:behavior|behaviour)\s+definitions?|definitions?|"
+        r"focus(?:\s+points?)?)\b",
         labels_text,
         maxsplit=1,
         flags=re.IGNORECASE,
@@ -352,7 +422,9 @@ def _extract_behavior_labels_clause(text: str) -> list[str]:
     if not raw:
         return []
     match = re.search(
-        r"\b(?:with\s+labels?|labels?|behaviors?(?:\s+list)?)\s*(?::|=)\s*(?P<labels>.+)$",
+        r"\b(?:(?:with\s+labels?|labels?)\s*(?:(?::|=)\s*)?|"
+        r"behaviors?(?:\s+list)?\s*(?::|=)\s*)"
+        r"(?P<labels>.+)$",
         raw,
         flags=re.IGNORECASE,
     )
@@ -362,7 +434,9 @@ def _extract_behavior_labels_clause(text: str) -> list[str]:
     if not labels_text:
         return []
     labels_text = re.split(
-        r"\b(?:every|timeline|uniform|overwrite|replace|from\s+defined\s+list|from\s+schema|from\s+flags)\b",
+        r"\b(?:every|timeline|uniform|overwrite|replace|"
+        r"from\s+defined\s+list|from\s+schema|from\s+flags|"
+        r"subject\s+term|subject|organism|species|animal)\b",
         labels_text,
         maxsplit=1,
         flags=re.IGNORECASE,
@@ -375,7 +449,8 @@ def _strip_behavior_labels_clause(text: str) -> str:
     if not raw:
         return ""
     cleaned = re.sub(
-        r"\s+\b(?:with\s+labels?|labels?|behaviors?(?:\s+list)?)\s*(?::|=)\s*.+$",
+        r"\s+\b(?:(?:with\s+labels?|labels?)\s*(?:(?::|=)\s*)?|"
+        r"behaviors?(?:\s+list)?\s*(?::|=)\s*).+$",
         "",
         raw,
         flags=re.IGNORECASE,
@@ -775,7 +850,8 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
             }
 
     label_match = re.search(
-        r"\blabel\s+behaviors?\b.*?\b(?:in|for)\b\s+(?P<path>.+)",
+        r"\blabel(?:\s+(?P<subject_hint>[A-Za-z][A-Za-z0-9_-]{1,32}))?"
+        r"\s+behaviors?\b.*?\b(?:in|for)\b\s+(?P<path>.+)",
         text,
         flags=re.IGNORECASE,
     )

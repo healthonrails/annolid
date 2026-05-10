@@ -18,10 +18,10 @@ DEFAULT_BEHAVIOR_PROMPT_TEMPLATE = textwrap.dedent(
     {segment_sentence}
     {view_guidance}
     {roi_guidance}
-    Report only observable facts about the mouse—pose, locomotion, grooming, rearing, sniffing, tail posture, limb contact.
+    Report only observable facts about the {subject_term}—pose, locomotion, grooming, posture, limb or appendage contact, and visible body-part movements.
     Mention whether it is stationary or moving and describe the pace qualitatively (slow, moderate, rapid) if motion is visible.
-    Note head orientation, activities (sniffing, grooming), and what each set of paws is doing relative to the ground.
-    Keep the description focused on the animal; do not mention the arena, cameras, or lighting.
+    Note head or body orientation and visible activities; do not invent species-specific body parts that are not visible.
+    Keep the description focused on the {subject_term}; do not mention the arena, cameras, or lighting.
     {facts_guidance}
     {length_guidance}
     """
@@ -33,10 +33,10 @@ DEFAULT_BEHAVIOR_CLASSIFICATION_PROMPT_TEMPLATE = textwrap.dedent(
     {segment_sentence}
     {view_guidance}
     {roi_guidance}
-    Report only observable facts about the mouse—pose, locomotion, grooming, rearing, sniffing, tail posture, limb contact.
+    Report only observable facts about the {subject_term}—pose, locomotion, grooming, posture, limb or appendage contact, and visible body-part movements.
     Mention whether it is stationary or moving and describe the pace qualitatively (slow, moderate, rapid) if motion is visible.
-    Note head orientation, activities (sniffing, grooming), and what each set of paws is doing relative to the ground.
-    Keep the description focused on the animal; do not mention the arena, cameras, or lighting.
+    Note head or body orientation and visible activities; do not invent species-specific body parts that are not visible.
+    Keep the description focused on the {subject_term}; do not mention the arena, cameras, or lighting.
     Avoid referencing the arena, camera, or environment. Do not speculate about intent or emotion.
     Write 2–4 sentences that are concise but detailed.
 
@@ -144,6 +144,7 @@ def build_behavior_narrative_prompt(
     segment_label: Optional[str] = None,
     multi_view: bool = False,
     include_roi_notes: bool = False,
+    subject_term: str = "animal",
 ) -> str:
     """
     Prompt for a prose-style behavior description saved as caption text.
@@ -159,7 +160,11 @@ def build_behavior_narrative_prompt(
         if include_roi_notes
         else ""
     )
-    segment_text = build_segment_observation_sentence(segment_label)
+    subject = _normalize_subject_term(subject_term)
+    segment_text = build_segment_observation_sentence(
+        segment_label,
+        subject_term=subject,
+    )
 
     facts_guidance = "Avoid referencing the arena, camera, or environment. Do not speculate about intent or emotion."
     length_guidance = "Write 2–4 sentences that are concise but detailed."
@@ -168,6 +173,7 @@ def build_behavior_narrative_prompt(
         "segment_label": segment_label or "this moment",
         "view_guidance": view_text,
         "roi_guidance": roi_text,
+        "subject_term": subject,
         "facts_guidance": facts_guidance,
         "length_guidance": length_guidance,
     }
@@ -185,6 +191,7 @@ def build_behavior_classification_prompt(
     segment_label: Optional[str] = None,
     multi_view: bool = False,
     include_roi_notes: bool = False,
+    subject_term: str = "animal",
     video_description: Optional[str] = None,
     instance_count: Optional[int] = None,
     experiment_context: Optional[str] = None,
@@ -222,11 +229,16 @@ def build_behavior_classification_prompt(
         if include_roi_notes
         else ""
     )
-    segment_text = build_segment_observation_sentence(segment_label)
+    subject = _normalize_subject_term(subject_term)
+    segment_text = build_segment_observation_sentence(
+        segment_label,
+        subject_term=subject,
+    )
     context = {
         "segment_sentence": segment_text,
         "view_guidance": view_text,
         "roi_guidance": roi_text,
+        "subject_term": subject,
         "behavior_list": behavior_list,
     }
     template = DEFAULT_BEHAVIOR_CLASSIFICATION_PROMPT_TEMPLATE
@@ -267,15 +279,25 @@ def build_behavior_classification_prompt(
     return "\n".join(prompt_lines)
 
 
-def build_segment_observation_sentence(segment_label: Optional[str]) -> str:
+def _normalize_subject_term(subject_term: Optional[str]) -> str:
+    subject = str(subject_term or "").strip()
+    return subject or "animal"
+
+
+def build_segment_observation_sentence(
+    segment_label: Optional[str],
+    *,
+    subject_term: str = "animal",
+) -> str:
     """Return consistent per-segment observation wording for behavior prompts."""
     label = str(segment_label or "").strip()
+    subject = _normalize_subject_term(subject_term)
     if label:
         return (
-            f"Describe what the mouse is doing during {label}. "
+            f"Describe what the {subject} is doing during {label}. "
             "Use only the visual evidence from this one segment."
         )
-    return "Describe what the mouse is doing at this moment."
+    return f"Describe what the {subject} is doing at this moment."
 
 
 def qwen_messages(images: Sequence[str], text: str) -> List[dict]:
