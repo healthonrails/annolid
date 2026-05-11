@@ -77,7 +77,7 @@ def _extract_completion_text(result: Any) -> Optional[str]:
     choice = choices[0]
     message = _get_value(choice, "message", None)
     if message is not None:
-        for key in ("content", "parsed", "reasoning_content", "refusal"):
+        for key in ("content", "parsed", "reasoning_content", "thinking", "refusal"):
             text = _content_to_text(_get_value(message, key, None))
             if text:
                 return text
@@ -221,6 +221,9 @@ class LLMChatAdapter(RuntimeModel):
         response_format = request.params.get("response_format")
         if isinstance(response_format, Mapping):
             kwargs["response_format"] = dict(response_format)
+        extra_body = request.params.get("extra_body")
+        if isinstance(extra_body, Mapping):
+            kwargs["extra_body"] = dict(extra_body)
 
         result = self._client.chat.completions.create(**kwargs)
         text = _extract_completion_text(result)

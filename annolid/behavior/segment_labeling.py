@@ -22,6 +22,28 @@ class BehaviorLabelRateLimitError(RuntimeError):
     """Raised when behavior segment labeling should pause after provider 429s."""
 
 
+class BehaviorLabelEmptyResponseError(RuntimeError):
+    """Raised when a provider repeatedly returns empty behavior-label text."""
+
+
+def behavior_label_model_controls(provider: str, model: str) -> Dict[str, Any]:
+    provider_text = str(provider or "").strip().lower()
+    model_text = str(model or "").strip().lower()
+    controls: Dict[str, Any] = {"max_tokens": 512}
+    if provider_text == "ollama" and "qwen" in model_text:
+        controls["extra_body"] = {"think": False}
+    return controls
+
+
+def behavior_label_prompt_text(prompt: str, *, provider: str, model: str) -> str:
+    text = str(prompt or "").strip()
+    provider_text = str(provider or "").strip().lower()
+    model_text = str(model or "").strip().lower()
+    if provider_text == "ollama" and "qwen" in model_text and "/no_think" not in text:
+        return f"{text}\n\n/no_think"
+    return text
+
+
 def infer_behavior_subject_term(
     video_path: str,
     subject: Optional[str] = None,
@@ -172,7 +194,24 @@ def behavior_grid_system_prompt(labels: List[str]) -> str:
             f"Allowed labels: {labels_text}",
             "Classification must be exactly one allowed label.",
             "Always include a short behavior description.",
+            "Do not spend tokens on hidden reasoning; answer with the JSON object only.",
         ]
+    )
+
+
+def behavior_grid_description_fallback(
+    *,
+    segment_text: str,
+    label: str,
+    motion_score: float,
+    mean_delta: float,
+) -> str:
+    label_text = str(label or "selected behavior").strip()
+    return (
+        f"{segment_text} The selected label is {label_text!r}. "
+        "The model did not provide a description, so Annolid recorded a "
+        "minimal frame-grid evidence summary instead "
+        f"(motion_score={motion_score:.2f}, mean_delta={mean_delta:.2f})."
     )
 
 
@@ -251,6 +290,10 @@ def run_behavior_segment_vlm_worker(
     skipped_segments = 0
     rate_limited = False
     rate_limit_error = ""
+    empty_response_paused = False
+    empty_response_error = ""
+    empty_response_streak = 0
+    max_consecutive_empty_segments = 3
 
     requested_profile = str(llm_profile or "").strip()
     requested_provider = str(llm_provider or "").strip()
@@ -351,15 +394,23 @@ def run_behavior_segment_vlm_worker(
                 )
                 retry_prompt = behavior_label_retry_prompt(prompt, labels)
                 system_prompt = behavior_grid_system_prompt(labels)
+                model_controls = behavior_label_model_controls(
+                    requested_provider,
+                    requested_model,
+                )
                 if route_to_caption_profile:
                     attempts: List[Dict[str, Any]] = [
                         {
                             "name": "caption_profile_with_image",
-                            "text": prompt,
+                            "text": behavior_label_prompt_text(
+                                prompt,
+                                provider=requested_provider,
+                                model=requested_model,
+                            ),
                             "params": {
                                 "temperature": 0.0,
-                                "max_tokens": 180,
                                 "system_prompt": system_prompt,
+                                **model_controls,
                             },
                         }
                     ]
@@ -367,30 +418,42 @@ def run_behavior_segment_vlm_worker(
                     attempts = [
                         {
                             "name": "json_with_image",
-                            "text": prompt,
+                            "text": behavior_label_prompt_text(
+                                prompt,
+                                provider=requested_provider,
+                                model=requested_model,
+                            ),
                             "params": {
                                 "temperature": 0.0,
-                                "max_tokens": 180,
                                 "system_prompt": system_prompt,
                                 "response_format": {"type": "json_object"},
+                                **model_controls,
                             },
                         },
                         {
                             "name": "plain_with_image",
-                            "text": prompt,
+                            "text": behavior_label_prompt_text(
+                                prompt,
+                                provider=requested_provider,
+                                model=requested_model,
+                            ),
                             "params": {
                                 "temperature": 0.0,
-                                "max_tokens": 180,
                                 "system_prompt": system_prompt,
+                                **model_controls,
                             },
                         },
                         {
                             "name": "repair_with_image",
-                            "text": retry_prompt,
+                            "text": behavior_label_prompt_text(
+                                retry_prompt,
+                                provider=requested_provider,
+                                model=requested_model,
+                            ),
                             "params": {
                                 "temperature": 0.0,
-                                "max_tokens": 180,
                                 "use_annolid_bot_system": False,
+                                **model_controls,
                             },
                         },
                     ]
@@ -507,11 +570,15 @@ def run_behavior_segment_vlm_worker(
                         rescue_resp = _predict_with_rate_limit(
                             caption_rescue_adapter,
                             attempt_name=rescue_attempt_name,
-                            text=str(retry_prompt or "").strip(),
+                            text=behavior_label_prompt_text(
+                                retry_prompt,
+                                provider=requested_provider,
+                                model=requested_model,
+                            ),
                             params={
                                 "temperature": 0.0,
-                                "max_tokens": 180,
                                 "use_annolid_bot_system": False,
+                                **model_controls,
                             },
                         )
                         rescue_raw = str(
@@ -558,6 +625,11 @@ def run_behavior_segment_vlm_worker(
                 motion_score = float(motion_summary.get("motion_score") or 0.0)
                 if not label:
                     raw_preview = raw[:240].replace("\n", " ")
+                    if not raw_preview and empty_attempts:
+                        raise BehaviorLabelEmptyResponseError(
+                            "Provider returned empty text for all behavior-label "
+                            f"attempts on frames {start_frame}-{end_frame}."
+                        )
                     raise RuntimeError(
                         "Model response did not contain a label from the defined "
                         f"list {labels!r}. Raw response: {raw_preview!r}"
@@ -576,14 +648,16 @@ def run_behavior_segment_vlm_worker(
                 description = str(parsed.get("description") or "").strip()
                 fallback_reason = str(parsed.get("fallback_reason") or "").strip()
                 if not description:
-                    raw_preview = raw[:240].replace("\n", " ")
-                    raise RuntimeError(
-                        "Model response did not include a non-empty description. "
-                        f"Raw response: {raw_preview!r}"
+                    description = behavior_grid_description_fallback(
+                        segment_text=segment_text,
+                        label=label,
+                        motion_score=motion_score,
+                        mean_delta=float(motion_summary.get("mean_delta") or 0.0),
                     )
+                    fallback_reason = fallback_reason or "description_fallback"
                 if not model_description:
-                    model_description = description
-                description_source = "model"
+                    model_description = str(parsed.get("description") or "").strip()
+                description_source = "model" if model_description else "fallback"
                 parsed["description"] = description
                 parsed["model_description"] = model_description
                 parsed["description_source"] = description_source
@@ -659,6 +733,7 @@ def run_behavior_segment_vlm_worker(
                         }
                     )
                     pred_worker.report_progress(progress_value)
+                empty_response_streak = 0
             except BehaviorLabelRateLimitError as exc:
                 skipped_segments += 1
                 rate_limited = True
@@ -683,8 +758,44 @@ def run_behavior_segment_vlm_worker(
                     )
                     pred_worker.report_progress(progress_value)
                 break
+            except BehaviorLabelEmptyResponseError as exc:
+                skipped_segments += 1
+                empty_response_streak += 1
+                logger.warning(
+                    "Behavior segment grid labeling received empty text for frames %s-%s (%s/%s): %s",
+                    start_frame,
+                    end_frame,
+                    empty_response_streak,
+                    max_consecutive_empty_segments,
+                    exc,
+                )
+                if pred_worker is not None:
+                    pred_worker.report_preview(
+                        {
+                            "index": int(idx),
+                            "total": int(total),
+                            "start_frame": int(start_frame),
+                            "end_frame": int(end_frame),
+                            "status": "empty_response",
+                            "progress": int(progress_value),
+                            "error": str(exc),
+                        }
+                    )
+                    pred_worker.report_progress(progress_value)
+                if empty_response_streak >= max_consecutive_empty_segments:
+                    empty_response_paused = True
+                    empty_response_error = (
+                        f"{exc} Behavior labeling was paused to avoid repeatedly "
+                        "sending grids that receive blank HTTP-200 responses."
+                    )
+                    logger.warning(
+                        "Behavior segment labeling paused after %s consecutive empty provider responses.",
+                        empty_response_streak,
+                    )
+                    break
             except Exception as exc:
                 skipped_segments += 1
+                empty_response_streak = 0
                 logger.warning(
                     "Behavior segment grid labeling skipped frames %s-%s: %s",
                     start_frame,
@@ -711,7 +822,8 @@ def run_behavior_segment_vlm_worker(
         "processed_segments": int(len(intervals)),
         "cancelled": bool(stop_event is not None and stop_event.is_set()),
         "rate_limited": bool(rate_limited),
-        "error": str(rate_limit_error),
+        "empty_response_paused": bool(empty_response_paused),
+        "error": str(rate_limit_error or empty_response_error),
     }
 
 

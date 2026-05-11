@@ -4748,13 +4748,19 @@ class AIChatWidget(QtWidgets.QWidget):
             progress_value = max(0, min(100, progress_value))
         else:
             progress_value = max(0, min(100, int(payload.get("progress") or 0)))
-        if status in {"skipped", "rate_limited"}:
+        if status in {"skipped", "rate_limited", "empty_response"}:
             context["skipped_segments"] = int(context["skipped_segments"]) + 1
             if status == "rate_limited":
                 context["rate_limited"] = True
                 context["rate_limit_error"] = str(payload.get("error") or "")
                 self.status_label.setText(
                     "Behavior labeling paused after provider rate limit; "
+                    f"{progress_value}% complete."
+                )
+            elif status == "empty_response":
+                context["empty_response_error"] = str(payload.get("error") or "")
+                self.status_label.setText(
+                    "Behavior labeling received empty model responses; "
                     f"{progress_value}% complete."
                 )
             else:
@@ -4860,6 +4866,13 @@ class AIChatWidget(QtWidgets.QWidget):
                 or context.get("rate_limit_error")
                 or "Provider rate limit reached."
             )
+        if bool(payload.get("empty_response_paused")):
+            context["empty_response_paused"] = True
+            context["empty_response_error"] = str(
+                payload.get("error")
+                or context.get("empty_response_error")
+                or "Provider returned empty behavior-label responses."
+            )
 
         predictions = list(context.get("predictions") or [])
         fallback_predictions = list(payload.get("predictions") or [])
@@ -4899,6 +4912,19 @@ class AIChatWidget(QtWidgets.QWidget):
                 )
                 self.status_label.setText(
                     "Behavior labeling paused after provider rate limit."
+                )
+                return
+            if bool(context.get("empty_response_paused")):
+                error_text = str(
+                    context.get("empty_response_error")
+                    or "Provider returned empty behavior-label responses."
+                )
+                self._set_bot_action_result(
+                    "label_behavior_segments",
+                    {"ok": False, "empty_response_paused": True, "error": error_text},
+                )
+                self.status_label.setText(
+                    "Behavior labeling paused after empty model responses."
                 )
                 return
             self._set_bot_action_result(
@@ -4973,12 +4999,22 @@ class AIChatWidget(QtWidgets.QWidget):
             action_payload["warning"] = str(
                 context.get("rate_limit_error") or "Provider rate limit reached."
             )
+        if bool(context.get("empty_response_paused")):
+            action_payload["empty_response_paused"] = True
+            action_payload["warning"] = str(
+                context.get("empty_response_error")
+                or "Provider returned empty behavior-label responses."
+            )
         self._set_bot_action_result("label_behavior_segments", action_payload)
         timestamps_name = Path(str(timestamp_result.get("path") or "")).name
         behavior_log_name = Path(str(behavior_log_result.get("path") or "")).name
         if bool(context.get("rate_limited")):
             self.status_label.setText(
                 f"Labeled {len(predictions)} segment(s) before provider rate limit; saved progress."
+            )
+        elif bool(context.get("empty_response_paused")):
+            self.status_label.setText(
+                f"Labeled {len(predictions)} segment(s) before empty model responses; saved progress."
             )
         elif behavior_log_name:
             self.status_label.setText(

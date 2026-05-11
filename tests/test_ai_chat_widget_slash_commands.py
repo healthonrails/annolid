@@ -1267,6 +1267,197 @@ def test_behavior_segment_vlm_worker_retries_empty_json_response(
     assert prediction["description_source"] == "model"
 
 
+def test_behavior_segment_vlm_worker_adds_qwen_no_think_controls(
+    monkeypatch, tmp_path: Path
+) -> None:
+    video_path = tmp_path / "fly.avi"
+    writer = cv2.VideoWriter(
+        str(video_path),
+        cv2.VideoWriter_fourcc(*"MJPG"),
+        10.0,
+        (64, 48),
+    )
+    assert writer.isOpened()
+    try:
+        for idx in range(8):
+            frame = np.zeros((48, 64, 3), dtype=np.uint8)
+            frame[..., 1] = idx * 10
+            writer.write(frame)
+    finally:
+        writer.release()
+
+    requests = []
+
+    class _FakeAdapter:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def predict(self, request):
+            requests.append(request)
+            return ModelResponse(
+                task="caption",
+                output={
+                    "text": (
+                        '{"label":"still","confidence":0.84,'
+                        '"description":"fly posture remains stable across tiles"}'
+                    )
+                },
+                text=(
+                    '{"label":"still","confidence":0.84,'
+                    '"description":"fly posture remains stable across tiles"}'
+                ),
+            )
+
+    import annolid.core.models.adapters.llm_chat as llm_chat
+
+    monkeypatch.setattr(llm_chat, "LLMChatAdapter", _FakeAdapter)
+
+    widget = AIChatWidget.__new__(AIChatWidget)
+    result = widget._run_behavior_segment_vlm_worker(
+        video_path=str(video_path),
+        intervals=[{"start_frame": 0, "end_frame": 7, "subject": "fly"}],
+        labels=["still", "walk"],
+        sample_frames_per_segment=3,
+        llm_profile="",
+        llm_provider="ollama",
+        llm_model="qwen3.6:35b",
+    )
+
+    assert result["skipped_segments"] == 0
+    assert len(requests) == 1
+    assert "/no_think" in str(requests[0].text)
+    assert dict(requests[0].params).get("max_tokens") == 512
+    assert dict(requests[0].params).get("extra_body") == {"think": False}
+
+
+def test_behavior_segment_vlm_worker_builds_description_fallback(
+    monkeypatch, tmp_path: Path
+) -> None:
+    video_path = tmp_path / "fly.avi"
+    writer = cv2.VideoWriter(
+        str(video_path),
+        cv2.VideoWriter_fourcc(*"MJPG"),
+        10.0,
+        (64, 48),
+    )
+    assert writer.isOpened()
+    try:
+        for idx in range(8):
+            frame = np.zeros((48, 64, 3), dtype=np.uint8)
+            frame[..., 1] = idx * 10
+            writer.write(frame)
+    finally:
+        writer.release()
+
+    class _FakeAdapter:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def predict(self, request):
+            return ModelResponse(
+                task="caption",
+                output={"text": '{"label":"still","confidence":0.7}'},
+                text='{"label":"still","confidence":0.7}',
+            )
+
+    import annolid.core.models.adapters.llm_chat as llm_chat
+
+    monkeypatch.setattr(llm_chat, "LLMChatAdapter", _FakeAdapter)
+
+    widget = AIChatWidget.__new__(AIChatWidget)
+    result = widget._run_behavior_segment_vlm_worker(
+        video_path=str(video_path),
+        intervals=[{"start_frame": 0, "end_frame": 7, "subject": "fly"}],
+        labels=["still", "walk"],
+        sample_frames_per_segment=3,
+        llm_profile="",
+        llm_provider="",
+        llm_model="",
+    )
+
+    assert result["skipped_segments"] == 0
+    prediction = result["predictions"][0]
+    assert prediction["label"] == "still"
+    assert prediction["description_source"] == "fallback"
+    assert prediction["model_description"] == ""
+    assert "model did not provide a description" in prediction["description"]
+    assert prediction["visual_evidence"]["fallback_reason"] == "description_fallback"
+
+
+def test_behavior_segment_vlm_worker_pauses_after_repeated_empty_responses(
+    monkeypatch, tmp_path: Path
+) -> None:
+    video_path = tmp_path / "fly.avi"
+    writer = cv2.VideoWriter(
+        str(video_path),
+        cv2.VideoWriter_fourcc(*"MJPG"),
+        10.0,
+        (64, 48),
+    )
+    assert writer.isOpened()
+    try:
+        for idx in range(12):
+            frame = np.zeros((48, 64, 3), dtype=np.uint8)
+            frame[..., 1] = idx * 10
+            writer.write(frame)
+    finally:
+        writer.release()
+
+    requests = []
+
+    class _FakeAdapter:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def predict(self, request):
+            requests.append(request)
+            return ModelResponse(task="caption", output={"text": ""}, text="")
+
+    import annolid.core.models.adapters.llm_chat as llm_chat
+
+    monkeypatch.setattr(llm_chat, "LLMChatAdapter", _FakeAdapter)
+
+    widget = AIChatWidget.__new__(AIChatWidget)
+    result = widget._run_behavior_segment_vlm_worker(
+        video_path=str(video_path),
+        intervals=[
+            {"start_frame": 0, "end_frame": 2, "subject": "fly"},
+            {"start_frame": 3, "end_frame": 5, "subject": "fly"},
+            {"start_frame": 6, "end_frame": 8, "subject": "fly"},
+            {"start_frame": 9, "end_frame": 11, "subject": "fly"},
+        ],
+        labels=["still", "walk"],
+        sample_frames_per_segment=3,
+        llm_profile="",
+        llm_provider="",
+        llm_model="",
+    )
+
+    assert result["empty_response_paused"] is True
+    assert result["skipped_segments"] == 3
+    assert result["predictions"] == []
+    assert "empty text" in result["error"]
+    assert len(requests) == 12
+
+
 def test_behavior_segment_vlm_worker_normalizes_classification_to_label_list(
     monkeypatch, tmp_path: Path
 ) -> None:

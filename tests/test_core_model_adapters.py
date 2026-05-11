@@ -179,6 +179,54 @@ def test_llm_adapter_can_disable_annolid_bot_system_prompt(tmp_path: Path):
     assert messages[0]["role"] == "user"
 
 
+def test_llm_adapter_passes_extra_body_and_extracts_thinking(tmp_path: Path):
+    img = np.zeros((8, 8, 3), dtype=np.uint8)
+    img_path = tmp_path / "img.png"
+
+    try:
+        import cv2  # type: ignore
+    except ImportError:
+        pytest.skip("cv2 is required for this test.")
+
+    assert cv2.imwrite(str(img_path), cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+
+    class _ThinkingCompletions:
+        def __init__(self) -> None:
+            self.last_kwargs = None
+
+        def create(self, **kwargs):  # noqa: ANN003
+            self.last_kwargs = dict(kwargs)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        finish_reason="stop",
+                        message=SimpleNamespace(content="", thinking="fallback text"),
+                    )
+                ]
+            )
+
+    completions = _ThinkingCompletions()
+    fake_client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    adapter = LLMChatAdapter(
+        provider="ollama",
+        model="qwen3.6:35b",
+        persist=False,
+        client_factory=lambda _cfg: fake_client,
+    )
+
+    response = adapter.predict(
+        ModelRequest(
+            task="caption",
+            image_path=str(img_path),
+            text="Describe image",
+            params={"extra_body": {"think": False}},
+        )
+    )
+
+    assert response.text == "fallback text"
+    assert (completions.last_kwargs or {}).get("extra_body") == {"think": False}
+
+
 def test_cv_adapter_caption_swappable_with_fake_model(tmp_path: Path):
     torch = pytest.importorskip("torch")
 
