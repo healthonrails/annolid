@@ -7,6 +7,8 @@ import json
 import logging
 import re
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -16,6 +18,7 @@ from annolid.behavior.timeline_sampling import format_hhmmss
 from annolid.core.media.video import build_segment_frame_grid, save_rgb_image
 
 logger = logging.getLogger(__name__)
+_OLLAMA_MODEL_CAPABILITY_CACHE: Dict[tuple[str, str], Optional[bool]] = {}
 
 
 class BehaviorLabelRateLimitError(RuntimeError):
@@ -28,20 +31,83 @@ class BehaviorLabelEmptyResponseError(RuntimeError):
 
 def behavior_label_model_controls(provider: str, model: str) -> Dict[str, Any]:
     provider_text = str(provider or "").strip().lower()
-    model_text = str(model or "").strip().lower()
     controls: Dict[str, Any] = {"max_tokens": 512}
-    if provider_text == "ollama" and "qwen" in model_text:
+    if provider_text in {"ollama", "local"}:
         controls["extra_body"] = {"think": False}
     return controls
 
 
 def behavior_label_prompt_text(prompt: str, *, provider: str, model: str) -> str:
-    text = str(prompt or "").strip()
-    provider_text = str(provider or "").strip().lower()
-    model_text = str(model or "").strip().lower()
-    if provider_text == "ollama" and "qwen" in model_text and "/no_think" not in text:
-        return f"{text}\n\n/no_think"
-    return text
+    return str(prompt or "").strip()
+
+
+def _ollama_host_from_settings() -> str:
+    try:
+        from annolid.utils.llm_settings import load_llm_settings
+
+        settings = load_llm_settings()
+        host = str((settings.get("ollama", {}) or {}).get("host") or "").strip()
+    except Exception:
+        host = ""
+    return host or "http://localhost:11434"
+
+
+def _extract_ollama_vision_capability(payload: Any) -> Optional[bool]:
+    if not isinstance(payload, dict):
+        return None
+    caps = payload.get("capabilities")
+    if isinstance(caps, list):
+        normalized = {str(item or "").strip().lower() for item in caps}
+        if "vision" in normalized:
+            return True
+        if "completion" in normalized or "tools" in normalized:
+            return False
+
+    details = payload.get("details")
+    detail_text = ""
+    if isinstance(details, dict):
+        detail_text = json.dumps(details, ensure_ascii=False).lower()
+    text = " ".join(
+        str(payload.get(key) or "").lower()
+        for key in ("modelfile", "template", "system")
+    )
+    combined = f"{detail_text} {text}"
+    vision_markers = ("clip", "vision", "image", "mmproj", "projector", "multimodal")
+    if any(marker in combined for marker in vision_markers):
+        return True
+    return None
+
+
+def ollama_model_supports_vision(model: str, *, host: str = "") -> Optional[bool]:
+    model_text = str(model or "").strip()
+    if not model_text:
+        return None
+    base_host = str(host or "").strip() or _ollama_host_from_settings()
+    base_host = base_host.rstrip("/")
+    cache_key = (base_host, model_text)
+    if cache_key in _OLLAMA_MODEL_CAPABILITY_CACHE:
+        return _OLLAMA_MODEL_CAPABILITY_CACHE[cache_key]
+
+    request = urllib.request.Request(
+        f"{base_host}/api/show",
+        data=json.dumps({"model": model_text}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=2.0) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        logger.debug(
+            "Could not inspect Ollama model capabilities for %s: %s",
+            model_text,
+            exc,
+        )
+        return None
+
+    supports = _extract_ollama_vision_capability(payload)
+    _OLLAMA_MODEL_CAPABILITY_CACHE[cache_key] = supports
+    return supports
 
 
 def infer_behavior_subject_term(
@@ -79,8 +145,16 @@ def infer_behavior_subject_term(
 
 def is_likely_non_vision_model(*, provider: str, model: str) -> bool:
     provider_text = str(provider or "").strip().lower()
-    model_text = str(model or "").strip().lower()
-    if not model_text:
+    model_name = str(model or "").strip()
+    model_text = model_name.lower()
+    if not model_name:
+        return False
+    if provider_text in {"ollama", "local"}:
+        supports_vision = ollama_model_supports_vision(model_name)
+        if supports_vision is True:
+            return False
+        if supports_vision is False:
+            return True
         return False
     known_text_only_tokens = (
         "kimi-k2.5",
@@ -93,6 +167,22 @@ def is_likely_non_vision_model(*, provider: str, model: str) -> bool:
     return False
 
 
+def behavior_label_empty_response_segment_limit(
+    *,
+    provider: str,
+    model: str,
+    routed_to_caption_profile: bool,
+) -> int:
+    provider_text = str(provider or "").strip().lower()
+    if routed_to_caption_profile or provider_text in {"ollama", "local"}:
+        return 1
+    return 3
+
+
+def _is_local_llm_provider(provider: str) -> bool:
+    return str(provider or "").strip().lower() in {"ollama", "local"}
+
+
 def behavior_label_provider_request_interval(provider: str, model: str) -> float:
     provider_text = str(provider or "").strip().lower()
     model_text = str(model or "").strip().lower()
@@ -101,6 +191,94 @@ def behavior_label_provider_request_interval(provider: str, model: str) -> float
     if provider_text == "nvidia" or "kimi" in model_text:
         return 1.0
     return 0.5
+
+
+def behavior_label_attempt_plan(
+    *,
+    prompt: str,
+    retry_prompt: str,
+    system_prompt: str,
+    provider: str,
+    model: str,
+    routed_to_caption_profile: bool,
+) -> List[Dict[str, Any]]:
+    controls = behavior_label_model_controls(provider, model)
+    if routed_to_caption_profile:
+        return [
+            {
+                "name": "caption_profile_with_image",
+                "text": behavior_label_prompt_text(
+                    prompt,
+                    provider=provider,
+                    model=model,
+                ),
+                "params": {
+                    "temperature": 0.0,
+                    "system_prompt": system_prompt,
+                    **controls,
+                },
+            }
+        ]
+
+    if _is_local_llm_provider(provider):
+        return [
+            {
+                "name": "local_vlm_with_image",
+                "text": behavior_label_prompt_text(
+                    prompt,
+                    provider=provider,
+                    model=model,
+                ),
+                "params": {
+                    "temperature": 0.0,
+                    "system_prompt": system_prompt,
+                    **controls,
+                },
+            }
+        ]
+
+    return [
+        {
+            "name": "json_with_image",
+            "text": behavior_label_prompt_text(
+                prompt,
+                provider=provider,
+                model=model,
+            ),
+            "params": {
+                "temperature": 0.0,
+                "system_prompt": system_prompt,
+                "response_format": {"type": "json_object"},
+                **controls,
+            },
+        },
+        {
+            "name": "plain_with_image",
+            "text": behavior_label_prompt_text(
+                prompt,
+                provider=provider,
+                model=model,
+            ),
+            "params": {
+                "temperature": 0.0,
+                "system_prompt": system_prompt,
+                **controls,
+            },
+        },
+        {
+            "name": "repair_with_image",
+            "text": behavior_label_prompt_text(
+                retry_prompt,
+                provider=provider,
+                model=model,
+            ),
+            "params": {
+                "temperature": 0.0,
+                "use_annolid_bot_system": False,
+                **controls,
+            },
+        },
+    ]
 
 
 def behavior_label_rate_limit_backoff_seconds(exc: Exception) -> Optional[float]:
@@ -280,6 +458,7 @@ def run_behavior_segment_vlm_worker(
     behavior_definitions: str = "",
     focus_points: str = "",
     subject_term: str = "",
+    prior_predictions: Optional[List[Dict[str, Any]]] = None,
     stop_event=None,
     pred_worker=None,
 ) -> Dict[str, Any]:
@@ -287,13 +466,22 @@ def run_behavior_segment_vlm_worker(
     from annolid.core.models.base import ModelRequest
 
     predictions: List[Dict[str, Any]] = []
+    prior_prediction_records: List[Dict[str, Any]] = []
+    for pred in list(prior_predictions or []):
+        if not isinstance(pred, dict):
+            continue
+        try:
+            prior_prediction_records.append(
+                normalize_behavior_segment_prediction_for_log(pred)
+            )
+        except Exception:
+            continue
     skipped_segments = 0
     rate_limited = False
     rate_limit_error = ""
     empty_response_paused = False
     empty_response_error = ""
     empty_response_streak = 0
-    max_consecutive_empty_segments = 3
 
     requested_profile = str(llm_profile or "").strip()
     requested_provider = str(llm_provider or "").strip()
@@ -306,12 +494,20 @@ def run_behavior_segment_vlm_worker(
         requested_provider,
         requested_model,
     )
+    max_consecutive_empty_segments = behavior_label_empty_response_segment_limit(
+        provider=requested_provider,
+        model=requested_model,
+        routed_to_caption_profile=route_to_caption_profile,
+    )
+    primary_provider = "" if route_to_caption_profile else requested_provider
+    primary_model = "" if route_to_caption_profile else requested_model
     last_request_at = 0.0
     rate_limit_backoffs = 0
     if route_to_caption_profile:
         logger.info(
             "Behavior segment routing to caption profile for image labeling "
-            "because selected model appears non-vision provider=%s model=%s",
+            "because selected model appears non-vision provider=%s model=%s; "
+            "provider/model overrides will not be applied to the caption profile.",
             requested_provider,
             requested_model,
         )
@@ -321,8 +517,8 @@ def run_behavior_segment_vlm_worker(
             adapter = stack.enter_context(
                 LLMChatAdapter(
                     profile="caption",
-                    provider=requested_provider or None,
-                    model=requested_model or None,
+                    provider=None,
+                    model=None,
                     persist=False,
                 )
             )
@@ -357,7 +553,19 @@ def run_behavior_segment_vlm_worker(
                 ),
             )
             progress_value = int((idx * 100) / total)
+            active_progress_value = int(((idx - 1) * 100) / total)
             try:
+                if pred_worker is not None:
+                    pred_worker.report_preview(
+                        {
+                            "index": int(idx),
+                            "total": int(total),
+                            "status": "building_grid",
+                            "progress": int(active_progress_value),
+                            "start_frame": int(start_frame),
+                            "end_frame": int(end_frame),
+                        }
+                    )
                 grid = build_segment_frame_grid(
                     video_path,
                     start_frame=start_frame,
@@ -394,69 +602,14 @@ def run_behavior_segment_vlm_worker(
                 )
                 retry_prompt = behavior_label_retry_prompt(prompt, labels)
                 system_prompt = behavior_grid_system_prompt(labels)
-                model_controls = behavior_label_model_controls(
-                    requested_provider,
-                    requested_model,
+                attempts = behavior_label_attempt_plan(
+                    prompt=prompt,
+                    retry_prompt=retry_prompt,
+                    system_prompt=system_prompt,
+                    provider=primary_provider,
+                    model=primary_model,
+                    routed_to_caption_profile=route_to_caption_profile,
                 )
-                if route_to_caption_profile:
-                    attempts: List[Dict[str, Any]] = [
-                        {
-                            "name": "caption_profile_with_image",
-                            "text": behavior_label_prompt_text(
-                                prompt,
-                                provider=requested_provider,
-                                model=requested_model,
-                            ),
-                            "params": {
-                                "temperature": 0.0,
-                                "system_prompt": system_prompt,
-                                **model_controls,
-                            },
-                        }
-                    ]
-                else:
-                    attempts = [
-                        {
-                            "name": "json_with_image",
-                            "text": behavior_label_prompt_text(
-                                prompt,
-                                provider=requested_provider,
-                                model=requested_model,
-                            ),
-                            "params": {
-                                "temperature": 0.0,
-                                "system_prompt": system_prompt,
-                                "response_format": {"type": "json_object"},
-                                **model_controls,
-                            },
-                        },
-                        {
-                            "name": "plain_with_image",
-                            "text": behavior_label_prompt_text(
-                                prompt,
-                                provider=requested_provider,
-                                model=requested_model,
-                            ),
-                            "params": {
-                                "temperature": 0.0,
-                                "system_prompt": system_prompt,
-                                **model_controls,
-                            },
-                        },
-                        {
-                            "name": "repair_with_image",
-                            "text": behavior_label_prompt_text(
-                                retry_prompt,
-                                provider=requested_provider,
-                                model=requested_model,
-                            ),
-                            "params": {
-                                "temperature": 0.0,
-                                "use_annolid_bot_system": False,
-                                **model_controls,
-                            },
-                        },
-                    ]
 
                 def _predict_with_rate_limit(
                     local_adapter: LLMChatAdapter,
@@ -518,6 +671,24 @@ def run_behavior_segment_vlm_worker(
                     attempt_name = str(attempt.get("name") or "").strip()
                     used_attempt_name = attempt_name or used_attempt_name
                     try:
+                        if pred_worker is not None:
+                            pred_worker.report_preview(
+                                {
+                                    "index": int(idx),
+                                    "total": int(total),
+                                    "status": "model_request",
+                                    "attempt": attempt_name,
+                                    "progress": int(active_progress_value),
+                                    "start_frame": int(start_frame),
+                                    "end_frame": int(end_frame),
+                                }
+                            )
+                        logger.info(
+                            "Behavior segment attempt '%s' started for frames %s-%s.",
+                            attempt_name,
+                            start_frame,
+                            end_frame,
+                        )
                         resp = _predict_with_rate_limit(
                             adapter,
                             attempt_name=attempt_name,
@@ -554,13 +725,17 @@ def run_behavior_segment_vlm_worker(
                         if attempt_name == "repair_with_image":
                             parsed.setdefault("fallback_reason", "repair_prompt")
                         break
-                if not label and not route_to_caption_profile:
+                allow_caption_rescue = (
+                    not route_to_caption_profile
+                    and not _is_local_llm_provider(primary_provider)
+                )
+                if not label and allow_caption_rescue:
                     if caption_rescue_adapter is None:
                         caption_rescue_adapter = stack.enter_context(
                             LLMChatAdapter(
                                 profile="caption",
-                                provider=requested_provider or None,
-                                model=requested_model or None,
+                                provider=None,
+                                model=None,
                                 persist=False,
                             )
                         )
@@ -572,13 +747,13 @@ def run_behavior_segment_vlm_worker(
                             attempt_name=rescue_attempt_name,
                             text=behavior_label_prompt_text(
                                 retry_prompt,
-                                provider=requested_provider,
-                                model=requested_model,
+                                provider="",
+                                model="",
                             ),
                             params={
                                 "temperature": 0.0,
                                 "use_annolid_bot_system": False,
-                                **model_controls,
+                                "max_tokens": 512,
                             },
                         )
                         rescue_raw = str(
@@ -626,14 +801,89 @@ def run_behavior_segment_vlm_worker(
                 if not label:
                     raw_preview = raw[:240].replace("\n", " ")
                     if not raw_preview and empty_attempts:
-                        raise BehaviorLabelEmptyResponseError(
-                            "Provider returned empty text for all behavior-label "
-                            f"attempts on frames {start_frame}-{end_frame}."
+                        adjacent_predictions = [
+                            pred
+                            for pred in [*prior_prediction_records, *predictions]
+                            if isinstance(pred, dict)
+                        ]
+                        prior_adjacent = None
+                        for pred in reversed(adjacent_predictions):
+                            try:
+                                pred_end = int(pred.get("end_frame"))
+                                pred_start = int(pred.get("start_frame"))
+                            except Exception:
+                                continue
+                            if pred_end + 1 == start_frame:
+                                prior_adjacent = pred
+                                break
+                            if end_frame + 1 == pred_start and prior_adjacent is None:
+                                prior_adjacent = pred
+                        segment_length = int(end_frame) - int(start_frame) + 1
+                        adjacent_length = 0
+                        if prior_adjacent is not None:
+                            try:
+                                adjacent_length = (
+                                    int(prior_adjacent.get("end_frame"))
+                                    - int(prior_adjacent.get("start_frame"))
+                                    + 1
+                                )
+                            except Exception:
+                                adjacent_length = 0
+                        adjacent_label = str(
+                            (prior_adjacent or {}).get("label")
+                            or (prior_adjacent or {}).get("classification")
+                            or ""
+                        ).strip()
+                        allowed_labels = {
+                            str(candidate).strip().casefold()
+                            for candidate in labels
+                            if str(candidate).strip()
+                        }
+                        is_short_adjacent_segment = (
+                            prior_adjacent is not None
+                            and segment_length > 0
+                            and adjacent_length > 0
+                            and segment_length < max(2, int(adjacent_length * 0.5))
+                            and adjacent_label.casefold() in allowed_labels
                         )
-                    raise RuntimeError(
-                        "Model response did not contain a label from the defined "
-                        f"list {labels!r}. Raw response: {raw_preview!r}"
-                    )
+                        if not is_short_adjacent_segment:
+                            raise BehaviorLabelEmptyResponseError(
+                                "Provider returned empty text for all behavior-label "
+                                f"attempts on frames {start_frame}-{end_frame}."
+                            )
+                        label = adjacent_label
+                        parsed = {
+                            "label": adjacent_label,
+                            "classification": adjacent_label,
+                            "confidence": min(
+                                0.5,
+                                max(
+                                    0.0,
+                                    float(
+                                        (prior_adjacent or {}).get("confidence") or 0.0
+                                    ),
+                                ),
+                            ),
+                            "description": "",
+                            "fallback_reason": "empty_response_adjacent_tail",
+                        }
+                        model_description = ""
+                        used_attempt_name = (
+                            used_attempt_name or "empty_response_adjacent_tail"
+                        )
+                        logger.warning(
+                            "Behavior segment frames %s-%s received empty provider text; appending adjacent-tail fallback label %r from frames %s-%s.",
+                            start_frame,
+                            end_frame,
+                            adjacent_label,
+                            (prior_adjacent or {}).get("start_frame"),
+                            (prior_adjacent or {}).get("end_frame"),
+                        )
+                    if not label:
+                        raise RuntimeError(
+                            "Model response did not contain a label from the defined "
+                            f"list {labels!r}. Raw response: {raw_preview!r}"
+                        )
                 classification_raw = str(
                     parsed.get("classification") or parsed.get("label") or label
                 ).strip()
@@ -823,6 +1073,8 @@ def run_behavior_segment_vlm_worker(
         "cancelled": bool(stop_event is not None and stop_event.is_set()),
         "rate_limited": bool(rate_limited),
         "empty_response_paused": bool(empty_response_paused),
+        "empty_response_segment_limit": int(max_consecutive_empty_segments),
+        "routed_to_caption_profile": bool(route_to_caption_profile),
         "error": str(rate_limit_error or empty_response_error),
     }
 

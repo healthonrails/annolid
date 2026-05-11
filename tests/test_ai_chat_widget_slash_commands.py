@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 from qtpy import QtCore, QtGui, QtWidgets
 
+from annolid.behavior import segment_labeling as segment_labeling_module
 from annolid.core.models.base import ModelResponse
 from annolid.core.agent.gui_backend.commands import parse_direct_gui_command
 from annolid.gui.widgets.ai_chat_backend import _append_selected_capabilities_prompt
@@ -1267,7 +1268,67 @@ def test_behavior_segment_vlm_worker_retries_empty_json_response(
     assert prediction["description_source"] == "model"
 
 
-def test_behavior_segment_vlm_worker_adds_qwen_no_think_controls(
+def test_ollama_vision_capability_detection_uses_metadata() -> None:
+    assert (
+        segment_labeling_module._extract_ollama_vision_capability(
+            {"capabilities": ["completion", "vision"]}
+        )
+        is True
+    )
+    assert (
+        segment_labeling_module._extract_ollama_vision_capability(
+            {"capabilities": ["completion"]}
+        )
+        is False
+    )
+    assert (
+        segment_labeling_module._extract_ollama_vision_capability(
+            {"details": {"families": ["gemma", "clip"]}}
+        )
+        is True
+    )
+    assert segment_labeling_module._extract_ollama_vision_capability({}) is None
+
+
+def test_ollama_non_vision_routing_uses_capability_probe(monkeypatch) -> None:
+    monkeypatch.setattr(
+        segment_labeling_module,
+        "ollama_model_supports_vision",
+        lambda model: True,
+    )
+    assert (
+        segment_labeling_module.is_likely_non_vision_model(
+            provider="ollama", model="any-local-model"
+        )
+        is False
+    )
+
+    monkeypatch.setattr(
+        segment_labeling_module,
+        "ollama_model_supports_vision",
+        lambda model: False,
+    )
+    assert (
+        segment_labeling_module.is_likely_non_vision_model(
+            provider="ollama", model="any-local-model"
+        )
+        is True
+    )
+
+    monkeypatch.setattr(
+        segment_labeling_module,
+        "ollama_model_supports_vision",
+        lambda model: None,
+    )
+    assert (
+        segment_labeling_module.is_likely_non_vision_model(
+            provider="ollama", model="any-local-model"
+        )
+        is False
+    )
+
+
+def test_behavior_segment_vlm_worker_uses_single_local_vlm_attempt(
     monkeypatch, tmp_path: Path
 ) -> None:
     video_path = tmp_path / "fly.avi"
@@ -1317,6 +1378,11 @@ def test_behavior_segment_vlm_worker_adds_qwen_no_think_controls(
     import annolid.core.models.adapters.llm_chat as llm_chat
 
     monkeypatch.setattr(llm_chat, "LLMChatAdapter", _FakeAdapter)
+    monkeypatch.setattr(
+        segment_labeling_module,
+        "ollama_model_supports_vision",
+        lambda model: True,
+    )
 
     widget = AIChatWidget.__new__(AIChatWidget)
     result = widget._run_behavior_segment_vlm_worker(
@@ -1326,14 +1392,263 @@ def test_behavior_segment_vlm_worker_adds_qwen_no_think_controls(
         sample_frames_per_segment=3,
         llm_profile="",
         llm_provider="ollama",
-        llm_model="qwen3.6:35b",
+        llm_model="local-vlm:latest",
     )
 
     assert result["skipped_segments"] == 0
     assert len(requests) == 1
-    assert "/no_think" in str(requests[0].text)
+    assert result["routed_to_caption_profile"] is False
+    assert "/no_think" not in str(requests[0].text)
+    assert dict(requests[0].params).get("response_format") is None
     assert dict(requests[0].params).get("max_tokens") == 512
     assert dict(requests[0].params).get("extra_body") == {"think": False}
+
+
+def test_behavior_segment_vlm_worker_routes_ollama_text_model_to_caption_profile(
+    monkeypatch, tmp_path: Path
+) -> None:
+    video_path = tmp_path / "fly.avi"
+    writer = cv2.VideoWriter(
+        str(video_path),
+        cv2.VideoWriter_fourcc(*"MJPG"),
+        10.0,
+        (64, 48),
+    )
+    assert writer.isOpened()
+    try:
+        for idx in range(8):
+            frame = np.zeros((48, 64, 3), dtype=np.uint8)
+            frame[..., 1] = idx * 10
+            writer.write(frame)
+    finally:
+        writer.release()
+
+    init_kwargs = []
+    requests = []
+
+    class _FakeAdapter:
+        def __init__(self, **kwargs):
+            self.kwargs = dict(kwargs)
+            init_kwargs.append(dict(kwargs))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def predict(self, request):
+            requests.append(request)
+            return ModelResponse(
+                task="caption",
+                output={
+                    "text": (
+                        '{"label":"still","confidence":0.84,'
+                        '"description":"fly posture remains stable across tiles"}'
+                    )
+                },
+                text=(
+                    '{"label":"still","confidence":0.84,'
+                    '"description":"fly posture remains stable across tiles"}'
+                ),
+            )
+
+    import annolid.core.models.adapters.llm_chat as llm_chat
+
+    monkeypatch.setattr(llm_chat, "LLMChatAdapter", _FakeAdapter)
+    monkeypatch.setattr(
+        segment_labeling_module,
+        "ollama_model_supports_vision",
+        lambda model: False,
+    )
+
+    widget = AIChatWidget.__new__(AIChatWidget)
+    result = widget._run_behavior_segment_vlm_worker(
+        video_path=str(video_path),
+        intervals=[{"start_frame": 0, "end_frame": 7, "subject": "fly"}],
+        labels=["still", "walk"],
+        sample_frames_per_segment=3,
+        llm_profile="",
+        llm_provider="ollama",
+        llm_model="local-text-model:latest",
+    )
+
+    assert result["skipped_segments"] == 0
+    assert result["routed_to_caption_profile"] is True
+    assert len(requests) == 1
+    assert requests[0].params.get("extra_body") is None
+    assert "/no_think" not in str(requests[0].text)
+    assert any(str(item.get("profile") or "") == "caption" for item in init_kwargs)
+    assert all(item.get("provider") is None for item in init_kwargs)
+    assert all(item.get("model") is None for item in init_kwargs)
+
+
+def test_behavior_segment_vlm_worker_reports_active_progress(
+    monkeypatch, tmp_path: Path
+) -> None:
+    video_path = tmp_path / "fly.avi"
+    writer = cv2.VideoWriter(
+        str(video_path),
+        cv2.VideoWriter_fourcc(*"MJPG"),
+        10.0,
+        (64, 48),
+    )
+    assert writer.isOpened()
+    try:
+        for idx in range(8):
+            frame = np.zeros((48, 64, 3), dtype=np.uint8)
+            frame[..., 1] = idx * 10
+            writer.write(frame)
+    finally:
+        writer.release()
+
+    class _FakeAdapter:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def predict(self, request):
+            return ModelResponse(
+                task="caption",
+                output={
+                    "text": (
+                        '{"label":"still","confidence":0.84,'
+                        '"description":"fly posture remains stable across tiles"}'
+                    )
+                },
+                text=(
+                    '{"label":"still","confidence":0.84,'
+                    '"description":"fly posture remains stable across tiles"}'
+                ),
+            )
+
+    class _PreviewWorker:
+        def __init__(self) -> None:
+            self.previews = []
+            self.progress = []
+
+        def report_preview(self, payload):
+            self.previews.append(dict(payload))
+
+        def report_progress(self, progress):
+            self.progress.append(int(progress))
+
+    import annolid.core.models.adapters.llm_chat as llm_chat
+
+    monkeypatch.setattr(llm_chat, "LLMChatAdapter", _FakeAdapter)
+    monkeypatch.setattr(
+        segment_labeling_module,
+        "ollama_model_supports_vision",
+        lambda model: True,
+    )
+    pred_worker = _PreviewWorker()
+
+    widget = AIChatWidget.__new__(AIChatWidget)
+    result = widget._run_behavior_segment_vlm_worker(
+        video_path=str(video_path),
+        intervals=[{"start_frame": 0, "end_frame": 7, "subject": "fly"}],
+        labels=["still", "walk"],
+        sample_frames_per_segment=3,
+        llm_profile="",
+        llm_provider="ollama",
+        llm_model="local-vlm:latest",
+        pred_worker=pred_worker,
+    )
+
+    assert result["skipped_segments"] == 0
+    statuses = [payload["status"] for payload in pred_worker.previews]
+    assert statuses[:2] == ["building_grid", "model_request"]
+    assert pred_worker.previews[1]["attempt"] == "local_vlm_with_image"
+    assert statuses[-1] == "labeled"
+
+
+def test_behavior_label_preview_updates_status_for_active_request(monkeypatch) -> None:
+    _ensure_qapp()
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.load_llm_settings",
+        lambda: {
+            "provider": "ollama",
+            "last_models": {"ollama": "local-vlm:latest"},
+            "ollama": {"preferred_models": ["local-vlm:latest"]},
+        },
+    )
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.ProviderRegistry.available_providers",
+        lambda self: ["ollama"],
+    )
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.ProviderRegistry.labels",
+        lambda self: {"ollama": "Ollama"},
+    )
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.ProviderRegistry.current_provider",
+        lambda self: "ollama",
+    )
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.ProviderRegistry.available_models",
+        lambda self, provider: ["local-vlm:latest"],
+    )
+    monkeypatch.setattr(
+        "annolid.gui.widgets.ai_chat_widget.ProviderRegistry.resolve_initial_model",
+        lambda self, provider, available_models: "local-vlm:latest",
+    )
+    monkeypatch.setattr(
+        AIChatWidget,
+        "_load_session_history_into_bubbles",
+        lambda self, session_id: None,
+    )
+    monkeypatch.setattr(AIChatWidget, "_update_model_selector", lambda self: None)
+    monkeypatch.setattr(AIChatWidget, "_refresh_header_chips", lambda self: None)
+    monkeypatch.setattr(
+        AIChatWidget, "_load_quick_actions_from_settings", lambda self: None
+    )
+
+    widget = AIChatWidget()
+    calls = []
+    try:
+        monkeypatch.setattr(
+            widget,
+            "_set_bot_action_result",
+            lambda action, payload: calls.append((action, dict(payload))),
+        )
+        widget._behavior_label_run_context = {
+            "host": object(),
+            "behavior_controller": object(),
+            "mode": "uniform",
+            "labels": ["still", "walk"],
+            "evaluated_segments": 10,
+            "resumed_segments": 0,
+            "skipped_segments": 0,
+            "predictions": [],
+        }
+
+        widget._on_behavior_label_preview(
+            {
+                "index": 2,
+                "total": 10,
+                "status": "model_request",
+                "attempt": "json_with_image",
+                "progress": 10,
+                "start_frame": 70,
+                "end_frame": 139,
+            }
+        )
+    finally:
+        widget.deleteLater()
+
+    assert (
+        "Labeling behavior grid 2/10 with json_with_image" in widget.status_label.text()
+    )
+    assert calls[-1][0] == "label_behavior_segments"
+    assert calls[-1][1]["in_progress"] is True
+    assert calls[-1][1]["active_status"] == "model_request"
+    assert calls[-1][1]["active_segment"] == 2
+    assert calls[-1][1]["active_attempt"] == "json_with_image"
 
 
 def test_behavior_segment_vlm_worker_builds_description_fallback(
@@ -1456,6 +1771,154 @@ def test_behavior_segment_vlm_worker_pauses_after_repeated_empty_responses(
     assert result["predictions"] == []
     assert "empty text" in result["error"]
     assert len(requests) == 12
+
+
+def test_behavior_segment_vlm_worker_pauses_after_one_empty_text_only_model_segment(
+    monkeypatch, tmp_path: Path
+) -> None:
+    video_path = tmp_path / "fly.avi"
+    writer = cv2.VideoWriter(
+        str(video_path),
+        cv2.VideoWriter_fourcc(*"MJPG"),
+        10.0,
+        (64, 48),
+    )
+    assert writer.isOpened()
+    try:
+        for idx in range(8):
+            frame = np.zeros((48, 64, 3), dtype=np.uint8)
+            frame[..., 1] = idx * 10
+            writer.write(frame)
+    finally:
+        writer.release()
+
+    requests = []
+
+    class _FakeAdapter:
+        def __init__(self, **kwargs):
+            self.kwargs = dict(kwargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def predict(self, request):
+            requests.append(request)
+            return ModelResponse(task="caption", output={"text": ""}, text="")
+
+    import annolid.core.models.adapters.llm_chat as llm_chat
+
+    monkeypatch.setattr(llm_chat, "LLMChatAdapter", _FakeAdapter)
+    monkeypatch.setattr(
+        segment_labeling_module,
+        "ollama_model_supports_vision",
+        lambda model: False,
+    )
+
+    widget = AIChatWidget.__new__(AIChatWidget)
+    result = widget._run_behavior_segment_vlm_worker(
+        video_path=str(video_path),
+        intervals=[
+            {"start_frame": 0, "end_frame": 3, "subject": "fly"},
+            {"start_frame": 4, "end_frame": 7, "subject": "fly"},
+        ],
+        labels=["still", "walk"],
+        sample_frames_per_segment=3,
+        llm_profile="",
+        llm_provider="ollama",
+        llm_model="local-text-model:latest",
+    )
+
+    assert result["routed_to_caption_profile"] is True
+    assert result["empty_response_paused"] is True
+    assert result["empty_response_segment_limit"] == 1
+    assert result["skipped_segments"] == 1
+    assert len(requests) == 1
+
+
+def test_behavior_segment_vlm_worker_appends_empty_tail_from_prior_segment(
+    monkeypatch, tmp_path: Path
+) -> None:
+    video_path = tmp_path / "mouse.avi"
+    writer = cv2.VideoWriter(
+        str(video_path),
+        cv2.VideoWriter_fourcc(*"MJPG"),
+        39.17,
+        (64, 48),
+    )
+    assert writer.isOpened()
+    try:
+        for idx in range(43):
+            frame = np.zeros((48, 64, 3), dtype=np.uint8)
+            frame[..., 1] = min(255, idx * 4)
+            writer.write(frame)
+    finally:
+        writer.release()
+
+    requests = []
+
+    class _FakeAdapter:
+        def __init__(self, **kwargs):
+            self.kwargs = dict(kwargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def predict(self, request):
+            requests.append(request)
+            return ModelResponse(task="caption", output={"text": ""}, text="")
+
+    import annolid.core.models.adapters.llm_chat as llm_chat
+
+    monkeypatch.setattr(llm_chat, "LLMChatAdapter", _FakeAdapter)
+    monkeypatch.setattr(
+        segment_labeling_module,
+        "ollama_model_supports_vision",
+        lambda model: True,
+    )
+
+    widget = AIChatWidget.__new__(AIChatWidget)
+    result = widget._run_behavior_segment_vlm_worker(
+        video_path=str(video_path),
+        intervals=[{"start_frame": 39, "end_frame": 42, "subject": "mouse"}],
+        labels=["rearing", "walking"],
+        sample_frames_per_segment=4,
+        llm_profile="",
+        llm_provider="ollama",
+        llm_model="local-vlm:latest",
+        prior_predictions=[
+            {
+                "start_frame": 0,
+                "end_frame": 38,
+                "subject": "mouse",
+                "label": "walking",
+                "classification": "walking",
+                "confidence": 0.9,
+                "description": "Mouse moves across the frame.",
+            }
+        ],
+    )
+
+    assert result["empty_response_paused"] is False
+    assert result["skipped_segments"] == 0
+    assert len(requests) == 1
+    prediction = result["predictions"][0]
+    assert prediction["start_frame"] == 39
+    assert prediction["end_frame"] == 42
+    assert prediction["label"] == "walking"
+    assert prediction["confidence"] == 0.5
+    assert prediction["description_source"] == "fallback"
+    assert prediction["model_description"] == ""
+    assert (
+        prediction["visual_evidence"]["fallback_reason"]
+        == "empty_response_adjacent_tail"
+    )
+    assert prediction["visual_evidence"]["empty_attempts"] == 1
 
 
 def test_behavior_segment_vlm_worker_normalizes_classification_to_label_list(
@@ -1674,10 +2137,8 @@ def test_behavior_segment_vlm_worker_routes_known_non_vision_model_to_caption_pr
     assert prediction["visual_evidence"]["request_interval_seconds"] == 1.0
     assert len(requests) == 1
     assert any(str(item.get("profile") or "") == "caption" for item in init_kwargs)
-    assert any(str(item.get("provider") or "") == "nvidia" for item in init_kwargs)
-    assert any(
-        str(item.get("model") or "") == "moonshotai/kimi-k2.5" for item in init_kwargs
-    )
+    assert all(item.get("provider") is None for item in init_kwargs)
+    assert all(item.get("model") is None for item in init_kwargs)
 
 
 def test_behavior_segment_vlm_worker_infers_fly_subject_from_video_path(

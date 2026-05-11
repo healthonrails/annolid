@@ -4436,6 +4436,7 @@ class AIChatWidget(QtWidgets.QWidget):
         behavior_definitions: str = "",
         focus_points: str = "",
         subject_term: str = "",
+        prior_predictions: Optional[List[Dict[str, Any]]] = None,
         stop_event=None,
         pred_worker=None,
     ) -> Dict[str, Any]:
@@ -4456,6 +4457,7 @@ class AIChatWidget(QtWidgets.QWidget):
             behavior_definitions=behavior_definitions,
             focus_points=focus_points,
             subject_term=subject_term,
+            prior_predictions=prior_predictions,
             stop_event=stop_event,
             pred_worker=pred_worker,
         )
@@ -4735,11 +4737,53 @@ class AIChatWidget(QtWidgets.QWidget):
             return
 
         status = str(payload.get("status") or "").strip().lower()
+        evaluated_for_progress = int(context.get("evaluated_segments") or 0)
+        progress_value = max(0, min(100, int(payload.get("progress") or 0)))
+        if status in {"building_grid", "model_request"}:
+            active_index = int(payload.get("index") or 0)
+            total = int(payload.get("total") or evaluated_for_progress or 0)
+            start_frame = int(payload.get("start_frame") or 0)
+            end_frame = int(payload.get("end_frame") or start_frame)
+            if status == "building_grid":
+                message = (
+                    f"Preparing behavior grid {active_index}/{max(1, total)} "
+                    f"(frames {start_frame}-{end_frame}); {progress_value}% complete."
+                )
+            else:
+                attempt = str(payload.get("attempt") or "model").strip()
+                message = (
+                    f"Labeling behavior grid {active_index}/{max(1, total)} "
+                    f"with {attempt}; {progress_value}% complete."
+                )
+            self.status_label.setText(message)
+            self._set_bot_action_result(
+                "label_behavior_segments",
+                {
+                    "ok": True,
+                    "queued": False,
+                    "in_progress": True,
+                    "mode": str(context.get("mode") or "uniform"),
+                    "active_status": status,
+                    "active_segment": active_index,
+                    "active_attempt": str(payload.get("attempt") or ""),
+                    "evaluated_segments": int(context.get("evaluated_segments") or 0),
+                    "labeled_segments": len(context.get("predictions") or []),
+                    "skipped_segments": int(context.get("skipped_segments") or 0),
+                    "resumed_segments": int(context.get("resumed_segments") or 0),
+                    "remaining_segments": max(
+                        0,
+                        int(context.get("evaluated_segments") or 0)
+                        - int(context.get("resumed_segments") or 0),
+                    ),
+                    "labels_used": list(context.get("labels") or []),
+                },
+            )
+            return
+
         context["processed_segments"] = int(context.get("processed_offset") or 0) + int(
             payload.get("index") or 0
         )
         context["skipped_segments"] = int(context.get("skipped_segments") or 0)
-        evaluated_for_progress = int(context.get("evaluated_segments") or 0)
         if evaluated_for_progress > 0:
             progress_value = int(
                 (int(context.get("processed_segments") or 0) * 100)
@@ -6663,6 +6707,7 @@ class AIChatWidget(QtWidgets.QWidget):
                 behavior_definitions=str(behavior_definitions or "").strip(),
                 focus_points=str(focus_points or "").strip(),
                 subject_term=str(subject_term or "").strip(),
+                prior_predictions=list(resumed_predictions),
             )
             worker.moveToThread(thread)
             thread.started.connect(worker.run, QtCore.Qt.QueuedConnection)
