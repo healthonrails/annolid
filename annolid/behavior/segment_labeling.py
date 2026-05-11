@@ -13,12 +13,14 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from annolid.behavior.event_utils import parse_aggression_sub_event_counts
+from annolid.behavior.labeling_skill import behavior_labeling_prompt_guidance
 from annolid.behavior import prompting as behavior_prompting
 from annolid.behavior.timeline_sampling import format_hhmmss
 from annolid.core.media.video import build_segment_frame_grid, save_rgb_image
 
 logger = logging.getLogger(__name__)
 _OLLAMA_MODEL_CAPABILITY_CACHE: Dict[tuple[str, str], Optional[bool]] = {}
+NO_BEHAVIOR_LABEL = "no_behavior"
 
 
 class BehaviorLabelRateLimitError(RuntimeError):
@@ -364,32 +366,37 @@ def behavior_grid_output_path(
 
 
 def behavior_label_retry_prompt(prompt: str, labels: List[str]) -> str:
-    labels_text = ", ".join(str(label) for label in labels)
+    labels_text = ", ".join([*(str(label) for label in labels), NO_BEHAVIOR_LABEL])
     return "\n".join(
         [
             str(prompt or "").strip(),
             "",
             "Your previous response was empty or did not include a valid label.",
             f"Choose exactly one label from this list: {labels_text}.",
-            'Return JSON only: {"label":"<one label exactly as listed>","classification":"<same label>","confidence":0.0,"description":"observable evidence from the frame grid"}.',
+            f'If none of the listed behaviors are clearly visible, use "{NO_BEHAVIOR_LABEL}".',
+            'Return JSON only: {"label":"<one label exactly as listed or no_behavior>","classification":"<same label>","confidence":0.0,"description":"observable evidence from the frame grid"}.',
             "Do not return an empty message. Do not use a label outside the list.",
         ]
     )
 
 
 def behavior_grid_system_prompt(labels: List[str]) -> str:
-    labels_text = ", ".join(str(label) for label in labels if str(label).strip())
-    return "\n".join(
-        [
-            "You are Annolid Bot.",
-            "Analyze chronological frame-grid images for behavior labeling.",
-            "You must ground output in visible evidence from the grid tiles.",
-            f"Allowed labels: {labels_text}",
-            "Classification must be exactly one allowed label.",
-            "Always include a short behavior description.",
-            "Do not spend tokens on hidden reasoning; answer with the JSON object only.",
-        ]
+    labels_text = ", ".join(
+        [*(str(label) for label in labels if str(label).strip()), NO_BEHAVIOR_LABEL]
     )
+    lines = [
+        "You are Annolid Bot.",
+        "Analyze chronological frame-grid images for behavior labeling.",
+        "You must ground output in visible evidence from the grid tiles.",
+        f"Allowed labels: {labels_text}",
+        "Classification must be exactly one allowed label.",
+        "Always include a short behavior description.",
+        "Do not spend tokens on hidden reasoning; answer with the JSON object only.",
+    ]
+    skill_guidance = behavior_labeling_prompt_guidance()
+    if skill_guidance:
+        lines.extend(["Behavior labeling skill rules:", skill_guidance])
+    return "\n".join(lines)
 
 
 def behavior_grid_description_fallback(
@@ -481,6 +488,7 @@ def run_behavior_segment_vlm_worker(
     from annolid.core.models.base import ModelRequest
 
     predictions: List[Dict[str, Any]] = []
+    skipped_predictions: List[Dict[str, Any]] = []
     prior_prediction_records: List[Dict[str, Any]] = []
     for pred in list(prior_predictions or []):
         if not isinstance(pred, dict):
@@ -816,6 +824,74 @@ def run_behavior_segment_vlm_worker(
                     frame_count=len(grid.frame_indices),
                 )
                 motion_score = float(motion_summary.get("motion_score") or 0.0)
+                if bool(parsed.get("no_behavior")):
+                    skipped_segments += 1
+                    empty_response_streak = 0
+                    no_behavior_description = str(
+                        parsed.get("description") or ""
+                    ).strip()
+                    no_behavior_record = {
+                        "start_frame": start_frame,
+                        "end_frame": end_frame,
+                        "subject": item.get("subject"),
+                        "label": NO_BEHAVIOR_LABEL,
+                        "classification": NO_BEHAVIOR_LABEL,
+                        "confidence": float(parsed.get("confidence") or 0.0),
+                        "description": no_behavior_description,
+                        "model_description": no_behavior_description,
+                        "description_source": "model"
+                        if no_behavior_description
+                        else "",
+                        "grid_image_path": str(image_path),
+                        "grid_frame_description": segment_text,
+                        "aggression_sub_events": {},
+                        "visual_evidence": {
+                            "type": "frame_grid",
+                            "grid_image_path": str(image_path),
+                            "grid_frame_description": segment_text,
+                            "subject_term": segment_subject_term,
+                            "frame_indices": list(grid.frame_indices),
+                            "rows": int(grid.rows),
+                            "columns": int(grid.columns),
+                            "tile_width": int(grid.tile_width),
+                            "tile_height": int(grid.tile_height),
+                            "model_attempt": used_attempt_name,
+                            "empty_attempts": int(empty_attempts),
+                            "description_source": "model"
+                            if no_behavior_description
+                            else "",
+                            "request_interval_seconds": float(request_interval_seconds),
+                            "rate_limit_backoffs": int(rate_limit_backoffs),
+                            "skip_reason": NO_BEHAVIOR_LABEL,
+                            "motion_score": motion_score,
+                            "mean_delta": float(
+                                motion_summary.get("mean_delta") or 0.0
+                            ),
+                        },
+                    }
+                    skipped_predictions.append(no_behavior_record)
+                    logger.info(
+                        "Behavior segment grid labeling skipped frames %s-%s: model returned no_behavior.",
+                        start_frame,
+                        end_frame,
+                    )
+                    if pred_worker is not None:
+                        pred_worker.report_preview(
+                            {
+                                "index": int(idx),
+                                "total": int(total),
+                                "start_frame": int(start_frame),
+                                "end_frame": int(end_frame),
+                                "status": "no_behavior",
+                                "progress": int(progress_value),
+                                "description": str(
+                                    parsed.get("description") or ""
+                                ).strip(),
+                                "skipped_prediction": dict(no_behavior_record),
+                            }
+                        )
+                        pred_worker.report_progress(progress_value)
+                    continue
                 if not label:
                     raw_preview = raw[:240].replace("\n", " ")
                     if not raw_preview and empty_attempts:
@@ -898,10 +974,89 @@ def run_behavior_segment_vlm_worker(
                             (prior_adjacent or {}).get("end_frame"),
                         )
                     if not label:
-                        raise RuntimeError(
-                            "Model response did not contain a label from the defined "
-                            f"list {labels!r}. Raw response: {raw_preview!r}"
+                        unmatched_description = str(
+                            parsed.get("description")
+                            or parsed.get("unmatched_text")
+                            or raw
+                            or raw_preview
+                            or ""
+                        ).strip()
+                        unmatched_label = str(
+                            parsed.get("unmatched_label")
+                            or parsed.get("classification")
+                            or ""
+                        ).strip()
+                        skipped_segments += 1
+                        empty_response_streak = 0
+                        unclassified_record = {
+                            "start_frame": start_frame,
+                            "end_frame": end_frame,
+                            "subject": item.get("subject"),
+                            "label": "unclassified",
+                            "classification": "unclassified",
+                            "confidence": float(parsed.get("confidence") or 0.0),
+                            "description": unmatched_description,
+                            "model_description": unmatched_description,
+                            "description_source": "model"
+                            if unmatched_description
+                            else "",
+                            "grid_image_path": str(image_path),
+                            "grid_frame_description": segment_text,
+                            "aggression_sub_events": parse_aggression_sub_event_counts(
+                                parsed.get("aggression_sub_events")
+                                or parsed.get("sub_events")
+                                or parsed.get("subevents")
+                            ),
+                            "visual_evidence": {
+                                "type": "frame_grid",
+                                "grid_image_path": str(image_path),
+                                "grid_frame_description": segment_text,
+                                "subject_term": segment_subject_term,
+                                "frame_indices": list(grid.frame_indices),
+                                "rows": int(grid.rows),
+                                "columns": int(grid.columns),
+                                "tile_width": int(grid.tile_width),
+                                "tile_height": int(grid.tile_height),
+                                "model_attempt": used_attempt_name,
+                                "empty_attempts": int(empty_attempts),
+                                "description_source": "model"
+                                if unmatched_description
+                                else "",
+                                "request_interval_seconds": float(
+                                    request_interval_seconds
+                                ),
+                                "rate_limit_backoffs": int(rate_limit_backoffs),
+                                "skip_reason": "unmatched_label",
+                                "model_label": unmatched_label,
+                                "raw_response_preview": raw_preview,
+                                "motion_score": motion_score,
+                                "mean_delta": float(
+                                    motion_summary.get("mean_delta") or 0.0
+                                ),
+                            },
+                        }
+                        skipped_predictions.append(unclassified_record)
+                        logger.warning(
+                            "Behavior segment grid labeling skipped frames %s-%s: model returned unsupported label %r.",
+                            start_frame,
+                            end_frame,
+                            unmatched_label or "<missing>",
                         )
+                        if pred_worker is not None:
+                            pred_worker.report_preview(
+                                {
+                                    "index": int(idx),
+                                    "total": int(total),
+                                    "start_frame": int(start_frame),
+                                    "end_frame": int(end_frame),
+                                    "status": "unclassified",
+                                    "progress": int(progress_value),
+                                    "description": unmatched_description,
+                                    "skipped_prediction": dict(unclassified_record),
+                                }
+                            )
+                            pred_worker.report_progress(progress_value)
+                        continue
                 classification_raw = str(
                     parsed.get("classification") or parsed.get("label") or label
                 ).strip()
@@ -1086,6 +1241,7 @@ def run_behavior_segment_vlm_worker(
 
     return {
         "predictions": predictions,
+        "skipped_predictions": skipped_predictions,
         "skipped_segments": int(skipped_segments),
         "processed_segments": int(len(intervals)),
         "cancelled": bool(stop_event is not None and stop_event.is_set()),
@@ -1157,7 +1313,12 @@ def load_resumable_behavior_segment_predictions(
 ) -> Dict[str, Any]:
     output_path = behavior_segment_labeling_log_path(video_path)
     if not output_path.exists():
-        return {"ok": True, "path": str(output_path), "predictions": []}
+        return {
+            "ok": True,
+            "path": str(output_path),
+            "predictions": [],
+            "skipped_predictions": [],
+        }
     try:
         payload = json.loads(output_path.read_text(encoding="utf-8"))
     except Exception as exc:
@@ -1166,12 +1327,23 @@ def load_resumable_behavior_segment_predictions(
             output_path,
             exc,
         )
-        return {"ok": False, "path": str(output_path), "predictions": []}
+        return {
+            "ok": False,
+            "path": str(output_path),
+            "predictions": [],
+            "skipped_predictions": [],
+        }
     if not isinstance(payload, dict):
-        return {"ok": False, "path": str(output_path), "predictions": []}
+        return {
+            "ok": False,
+            "path": str(output_path),
+            "predictions": [],
+            "skipped_predictions": [],
+        }
 
     allowed = {str(label).strip().casefold() for label in labels if str(label).strip()}
     predictions: List[Dict[str, Any]] = []
+    skipped_predictions: List[Dict[str, Any]] = []
     for raw in list(payload.get("predictions") or []):
         if not isinstance(raw, dict):
             continue
@@ -1192,8 +1364,25 @@ def load_resumable_behavior_segment_predictions(
         normalized["start_frame"] = start_frame
         normalized["end_frame"] = end_frame
         predictions.append(normalized)
+    for raw in list(payload.get("skipped_predictions") or []):
+        if not isinstance(raw, dict):
+            continue
+        try:
+            normalized = normalize_behavior_segment_prediction_for_log(raw)
+        except Exception:
+            continue
+        try:
+            start_frame = int(normalized.get("start_frame"))
+            end_frame = int(normalized.get("end_frame"))
+        except Exception:
+            continue
+        if start_frame < 0 or end_frame < start_frame:
+            continue
+        normalized["start_frame"] = start_frame
+        normalized["end_frame"] = end_frame
+        skipped_predictions.append(normalized)
 
-    if predictions:
+    if predictions or skipped_predictions:
         expected_segment_frames = int(payload.get("segment_frames") or 0)
         expected_sample_frames = int(payload.get("sample_frames_per_segment") or 0)
         expected_segment_seconds = float(payload.get("segment_seconds") or 0.0)
@@ -1229,4 +1418,5 @@ def load_resumable_behavior_segment_predictions(
         "ok": True,
         "path": str(output_path),
         "predictions": predictions,
+        "skipped_predictions": skipped_predictions,
     }

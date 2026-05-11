@@ -3985,9 +3985,13 @@ class AIChatWidget(QtWidgets.QWidget):
         behaviors = getattr(schema, "behaviors", None)
         if isinstance(behaviors, list):
             for behavior in behaviors:
+                name = str(getattr(behavior, "name", "") or "").strip()
+                if name:
+                    labels.append(name.replace("_", " "))
+                    continue
                 code = str(getattr(behavior, "code", "") or "").strip()
                 if code:
-                    labels.append(code)
+                    labels.append(code.replace("_", " "))
         if not labels:
             flags = getattr(host, "flags", None)
             if isinstance(flags, dict):
@@ -4162,6 +4166,28 @@ class AIChatWidget(QtWidgets.QWidget):
                 except Exception:
                     conf = 0.0
                 if label_val:
+                    no_behavior_values = {
+                        "no_behavior",
+                        "no behavior",
+                        "none",
+                        "none of the above",
+                        "other",
+                        "background",
+                    }
+                    if (
+                        label_val.strip().lower().replace("_", " ")
+                        in no_behavior_values
+                    ):
+                        description = str(payload.get("description") or "").strip()
+                        parsed = {
+                            "label": "",
+                            "classification": "no_behavior",
+                            "confidence": max(0.0, min(1.0, conf)),
+                            "no_behavior": True,
+                        }
+                        if description:
+                            parsed["description"] = description
+                        return parsed
                     for candidate in labels:
                         if candidate.lower() == label_val.lower():
                             parsed_sub_events = parse_aggression_sub_event_counts(
@@ -4186,6 +4212,17 @@ class AIChatWidget(QtWidgets.QWidget):
                             if parsed_sub_events:
                                 parsed["aggression_sub_events"] = parsed_sub_events
                             return parsed
+                    description = str(payload.get("description") or "").strip()
+                    parsed = {
+                        "label": "",
+                        "classification": "",
+                        "confidence": max(0.0, min(1.0, conf)),
+                        "unmatched_label": label_val,
+                        "unmatched_text": raw,
+                    }
+                    if description:
+                        parsed["description"] = description
+                    return parsed
 
         def _label_mentioned(candidate: str, source: str) -> bool:
             normalized_candidate = re.sub(
@@ -4366,6 +4403,7 @@ class AIChatWidget(QtWidgets.QWidget):
         evaluated_segments: int,
         skipped_segments: int,
         predictions: List[Dict[str, Any]],
+        skipped_predictions: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         video_file = str(getattr(host, "video_file", "") or "").strip()
         if not video_file:
@@ -4378,6 +4416,10 @@ class AIChatWidget(QtWidgets.QWidget):
             normalized_predictions = [
                 normalize_behavior_segment_prediction_for_log(pred)
                 for pred in predictions
+            ]
+            normalized_skipped_predictions = [
+                normalize_behavior_segment_prediction_for_log(pred)
+                for pred in list(skipped_predictions or [])
             ]
             aggression_summary = aggregate_aggression_bout_summary(
                 normalized_predictions
@@ -4394,6 +4436,7 @@ class AIChatWidget(QtWidgets.QWidget):
                 "labeled_segments": int(len(normalized_predictions)),
                 "skipped_segments": int(skipped_segments),
                 "predictions": list(normalized_predictions),
+                "skipped_predictions": list(normalized_skipped_predictions),
                 "event_schema": aggression_sub_event_schema(),
                 "aggression_bout_summary": aggression_summary,
                 "generated_at": datetime.now().isoformat(),
@@ -4406,6 +4449,7 @@ class AIChatWidget(QtWidgets.QWidget):
                 "ok": True,
                 "path": str(output_path),
                 "rows": len(normalized_predictions),
+                "skipped_rows": len(normalized_skipped_predictions),
             }
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
@@ -4605,6 +4649,53 @@ class AIChatWidget(QtWidgets.QWidget):
         self._refresh_behavior_panels(host)
         return normalized_prediction
 
+    def _commit_behavior_label_skipped_prediction(
+        self,
+        context: Dict[str, Any],
+        prediction: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        try:
+            normalized_prediction = normalize_behavior_segment_prediction_for_log(
+                prediction
+            )
+        except Exception:
+            return None
+        context_predictions = list(context.get("skipped_predictions") or [])
+        existing_ranges = {
+            (
+                int(pred.get("start_frame") or -1),
+                int(pred.get("end_frame") or -1),
+            )
+            for pred in context_predictions
+            if isinstance(pred, dict)
+        }
+        pred_range = (
+            int(normalized_prediction.get("start_frame") or -1),
+            int(normalized_prediction.get("end_frame") or -1),
+        )
+        if pred_range not in existing_ranges:
+            context_predictions.append(normalized_prediction)
+            context["skipped_predictions"] = context_predictions
+            behavior_controller = context.get("behavior_controller")
+            add_mark = getattr(behavior_controller, "add_generic_mark", None)
+            if callable(add_mark):
+                label = str(normalized_prediction.get("label") or "").strip()
+                mark_type = (
+                    "behavior_no_behavior"
+                    if label == "no_behavior"
+                    else "behavior_unclassified"
+                )
+                color = "#808080" if label == "no_behavior" else "#ff9800"
+                try:
+                    add_mark(
+                        int(normalized_prediction.get("start_frame") or 0),
+                        mark_type=mark_type,
+                        color=color,
+                    )
+                except Exception:
+                    pass
+        return normalized_prediction
+
     def _save_behavior_segment_progress(
         self, *, force_timestamps: bool = False
     ) -> Dict[str, Any]:
@@ -4617,6 +4708,7 @@ class AIChatWidget(QtWidgets.QWidget):
             return {"ok": False, "error": "Behavior labeling host is unavailable."}
 
         predictions = list(context.get("predictions") or [])
+        skipped_predictions = list(context.get("skipped_predictions") or [])
         timestamp_result: Dict[str, Any] = {}
         processed = int(context.get("processed_segments") or 0)
         if force_timestamps or (processed > 0 and processed % 10 == 0):
@@ -4634,6 +4726,7 @@ class AIChatWidget(QtWidgets.QWidget):
             evaluated_segments=int(context.get("evaluated_segments") or 0),
             skipped_segments=int(context.get("skipped_segments") or 0),
             predictions=predictions,
+            skipped_predictions=skipped_predictions,
         )
         return {
             "ok": bool(behavior_log_result.get("ok", False)),
@@ -4792,8 +4885,20 @@ class AIChatWidget(QtWidgets.QWidget):
             progress_value = max(0, min(100, progress_value))
         else:
             progress_value = max(0, min(100, int(payload.get("progress") or 0)))
-        if status in {"skipped", "rate_limited", "empty_response"}:
+        if status in {
+            "skipped",
+            "no_behavior",
+            "unclassified",
+            "rate_limited",
+            "empty_response",
+        }:
             context["skipped_segments"] = int(context["skipped_segments"]) + 1
+            if status in {"no_behavior", "unclassified"}:
+                skipped_prediction = payload.get("skipped_prediction")
+                if isinstance(skipped_prediction, dict):
+                    self._commit_behavior_label_skipped_prediction(
+                        context, skipped_prediction
+                    )
             if status == "rate_limited":
                 context["rate_limited"] = True
                 context["rate_limit_error"] = str(payload.get("error") or "")
@@ -4806,6 +4911,14 @@ class AIChatWidget(QtWidgets.QWidget):
                 self.status_label.setText(
                     "Behavior labeling received empty model responses; "
                     f"{progress_value}% complete."
+                )
+            elif status == "no_behavior":
+                self.status_label.setText(
+                    f"Segment {context['processed_segments']}/{context.get('evaluated_segments')} has no listed behavior; {progress_value}% complete."
+                )
+            elif status == "unclassified":
+                self.status_label.setText(
+                    f"Segment {context['processed_segments']}/{context.get('evaluated_segments')} returned an unsupported label; saved model description; {progress_value}% complete."
                 )
             else:
                 self.status_label.setText(
@@ -4919,6 +5032,7 @@ class AIChatWidget(QtWidgets.QWidget):
             )
 
         predictions = list(context.get("predictions") or [])
+        skipped_predictions = list(context.get("skipped_predictions") or [])
         fallback_predictions = list(payload.get("predictions") or [])
         if fallback_predictions:
             existing_ranges = {
@@ -4944,8 +5058,69 @@ class AIChatWidget(QtWidgets.QWidget):
                         predictions.append(normalized_prediction)
                         existing_ranges.add(pred_range)
             context["predictions"] = predictions
+        fallback_skipped_predictions = list(payload.get("skipped_predictions") or [])
+        if fallback_skipped_predictions:
+            existing_skipped_ranges = {
+                (
+                    int(pred.get("start_frame") or -1),
+                    int(pred.get("end_frame") or -1),
+                )
+                for pred in skipped_predictions
+                if isinstance(pred, dict)
+            }
+            for pred in fallback_skipped_predictions:
+                try:
+                    pred_range = (
+                        int(pred.get("start_frame") or -1),
+                        int(pred.get("end_frame") or -1),
+                    )
+                except Exception:
+                    pred_range = (-1, -1)
+                if pred_range not in existing_skipped_ranges:
+                    normalized_prediction = (
+                        self._commit_behavior_label_skipped_prediction(context, pred)
+                    )
+                    if normalized_prediction is not None:
+                        skipped_predictions.append(normalized_prediction)
+                        existing_skipped_ranges.add(pred_range)
+            context["skipped_predictions"] = skipped_predictions
 
         if not predictions:
+            if skipped_predictions:
+                context["skipped_segments"] = max(
+                    int(context.get("skipped_segments") or 0),
+                    int(payload.get("skipped_segments") or 0),
+                    len(skipped_predictions),
+                )
+                self._behavior_label_run_context = context
+                save_result = self._save_behavior_segment_progress(
+                    force_timestamps=True
+                )
+                self._behavior_label_run_context = {}
+                behavior_log_result = dict(save_result.get("behavior_log_result") or {})
+                self._set_bot_action_result(
+                    "label_behavior_segments",
+                    {
+                        "ok": True,
+                        "queued": False,
+                        "in_progress": False,
+                        "mode": str(context.get("mode") or "uniform"),
+                        "labeled_segments": 0,
+                        "evaluated_segments": int(
+                            context.get("evaluated_segments") or 0
+                        ),
+                        "skipped_segments": int(context.get("skipped_segments") or 0),
+                        "behavior_log_json": str(behavior_log_result.get("path") or ""),
+                        "behavior_log_rows": int(behavior_log_result.get("rows") or 0),
+                        "behavior_log_skipped_rows": int(
+                            behavior_log_result.get("skipped_rows") or 0
+                        ),
+                    },
+                )
+                self.status_label.setText(
+                    "Behavior labeling finished with no listed behaviors detected; saved segment log."
+                )
+                return
             if bool(context.get("rate_limited")):
                 error_text = str(
                     context.get("rate_limit_error") or "Provider rate limit reached."
@@ -6525,6 +6700,7 @@ class AIChatWidget(QtWidgets.QWidget):
 
             evaluated_segments = int(len(intervals))
             resumed_predictions: List[Dict[str, Any]] = []
+            resumed_skipped_predictions: List[Dict[str, Any]] = []
             resume_log_path = ""
             if not bool(overwrite_existing):
                 resume_payload = self._load_resumable_behavior_segment_predictions(
@@ -6536,7 +6712,10 @@ class AIChatWidget(QtWidgets.QWidget):
                 )
                 resume_log_path = str(resume_payload.get("path") or "")
                 resumed_predictions = list(resume_payload.get("predictions") or [])
-                if resumed_predictions:
+                resumed_skipped_predictions = list(
+                    resume_payload.get("skipped_predictions") or []
+                )
+                if resumed_predictions or resumed_skipped_predictions:
                     current_ranges = {
                         (
                             int(item.get("start_frame") or -1),
@@ -6553,6 +6732,15 @@ class AIChatWidget(QtWidgets.QWidget):
                         )
                         in current_ranges
                     ]
+                    resumed_skipped_predictions = [
+                        pred
+                        for pred in resumed_skipped_predictions
+                        if (
+                            int(pred.get("start_frame") or -1),
+                            int(pred.get("end_frame") or -1),
+                        )
+                        in current_ranges
+                    ]
                     existing_ranges = {
                         (
                             int(pred.get("start_frame") or -1),
@@ -6560,6 +6748,15 @@ class AIChatWidget(QtWidgets.QWidget):
                         )
                         for pred in resumed_predictions
                     }
+                    existing_ranges.update(
+                        {
+                            (
+                                int(pred.get("start_frame") or -1),
+                                int(pred.get("end_frame") or -1),
+                            )
+                            for pred in resumed_skipped_predictions
+                        }
+                    )
                     intervals = [
                         item
                         for item in intervals
@@ -6572,8 +6769,17 @@ class AIChatWidget(QtWidgets.QWidget):
 
             if bool(overwrite_existing):
                 behavior_controller.clear_behavior_data()
+            clear_generic_marks = getattr(
+                behavior_controller, "clear_generic_marks", None
+            )
+            if callable(clear_generic_marks):
+                try:
+                    clear_generic_marks(mark_type="behavior_no_behavior")
+                    clear_generic_marks(mark_type="behavior_unclassified")
+                except Exception:
+                    pass
 
-            if not intervals and resumed_predictions:
+            if not intervals and (resumed_predictions or resumed_skipped_predictions):
                 self._behavior_label_run_context = {
                     "host": host,
                     "behavior_controller": behavior_controller,
@@ -6585,9 +6791,12 @@ class AIChatWidget(QtWidgets.QWidget):
                     "visual_input_mode": "frame_grid",
                     "request_interval_seconds": float(behavior_request_interval),
                     "evaluated_segments": evaluated_segments,
-                    "processed_segments": int(len(resumed_predictions)),
-                    "skipped_segments": 0,
+                    "processed_segments": int(
+                        len(resumed_predictions) + len(resumed_skipped_predictions)
+                    ),
+                    "skipped_segments": int(len(resumed_skipped_predictions)),
                     "predictions": list(resumed_predictions),
+                    "skipped_predictions": list(resumed_skipped_predictions),
                     "use_defined_behavior_list": bool(use_defined_behavior_list),
                     "default_subject": str(subject or "").strip() or None,
                     "timestamp_provider": self._behavior_label_timestamp_provider(host),
@@ -6615,7 +6824,7 @@ class AIChatWidget(QtWidgets.QWidget):
                         "mode": mode,
                         "labeled_segments": int(len(resumed_predictions)),
                         "evaluated_segments": evaluated_segments,
-                        "skipped_segments": 0,
+                        "skipped_segments": int(len(resumed_skipped_predictions)),
                         "resumed_segments": int(len(resumed_predictions)),
                         "remaining_segments": 0,
                         "segment_frames": int(segment_frames),
@@ -6631,7 +6840,7 @@ class AIChatWidget(QtWidgets.QWidget):
                     },
                 )
                 self.status_label.setText(
-                    f"Behavior labeling already complete for {len(resumed_predictions)} segment(s); skipped model calls."
+                    f"Behavior labeling already complete for {len(resumed_predictions)} labeled and {len(resumed_skipped_predictions)} skipped segment(s); skipped model calls."
                 )
                 return
 
@@ -6675,10 +6884,15 @@ class AIChatWidget(QtWidgets.QWidget):
                 "visual_input_mode": "frame_grid",
                 "request_interval_seconds": float(behavior_request_interval),
                 "evaluated_segments": evaluated_segments,
-                "processed_segments": int(len(resumed_predictions)),
-                "processed_offset": int(len(resumed_predictions)),
-                "skipped_segments": 0,
+                "processed_segments": int(
+                    len(resumed_predictions) + len(resumed_skipped_predictions)
+                ),
+                "processed_offset": int(
+                    len(resumed_predictions) + len(resumed_skipped_predictions)
+                ),
+                "skipped_segments": int(len(resumed_skipped_predictions)),
                 "predictions": list(resumed_predictions),
+                "skipped_predictions": list(resumed_skipped_predictions),
                 "use_defined_behavior_list": bool(use_defined_behavior_list),
                 "default_subject": str(subject or "").strip() or None,
                 "timestamp_provider": self._behavior_label_timestamp_provider(host),

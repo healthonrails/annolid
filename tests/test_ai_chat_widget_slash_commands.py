@@ -475,6 +475,34 @@ def test_extract_label_from_model_text_accepts_prediction_alias_key() -> None:
     assert confidence == 0.4
 
 
+def test_extract_prediction_from_model_text_accepts_no_behavior() -> None:
+    parsed = AIChatWidget._extract_prediction_from_model_text(
+        '{"label":"no_behavior","confidence":0.88,"description":"Mouse is walking, not grooming or rearing."}',
+        ["grooming", "supported rearing", "unsupported rearing"],
+    )
+
+    assert parsed["label"] == ""
+    assert parsed["classification"] == "no_behavior"
+    assert parsed["confidence"] == 0.88
+    assert parsed["no_behavior"] is True
+
+
+def test_extract_prediction_from_model_text_preserves_unsupported_label_description() -> (
+    None
+):
+    parsed = AIChatWidget._extract_prediction_from_model_text(
+        '{"label":"walking","confidence":0.82,"description":"Mouse walks along the wall without grooming or rearing."}',
+        ["grooming", "supported rearing", "unsupported rearing"],
+    )
+
+    assert parsed["label"] == ""
+    assert parsed["confidence"] == 0.82
+    assert parsed["unmatched_label"] == "walking"
+    assert parsed["description"] == (
+        "Mouse walks along the wall without grooming or rearing."
+    )
+
+
 def test_extract_prediction_from_model_text_parses_aggression_sub_events() -> None:
     labels = ["aggression_bout", "grooming"]
     parsed = AIChatWidget._extract_prediction_from_model_text(
@@ -953,6 +981,32 @@ def test_behavior_label_resolution_preserves_explicit_defined_list(monkeypatch) 
             widget.close()
 
 
+def test_labels_from_project_schema_prefers_names_and_normalizes_underscores():
+    widget = AIChatWidget.__new__(AIChatWidget)
+
+    class _Behavior:
+        def __init__(self, code, name):
+            self.code = code
+            self.name = name
+
+    class _Schema:
+        behaviors = [
+            _Behavior("behavior_1", "Behavior 1"),
+            _Behavior("unsupported_rearing", "unsupported_rearing"),
+            _Behavior("walking", "walking"),
+        ]
+
+    class _Host:
+        project_schema = _Schema()
+
+    widget.host_window_widget = _Host()
+
+    assert widget._labels_from_schema_or_flags() == [
+        "unsupported rearing",
+        "walking",
+    ]
+
+
 def test_behavior_label_preview_applies_incremental_updates(monkeypatch) -> None:
     _ensure_qapp()
     monkeypatch.setattr(
@@ -1000,9 +1054,13 @@ def test_behavior_label_preview_applies_incremental_updates(monkeypatch) -> None
         class _BehaviorController:
             def __init__(self) -> None:
                 self.intervals = []
+                self.generic_marks = []
 
             def create_interval(self, **kwargs):
                 self.intervals.append(dict(kwargs))
+
+            def add_generic_mark(self, frame, **kwargs):
+                self.generic_marks.append((int(frame), dict(kwargs)))
 
         class _Host:
             fps = 30.0
@@ -1027,6 +1085,7 @@ def test_behavior_label_preview_applies_incremental_updates(monkeypatch) -> None
             "processed_segments": 0,
             "skipped_segments": 0,
             "predictions": [],
+            "skipped_predictions": [],
             "use_defined_behavior_list": True,
             "default_subject": "mouse",
             "timestamp_provider": widget._behavior_label_timestamp_provider(host),
@@ -1080,10 +1139,36 @@ def test_behavior_label_preview_applies_incremental_updates(monkeypatch) -> None
         assert calls[-1][0] == "label_behavior_segments"
         assert calls[-1][1]["in_progress"] is True
 
+        widget._on_behavior_label_preview(
+            {
+                "index": 2,
+                "total": 3,
+                "status": "unclassified",
+                "progress": 66,
+                "skipped_prediction": {
+                    "start_frame": 30,
+                    "end_frame": 59,
+                    "subject": "mouse",
+                    "label": "unclassified",
+                    "confidence": 0.82,
+                    "description": "Mouse walks, outside the requested behavior list.",
+                },
+            }
+        )
+
+        assert behavior_controller.generic_marks == [
+            (
+                30,
+                {"mark_type": "behavior_unclassified", "color": "#ff9800"},
+            )
+        ]
+        assert len(widget._behavior_label_run_context["skipped_predictions"]) == 1
+
         widget._on_behavior_label_finished(
             {
                 "predictions": [],
-                "skipped_segments": 0,
+                "skipped_predictions": [],
+                "skipped_segments": 1,
                 "processed_segments": 3,
                 "cancelled": False,
             }
@@ -1995,6 +2080,146 @@ def test_behavior_segment_vlm_worker_continues_after_local_empty_response(
     assert len(requests) == 4
 
 
+def test_behavior_segment_vlm_worker_skips_no_behavior_response(
+    monkeypatch, tmp_path: Path
+) -> None:
+    video_path = tmp_path / "mouse.avi"
+    writer = cv2.VideoWriter(
+        str(video_path),
+        cv2.VideoWriter_fourcc(*"MJPG"),
+        10.0,
+        (64, 48),
+    )
+    assert writer.isOpened()
+    try:
+        for idx in range(4):
+            frame = np.zeros((48, 64, 3), dtype=np.uint8)
+            frame[..., 1] = idx * 20
+            writer.write(frame)
+    finally:
+        writer.release()
+
+    class _FakeAdapter:
+        def __init__(self, **kwargs):
+            self.kwargs = dict(kwargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def predict(self, request):
+            return ModelResponse(
+                task="caption",
+                output={
+                    "text": (
+                        '{"label":"no_behavior","confidence":0.91,'
+                        '"description":"Mouse is walking, not grooming or rearing."}'
+                    )
+                },
+                text=(
+                    '{"label":"no_behavior","confidence":0.91,'
+                    '"description":"Mouse is walking, not grooming or rearing."}'
+                ),
+            )
+
+    import annolid.core.models.adapters.llm_chat as llm_chat
+
+    monkeypatch.setattr(llm_chat, "LLMChatAdapter", _FakeAdapter)
+
+    widget = AIChatWidget.__new__(AIChatWidget)
+    result = widget._run_behavior_segment_vlm_worker(
+        video_path=str(video_path),
+        intervals=[{"start_frame": 0, "end_frame": 3, "subject": "mouse"}],
+        labels=["grooming", "supported rearing", "unsupported rearing"],
+        sample_frames_per_segment=4,
+        llm_profile="",
+        llm_provider="",
+        llm_model="",
+    )
+
+    assert result["skipped_segments"] == 1
+    assert result["predictions"] == []
+    assert result["skipped_predictions"][0]["label"] == "no_behavior"
+    assert result["skipped_predictions"][0]["description"] == (
+        "Mouse is walking, not grooming or rearing."
+    )
+    assert result["skipped_predictions"][0]["description_source"] == "model"
+    assert result["empty_response_paused"] is False
+
+
+def test_behavior_segment_vlm_worker_saves_unclassified_model_description(
+    monkeypatch, tmp_path: Path
+) -> None:
+    video_path = tmp_path / "mouse.avi"
+    writer = cv2.VideoWriter(
+        str(video_path),
+        cv2.VideoWriter_fourcc(*"MJPG"),
+        10.0,
+        (64, 48),
+    )
+    assert writer.isOpened()
+    try:
+        for idx in range(4):
+            frame = np.zeros((48, 64, 3), dtype=np.uint8)
+            frame[..., 0] = idx * 20
+            writer.write(frame)
+    finally:
+        writer.release()
+
+    class _FakeAdapter:
+        def __init__(self, **kwargs):
+            self.kwargs = dict(kwargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def predict(self, request):
+            return ModelResponse(
+                task="caption",
+                output={
+                    "text": (
+                        '{"label":"walking","confidence":0.82,'
+                        '"description":"Mouse walks along the wall without grooming or rearing."}'
+                    )
+                },
+                text=(
+                    '{"label":"walking","confidence":0.82,'
+                    '"description":"Mouse walks along the wall without grooming or rearing."}'
+                ),
+            )
+
+    import annolid.core.models.adapters.llm_chat as llm_chat
+
+    monkeypatch.setattr(llm_chat, "LLMChatAdapter", _FakeAdapter)
+
+    widget = AIChatWidget.__new__(AIChatWidget)
+    result = widget._run_behavior_segment_vlm_worker(
+        video_path=str(video_path),
+        intervals=[{"start_frame": 0, "end_frame": 3, "subject": "mouse"}],
+        labels=["grooming", "supported rearing", "unsupported rearing"],
+        sample_frames_per_segment=4,
+        llm_profile="",
+        llm_provider="",
+        llm_model="",
+    )
+
+    assert result["skipped_segments"] == 1
+    assert result["predictions"] == []
+    skipped = result["skipped_predictions"][0]
+    assert skipped["label"] == "unclassified"
+    assert skipped["description"] == (
+        "Mouse walks along the wall without grooming or rearing."
+    )
+    assert skipped["description_source"] == "model"
+    assert skipped["visual_evidence"]["model_label"] == "walking"
+    assert skipped["visual_evidence"]["skip_reason"] == "unmatched_label"
+
+
 def test_behavior_segment_vlm_worker_normalizes_classification_to_label_list(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -2530,6 +2755,22 @@ def test_behavior_segment_log_saves_classification_and_description(
                 },
             },
         ],
+        skipped_predictions=[
+            {
+                "start_frame": 20,
+                "end_frame": 29,
+                "subject": "mouse",
+                "label": "no_behavior",
+                "classification": "no_behavior",
+                "confidence": 0.91,
+                "description": "Mouse is walking, not grooming or rearing.",
+                "model_description": "Mouse is walking, not grooming or rearing.",
+                "description_source": "model",
+                "grid_image_path": str(tmp_path / "grid3.png"),
+                "grid_frame_description": "segment frames 20-29; tiles f20, f24, f29.",
+                "visual_evidence": {"skip_reason": "no_behavior"},
+            }
+        ],
     )
 
     assert result["ok"] is True
@@ -2546,6 +2787,11 @@ def test_behavior_segment_log_saves_classification_and_description(
     assert payload["predictions"][1]["description"] == ""
     assert payload["predictions"][1]["grid_image_path"].endswith("grid2.png")
     assert "segment frames 10-19" in payload["predictions"][1]["grid_frame_description"]
+    assert payload["skipped_predictions"][0]["label"] == "no_behavior"
+    assert payload["skipped_predictions"][0]["description"] == (
+        "Mouse is walking, not grooming or rearing."
+    )
+    assert payload["skipped_predictions"][0]["description_source"] == "model"
 
 
 def test_load_resumable_behavior_segment_predictions_filters_allowed_labels(
@@ -2579,6 +2825,15 @@ def test_load_resumable_behavior_segment_predictions_filters_allowed_labels(
                         "label": "walk",
                     },
                 ],
+                "skipped_predictions": [
+                    {
+                        "start_frame": 210,
+                        "end_frame": 279,
+                        "label": "no_behavior",
+                        "confidence": 0.91,
+                        "description": "Fly is still, not grooming.",
+                    }
+                ],
             }
         ),
         encoding="utf-8",
@@ -2604,6 +2859,22 @@ def test_load_resumable_behavior_segment_predictions_filters_allowed_labels(
             "classification": "still",
             "confidence": 0.9,
             "description": "",
+            "model_description": "",
+            "description_source": "",
+            "grid_image_path": "",
+            "grid_frame_description": "",
+            "aggression_sub_events": {},
+        }
+    ]
+    assert result["skipped_predictions"] == [
+        {
+            "start_frame": 210,
+            "end_frame": 279,
+            "subject": None,
+            "label": "no_behavior",
+            "classification": "no_behavior",
+            "confidence": 0.91,
+            "description": "Fly is still, not grooming.",
             "model_description": "",
             "description_source": "",
             "grid_image_path": "",

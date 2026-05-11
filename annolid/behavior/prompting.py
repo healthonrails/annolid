@@ -8,6 +8,8 @@ from typing import List, Optional, Sequence
 from pathlib import Path
 import textwrap
 
+from annolid.behavior.labeling_skill import behavior_labeling_prompt_guidance
+
 _PROMPT_DIR = Path.home() / ".annolid"
 _PROMPT_FILE = _PROMPT_DIR / "behavior_prompt_template.txt"
 
@@ -43,8 +45,11 @@ DEFAULT_BEHAVIOR_CLASSIFICATION_PROMPT_TEMPLATE = textwrap.dedent(
     Classify behavior using exactly one label from the defined behavior list:
     {behavior_list}
 
+    If none of the listed behaviors are clearly visible, use label "no_behavior".
+    Do not force a sparse behavior label onto still, walking, resting, or unclear frames unless the listed behavior is directly visible.
+
     Return strict JSON only (no prose or markdown) with this schema:
-    {{"label":"<one label from list>","confidence":0.0,"description":"2-4 sentence observable description","sub_events":{{"slap_in_face":0,"run_away":0,"fight_initiation":0}}}}
+    {{"label":"<one label from list or no_behavior>","confidence":0.0,"description":"2-4 sentence observable description","sub_events":{{"slap_in_face":0,"run_away":0,"fight_initiation":0}}}}
     If sub-events are not visible/relevant, set "sub_events" to {{}}.
     """
 ).strip()
@@ -275,6 +280,9 @@ def build_behavior_classification_prompt(
             ]
         )
         prompt_lines.extend(extra_lines)
+    skill_guidance = behavior_labeling_prompt_guidance()
+    if skill_guidance:
+        prompt_lines.extend(["Behavior labeling skill rules:", skill_guidance])
 
     return "\n".join(prompt_lines)
 

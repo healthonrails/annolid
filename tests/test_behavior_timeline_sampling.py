@@ -7,6 +7,7 @@ from annolid.behavior.timeline_sampling import (
     timestamp_rows_to_timeline_intervals,
 )
 from annolid.behavior import prompting as behavior_prompting
+from annolid.behavior.segment_labeling import behavior_grid_system_prompt
 
 
 def test_compute_timeline_points_inclusive_endpoints():
@@ -48,10 +49,24 @@ def test_build_behavior_classification_prompt_requires_defined_labels_and_json()
     assert "- walking" in prompt
     assert "- grooming" in prompt
     assert "- rearing" in prompt
-    assert '"label":"<one label from list>"' in prompt
+    assert 'use label "no_behavior"' in prompt
+    assert '"label":"<one label from list or no_behavior>"' in prompt
     assert '"confidence":0.0' in prompt
     assert '"description":"2-4 sentence observable description"' in prompt
     assert '"sub_events":{"slap_in_face":0,"run_away":0,"fight_initiation":0}' in prompt
+    assert "Behavior labeling skill rules:" in prompt
+    assert "Do not force sparse labels" in prompt
+
+
+def test_behavior_grid_system_prompt_uses_behavior_labeling_skill_rules():
+    prompt = behavior_grid_system_prompt(["grooming", "unsupported rearing"])
+
+    assert "Allowed labels: grooming, unsupported rearing, no_behavior" in prompt
+    assert "Behavior labeling skill rules:" in prompt
+    assert (
+        "Use `no_behavior` when none of the listed behaviors is clearly visible."
+        in prompt
+    )
 
 
 def test_build_behavior_classification_prompt_includes_optional_context():

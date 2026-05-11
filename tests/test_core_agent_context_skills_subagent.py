@@ -88,6 +88,7 @@ def test_skills_loader_lists_builtin_skills() -> None:
     names = {s["name"] for s in skills}
     assert "behavior-assay-taxonomy" in names
     assert "behavior-segmentation" in names
+    assert "behavior-vlm-labeling" in names
     assert "scientific-reporting" in names
     assert "github" in names
     assert "weather" in names
@@ -128,6 +129,14 @@ def test_skills_loader_suggests_behavior_skills_for_behavior_analysis_tasks() ->
     segmentation_names = [row["name"] for row in segmentation_suggestions]
     assert "behavior-segmentation" in segmentation_names
     assert "timeline-reasoning" in segmentation_names
+
+    vlm_suggestions = loader.suggest_skills_for_task_scored(
+        "label behavior in video.mp4 with labels grooming and unsupported rearing every 1s with 9 frames per grid",
+        top_k=5,
+    )
+    assert vlm_suggestions
+    vlm_names = [row["name"] for row in vlm_suggestions]
+    assert "behavior-vlm-labeling" in vlm_names
 
     reporting_suggestions = loader.suggest_skills_for_task_scored(
         "Write a scientific behavior analysis report with manifest provenance",
