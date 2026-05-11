@@ -5807,7 +5807,7 @@ class AIChatWidget(QtWidgets.QWidget):
             "selected_model": selected_model,
             "segment_seconds": 1.0,
             "frames_per_grid": 9,
-            "max_segments": 120,
+            "max_segments": 0,
         }
 
     @QtCore.Slot()
@@ -5823,7 +5823,7 @@ class AIChatWidget(QtWidgets.QWidget):
             selected_model=str(defaults.get("selected_model") or ""),
             segment_seconds=float(defaults.get("segment_seconds") or 1.0),
             frames_per_grid=int(defaults.get("frames_per_grid") or 9),
-            max_segments=int(defaults.get("max_segments") or 120),
+            max_segments=int(defaults.get("max_segments") or 0),
         )
         if dialog.exec_() != QtWidgets.QDialog.Accepted:
             self._set_bot_action_result(
@@ -5851,7 +5851,7 @@ class AIChatWidget(QtWidgets.QWidget):
             segment_frames=60,
             segment_seconds=float(values.get("segment_seconds") or 1.0),
             sample_frames_per_segment=int(values.get("sample_frames_per_segment") or 9),
-            max_segments=int(values.get("max_segments") or 120),
+            max_segments=int(values.get("max_segments") or 0),
             subject="Agent",
             overwrite_existing=bool(values.get("overwrite_existing", False)),
             llm_profile="",
@@ -6391,7 +6391,7 @@ class AIChatWidget(QtWidgets.QWidget):
         segment_frames: int = 60,
         segment_seconds: float = 0.0,
         sample_frames_per_segment: int = 4,
-        max_segments: int = 120,
+        max_segments: int = 0,
         subject: str = "Agent",
         overwrite_existing: bool = False,
         llm_profile: str = "",
@@ -6481,7 +6481,7 @@ class AIChatWidget(QtWidgets.QWidget):
             mode = str(segment_mode or "timeline").strip().lower()
             if total_frames <= 0:
                 raise RuntimeError("No video is loaded.")
-            max_segments = max(1, int(max_segments))
+            max_segments = max(0, int(max_segments or 0))
             segment_frames = max(1, int(segment_frames))
             segment_seconds = max(0.0, float(segment_seconds or 0.0))
             try:
@@ -6518,7 +6518,8 @@ class AIChatWidget(QtWidgets.QWidget):
                         }
                     )
                     start = end + 1
-            intervals = intervals[:max_segments]
+            if max_segments > 0:
+                intervals = intervals[:max_segments]
             if not intervals:
                 raise RuntimeError("No segments available for labeling.")
 
@@ -6776,7 +6777,7 @@ class AIChatWidget(QtWidgets.QWidget):
                 or payload.get("frames_per_grid")
                 or 4
             ),
-            max_segments=int(payload.get("max_segments") or 120),
+            max_segments=int(payload.get("max_segments") or 0),
             subject=str(payload.get("subject") or "Agent"),
             overwrite_existing=bool(payload.get("overwrite_existing", False)),
             llm_profile=str(payload.get("llm_profile") or ""),

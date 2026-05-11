@@ -174,8 +174,10 @@ def behavior_label_empty_response_segment_limit(
     routed_to_caption_profile: bool,
 ) -> int:
     provider_text = str(provider or "").strip().lower()
-    if routed_to_caption_profile or provider_text in {"ollama", "local"}:
+    if routed_to_caption_profile:
         return 1
+    if provider_text in {"ollama", "local"}:
+        return 3
     return 3
 
 
@@ -234,7 +236,20 @@ def behavior_label_attempt_plan(
                     "system_prompt": system_prompt,
                     **controls,
                 },
-            }
+            },
+            {
+                "name": "local_vlm_retry_with_image",
+                "text": behavior_label_prompt_text(
+                    retry_prompt,
+                    provider=provider,
+                    model=model,
+                ),
+                "params": {
+                    "temperature": 0.0,
+                    "system_prompt": system_prompt,
+                    **controls,
+                },
+            },
         ]
 
     return [
@@ -722,7 +737,10 @@ def run_behavior_segment_vlm_worker(
                     label = str(parsed.get("label") or "").strip()
                     model_description = str(parsed.get("description") or "").strip()
                     if label:
-                        if attempt_name == "repair_with_image":
+                        if attempt_name in {
+                            "repair_with_image",
+                            "local_vlm_retry_with_image",
+                        }:
                             parsed.setdefault("fallback_reason", "repair_prompt")
                         break
                 allow_caption_rescue = (

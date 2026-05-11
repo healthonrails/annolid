@@ -9,6 +9,7 @@ import pytest
 from annolid.core.models.base import ModelRequest
 from annolid.core.models.pipeline import run_caption
 from annolid.core.models.adapters.llm_chat import LLMChatAdapter, _OpenAICompatConfig
+import annolid.core.models.adapters.llm_chat as llm_chat_module
 from annolid.core.models.adapters.maskrcnn_torchvision import (
     TorchvisionMaskRCNNAdapter,
 )
@@ -225,6 +226,68 @@ def test_llm_adapter_passes_extra_body_and_extracts_thinking(tmp_path: Path):
 
     assert response.text == "fallback text"
     assert (completions.last_kwargs or {}).get("extra_body") == {"think": False}
+
+
+def test_llm_adapter_uses_native_ollama_chat_for_image_caption(
+    monkeypatch, tmp_path: Path
+):
+    img = np.zeros((8, 8, 3), dtype=np.uint8)
+    img_path = tmp_path / "img.png"
+
+    try:
+        import cv2  # type: ignore
+    except ImportError:
+        pytest.skip("cv2 is required for this test.")
+
+    assert cv2.imwrite(str(img_path), cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+
+    captured = {}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def read(self):
+            return b'{"message":{"content":"native caption"},"done_reason":"stop"}'
+
+    def _fake_urlopen(request, timeout=None):  # noqa: ANN001
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        captured["payload"] = request.data
+        return _Response()
+
+    monkeypatch.setattr(llm_chat_module.urllib.request, "urlopen", _fake_urlopen)
+
+    adapter = LLMChatAdapter(provider="ollama", model="gemma4:e2b", persist=False)
+    adapter._config = _OpenAICompatConfig(
+        provider="ollama",
+        model="gemma4:e2b",
+        api_key="ollama",
+        base_url="http://localhost:11434/v1",
+    )
+    adapter._client = object()
+
+    response = adapter.predict(
+        ModelRequest(
+            task="caption",
+            image_path=str(img_path),
+            text="Describe image",
+            params={"extra_body": {"think": False}, "max_tokens": 32},
+        )
+    )
+
+    assert response.text == "native caption"
+    assert response.meta["transport"] == "ollama_native_chat"
+    assert captured["url"] == "http://localhost:11434/api/chat"
+    payload = llm_chat_module.json.loads(captured["payload"].decode("utf-8"))
+    assert payload["model"] == "gemma4:e2b"
+    assert payload["stream"] is False
+    assert payload["think"] is False
+    assert payload["options"]["num_predict"] == 32
+    assert payload["messages"][-1]["images"]
 
 
 def test_cv_adapter_caption_swappable_with_fake_model(tmp_path: Path):

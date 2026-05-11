@@ -320,7 +320,7 @@ async def execute_direct_gui_command(
                 or args.get("frames_per_grid")
                 or 4
             ),
-            max_segments=int(args.get("max_segments") or 120),
+            max_segments=int(args.get("max_segments") or 0),
             subject=str(args.get("subject") or "Agent"),
             subject_term=str(args.get("subject_term") or ""),
             overwrite_existing=bool(args.get("overwrite_existing", False)),
@@ -378,7 +378,7 @@ async def execute_direct_gui_command(
                 or args.get("frames_per_grid")
                 or 4
             ),
-            max_segments=int(args.get("max_segments") or 120),
+            max_segments=int(args.get("max_segments") or 0),
             subject=str(args.get("subject") or "Agent"),
             subject_term=str(args.get("subject_term") or ""),
             overwrite_existing=bool(args.get("overwrite_existing", False)),

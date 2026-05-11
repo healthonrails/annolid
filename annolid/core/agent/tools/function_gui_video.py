@@ -207,7 +207,11 @@ class GuiLabelBehaviorSegmentsTool(FunctionTool):
                     "default": 4,
                 },
                 "frames_per_grid": {"type": "integer", "minimum": 1, "default": 4},
-                "max_segments": {"type": "integer", "minimum": 1},
+                "max_segments": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Maximum segments to label; 0 means all segments.",
+                },
                 "subject": {"type": "string"},
                 "subject_term": {
                     "type": "string",
@@ -324,7 +328,11 @@ class GuiProcessVideoBehaviorsTool(FunctionTool):
                     "default": 4,
                 },
                 "frames_per_grid": {"type": "integer", "minimum": 1, "default": 4},
-                "max_segments": {"type": "integer", "minimum": 1},
+                "max_segments": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Maximum segments to label; 0 means all segments.",
+                },
                 "subject": {"type": "string"},
                 "subject_term": {
                     "type": "string",

@@ -1906,7 +1906,7 @@ def test_behavior_segment_vlm_worker_appends_empty_tail_from_prior_segment(
 
     assert result["empty_response_paused"] is False
     assert result["skipped_segments"] == 0
-    assert len(requests) == 1
+    assert len(requests) == 2
     prediction = result["predictions"][0]
     assert prediction["start_frame"] == 39
     assert prediction["end_frame"] == 42
@@ -1918,7 +1918,81 @@ def test_behavior_segment_vlm_worker_appends_empty_tail_from_prior_segment(
         prediction["visual_evidence"]["fallback_reason"]
         == "empty_response_adjacent_tail"
     )
-    assert prediction["visual_evidence"]["empty_attempts"] == 1
+    assert prediction["visual_evidence"]["empty_attempts"] == 2
+
+
+def test_behavior_segment_vlm_worker_continues_after_local_empty_response(
+    monkeypatch, tmp_path: Path
+) -> None:
+    video_path = tmp_path / "mouse.avi"
+    writer = cv2.VideoWriter(
+        str(video_path),
+        cv2.VideoWriter_fourcc(*"MJPG"),
+        10.0,
+        (64, 48),
+    )
+    assert writer.isOpened()
+    try:
+        for idx in range(12):
+            frame = np.zeros((48, 64, 3), dtype=np.uint8)
+            frame[..., 1] = idx * 10
+            writer.write(frame)
+    finally:
+        writer.release()
+
+    requests = []
+
+    class _FakeAdapter:
+        def __init__(self, **kwargs):
+            self.kwargs = dict(kwargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def predict(self, request):
+            requests.append(request)
+            return ModelResponse(task="caption", output={"text": ""}, text="")
+
+    import annolid.core.models.adapters.llm_chat as llm_chat
+
+    monkeypatch.setattr(llm_chat, "LLMChatAdapter", _FakeAdapter)
+    monkeypatch.setattr(
+        segment_labeling_module,
+        "ollama_model_supports_vision",
+        lambda model: True,
+    )
+
+    widget = AIChatWidget.__new__(AIChatWidget)
+    result = widget._run_behavior_segment_vlm_worker(
+        video_path=str(video_path),
+        intervals=[
+            {"start_frame": 0, "end_frame": 3, "subject": "mouse"},
+            {"start_frame": 4, "end_frame": 7, "subject": "mouse"},
+        ],
+        labels=["rearing", "walking"],
+        sample_frames_per_segment=4,
+        llm_profile="",
+        llm_provider="ollama",
+        llm_model="local-vlm:latest",
+    )
+
+    assert result["routed_to_caption_profile"] is False
+    assert result["empty_response_paused"] is False
+    assert result["empty_response_segment_limit"] == 3
+    assert result["skipped_segments"] == 2
+    assert result["predictions"] == []
+    assert [
+        request.params.get("system_prompt") is not None for request in requests
+    ] == [
+        True,
+        True,
+        True,
+        True,
+    ]
+    assert len(requests) == 4
 
 
 def test_behavior_segment_vlm_worker_normalizes_classification_to_label_list(

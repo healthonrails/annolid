@@ -42,7 +42,7 @@ class BehaviorSlashDialog(QtWidgets.QDialog):
         selected_model: str = "",
         segment_seconds: float = 1.0,
         frames_per_grid: int = 9,
-        max_segments: int = 120,
+        max_segments: int = 0,
         subject_term: str = "",
         video_description: str = "",
         behavior_definitions: str = "",
@@ -119,8 +119,9 @@ class BehaviorSlashDialog(QtWidgets.QDialog):
         self.frames_spin.setRange(1, 64)
         self.frames_spin.setValue(max(1, int(frames_per_grid or 9)))
         self.max_segments_spin = QtWidgets.QSpinBox(self)
-        self.max_segments_spin.setRange(1, 1_000_000)
-        self.max_segments_spin.setValue(max(1, int(max_segments or 120)))
+        self.max_segments_spin.setRange(0, 1_000_000)
+        self.max_segments_spin.setSpecialValueText("All")
+        self.max_segments_spin.setValue(max(0, int(max_segments or 0)))
         settings_layout.addWidget(QtWidgets.QLabel("Every", self), 0)
         settings_layout.addWidget(self.seconds_spin, 1)
         settings_layout.addWidget(QtWidgets.QLabel("Frames/grid", self), 0)

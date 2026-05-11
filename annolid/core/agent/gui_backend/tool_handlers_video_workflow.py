@@ -214,7 +214,7 @@ def label_behavior_segments_tool(
     if instance_count_value is not None and instance_count_value <= 0:
         instance_count_value = None
     sample_frames = max(1, int(sample_frames_per_segment))
-    max_seg = max(1, int(max_segments))
+    max_seg = max(0, int(max_segments or 0))
     if mode_norm == "uniform" and resolved_path is not None:
         resolved_video = Path(resolved_path)
         video_fps = _video_fps(resolved_video)
@@ -222,7 +222,7 @@ def label_behavior_segments_tool(
             frames = max(1, int(round(seconds * video_fps)))
         total_frames = _video_total_frames(resolved_video)
         if total_frames > 1:
-            if fixed_interval_mode and int(max_segments or 0) == 120:
+            if fixed_interval_mode and max_seg <= 0:
                 max_seg = max(1, int((total_frames + frames - 1) // frames))
             # For short clips, avoid collapsing to a single uniform segment
             # when defaults (segment_frames=60) exceed video length.

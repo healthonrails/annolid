@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import json
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional
@@ -31,6 +33,10 @@ def _encode_image_data_uri(path: Path) -> str:
     mime = _guess_mime_type(path)
     data = base64.b64encode(path.read_bytes()).decode("utf-8")
     return f"data:{mime};base64,{data}"
+
+
+def _encode_image_base64(path: Path) -> str:
+    return base64.b64encode(path.read_bytes()).decode("utf-8")
 
 
 def _get_value(obj: Any, key: str, default: Any = None) -> Any:
@@ -82,6 +88,27 @@ def _extract_completion_text(result: Any) -> Optional[str]:
             if text:
                 return text
     return _content_to_text(_get_value(choice, "text", None))
+
+
+def _ollama_host_from_openai_base_url(base_url: str) -> str:
+    text = str(base_url or "").strip().rstrip("/")
+    if text.endswith("/v1"):
+        return text[:-3].rstrip("/")
+    return text
+
+
+def _extract_ollama_response_text(payload: Mapping[str, Any]) -> str:
+    message = payload.get("message") or {}
+    if isinstance(message, Mapping):
+        text = _content_to_text(message.get("content"))
+        if text:
+            return text
+        for key in ("thinking", "text", "output_text"):
+            text = _content_to_text(message.get(key))
+            if text:
+                return text
+    text = _content_to_text(payload.get("response"))
+    return text or ""
 
 
 @dataclass(frozen=True)
@@ -157,6 +184,10 @@ class LLMChatAdapter(RuntimeModel):
             self._client = self._client_factory(resolved)
             return
 
+        if resolved.provider == "ollama":
+            self._client = object()
+            return
+
         try:
             from openai import OpenAI  # type: ignore
         except ImportError as exc:
@@ -225,6 +256,32 @@ class LLMChatAdapter(RuntimeModel):
         if isinstance(extra_body, Mapping):
             kwargs["extra_body"] = dict(extra_body)
 
+        if self._config.provider == "ollama" and self._client_factory is None:
+            result = self._create_native_ollama_chat(
+                messages=messages,
+                image_path=str(request.image_path or ""),
+                temperature=temperature,
+                max_tokens=max_tokens_value,
+                extra_body=dict(extra_body) if isinstance(extra_body, Mapping) else {},
+            )
+            text = _extract_ollama_response_text(result)
+            finish_reason = str(
+                result.get("done_reason") or result.get("done") or "stop"
+            )
+            return ModelResponse(
+                task=request.task,
+                output={"text": text},
+                text=text,
+                raw=result,
+                meta={
+                    "provider": self._config.provider,
+                    "model": self._config.model,
+                    "finish_reason": finish_reason,
+                    "empty_text": not bool(str(text or "").strip()),
+                    "transport": "ollama_native_chat",
+                },
+            )
+
         result = self._client.chat.completions.create(**kwargs)
         text = _extract_completion_text(result)
         choices = _get_value(result, "choices", None) or []
@@ -242,8 +299,75 @@ class LLMChatAdapter(RuntimeModel):
                 "model": self._config.model,
                 "finish_reason": finish_reason,
                 "empty_text": not bool(str(text or "").strip()),
+                "transport": "openai_compat",
             },
         )
+
+    def _create_native_ollama_chat(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        image_path: str,
+        temperature: float,
+        max_tokens: Optional[int],
+        extra_body: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        if self._config is None:
+            raise RuntimeError("LLMChatAdapter is not loaded.")
+        host = _ollama_host_from_openai_base_url(self._config.base_url)
+        if not host:
+            host = "http://localhost:11434"
+        image_b64 = (
+            _encode_image_base64(Path(image_path))
+            if image_path and Path(image_path).exists()
+            else ""
+        )
+        native_messages: list[dict[str, Any]] = []
+        for message in messages:
+            role = str(message.get("role") or "user").strip() or "user"
+            content = message.get("content")
+            if isinstance(content, list):
+                text_parts = []
+                has_image = False
+                for item in content:
+                    if not isinstance(item, Mapping):
+                        continue
+                    if item.get("type") == "text":
+                        text_parts.append(str(item.get("text") or ""))
+                    elif item.get("type") == "image_url":
+                        has_image = True
+                native_message: Dict[str, Any] = {
+                    "role": role,
+                    "content": "\n".join(part for part in text_parts if part).strip(),
+                }
+                if has_image and image_b64:
+                    native_message["images"] = [image_b64]
+                native_messages.append(native_message)
+            else:
+                native_messages.append({"role": role, "content": str(content or "")})
+
+        options: Dict[str, Any] = {"temperature": float(temperature)}
+        if max_tokens is not None:
+            options["num_predict"] = int(max_tokens)
+        payload: Dict[str, Any] = {
+            "model": self._config.model,
+            "messages": native_messages,
+            "stream": False,
+            "options": options,
+        }
+        if "think" in extra_body:
+            payload["think"] = bool(extra_body.get("think"))
+        request = urllib.request.Request(
+            f"{host.rstrip('/')}/api/chat",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=120.0) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+            raise RuntimeError(f"Ollama native chat request failed: {exc}") from exc
 
     def _resolve_annolid_system_prompt(self, *, task_hint: str = "") -> str:
         cached = str(self._annolid_system_prompt_cache or "").strip()
