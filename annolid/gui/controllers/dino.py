@@ -384,6 +384,43 @@ class DinoController(QtCore.QObject):
     # ------------------------------------------------------------------ #
     # Internal helpers
     # ------------------------------------------------------------------ #
+    @staticmethod
+    def _qimage_rgba_array(qimage: QtGui.QImage) -> Optional[np.ndarray]:
+        if qimage is None or qimage.isNull():
+            return None
+
+        width = int(qimage.width())
+        height = int(qimage.height())
+        stride = int(qimage.bytesPerLine())
+        if width <= 0 or height <= 0 or stride < width * 4:
+            return None
+
+        buffer = qimage.constBits()
+        if hasattr(qimage, "sizeInBytes"):
+            size_bytes = int(qimage.sizeInBytes())
+        else:
+            size_bytes = int(qimage.byteCount())
+        try:
+            if hasattr(buffer, "setsize"):
+                buffer.setsize(size_bytes)
+                raw_bytes = bytes(buffer)
+            elif hasattr(buffer, "asstring"):
+                raw_bytes = buffer.asstring(size_bytes)
+            else:
+                raw_bytes = bytes(buffer)
+        except Exception as exc:
+            logger.error("Failed to access current frame image buffer: %s", exc)
+            return None
+
+        try:
+            array = np.frombuffer(raw_bytes, dtype=np.uint8).reshape(height, stride)
+            rgba = array[:, : width * 4].reshape(height, width, 4)
+        except ValueError as exc:
+            logger.error("Failed to reshape current frame image buffer: %s", exc)
+            return None
+
+        return np.asarray(rgba).copy()
+
     def _grab_current_frame_image(self):
         window = self._window
         if window.canvas.pixmap is None or window.canvas.pixmap.isNull():
@@ -391,11 +428,9 @@ class DinoController(QtCore.QObject):
         qimage = window.canvas.pixmap.toImage().convertToFormat(
             QtGui.QImage.Format_RGBA8888
         )
-        ptr = qimage.constBits()
-        ptr.setsize(qimage.sizeInBytes())
-        array = np.frombuffer(ptr, dtype=np.uint8).reshape(
-            qimage.height(), qimage.width(), 4
-        )
+        array = self._qimage_rgba_array(qimage)
+        if array is None:
+            return None
         try:
             return Image.fromarray(array, mode="RGBA").convert("RGB")
         except Exception as exc:
