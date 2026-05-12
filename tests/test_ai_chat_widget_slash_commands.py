@@ -485,6 +485,17 @@ def test_extract_prediction_from_model_text_accepts_no_behavior() -> None:
     assert parsed["classification"] == "no_behavior"
     assert parsed["confidence"] == 0.88
     assert parsed["no_behavior"] is True
+    assert parsed["model_label"] == "no_behavior"
+
+
+def test_extract_prediction_from_model_text_preserves_no_behavior_alias() -> None:
+    parsed = AIChatWidget._extract_prediction_from_model_text(
+        '{"label":"background","confidence":0.72,"description":"No listed behavior is visible."}',
+        ["grooming", "supported rearing", "unsupported rearing"],
+    )
+
+    assert parsed["classification"] == "no_behavior"
+    assert parsed["model_label"] == "background"
 
 
 def test_extract_prediction_from_model_text_preserves_unsupported_label_description() -> (
@@ -1066,10 +1077,17 @@ def test_behavior_label_preview_applies_incremental_updates(monkeypatch) -> None
             fps = 30.0
             video_file = "/tmp/mouse.mp4"
             timeline_panel = None
+            frame_number = 30
+
+            def __init__(self) -> None:
+                self.overlay_refresh_calls = []
 
             @staticmethod
             def _refresh_behavior_log() -> None:
                 return None
+
+            def _refresh_behavior_overlay(self, frame_number=None) -> None:
+                self.overlay_refresh_calls.append(frame_number)
 
         behavior_controller = _BehaviorController()
         host = _Host()
@@ -1163,6 +1181,10 @@ def test_behavior_label_preview_applies_incremental_updates(monkeypatch) -> None
             )
         ]
         assert len(widget._behavior_label_run_context["skipped_predictions"]) == 1
+        assert host._behavior_label_skipped_overlay_records[0]["label"] == (
+            "unclassified"
+        )
+        assert host.overlay_refresh_calls[-1] == 30
 
         widget._on_behavior_label_finished(
             {
@@ -2146,6 +2168,10 @@ def test_behavior_segment_vlm_worker_skips_no_behavior_response(
         "Mouse is walking, not grooming or rearing."
     )
     assert result["skipped_predictions"][0]["description_source"] == "model"
+    assert (
+        result["skipped_predictions"][0]["visual_evidence"]["model_label"]
+        == "no_behavior"
+    )
     assert result["empty_response_paused"] is False
 
 

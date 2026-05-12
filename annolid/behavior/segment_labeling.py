@@ -863,6 +863,9 @@ def run_behavior_segment_vlm_worker(
                             "request_interval_seconds": float(request_interval_seconds),
                             "rate_limit_backoffs": int(rate_limit_backoffs),
                             "skip_reason": NO_BEHAVIOR_LABEL,
+                            "model_label": str(
+                                parsed.get("model_label") or NO_BEHAVIOR_LABEL
+                            ).strip(),
                             "motion_score": motion_score,
                             "mean_delta": float(
                                 motion_summary.get("mean_delta") or 0.0

@@ -4184,6 +4184,7 @@ class AIChatWidget(QtWidgets.QWidget):
                             "classification": "no_behavior",
                             "confidence": max(0.0, min(1.0, conf)),
                             "no_behavior": True,
+                            "model_label": label_val,
                         }
                         if description:
                             parsed["description"] = description
@@ -4464,6 +4465,33 @@ class AIChatWidget(QtWidgets.QWidget):
         normalize_behavior_segment_prediction_for_log
     )
 
+    def _update_behavior_label_skipped_overlay_records(
+        self, context: Dict[str, Any]
+    ) -> None:
+        """Expose skipped behavior-label records to the canvas overlay mixin."""
+        host = context.get("host")
+        if host is None:
+            return
+        records: List[Dict[str, Any]] = []
+        for pred in list(context.get("skipped_predictions") or []):
+            if not isinstance(pred, dict):
+                continue
+            try:
+                records.append(normalize_behavior_segment_prediction_for_log(pred))
+            except Exception:
+                continue
+        video_file = str(getattr(host, "video_file", "") or "").strip()
+        mtime_ns = None
+        if video_file:
+            try:
+                log_path = behavior_segment_labeling_log_path(video_file)
+                mtime_ns = log_path.stat().st_mtime_ns if log_path.exists() else None
+            except Exception:
+                mtime_ns = None
+        setattr(host, "_behavior_label_skipped_overlay_records", records)
+        setattr(host, "_behavior_label_skipped_overlay_video", video_file)
+        setattr(host, "_behavior_label_skipped_overlay_mtime_ns", mtime_ns)
+
     def _run_behavior_segment_vlm_worker(
         self,
         *,
@@ -4694,6 +4722,14 @@ class AIChatWidget(QtWidgets.QWidget):
                     )
                 except Exception:
                     pass
+        self._update_behavior_label_skipped_overlay_records(context)
+        host = context.get("host")
+        refresh_overlay = getattr(host, "_refresh_behavior_overlay", None)
+        if callable(refresh_overlay):
+            try:
+                refresh_overlay(getattr(host, "frame_number", pred_range[0]))
+            except Exception:
+                pass
         return normalized_prediction
 
     def _save_behavior_segment_progress(
@@ -6809,6 +6845,9 @@ class AIChatWidget(QtWidgets.QWidget):
                     "resumed_segments": int(len(resumed_predictions)),
                     "resume_log_json": resume_log_path,
                 }
+                self._update_behavior_label_skipped_overlay_records(
+                    self._behavior_label_run_context
+                )
                 save_result = self._save_behavior_segment_progress(
                     force_timestamps=True
                 )
@@ -6905,6 +6944,9 @@ class AIChatWidget(QtWidgets.QWidget):
                 "resumed_segments": int(len(resumed_predictions)),
                 "resume_log_json": resume_log_path,
             }
+            self._update_behavior_label_skipped_overlay_records(
+                self._behavior_label_run_context
+            )
 
             thread = QtCore.QThread()
             worker = FlexibleWorker(

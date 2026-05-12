@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from annolid.gui.mixins.flags_overlay_mixin import FlagsOverlayMixin
 
 
@@ -93,3 +95,67 @@ def test_refresh_behavior_overlay_uses_explicit_frame_number() -> None:
     host._refresh_behavior_overlay(frame_number=7)
 
     assert calls == [7]
+
+
+def test_refresh_behavior_overlay_displays_cached_skipped_classification() -> None:
+    host = _Host()
+    host._behavior_label_skipped_overlay_records = [
+        {
+            "start_frame": 10,
+            "end_frame": 20,
+            "label": "no_behavior",
+            "classification": "no_behavior",
+        }
+    ]
+
+    host._refresh_behavior_overlay(frame_number=15)
+
+    assert host.canvas.behavior_text_calls[-1] == "no_behavior"
+    assert host.loaded_flags[-1] == {"chamber": False, "contact": False}
+
+
+def test_refresh_behavior_overlay_displays_model_label_for_skipped_alias() -> None:
+    host = _Host()
+    host._behavior_label_skipped_overlay_records = [
+        {
+            "start_frame": 10,
+            "end_frame": 20,
+            "label": "no_behavior",
+            "classification": "no_behavior",
+            "visual_evidence": {"model_label": "background"},
+        }
+    ]
+
+    host._refresh_behavior_overlay(frame_number=12)
+
+    assert host.canvas.behavior_text_calls[-1] == "background"
+
+
+def test_refresh_behavior_overlay_loads_skipped_classification_from_sidecar(
+    tmp_path,
+) -> None:
+    video_path = tmp_path / "video.mp4"
+    video_path.write_bytes(b"")
+    sidecar_path = tmp_path / "video_behavior_segment_labels.json"
+    sidecar_path.write_text(
+        json.dumps(
+            {
+                "skipped_predictions": [
+                    {
+                        "start_frame": 3,
+                        "end_frame": 4,
+                        "label": "unclassified",
+                        "classification": "unclassified",
+                        "visual_evidence": {"model_label": "rearing"},
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    host = _Host()
+    host.video_file = str(video_path)
+
+    host._refresh_behavior_overlay(frame_number=3)
+
+    assert host.canvas.behavior_text_calls[-1] == "rearing"
