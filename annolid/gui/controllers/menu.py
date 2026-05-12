@@ -574,6 +574,14 @@ class MenuController:
                 "tip": w.tr("Run inference on videos with trained models"),
             },
             {
+                "name": "polygon_classifier_workbench",
+                "text": w.tr("&Polygon Classifier Workbench…"),
+                "slot": w.open_polygon_classifier_workbench,
+                "tip": w.tr(
+                    "Create polygon feature datasets, train behavior classifiers, and run inference"
+                ),
+            },
+            {
                 "name": "project_schema",
                 "text": w.tr("Project &Schema"),
                 "slot": w.open_project_schema_dialog,
@@ -1377,6 +1385,7 @@ class MenuController:
             (
                 actions["training_wizard"],
                 actions["inference_wizard"],
+                actions["polygon_classifier_workbench"],
             ),
             # Legacy training dialog
             (

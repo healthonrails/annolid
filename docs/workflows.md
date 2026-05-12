@@ -106,6 +106,53 @@ python -m annolid.behavior.time_budget exported_events.csv \
     -o time_budget.csv
 ```
 
+### Polygon Classifier Workbench
+
+For frame-level behavior classifiers based on two animal polygons, use:
+
+- `AI & Models -> Polygon Classifier Workbench...`
+
+The workbench has four tabs:
+
+1. `Polygon CSV`: merges Annolid predicted polygon JSON or annotation-store
+   NDJSON files with a manual one-hot label CSV and writes a polygon-points CSV.
+2. `Legacy Dataset`: builds `train_dataset.csv` and `test_dataset.csv` from LabelMe
+   frame folders.
+3. `Train`: trains the temporal polygon-frame classifier and writes a run
+   folder with checkpoint, metrics, and test predictions.
+4. `Inference`: loads a checkpoint and writes per-frame predicted labels,
+   confidence, and class probabilities to CSV.
+
+Expected dataset layout:
+
+```text
+train/
+  video_001/
+    frame_000001.json
+    frame_000002.json
+test/
+  video_002/
+    frame_000001.json
+```
+
+Each LabelMe JSON needs one truthy behavior flag and polygon shapes labeled
+`intruder` and `resident`. Optional `<video_name>_tracked.csv` files beside the
+video folders can provide motion-index features; missing files default motion
+features to `0`.
+
+For predicted-shape workflows where labels live in a separate manual CSV, use
+the `Polygon CSV` tab instead. It accepts:
+
+- an Annolid frame folder containing predicted polygon JSON files and/or
+  `*_annotations.ndjson` predicted polygon records,
+- a manual one-hot behavior label CSV with frame numbers in `frame_number`,
+  `frame`, or the first column,
+- an output CSV path.
+
+The generated polygon-points CSV contains `video`, `frame`, `frame_number`,
+`label`, and one `<shape_label>_features` column per polygon label, plus area,
+centroid, perimeter, and `<shape_label>_motion_index` columns when available.
+
 ## Identity Repair Workflow
 
 For difficult multi-animal sessions where identity can flip after overlap/occlusion:

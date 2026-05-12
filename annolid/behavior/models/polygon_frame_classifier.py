@@ -732,12 +732,32 @@ def train_polygon_frame_classifier(
     }
     logger.info(f"Label distribution (full dataset): {distribution}")
 
-    splitter = GroupShuffleSplit(
-        n_splits=1, test_size=training_config.val_split_ratio, random_state=42
-    )
     groups = np.asarray([vid for vid, _ in full_dataset.indices])
     dummy = np.zeros(len(full_dataset))
-    train_indices, val_indices = next(splitter.split(dummy, dummy, groups=groups))
+    try:
+        splitter = GroupShuffleSplit(
+            n_splits=1, test_size=training_config.val_split_ratio, random_state=42
+        )
+        train_indices, val_indices = next(splitter.split(dummy, dummy, groups=groups))
+    except ValueError as exc:
+        logger.warning(
+            "Group validation split failed (%s); falling back to a deterministic "
+            "sample-level split. Add more videos for stronger validation.",
+            exc,
+        )
+        all_indices = np.arange(len(full_dataset))
+        if len(all_indices) <= 1:
+            train_indices = all_indices
+            val_indices = np.asarray([], dtype=int)
+        else:
+            rng = np.random.default_rng(42)
+            shuffled = rng.permutation(all_indices)
+            val_count = max(
+                1, int(round(len(shuffled) * training_config.val_split_ratio))
+            )
+            val_count = min(val_count, len(shuffled) - 1)
+            val_indices = np.sort(shuffled[:val_count])
+            train_indices = np.sort(shuffled[val_count:])
     if len(val_indices) == 0:
         if len(train_indices) <= 1:
             logger.warning(
@@ -812,12 +832,19 @@ def train_polygon_frame_classifier(
         lr=training_config.learning_rate,
         weight_decay=training_config.weight_decay,
     )
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer,
-        patience=training_config.scheduler_patience,
-        factor=0.5,
-        verbose=False,
-    )
+    try:
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            patience=training_config.scheduler_patience,
+            factor=0.5,
+            verbose=False,
+        )
+    except TypeError:
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            patience=training_config.scheduler_patience,
+            factor=0.5,
+        )
 
     def _maybe_save_checkpoint(state: Dict[str, object], label: str) -> Optional[Path]:
         if checkpoint_dir is None:
@@ -854,26 +881,29 @@ def train_polygon_frame_classifier(
         model.train()
         total_loss = 0.0
         nan_loss_detected = False
-        for step, (inputs, targets) in enumerate(train_loader, 1):
-            inputs = inputs.to(device)
-            targets = targets.to(device)
-            if training_config.add_noise_std > 0:
-                noise = torch.randn_like(inputs) * training_config.add_noise_std
-                inputs = inputs + noise
-            outputs = model(inputs)
-            loss = criterion(outputs, targets)
-            if not torch.isfinite(loss):
-                logger.error(
-                    f"Non-finite loss detected at epoch {epoch + 1} step {step}: {loss.item()}"
-                )
-                nan_loss_detected = True
-                break
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
-            if step % training_config.log_every == 0:
-                logger.info(f"Epoch {epoch + 1} Step {step} - loss {loss.item():.4f}")
+        with torch.enable_grad():
+            for step, (inputs, targets) in enumerate(train_loader, 1):
+                inputs = inputs.to(device)
+                targets = targets.to(device)
+                if training_config.add_noise_std > 0:
+                    noise = torch.randn_like(inputs) * training_config.add_noise_std
+                    inputs = inputs + noise
+                outputs = model(inputs)
+                loss = criterion(outputs, targets)
+                if not torch.isfinite(loss):
+                    logger.error(
+                        f"Non-finite loss detected at epoch {epoch + 1} step {step}: {loss.item()}"
+                    )
+                    nan_loss_detected = True
+                    break
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
+                if step % training_config.log_every == 0:
+                    logger.info(
+                        f"Epoch {epoch + 1} Step {step} - loss {loss.item():.4f}"
+                    )
 
         if nan_loss_detected:
             logger.info("Stopping training early due to non-finite loss.")

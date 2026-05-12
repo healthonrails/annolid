@@ -623,6 +623,37 @@ class ProjectWorkflowMixin:
         wizard = InferenceWizard(video_path=video_path, parent=self)
         wizard.exec_()
 
+    def open_polygon_classifier_workbench(self) -> None:
+        """Open the polygon classifier dataset/training/inference workbench."""
+        from annolid.gui.widgets.polygon_classifier_workbench import (
+            PolygonClassifierWorkbench,
+        )
+
+        source_dir = None
+        if self.video_file:
+            candidate = Path(self.video_file).with_suffix("")
+            if candidate.is_dir():
+                source_dir = str(candidate)
+
+        dialog = getattr(self, "_polygon_classifier_workbench", None)
+        if dialog is None:
+            dialog = PolygonClassifierWorkbench(
+                default_source_dir=source_dir,
+                parent=self,
+            )
+            dialog.finished.connect(
+                lambda *_: setattr(self, "_polygon_classifier_workbench", None)
+            )
+            dialog.destroyed.connect(
+                lambda *_: setattr(self, "_polygon_classifier_workbench", None)
+            )
+            self._polygon_classifier_workbench = dialog
+
+        dialog.show()
+        dialog.setWindowState(dialog.windowState() & ~QtCore.Qt.WindowMinimized)
+        dialog.raise_()
+        dialog.activateWindow()
+
     def _load_labels(self, labels_csv_file):
         """Load labels from the given CSV file."""
         self._df = pd.read_csv(labels_csv_file)
