@@ -2109,7 +2109,7 @@ class CutieCoreVideoProcessor:
                 frame_torch,
                 mask_tensor,
                 objects=reset_active_ids,
-                idx_mask=False,
+                idx_mask=True,
                 force_permanent=True,
             )
             active_ids[:] = list(reset_active_ids)
@@ -2298,7 +2298,7 @@ class CutieCoreVideoProcessor:
                 seed_frame_torch,
                 mask_tensor.to(self.device),
                 objects=recovered_active_ids,
-                idx_mask=False,
+                idx_mask=True,
                 force_permanent=True,
             )
             current_frame_torch = image_to_torch(frame, device=self.device)
@@ -2422,10 +2422,7 @@ class CutieCoreVideoProcessor:
         unique_ids = sorted(int(v) for v in np.unique(mask) if v != 0)
         if not unique_ids:
             return None, []
-        num_classes = int(mask.max()) + 1
-        one_hot = index_numpy_to_one_hot_torch(mask.astype(np.int64), num_classes)
-        selected = one_hot[unique_ids]
-        return selected, unique_ids
+        return torch.from_numpy(mask.astype(np.int64)), unique_ids
 
     def _build_seed_mask_dict(
         self,
@@ -2733,7 +2730,7 @@ class CutieCoreVideoProcessor:
                         frame_torch,
                         mask_tensor,
                         objects=active_ids,
-                        idx_mask=False,
+                        idx_mask=True,
                         force_permanent=True,
                     )
                     self._committed_seed_frames.add(segment.seed.frame_index)
@@ -3137,7 +3134,7 @@ class CutieCoreVideoProcessor:
                                 frame_torch,
                                 mask_tensor,
                                 objects=active_ids,
-                                idx_mask=False,
+                                idx_mask=True,
                                 force_permanent=True,
                             )
                             self._cache_recovery_seed_frame(
@@ -3167,7 +3164,7 @@ class CutieCoreVideoProcessor:
                                 frame_torch,
                                 mask_tensor,
                                 objects=active_ids,
-                                idx_mask=False,
+                                idx_mask=True,
                                 force_permanent=True,
                             )
                             prediction = torch_prob_to_numpy_mask(prediction)

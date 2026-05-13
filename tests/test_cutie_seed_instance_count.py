@@ -95,6 +95,19 @@ def test_count_tracking_instances_uses_only_active_seed_labels() -> None:
     assert processor._count_tracking_instances([_seed(0)]) == 1
 
 
+def test_build_object_mask_tensor_accepts_sparse_object_ids() -> None:
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    mask = np.array([[0, 3], [1, 0]], dtype=np.int32)
+
+    mask_tensor, active_ids = processor._build_object_mask_tensor(mask)
+
+    assert active_ids == [1, 3]
+    assert tuple(mask_tensor.shape) == (2, 2)
+    assert int((mask_tensor == 1).sum().item()) == 1
+    assert int((mask_tensor == 3).sum().item()) == 1
+    assert int((mask_tensor == 2).sum().item()) == 0
+
+
 def test_shapes_to_mask_skips_zone_flagged_shapes(tmp_path: Path) -> None:
     processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
     label_json = tmp_path / "seed_000000000.json"
@@ -391,6 +404,163 @@ def test_commit_masks_into_permanent_memory_commits_prior_references(
     assert labels == {"_background_": 0, "mouse": 1}
     assert processor._committed_seed_frames == {100, 200, 300, 400}
     assert processor.processor.calls == [[1], [1], [1], [1]]
+
+
+def test_process_segment_allows_later_seed_to_add_instance_after_prior_seed(
+    monkeypatch,
+) -> None:
+    class _DummyInferenceCore:
+        instances = []
+
+        def __init__(self, *_args, **_kwargs):
+            self.calls = []
+            type(self).instances.append(self)
+
+        def step(
+            self, _frame, mask_tensor=None, *, objects=None, idx_mask=None, **_kwargs
+        ):
+            self.calls.append(
+                {
+                    "objects": list(objects or []),
+                    "idx_mask": idx_mask,
+                    "mask_shape": tuple(mask_tensor.shape)
+                    if mask_tensor is not None
+                    else None,
+                }
+            )
+            return np.array([[1, 2], [3, 0]], dtype=np.int32)
+
+    class _DummyCap:
+        def __init__(self):
+            self._pos = 0
+            self._done = False
+
+        def get(self, _prop):
+            return self._pos
+
+        def set(self, _prop, value):
+            self._pos = int(value)
+
+        def isOpened(self):
+            return not self._done
+
+        def read(self):
+            if self._done:
+                return False, None
+            self._done = True
+            return True, np.zeros((2, 2, 3), dtype=np.uint8)
+
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    processor.cutie = object()
+    processor.cfg = types.SimpleNamespace(amp=False)
+    processor.device = "cpu"
+    processor.video_name = "clip.mp4"
+    processor.video_folder = Path("clip")
+    processor.label_registry = {
+        "_background_": 0,
+        "mouse": 1,
+        "teaball": 2,
+        "nose": 3,
+    }
+    processor._global_label_names = {
+        1: "mouse",
+        2: "teaball",
+        3: "nose",
+    }
+    processor.compute_optical_flow = False
+    processor.auto_missing_instance_recovery = True
+    processor.auto_fill_missing_instances = True
+    processor.continue_on_missing_instances = True
+    processor.debug = False
+    processor._optical_flow_kwargs = {}
+    processor.optical_flow_backend = "farneback"
+    processor._recent_instance_masks = {}
+    processor._recent_instance_mask_frames = {}
+    processor._recovery_seed_frame_index = None
+    processor._recovery_seed_frame = None
+    processor._recovery_seed_masks = {}
+    processor._last_saved_instance_masks = {}
+    processor._flow_hsv = None
+    processor._committed_seed_frames = set()
+    processor._should_stop = lambda _worker=None: False
+    processor._register_active_objects = lambda _ids: None
+
+    prior_segment = SeedSegment(
+        seed=_seed(0),
+        start_frame=0,
+        end_frame=9,
+        mask=np.array([[1, 2], [0, 0]], dtype=np.int32),
+        labels_map={"_background_": 0, "mouse": 1, "teaball": 2},
+        active_labels=["mouse", "teaball"],
+    )
+    current_segment = SeedSegment(
+        seed=_seed(10),
+        start_frame=10,
+        end_frame=10,
+        mask=np.array([[1, 2], [3, 0]], dtype=np.int32),
+        labels_map={
+            "_background_": 0,
+            "mouse": 1,
+            "teaball": 2,
+            "nose": 3,
+        },
+        active_labels=["mouse", "teaball", "nose"],
+    )
+    processor._seed_frames = [_seed(0), _seed(10)]
+    processor._seed_segment_lookup = {
+        0: prior_segment,
+        10: current_segment,
+    }
+
+    saved = {}
+
+    def _capture_save(_filename, mask_dict, _shape, shape_notes=None):
+        processor._last_saved_instance_masks = dict(mask_dict)
+        saved["labels"] = set(mask_dict)
+        saved["notes"] = dict(shape_notes or {})
+
+    processor._save_annotation_with_notes = _capture_save
+    processor._update_recent_instance_masks = (
+        CutieCoreVideoProcessor._update_recent_instance_masks.__get__(
+            processor, CutieCoreVideoProcessor
+        )
+    )
+
+    monkeypatch.setattr(cutie_predict, "InferenceCore", _DummyInferenceCore)
+    monkeypatch.setattr(
+        cutie_predict.cv2,
+        "imread",
+        lambda _path: np.zeros((2, 2, 3), dtype=np.uint8),
+    )
+    monkeypatch.setattr(
+        cutie_predict, "image_to_torch", lambda frame, device=None: frame
+    )
+    monkeypatch.setattr(cutie_predict, "torch_prob_to_numpy_mask", lambda pred: pred)
+
+    message, should_halt = processor._process_segment(
+        cap=_DummyCap(),
+        segment=current_segment,
+        end_frame=10,
+        fps=30.0,
+        seed_frames=processor._seed_frames,
+        seed_segment_lookup=processor._seed_segment_lookup,
+    )
+
+    assert should_halt is False
+    assert message == "Stop at frame:\n#10"
+    assert saved["labels"] == {"mouse", "teaball", "nose"}
+    assert saved["notes"] == {}
+    core = _DummyInferenceCore.instances[-1]
+    assert core.calls[0] == {
+        "objects": [1, 2],
+        "idx_mask": True,
+        "mask_shape": (2, 2),
+    }
+    assert core.calls[1] == {
+        "objects": [1, 2, 3],
+        "idx_mask": True,
+        "mask_shape": (2, 2),
+    }
 
 
 def test_resolve_start_frame_for_seed_backfill_restarts_from_zero_when_gap_exists() -> (
