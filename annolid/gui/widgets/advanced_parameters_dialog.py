@@ -46,7 +46,7 @@ class AdvancedParametersDialog(QDialog):
         self.automatic_pause_enabled = False
         self.cpu_only_enabled = False
         self.save_video_with_color_mask = False
-        self.auto_recovery_missing_instances = False
+        self.auto_recovery_missing_instances = True
         self.compute_optical_flow = True
         self.follow_prediction_progress = True
         self.optical_flow_backend = "farneback"
@@ -159,7 +159,7 @@ class AdvancedParametersDialog(QDialog):
             getattr(window, "save_video_with_color_mask", False)
         )
         self.auto_recovery_missing_instances = bool(
-            getattr(window, "auto_recovery_missing_instances", False)
+            getattr(window, "auto_recovery_missing_instances", True)
         )
         self.compute_optical_flow = bool(
             getattr(
@@ -299,7 +299,8 @@ class AdvancedParametersDialog(QDialog):
             self.auto_recovery_missing_instances
         )
         self.auto_recovery_missing_instances_checkbox.setToolTip(
-            "Try to reintroduce instances that disappear unexpectedly."
+            "Try to reintroduce instances that disappear unexpectedly using SAM "
+            "bbox recovery, then the most recent instance mask."
         )
 
         self.compute_optical_flow_checkbox = QCheckBox(

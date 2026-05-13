@@ -316,7 +316,7 @@ def _collect_advanced_parameters(window) -> dict:
             getattr(window, "save_video_with_color_mask", False)
         ),
         "auto_recovery_missing_instances": bool(
-            getattr(window, "auto_recovery_missing_instances", False)
+            getattr(window, "auto_recovery_missing_instances", True)
         ),
         "follow_prediction_progress": bool(
             getattr(window, "_follow_prediction_progress", True)

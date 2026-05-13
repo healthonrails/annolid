@@ -212,7 +212,7 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         self.t_max_value = 5
         self.use_cpu_only = False
         self.save_video_with_color_mask = False
-        self.auto_recovery_missing_instances = False
+        self.auto_recovery_missing_instances = True
         self.videomt_mask_threshold = 0.5
         self.videomt_logit_threshold = -2.0
         self.videomt_seed_iou_threshold = 0.01

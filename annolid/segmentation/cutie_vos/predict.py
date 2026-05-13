@@ -164,7 +164,10 @@ class CutieCoreVideoProcessor:
             )
         )
         self.auto_fill_missing_instances = bool(
-            kwargs.get("auto_fill_missing_instances", False)
+            kwargs.get(
+                "auto_fill_missing_instances",
+                self.auto_missing_instance_recovery,
+            )
         )
         self.automatic_pause_enabled = bool(
             kwargs.get("automatic_pause_enabled", False)
@@ -193,6 +196,9 @@ class CutieCoreVideoProcessor:
         # Latest per-instance masks available in the current run.
         self._recent_instance_masks: Dict[str, np.ndarray] = {}
         self._recent_instance_mask_frames: Dict[str, int] = {}
+        self._recovery_seed_frame_index: Optional[int] = None
+        self._recovery_seed_frame: Optional[np.ndarray] = None
+        self._recovery_seed_masks: Dict[str, np.ndarray] = {}
         self._last_saved_instance_masks: Dict[str, np.ndarray] = {}
         self._repetitive_warning_state: Dict[Tuple[str, str], Dict[str, int]] = {}
         self._tracking_stats_cache: Optional[Dict[str, Any]] = None
@@ -2178,86 +2184,11 @@ class CutieCoreVideoProcessor:
                 fpoint_shape.points = [fpoint]
                 label_list.append(fpoint_shape)
 
-    def _recover_missing_instances_with_bbox(
-        self, instance_names, cur_frame, score_threshold=0.60
-    ) -> Tuple[Dict[str, np.ndarray], Set[str]]:
-        """Recover missing masks from cached bboxes in a single SAM call.
-
-        Returns:
-            recovered_masks: recovered label->mask mappings.
-            attempted_labels: labels that were actually sent to SAM for recovery.
-        """
-        if not instance_names:
-            return {}, set()
-        if self.sam_hq is None or not hasattr(self.sam_hq, "segment_objects"):
-            logger.debug("Skipping missing-instance recovery: SAM HQ is unavailable.")
-            return {}, set()
-
-        valid_names: List[str] = []
-        valid_boxes: List[Tuple[float, float, float, float]] = []
-        for instance_name in sorted(instance_names):
-            bbox = self.cache.get_most_recent_bbox(instance_name)
-            if bbox is None:
-                continue
-            try:
-                x1, y1, x2, y2 = (float(v) for v in bbox)
-            except Exception:
-                continue
-            if not np.isfinite([x1, y1, x2, y2]).all():
-                continue
-            if x2 <= x1 or y2 <= y1:
-                continue
-            valid_names.append(str(instance_name))
-            valid_boxes.append((x1, y1, x2, y2))
-
-        if not valid_boxes:
-            return {}, set()
-
-        attempted_labels = set(valid_names)
-        try:
-            masks, scores, _ = self.sam_hq.segment_objects(cur_frame, valid_boxes)
-        except Exception as exc:
-            logger.warning(
-                "Missing-instance recovery failed for frame %s: %s",
-                self._frame_number,
-                exc,
-            )
-            return {}, attempted_labels
-
-        recovered: Dict[str, np.ndarray] = {}
-        num_items = min(len(valid_names), len(masks), len(scores))
-        for idx in range(num_items):
-            instance_name = valid_names[idx]
-            score = self._normalize_tracking_scalar(scores[idx], default=0.0)
-            logger.info(
-                "BBox recovery candidate %s score=%.4f threshold=%.2f",
-                instance_name,
-                score,
-                score_threshold,
-            )
-            if score < score_threshold:
-                continue
-
-            mask_arr = np.asarray(masks[idx])
-            if mask_arr.ndim == 3:
-                mask_arr = mask_arr[0]
-            if mask_arr.ndim != 2:
-                continue
-            mask_bool = mask_arr.astype(bool)
-            if not mask_bool.any():
-                continue
-            recovered[instance_name] = mask_bool
-
-        return recovered, attempted_labels
-
-    # Backward-compatible alias (legacy misspelling).
-    def segement_with_bbox(self, instance_names, cur_frame, score_threshold=0.60):
-        recovered, _ = self._recover_missing_instances_with_bbox(
-            instance_names, cur_frame, score_threshold=score_threshold
-        )
-        return recovered
-
-    def _update_recent_instance_masks(self, frame_idx: int, mask_dict: Dict[str, np.ndarray]) -> None:
+    def _update_recent_instance_masks(
+        self,
+        frame_idx: int,
+        mask_dict: Dict[str, np.ndarray],
+    ) -> None:
         """Store latest available binary mask per instance for fallback fill."""
         for label, mask in (mask_dict or {}).items():
             try:
@@ -2270,24 +2201,135 @@ class CutieCoreVideoProcessor:
             self._recent_instance_masks[key] = mask_bool.copy()
             self._recent_instance_mask_frames[key] = int(frame_idx)
 
-    def _fill_missing_instances_from_recent_masks(
-        self, missing_instances: Set[str]
-    ) -> Tuple[Dict[str, np.ndarray], Dict[str, str]]:
-        """Fill missing instances using their most recent available mask."""
-        recovered: Dict[str, np.ndarray] = {}
-        notes: Dict[str, str] = {}
-        for instance_name in sorted(missing_instances):
-            key = str(instance_name)
-            prev_mask = self._recent_instance_masks.get(key)
-            if prev_mask is None:
+    @staticmethod
+    def _valid_binary_mask(
+        mask: np.ndarray,
+        expected_shape: Tuple[int, int],
+    ) -> Optional[np.ndarray]:
+        try:
+            mask_bool = np.asarray(mask).astype(bool)
+        except Exception:
+            return None
+        if mask_bool.shape != expected_shape or not mask_bool.any():
+            return None
+        return mask_bool
+
+    def _cache_recovery_seed_frame(
+        self,
+        frame_idx: int,
+        frame: np.ndarray,
+        mask_dict: Dict[str, np.ndarray],
+        expected_labels: Set[str],
+    ) -> None:
+        """Cache the nearest complete frame as an internal CUTIE recovery seed."""
+        if frame is None or not expected_labels:
+            return
+        frame_shape = tuple(frame.shape[:2])
+        complete_masks: Dict[str, np.ndarray] = {}
+        for label in sorted(str(item) for item in expected_labels):
+            mask = self._valid_binary_mask(mask_dict.get(label), frame_shape)
+            if mask is None:
+                return
+            complete_masks[label] = mask.copy()
+        self._recovery_seed_frame_index = int(frame_idx)
+        self._recovery_seed_frame = np.asarray(frame).copy()
+        self._recovery_seed_masks = complete_masks
+        self._update_recent_instance_masks(frame_idx, complete_masks)
+
+    def _build_global_mask_from_instance_masks(
+        self,
+        mask_dict: Dict[str, np.ndarray],
+        labels_dict: Dict[str, int],
+        frame_shape: Tuple[int, int],
+    ) -> np.ndarray:
+        global_mask = np.zeros(frame_shape, dtype=np.int32)
+        for label, mask in (mask_dict or {}).items():
+            global_id = labels_dict.get(str(label))
+            if global_id is None or int(global_id) == 0:
                 continue
-            prev_frame = self._recent_instance_mask_frames.get(key)
-            recovered[key] = prev_mask.copy()
-            if prev_frame is None:
-                notes[key] = "filled_from_previous_available_instance_mask"
-            else:
-                notes[key] = f"filled_from_previous_available_instance_mask(frame={prev_frame})"
-        return recovered, notes
+            mask_bool = self._valid_binary_mask(mask, frame_shape)
+            if mask_bool is None:
+                continue
+            global_mask[mask_bool] = int(global_id)
+        return global_mask
+
+    def _recover_missing_instances_from_recovery_seed(
+        self,
+        missing_instances: Set[str],
+        frame: np.ndarray,
+        labels_dict: Dict[str, int],
+        active_ids: List[int],
+        value_to_label_names: Dict[int, str],
+        instance_names: Set[str],
+        current_frame_index: int,
+    ) -> Tuple[Dict[str, np.ndarray], Optional[np.ndarray], Set[str], List[int]]:
+        """Reset CUTIE from the nearest prior complete frame and retry current frame."""
+        recovery_frame_index = self._recovery_seed_frame_index
+        recovery_frame = self._recovery_seed_frame
+        recovery_masks = dict(self._recovery_seed_masks or {})
+        if (
+            recovery_frame_index is None
+            or recovery_frame is None
+            or int(recovery_frame_index) >= int(current_frame_index)
+            or not recovery_masks
+        ):
+            return {}, None, {str(item) for item in missing_instances}, active_ids
+
+        frame_shape = tuple(recovery_frame.shape[:2])
+        if {str(item) for item in instance_names} - set(recovery_masks):
+            return {}, None, {str(item) for item in missing_instances}, active_ids
+
+        seed_global_mask = self._build_global_mask_from_instance_masks(
+            recovery_masks,
+            labels_dict,
+            frame_shape,
+        )
+        mask_tensor, recovered_active_ids = self._build_object_mask_tensor(
+            seed_global_mask
+        )
+        if mask_tensor is None or not recovered_active_ids:
+            return {}, None, {str(item) for item in missing_instances}, active_ids
+
+        try:
+            self.processor = InferenceCore(self.cutie, cfg=self.cfg)
+            self._register_active_objects(recovered_active_ids)
+            seed_frame_torch = image_to_torch(recovery_frame, device=self.device)
+            self.processor.step(
+                seed_frame_torch,
+                mask_tensor.to(self.device),
+                objects=recovered_active_ids,
+                idx_mask=False,
+                force_permanent=True,
+            )
+            current_frame_torch = image_to_torch(frame, device=self.device)
+            prediction = self.processor.step(current_frame_torch)
+            prediction = torch_prob_to_numpy_mask(prediction)
+        except Exception:
+            logger.warning(
+                "Failed to recover CUTIE missing instance(s) at frame %s from "
+                "non-manual seed frame %s.",
+                current_frame_index,
+                recovery_frame_index,
+                exc_info=True,
+            )
+            return {}, None, {str(item) for item in missing_instances}, active_ids
+
+        mask_dict, global_prediction = self._prediction_to_instance_masks(
+            prediction,
+            seed_global_mask,
+            recovered_active_ids,
+            value_to_label_names,
+            instance_names,
+        )
+        remaining = {str(item) for item in instance_names} - set(mask_dict)
+        if not remaining:
+            logger.info(
+                "Recovered CUTIE tracking at frame %s by reseeding from nearest "
+                "complete non-manual frame %s.",
+                current_frame_index,
+                recovery_frame_index,
+            )
+        return mask_dict, global_prediction, remaining, recovered_active_ids
 
     def _should_pause_for_missing_instances(
         self,
@@ -2444,6 +2486,41 @@ class CutieCoreVideoProcessor:
         for tmp_id, global_id in tmp_to_global_ids.items():
             global_mask[prediction == int(tmp_id)] = int(global_id)
         return global_mask
+
+    def _prediction_to_instance_masks(
+        self,
+        prediction: Optional[np.ndarray],
+        fallback_global_mask: np.ndarray,
+        active_ids: List[int],
+        value_to_label_names: Dict[int, str],
+        instance_names: Set[str],
+    ) -> Tuple[Dict[str, np.ndarray], Optional[np.ndarray]]:
+        if prediction is None:
+            mask_dict: Dict[str, np.ndarray] = {}
+            for global_id in sorted(int(obj_id) for obj_id in active_ids):
+                global_mask = fallback_global_mask == int(global_id)
+                if not global_mask.any():
+                    continue
+                label_name = value_to_label_names.get(int(global_id), str(global_id))
+                if label_name not in instance_names:
+                    continue
+                mask_dict[label_name] = global_mask
+            return mask_dict, fallback_global_mask.copy()
+
+        tmp_to_global_ids = self._tmp_to_global_ids_from_processor(
+            self.processor,
+            active_ids,
+        )
+        mask_dict = {}
+        for tmp_id, global_id in sorted(tmp_to_global_ids.items()):
+            local_mask = prediction == int(tmp_id)
+            if not local_mask.any():
+                continue
+            label_name = value_to_label_names.get(int(global_id), str(global_id))
+            if label_name not in instance_names:
+                continue
+            mask_dict[label_name] = local_mask
+        return mask_dict, None
 
     @staticmethod
     def _map_local_prediction_to_global(
@@ -2927,6 +3004,9 @@ class CutieCoreVideoProcessor:
             value_to_label_names.update(self._global_label_names)
         instance_names = set(segment.active_labels)
         expected_instance_count = len(instance_names)
+        seed_mask_dict = self._build_seed_mask_dict(segment, instance_names)
+        if seed_mask_dict:
+            self._update_recent_instance_masks(segment.start_frame, seed_mask_dict)
 
         current_frame_index = segment.start_frame
         prev_frame = None
@@ -3060,6 +3140,12 @@ class CutieCoreVideoProcessor:
                                 idx_mask=False,
                                 force_permanent=True,
                             )
+                            self._cache_recovery_seed_frame(
+                                current_frame_index,
+                                frame,
+                                seed_mask_dict,
+                                instance_names,
+                            )
                         else:
                             self.processor.step(frame_torch)
                         skipped_persist_count += 1
@@ -3095,43 +3181,13 @@ class CutieCoreVideoProcessor:
                     if self._should_stop(pred_worker):
                         return (None, True)
 
-                    if prediction is None:
-                        global_prediction = mask.copy()
-                        mask_dict = {}
-                        for global_id in sorted(int(obj_id) for obj_id in active_ids):
-                            global_mask = global_prediction == int(global_id)
-                            if not global_mask.any():
-                                continue
-                            label_name = value_to_label_names.get(
-                                int(global_id), str(global_id)
-                            )
-                            if label_name not in instance_names:
-                                continue
-                            mask_dict[label_name] = global_mask
-                    else:
-                        tmp_to_global_ids = self._tmp_to_global_ids_from_processor(
-                            self.processor, active_ids
-                        )
-                        mask_dict = {}
-                        for tmp_id, global_id in sorted(tmp_to_global_ids.items()):
-                            local_mask = prediction == int(tmp_id)
-                            if not local_mask.any():
-                                continue
-                            label_name = value_to_label_names.get(
-                                int(global_id), str(global_id)
-                            )
-                            if label_name not in instance_names:
-                                continue
-                            mask_dict[label_name] = local_mask
-
-                        global_prediction = None
-                        if recording or (
-                            self.debug
-                            and current_frame_index % max(1, visualize_every) == 0
-                        ):
-                            global_prediction = self._local_prediction_to_global_mask(
-                                prediction, tmp_to_global_ids
-                            )
+                    mask_dict, global_prediction = self._prediction_to_instance_masks(
+                        prediction,
+                        mask,
+                        active_ids,
+                        value_to_label_names,
+                        instance_names,
+                    )
 
                     if self.compute_optical_flow and prev_frame is not None:
                         backend_val = str(self.optical_flow_backend).lower()
@@ -3225,34 +3281,47 @@ class CutieCoreVideoProcessor:
                             else:
                                 suppressed_missing_logs += 1
 
-                            if self.auto_missing_instance_recovery:
-                                recovered_instances, _ = (
-                                    self._recover_missing_instances_with_bbox(
-                                        missing_instances, frame
-                                    )
-                                )
-                                if recovered_instances:
-                                    mask_dict.update(recovered_instances)
-                            missing_instances = instance_names - set(mask_dict.keys())
-                            if (
-                                missing_instances
-                                and bool(
-                                    getattr(
-                                        self, "auto_fill_missing_instances", False
-                                    )
-                                )
+                            if bool(
+                                getattr(self, "auto_missing_instance_recovery", False)
                             ):
-                                filled_instances, filled_notes = (
-                                    self._fill_missing_instances_from_recent_masks(
-                                        missing_instances
-                                    )
+                                (
+                                    recovered_mask_dict,
+                                    recovered_global_prediction,
+                                    missing_instances,
+                                    recovered_active_ids,
+                                ) = self._recover_missing_instances_from_recovery_seed(
+                                    missing_instances,
+                                    frame,
+                                    labels_dict,
+                                    active_ids,
+                                    value_to_label_names,
+                                    instance_names,
+                                    current_frame_index,
                                 )
-                                if filled_instances:
-                                    mask_dict.update(filled_instances)
-                                    shape_notes_for_frame.update(filled_notes)
-                                    missing_instances = (
-                                        instance_names - set(mask_dict.keys())
+                                if recovered_mask_dict:
+                                    mask_dict = recovered_mask_dict
+                                    active_ids[:] = list(recovered_active_ids)
+                                    global_prediction = (
+                                        recovered_global_prediction
+                                        if recovered_global_prediction is not None
+                                        else self._build_global_mask_from_instance_masks(
+                                            mask_dict,
+                                            labels_dict,
+                                            tuple(frame.shape[:2]),
+                                        )
                                     )
+                                    shape_notes_for_frame.update(
+                                        {
+                                            label: (
+                                                "recovered_from_nearest_previous_"
+                                                "complete_frame"
+                                            )
+                                            for label in sorted(initial_missing_instances)
+                                            if label in mask_dict
+                                        }
+                                    )
+                            else:
+                                missing_instances = instance_names - set(mask_dict.keys())
                             collapse_artifact_labels = (
                                 self._tracking_collapse_artifact_labels(
                                     mask_dict,
@@ -3442,6 +3511,12 @@ class CutieCoreVideoProcessor:
                         self._update_recent_instance_masks(
                             current_frame_index, saved_mask_dict
                         )
+                        self._cache_recovery_seed_frame(
+                            current_frame_index,
+                            frame,
+                            saved_mask_dict,
+                            instance_names,
+                        )
 
                     if recording:
                         if global_prediction is None:
@@ -3516,6 +3591,9 @@ class CutieCoreVideoProcessor:
         self._video_active_object_ids = set()
         self._recent_instance_masks.clear()
         self._recent_instance_mask_frames.clear()
+        self._recovery_seed_frame_index = None
+        self._recovery_seed_frame = None
+        self._recovery_seed_masks.clear()
         self._seed_frames = seed_frames or []
 
         ordered_labels = sorted(labels_dict.items(), key=lambda item: item[1])
@@ -3570,6 +3648,9 @@ class CutieCoreVideoProcessor:
         self._video_active_object_ids = set()
         self._recent_instance_masks.clear()
         self._recent_instance_mask_frames.clear()
+        self._recovery_seed_frame_index = None
+        self._recovery_seed_frame = None
+        self._recovery_seed_masks.clear()
         self._seed_frames = self.discover_seed_frames(
             self.video_name, self.video_folder, force_refresh=True
         )

@@ -115,7 +115,7 @@ class TrackAllWorker(QThread):
             "epsilon_for_polygon": 2.0,
             "t_max_value": 5,
             "use_cpu_only": False,
-            "auto_recovery_missing_instances": False,
+            "auto_recovery_missing_instances": True,
             "save_video_with_color_mask": False,
             "compute_optical_flow": True,
             "optical_flow_backend": "farneback",  # farneback | farneback_torch | raft
