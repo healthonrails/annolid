@@ -111,8 +111,8 @@ Blau, A., Schaffer, E. S., Mishra, N., Miska, N. J., The International Brain
 Laboratory, Paninski, L., & Whiteway, M. R. (2024). A study of animal action
 segmentation algorithms across supervised, unsupervised, and semi-supervised
 learning paradigms. arXiv:2407.16727.
-https://doi.org/10.48550/arXiv.2407.16727
+[DOI](https://doi.org/10.48550/arXiv.2407.16727)
 
 The TCN setup in this tutorial follows the supervised TCN baseline discussed in
 the paper's methods and supplementary material:
-https://arxiv.org/pdf/2407.16727#page=33.07
+[paper PDF, supplementary methods](https://arxiv.org/pdf/2407.16727#page=33.07)
