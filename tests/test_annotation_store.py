@@ -270,6 +270,23 @@ def test_append_frame_handles_fast_scan_only_cache_state(tmp_path):
     assert store.get_frame_fast(1) is not None
 
 
+def test_append_frame_updates_complete_cache_without_copying_records(tmp_path):
+    frame_path = tmp_path / "video" / "video_000000000.json"
+    frame_path.parent.mkdir(parents=True, exist_ok=True)
+    store = AnnotationStore.for_frame_path(frame_path)
+    for frame in range(3):
+        _append_dummy_record(store, frame)
+
+    records = store._load_records()
+    records_id = id(records)
+
+    _append_dummy_record(store, 3)
+
+    cached = AnnotationStore._CACHE.get(store.store_path) or {}
+    assert id(cached.get("records")) == records_id
+    assert set(store.iter_frames()) == {0, 1, 2, 3}
+
+
 def test_get_frame_handles_fast_scan_only_cache_state(tmp_path):
     frame_path = tmp_path / "video" / "video_000000000.json"
     frame_path.parent.mkdir(parents=True, exist_ok=True)

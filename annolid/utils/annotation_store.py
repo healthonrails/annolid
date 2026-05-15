@@ -266,8 +266,13 @@ class AnnotationStore:
             except (TypeError, ValueError):
                 frame_key = frame
             records_complete = bool(cached.get("records_complete", False))
-            records = dict(cached.get("records") or {}) if records_complete else None
-            if isinstance(records, dict):
+            cached_records = cached.get("records")
+            records = (
+                cached_records
+                if records_complete and isinstance(cached_records, dict)
+                else None
+            )
+            if records is not None:
                 records[frame_key] = record
             try:
                 stat = self.store_path.stat()
@@ -278,7 +283,7 @@ class AnnotationStore:
                 updated_cache["mtime"] = stat.st_mtime
                 updated_cache["size"] = stat.st_size
                 updated_cache["records_complete"] = bool(records_complete)
-                if isinstance(records, dict):
+                if records is not None:
                     updated_cache["records"] = records
                 else:
                     updated_cache.pop("records", None)
