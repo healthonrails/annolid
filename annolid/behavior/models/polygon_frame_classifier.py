@@ -137,6 +137,14 @@ def _pad_or_truncate(arr: List[float], length: int) -> List[float]:
     return arr + [0.0] * (length - len(arr))
 
 
+def _finite_values(values: List[float]) -> List[float]:
+    """Replace missing optional numeric feature values with finite defaults."""
+    if not values:
+        return []
+    arr = np.asarray(values, dtype=np.float32)
+    return np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0).astype(float).tolist()
+
+
 def _frame_sort_key(name: str):
     stem = Path(str(name)).stem
     parts = stem.split("_")
@@ -353,7 +361,7 @@ class PolygonFrameDataset(Dataset):
     def _row_to_feature(self, row: pd.Series) -> List[float]:
         values: List[float] = []
         for col in self.feature_config.polygon_cols:
-            parsed = _parse_array(row[col])
+            parsed = _finite_values(_parse_array(row[col]))
             padded = _pad_or_truncate(parsed, self._polygon_lengths[col])
             if self.feature_config.rescale_coordinates and len(padded) >= 2:
                 # treat pairs as x,y; clip to [0,1] after scaling
@@ -372,11 +380,11 @@ class PolygonFrameDataset(Dataset):
                 "motion_index" in col
             ):
                 continue
-            parsed = _parse_array(row.get(col, 0))
+            parsed = _finite_values(_parse_array(row.get(col, 0)))
             values.extend(parsed)
 
         values.extend(self._relative_features(row))
-        return values
+        return _finite_values(values)
 
     def _build_video_cache(self) -> None:
         grouped = self.dataframe.groupby("video")

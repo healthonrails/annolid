@@ -67,6 +67,16 @@ frame index named `frame`, `frames`, `frame_index`, or `index`. Generic feature
 CSVs may also include one of those frame-index columns; it will be dropped before
 training. The first listed label is treated as background by convention.
 
+## Polygon Classifier Workbench
+
+Users who start from Annolid polygon annotations do not need to hand-convert
+polygon CSVs into TCN feature and label files. In the GUI, open
+**Tools -> Polygon Classifier Workbench**, generate or select a polygon feature
+CSV, then choose **TCN** in the training tab's model selector. Annolid preserves
+the polygon CSV format, builds temporary dense per-video TCN inputs inside the
+run directory, and saves a `polygon_tcn_classifier_best.pt` checkpoint that can
+be used from the same inference tab.
+
 ## Train
 
 ```bash

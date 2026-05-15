@@ -7,6 +7,7 @@ import torch
 from annolid.behavior.polygon_classifier_workflow import (
     build_polygon_feature_dataset,
     generate_polygon_points_csv,
+    predict_polygon_classifier_csv,
     train_polygon_classifier,
 )
 
@@ -172,6 +173,7 @@ def test_train_polygon_classifier_handles_single_video_csv(tmp_path):
                 "fly2_area": 1.0,
                 "fly2_centroid": [float(frame), 0.5],
                 "fly2_perimeter": 4.0,
+                "fly2_motion_index": float("nan") if frame == 0 else float(frame),
             }
         )
     csv_path = tmp_path / "polygon_points.csv"
@@ -191,3 +193,58 @@ def test_train_polygon_classifier_handles_single_video_csv(tmp_path):
 
     assert Path(outcome.checkpoint_path).is_file()
     assert Path(outcome.metrics_path).is_file()
+
+
+def test_train_polygon_classifier_supports_tcn_model(tmp_path):
+    rows = []
+    for frame in range(8):
+        rows.append(
+            {
+                "video": "video_a",
+                "frame": f"video_a_{frame:09d}.json",
+                "frame_number": frame,
+                "label": "background" if frame < 4 else "walk",
+                "fly2_features": [float(frame), 0.0, 1.0, 0.0, 1.0, 1.0],
+                "fly2_area": 1.0,
+                "fly2_centroid": [float(frame), 0.5],
+                "fly2_perimeter": 4.0,
+            }
+        )
+    csv_path = tmp_path / "polygon_points.csv"
+    pd.DataFrame.from_records(rows).to_csv(csv_path, index=False)
+
+    with torch.no_grad():
+        outcome = train_polygon_classifier(
+            train_csv=csv_path,
+            test_csv=csv_path,
+            output_dir=tmp_path / "runs",
+            model_type="tcn",
+            num_epochs=1,
+            batch_size=2,
+            hidden_dim=16,
+            num_residual_blocks=1,
+            window_size=3,
+            device="cpu",
+        )
+
+    assert outcome.model_type == "tcn"
+    assert Path(outcome.checkpoint_path).name == "polygon_tcn_classifier_best.pt"
+    assert Path(outcome.metrics_path).is_file()
+    assert "NaN" not in Path(outcome.metrics_path).read_text(encoding="utf-8")
+    tcn_features = pd.read_csv(
+        Path(outcome.run_dir) / "tcn_inputs" / "train" / "video_a_features.csv"
+    )
+    assert not tcn_features.isna().any().any()
+
+    inference = predict_polygon_classifier_csv(
+        feature_csv=csv_path,
+        checkpoint_path=outcome.checkpoint_path,
+        output_csv=tmp_path / "predictions.csv",
+        device="cpu",
+    )
+
+    assert inference.model_type == "tcn"
+    assert inference.rows == len(rows)
+    predictions = pd.read_csv(inference.output_csv)
+    assert "predicted_label" in predictions.columns
+    assert set(["prob_background", "prob_walk"]).issubset(predictions.columns)

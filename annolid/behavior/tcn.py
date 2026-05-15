@@ -413,10 +413,16 @@ def class_weights_from_dataset(
         values, curr = np.unique(labels, return_counts=True)
         counts[values.astype(int)] += curr
     weights = np.ones(int(num_classes), dtype=np.float32)
-    classes = [idx for idx in range(int(num_classes)) if idx != int(background_index)]
+    has_background = 0 <= int(background_index) < int(num_classes)
+    classes = [
+        idx
+        for idx in range(int(num_classes))
+        if not has_background or idx != int(background_index)
+    ]
     inv = 1.0 / np.maximum(counts[classes], 1.0)
     weights[classes] = inv / inv.mean()
-    weights[int(background_index)] = 0.0
+    if has_background:
+        weights[int(background_index)] = 0.0
     return torch.tensor(weights, dtype=torch.float32)
 
 
@@ -473,10 +479,16 @@ def train_tcn(
             history.append(
                 {
                     "epoch": float(epoch),
-                    "loss": float(np.mean(losses)) if losses else float("nan"),
+                    "loss": float(np.mean(losses)) if losses else 0.0,
                     "skipped_batches": float(skipped),
                 }
             )
+            if not losses:
+                raise ValueError(
+                    "No finite TCN training batches were available. Check for "
+                    "missing features, non-finite numeric values, or labels that "
+                    "are all mapped to the ignored background class."
+                )
     return history
 
 
@@ -601,6 +613,7 @@ def save_tcn_checkpoint(
     normalization: TCNNormalization | None,
     input_dim: int,
     label_names: list[str],
+    metadata: Mapping[str, Any] | None = None,
 ) -> None:
     payload = {
         "state_dict": model.state_dict(),
@@ -626,6 +639,8 @@ def save_tcn_checkpoint(
         "input_dim": int(input_dim),
         "label_names": list(label_names),
     }
+    if metadata:
+        payload["metadata"] = dict(metadata)
     path = Path(path).expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(payload, path)

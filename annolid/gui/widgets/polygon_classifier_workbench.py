@@ -352,7 +352,7 @@ class PolygonClassifierWorkbench(QtWidgets.QDialog):
         layout.addWidget(
             _section_title(
                 "Train",
-                "Train the temporal polygon classifier from feature CSV files. Defaults are conservative for GUI runs.",
+                "Train a ConvNet or TCN temporal polygon classifier from feature CSV files. Defaults are conservative for GUI runs.",
             )
         )
 
@@ -400,10 +400,14 @@ class PolygonClassifierWorkbench(QtWidgets.QDialog):
         self.hidden_dim = QtWidgets.QSpinBox()
         self.hidden_dim.setRange(16, 2048)
         self.hidden_dim.setValue(128)
+        self.model_type = QtWidgets.QComboBox()
+        self.model_type.addItem("ConvNet", "convnet")
+        self.model_type.addItem("TCN", "tcn")
         self.device = QtWidgets.QComboBox()
         self.device.addItems(["auto", "cpu", "mps", "cuda"])
         for row, (label, widget) in enumerate(
             (
+                ("Model", self.model_type),
                 ("Epochs", self.epochs),
                 ("Batch size", self.batch_size),
                 ("Window size", self.window_size),
@@ -587,6 +591,7 @@ class PolygonClassifierWorkbench(QtWidgets.QDialog):
                 train_csv=self.train_csv.path(),
                 test_csv=self.test_csv.path(),
                 output_dir=self.training_output.path(),
+                model_type=str(self.model_type.currentData() or "convnet"),
                 num_epochs=int(self.epochs.value()),
                 batch_size=int(self.batch_size.value()),
                 learning_rate=float(self.learning_rate.value()),
@@ -605,6 +610,7 @@ class PolygonClassifierWorkbench(QtWidgets.QDialog):
             self._append_log(f"Run: {outcome.run_dir}")
             self._append_log(f"Checkpoint: {outcome.checkpoint_path}")
             self._append_log(f"Metrics: {outcome.metrics_path}")
+            self._append_log(f"Model: {getattr(outcome, 'model_type', 'convnet')}")
             self.train_run_value.setText(outcome.run_dir)
             self.train_checkpoint_value.setText(outcome.checkpoint_path)
             self.train_metrics_value.setText(outcome.metrics_path)
