@@ -256,6 +256,22 @@ def test_get_frames_fast_reads_many_records_in_one_scan(tmp_path, monkeypatch):
     assert all(record["imageHeight"] == 1 for record in records.values())
 
 
+def test_iter_frame_numbers_fast_avoids_full_record_parse(tmp_path, monkeypatch):
+    frame_path = tmp_path / "video" / "video_000000000.json"
+    frame_path.parent.mkdir(parents=True, exist_ok=True)
+    store = AnnotationStore.for_frame_path(frame_path)
+    for frame in range(5):
+        _append_dummy_record(store, frame)
+    AnnotationStore._CACHE.pop(store.store_path, None)
+
+    def _fail_load_records(_force_reload=False):
+        raise AssertionError("Frame-number scan should not parse full records.")
+
+    monkeypatch.setattr(store, "_load_records", _fail_load_records)
+
+    assert set(store.iter_frame_numbers_fast()) == {0, 1, 2, 3, 4}
+
+
 def test_append_frame_handles_fast_scan_only_cache_state(tmp_path):
     frame_path = tmp_path / "video" / "video_000000000.json"
     frame_path.parent.mkdir(parents=True, exist_ok=True)

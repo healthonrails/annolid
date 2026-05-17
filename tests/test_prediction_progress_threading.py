@@ -126,3 +126,9 @@ def test_refresh_missing_instance_marks_from_tracking_stats(tmp_path: Path) -> N
 
     marked = sorted(int(mark.val) for mark in obj.seekbar.getMarks("missing_instance"))
     assert marked == [3, 11]
+
+
+def test_frames_to_intervals_accepts_cached_intervals() -> None:
+    intervals = _DummyPredictionProgress._frames_to_intervals([(10, 20), (1, 3)])
+
+    assert intervals == [(1, 3), (10, 20)]

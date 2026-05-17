@@ -67,3 +67,40 @@ def test_save_labels_writes_store_even_when_manual_json_exists(tmp_path: Path) -
 
     # Manual JSON should remain unchanged (no overwrite when persist_json=False).
     assert json_path.read_text(encoding="utf-8") == json_text
+
+
+def test_save_labels_can_append_prediction_without_existing_lookup(
+    tmp_path: Path, monkeypatch
+) -> None:
+    frame_stem = f"{tmp_path.name}_000000001"
+    json_path = tmp_path / f"{frame_stem}.json"
+
+    def _fail_get_frame(self, frame):
+        raise AssertionError(
+            "Prediction append should not load existing store records."
+        )
+
+    monkeypatch.setattr(AnnotationStore, "get_frame", _fail_get_frame)
+
+    pt = Shape(label="nose", shape_type="point", flags={})
+    pt.points = [[20.0, 20.0]]
+    save_labels(
+        filename=str(json_path),
+        imagePath="",
+        label_list=[pt],
+        height=64,
+        width=96,
+        save_image_to_json=False,
+        persist_json=False,
+        merge_existing=False,
+    )
+
+    rows = [
+        json.loads(line)
+        for line in AnnotationStore.for_frame_path(json_path)
+        .store_path.read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip()
+    ]
+    assert rows[-1]["frame"] == 1
+    assert rows[-1]["shapes"][0]["label"] == "nose"

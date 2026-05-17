@@ -157,6 +157,14 @@ class PredictionProgressMixin:
     def _frames_to_intervals(frame_nums: list[int] | set[int]) -> list[tuple[int, int]]:
         if not frame_nums:
             return []
+        if all(isinstance(item, tuple) and len(item) == 2 for item in frame_nums):
+            intervals = []
+            for start, end in frame_nums:
+                try:
+                    intervals.append((int(start), int(end)))
+                except (TypeError, ValueError):
+                    continue
+            return sorted(set(intervals))
         ordered = sorted({int(v) for v in frame_nums})
         intervals: list[tuple[int, int]] = []
         start = ordered[0]
@@ -544,7 +552,9 @@ class PredictionProgressMixin:
                     path / f"{path.name}_000000000.json"
                 )
                 if store.store_path.exists():
-                    self._prediction_existing_store_frames = set(store.iter_frames())
+                    self._prediction_existing_store_frames = set(
+                        store.iter_frame_numbers_fast()
+                    )
                 self._prediction_store_path = store.store_path
                 try:
                     self._prediction_store_baseline_size = int(
@@ -558,6 +568,11 @@ class PredictionProgressMixin:
                 self._prediction_store_path = None
                 self._prediction_store_baseline_size = 0
                 self._prediction_appended_frames = set()
+            existing_for_display = set(self._prediction_existing_json_frames)
+            existing_for_display.update(self._prediction_existing_store_frames)
+            self._prediction_existing_frame_intervals = self._frames_to_intervals(
+                existing_for_display
+            )
             self.prediction_progress_watcher.start(1000)
             logger.info(
                 f"Prediction progress watcher started for: {folder_path_to_watch}"
@@ -647,14 +662,10 @@ class PredictionProgressMixin:
                     continue
 
             store_frame_nums_set: set[int] = set()
+            appended_store_frames: set[int] = set()
             if prediction_active:
-                store_frame_nums_set.update(
-                    int(frame)
-                    for frame in getattr(
-                        self, "_prediction_existing_store_frames", set()
-                    )
-                )
-                store_frame_nums_set.update(self._scan_prediction_store_updates())
+                appended_store_frames.update(self._scan_prediction_store_updates())
+                store_frame_nums_set.update(appended_store_frames)
             else:
                 try:
                     store = AnnotationStore.for_frame_path(
@@ -672,30 +683,27 @@ class PredictionProgressMixin:
                         exc_info=True,
                     )
 
-            current_frame_set = set(json_frame_nums_set)
-            current_frame_set.update(store_frame_nums_set)
-
-            baseline_frame_set: set[int] = set()
             if prediction_active:
-                baseline_frame_set.update(
+                baseline_json_frames = {
                     int(frame)
                     for frame in getattr(
                         self, "_prediction_existing_json_frames", set()
                     )
-                )
-                baseline_frame_set.update(
-                    int(frame)
-                    for frame in getattr(
-                        self, "_prediction_existing_store_frames", set()
-                    )
-                )
+                }
+                current_frame_set = set(json_frame_nums_set - baseline_json_frames)
+                current_frame_set.update(appended_store_frames)
+            else:
+                current_frame_set = set(json_frame_nums_set)
+                current_frame_set.update(store_frame_nums_set)
 
             # Keep completed sections visible while prediction is running:
             # - existing frames: already present before this run started
             # - predicted frames: newly produced during this run
             if prediction_active:
-                existing_frame_nums = sorted(baseline_frame_set)
-                all_frame_nums = sorted(current_frame_set - baseline_frame_set)
+                existing_frame_nums = list(
+                    getattr(self, "_prediction_existing_frame_intervals", [])
+                )
+                all_frame_nums = sorted(current_frame_set)
             else:
                 existing_frame_nums = []
                 all_frame_nums = sorted(current_frame_set)

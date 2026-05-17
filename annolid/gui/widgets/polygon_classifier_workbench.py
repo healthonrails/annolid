@@ -227,11 +227,59 @@ class PolygonClassifierWorkbench(QtWidgets.QDialog):
         layout.addWidget(
             _section_title(
                 "Polygon Points CSV",
-                "Merge Annolid predicted polygon JSON or NDJSON shapes with a manual one-hot label CSV. This is the recommended path for predicted-shape workflows.",
+                "Merge Annolid predicted polygon JSON or NDJSON shapes with manual one-hot label CSVs. Use one video for quick export, or assign separate train/test videos for model training.",
             )
         )
 
-        paths = QtWidgets.QGroupBox("Inputs")
+        split_paths = QtWidgets.QGroupBox("Train/Test Video Assignment")
+        split_layout = QtWidgets.QVBoxLayout(split_paths)
+        self.train_annotation_dir = _PathPicker(
+            "Training video shapes folder",
+            "/path/to/train_video_folder_with_json_or_annotations_ndjson",
+            mode="dir",
+        )
+        self.train_label_csv = _PathPicker(
+            "Training labels CSV",
+            "/path/to/train_labels.csv",
+            file_filter="CSV Files (*.csv);;All Files (*)",
+        )
+        self.test_annotation_dir = _PathPicker(
+            "Test video shapes folder",
+            "/path/to/test_video_folder_with_json_or_annotations_ndjson",
+            mode="dir",
+        )
+        self.test_label_csv = _PathPicker(
+            "Test labels CSV",
+            "/path/to/test_labels.csv",
+            file_filter="CSV Files (*.csv);;All Files (*)",
+        )
+        default_split_output = shared_runs_root() / "polygon_classifier" / "datasets"
+        self.split_output_dir = _PathPicker(
+            "Output folder",
+            str(default_split_output),
+            mode="dir",
+        )
+        self.split_output_dir.setPath(default_split_output)
+        for picker in (
+            self.train_annotation_dir,
+            self.train_label_csv,
+            self.test_annotation_dir,
+            self.test_label_csv,
+            self.split_output_dir,
+        ):
+            picker.changed.connect(lambda _text: self._refresh_validation())
+            split_layout.addWidget(picker)
+        if default_source_dir:
+            self.train_annotation_dir.setPath(default_source_dir)
+        layout.addWidget(split_paths)
+
+        self.generate_train_test_btn = QtWidgets.QPushButton(
+            "Generate Train/Test Polygon CSVs"
+        )
+        self.generate_train_test_btn.clicked.connect(self._generate_train_test_csvs)
+        layout.addLayout(_action_row(self.generate_train_test_btn))
+
+        paths = QtWidgets.QGroupBox("Single Video Export")
         form = QtWidgets.QVBoxLayout(paths)
         self.points_annotation_dir = _PathPicker(
             "Predicted shapes folder",
@@ -581,6 +629,75 @@ class PolygonClassifierWorkbench(QtWidgets.QDialog):
 
         self._run_worker("Polygon CSV export", task, success)
 
+    def _generate_train_test_csvs(self) -> None:
+        from annolid.behavior.polygon_classifier_workflow import (
+            generate_polygon_points_csv,
+        )
+
+        def output_path(video_folder: str, suffix: str) -> Path:
+            video_name = Path(video_folder).expanduser().name or suffix
+            return (
+                Path(self.split_output_dir.path()).expanduser()
+                / f"{video_name}_{suffix}_polygon_points.csv"
+            )
+
+        def task():
+            train_output = output_path(self.train_annotation_dir.path(), "train")
+            test_output = output_path(self.test_annotation_dir.path(), "test")
+            train_outcome = generate_polygon_points_csv(
+                annotation_dir=self.train_annotation_dir.path(),
+                label_csv=self.train_label_csv.path(),
+                output_csv=train_output,
+                num_points=int(self.points_num_points.value()),
+                include_unlabeled=bool(self.include_unlabeled.isChecked()),
+            )
+            test_outcome = generate_polygon_points_csv(
+                annotation_dir=self.test_annotation_dir.path(),
+                label_csv=self.test_label_csv.path(),
+                output_csv=test_output,
+                num_points=int(self.points_num_points.value()),
+                include_unlabeled=bool(self.include_unlabeled.isChecked()),
+            )
+            return {
+                "train": train_outcome,
+                "test": test_outcome,
+            }
+
+        def success(outcome: Any) -> None:
+            train_outcome = outcome["train"]
+            test_outcome = outcome["test"]
+            self._last_train_csv = train_outcome.output_csv
+            self._last_test_csv = test_outcome.output_csv
+            self.train_csv.setPath(train_outcome.output_csv)
+            self.test_csv.setPath(test_outcome.output_csv)
+            self.infer_csv.setPath(test_outcome.output_csv)
+            train_columns = set(train_outcome.polygon_columns)
+            test_columns = set(test_outcome.polygon_columns)
+            missing_from_test = sorted(train_columns - test_columns)
+            extra_in_test = sorted(test_columns - train_columns)
+            schema_note = "Feature columns match."
+            if missing_from_test or extra_in_test:
+                schema_note = (
+                    "Feature column mismatch. "
+                    f"Missing from test: {', '.join(missing_from_test) or '-'}; "
+                    f"extra in test: {', '.join(extra_in_test) or '-'}."
+                )
+            self.points_summary.setText(
+                f"Training CSV: {train_outcome.output_csv} ({train_outcome.rows} rows). "
+                f"Test CSV: {test_outcome.output_csv} ({test_outcome.rows} rows). "
+                f"Train labels: {', '.join(train_outcome.labels) or '-'}; "
+                f"test labels: {', '.join(test_outcome.labels) or '-'}. "
+                f"{schema_note}"
+            )
+            self._append_log(f"Training polygon CSV: {train_outcome.output_csv}")
+            self._append_log(f"Test polygon CSV: {test_outcome.output_csv}")
+            if missing_from_test or extra_in_test:
+                self._append_log(schema_note)
+            self.tabs.setCurrentIndex(2)
+            self._refresh_validation()
+
+        self._run_worker("Train/test polygon CSV export", task, success)
+
     def _train(self) -> None:
         from annolid.behavior.polygon_classifier_workflow import (
             train_polygon_classifier,
@@ -649,6 +766,7 @@ class PolygonClassifierWorkbench(QtWidgets.QDialog):
     def _set_busy(self, busy: bool) -> None:
         self._busy = bool(busy)
         for button in (
+            self.generate_train_test_btn,
             self.generate_points_btn,
             self.create_dataset_btn,
             self.train_btn,
@@ -662,6 +780,22 @@ class PolygonClassifierWorkbench(QtWidgets.QDialog):
             return
 
         if hasattr(self, "points_annotation_dir"):
+            self._validate_picker(self.train_annotation_dir, want_dir=True)
+            self._validate_picker(self.train_label_csv, want_file=True)
+            self._validate_picker(self.test_annotation_dir, want_dir=True)
+            self._validate_picker(self.test_label_csv, want_file=True)
+            self._validate_picker(
+                self.split_output_dir, want_dir=False, allow_missing=True
+            )
+            if hasattr(self, "generate_train_test_btn"):
+                self.generate_train_test_btn.setEnabled(
+                    Path(self.train_annotation_dir.path()).is_dir()
+                    and Path(self.train_label_csv.path()).is_file()
+                    and Path(self.test_annotation_dir.path()).is_dir()
+                    and Path(self.test_label_csv.path()).is_file()
+                    and bool(self.split_output_dir.path())
+                )
+
             self._validate_picker(self.points_annotation_dir, want_dir=True)
             self._validate_picker(self.manual_label_csv, want_file=True)
             self._validate_picker(

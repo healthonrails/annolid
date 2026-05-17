@@ -551,6 +551,31 @@ class AnnotationStore:
         records = self._load_records()
         return records.keys()
 
+    def iter_frame_numbers_fast(self) -> Iterable[int]:
+        """Yield frame numbers without fully parsing large annotation records."""
+        cached_records = self._cached_records_or_empty()
+        if cached_records:
+            return cached_records.keys()
+        if not self.store_path.exists():
+            return []
+
+        frames: Set[int] = set()
+        try:
+            with self.store_path.open("r", encoding="utf-8") as fh:
+                for raw_line in fh:
+                    if '"frame"' not in raw_line:
+                        continue
+                    match = self._FRAME_PATTERN.search(raw_line)
+                    if not match:
+                        continue
+                    try:
+                        frames.add(int(match.group(1)))
+                    except (TypeError, ValueError):
+                        continue
+        except OSError:
+            return []
+        return frames
+
     def _cached_records_or_empty(self) -> Dict[int, Dict[str, Any]]:
         cached = AnnotationStore._CACHE.get(self.store_path)
         if (
@@ -749,8 +774,6 @@ class AnnotationStore:
             return 0
 
         AnnotationStore._CACHE.pop(self.store_path, None)
-        # Refresh cache after pruning so subsequent reads see the updated state.
-        self._load_records(force_reload=True)
 
         return removed
 
@@ -845,7 +868,6 @@ class AnnotationStore:
             return 0
 
         AnnotationStore._CACHE.pop(self.store_path, None)
-        self._load_records(force_reload=True)
 
         return removed
 

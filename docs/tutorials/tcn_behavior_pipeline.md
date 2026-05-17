@@ -77,6 +77,10 @@ the polygon CSV format, builds temporary dense per-video TCN inputs inside the
 run directory, and saves a `polygon_tcn_classifier_best.pt` checkpoint that can
 be used from the same inference tab.
 
+For a step-by-step guide to collecting compatible training and test videos with
+Annolid polygon tracking, see
+[Collect Videos for Polygon TCN Training and Testing](polygon_tcn_video_collection.md).
+
 ## Train
 
 ```bash

@@ -158,6 +158,7 @@ def save_labels(
     flags=None,
     caption=None,
     persist_json=True,
+    merge_existing=True,
 ):
     """Save a list of labeled shapes to a JSON file.
 
@@ -231,9 +232,9 @@ def save_labels(
         return
 
     store = AnnotationStore.for_frame_path(frame_path)
-    existing_record = store.get_frame(frame_number)
+    existing_record = store.get_frame(frame_number) if merge_existing else None
     existing_json = None
-    if existing_record is None:
+    if merge_existing and existing_record is None:
         existing_json = load_existing_json(str(frame_path)) or None
     existing_shapes = (
         [dict(shape) for shape in existing_record.get("shapes", [])]

@@ -1848,6 +1848,7 @@ class CutieCoreVideoProcessor:
             width=width,
             save_image_to_json=False,
             persist_json=False,
+            merge_existing=False,
         )
         frame_idx = AnnotationStore.frame_number_from_path(Path(filename))
         if frame_idx is None:

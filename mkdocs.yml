@@ -97,6 +97,7 @@ nav:
       - Tutorials Overview: tutorials.md
       - Video Downsample Workflow (GUI): tutorials/video_downsample_workflow.md
       - Behavior Labeling (Timeline + Flags + Bot): tutorials/behavior_timeline_flags_bot.md
+      - Polygon TCN Video Collection: tutorials/polygon_tcn_video_collection.md
       - Realtime Wireless Camera Detection (GUI): tutorials/realtime_wireless_camera_detection.md
       - Video Processing with FFmpeg: tutorials/video_ffmpeg_processing.md
       - Segment-based Batch Tracking: tutorials/segment-based-batch-tracking.md
