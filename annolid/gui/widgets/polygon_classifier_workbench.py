@@ -100,6 +100,121 @@ class _PathPicker(QtWidgets.QWidget):
         return super().eventFilter(obj, event)
 
 
+class _VideoAssignmentTable(QtWidgets.QWidget):
+    changed = QtCore.Signal()
+
+    def __init__(
+        self,
+        title: str,
+        *,
+        parent: Optional[QtWidgets.QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        header = QtWidgets.QHBoxLayout()
+        label = QtWidgets.QLabel(title)
+        label.setProperty("muted", True)
+        header.addWidget(label)
+        header.addStretch()
+        self.count_label = QtWidgets.QLabel("0 complete")
+        self.count_label.setProperty("muted", True)
+        header.addWidget(self.count_label)
+        layout.addLayout(header)
+
+        self.table = QtWidgets.QTableWidget(0, 2)
+        self.table.setHorizontalHeaderLabels(["Video shapes folder", "Labels CSV"])
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.horizontalHeader().setSectionResizeMode(
+            0, QtWidgets.QHeaderView.Stretch
+        )
+        self.table.horizontalHeader().setSectionResizeMode(
+            1, QtWidgets.QHeaderView.Stretch
+        )
+        self.table.verticalHeader().setVisible(False)
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.table.setMinimumHeight(120)
+        self.table.itemChanged.connect(lambda _item: self._emit_changed())
+        layout.addWidget(self.table)
+
+        actions = QtWidgets.QHBoxLayout()
+        add_btn = QtWidgets.QPushButton("Add Video...")
+        add_btn.setIcon(self.style().standardIcon(QtWidgets.QStyle.SP_DirOpenIcon))
+        add_btn.clicked.connect(self._add_from_dialog)
+        remove_btn = QtWidgets.QPushButton("Remove Selected")
+        remove_btn.clicked.connect(self.remove_selected)
+        clear_btn = QtWidgets.QPushButton("Clear")
+        clear_btn.clicked.connect(self.clear)
+        actions.addWidget(add_btn)
+        actions.addWidget(remove_btn)
+        actions.addWidget(clear_btn)
+        actions.addStretch()
+        layout.addLayout(actions)
+
+    def add_assignment(
+        self,
+        video_folder: str | Path = "",
+        label_csv: str | Path = "",
+    ) -> None:
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+        self.table.setItem(row, 0, QtWidgets.QTableWidgetItem(str(video_folder)))
+        self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(str(label_csv)))
+        self._emit_changed()
+
+    def assignments(self) -> list[tuple[str, str]]:
+        rows: list[tuple[str, str]] = []
+        for row in range(self.table.rowCount()):
+            video_item = self.table.item(row, 0)
+            label_item = self.table.item(row, 1)
+            video = video_item.text().strip() if video_item else ""
+            label = label_item.text().strip() if label_item else ""
+            if video or label:
+                rows.append((video, label))
+        return rows
+
+    def complete_assignments(self) -> list[tuple[str, str]]:
+        return [
+            (video, label)
+            for video, label in self.assignments()
+            if Path(video).expanduser().is_dir() and Path(label).expanduser().is_file()
+        ]
+
+    def remove_selected(self) -> None:
+        rows = sorted(
+            {index.row() for index in self.table.selectedIndexes()}, reverse=True
+        )
+        for row in rows:
+            self.table.removeRow(row)
+        self._emit_changed()
+
+    def clear(self) -> None:
+        self.table.setRowCount(0)
+        self._emit_changed()
+
+    def _add_from_dialog(self) -> None:
+        video_folder = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "Select Video Shapes Folder"
+        )
+        if not video_folder:
+            return
+        label_csv, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Select Labels CSV", "", "CSV Files (*.csv);;All Files (*)"
+        )
+        if not label_csv:
+            return
+        self.add_assignment(video_folder, label_csv)
+
+    def _emit_changed(self) -> None:
+        complete = len(self.complete_assignments())
+        total = len(self.assignments())
+        self.count_label.setText(f"{complete}/{total} complete")
+        self.changed.emit()
+
+
 def _section_title(title: str, subtitle: str) -> QtWidgets.QWidget:
     widget = QtWidgets.QWidget()
     layout = QtWidgets.QVBoxLayout(widget)
@@ -233,26 +348,12 @@ class PolygonClassifierWorkbench(QtWidgets.QDialog):
 
         split_paths = QtWidgets.QGroupBox("Train/Test Video Assignment")
         split_layout = QtWidgets.QVBoxLayout(split_paths)
-        self.train_annotation_dir = _PathPicker(
-            "Training video shapes folder",
-            "/path/to/train_video_folder_with_json_or_annotations_ndjson",
-            mode="dir",
-        )
-        self.train_label_csv = _PathPicker(
-            "Training labels CSV",
-            "/path/to/train_labels.csv",
-            file_filter="CSV Files (*.csv);;All Files (*)",
-        )
-        self.test_annotation_dir = _PathPicker(
-            "Test video shapes folder",
-            "/path/to/test_video_folder_with_json_or_annotations_ndjson",
-            mode="dir",
-        )
-        self.test_label_csv = _PathPicker(
-            "Test labels CSV",
-            "/path/to/test_labels.csv",
-            file_filter="CSV Files (*.csv);;All Files (*)",
-        )
+        self.train_video_table = _VideoAssignmentTable("Training videos")
+        self.test_video_table = _VideoAssignmentTable("Test videos")
+        self.train_video_table.changed.connect(self._refresh_validation)
+        self.test_video_table.changed.connect(self._refresh_validation)
+        split_layout.addWidget(self.train_video_table)
+        split_layout.addWidget(self.test_video_table)
         default_split_output = shared_runs_root() / "polygon_classifier" / "datasets"
         self.split_output_dir = _PathPicker(
             "Output folder",
@@ -260,17 +361,10 @@ class PolygonClassifierWorkbench(QtWidgets.QDialog):
             mode="dir",
         )
         self.split_output_dir.setPath(default_split_output)
-        for picker in (
-            self.train_annotation_dir,
-            self.train_label_csv,
-            self.test_annotation_dir,
-            self.test_label_csv,
-            self.split_output_dir,
-        ):
-            picker.changed.connect(lambda _text: self._refresh_validation())
-            split_layout.addWidget(picker)
+        self.split_output_dir.changed.connect(lambda _text: self._refresh_validation())
+        split_layout.addWidget(self.split_output_dir)
         if default_source_dir:
-            self.train_annotation_dir.setPath(default_source_dir)
+            self.train_video_table.add_assignment(default_source_dir, "")
         layout.addWidget(split_paths)
 
         self.generate_train_test_btn = QtWidgets.QPushButton(
@@ -467,6 +561,9 @@ class PolygonClassifierWorkbench(QtWidgets.QDialog):
             grid.addWidget(QtWidgets.QLabel(label), row // 2, (row % 2) * 2)
             grid.addWidget(widget, row // 2, (row % 2) * 2 + 1)
         layout.addWidget(params)
+        self.model_type.currentIndexChanged.connect(self._apply_model_defaults)
+        self.model_type.setCurrentIndex(1)
+        self._apply_model_defaults()
 
         self.train_btn = QtWidgets.QPushButton("Start Training")
         self.train_btn.clicked.connect(self._train)
@@ -600,6 +697,23 @@ class PolygonClassifierWorkbench(QtWidgets.QDialog):
 
         self._run_worker("Dataset creation", task, success)
 
+    def _apply_model_defaults(self) -> None:
+        if not hasattr(self, "model_type"):
+            return
+        model_type = str(self.model_type.currentData() or "convnet")
+        if model_type == "tcn":
+            self.epochs.setValue(500)
+            self.learning_rate.setValue(0.000001)
+            self.batch_size.setValue(64)
+            self.window_size.setValue(11)
+            self.hidden_dim.setValue(128)
+        else:
+            self.epochs.setValue(30)
+            self.learning_rate.setValue(0.004)
+            self.batch_size.setValue(64)
+            self.window_size.setValue(11)
+            self.hidden_dim.setValue(128)
+
     def _generate_points_csv(self) -> None:
         from annolid.behavior.polygon_classifier_workflow import (
             generate_polygon_points_csv,
@@ -631,68 +745,38 @@ class PolygonClassifierWorkbench(QtWidgets.QDialog):
 
     def _generate_train_test_csvs(self) -> None:
         from annolid.behavior.polygon_classifier_workflow import (
-            generate_polygon_points_csv,
+            generate_polygon_train_test_csvs,
         )
 
-        def output_path(video_folder: str, suffix: str) -> Path:
-            video_name = Path(video_folder).expanduser().name or suffix
-            return (
-                Path(self.split_output_dir.path()).expanduser()
-                / f"{video_name}_{suffix}_polygon_points.csv"
-            )
-
         def task():
-            train_output = output_path(self.train_annotation_dir.path(), "train")
-            test_output = output_path(self.test_annotation_dir.path(), "test")
-            train_outcome = generate_polygon_points_csv(
-                annotation_dir=self.train_annotation_dir.path(),
-                label_csv=self.train_label_csv.path(),
-                output_csv=train_output,
+            return generate_polygon_train_test_csvs(
+                train_assignments=self.train_video_table.complete_assignments(),
+                test_assignments=self.test_video_table.complete_assignments(),
+                output_dir=self.split_output_dir.path(),
                 num_points=int(self.points_num_points.value()),
                 include_unlabeled=bool(self.include_unlabeled.isChecked()),
             )
-            test_outcome = generate_polygon_points_csv(
-                annotation_dir=self.test_annotation_dir.path(),
-                label_csv=self.test_label_csv.path(),
-                output_csv=test_output,
-                num_points=int(self.points_num_points.value()),
-                include_unlabeled=bool(self.include_unlabeled.isChecked()),
-            )
-            return {
-                "train": train_outcome,
-                "test": test_outcome,
-            }
 
         def success(outcome: Any) -> None:
-            train_outcome = outcome["train"]
-            test_outcome = outcome["test"]
-            self._last_train_csv = train_outcome.output_csv
-            self._last_test_csv = test_outcome.output_csv
-            self.train_csv.setPath(train_outcome.output_csv)
-            self.test_csv.setPath(test_outcome.output_csv)
-            self.infer_csv.setPath(test_outcome.output_csv)
-            train_columns = set(train_outcome.polygon_columns)
-            test_columns = set(test_outcome.polygon_columns)
-            missing_from_test = sorted(train_columns - test_columns)
-            extra_in_test = sorted(test_columns - train_columns)
+            train_outcome = outcome.train
+            test_outcome = outcome.test
+            self._last_train_csv = train_outcome.csv
+            self._last_test_csv = test_outcome.csv
+            self.train_csv.setPath(train_outcome.csv)
+            self.test_csv.setPath(test_outcome.csv)
+            self.infer_csv.setPath(test_outcome.csv)
             schema_note = "Feature columns match."
-            if missing_from_test or extra_in_test:
-                schema_note = (
-                    "Feature column mismatch. "
-                    f"Missing from test: {', '.join(missing_from_test) or '-'}; "
-                    f"extra in test: {', '.join(extra_in_test) or '-'}."
-                )
             self.points_summary.setText(
-                f"Training CSV: {train_outcome.output_csv} ({train_outcome.rows} rows). "
-                f"Test CSV: {test_outcome.output_csv} ({test_outcome.rows} rows). "
+                f"Training CSV: {train_outcome.csv} ({train_outcome.rows} rows from "
+                f"{len(train_outcome.videos)} videos). "
+                f"Test CSV: {test_outcome.csv} ({test_outcome.rows} rows from "
+                f"{len(test_outcome.videos)} videos). "
                 f"Train labels: {', '.join(train_outcome.labels) or '-'}; "
                 f"test labels: {', '.join(test_outcome.labels) or '-'}. "
                 f"{schema_note}"
             )
-            self._append_log(f"Training polygon CSV: {train_outcome.output_csv}")
-            self._append_log(f"Test polygon CSV: {test_outcome.output_csv}")
-            if missing_from_test or extra_in_test:
-                self._append_log(schema_note)
+            self._append_log(f"Training polygon CSV: {train_outcome.csv}")
+            self._append_log(f"Test polygon CSV: {test_outcome.csv}")
             self.tabs.setCurrentIndex(2)
             self._refresh_validation()
 
@@ -780,19 +864,13 @@ class PolygonClassifierWorkbench(QtWidgets.QDialog):
             return
 
         if hasattr(self, "points_annotation_dir"):
-            self._validate_picker(self.train_annotation_dir, want_dir=True)
-            self._validate_picker(self.train_label_csv, want_file=True)
-            self._validate_picker(self.test_annotation_dir, want_dir=True)
-            self._validate_picker(self.test_label_csv, want_file=True)
             self._validate_picker(
                 self.split_output_dir, want_dir=False, allow_missing=True
             )
             if hasattr(self, "generate_train_test_btn"):
                 self.generate_train_test_btn.setEnabled(
-                    Path(self.train_annotation_dir.path()).is_dir()
-                    and Path(self.train_label_csv.path()).is_file()
-                    and Path(self.test_annotation_dir.path()).is_dir()
-                    and Path(self.test_label_csv.path()).is_file()
+                    bool(self.train_video_table.complete_assignments())
+                    and bool(self.test_video_table.complete_assignments())
                     and bool(self.split_output_dir.path())
                 )
 

@@ -58,6 +58,27 @@ class PolygonPointsCSVOutcome:
 
 
 @dataclass(frozen=True)
+class PolygonVideoAssignment:
+    annotation_dir: str
+    label_csv: str
+
+
+@dataclass(frozen=True)
+class PolygonSplitCSVOutcome:
+    csv: str
+    rows: int
+    labels: tuple[str, ...]
+    polygon_columns: tuple[str, ...]
+    videos: tuple[PolygonPointsCSVOutcome, ...]
+
+
+@dataclass(frozen=True)
+class PolygonTrainTestCSVOutcome:
+    train: PolygonSplitCSVOutcome
+    test: PolygonSplitCSVOutcome
+
+
+@dataclass(frozen=True)
 class PolygonTrainingOutcome:
     run_dir: str
     checkpoint_path: str
@@ -322,6 +343,101 @@ def generate_polygon_points_csv(
         polygon_columns=tuple(sorted(polygon_columns)),
         skipped_frames=int(skipped),
     )
+
+
+def _normalize_video_assignments(
+    assignments: Iterable[PolygonVideoAssignment | tuple[str | Path, str | Path]],
+) -> list[PolygonVideoAssignment]:
+    normalized: list[PolygonVideoAssignment] = []
+    for item in assignments:
+        if isinstance(item, PolygonVideoAssignment):
+            video_dir = item.annotation_dir
+            label_csv = item.label_csv
+        else:
+            video_dir, label_csv = item
+        normalized.append(
+            PolygonVideoAssignment(
+                annotation_dir=str(Path(video_dir).expanduser()),
+                label_csv=str(Path(label_csv).expanduser()),
+            )
+        )
+    return normalized
+
+
+def generate_polygon_train_test_csvs(
+    *,
+    train_assignments: Iterable[PolygonVideoAssignment | tuple[str | Path, str | Path]],
+    test_assignments: Iterable[PolygonVideoAssignment | tuple[str | Path, str | Path]],
+    output_dir: str | Path,
+    num_points: int = 50,
+    include_unlabeled: bool = False,
+) -> PolygonTrainTestCSVOutcome:
+    """Create combined train/test polygon point CSVs from video annotation sets."""
+
+    def feature_columns(columns: Iterable[str]) -> set[str]:
+        return {str(col) for col in columns if str(col).endswith("_features")}
+
+    def video_output_path(video_folder: str, split: str, index: int) -> Path:
+        video_name = Path(video_folder).expanduser().name or f"{split}_{index}"
+        return out_dir / f"{index:02d}_{video_name}_{split}_polygon_points.csv"
+
+    def build_split(
+        assignments: list[PolygonVideoAssignment], split: str
+    ) -> PolygonSplitCSVOutcome:
+        if not assignments:
+            raise ValueError(f"No {split} videos were assigned.")
+
+        outcomes: list[PolygonPointsCSVOutcome] = []
+        frames: list[pd.DataFrame] = []
+        expected_features: set[str] | None = None
+        for index, assignment in enumerate(assignments, start=1):
+            outcome = generate_polygon_points_csv(
+                annotation_dir=assignment.annotation_dir,
+                label_csv=assignment.label_csv,
+                output_csv=video_output_path(assignment.annotation_dir, split, index),
+                num_points=int(num_points),
+                include_unlabeled=bool(include_unlabeled),
+            )
+            current_features = feature_columns(outcome.polygon_columns)
+            if expected_features is None:
+                expected_features = current_features
+            elif current_features != expected_features:
+                raise ValueError(
+                    f"{split} video {assignment.annotation_dir} has polygon columns "
+                    f"{sorted(current_features)}, expected {sorted(expected_features)}. "
+                    "Use the same body-part polygon labels for every video in a split."
+                )
+            outcomes.append(outcome)
+            frames.append(pd.read_csv(outcome.output_csv))
+
+        combined = pd.concat(frames, ignore_index=True, sort=False)
+        combined_csv = out_dir / f"{split}_polygon_points.csv"
+        combined.to_csv(combined_csv, index=False)
+        labels = tuple(
+            sorted({label for outcome in outcomes for label in outcome.labels})
+        )
+        return PolygonSplitCSVOutcome(
+            csv=str(combined_csv),
+            rows=int(len(combined)),
+            labels=labels,
+            polygon_columns=tuple(sorted(expected_features or set())),
+            videos=tuple(outcomes),
+        )
+
+    out_dir = Path(output_dir).expanduser().resolve()
+    if int(num_points) <= 0:
+        raise ValueError("num_points must be greater than 0.")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    train = build_split(_normalize_video_assignments(train_assignments), "train")
+    test = build_split(_normalize_video_assignments(test_assignments), "test")
+    if set(train.polygon_columns) != set(test.polygon_columns):
+        raise ValueError(
+            "Train/test polygon feature columns do not match. "
+            f"Train: {list(train.polygon_columns)}; test: {list(test.polygon_columns)}. "
+            "Use compatible body-part polygon labels before training."
+        )
+    return PolygonTrainTestCSVOutcome(train=train, test=test)
 
 
 def build_polygon_feature_dataset(

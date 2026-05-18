@@ -27,18 +27,32 @@ def test_polygon_classifier_workbench_assigns_train_and_test_videos(tmp_path: Pa
 
     dialog = PolygonClassifierWorkbench()
     try:
-        assert hasattr(dialog, "train_annotation_dir")
-        assert hasattr(dialog, "test_annotation_dir")
+        assert hasattr(dialog, "train_video_table")
+        assert hasattr(dialog, "test_video_table")
         assert hasattr(dialog, "generate_train_test_btn")
         assert not dialog.generate_train_test_btn.isEnabled()
 
-        dialog.train_annotation_dir.setPath(train_dir)
-        dialog.train_label_csv.setPath(train_labels)
-        dialog.test_annotation_dir.setPath(test_dir)
-        dialog.test_label_csv.setPath(test_labels)
+        dialog.train_video_table.add_assignment(train_dir, train_labels)
+        dialog.test_video_table.add_assignment(test_dir, test_labels)
         dialog.split_output_dir.setPath(tmp_path / "out")
         dialog._refresh_validation()
 
         assert dialog.generate_train_test_btn.isEnabled()
+    finally:
+        dialog.close()
+
+
+def test_polygon_classifier_workbench_applies_model_defaults():
+    _ensure_qapp()
+    dialog = PolygonClassifierWorkbench()
+    try:
+        assert dialog.model_type.currentData() == "tcn"
+        assert dialog.epochs.value() == 500
+        assert dialog.learning_rate.value() == 0.000001
+
+        dialog.model_type.setCurrentIndex(0)
+        assert dialog.model_type.currentData() == "convnet"
+        assert dialog.epochs.value() == 30
+        assert dialog.learning_rate.value() == 0.004
     finally:
         dialog.close()

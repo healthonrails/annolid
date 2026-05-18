@@ -6,6 +6,7 @@ import torch
 
 from annolid.behavior.polygon_classifier_workflow import (
     build_polygon_feature_dataset,
+    generate_polygon_train_test_csvs,
     generate_polygon_points_csv,
     predict_polygon_classifier_csv,
     train_polygon_classifier,
@@ -158,6 +159,39 @@ def test_generate_polygon_points_csv_includes_predicted_shapes_from_ndjson(tmp_p
     assert ndjson_row["label"] == "walk"
     assert "fly2_motion_index" in df.columns
     assert ndjson_row["fly2_motion_index"] == 3.5
+
+
+def test_generate_polygon_train_test_csvs_combines_multiple_videos(tmp_path):
+    train_a = tmp_path / "train_a"
+    train_b = tmp_path / "train_b"
+    test_a = tmp_path / "test_a"
+    train_a.mkdir()
+    train_b.mkdir()
+    test_a.mkdir()
+    _write_labelme(train_a / "train_a_000000000.json", label="attack")
+    _write_labelme(train_b / "train_b_000000001.json", label="groom")
+    _write_labelme(test_a / "test_a_000000000.json", label="attack")
+
+    train_a_labels = tmp_path / "train_a_labels.csv"
+    train_b_labels = tmp_path / "train_b_labels.csv"
+    test_labels = tmp_path / "test_labels.csv"
+    train_a_labels.write_text("frame,attack,groom\n0,1,0\n", encoding="utf-8")
+    train_b_labels.write_text("frame,attack,groom\n1,0,1\n", encoding="utf-8")
+    test_labels.write_text("frame,attack,groom\n0,1,0\n", encoding="utf-8")
+
+    outcome = generate_polygon_train_test_csvs(
+        train_assignments=[(train_a, train_a_labels), (train_b, train_b_labels)],
+        test_assignments=[(test_a, test_labels)],
+        output_dir=tmp_path / "out",
+        num_points=4,
+    )
+
+    assert outcome.train.rows == 2
+    assert outcome.test.rows == 1
+    assert Path(outcome.train.csv).is_file()
+    assert Path(outcome.test.csv).is_file()
+    assert outcome.train.labels == ("attack", "groom")
+    assert set(outcome.train.polygon_columns) == set(outcome.test.polygon_columns)
 
 
 def test_train_polygon_classifier_handles_single_video_csv(tmp_path):

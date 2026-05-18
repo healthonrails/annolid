@@ -200,7 +200,43 @@ held-out test video.
 
 ## 6. Train TCN and Evaluate on a Held-Out Video
 
-Train on the training CSV and evaluate on the held-out test CSV:
+The CLI can generate compatible train/test polygon CSVs from one or more
+annotated videos, then train the classifier in one command:
+
+```bash
+source .venv/bin/activate
+annolid-run train polygon_classifier \
+  --model-type tcn \
+  --train-video /path/to/project/videos/2019_08_20_fly2 /path/to/project/labels-hand-paper-matched/2019_08_20_fly2_labels.csv \
+  --train-video /path/to/project/videos/2019_08_14_fly1 /path/to/project/labels-hand-paper-matched/2019_08_14_fly1_labels.csv \
+  --test-video /path/to/project/videos/2019_06_26_fly2 /path/to/project/labels-hand-paper-matched/2019_06_26_fly2_labels.csv \
+  --csv-output-dir /path/to/project/logs/polygon_tcn_train_test \
+  --output-dir /path/to/project/logs/runs/polygon_classifier/train \
+  --run-name fly_polygon_tcn
+```
+
+By default, `--model-type tcn` uses `--num-epochs 500`,
+`--learning-rate 1e-6`, `--batch-size 64`, `--window-size 11`, and
+`--hidden-dim 128`. Override any of these flags when a smaller smoke test or
+different training profile is needed.
+
+If you already created `train_polygon_points.csv` and
+`test_polygon_points.csv`, train directly from those CSVs:
+
+```bash
+source .venv/bin/activate
+annolid-run train polygon_classifier \
+  --model-type tcn \
+  --train-csv /path/to/project/logs/polygon_tcn_train_test/train_polygon_points.csv \
+  --test-csv /path/to/project/logs/polygon_tcn_train_test/test_polygon_points.csv \
+  --output-dir /path/to/project/logs/runs/polygon_classifier/train \
+  --run-name fly_polygon_tcn
+```
+
+The command prints JSON with the generated CSV paths, run directory,
+checkpoint, metrics path, and training parameters.
+
+The same workflow is available from Python when scripting inside notebooks:
 
 ```bash
 source .venv/bin/activate
