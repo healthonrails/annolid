@@ -48,7 +48,10 @@ def test_polygon_classifier_workbench_applies_model_defaults():
     try:
         assert dialog.model_type.currentData() == "tcn"
         assert dialog.epochs.value() == 500
-        assert dialog.learning_rate.value() == 0.000001
+        assert dialog.learning_rate.value() == 0.0001
+        assert dialog.batch_size.value() == 8
+        assert dialog.window_size.value() == 1000
+        assert dialog.hidden_dim.value() == 32
 
         dialog.model_type.setCurrentIndex(0)
         assert dialog.model_type.currentData() == "convnet"

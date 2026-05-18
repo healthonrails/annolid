@@ -532,8 +532,8 @@ class PolygonClassifierWorkbench(QtWidgets.QDialog):
         self.batch_size.setRange(1, 1024)
         self.batch_size.setValue(64)
         self.window_size = QtWidgets.QSpinBox()
-        self.window_size.setRange(3, 101)
-        self.window_size.setSingleStep(2)
+        self.window_size.setRange(3, 5000)
+        self.window_size.setSingleStep(1)
         self.window_size.setValue(11)
         self.learning_rate = QtWidgets.QDoubleSpinBox()
         self.learning_rate.setRange(0.000001, 1.0)
@@ -552,7 +552,7 @@ class PolygonClassifierWorkbench(QtWidgets.QDialog):
                 ("Model", self.model_type),
                 ("Epochs", self.epochs),
                 ("Batch size", self.batch_size),
-                ("Window size", self.window_size),
+                ("Window / sequence length", self.window_size),
                 ("Learning rate", self.learning_rate),
                 ("Hidden dim", self.hidden_dim),
                 ("Device", self.device),
@@ -703,10 +703,10 @@ class PolygonClassifierWorkbench(QtWidgets.QDialog):
         model_type = str(self.model_type.currentData() or "convnet")
         if model_type == "tcn":
             self.epochs.setValue(500)
-            self.learning_rate.setValue(0.000001)
-            self.batch_size.setValue(64)
-            self.window_size.setValue(11)
-            self.hidden_dim.setValue(128)
+            self.learning_rate.setValue(0.0001)
+            self.batch_size.setValue(8)
+            self.window_size.setValue(1000)
+            self.hidden_dim.setValue(32)
         else:
             self.epochs.setValue(30)
             self.learning_rate.setValue(0.004)
@@ -798,6 +798,9 @@ class PolygonClassifierWorkbench(QtWidgets.QDialog):
                 learning_rate=float(self.learning_rate.value()),
                 window_size=int(self.window_size.value()),
                 hidden_dim=int(self.hidden_dim.value()),
+                kernel_size=9
+                if str(self.model_type.currentData() or "convnet") == "tcn"
+                else None,
                 device=""
                 if self.device.currentText() == "auto"
                 else self.device.currentText(),

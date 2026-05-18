@@ -215,9 +215,11 @@ annolid-run train polygon_classifier \
   --run-name fly_polygon_tcn
 ```
 
-By default, `--model-type tcn` uses `--num-epochs 500`,
-`--learning-rate 1e-6`, `--batch-size 64`, `--window-size 11`, and
-`--hidden-dim 128`. Override any of these flags when a smaller smoke test or
+By default, `--model-type tcn` follows the DAART supervised TCN reproduction
+settings: `--num-epochs 500`, `--learning-rate 1e-4`, `--batch-size 8`,
+`--window-size 1000` for sequence length, `--hidden-dim 32`,
+`--num-residual-blocks 2`, `--kernel-size 9` (`n_lags=4`), and
+`--dropout 0.1`. Override any of these flags when a smaller smoke test or
 different training profile is needed.
 
 If you already created `train_polygon_points.csv` and
@@ -252,12 +254,13 @@ outcome = train_polygon_classifier(
     model_type="tcn",
     run_name="fly2_train_20190626_test_tcn",
     num_epochs=500,
-    batch_size=64,
-    learning_rate=1e-6,
-    window_size=11,
-    hidden_dim=128,
-    num_residual_blocks=6,
-    dropout=0.3,
+    batch_size=8,
+    learning_rate=1e-4,
+    window_size=1000,
+    hidden_dim=32,
+    num_residual_blocks=2,
+    kernel_size=9,
+    dropout=0.1,
     device="auto",
 )
 print(outcome)

@@ -48,6 +48,7 @@ class PolygonClassifierPlugin(ModelPluginBase):
                 "--window-size",
                 "--hidden-dim",
                 "--num-residual-blocks",
+                "--kernel-size",
                 "--dropout",
             ),
         ),

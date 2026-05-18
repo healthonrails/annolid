@@ -17,12 +17,13 @@ from annolid.utils.runs import shared_runs_root
 
 _TCN_DEFAULTS = {
     "num_epochs": 500,
-    "learning_rate": 1e-6,
-    "batch_size": 64,
-    "window_size": 11,
-    "hidden_dim": 128,
-    "num_residual_blocks": 6,
-    "dropout": 0.3,
+    "learning_rate": 1e-4,
+    "batch_size": 8,
+    "window_size": 1000,
+    "hidden_dim": 32,
+    "num_residual_blocks": 2,
+    "kernel_size": 9,
+    "dropout": 0.1,
 }
 _CONVNET_DEFAULTS = {
     "num_epochs": 30,
@@ -31,6 +32,7 @@ _CONVNET_DEFAULTS = {
     "window_size": 11,
     "hidden_dim": 128,
     "num_residual_blocks": 6,
+    "kernel_size": 9,
     "dropout": 0.3,
 }
 
@@ -126,7 +128,7 @@ def add_train_args(parser: argparse.ArgumentParser) -> None:
         parser,
         "--window-size",
         option_type=int,
-        help_text="Temporal window size. Defaults depend on --model-type.",
+        help_text="Temporal sequence length for TCN, or sliding window size for ConvNet. Defaults depend on --model-type.",
     )
     _add_optional_default(
         parser,
@@ -139,6 +141,12 @@ def add_train_args(parser: argparse.ArgumentParser) -> None:
         "--num-residual-blocks",
         option_type=int,
         help_text="Number of residual blocks. Defaults depend on --model-type.",
+    )
+    _add_optional_default(
+        parser,
+        "--kernel-size",
+        option_type=int,
+        help_text="TCN convolution kernel size. Defaults to DAART n_lags=4, kernel size 9.",
     )
     _add_optional_default(
         parser,
@@ -205,6 +213,7 @@ def run_train_command(args: argparse.Namespace) -> int:
         window_size=int(params["window_size"]),
         hidden_dim=int(params["hidden_dim"]),
         num_residual_blocks=int(params["num_residual_blocks"]),
+        kernel_size=int(params["kernel_size"]),
         dropout=float(params["dropout"]),
         device=args.device,
     )

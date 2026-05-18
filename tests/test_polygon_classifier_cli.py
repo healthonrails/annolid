@@ -57,7 +57,13 @@ def test_annolid_run_trains_polygon_classifier_from_existing_csvs_with_tcn_defau
     assert rc == 0
     assert calls["model_type"] == "tcn"
     assert calls["num_epochs"] == 500
-    assert calls["learning_rate"] == 1e-6
+    assert calls["learning_rate"] == 1e-4
+    assert calls["batch_size"] == 8
+    assert calls["window_size"] == 1000
+    assert calls["hidden_dim"] == 32
+    assert calls["num_residual_blocks"] == 2
+    assert calls["kernel_size"] == 9
+    assert calls["dropout"] == 0.1
     payload = json.loads(capsys.readouterr().out)
     assert payload["parameters"]["model_type"] == "tcn"
     assert payload["training"]["checkpoint_path"].endswith(

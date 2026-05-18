@@ -706,6 +706,7 @@ def _train_polygon_tcn_classifier(
     window_size: int,
     hidden_dim: int,
     num_residual_blocks: int,
+    kernel_size: int | None,
     dropout: float,
     device: str | None,
 ) -> PolygonTrainingOutcome:
@@ -757,7 +758,7 @@ def _train_polygon_tcn_classifier(
     model_config = TCNModelConfig(
         hidden_dim=int(hidden_dim),
         num_blocks=max(1, int(num_residual_blocks)),
-        kernel_size=max(1, int(window_size)),
+        kernel_size=max(1, int(kernel_size or TCNModelConfig().kernel_size)),
         dropout=float(dropout),
     )
     run_config = TCNRunConfig(
@@ -966,6 +967,7 @@ def train_polygon_classifier(
     window_size: int = 11,
     hidden_dim: int = 128,
     num_residual_blocks: int = 6,
+    kernel_size: int | None = None,
     dropout: float = 0.3,
     device: str | None = None,
 ) -> PolygonTrainingOutcome:
@@ -989,6 +991,22 @@ def train_polygon_classifier(
     run_dir.mkdir(parents=True, exist_ok=False)
 
     if model_kind == "tcn":
+        if int(num_epochs) == 30:
+            num_epochs = 500
+        if int(batch_size) == 64:
+            batch_size = 8
+        if float(learning_rate) == 4e-3:
+            learning_rate = 1e-4
+        if int(window_size) == 11:
+            window_size = 1000
+        if int(hidden_dim) == 128:
+            hidden_dim = 32
+        if int(num_residual_blocks) == 6:
+            num_residual_blocks = 2
+        if kernel_size is None:
+            kernel_size = 9
+        if float(dropout) == 0.3:
+            dropout = 0.1
         return _train_polygon_tcn_classifier(
             train_path=train_path,
             test_path=test_path,
@@ -999,6 +1017,7 @@ def train_polygon_classifier(
             window_size=int(window_size),
             hidden_dim=int(hidden_dim),
             num_residual_blocks=int(num_residual_blocks),
+            kernel_size=kernel_size,
             dropout=float(dropout),
             device=device,
         )
