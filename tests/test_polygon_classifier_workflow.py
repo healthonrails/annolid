@@ -1,7 +1,9 @@
 import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
+import pytest
 import torch
 
 from annolid.behavior.polygon_classifier_workflow import (
@@ -159,6 +161,59 @@ def test_generate_polygon_points_csv_includes_predicted_shapes_from_ndjson(tmp_p
     assert ndjson_row["label"] == "walk"
     assert "fly2_motion_index" in df.columns
     assert ndjson_row["fly2_motion_index"] == 3.5
+
+
+def test_generate_polygon_points_csv_uses_tracking_csv_masks_when_store_has_no_polygons(
+    tmp_path,
+):
+    pytest.importorskip("cv2")
+    mask_utils = pytest.importorskip("pycocotools.mask")
+    annotation_dir = tmp_path / "video_a"
+    annotation_dir.mkdir()
+    (annotation_dir / "video_a_annotations.ndjson").write_text(
+        json.dumps({"frame": 0, "shapes": []}) + "\n",
+        encoding="utf-8",
+    )
+    mask = np.zeros((12, 12), dtype=np.uint8)
+    mask[2:8, 3:9] = 1
+    rle = mask_utils.encode(np.asfortranarray(mask))
+    rle_payload = {
+        "size": [int(rle["size"][0]), int(rle["size"][1])],
+        "counts": rle["counts"].decode("utf-8"),
+    }
+    pd.DataFrame.from_records(
+        [
+            {
+                "frame_number": 0,
+                "x1": 3,
+                "y1": 2,
+                "x2": 8,
+                "y2": 7,
+                "cx": 5.5,
+                "cy": 4.5,
+                "instance_name": "head",
+                "class_score": 1.0,
+                "segmentation": repr(rle_payload),
+                "tracking_id": 1,
+            }
+        ]
+    ).to_csv(annotation_dir / "video_a_tracking.csv", index=False)
+    labels_csv = tmp_path / "manual_labels.csv"
+    labels_csv.write_text("frame_number,background,walk\n0,0,1\n", encoding="utf-8")
+
+    outcome = generate_polygon_points_csv(
+        annotation_dir=annotation_dir,
+        label_csv=labels_csv,
+        output_csv=tmp_path / "polygon_points.csv",
+        num_points=4,
+    )
+
+    assert outcome.rows == 1
+    assert outcome.labels == ("walk",)
+    assert "head_features" in outcome.polygon_columns
+    df = pd.read_csv(outcome.output_csv)
+    assert df.loc[0, "frame"] == "video_a_000000000.json"
+    assert df.loc[0, "label"] == "walk"
 
 
 def test_generate_polygon_train_test_csvs_combines_multiple_videos(tmp_path):

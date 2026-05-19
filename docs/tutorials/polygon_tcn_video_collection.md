@@ -42,11 +42,15 @@ tracking so Annolid writes:
 /path/to/videos/<video_name>/
   <video_name>_000000000.json
   <video_name>_annotations.ndjson
+  <video_name>_tracking.csv
   <video_name>_tracking_stats.json
 ```
 
 The seed JSON should contain one polygon per body part. The NDJSON file should
 then contain tracked polygons for the same labels across frames.
+If the annotation store contains frame records without polygon shapes, Annolid
+falls back to the sibling `*_tracking.csv` file and converts COCO RLE
+`segmentation` masks into polygon points for classifier training.
 
 Check the annotation schema before training:
 

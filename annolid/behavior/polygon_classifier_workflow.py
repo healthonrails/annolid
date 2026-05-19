@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 import tempfile
@@ -231,6 +232,76 @@ def _iter_ndjson_records(path: Path) -> Iterable[tuple[int, dict[str, Any]]]:
             yield int(frame), record
 
 
+def _mask_to_polygon_points(segmentation: object) -> list[list[float]]:
+    if not isinstance(segmentation, str) or not segmentation.strip():
+        return []
+    try:
+        rle = ast.literal_eval(segmentation)
+    except (SyntaxError, ValueError):
+        return []
+    if not isinstance(rle, dict) or "size" not in rle or "counts" not in rle:
+        return []
+    try:
+        import cv2
+        from pycocotools import mask as mask_utils
+    except Exception:
+        return []
+    rle_payload = dict(rle)
+    if isinstance(rle_payload.get("counts"), str):
+        rle_payload["counts"] = rle_payload["counts"].encode("utf-8")
+    try:
+        decoded = mask_utils.decode(rle_payload)
+    except Exception:
+        return []
+    contours, _ = cv2.findContours(
+        decoded.astype("uint8"), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE
+    )
+    if not contours:
+        return []
+    contour = max(contours, key=cv2.contourArea).reshape(-1, 2)
+    if len(contour) < 3:
+        return []
+    return [[float(x), float(y)] for x, y in contour]
+
+
+def _iter_tracking_csv_records(
+    folder: Path,
+) -> Iterable[tuple[int, str, dict[str, Any]]]:
+    for tracking_csv in sorted(folder.glob("*_tracking.csv")):
+        try:
+            usecols = ["frame_number", "instance_name", "segmentation"]
+            df = pd.read_csv(tracking_csv, usecols=usecols)
+        except Exception:
+            continue
+        if df.empty:
+            continue
+        for frame, group in df.groupby("frame_number", sort=True):
+            shapes = []
+            for _, row in group.iterrows():
+                points = _mask_to_polygon_points(row.get("segmentation"))
+                if len(points) < 3:
+                    continue
+                shapes.append(
+                    {
+                        "label": str(row.get("instance_name") or "polygon"),
+                        "shape_type": "polygon",
+                        "points": points,
+                    }
+                )
+            if shapes:
+                frame_number = int(frame)
+                yield (
+                    frame_number,
+                    f"{folder.name}_{frame_number:09d}.json",
+                    {
+                        "version": "annolid-tracking-csv",
+                        "flags": {},
+                        "shapes": shapes,
+                        "imagePath": f"{folder.name}_{frame_number:09d}.png",
+                    },
+                )
+
+
 def _iter_annotation_payloads(
     folder: Path,
 ) -> Iterable[tuple[int, str, dict[str, Any]]]:
@@ -257,6 +328,11 @@ def _iter_annotation_payloads(
                 continue
             frame_name = record.get("imagePath") or f"{folder.name}_{frame:09d}.json"
             records_by_frame[int(frame)] = (str(frame_name), record)
+
+    for frame, frame_name, record in _iter_tracking_csv_records(folder):
+        if frame in records_by_frame:
+            continue
+        records_by_frame[int(frame)] = (frame_name, record)
 
     for frame in sorted(records_by_frame):
         frame_name, record = records_by_frame[frame]
