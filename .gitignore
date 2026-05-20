@@ -155,6 +155,7 @@ graphify-out/
 **/graphify-out/
 sam3_agent_out/
 annolid/realtime/models/
+.codex_runs
 
 # Track only the curated vendored VGGT runtime subset
 annolid/tracker/cowtracker/cowtracker/thirdparty/vggt/**

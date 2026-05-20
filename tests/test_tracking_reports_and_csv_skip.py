@@ -105,6 +105,54 @@ def test_find_tracking_gaps_merges_duplicate_frame_json_files(
     assert gaps["snail"][0]["end_frame"] == 2
 
 
+def test_find_tracking_gaps_prefers_complete_tracking_csv(
+    tmp_path: Path, monkeypatch
+) -> None:
+    video_path = tmp_path / "video.mp4"
+    video_path.write_bytes(b"")
+    json_dir = tmp_path / "video"
+    json_dir.mkdir()
+    (json_dir / "video_000000000.json").write_text(
+        json.dumps({"shapes": [{"label": "head"}]}),
+        encoding="utf-8",
+    )
+
+    tracking_csv = tmp_path / "video_tracking.csv"
+    tracking_csv.write_text(
+        "\n".join(
+            [
+                "frame_number,x1,y1,x2,y2,cx,cy,instance_name,class_score,segmentation,tracking_id",
+                "0,0,0,1,1,0.5,0.5,head,1.0,,0",
+                "0,0,0,1,1,0.5,0.5,thorax,1.0,,0",
+                "1,0,0,1,1,0.5,0.5,head,1.0,,0",
+                "1,0,0,1,1,0.5,0.5,thorax,1.0,,0",
+                "2,0,0,1,1,0.5,0.5,head,1.0,,0",
+                "2,0,0,1,1,0.5,0.5,thorax,1.0,,0",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(tracking_reports, "OPENCV_AVAILABLE", False)
+
+    assert tracking_reports.find_tracking_gaps(str(video_path)) == {}
+
+
+def test_generate_reports_removes_stale_gap_csv_when_no_gaps(tmp_path: Path) -> None:
+    video_path = tmp_path / "video.mp4"
+    video_path.write_bytes(b"")
+    stale_csv = tmp_path / "video_gaps_report.csv"
+    stale_csv.write_text(
+        "instance_label,start_frame,end_frame,duration_frames\nhead,1,2,2\n",
+        encoding="utf-8",
+    )
+
+    tracking_reports.generate_reports({}, str(video_path))
+
+    assert not stale_csv.exists()
+    assert (tmp_path / "video_tracking_gaps_report.md").exists()
+
+
 def test_convert_json_to_csv_skips_when_existing_csv_is_complete(
     tmp_path: Path,
 ) -> None:

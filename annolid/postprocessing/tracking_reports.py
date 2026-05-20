@@ -18,6 +18,41 @@ except ImportError:
     )
 
 
+def _tracking_csv_for_video(video_file: Path) -> Path | None:
+    """Return a tracking CSV with frame/instance rows for the video, if present."""
+    candidates = [
+        video_file.with_name(f"{video_file.stem}_tracking.csv"),
+        video_file.with_name(f"{video_file.stem}_tracked.csv"),
+    ]
+    for csv_path in candidates:
+        if not csv_path.is_file():
+            continue
+        try:
+            columns = set(pd.read_csv(csv_path, nrows=0).columns)
+        except Exception as exc:
+            logger.warning("Could not inspect tracking CSV %s: %s", csv_path, exc)
+            continue
+        if {"frame_number", "instance_name"}.issubset(columns):
+            return csv_path
+    return None
+
+
+def _presence_from_tracking_csv(csv_path: Path) -> tuple[dict[int, set], set, int]:
+    usecols = ["frame_number", "instance_name"]
+    df = pd.read_csv(csv_path, usecols=usecols)
+    if df.empty:
+        return {}, set(), -1
+
+    df = df.dropna(subset=usecols)
+    df["frame_number"] = df["frame_number"].astype(int)
+    frame_presence = {
+        int(frame_number): set(group["instance_name"].astype(str))
+        for frame_number, group in df.groupby("frame_number", sort=True)
+    }
+    all_instance_labels = set(df["instance_name"].astype(str))
+    return frame_presence, all_instance_labels, int(df["frame_number"].max())
+
+
 def find_tracking_gaps(video_path: str) -> dict:
     """
     Scans for tracking gaps based on a video file and its associated JSON directory.
@@ -33,14 +68,19 @@ def find_tracking_gaps(video_path: str) -> dict:
         logger.error(f"Video file not found: {video_file}")
         return {}
 
+    tracking_csv = _tracking_csv_for_video(video_file)
+
     # Infer the JSON directory path from the video filename
     json_directory = video_file.with_suffix("")
-    if not json_directory.is_dir():
+    if tracking_csv is None and not json_directory.is_dir():
         logger.error(f"Associated JSON directory not found at: {json_directory}")
         return {}
 
     logger.info(f"Analyzing video: {video_file.name}")
-    logger.info(f"Reading JSON files from: {json_directory}")
+    if tracking_csv is not None:
+        logger.info(f"Reading tracking CSV from: {tracking_csv}")
+    else:
+        logger.info(f"Reading JSON files from: {json_directory}")
 
     # --- 1. Determine the Full Frame Range (The Ground Truth) ---
     min_frame = 0
@@ -53,6 +93,15 @@ def find_tracking_gaps(video_path: str) -> dict:
         max_frame = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) - 1
         cap.release()
         logger.info(f"Video metadata: Total frames = {max_frame + 1}.")
+    elif tracking_csv is not None:
+        _, _, max_frame = _presence_from_tracking_csv(tracking_csv)
+        if max_frame < 0:
+            logger.warning("No tracking rows found to infer frame range.")
+            return {}
+        logger.warning(
+            "OpenCV not found. Inferred max frame is %s from tracking CSV.",
+            max_frame,
+        )
     else:
         # Fallback if OpenCV is not installed: infer range from JSON files.
         json_files_for_range = sorted(
@@ -74,24 +123,29 @@ def find_tracking_gaps(video_path: str) -> dict:
     )
 
     # --- 2. Scan and Parse Existing Files ---
-    frame_presence: dict[int, set] = {}
-    all_instance_labels = set()
-    for file_path in json_directory.glob("*.json"):
-        try:
-            # Use robust regex to handle filenames like 'video_00001.json'
-            match = re.search(r"(\d+)(?=\.json$)", file_path.name)
-            if not match:
-                continue
+    if tracking_csv is not None:
+        frame_presence, all_instance_labels, _ = _presence_from_tracking_csv(
+            tracking_csv
+        )
+    else:
+        frame_presence: dict[int, set] = {}
+        all_instance_labels = set()
+        for file_path in json_directory.glob("*.json"):
+            try:
+                # Use robust regex to handle filenames like 'video_00001.json'
+                match = re.search(r"(\d+)(?=\.json$)", file_path.name)
+                if not match:
+                    continue
 
-            frame_number = int(match.group(1))
-            with open(file_path, "r") as f:
-                data = json.load(f)
+                frame_number = int(match.group(1))
+                with open(file_path, "r") as f:
+                    data = json.load(f)
 
-            labels_in_frame = {shape["label"] for shape in data.get("shapes", [])}
-            frame_presence.setdefault(frame_number, set()).update(labels_in_frame)
-            all_instance_labels.update(labels_in_frame)
-        except (ValueError, IndexError, json.JSONDecodeError) as e:
-            logger.warning(f"Could not parse file {file_path.name}: {e}")
+                labels_in_frame = {shape["label"] for shape in data.get("shapes", [])}
+                frame_presence.setdefault(frame_number, set()).update(labels_in_frame)
+                all_instance_labels.update(labels_in_frame)
+            except (ValueError, IndexError, json.JSONDecodeError) as e:
+                logger.warning(f"Could not parse file {file_path.name}: {e}")
 
     if not all_instance_labels:
         logger.info("No labeled instances found in any JSON file.")
@@ -168,11 +222,14 @@ def generate_reports(gap_report: dict, video_path: str):
             record = {"instance_label": label, **gap}
             csv_records.append(record)
 
+    csv_filename = output_path.parent / f"{output_path.stem}_gaps_report.csv"
     if csv_records:
         csv_df = pd.DataFrame(csv_records)
-        csv_filename = output_path.parent / f"{output_path.stem}_gaps_report.csv"
         csv_df.to_csv(csv_filename, index=False)
         logger.info(f"Machine-readable gap report saved to: {csv_filename}")
+    elif csv_filename.exists():
+        csv_filename.unlink()
+        logger.info("Removed stale machine-readable gap report: %s", csv_filename)
 
     # --- 2. Generate Human-Readable Markdown Report ---
     md_filename = output_path.parent / f"{output_path.stem}_tracking_gaps_report.md"
