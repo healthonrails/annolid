@@ -100,7 +100,8 @@ Outputs:
 annolid-run predict tcn_behavior \
   --config /path/to/tcn_behavior.yaml \
   --checkpoint-path /path/to/run_dir/best_model.pt \
-  --output-csv /path/to/predictions.csv
+  --output-csv /path/to/predictions.csv \
+  --smoothing-window 51
 ```
 
 The prediction CSV contains one row per frame:
@@ -116,8 +117,13 @@ annolid-run predict tcn_behavior \
   --config /path/to/tcn_behavior.yaml \
   --checkpoint-path /path/to/run_dir/best_model.pt \
   --output-csv /path/to/predictions.csv \
-  --metrics-json /path/to/test_metrics.json
+  --metrics-json /path/to/test_metrics.json \
+  --smoothing-window 51
 ```
+
+Use `--smoothing-window 1` to disable temporal smoothing. Larger odd-valued
+windows average neighboring class probabilities before the final label choice;
+choose the window on validation data rather than on the final test set.
 
 ## Citation
 

@@ -497,7 +497,14 @@ def predict_tcn(
     dataset: TCNSequenceDataset,
     *,
     device: str | torch.device = "auto",
+    smoothing_window: int = 1,
 ) -> dict[str, np.ndarray]:
+    """Predict per-frame labels.
+
+    ``smoothing_window`` applies a centered moving average to class
+    probabilities before the final argmax. This is useful for behavior labels
+    that are expected to persist across neighboring frames.
+    """
     device_t = (
         resolve_device(str(device)) if not isinstance(device, torch.device) else device
     )
@@ -531,9 +538,25 @@ def predict_tcn(
     for session_id, scores in score_by_session.items():
         counts = np.maximum(counts_by_session[session_id][:, None], 1.0)
         scores = scores / counts
+        scores = _smooth_scores(scores, int(smoothing_window))
         score_by_session[session_id] = scores
         pred_by_session[session_id] = scores.argmax(axis=1).astype(np.int64)
     return {"predictions": pred_by_session, "scores": score_by_session}
+
+
+def _smooth_scores(scores: np.ndarray, smoothing_window: int) -> np.ndarray:
+    window = int(smoothing_window)
+    if window <= 1 or len(scores) == 0:
+        return scores
+    if window % 2 == 0:
+        window += 1
+    pad = window // 2
+    kernel = np.ones(window, dtype=np.float32) / float(window)
+    padded = np.pad(scores, ((pad, pad), (0, 0)), mode="edge")
+    smoothed = np.empty_like(scores)
+    for class_idx in range(scores.shape[1]):
+        smoothed[:, class_idx] = np.convolve(padded[:, class_idx], kernel, mode="valid")
+    return smoothed.astype(scores.dtype, copy=False)
 
 
 def evaluate_tcn_predictions(
@@ -581,8 +604,11 @@ def evaluate_tcn(
     *,
     background_index: int = 0,
     device: str | torch.device = "auto",
+    smoothing_window: int = 1,
 ) -> dict[str, Any]:
-    pred = predict_tcn(model, dataset, device=device)["predictions"]
+    pred = predict_tcn(
+        model, dataset, device=device, smoothing_window=int(smoothing_window)
+    )["predictions"]
     y_true: list[np.ndarray] = []
     y_pred: list[np.ndarray] = []
     for session_id, labels in dataset.labels_by_session.items():

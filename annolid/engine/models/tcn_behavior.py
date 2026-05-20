@@ -189,6 +189,15 @@ class TCNBehaviorPlugin(ModelPluginBase):
         parser.add_argument("--metrics-json", default=None)
         parser.add_argument("--split", default="test")
         parser.add_argument("--device", default="auto")
+        parser.add_argument(
+            "--smoothing-window",
+            type=int,
+            default=1,
+            help=(
+                "Centered moving-average window, in frames, applied to class "
+                "probabilities before argmax. Use 1 to disable smoothing."
+            ),
+        )
 
     def predict(self, args: argparse.Namespace) -> int:
         from annolid.behavior.tcn import (
@@ -217,13 +226,24 @@ class TCNBehaviorPlugin(ModelPluginBase):
             normalization=normalization,
             require_labels=False,
         )
-        result = predict_tcn(model, dataset, device=args.device)
+        smoothing_window = max(1, int(getattr(args, "smoothing_window", 1) or 1))
+        result = predict_tcn(
+            model,
+            dataset,
+            device=args.device,
+            smoothing_window=smoothing_window,
+        )
         output_csv = Path(args.output_csv).expanduser().resolve()
         _write_prediction_csv(output_csv, result["predictions"], label_names)
 
         if args.metrics_json:
             if any(session.labels is not None for session in sessions):
-                metrics = evaluate_tcn(model, dataset, device=args.device)
+                metrics = evaluate_tcn(
+                    model,
+                    dataset,
+                    device=args.device,
+                    smoothing_window=smoothing_window,
+                )
             else:
                 metrics = {
                     "macro_f1": 0.0,

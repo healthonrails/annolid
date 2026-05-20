@@ -337,13 +337,15 @@ outcome = predict_polygon_classifier_csv(
     checkpoint_path=run / "polygon_tcn_classifier_best.pt",
     output_csv=run / "new_video_predictions.csv",
     device="auto",
+    smoothing_window=51,
 )
 print(outcome)
 PY
 ```
 
 The input CSV must use the same polygon labels and feature schema used during
-training.
+training. Set `smoothing_window=1` to disable temporal smoothing. Select larger
+windows on validation videos, not on the final test videos.
 
 ## Troubleshooting
 

@@ -20,6 +20,7 @@ from annolid.behavior.tcn import (
     evaluate_tcn,
     fit_normalization,
     load_tcn_checkpoint,
+    predict_tcn,
     read_feature_csv,
     save_tcn_checkpoint,
     train_tcn,
@@ -169,6 +170,30 @@ def test_tcn_training_reenables_grad_mode(tmp_path: Path) -> None:
     assert np.isfinite(history[0]["loss"])
 
 
+def test_tcn_prediction_smoothing_keeps_probabilities_normalized(
+    tmp_path: Path,
+) -> None:
+    test_session = _session(tmp_path, "test", split="test")
+    dataset = TCNSequenceDataset(
+        [test_session],
+        feature_config=TCNFeatureConfig(),
+        label_names=["background", "walk", "groom"],
+        sequence_length=20,
+    )
+    model = BehaviorTCN(
+        input_dim=dataset.input_dim,
+        num_classes=len(dataset.label_names),
+        config=TCNModelConfig(hidden_dim=8, num_blocks=1, kernel_size=3, dropout=0.0),
+    )
+
+    result = predict_tcn(model, dataset, device="cpu", smoothing_window=5)
+
+    scores = result["scores"]["test"]
+    assert scores.shape == (40, 3)
+    np.testing.assert_allclose(scores.sum(axis=1), 1.0, atol=1e-6)
+    assert result["predictions"]["test"].shape == (40,)
+
+
 def test_tcn_behavior_engine_plugin_train_predict(tmp_path: Path) -> None:
     train_session = _session(tmp_path, "train", split="train")
     test_session = _session(tmp_path, "test", split="test")
@@ -245,6 +270,7 @@ def test_tcn_behavior_engine_plugin_train_predict(tmp_path: Path) -> None:
                     "metrics_json": str(tmp_path / "predict_metrics.json"),
                     "split": "test",
                     "device": "cpu",
+                    "smoothing_window": 3,
                 },
             )()
         )

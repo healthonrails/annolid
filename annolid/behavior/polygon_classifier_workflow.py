@@ -945,6 +945,7 @@ def _predict_polygon_tcn_classifier_csv(
     output_csv: str | Path,
     device: str,
     payload: Mapping[str, Any],
+    smoothing_window: int = 1,
 ) -> PolygonInferenceOutcome:
     from annolid.behavior.tcn import (
         TCNFeatureConfig,
@@ -987,7 +988,12 @@ def _predict_polygon_tcn_classifier_csv(
             require_labels=False,
         )
         model, _payload = load_tcn_checkpoint(checkpoint_path, device=device)
-        result = predict_tcn(model, dataset, device=device)
+        result = predict_tcn(
+            model,
+            dataset,
+            device=device,
+            smoothing_window=max(1, int(smoothing_window or 1)),
+        )
         predictions = result["predictions"]
         scores = result["scores"]
 
@@ -1176,6 +1182,7 @@ def predict_polygon_classifier_csv(
     checkpoint_path: str | Path,
     output_csv: str | Path,
     device: str | None = None,
+    smoothing_window: int = 1,
 ) -> PolygonInferenceOutcome:
     """Run frame-level polygon classifier inference for a feature CSV."""
     csv_path = Path(feature_csv).expanduser().resolve()
@@ -1201,6 +1208,7 @@ def predict_polygon_classifier_csv(
             output_csv=output_csv,
             device=str(torch_device),
             payload=raw_state,
+            smoothing_window=smoothing_window,
         )
 
     state = _load_checkpoint(checkpoint_resolved, torch_device)
