@@ -378,5 +378,6 @@ async def build_subagent_tools_registry(
     registry.unregister("coding_session_send")
     registry.unregister("coding_session_poll")
     registry.unregister("coding_session_list")
+    registry.unregister("coding_session_abort")
     registry.unregister("coding_session_close")
     return registry

@@ -633,6 +633,7 @@ def test_coding_harness_manager_processes_long_lived_session_messages(
             task="inspect repo",
             label="coder",
             workspace=str(tmp_path),
+            sandbox="workspace-write",
             origin_channel="local",
             origin_chat_id="u1",
         )
@@ -647,6 +648,7 @@ def test_coding_harness_manager_processes_long_lived_session_messages(
         )
         payload = await manager.poll(session_id, tail_messages=4)
         assert payload["ok"] is True
+        assert payload["sandbox"] == "workspace-write"
         assert payload["turn_count"] == 2
         assert payload["last_response"] == "reply-3-codex-cli/gpt-5.1-codex"
         tail = payload["tail_messages"]

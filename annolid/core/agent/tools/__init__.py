@@ -51,6 +51,7 @@ from .training import (
 from .camera import CameraSnapshotTool
 from .box import BoxTool
 from .coding_harness import (
+    CodingSessionAbortTool,
     CodingSessionCloseTool,
     CodingSessionListTool,
     CodingSessionPollTool,
@@ -316,6 +317,7 @@ __all__ = [
     "CodingSessionSendTool",
     "CodingSessionPollTool",
     "CodingSessionListTool",
+    "CodingSessionAbortTool",
     "CodingSessionCloseTool",
     "BoxTool",
     "GoogleCalendarTool",

@@ -74,6 +74,7 @@ from annolid.core.agent.tools.function_video import (
     VideoSegmentFrameGridTool,
 )
 from annolid.core.agent.tools.function_sam3 import Sam3AgentVideoTrackTool
+from annolid.core.agent.tools.coding_harness import CodingSessionStartTool
 from annolid.core.agent.tools.function_gui import register_annolid_gui_tools
 from annolid.core.agent.tools.function_registry import FunctionToolRegistry
 from annolid.core.agent.tools.mcp import MCPToolWrapper
@@ -3409,6 +3410,7 @@ def test_register_nanobot_style_tools(tmp_path: Path) -> None:
     assert registry.has("coding_session_send")
     assert registry.has("coding_session_poll")
     assert registry.has("coding_session_list")
+    assert registry.has("coding_session_abort")
     assert registry.has("coding_session_close")
     assert registry.has("automation_schedule")
     assert registry.has("exec")
@@ -3431,6 +3433,52 @@ def test_register_nanobot_style_tools(tmp_path: Path) -> None:
     assert registry.has("clawhub_search_skills")
     assert registry.has("clawhub_install_skill")
     assert registry.has("box") is False
+
+
+def test_coding_session_start_tool_resolves_relative_workspace_inside_root(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    project = workspace / "project"
+    project.mkdir(parents=True)
+    captured: dict[str, str] = {}
+
+    class _Manager:
+        async def start(self, **kwargs):
+            captured.update({key: str(value) for key, value in kwargs.items()})
+            return "started"
+
+    tool = CodingSessionStartTool(manager=_Manager(), workspace=workspace)  # type: ignore[arg-type]
+
+    result = asyncio.run(
+        tool.execute(
+            task="review code",
+            workspace="project",
+            sandbox="workspace-write",
+        )
+    )
+
+    assert result == "started"
+    assert captured["workspace"] == str(project.resolve())
+    assert captured["sandbox"] == "workspace-write"
+
+
+def test_coding_session_start_tool_blocks_workspace_outside_root(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    tool = CodingSessionStartTool(manager=object(), workspace=workspace)  # type: ignore[arg-type]
+
+    with pytest.raises(PermissionError):
+        asyncio.run(
+            tool.execute(
+                task="edit code",
+                workspace=str(outside),
+            )
+        )
 
 
 def test_register_nanobot_style_tools_accepts_custom_cron_store_path(

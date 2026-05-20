@@ -60,6 +60,7 @@ from .google_drive import GoogleDriveTool
 from .box import BoxTool
 from .camera import CameraSnapshotTool
 from .coding_harness import (
+    CodingSessionAbortTool,
     CodingSessionCloseTool,
     CodingSessionListTool,
     CodingSessionPollTool,
@@ -248,6 +249,7 @@ async def register_nanobot_style_tools(
     registry.register(CodingSessionSendTool())
     registry.register(CodingSessionPollTool())
     registry.register(CodingSessionListTool())
+    registry.register(CodingSessionAbortTool())
     registry.register(CodingSessionCloseTool())
     registry.register(
         AnnolidRunTool(

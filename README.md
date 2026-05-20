@@ -123,6 +123,7 @@ For advanced users, Docker, Conda, or manual Pip installation, please see the [D
 - To cap slow tool calls in the agent loop, tune `Agent Runtime → Agent tool timeout` (seconds).
 - To force browser-first web handling, keep `Agent Runtime → Prefer MCP browser for web tasks` enabled.
 - Annolid Bot can now run model inference directly on videos via tools: use `video_list_inference_models` to discover compatible `predict` plugins, then `video_run_model_inference` to execute `annolid-run predict <model>` against a video path.
+- Annolid Bot can delegate coding work to long-lived Codex CLI sessions via `coding_session_start`; sessions default to read-only review mode and can opt into `workspace-write` when code edits are explicitly requested.
 - Annolid Bot can also run SAM3 agent-seeded long-video tracking via `sam3_agent_video_track` for occluded or drifting objects that need windowed reseeding. See the [SAM3 guide](docs/sam3.md) for the recommended workflow and output contract.
 - **ClawHub Skills**: Search and install agent skills from ClawHub directly in Annolid Bot. See the tutorials hub at <https://annolid.com/portal/tutorials/>.
 - **Model Context Protocol (MCP)**: Extend Annolid Bot with external tools and data sources. See the [MCP Configuration and Usage Tutorial](docs/mcp.md) for details.

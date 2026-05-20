@@ -15,6 +15,8 @@ from .base import LLMProvider, LLMResponse
 
 DEFAULT_CODEX_CLI = "codex"
 DEFAULT_CODEX_CLI_MODEL = "codex-cli/gpt-5.3-codex"
+DEFAULT_CODEX_CLI_SANDBOX = "read-only"
+_ALLOWED_CODEX_CLI_SANDBOXES = {"read-only", "workspace-write"}
 _ANNOLID_DIR = Path.home() / ".annolid"
 _CODEX_CLI_SESSION_FILE = _ANNOLID_DIR / "codex_cli_sessions.json"
 _CODEX_CLI_SESSION_LOCK = Lock()
@@ -27,6 +29,7 @@ class CodexCLIResolved:
     workdir: str
     session_id: str
     runtime: str
+    sandbox: str
 
 
 def resolve_codex_cli(config: Any) -> CodexCLIResolved:
@@ -36,12 +39,14 @@ def resolve_codex_cli(config: Any) -> CodexCLIResolved:
     workdir = str(params.get("workdir") or "").strip() or os.getcwd()
     session_id = str(params.get("session_id") or "").strip()
     runtime = str(params.get("runtime") or "").strip().lower()
+    sandbox = _normalize_sandbox(params.get("sandbox"))
     return CodexCLIResolved(
         model=model,
         cli_path=cli_path,
         workdir=workdir,
         session_id=session_id,
         runtime=runtime,
+        sandbox=sandbox,
     )
 
 
@@ -83,7 +88,11 @@ class CodexCLIProvider(LLMProvider):
                 finish_reason="error",
             )
 
-        prompt = _render_prompt(messages, tools=tools)
+        prompt = _render_prompt(
+            messages,
+            tools=tools,
+            sandbox=self._resolved.sandbox,
+        )
         timeout_s = float(timeout_seconds) if timeout_seconds else 180.0
         try:
             runner_kwargs = {
@@ -95,6 +104,7 @@ class CodexCLIProvider(LLMProvider):
                 "images": _extract_latest_user_images(messages),
                 "session_id": self._resolved.session_id,
                 "runtime": self._resolved.runtime,
+                "sandbox": self._resolved.sandbox,
             }
             if cancel_event is not None:
                 runner_kwargs["cancel_event"] = cancel_event
@@ -125,8 +135,10 @@ def _run_codex_cli(
     images: Sequence[str],
     session_id: str,
     runtime: str,
+    sandbox: str = DEFAULT_CODEX_CLI_SANDBOX,
     cancel_event: Optional[ThreadEvent] = None,
 ) -> str:
+    sandbox = _normalize_sandbox(sandbox)
     with tempfile.TemporaryDirectory(prefix="annolid-codex-cli-") as tmpdir:
         output_path = Path(tmpdir) / "last_message.txt"
         mapped_thread_id = _load_codex_thread_id(
@@ -145,6 +157,7 @@ def _run_codex_cli(
             thread_id=mapped_thread_id,
             runtime=runtime,
             session_id=session_id,
+            sandbox=sandbox,
             cancel_event=cancel_event,
         )
         if completed.returncode != 0 and mapped_thread_id:
@@ -164,6 +177,7 @@ def _run_codex_cli(
                 thread_id="",
                 runtime=runtime,
                 session_id=session_id,
+                sandbox=sandbox,
                 cancel_event=cancel_event,
             )
         output_text = ""
@@ -202,6 +216,7 @@ def _invoke_codex_cli(
     thread_id: str,
     runtime: str,
     session_id: str,
+    sandbox: str,
     cancel_event: Optional[ThreadEvent],
 ) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
@@ -221,6 +236,8 @@ def _invoke_codex_cli(
             "--model",
             model,
             "--skip-git-repo-check",
+            "--sandbox",
+            sandbox,
             "--json",
             "--color",
             "never",
@@ -236,7 +253,7 @@ def _invoke_codex_cli(
             model,
             "--skip-git-repo-check",
             "--sandbox",
-            "read-only",
+            sandbox,
             "--json",
             "--color",
             "never",
@@ -323,16 +340,39 @@ def _strip_model_prefix(model: str) -> str:
     return raw
 
 
+def _normalize_sandbox(value: Any) -> str:
+    raw = str(value or "").strip().lower().replace("_", "-")
+    if raw in {"readonly", "read"}:
+        raw = "read-only"
+    if raw in {"write", "workspace"}:
+        raw = "workspace-write"
+    if raw not in _ALLOWED_CODEX_CLI_SANDBOXES:
+        return DEFAULT_CODEX_CLI_SANDBOX
+    return raw
+
+
 def _render_prompt(
     messages: Sequence[Dict[str, Any]],
     *,
     tools: Optional[Sequence[Dict[str, Any]]] = None,
+    sandbox: str = DEFAULT_CODEX_CLI_SANDBOX,
 ) -> str:
+    sandbox = _normalize_sandbox(sandbox)
     sections: List[str] = [
         "You are running inside Annolid's Codex CLI runtime.",
         "Respond with the final answer only.",
-        "Do not run shell commands, edit files, or depend on external tools in this mode.",
     ]
+    if sandbox == "workspace-write":
+        sections.append(
+            "You may inspect and edit files in the configured workspace when the user asks for coding changes."
+        )
+        sections.append(
+            "Preserve Annolid data integrity: keep changes scoped, avoid secrets, and report validation actually run."
+        )
+    else:
+        sections.append(
+            "Do not run shell commands, edit files, or depend on external tools in this mode."
+        )
     if tools:
         sections.append(
             "Annolid tools are unavailable in this runtime; answer from the provided context only."

@@ -37,6 +37,7 @@ from .camera import CameraSnapshotTool
 from .box import BoxTool
 from .function_sam3 import Sam3AgentVideoTrackTool
 from .coding_harness import (
+    CodingSessionAbortTool,
     CodingSessionCloseTool,
     CodingSessionListTool,
     CodingSessionPollTool,
@@ -157,6 +158,7 @@ __all__ = [
     "CodingSessionSendTool",
     "CodingSessionPollTool",
     "CodingSessionListTool",
+    "CodingSessionAbortTool",
     "CodingSessionCloseTool",
     "AdminSkillsRefreshTool",
     "AdminMemoryFlushTool",

@@ -514,6 +514,7 @@ def test_codex_cli_provider_runs_text_only_cli(monkeypatch) -> None:
         images,
         session_id,
         runtime,
+        sandbox,
     ):  # noqa: ANN001
         calls["cli_path"] = cli_path
         calls["prompt"] = prompt
@@ -523,6 +524,7 @@ def test_codex_cli_provider_runs_text_only_cli(monkeypatch) -> None:
         calls["images"] = list(images)
         calls["session_id"] = session_id
         calls["runtime"] = runtime
+        calls["sandbox"] = sandbox
         return "final cli reply"
 
     resolved = resolve_codex_cli(
@@ -558,6 +560,7 @@ def test_codex_cli_provider_runs_text_only_cli(monkeypatch) -> None:
     assert calls["workdir"] == "/tmp/annolid-codex"
     assert calls["session_id"] == "gui:test-codex"
     assert calls["runtime"] == ""
+    assert calls["sandbox"] == "read-only"
     assert "tools are unavailable" in calls["prompt"].lower()
 
 
@@ -607,6 +610,7 @@ def test_codex_cli_runner_persists_and_resumes_thread_id(
         images=[],
         session_id="gui:codex-session",
         runtime="acp",
+        sandbox="workspace-write",
     )
     second = codex_cli_mod._run_codex_cli(
         cli_path="codex",
@@ -617,9 +621,12 @@ def test_codex_cli_runner_persists_and_resumes_thread_id(
         images=[],
         session_id="gui:codex-session",
         runtime="acp",
+        sandbox="workspace-write",
     )
 
     assert first == "cli reply"
     assert second == "cli reply"
     assert "resume" not in calls[0]
     assert calls[1][:4] == ["codex", "exec", "resume", "thread_123"]
+    assert calls[0][calls[0].index("--sandbox") + 1] == "workspace-write"
+    assert calls[1][calls[1].index("--sandbox") + 1] == "workspace-write"

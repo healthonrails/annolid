@@ -9,6 +9,7 @@ from annolid.core.agent.coding_harness import (
     get_coding_harness_manager,
 )
 
+from .common import _resolve_read_path
 from .function_base import FunctionTool
 
 
@@ -46,6 +47,10 @@ class CodingSessionStartTool(FunctionTool):
                 "provider": {"type": "string"},
                 "model": {"type": "string"},
                 "workspace": {"type": "string"},
+                "sandbox": {
+                    "type": "string",
+                    "enum": ["read-only", "workspace-write"],
+                },
             },
             "required": ["task"],
         }
@@ -57,20 +62,34 @@ class CodingSessionStartTool(FunctionTool):
         provider: str = "codex_cli",
         model: str = "codex-cli/gpt-5.1-codex",
         workspace: str = "",
+        sandbox: str = "read-only",
         **kwargs: Any,
     ) -> str:
         del kwargs
         manager = self._manager or get_coding_harness_manager()
+        resolved_workspace = self._resolve_workspace(workspace)
         reply = await manager.start(
             task=task,
             label=label or None,
             provider=provider,
             model=model,
-            workspace=workspace or str(self._workspace or Path.cwd()),
+            workspace=resolved_workspace,
+            sandbox=sandbox,
             origin_channel=self._origin_channel,
             origin_chat_id=self._origin_chat_id,
         )
         return reply
+
+    def _resolve_workspace(self, workspace: str) -> str:
+        raw = str(workspace or "").strip()
+        if not raw:
+            return str(Path(self._workspace or Path.cwd()).expanduser().resolve())
+        if self._workspace is None:
+            return str(Path(raw).expanduser().resolve())
+        candidate = Path(raw).expanduser()
+        if not candidate.is_absolute():
+            candidate = self._workspace / candidate
+        return str(_resolve_read_path(str(candidate), allowed_dir=self._workspace))
 
 
 class CodingSessionSendTool(FunctionTool):
@@ -215,10 +234,43 @@ class CodingSessionCloseTool(FunctionTool):
         )
 
 
+class CodingSessionAbortTool(FunctionTool):
+    def __init__(self, *, manager: Optional[CodingHarnessManager] = None) -> None:
+        self._manager = manager
+
+    @property
+    def name(self) -> str:
+        return "coding_session_abort"
+
+    @property
+    def description(self) -> str:
+        return "Abort the active turn in a coding harness session without closing it."
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "session_id": {"type": "string"},
+            },
+            "required": ["session_id"],
+        }
+
+    async def execute(self, session_id: str, **kwargs: Any) -> str:
+        del kwargs
+        manager = self._manager or get_coding_harness_manager()
+        ok = await manager.abort(session_id)
+        return json.dumps(
+            {"ok": bool(ok), "session_id": session_id},
+            ensure_ascii=False,
+        )
+
+
 __all__ = [
     "CodingSessionStartTool",
     "CodingSessionSendTool",
     "CodingSessionPollTool",
     "CodingSessionListTool",
     "CodingSessionCloseTool",
+    "CodingSessionAbortTool",
 ]

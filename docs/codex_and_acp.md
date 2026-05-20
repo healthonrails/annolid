@@ -70,10 +70,12 @@ Current behavior:
 
 - default model: `codex-cli/gpt-5.3-codex`
 - text-first runtime
+- default sandbox: `read-only`
+- optional coding sandbox: `workspace-write`
 - Codex CLI thread IDs are persisted so later turns can resume the same Codex thread
 - GUI chat sessions pass the Annolid session ID through to preserve continuity
 
-This mode is useful when the local Codex CLI is already installed and you want a simpler runtime path.
+This mode is useful when the local Codex CLI is already installed and you want a simpler runtime path. Use the default `read-only` sandbox for review, explanation, and planning tasks. Use `workspace-write` only when the user explicitly wants Codex to make code changes in the selected workspace.
 
 Requirements:
 
@@ -124,6 +126,7 @@ What that means in practice:
 - keep it open across prompts,
 - queue follow-up requests into the same session,
 - cancel the active turn without destroying the whole session,
+- run in either `read-only` or `workspace-write` Codex CLI sandbox mode,
 - expose the session over stdio for IDE integrations.
 
 This is different from one-shot provider chat. ACP is for ongoing coding work.
@@ -138,7 +141,7 @@ Annolid also tracks Codex CLI thread continuity for ACP-backed Codex CLI runs, s
 
 ### Cancel Behavior
 
-ACP `cancel` does not tear down the whole session anymore.
+ACP `cancel`, and the Annolid Bot `coding_session_abort` tool, do not tear down the whole session.
 
 Current behavior:
 
@@ -168,6 +171,7 @@ Current ACP-native methods supported:
 - `prompt`
 - `cancel`
 - `listSessions`
+- `health`
 - `shutdown`
 
 Annolid also accepts compatibility aliases used by OpenClaw-style clients, including:
@@ -217,6 +221,7 @@ Use this if you prefer the local CLI path:
 1. Install the `codex` CLI.
 2. Set provider to `codex_cli`.
 3. Keep using the same Annolid chat session to preserve Codex CLI thread continuity.
+4. For implementation tasks, start a coding session with `sandbox` set to `workspace-write`; for review and explanation, keep `read-only`.
 
 ### IDE or Thread-Oriented Coding Work
 

@@ -187,6 +187,7 @@ class ACPStdioBridge:
                     "notifications": ["sessions.updated", "session.updated"],
                     "runtimes": ["acp"],
                     "session_runtime": "acp",
+                    "sandboxModes": ["read-only", "workspace-write"],
                     "loadSession": True,
                     "promptCapabilities": {
                         "image": False,
@@ -297,6 +298,8 @@ class ACPStdioBridge:
                 or "codex-cli/gpt-5.1-codex",
                 workspace=self._optional_text(normalized_params.get("workspace"))
                 or self._workspace,
+                sandbox=self._optional_text(normalized_params.get("sandbox"))
+                or "read-only",
                 origin_channel=self._optional_text(
                     normalized_params.get("origin_channel")
                 )
@@ -446,6 +449,7 @@ class ACPStdioBridge:
             "provider": meta.provider,
             "model": meta.model,
             "workspace": meta.workspace,
+            "sandbox": getattr(meta, "sandbox", "read-only"),
             "runtime": "acp",
             "kind": "acp",
             "turn_count": int(meta.turn_count),
@@ -481,6 +485,7 @@ class ACPStdioBridge:
             provider=self._optional_text(params.get("provider")) or "codex_cli",
             model=self._optional_text(params.get("model")) or "codex-cli/gpt-5.1-codex",
             workspace=cwd,
+            sandbox=self._optional_text(params.get("sandbox")) or "read-only",
             origin_channel="acp-stdio",
             origin_chat_id=reuse_session_id or "external",
         )

@@ -10,6 +10,7 @@ from threading import Event as ThreadEvent
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from annolid.core.agent.providers.background_chat import run_codex_cli_chat
+from annolid.core.agent.providers.codex_cli_provider import DEFAULT_CODEX_CLI_SANDBOX
 from annolid.core.agent.session_manager import AgentSessionManager
 from annolid.utils.llm_settings import default_settings
 
@@ -27,6 +28,7 @@ class CodingHarnessSession:
     provider: str
     model: str
     workspace: str
+    sandbox: str
     origin_channel: str
     origin_chat_id: str
     status: str = "idle"
@@ -75,6 +77,7 @@ class CodingHarnessManager:
         provider: str = "codex_cli",
         model: str = "codex-cli/gpt-5.1-codex",
         workspace: str = "",
+        sandbox: str = DEFAULT_CODEX_CLI_SANDBOX,
         origin_channel: str = "cli",
         origin_chat_id: str = "direct",
     ) -> CodingHarnessSession:
@@ -87,6 +90,7 @@ class CodingHarnessManager:
             provider=provider,
             model=model,
             workspace=workspace,
+            sandbox=sandbox,
             origin_channel=origin_channel,
             origin_chat_id=origin_chat_id,
         )
@@ -103,6 +107,7 @@ class CodingHarnessManager:
         provider: str = "codex_cli",
         model: str = "codex-cli/gpt-5.1-codex",
         workspace: str = "",
+        sandbox: str = DEFAULT_CODEX_CLI_SANDBOX,
         origin_channel: str = "cli",
         origin_chat_id: str = "direct",
     ) -> CodingHarnessSession:
@@ -115,6 +120,7 @@ class CodingHarnessManager:
             provider=str(provider or "codex_cli").strip().lower(),
             model=str(model or "codex-cli/gpt-5.1-codex").strip(),
             workspace=workspace_path,
+            sandbox=_normalize_coding_sandbox(sandbox),
             origin_channel=origin_channel,
             origin_chat_id=origin_chat_id,
             status="idle",
@@ -134,6 +140,7 @@ class CodingHarnessManager:
         provider: str = "codex_cli",
         model: str = "codex-cli/gpt-5.1-codex",
         workspace: str = "",
+        sandbox: str = DEFAULT_CODEX_CLI_SANDBOX,
         origin_channel: str = "cli",
         origin_chat_id: str = "direct",
     ) -> str:
@@ -144,6 +151,7 @@ class CodingHarnessManager:
                 provider=provider,
                 model=model,
                 workspace=workspace,
+                sandbox=sandbox,
                 origin_channel=origin_channel,
                 origin_chat_id=origin_chat_id,
             )
@@ -151,7 +159,7 @@ class CodingHarnessManager:
             return f"Error: {exc}"
         return (
             f"Coding harness [{meta.label}] started (id: {meta.session_id}, "
-            f"provider: {meta.provider})."
+            f"provider: {meta.provider}, sandbox: {meta.sandbox})."
         )
 
     async def send_message(self, session_id: str, message: str) -> bool:
@@ -197,6 +205,7 @@ class CodingHarnessManager:
             "provider": meta.provider,
             "model": meta.model,
             "workspace": meta.workspace,
+            "sandbox": meta.sandbox,
             "turn_count": meta.turn_count,
             "pending_messages": meta.pending_messages,
             "last_response": meta.last_response,
@@ -244,12 +253,17 @@ class CodingHarnessManager:
             meta.active_cancel_event = cancel_event
 
             try:
+                turn_settings = dict(self._settings)
+                provider_block = dict(turn_settings.get(meta.provider, {}) or {})
+                if isinstance(provider_block, dict):
+                    provider_block["sandbox"] = meta.sandbox
+                    turn_settings[meta.provider] = provider_block
                 invoke_kwargs = {
                     "prompt": message,
                     "image_path": "",
                     "model": meta.model,
                     "provider_name": meta.provider,
-                    "settings": self._settings,
+                    "settings": turn_settings,
                     "load_history_messages": lambda: self.get_session_transcript(
                         meta.session_id
                     ),
@@ -331,6 +345,7 @@ class CodingHarnessManager:
                 "provider": meta.provider,
                 "model": meta.model,
                 "workspace": meta.workspace,
+                "sandbox": meta.sandbox,
                 "status": meta.status,
                 "turn_count": meta.turn_count,
                 "pending_messages": meta.pending_messages,
@@ -351,6 +366,17 @@ class CodingHarnessManager:
 
 _HARNESS_MANAGER: Optional[CodingHarnessManager] = None
 _HARNESS_MANAGER_LOOP_ID: Optional[int] = None
+
+
+def _normalize_coding_sandbox(value: str) -> str:
+    raw = str(value or "").strip().lower().replace("_", "-")
+    if raw in {"readonly", "read"}:
+        raw = "read-only"
+    if raw in {"write", "workspace"}:
+        raw = "workspace-write"
+    if raw not in {"read-only", "workspace-write"}:
+        return DEFAULT_CODEX_CLI_SANDBOX
+    return raw
 
 
 def get_coding_harness_manager() -> CodingHarnessManager:
