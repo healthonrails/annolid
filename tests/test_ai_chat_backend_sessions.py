@@ -481,3 +481,43 @@ def test_streaming_chat_task_forwards_selected_slash_skills_to_agent_loop(
     assert captured["prompt"] == "Summarize aggression bouts."
     kwargs = dict(captured.get("kwargs") or {})
     assert kwargs.get("skill_names") == ["behavior-segmentation"]
+
+
+def test_tool_first_weather_failure_skips_empty_model_turn(monkeypatch) -> None:
+    task = StreamingChatTask(
+        prompt="weather",
+        widget=None,
+        provider="nvidia",
+        model="moonshotai/kimi-k2.6",
+        enable_web_tools=True,
+    )
+    emitted: dict[str, object] = {}
+
+    async def _no_direct_command() -> bool:
+        return False
+
+    async def _fake_context(**_kwargs):
+        return ai_chat_backend._AgentExecutionContext(
+            workspace=Path.cwd(),
+            allowed_read_roots=[],
+            tools=ai_chat_backend.FunctionToolRegistry(),
+            system_prompt="system",
+            strict_runtime_tool_guard=False,
+        )
+
+    def _unexpected_loop(**_kwargs):
+        raise AssertionError("agent loop should not run after tool-first web failure")
+
+    monkeypatch.setattr(task, "_provider_dependency_error", lambda: None)
+    monkeypatch.setattr(task, "_try_execute_direct_gui_command", _no_direct_command)
+    monkeypatch.setattr(task, "_build_agent_execution_context", _fake_context)
+    monkeypatch.setattr(task, "_build_agent_loop_instance", _unexpected_loop)
+    monkeypatch.setattr(
+        ai_chat_backend,
+        "emit_agent_loop_result",
+        lambda **kwargs: emitted.update(kwargs),
+    )
+
+    ai_chat_backend.run_chat_awaitable_sync(task._run_agent_loop_async())
+
+    assert "I tried a local-context lookup first" in str(emitted.get("text") or "")

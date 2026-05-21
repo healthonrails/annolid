@@ -7,6 +7,7 @@ import json
 import os
 import re
 import socket
+import time
 import urllib.parse
 from pathlib import Path
 from typing import Any
@@ -95,10 +96,13 @@ class WebSearchTool(FunctionTool):
         api_key: str | None = None,
         max_results: int = 5,
         backend: str = "auto",
+        cache_ttl_seconds: float = 900.0,
     ):
         self.api_key = api_key or os.environ.get("BRAVE_API_KEY", "")
         self.max_results = max_results
         self.backend = str(backend or "auto").strip().lower()
+        self.cache_ttl_seconds = max(0.0, float(cache_ttl_seconds or 0.0))
+        self._cache: dict[tuple[str, str, int], tuple[float, str]] = {}
 
     @property
     def name(self) -> str:
@@ -139,6 +143,10 @@ class WebSearchTool(FunctionTool):
         preferred = (
             requested_backend if requested_backend in self._VALID_BACKENDS else "auto"
         )
+        cache_key = self._cache_key(query_text, preferred, n)
+        cached = self._get_cached(cache_key)
+        if cached:
+            return cached
         scrapling_available = False
 
         if preferred in {"auto", "scrapling"}:
@@ -147,7 +155,9 @@ class WebSearchTool(FunctionTool):
             )
             scrapling_available = scrapling_result is not None
             if scrapling_result:
-                return self._format_results(query_text, scrapling_result)
+                text = self._format_results(query_text, scrapling_result)
+                self._store_cached(cache_key, text)
+                return text
             if preferred == "scrapling":
                 if scrapling_available:
                     return f"No results for: {query_text}"
@@ -158,11 +168,36 @@ class WebSearchTool(FunctionTool):
 
         brave_result = await self._search_with_brave(query=query_text, count=n)
         if brave_result is not None:
-            return self._format_results(query_text, brave_result)
+            text = self._format_results(query_text, brave_result)
+            self._store_cached(cache_key, text)
+            return text
 
         if scrapling_available:
             return f"No results for: {query_text}"
         return "Error: BRAVE_API_KEY not configured"
+
+    @staticmethod
+    def _cache_key(query: str, backend: str, count: int) -> tuple[str, str, int]:
+        normalized_query = " ".join(str(query or "").split()).strip().lower()
+        normalized_backend = str(backend or "auto").strip().lower()
+        return (normalized_backend, normalized_query, int(count))
+
+    def _get_cached(self, key: tuple[str, str, int]) -> str:
+        if self.cache_ttl_seconds <= 0:
+            return ""
+        cached = self._cache.get(key)
+        if cached is None:
+            return ""
+        expires_at, text = cached
+        if time.monotonic() >= expires_at:
+            self._cache.pop(key, None)
+            return ""
+        return text
+
+    def _store_cached(self, key: tuple[str, str, int], text: str) -> None:
+        if self.cache_ttl_seconds <= 0 or not str(text or "").strip():
+            return
+        self._cache[key] = (time.monotonic() + self.cache_ttl_seconds, text)
 
     @staticmethod
     def _bounded_int(

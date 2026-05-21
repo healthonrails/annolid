@@ -2762,6 +2762,52 @@ def test_web_search_tool_prefers_scrapling_backend(monkeypatch) -> None:
     assert "Brave Result" not in result
 
 
+def test_web_search_tool_caches_successful_results(monkeypatch) -> None:
+    tool = WebSearchTool(api_key="", cache_ttl_seconds=900)
+    calls = {"scrapling": 0}
+
+    async def _fake_scrapling(*, query: str, count: int):
+        del query, count
+        calls["scrapling"] += 1
+        return [
+            {
+                "title": "Cached Result",
+                "url": "https://example.org/cached",
+                "description": "",
+            }
+        ]
+
+    monkeypatch.setattr(tool, "_search_with_scrapling", _fake_scrapling)
+    first = asyncio.run(tool.execute(query="Annolid Weather", count=3))
+    second = asyncio.run(tool.execute(query=" annolid   weather ", count=3))
+
+    assert first == second
+    assert calls["scrapling"] == 1
+
+
+def test_web_search_tool_cache_can_be_disabled(monkeypatch) -> None:
+    tool = WebSearchTool(api_key="", cache_ttl_seconds=0)
+    calls = {"scrapling": 0}
+
+    async def _fake_scrapling(*, query: str, count: int):
+        del query, count
+        calls["scrapling"] += 1
+        return [
+            {
+                "title": f"Result {calls['scrapling']}",
+                "url": "https://example.org/result",
+                "description": "",
+            }
+        ]
+
+    monkeypatch.setattr(tool, "_search_with_scrapling", _fake_scrapling)
+    first = asyncio.run(tool.execute(query="annolid"))
+    second = asyncio.run(tool.execute(query="annolid"))
+
+    assert first != second
+    assert calls["scrapling"] == 2
+
+
 def test_web_search_tool_scrapling_fetchers_class_api(monkeypatch) -> None:
     called: dict[str, object] = {}
 

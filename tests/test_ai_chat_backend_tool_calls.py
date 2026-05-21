@@ -2737,7 +2737,135 @@ def test_finalize_agent_text_strips_raw_tool_call_markup() -> None:
     assert used_direct_gui_fallback is False
     assert "<|tool_calls_section_begin|>" not in text
     assert "functions.read_file" not in text
-    assert "Model returned empty output after multiple attempts." in text
+    assert "I couldn't retrieve current web data" in text
+
+
+def test_finalize_agent_text_uses_web_fallback_after_markup_sanitization() -> None:
+    class _DummyRegistry:
+        def has(self, name: str) -> bool:
+            return name == "web_search"
+
+        async def execute(self, name: str, params: dict) -> str:
+            assert name == "web_search"
+            assert params.get("query") == "check today's weather"
+            return (
+                "Results for: check today's weather\n\n"
+                "1. Ithaca weather\n   https://example.org/weather\n"
+                "   39 F, light rain, wind 6 mph."
+            )
+
+    class _Result:
+        content = (
+            "<|tool_calls_section_begin|> <|tool_call_begin|> functions.read_file:0 "
+            '<|tool_call_argument_begin|> {"file_path": '
+            '"/Users/chenyang/.annolid/workspace/skills/weather/skill.yaml"} '
+            "<|tool_call_end|> <|tool_calls_section_end|>"
+        )
+        tool_runs = ()
+
+    task = StreamingChatTask(
+        "check today's weather",
+        widget=None,
+        enable_web_tools=True,
+        provider="nvidia",
+        model="moonshotai/kimi-k2.6",
+    )
+    text, used_recovery, used_direct_gui_fallback = task._finalize_agent_text(
+        _Result(),
+        tools=_DummyRegistry(),  # type: ignore[arg-type]
+    )
+    assert used_recovery is False
+    assert used_direct_gui_fallback is False
+    assert "Results for: check today's weather" in text
+    assert "39 F, light rain" in text
+
+
+def test_tool_first_live_web_response_uses_web_search_before_model() -> None:
+    class _DummyRegistry:
+        def has(self, name: str) -> bool:
+            return name == "web_search"
+
+        async def execute(self, name: str, params: dict) -> str:
+            assert name == "web_search"
+            assert params.get("query") == "weather in Ithaca NY"
+            return (
+                "Results for: weather in Ithaca NY\n\n"
+                "1. Ithaca weather\n   https://example.org/weather\n"
+                "   39 F, light rain, wind 6 mph."
+            )
+
+    task = StreamingChatTask(
+        "weather in Ithaca NY",
+        widget=None,
+        enable_web_tools=True,
+        provider="nvidia",
+        model="moonshotai/kimi-k2.6",
+    )
+    text = task._run_async(
+        task._try_tool_first_live_web_response(
+            _DummyRegistry(),  # type: ignore[arg-type]
+        )
+    )
+    assert "Results for: weather in Ithaca NY" in text
+    assert "39 F, light rain" in text
+
+
+def test_tool_first_weather_response_prefers_browser_skill_order() -> None:
+    calls: list[str] = []
+
+    class _DummyRegistry:
+        def has(self, name: str) -> bool:
+            return name in {"web_search", "gui_web_run_steps"}
+
+        async def execute(self, name: str, params: dict) -> str:
+            calls.append(name)
+            if name == "gui_web_run_steps":
+                return json.dumps(
+                    {
+                        "ok": True,
+                        "results": [
+                            {
+                                "action": "get_text",
+                                "result": {
+                                    "ok": True,
+                                    "text": "Ithaca weather today: 39 F, light rain.",
+                                },
+                            }
+                        ],
+                    }
+                )
+            if name == "web_search":
+                return "Results for: weather in Ithaca NY"
+            raise AssertionError(f"Unexpected tool {name}")
+
+    task = StreamingChatTask(
+        "weather in Ithaca NY",
+        widget=None,
+        enable_web_tools=True,
+        provider="nvidia",
+        model="moonshotai/kimi-k2.6",
+    )
+    text = task._run_async(
+        task._try_tool_first_live_web_response(
+            _DummyRegistry(),  # type: ignore[arg-type]
+        )
+    )
+    assert "Ithaca weather today" in text
+    assert calls == ["gui_web_run_steps"]
+
+
+def test_weather_empty_output_uses_tool_context_message_after_attempt() -> None:
+    task = StreamingChatTask(
+        "weather",
+        widget=None,
+        enable_web_tools=True,
+        provider="nvidia",
+        model="moonshotai/kimi-k2.6",
+    )
+    task._live_web_fallback_attempted = True
+    text = task._ensure_non_empty_final_text("")
+    assert "I tried a local-context lookup first" in text
+    assert "Model returned empty output" not in text
 
 
 def test_finalize_agent_text_does_not_force_web_search_for_non_web_empty_output() -> (

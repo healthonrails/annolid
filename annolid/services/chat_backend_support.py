@@ -42,6 +42,16 @@ from annolid.core.agent.gui_backend.heuristics import (
     should_attach_tracking_stats_context,
     topic_tokens,
 )
+from annolid.core.agent.gui_backend.live_web import (
+    ContextualWebPrompt,
+    ToolFirstWebResult,
+    contextualize_live_web_prompt,
+    is_bare_weather_prompt,
+    is_tool_first_live_web_prompt,
+    is_weather_prompt,
+    run_tool_first_live_web_response,
+    tool_first_live_web_error_message,
+)
 from annolid.core.agent.gui_backend.ollama_adapter import (
     build_gui_ollama_llm_callable,
     collect_gui_ollama_stream,
@@ -101,6 +111,11 @@ from annolid.core.agent.gui_backend.turn_state import (
     TURN_STATUS_QUEUED,
     TURN_STATUS_RUNNING,
 )
+from annolid.core.agent.web_intents import (
+    WEATHER_INTENT_TOKENS,
+    has_fast_web_data_intent,
+    tokenize_intent_text,
+)
 
 __all__ = [
     "ERROR_TYPE_CANCELLED",
@@ -113,6 +128,9 @@ __all__ = [
     "TURN_STATUS_FAILED",
     "TURN_STATUS_QUEUED",
     "TURN_STATUS_RUNNING",
+    "WEATHER_INTENT_TOKENS",
+    "ToolFirstWebResult",
+    "ContextualWebPrompt",
     "build_extractive_summary",
     "build_root_slash_completion_entries",
     "build_gui_compact_system_prompt",
@@ -126,6 +144,7 @@ __all__ = [
     "collect_gui_ollama_stream",
     "collect_tutorial_evidence",
     "contains_hint",
+    "contextualize_live_web_prompt",
     "emit_agent_loop_result",
     "extract_gui_ollama_text",
     "extract_page_text_from_web_steps",
@@ -134,6 +153,10 @@ __all__ = [
     "extract_web_urls",
     "find_video_by_basename_in_roots",
     "format_gui_tool_trace",
+    "has_fast_web_data_intent",
+    "is_bare_weather_prompt",
+    "is_tool_first_live_web_prompt",
+    "is_weather_prompt",
     "gui_apply_direct_gui_fallback",
     "gui_apply_empty_ollama_recovery",
     "gui_apply_pdf_response_fallback",
@@ -164,14 +187,17 @@ __all__ = [
     "prompt_may_need_tools",
     "matches_slash_completion_search",
     "resolve_video_path_for_roots",
+    "run_tool_first_live_web_response",
     "select_annolid_reference_paths",
     "should_attach_live_pdf_context",
     "should_attach_live_web_context",
     "should_attach_tracking_stats_context",
     "topic_tokens",
+    "tool_first_live_web_error_message",
     "try_browser_search_fallback",
     "try_open_page_content_fallback",
     "try_web_fetch_fallback",
     "try_web_search_fallback",
+    "tokenize_intent_text",
     "build_gui_ollama_llm_callable",
 ]

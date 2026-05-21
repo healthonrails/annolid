@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from threading import Lock
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Sequence
 
 from annolid.utils.logger import logger
@@ -96,6 +97,18 @@ if TYPE_CHECKING:
         GoogleAuthConfig,
     )
     from annolid.core.agent.scheduler import TaskScheduler
+
+
+_INFO_LOG_ONCE_KEYS: set[str] = set()
+_INFO_LOG_ONCE_LOCK = Lock()
+
+
+def _log_info_once(key: str, message: str) -> None:
+    with _INFO_LOG_ONCE_LOCK:
+        if key in _INFO_LOG_ONCE_KEYS:
+            return
+        _INFO_LOG_ONCE_KEYS.add(key)
+    logger.info(message)
 
 
 async def register_nanobot_style_tools(
@@ -435,7 +448,10 @@ async def register_nanobot_style_tools(
         )
 
     if getattr(calendar_cfg, "enabled", False) and registry.has("google_calendar"):
-        logger.info("Google Calendar tool registered with Google OAuth backend.")
+        _log_info_once(
+            "google_calendar_registered_oauth",
+            "Google Calendar tool registered with Google OAuth backend.",
+        )
 
     if google_drive_enabled:
         credentials_file = str(
