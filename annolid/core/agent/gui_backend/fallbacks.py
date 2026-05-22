@@ -1,15 +1,148 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import quote_plus
 
 from annolid.core.agent.gui_backend.heuristics import (
     EMBEDDED_SEARCH_SOURCE,
     EMBEDDED_SEARCH_URL_TEMPLATE,
+    classify_unresolved_tool_promise,
 )
 from annolid.core.agent.web_prompt_utils import normalize_web_lookup_prompt
 from annolid.core.agent.tools import FunctionToolRegistry
+
+
+_LOCAL_SEARCH_STOPWORDS = {
+    "about",
+    "annolid",
+    "check",
+    "codebase",
+    "could",
+    "feature",
+    "features",
+    "find",
+    "handle",
+    "handles",
+    "how",
+    "improve",
+    "like",
+    "look",
+    "recent",
+    "repo",
+    "repository",
+    "search",
+    "source",
+    "tell",
+    "that",
+    "the",
+    "this",
+    "what",
+    "where",
+    "will",
+    "with",
+}
+
+
+def _derive_local_search_query(prompt: str, fallback_text: str = "") -> str:
+    combined = f"{prompt}\n{fallback_text}"
+    for pattern in (r"`([^`]{2,80})`", r"['\"]([^'\"]{2,80})['\"]"):
+        for match in re.findall(pattern, combined):
+            query = " ".join(str(match).split()).strip()
+            if query:
+                return query
+    symbolic = re.findall(r"\b[a-zA-Z][a-zA-Z0-9]*(?:[_\-.][a-zA-Z0-9]+)+\b", combined)
+    if symbolic:
+        return symbolic[0].strip(".,:;")
+    lowered = combined.lower()
+    tokens = [
+        token
+        for token in re.findall(r"[a-zA-Z_][a-zA-Z0-9_]{2,}", lowered)
+        if token not in _LOCAL_SEARCH_STOPWORDS
+    ]
+    if not tokens:
+        return ""
+    return tokens[0]
+
+
+def _format_local_search_payload(payload: Dict[str, Any]) -> str:
+    results = payload.get("results")
+    if not isinstance(results, list):
+        return ""
+    lines = []
+    for row in results[:8]:
+        if not isinstance(row, dict):
+            continue
+        path = str(row.get("path") or "").strip()
+        line = int(row.get("line") or 0)
+        text = str(row.get("text") or "").strip()
+        if not path or not line:
+            continue
+        lines.append(f"- {path}:{line}: {text[:180]}")
+    if not lines:
+        return ""
+    query = str(payload.get("query") or "").strip()
+    count = int(payload.get("count") or len(lines))
+    truncated = " (truncated)" if bool(payload.get("truncated")) else ""
+    return (
+        f"I searched the local workspace for `{query}` and found {count} match(es)"
+        f"{truncated}:\n" + "\n".join(lines)
+    )
+
+
+async def try_local_search_fallback(
+    *,
+    prompt: str,
+    fallback_text: str,
+    tools: Optional[FunctionToolRegistry],
+    emit_progress: Callable[[str], None],
+) -> str:
+    registry = tools
+    if registry is None or not registry.has("code_search"):
+        return ""
+    intent = classify_unresolved_tool_promise(fallback_text)
+    if intent is None or intent.kind != "local_search":
+        return ""
+    query = _derive_local_search_query(prompt, fallback_text)
+    if not query:
+        return ""
+    try:
+        emit_progress("Converting local-search promise into code_search")
+        payload_raw = await registry.execute(
+            "code_search",
+            {
+                "query": query,
+                "path": ".",
+                "glob": "*",
+                "max_results": 8,
+                "context_lines": 0,
+            },
+        )
+    except Exception:
+        return ""
+    try:
+        payload = json.loads(str(payload_raw or "{}"))
+    except Exception:
+        return ""
+    if not isinstance(payload, dict) or payload.get("error"):
+        return ""
+    return _format_local_search_payload(payload)
+
+
+async def try_code_search_fallback(
+    *,
+    prompt: str,
+    fallback_text: str,
+    tools: Optional[FunctionToolRegistry],
+    emit_progress: Callable[[str], None],
+) -> str:
+    return await try_local_search_fallback(
+        prompt=prompt,
+        fallback_text=fallback_text,
+        tools=tools,
+        emit_progress=emit_progress,
+    )
 
 
 def candidate_web_urls_for_prompt(

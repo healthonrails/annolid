@@ -151,6 +151,18 @@ Recommended action:
 - keep runtime execution separate from messaging and scheduling where possible,
 - require signed skills in production-like environments.
 
+### Runtime Network and Workspace Guards
+
+Annolid Bot blocks shell commands that target private or internal HTTP(S)
+addresses, including local hosts and cloud metadata ranges. Workspace-scoped
+shell execution also treats the configured workspace as the trusted root, so a
+tool call cannot widen access by passing a different `working_dir`.
+
+Filesystem tools report workspace-boundary failures as hard policy boundaries.
+If the same outside target is retried across equivalent tools, the tool registry
+returns a refusal that tells the agent to ask the user how to proceed instead of
+trying shell or path-workaround variants.
+
 ### Unsigned Auto Updates
 
 If automatic updates are enabled without strict signature requirements, the audit flags it.

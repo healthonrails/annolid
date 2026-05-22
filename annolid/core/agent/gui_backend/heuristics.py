@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
-from typing import List, Tuple
+from typing import List, Literal, Tuple
 
 from annolid.core.agent.web_intents import LIVE_WEB_INTENT_HINTS
 
@@ -196,6 +196,71 @@ EMBEDDED_SEARCH_URL_TEMPLATE = "https://html.duckduckgo.com/html/?q={query}"
 EMBEDDED_SEARCH_SOURCE = "DuckDuckGo search results page (embedded web viewer)."
 _WORD_RE = re.compile(r"[a-zA-Z0-9_]+")
 
+TOOL_PROMISE_START_HINTS: Tuple[str, ...] = (
+    "i'll",
+    "i will",
+    "let me",
+    "i am going to",
+    "i'm going to",
+)
+
+TOOL_PROMISE_ACTION_TOKENS: Tuple[str, ...] = (
+    "analyze",
+    "analyse",
+    "check",
+    "extract",
+    "find",
+    "inspect",
+    "look",
+    "open",
+    "read",
+    "review",
+    "scan",
+    "search",
+    "summarize",
+    "summarise",
+)
+
+LOCAL_SEARCH_CONTEXT_TOKENS: Tuple[str, ...] = (
+    "changelog",
+    "code",
+    "codebase",
+    "file",
+    "files",
+    "repo",
+    "repository",
+    "source",
+    "test",
+    "tests",
+)
+
+WEB_TOOL_CONTEXT_TOKENS: Tuple[str, ...] = (
+    "browser",
+    "current",
+    "forecast",
+    "latest",
+    "news",
+    "page",
+    "site",
+    "today",
+    "url",
+    "weather",
+    "web",
+    "website",
+)
+
+PDF_TOOL_CONTEXT_TOKENS: Tuple[str, ...] = (
+    "article",
+    "document",
+    "manuscript",
+    "paper",
+    "pdf",
+    "phrase",
+    "section",
+)
+
+ToolPromiseKind = Literal["local_search", "web", "pdf"]
+
 
 @dataclass(frozen=True)
 class PhraseHeuristic:
@@ -203,6 +268,12 @@ class PhraseHeuristic:
     max_chars: int | None = None
     required_any_terms: Tuple[str, ...] = ()
     required_all_terms: Tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ToolPromiseIntent:
+    kind: ToolPromiseKind
+    action: str
 
 
 def contains_hint(text: str, hints: Tuple[str, ...]) -> bool:
@@ -214,6 +285,35 @@ def contains_hint(text: str, hints: Tuple[str, ...]) -> bool:
 
 def _token_set(text: str) -> set[str]:
     return set(_WORD_RE.findall(str(text or "").lower()))
+
+
+def _first_matching_token(tokens: set[str], candidates: Tuple[str, ...]) -> str:
+    for candidate in candidates:
+        if candidate in tokens:
+            return candidate
+    return ""
+
+
+def classify_unresolved_tool_promise(text: str) -> ToolPromiseIntent | None:
+    lowered = str(text or "").strip().lower()
+    if not lowered or len(lowered) > 420:
+        return None
+    if not contains_hint(lowered, TOOL_PROMISE_START_HINTS):
+        return None
+    tokens = _token_set(lowered)
+    action = _first_matching_token(tokens, TOOL_PROMISE_ACTION_TOKENS)
+    if not action:
+        return None
+    local_hit = _first_matching_token(tokens, LOCAL_SEARCH_CONTEXT_TOKENS)
+    pdf_hit = _first_matching_token(tokens, PDF_TOOL_CONTEXT_TOKENS)
+    web_hit = _first_matching_token(tokens, WEB_TOOL_CONTEXT_TOKENS)
+    if local_hit:
+        return ToolPromiseIntent(kind="local_search", action=action)
+    if pdf_hit:
+        return ToolPromiseIntent(kind="pdf", action=action)
+    if web_hit:
+        return ToolPromiseIntent(kind="web", action=action)
+    return None
 
 
 def looks_like_url_request(text: str) -> bool:
@@ -277,6 +377,9 @@ def looks_like_open_pdf_suggestion(text: str) -> bool:
 
 
 def looks_like_pdf_read_promise(text: str) -> bool:
+    intent = classify_unresolved_tool_promise(text)
+    if intent is not None and intent.kind == "pdf":
+        return True
     return _matches_phrase_heuristic(
         text,
         PhraseHeuristic(
@@ -301,6 +404,9 @@ def looks_like_pdf_read_promise(text: str) -> bool:
 
 
 def looks_like_web_lookup_promise(text: str) -> bool:
+    intent = classify_unresolved_tool_promise(text)
+    if intent is not None and intent.kind == "web":
+        return True
     return _matches_phrase_heuristic(
         text,
         PhraseHeuristic(
@@ -316,6 +422,15 @@ def looks_like_web_lookup_promise(text: str) -> bool:
             ),
         ),
     )
+
+
+def looks_like_codebase_search_promise(text: str) -> bool:
+    return looks_like_local_search_promise(text)
+
+
+def looks_like_local_search_promise(text: str) -> bool:
+    intent = classify_unresolved_tool_promise(text)
+    return bool(intent is not None and intent.kind == "local_search")
 
 
 def looks_like_pdf_phrase_miss_response(text: str) -> bool:

@@ -8,6 +8,13 @@ from pathlib import Path
 from typing import Sequence
 from urllib.parse import urlparse
 
+WORKSPACE_BOUNDARY_NOTE = (
+    " This is a hard policy boundary, not a transient failure; do not retry "
+    "with shell tricks, symlinks, base64 piping, alternative tools, or "
+    "working_dir overrides. If the resource is genuinely required, ask the "
+    "user how to proceed."
+)
+
 
 def _normalize_workspace_alias_path(path: str) -> str:
     raw = str(path or "").strip()
@@ -32,8 +39,11 @@ def _normalize_workspace_alias_path(path: str) -> str:
 
 def _resolve_path(path: str, allowed_dir: Path | None = None) -> Path:
     resolved = Path(path).expanduser().resolve()
-    if allowed_dir and not str(resolved).startswith(str(allowed_dir.resolve())):
-        raise PermissionError(f"Path {path} is outside allowed directory {allowed_dir}")
+    if allowed_dir and not _is_within_root(resolved, Path(allowed_dir).resolve()):
+        raise PermissionError(
+            f"Path {path} is outside allowed directory {allowed_dir}."
+            f"{WORKSPACE_BOUNDARY_NOTE}"
+        )
     return resolved
 
 
@@ -74,7 +84,10 @@ def _resolve_read_path(
     roots = _normalize_allowed_read_roots(allowed_dir, allowed_read_roots)
     if roots and not any(_is_within_root(resolved, root) for root in roots):
         allowed = ", ".join(str(root) for root in roots)
-        raise PermissionError(f"Path {path} is outside allowed read roots: [{allowed}]")
+        raise PermissionError(
+            f"Path {path} is outside allowed read roots: [{allowed}]."
+            f"{WORKSPACE_BOUNDARY_NOTE}"
+        )
     return resolved
 
 
@@ -83,7 +96,10 @@ def _resolve_write_path(path: str, *, allowed_dir: Path | None = None) -> Path:
     if allowed_dir is not None and not _is_within_root(
         resolved, Path(allowed_dir).expanduser().resolve()
     ):
-        raise PermissionError(f"Path {path} is outside allowed directory {allowed_dir}")
+        raise PermissionError(
+            f"Path {path} is outside allowed directory {allowed_dir}."
+            f"{WORKSPACE_BOUNDARY_NOTE}"
+        )
     return resolved
 
 

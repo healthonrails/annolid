@@ -102,6 +102,7 @@ from annolid.services.chat_backend_support import (
     list_available_pdfs_in_roots,
     looks_like_local_access_refusal,
     looks_like_knowledge_gap_response,
+    looks_like_local_search_promise,
     looks_like_pdf_phrase_miss_response,
     looks_like_pdf_summary_request,
     looks_like_pdf_read_promise,
@@ -125,6 +126,7 @@ from annolid.services.chat_backend_support import (
     topic_tokens,
     tool_first_live_web_error_message,
     try_browser_search_fallback,
+    try_local_search_fallback,
     try_open_page_content_fallback,
     try_web_fetch_fallback,
     try_web_search_fallback,
@@ -1434,6 +1436,9 @@ class StreamingChatTask(QRunnable):
         text = await self._apply_web_response_fallbacks(
             text, tools=tools, tool_run_count=tool_run_count
         )
+        text = await self._apply_local_search_response_fallback(
+            text, tools=tools, tool_run_count=tool_run_count
+        )
         text = self._apply_pdf_response_fallback(text, tool_run_count=tool_run_count)
         text = self._replace_unresolved_action_promise(text)
         text = self._upgrade_pdf_summary_response(text)
@@ -1570,6 +1575,25 @@ class StreamingChatTask(QRunnable):
             try_web_fetch_fallback=self._try_web_fetch_fallback,
             log_web_fallback_event=self._log_web_fallback_event,
         )
+
+    async def _apply_local_search_response_fallback(
+        self,
+        text: str,
+        *,
+        tools: Optional[FunctionToolRegistry],
+        tool_run_count: int,
+    ) -> str:
+        if tool_run_count > 0:
+            return text
+        if not looks_like_local_search_promise(text):
+            return text
+        fallback = await try_local_search_fallback(
+            prompt=self.prompt,
+            fallback_text=text,
+            tools=tools,
+            emit_progress=self._emit_progress,
+        )
+        return fallback or text
 
     async def _try_tool_first_live_web_response(
         self,

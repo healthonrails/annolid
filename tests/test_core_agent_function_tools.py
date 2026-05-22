@@ -4,6 +4,7 @@ import asyncio
 import json
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import types
@@ -289,6 +290,32 @@ def test_function_registry_validate_and_execute() -> None:
     assert "Invalid parameters" in bad
     ok = asyncio.run(registry.execute("echo", {"text": "hi"}))
     assert ok == "hi"
+
+
+def test_function_registry_throttles_repeated_workspace_boundary(
+    tmp_path: Path,
+) -> None:
+    registry = FunctionToolRegistry()
+    registry.register(ReadFileTool(allowed_dir=tmp_path))
+    registry.register(WriteFileTool(allowed_dir=tmp_path))
+    registry.register(
+        SandboxedExecTool(working_dir=str(tmp_path), restrict_to_workspace=True)
+    )
+    outside = tmp_path.parent / f"{tmp_path.name}_outside.txt"
+
+    first = asyncio.run(registry.execute("read_file", {"path": str(outside)}))
+    second = asyncio.run(
+        registry.execute(
+            "write_file",
+            {"path": str(outside), "content": "blocked"},
+        )
+    )
+    third = asyncio.run(registry.execute("exec", {"command": f"cat {outside}"}))
+
+    assert "outside allowed" in first
+    assert "outside allowed" in second
+    assert "refusing repeated workspace-bypass" in third
+    assert str(outside).lower() in third
 
 
 def test_annolid_run_tool_executes_in_process_cli(monkeypatch, tmp_path: Path) -> None:
@@ -2622,6 +2649,54 @@ def test_exec_tool_guard_blocks_dangerous() -> None:
     tool = SandboxedExecTool()
     result = asyncio.run(tool.execute(command="rm -rf /tmp/foo"))
     assert "blocked by safety guard" in result
+
+
+def test_exec_tool_blocks_private_network_targets(monkeypatch) -> None:
+    def _private_getaddrinfo(hostname, port, family=0, type=0):
+        del hostname, port, family, type
+        return [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("169.254.169.254", 0))]
+
+    monkeypatch.setattr(
+        "annolid.core.agent.security_network.socket.getaddrinfo",
+        _private_getaddrinfo,
+    )
+
+    tool = SandboxedExecTool()
+    result = asyncio.run(
+        tool.execute(
+            command=(
+                "curl -s -H 'Metadata-Flavor: Google' "
+                "http://169.254.169.254/computeMetadata/v1/"
+            )
+        )
+    )
+
+    assert "blocked by safety guard" in result
+    assert "internal URL target" in result
+
+
+def test_exec_tool_rejects_working_dir_outside_configured_workspace(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+
+    tool = SandboxedExecTool(working_dir=str(workspace), restrict_to_workspace=True)
+    result = asyncio.run(
+        tool.execute(command="echo should-not-run", working_dir=str(outside))
+    )
+
+    assert "working_dir outside the configured workspace" in result
+
+
+def test_exec_tool_allows_benign_device_redirect_inside_workspace(tmp_path: Path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    tool = SandboxedExecTool(working_dir=str(workspace), restrict_to_workspace=True)
+
+    result = tool._guard_command("echo ok >/dev/null", str(workspace))
+
+    assert result is None
 
 
 def test_sandboxed_exec_tool_builds_hardened_docker_command(tmp_path: Path) -> None:

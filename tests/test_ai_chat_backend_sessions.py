@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from pathlib import Path
 from datetime import date
 
+from annolid.core.agent.tools.function_base import FunctionTool
 from annolid.core.agent.session_manager import (
     AgentSessionManager,
     PersistentSessionStore,
@@ -11,6 +13,41 @@ from annolid.core.agent.session_manager import (
 import annolid.gui.widgets.ai_chat_backend as ai_chat_backend
 from annolid.gui.widgets.ai_chat_backend import StreamingChatTask
 from annolid.gui.widgets.ai_chat_widget import _extract_slash_selection_state
+
+
+class _FakeCodeSearchTool(FunctionTool):
+    @property
+    def name(self) -> str:
+        return "code_search"
+
+    @property
+    def description(self) -> str:
+        return "fake code search"
+
+    @property
+    def parameters(self) -> dict[str, object]:
+        return {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        }
+
+    async def execute(self, query: str, **kwargs) -> str:
+        del kwargs
+        return json.dumps(
+            {
+                "query": query,
+                "count": 1,
+                "truncated": False,
+                "results": [
+                    {
+                        "path": "annolid/core/agent/runner.py",
+                        "line": 312,
+                        "text": "if response.should_execute_tools:",
+                    }
+                ],
+            }
+        )
 
 
 def test_streaming_chat_task_persists_and_loads_session_history(tmp_path: Path) -> None:
@@ -524,6 +561,39 @@ def test_selected_skills_force_tool_context_for_generic_prompt(monkeypatch) -> N
     ai_chat_backend.run_chat_awaitable_sync(task._run_agent_loop_async())
 
     assert captured["include_tools"] is True
+
+
+def test_finalize_converts_local_search_promise_to_code_search() -> None:
+    assert ai_chat_backend.looks_like_local_search_promise(
+        "I'll inspect the repository for recent release notes."
+    )
+    assert not ai_chat_backend.looks_like_local_search_promise(
+        "I'll check the weather forecast."
+    )
+    task = StreamingChatTask(
+        prompt="Check how Annolid handles tool calls in the codebase.",
+        widget=None,
+        provider="openai",
+        model="gpt-4o-mini",
+    )
+    tools = ai_chat_backend.FunctionToolRegistry()
+    tools.register(_FakeCodeSearchTool())
+
+    text, used_recovery, used_direct = ai_chat_backend.run_chat_awaitable_sync(
+        task._finalize_agent_text_async(
+            SimpleNamespace(
+                content="I'll search the Annolid codebase for tool calls.",
+                tool_runs=[],
+            ),
+            tools=tools,
+        )
+    )
+
+    assert used_recovery is False
+    assert used_direct is False
+    assert "I searched the local workspace for `tool`" in text
+    assert "annolid/core/agent/runner.py:312" in text
+    assert "I'll search" not in text
 
 
 def test_tool_first_weather_failure_skips_empty_model_turn(monkeypatch) -> None:

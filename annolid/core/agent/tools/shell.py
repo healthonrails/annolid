@@ -6,10 +6,26 @@ import re
 from pathlib import Path
 from typing import Any
 
+from annolid.core.agent.security_network import contains_private_url_target
+
 from .function_base import FunctionTool
 
 
 class ExecTool(FunctionTool):
+    _BENIGN_DEVICE_PATHS = frozenset(
+        {
+            "/dev/null",
+            "/dev/zero",
+            "/dev/full",
+            "/dev/random",
+            "/dev/urandom",
+            "/dev/stdin",
+            "/dev/stdout",
+            "/dev/stderr",
+            "/dev/tty",
+        }
+    )
+
     def __init__(
         self,
         timeout: int = 60,
@@ -32,6 +48,9 @@ class ExecTool(FunctionTool):
         ]
         self.allow_patterns = allow_patterns or []
         self.restrict_to_workspace = restrict_to_workspace
+        self._workspace_root = (
+            Path(working_dir).expanduser().resolve() if working_dir else None
+        )
 
     @property
     def name(self) -> str:
@@ -98,6 +117,12 @@ class ExecTool(FunctionTool):
     def _guard_command(self, command: str, cwd: str) -> str | None:
         cmd = command.strip()
         lower = cmd.lower()
+        blocked_url, url_error = contains_private_url_target(cmd)
+        if blocked_url:
+            return (
+                "Error: Command blocked by safety guard "
+                f"(private or internal URL target: {url_error})"
+            )
         for pattern in self.deny_patterns:
             if re.search(pattern, lower):
                 return "Error: Command blocked by safety guard (dangerous pattern detected)"
@@ -111,18 +136,34 @@ class ExecTool(FunctionTool):
                     "Error: Command blocked by safety guard (path traversal detected)"
                 )
             cwd_path = Path(cwd).resolve()
+            workspace_root = self._workspace_root or cwd_path
+            if not self._is_within_root(cwd_path, workspace_root):
+                return (
+                    "Error: Command blocked by safety guard "
+                    "(working_dir outside the configured workspace)"
+                )
             abs_paths = re.findall(r"(?:^|[\s|>])(/[^\s\"'>]+)", cmd)
             for raw in abs_paths:
                 try:
                     p = Path(raw.strip()).resolve()
                 except Exception:
                     continue
-                if p.is_absolute() and cwd_path not in p.parents and p != cwd_path:
+                if str(p) in self._BENIGN_DEVICE_PATHS or str(p).startswith("/dev/fd/"):
+                    continue
+                if not self._is_within_root(p, workspace_root):
                     return (
                         "Error: Command blocked by safety guard "
                         "(path outside working dir)"
                     )
         return None
+
+    @staticmethod
+    def _is_within_root(path: Path, root: Path) -> bool:
+        try:
+            path.relative_to(root)
+            return True
+        except ValueError:
+            return False
 
 
 __all__ = ["ExecTool"]
