@@ -81,6 +81,28 @@ def apply_pdf_response_fallback(
     return open_pdf_fallback or text
 
 
+def replace_unresolved_pdf_action_promise(
+    text: str,
+    *,
+    looks_like_pdf_read_promise: Callable[[str], bool],
+    get_pdf_state: Callable[[], Any],
+) -> str:
+    if not looks_like_pdf_read_promise(text):
+        return text
+    state = dict(get_pdf_state() or {})
+    if not bool(state.get("has_pdf")):
+        return (
+            "I couldn't complete the requested document lookup because no PDF "
+            "is open or resolvable in Annolid Bot. Open the PDF or include a "
+            "PDF path/URL, then ask again."
+        )
+    return (
+        "I couldn't complete the requested document lookup from the open PDF. "
+        "Try asking for a specific page, section, phrase, or provide the PDF "
+        "path so Annolid Bot can extract the relevant context."
+    )
+
+
 def apply_empty_ollama_recovery(
     text: str,
     *,

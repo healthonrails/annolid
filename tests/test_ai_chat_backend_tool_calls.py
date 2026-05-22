@@ -2010,6 +2010,12 @@ def test_prompt_may_need_tools_heuristic() -> None:
     assert (
         StreamingChatTask._prompt_may_need_tools("what is the weather today?") is True
     )
+    assert (
+        StreamingChatTask._prompt_may_need_tools(
+            "Where is S3LDS discussed in this paper?"
+        )
+        is True
+    )
     assert StreamingChatTask._prompt_may_need_tools("latest ai news") is True
     assert StreamingChatTask._prompt_may_need_tools("hello there") is False
 
@@ -3148,6 +3154,34 @@ def test_finalize_agent_text_pdf_fallback_replaces_read_promise_placeholder() ->
     assert "Summary of the open PDF" in text
     assert "quantum-dot-grounded behavioral data".lower() in text.lower()
     assert "I'll read the relevant section" not in text
+
+
+def test_finalize_agent_text_replaces_unresolved_extract_promise_without_pdf() -> None:
+    class _Result:
+        content = (
+            "I'll extract the text around where S3LDS is discussed to understand "
+            "the context."
+        )
+        tool_runs = ()
+
+    task = StreamingChatTask(
+        "Where is S3LDS discussed in this paper?",
+        widget=None,
+        enable_web_tools=True,
+    )
+    task._tool_gui_pdf_get_state = lambda: {  # type: ignore[method-assign]
+        "ok": True,
+        "has_pdf": False,
+    }
+
+    text, used_recovery, used_direct_gui_fallback = task._finalize_agent_text(
+        _Result(),
+        tools=None,
+    )
+    assert used_recovery is False
+    assert isinstance(used_direct_gui_fallback, bool)
+    assert "I'll extract" not in text
+    assert "no PDF is open or resolvable" in text
 
 
 def test_finalize_agent_text_pdf_fallback_replaces_phrase_miss_placeholder() -> None:

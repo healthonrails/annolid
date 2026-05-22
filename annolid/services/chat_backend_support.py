@@ -78,6 +78,7 @@ from annolid.core.agent.gui_backend.response_finalize import (
     apply_pdf_response_fallback as gui_apply_pdf_response_fallback,
     apply_web_response_fallbacks as gui_apply_web_response_fallbacks,
     ensure_non_empty_final_text as gui_ensure_non_empty_final_text,
+    replace_unresolved_pdf_action_promise as gui_replace_unresolved_pdf_action_promise,
     sanitize_final_response_text as gui_sanitize_final_response_text,
     should_apply_web_refusal_fallback as gui_should_apply_web_refusal_fallback,
 )
@@ -163,6 +164,7 @@ __all__ = [
     "gui_apply_web_response_fallbacks",
     "gui_ensure_non_empty_final_text",
     "gui_log_agent_result",
+    "gui_replace_unresolved_pdf_action_promise",
     "gui_sanitize_final_response_text",
     "gui_should_apply_web_refusal_fallback",
     "gui_looks_like_raw_pdf_extract_response",

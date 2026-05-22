@@ -210,6 +210,10 @@ class AgentContextBuilder:
             "For camera checks in non-GUI channels, use `camera_snapshot` to probe and save a frame, "
             "then use `email` with `attachment_paths` to send the saved snapshot.\n"
             "Do not claim these tools are unavailable before trying them.\n"
+            "If a request needs tool-backed reading, browsing, file, GUI, or runtime "
+            "work, call the tool before answering. Do not end with a promise such "
+            'as "I\'ll check", "I\'ll read", or "I\'ll extract" unless the action '
+            "has already completed or a specific missing input blocks it.\n"
         )
 
     def _load_bootstrap_files(self) -> str:

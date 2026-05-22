@@ -89,6 +89,7 @@ from annolid.services.chat_backend_support import (
     gui_apply_direct_gui_fallback,
     gui_apply_empty_ollama_recovery,
     gui_apply_pdf_response_fallback,
+    gui_replace_unresolved_pdf_action_promise,
     gui_sanitize_final_response_text,
     gui_apply_web_response_fallbacks,
     gui_ensure_non_empty_final_text,
@@ -889,10 +890,17 @@ class StreamingChatTask(QRunnable):
             provider=self.provider,
         )
 
+    def _should_include_agent_tools(self) -> bool:
+        return bool(
+            self._prompt_may_need_tools(self.prompt)
+            or self.selected_skill_names
+            or self.selected_tool_names
+        )
+
     def _fallback_timeout_retry_seconds(self) -> float:
         return chat_fallback_timeout_retry_seconds(
             settings=self.settings,
-            prompt_needs_tools=self._prompt_may_need_tools(self.prompt),
+            prompt_needs_tools=self._should_include_agent_tools(),
         )
 
     def _provider_dependency_error(self) -> Optional[str]:
@@ -1002,7 +1010,7 @@ class StreamingChatTask(QRunnable):
             )
             return True
 
-        prompt_needs_tools = self._prompt_may_need_tools(self.prompt)
+        prompt_needs_tools = self._should_include_agent_tools()
         context = await self._build_agent_execution_context(
             include_tools=prompt_needs_tools,
             selected_skill_names=self.selected_skill_names,
@@ -1427,6 +1435,7 @@ class StreamingChatTask(QRunnable):
             text, tools=tools, tool_run_count=tool_run_count
         )
         text = self._apply_pdf_response_fallback(text, tool_run_count=tool_run_count)
+        text = self._replace_unresolved_action_promise(text)
         text = self._upgrade_pdf_summary_response(text)
         text, used_recovery = self._apply_empty_ollama_recovery(
             text,
@@ -1648,6 +1657,13 @@ class StreamingChatTask(QRunnable):
             looks_like_pdf_phrase_miss_response=self._looks_like_pdf_phrase_miss_response,
             looks_like_pdf_summary_request=self._looks_like_pdf_summary_request,
             try_open_pdf_content_fallback=self._try_open_pdf_content_fallback,
+        )
+
+    def _replace_unresolved_action_promise(self, text: str) -> str:
+        return gui_replace_unresolved_pdf_action_promise(
+            text,
+            looks_like_pdf_read_promise=self._looks_like_pdf_read_promise,
+            get_pdf_state=self._tool_gui_pdf_get_state,
         )
 
     def _apply_empty_ollama_recovery(

@@ -483,6 +483,49 @@ def test_streaming_chat_task_forwards_selected_slash_skills_to_agent_loop(
     assert kwargs.get("skill_names") == ["behavior-segmentation"]
 
 
+def test_selected_skills_force_tool_context_for_generic_prompt(monkeypatch) -> None:
+    task = StreamingChatTask(
+        prompt="continue",
+        widget=None,
+        provider="openai",
+        model="gpt-4o-mini",
+    )
+    task.selected_skill_names = ["paper-reader"]
+    captured: dict[str, object] = {}
+
+    async def _no_direct_command() -> bool:
+        return False
+
+    async def _fake_context(**kwargs):
+        captured["include_tools"] = kwargs.get("include_tools")
+        return ai_chat_backend._AgentExecutionContext(
+            workspace=Path.cwd(),
+            allowed_read_roots=[],
+            tools=ai_chat_backend.FunctionToolRegistry(),
+            system_prompt="system",
+            strict_runtime_tool_guard=False,
+        )
+
+    class _Loop:
+        async def run(self, prompt: str, **kwargs):
+            del prompt, kwargs
+            return SimpleNamespace(content="ok", tool_runs=[])
+
+    monkeypatch.setattr(task, "_try_execute_direct_gui_command", _no_direct_command)
+    monkeypatch.setattr(task, "_build_agent_execution_context", _fake_context)
+    monkeypatch.setattr(task, "_resolve_mcp_servers", lambda **_kwargs: [])
+    monkeypatch.setattr(task, "_log_runtime_timeouts", lambda **_kwargs: None)
+    monkeypatch.setattr(task, "_build_agent_loop_instance", lambda **_kwargs: _Loop())
+    monkeypatch.setattr(task, "_log_agent_result", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        ai_chat_backend, "emit_agent_loop_result", lambda **kwargs: None
+    )
+
+    ai_chat_backend.run_chat_awaitable_sync(task._run_agent_loop_async())
+
+    assert captured["include_tools"] is True
+
+
 def test_tool_first_weather_failure_skips_empty_model_turn(monkeypatch) -> None:
     task = StreamingChatTask(
         prompt="weather",
