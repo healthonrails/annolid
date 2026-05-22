@@ -240,7 +240,7 @@ annolid-run train polygon_classifier \
 ```
 
 The command prints JSON with the generated CSV paths, run directory,
-checkpoint, metrics path, and training parameters.
+checkpoint, metrics path, Markdown report path, and training parameters.
 
 The same workflow is available from Python when scripting inside notebooks:
 
@@ -281,6 +281,7 @@ Each run writes:
 ```text
 <run_dir>/
   metrics.json
+  report.md
   polygon_tcn_classifier_best.pt
   test_predictions.csv
   tcn_inputs/

@@ -282,6 +282,15 @@ def test_train_polygon_classifier_handles_single_video_csv(tmp_path):
 
     assert Path(outcome.checkpoint_path).is_file()
     assert Path(outcome.metrics_path).is_file()
+    assert outcome.report_path is not None
+    report_text = Path(outcome.report_path).read_text(encoding="utf-8")
+    assert "# Polygon Classifier Training Report" in report_text
+    assert "macro_f1" in report_text
+
+    metrics_payload = json.loads(Path(outcome.metrics_path).read_text(encoding="utf-8"))
+    assert metrics_payload["model_type"] == "convnet"
+    assert metrics_payload["held_out_test"]["available"] is True
+    assert "classification_report" in metrics_payload["held_out_test"]
 
 
 def test_train_polygon_classifier_supports_tcn_model(tmp_path):
@@ -319,7 +328,13 @@ def test_train_polygon_classifier_supports_tcn_model(tmp_path):
     assert outcome.model_type == "tcn"
     assert Path(outcome.checkpoint_path).name == "polygon_tcn_classifier_best.pt"
     assert Path(outcome.metrics_path).is_file()
+    assert outcome.report_path is not None
+    assert Path(outcome.report_path).is_file()
     assert "NaN" not in Path(outcome.metrics_path).read_text(encoding="utf-8")
+    metrics_payload = json.loads(Path(outcome.metrics_path).read_text(encoding="utf-8"))
+    assert metrics_payload["model_type"] == "tcn"
+    assert metrics_payload["held_out_test"]["available"] is True
+    assert metrics_payload["test_predictions_csv"].endswith("test_predictions.csv")
     tcn_features = pd.read_csv(
         Path(outcome.run_dir) / "tcn_inputs" / "train" / "video_a_features.csv"
     )

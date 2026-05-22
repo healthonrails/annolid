@@ -10,6 +10,9 @@ from annolid.agents.coding_agent import AnalysisCodingAgent
 from annolid.agents.report_agent import ReportAgent
 from annolid.domain.behavior_agent import TaskPlan, TrackArtifact
 from annolid.services.behavior_agent.model_policy import resolve_behavior_model_policy
+from annolid.services.behavior_agent.subagents import (
+    resolve_behavior_subagent_profile,
+)
 
 
 def test_assay_feature_routing_agents_work_together() -> None:
@@ -32,6 +35,15 @@ def test_assay_feature_routing_agents_work_together() -> None:
         policy=resolve_behavior_model_policy("hosted_reasoning_local_tracking_v1"),
     )
     assert route.backend in {"annolid_tracking", "grounding_dino", "sam2_server"}
+
+
+def test_behavior_polygon_classifier_subagent_profile_exposes_training_skills() -> None:
+    profile = resolve_behavior_subagent_profile("behavior_polygon_classifier")
+
+    assert profile is not None
+    assert "polygon classifier" in profile.description.lower()
+    assert "polygon-classifier-training" in profile.default_skill_names
+    assert "scientific-reporting" in profile.default_skill_names
 
 
 @pytest.mark.active_provider

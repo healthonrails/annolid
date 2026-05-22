@@ -65,6 +65,25 @@ _PROFILES: dict[str, BehaviorSubagentProfile] = {
         ),
         default_skill_names=("sandboxed-analysis", "metrics-derivation"),
     ),
+    "behavior_polygon_classifier": BehaviorSubagentProfile(
+        name="behavior_polygon_classifier",
+        description=(
+            "Prepare train/test polygon data, train polygon classifier models, "
+            "evaluate held-out predictions, and generate reproducible reports."
+        ),
+        system_instructions=(
+            "You are the Polygon Classifier subagent. Use Annolid polygon classifier "
+            "workflows to generate compatible train/test CSVs, train TCN or ConvNet "
+            "models, run held-out test prediction, and return checkpoint, metrics, "
+            "prediction, and report artifact paths."
+        ),
+        default_skill_names=(
+            "polygon-classifier-training",
+            "behavior-evaluation",
+            "scientific-reporting",
+            "provenance",
+        ),
+    ),
     "behavior_reporting": BehaviorSubagentProfile(
         name="behavior_reporting",
         description="Produce report summaries with provenance links.",

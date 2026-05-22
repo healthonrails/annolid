@@ -129,18 +129,21 @@ Examples include:
 - `behavior-segmentation`
 - `timeline-reasoning`
 - `sandboxed-analysis`
+- `polygon-classifier-training`
+- `behavior-evaluation`
 - `scientific-reporting`
 - `provenance`
 
 These skills are used by the specialized behavior subagents for assay
-inference, feature planning, routing, segmentation, analysis coding, and
-reporting.
+inference, feature planning, routing, segmentation, polygon classifier
+training/evaluation, analysis coding, and reporting.
 
 The Agent Capabilities dialog (`/capabilities`) also includes behavior presets
 for:
 
 - assay inference,
 - aggression segmentation,
+- polygon classifier training and reporting,
 - scientific reporting.
 
 Each preset sets a focused task hint and refreshes suggested skills.

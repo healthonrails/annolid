@@ -86,6 +86,7 @@ class PolygonTrainingOutcome:
     metrics_path: str
     labels: tuple[str, ...]
     model_type: str = "convnet"
+    report_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -668,6 +669,141 @@ def _ordered_labels(*paths: Path) -> list[str]:
     return ordered
 
 
+def _classification_summary_from_predictions(
+    *,
+    truth_csv: Path,
+    prediction_csv: Path,
+    labels: Iterable[str],
+) -> dict[str, Any]:
+    """Build deterministic held-out test metrics from test labels and predictions."""
+    truth = pd.read_csv(truth_csv)
+    predictions = pd.read_csv(prediction_csv)
+    label_names = [str(label) for label in labels]
+    if "label" not in truth.columns:
+        return {"available": False, "reason": "test CSV has no label column"}
+    if "predicted_label" not in predictions.columns:
+        return {
+            "available": False,
+            "reason": "prediction CSV has no predicted_label column",
+        }
+    if len(truth) != len(predictions):
+        return {
+            "available": False,
+            "reason": (
+                f"row count mismatch: {len(truth)} test rows and "
+                f"{len(predictions)} predictions"
+            ),
+        }
+
+    y_true = [str(value) for value in truth["label"].fillna("")]
+    y_pred = [str(value) for value in predictions["predicted_label"].fillna("")]
+    if not label_names:
+        label_names = sorted({*y_true, *y_pred})
+
+    report = metrics.classification_report(
+        y_true,
+        y_pred,
+        labels=label_names,
+        output_dict=True,
+        zero_division=0,
+    )
+    matrix = metrics.confusion_matrix(y_true, y_pred, labels=label_names)
+    return {
+        "available": True,
+        "accuracy": float(metrics.accuracy_score(y_true, y_pred)),
+        "macro_f1": float(
+            metrics.f1_score(
+                y_true,
+                y_pred,
+                labels=label_names,
+                average="macro",
+                zero_division=0,
+            )
+        ),
+        "weighted_f1": float(
+            metrics.f1_score(
+                y_true,
+                y_pred,
+                labels=label_names,
+                average="weighted",
+                zero_division=0,
+            )
+        ),
+        "classification_report": report,
+        "confusion_matrix": {
+            "labels": label_names,
+            "matrix": matrix.astype(int).tolist(),
+        },
+    }
+
+
+def _write_polygon_training_report(
+    *,
+    run_dir: Path,
+    model_type: str,
+    train_csv: Path,
+    test_csv: Path,
+    checkpoint_path: Path,
+    metrics_path: Path,
+    prediction_csv: Path,
+    labels: Iterable[str],
+    summary: Mapping[str, Any],
+) -> Path:
+    """Write a concise, reproducible Markdown report for a classifier run."""
+    label_names = [str(label) for label in labels]
+    train_rows = len(pd.read_csv(train_csv, usecols=["label"]))
+    test_rows = len(pd.read_csv(test_csv, usecols=["label"]))
+    lines = [
+        "# Polygon Classifier Training Report",
+        "",
+        f"- model_type: {model_type}",
+        f"- train_csv: {train_csv}",
+        f"- test_csv: {test_csv}",
+        f"- train_rows: {train_rows}",
+        f"- test_rows: {test_rows}",
+        f"- labels: {', '.join(label_names)}",
+        f"- checkpoint: {checkpoint_path}",
+        f"- metrics_json: {metrics_path}",
+        f"- test_predictions_csv: {prediction_csv}",
+        "",
+        "## Held-Out Test Metrics",
+        "",
+    ]
+    if summary.get("available"):
+        lines.extend(
+            [
+                f"- accuracy: {float(summary.get('accuracy', 0.0)):.6f}",
+                f"- macro_f1: {float(summary.get('macro_f1', 0.0)):.6f}",
+                f"- weighted_f1: {float(summary.get('weighted_f1', 0.0)):.6f}",
+                "",
+                "## Confusion Matrix",
+                "",
+                "| actual \\ predicted | " + " | ".join(label_names) + " |",
+                "| --- | " + " | ".join("---" for _ in label_names) + " |",
+            ]
+        )
+        matrix = summary.get("confusion_matrix", {}).get("matrix", [])
+        for label, row in zip(label_names, matrix):
+            values = " | ".join(str(int(value)) for value in row)
+            lines.append(f"| {label} | {values} |")
+        lines.extend(["", "## Per-Class F1", ""])
+        class_report = summary.get("classification_report", {})
+        for label in label_names:
+            row = class_report.get(label, {})
+            lines.append(
+                f"- {label}: precision={float(row.get('precision', 0.0)):.6f}, "
+                f"recall={float(row.get('recall', 0.0)):.6f}, "
+                f"f1={float(row.get('f1-score', 0.0)):.6f}, "
+                f"support={int(row.get('support', 0))}"
+            )
+    else:
+        lines.append(f"- unavailable: {summary.get('reason', 'unknown reason')}")
+
+    report_path = run_dir / "report.md"
+    report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return report_path
+
+
 def _write_tcn_inputs_from_polygon_csv(
     *,
     csv_path: Path,
@@ -900,6 +1036,11 @@ def _train_polygon_tcn_classifier(
         output_csv=run_dir / "test_predictions.csv",
         device=training_config.device,
     )
+    classification_summary = _classification_summary_from_predictions(
+        truth_csv=test_path,
+        prediction_csv=Path(inference.output_csv),
+        labels=inference.labels,
+    )
     metrics_payload: Dict[str, Any] = {
         "model_type": "tcn",
         "labels": list(inference.labels),
@@ -907,8 +1048,10 @@ def _train_polygon_tcn_classifier(
         "train_csv": str(train_path),
         "test_csv": str(test_path),
         "run_dir": str(run_dir),
+        "test_predictions_csv": str(inference.output_csv),
         "history": history,
         "test_metrics": test_metrics,
+        "held_out_test": classification_summary,
         "config": {
             "feature": asdict(feature_config),
             "model": asdict(model_config),
@@ -917,12 +1060,24 @@ def _train_polygon_tcn_classifier(
     }
     metrics_path = run_dir / "metrics.json"
     metrics_path.write_text(json.dumps(metrics_payload, indent=2), encoding="utf-8")
+    report_path = _write_polygon_training_report(
+        run_dir=run_dir,
+        model_type="tcn",
+        train_csv=train_path,
+        test_csv=test_path,
+        checkpoint_path=checkpoint_path,
+        metrics_path=metrics_path,
+        prediction_csv=Path(inference.output_csv),
+        labels=inference.labels,
+        summary=classification_summary,
+    )
     return PolygonTrainingOutcome(
         run_dir=str(run_dir),
         checkpoint_path=str(checkpoint_path),
         metrics_path=str(metrics_path),
         labels=tuple(labels),
         model_type="tcn",
+        report_path=str(report_path),
     )
 
 
@@ -1138,41 +1293,50 @@ def train_polygon_classifier(
         output_csv=run_dir / "test_predictions.csv",
         device=str(torch_device),
     )
-    predictions = pd.read_csv(inference.output_csv)
-    truth = pd.read_csv(test_path)
+    classification_summary = _classification_summary_from_predictions(
+        truth_csv=test_path,
+        prediction_csv=Path(inference.output_csv),
+        labels=inference.labels,
+    )
     metrics_payload: Dict[str, Any] = {
+        "model_type": "convnet",
         "labels": list(inference.labels),
         "checkpoint_path": str(checkpoint_path),
         "train_csv": str(train_path),
         "test_csv": str(test_path),
         "run_dir": str(run_dir),
+        "test_predictions_csv": str(inference.output_csv),
+        "held_out_test": classification_summary,
         "config": {
             "feature": asdict(feature_config),
             "model": asdict(model_config),
             "training": asdict(training_config),
         },
     }
-    if "label" in truth.columns and len(truth) == len(predictions):
-        metrics_payload["accuracy"] = float(
-            metrics.accuracy_score(truth["label"], predictions["predicted_label"])
-        )
-        metrics_payload["macro_f1"] = float(
-            metrics.f1_score(
-                truth["label"],
-                predictions["predicted_label"],
-                average="macro",
-                zero_division=0,
-            )
-        )
+    if classification_summary.get("available"):
+        metrics_payload["accuracy"] = classification_summary["accuracy"]
+        metrics_payload["macro_f1"] = classification_summary["macro_f1"]
 
     metrics_path = run_dir / "metrics.json"
     metrics_path.write_text(json.dumps(metrics_payload, indent=2), encoding="utf-8")
+    report_path = _write_polygon_training_report(
+        run_dir=run_dir,
+        model_type="convnet",
+        train_csv=train_path,
+        test_csv=test_path,
+        checkpoint_path=checkpoint_path,
+        metrics_path=metrics_path,
+        prediction_csv=Path(inference.output_csv),
+        labels=inference.labels,
+        summary=classification_summary,
+    )
     return PolygonTrainingOutcome(
         run_dir=str(run_dir),
         checkpoint_path=str(checkpoint_path),
         metrics_path=str(metrics_path),
         labels=inference.labels,
         model_type="convnet",
+        report_path=str(report_path),
     )
 
 
