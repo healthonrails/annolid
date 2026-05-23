@@ -257,6 +257,51 @@ def test_channel_manager_dispatches_outbound() -> None:
     asyncio.run(_run())
 
 
+def test_channel_manager_dispatch_survives_event_loop_restart(caplog) -> None:
+    bus = MessageBus()
+    seen: list[str] = []
+
+    async def _send(msg: OutboundMessage) -> None:
+        seen.append(f"{msg.channel}:{msg.chat_id}:{msg.content}")
+
+    manager = ChannelManager(bus=bus, channels_config={})
+    manager.register_channel(TelegramChannel({}, bus, send_callback=_send))
+
+    async def _start_empty_dispatch_then_stop_loop() -> None:
+        dispatch_task = asyncio.create_task(manager._dispatch_outbound())
+        await asyncio.sleep(0.02)
+        assert not dispatch_task.done()
+        dispatch_task.cancel()
+        try:
+            await dispatch_task
+        except asyncio.CancelledError:
+            pass
+
+    async def _dispatch_from_new_loop() -> None:
+        dispatch_task = asyncio.create_task(manager._dispatch_outbound())
+        try:
+            await asyncio.sleep(0.02)
+            await bus.publish_outbound(
+                OutboundMessage(channel="telegram", chat_id="c1", content="pong")
+            )
+            for _ in range(20):
+                if seen:
+                    break
+                await asyncio.sleep(0.01)
+            assert seen == ["telegram:c1:pong"]
+        finally:
+            dispatch_task.cancel()
+            try:
+                await dispatch_task
+            except asyncio.CancelledError:
+                pass
+
+    with caplog.at_level("ERROR", logger="annolid.agent.channels"):
+        asyncio.run(_start_empty_dispatch_then_stop_loop())
+        asyncio.run(_dispatch_from_new_loop())
+    assert "Outbound dispatch failure" not in caplog.text
+
+
 def test_telegram_channel_send_callback_normalizes_metadata_video_attachment() -> None:
     async def _run() -> None:
         bus = MessageBus()

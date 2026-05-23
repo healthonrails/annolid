@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from contextlib import suppress
-from typing import Awaitable, Callable, Dict, List, Optional
+from typing import Awaitable, Callable, Dict, List, Optional, TypeVar
 
 from .events import InboundMessage, OutboundMessage
 
 OutboundCallback = Callable[[OutboundMessage], Awaitable[None]]
+_MessageT = TypeVar("_MessageT", InboundMessage, OutboundMessage)
 
 
 class MessageBus:
@@ -26,6 +28,7 @@ class MessageBus:
         self._running = False
         self._dispatch_task: Optional[asyncio.Task[None]] = None
         self._logger = logging.getLogger("annolid.agent.bus")
+        self._poll_interval_s = 0.01
 
     async def publish_inbound(self, msg: InboundMessage) -> None:
         await self.inbound.put(msg)
@@ -33,9 +36,7 @@ class MessageBus:
     async def consume_inbound(
         self, *, timeout_s: Optional[float] = None
     ) -> InboundMessage:
-        if timeout_s is None:
-            return await self.inbound.get()
-        return await asyncio.wait_for(self.inbound.get(), timeout=timeout_s)
+        return await self._consume_queue(self.inbound, timeout_s=timeout_s)
 
     async def publish_outbound(self, msg: OutboundMessage) -> None:
         await self.outbound.put(msg)
@@ -43,9 +44,31 @@ class MessageBus:
     async def consume_outbound(
         self, *, timeout_s: Optional[float] = None
     ) -> OutboundMessage:
-        if timeout_s is None:
-            return await self.outbound.get()
-        return await asyncio.wait_for(self.outbound.get(), timeout=timeout_s)
+        return await self._consume_queue(self.outbound, timeout_s=timeout_s)
+
+    async def _consume_queue(
+        self,
+        queue: asyncio.Queue[_MessageT],
+        *,
+        timeout_s: Optional[float],
+    ) -> _MessageT:
+        """Drain a public bus queue without binding it to the current event loop."""
+        deadline = (
+            time.monotonic() + max(0.0, float(timeout_s))
+            if timeout_s is not None
+            else None
+        )
+        while True:
+            try:
+                return queue.get_nowait()
+            except asyncio.QueueEmpty:
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise asyncio.TimeoutError
+                    await asyncio.sleep(min(self._poll_interval_s, remaining))
+                else:
+                    await asyncio.sleep(self._poll_interval_s)
 
     def subscribe_outbound(self, channel: str, callback: OutboundCallback) -> None:
         channel_key = str(channel or "").strip().lower()
@@ -76,7 +99,7 @@ class MessageBus:
     async def _dispatch_loop(self) -> None:
         while self._running:
             try:
-                msg = await self.outbound.get()
+                msg = await self.consume_outbound()
                 callbacks = self._outbound_subscribers.get(msg.channel.lower(), [])
                 for callback in callbacks:
                     try:

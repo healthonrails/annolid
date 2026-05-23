@@ -78,6 +78,33 @@ def test_message_bus_publish_consume_and_dispatch() -> None:
     asyncio.run(_run())
 
 
+def test_message_bus_consume_survives_event_loop_restart() -> None:
+    bus = MessageBus()
+
+    async def _start_waiting_consumer_then_stop_loop() -> None:
+        task = asyncio.create_task(bus.consume_outbound())
+        await asyncio.sleep(0.02)
+        assert not task.done()
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    async def _consume_from_new_loop() -> None:
+        task = asyncio.create_task(bus.consume_outbound())
+        await asyncio.sleep(0.02)
+        assert not task.done()
+        await bus.publish_outbound(
+            OutboundMessage(channel="slack", chat_id="c1", content="reply")
+        )
+        got = await asyncio.wait_for(task, timeout=0.2)
+        assert got.content == "reply"
+
+    asyncio.run(_start_waiting_consumer_then_stop_loop())
+    asyncio.run(_consume_from_new_loop())
+
+
 def test_agent_bus_service_processes_inbound_to_outbound() -> None:
     async def fake_llm(
         messages: Sequence[Mapping[str, Any]],
