@@ -63,6 +63,7 @@ from annolid.gui.features import (
 from annolid.annotation.pose_schema import PoseSchema
 from annolid.gui.model_manager import AIModelManager
 from annolid.gui.models_registry import (
+    PATCH_SIMILARITY_DEFAULT_MODEL,
     get_runtime_model_registry,
     validate_model_registry_entries,
 )
@@ -139,6 +140,7 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         self.here = Path(__file__).resolve().parent
         self.settings_manager = SettingsManager("Annolid", "Annolid")
         self.settings = self.settings_manager.qt_settings
+        self._initialize_dino_defaults()
         self._load_label_color_overrides_from_settings()
         ui_settings = self.settings_manager.get_ui_settings()
         pose_settings = self.settings_manager.get_pose_settings()
@@ -512,6 +514,28 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         controller.initialize()
         self.dino_controller = controller
         return controller
+
+    def _initialize_dino_defaults(self) -> None:
+        self.patch_similarity_model = str(
+            self.settings.value(
+                "patch_similarity/model", PATCH_SIMILARITY_DEFAULT_MODEL
+            )
+        )
+        self.patch_similarity_alpha = float(
+            self.settings.value("patch_similarity/alpha", 0.55)
+        )
+        self.patch_similarity_alpha = min(max(self.patch_similarity_alpha, 0.05), 1.0)
+        self.pca_map_model = str(
+            self.settings.value(
+                "pca_map/model",
+                self.patch_similarity_model or PATCH_SIMILARITY_DEFAULT_MODEL,
+            )
+        )
+        self.pca_map_alpha = float(self.settings.value("pca_map/alpha", 0.65))
+        self.pca_map_alpha = min(max(self.pca_map_alpha, 0.05), 1.0)
+        self.pca_map_clusters = int(self.settings.value("pca_map/clusters", 0))
+        if self.pca_map_clusters < 0:
+            self.pca_map_clusters = 0
 
     def ensure_yolo_training_manager(self):
         manager = getattr(self, "yolo_training_manager", None)

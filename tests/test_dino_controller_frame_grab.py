@@ -45,3 +45,20 @@ def test_qimage_rgba_array_returns_none_for_invalid_image():
     from annolid.gui.controllers.dino import DinoController
 
     assert DinoController._qimage_rgba_array(QtGui.QImage()) is None
+
+
+def test_annolid_window_initializes_dino_defaults_before_lazy_controller():
+    _ensure_qapp()
+
+    from annolid.gui.app import AnnolidWindow
+    from annolid.gui.models_registry import PATCH_SIMILARITY_DEFAULT_MODEL
+
+    window = AnnolidWindow(config={})
+    try:
+        assert window.dino_controller is None
+        assert window.patch_similarity_model == PATCH_SIMILARITY_DEFAULT_MODEL
+        assert window.pca_map_model == PATCH_SIMILARITY_DEFAULT_MODEL
+        assert window.patch_similarity_alpha == 0.55
+        assert window.pca_map_alpha == 0.65
+    finally:
+        window.close()

@@ -46,6 +46,10 @@ class DinoController(QtCore.QObject):
     # ------------------------------------------------------------------ #
     def initialize(self) -> None:
         window = self._window
+        initialize_defaults = getattr(window, "_initialize_dino_defaults", None)
+        if callable(initialize_defaults):
+            initialize_defaults()
+            return
         settings = window.settings
 
         window.patch_similarity_model = str(
