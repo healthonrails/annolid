@@ -55,6 +55,20 @@ _MAX_CONTEXT_MENU_IMAGE_DATA_URL_CHARS = 2_000_000
 _MAX_CONTEXT_MENU_IMAGE_BYTES = 15 * 1024 * 1024
 _MAX_CONTEXT_MENU_IMAGE_PIXELS = 2048 * 2048
 _LOCAL_MARKDOWN_SUFFIXES = {".md", ".markdown", ".mdown", ".mkdn"}
+_THIRD_PARTY_AD_ANALYTICS_DOMAINS = {
+    "connect.facebook.net",
+    "doubleclick.net",
+    "securepubads.g.doubleclick.net",
+    "www.googletagservices.com",
+}
+
+
+def _is_third_party_ad_or_analytics_source(source_id: str) -> bool:
+    domain = _console_source_domain(source_id)
+    return any(
+        domain == known_domain or domain.endswith(f".{known_domain}")
+        for known_domain in _THIRD_PARTY_AD_ANALYTICS_DOMAINS
+    )
 
 
 def _is_ignorable_js_console_message(message: str, source_id: str = "") -> bool:
@@ -93,6 +107,18 @@ def _is_ignorable_js_console_message(message: str, source_id: str = "") -> bool:
     )
     if any(marker in value for marker in noisy_markers):
         return True
+
+    # External ad and analytics libraries frequently log policy/deprecation
+    # advisories for the site being viewed. They are not actionable for Annolid.
+    if _is_third_party_ad_or_analytics_source(source):
+        third_party_ad_markers = (
+            "[meta pixel]",
+            "removed parameters from custom data due to potential violations",
+            "pubadsservice.settargeting is deprecated",
+            "googletag.setconfig({targeting:",
+        )
+        if any(marker in value for marker in third_party_ad_markers):
+            return True
 
     # Weather.com frequently logs third-party analytics/geolocation/react noise that
     # is non-actionable for Annolid and can overwhelm logs.

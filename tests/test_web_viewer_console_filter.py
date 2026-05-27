@@ -130,6 +130,33 @@ def test_weather_like_message_not_ignored_for_non_weather_source() -> None:
     )
 
 
+def test_ignorable_third_party_ad_analytics_console_noise() -> None:
+    meta_pixel_src = "https://connect.facebook.net/en_US/fbevents.js"
+    gpt_src = (
+        "https://securepubads.g.doubleclick.net/pagead/managed/js/gpt/"
+        "m202605200101/pubads_impl.js"
+    )
+
+    assert _is_ignorable_js_console_message(
+        "[Meta Pixel] - Removed parameters from custom data due to potential violations. "
+        "Go to Events Manager to learn more.",
+        meta_pixel_src,
+    )
+    assert _is_ignorable_js_console_message(
+        "[GPT] PubAdsService.setTargeting is deprecated, use "
+        "googletag.setConfig({targeting: ...}) instead.\n"
+        "https://goo.gle/gpt-message#170",
+        gpt_src,
+    )
+
+
+def test_ad_analytics_like_message_not_ignored_for_local_source() -> None:
+    assert not _is_ignorable_js_console_message(
+        "[Meta Pixel] - Removed parameters from custom data due to potential violations.",
+        "http://127.0.0.1:8765/app.js",
+    )
+
+
 def test_console_source_domain_parsing() -> None:
     assert _console_source_domain("https://weather.com/weather/today/l/Ithaca+NY") == (
         "weather.com"
