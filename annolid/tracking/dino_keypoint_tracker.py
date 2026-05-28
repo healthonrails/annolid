@@ -98,6 +98,12 @@ class MotionPrior:
 
 
 @dataclass
+class PixelFlowEstimate:
+    xy: Tuple[float, float]
+    error: float
+
+
+@dataclass
 class BodyPrior:
     centroid_rc: Tuple[float, float]
     axis_rc: Tuple[float, float]
@@ -401,9 +407,10 @@ class DinoKeypointTracker:
         frame_array = np.array(image)
         frame_gray = cv2.cvtColor(frame_array, cv2.COLOR_RGB2GRAY)
         flow = None
-        if self.prev_gray is not None:
+        prev_gray = self.prev_gray
+        if prev_gray is not None:
             flow = cv2.calcOpticalFlowFarneback(
-                self.prev_gray,
+                prev_gray,
                 frame_gray,
                 None,
                 pyr_scale=0.5,
@@ -455,6 +462,7 @@ class DinoKeypointTracker:
         mask_pixels_by_track: Dict[str, Optional[np.ndarray]] = {}
         base_positions: Dict[str, Tuple[float, float]] = {}
         motion_priors: Dict[str, MotionPrior] = {}
+        pixel_flow_by_track: Dict[str, Optional[PixelFlowEstimate]] = {}
         results: List[Dict[str, object]] = []
         for track in self.tracks.values():
             manual_codebook = track.manual_codebook
@@ -500,9 +508,24 @@ class DinoKeypointTracker:
                     flow_dx, flow_dy = float(flow_vec[0]), float(flow_vec[1])
                     flow_vec_tuple = (flow_dx, flow_dy)
 
+            pixel_flow = self._track_pixel_flow(
+                prev_gray,
+                frame_gray,
+                track.last_position,
+            )
+            pixel_flow_by_track[track.key] = pixel_flow
+            if pixel_flow is not None:
+                flow_dx = float(pixel_flow.xy[0] - track.last_position[0])
+                flow_dy = float(pixel_flow.xy[1] - track.last_position[1])
+                flow_vec_tuple = (flow_dx, flow_dy)
+
             velocity_dx, velocity_dy = track.velocity
-            predicted_x = base_x + flow_dx + velocity_dx
-            predicted_y = base_y + flow_dy + velocity_dy
+            if pixel_flow is not None:
+                predicted_x = float(pixel_flow.xy[0] + velocity_dx)
+                predicted_y = float(pixel_flow.xy[1] + velocity_dy)
+            else:
+                predicted_x = base_x + flow_dx + velocity_dx
+                predicted_y = base_y + flow_dy + velocity_dy
             predicted_r, predicted_c = self._pixel_to_patch(
                 predicted_x,
                 predicted_y,
@@ -734,6 +757,8 @@ class DinoKeypointTracker:
             mask_descriptor = mask_descriptors.get(track.key)
             patch_mask = mask_patches.get(track.key)
             mask_pixels = mask_pixels_by_track.get(track.key)
+            pixel_flow = pixel_flow_by_track.get(track.key)
+            assignment_prior = motion_priors.get(track.key)
 
             quality = float(assignment.similarity) if assignment else -1.0
             if assignment is None or quality < self.min_similarity:
@@ -754,6 +779,21 @@ class DinoKeypointTracker:
                             refine_region=refine_regions.get(track.key),
                             patch_centers_x=patch_centers_x,
                             patch_centers_y=patch_centers_y,
+                        )
+                    )
+                    x, y = refined_x, refined_y
+                pixel_refine_confidence = 0.0
+                if pixel_flow is not None:
+                    refined_x, refined_y, pixel_refine_confidence = (
+                        self._apply_pixel_flow_refinement(
+                            dino_xy=(x, y),
+                            flow_estimate=pixel_flow,
+                            patch_px=(
+                                assignment_prior.radius_px
+                                if assignment_prior is not None
+                                else 0.0
+                            ),
+                            similarity=float(quality),
                         )
                     )
                     x, y = refined_x, refined_y
@@ -782,11 +822,10 @@ class DinoKeypointTracker:
                             1.0,
                         )
                     )
-                    prior = motion_priors.get(track.key)
                     candidate_visible = self._should_accept_jump(
                         track,
                         candidate_xy=(x, y),
-                        prior=prior,
+                        prior=assignment_prior,
                         similarity_confidence=similarity_conf,
                     )
                     if candidate_visible:
@@ -828,7 +867,11 @@ class DinoKeypointTracker:
                     )
                     rr, cc = track.patch_rc
                     new_desc = normalized_feats[:, rr, cc].detach().clone()
-                    combined_conf = max(similarity_conf, float(refine_confidence))
+                    combined_conf = max(
+                        similarity_conf,
+                        float(refine_confidence),
+                        float(pixel_refine_confidence),
+                    )
                     effective_momentum = self.momentum * combined_conf
 
                     blended = (
@@ -893,8 +936,12 @@ class DinoKeypointTracker:
                         track, feats, normalized_feats=normalized_feats
                     )
                     self._update_support_probe_mask_flags(track, patch_mask)
-                    delta_x = x - base_x
-                    delta_y = y - base_y
+                    if pixel_refine_confidence > 0.0:
+                        velocity_base_x, velocity_base_y = track.last_position
+                    else:
+                        velocity_base_x, velocity_base_y = base_x, base_y
+                    delta_x = x - velocity_base_x
+                    delta_y = y - velocity_base_y
                     track.velocity = (
                         (1.0 - velocity_smoothing) * track.velocity[0]
                         + velocity_smoothing * delta_x,
@@ -1107,6 +1154,98 @@ class DinoKeypointTracker:
 
         confidence = float(np.clip(max_weight / total, 0.0, 1.0))
         return (sum_x / total, sum_y / total, confidence)
+
+    def _track_pixel_flow(
+        self,
+        prev_gray: Optional[np.ndarray],
+        frame_gray: np.ndarray,
+        xy: Tuple[float, float],
+    ) -> Optional[PixelFlowEstimate]:
+        if not bool(getattr(self.runtime_config, "pixel_refine_enabled", True)):
+            return None
+        if prev_gray is None or frame_gray is None:
+            return None
+        if prev_gray.shape != frame_gray.shape:
+            return None
+        height, width = frame_gray.shape[:2]
+        x, y = float(xy[0]), float(xy[1])
+        if not (0.0 <= x < width and 0.0 <= y < height):
+            return None
+
+        win = max(3, int(getattr(self.runtime_config, "pixel_refine_window", 15)))
+        if win % 2 == 0:
+            win += 1
+        prev_pts = np.array([[[x, y]]], dtype=np.float32)
+        next_pts, status, err = cv2.calcOpticalFlowPyrLK(
+            prev_gray,
+            frame_gray,
+            prev_pts,
+            None,
+            winSize=(win, win),
+            maxLevel=2,
+            criteria=(
+                cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT,
+                20,
+                0.03,
+            ),
+        )
+        if next_pts is None or status is None or int(status.reshape(-1)[0]) != 1:
+            return None
+
+        nx = float(next_pts.reshape(-1, 2)[0][0])
+        ny = float(next_pts.reshape(-1, 2)[0][1])
+        if not (math.isfinite(nx) and math.isfinite(ny)):
+            return None
+        if not (0.0 <= nx < width and 0.0 <= ny < height):
+            return None
+
+        jump = math.hypot(nx - x, ny - y)
+        max_jump = float(getattr(self.runtime_config, "pixel_refine_max_jump_px", 24.0))
+        if max_jump > 0.0 and jump > max_jump:
+            return None
+
+        error = 0.0
+        if err is not None:
+            error = float(err.reshape(-1)[0])
+            max_error = float(
+                getattr(self.runtime_config, "pixel_refine_max_error", 18.0)
+            )
+            if max_error > 0.0 and error > max_error:
+                return None
+        return PixelFlowEstimate(xy=(nx, ny), error=error)
+
+    def _apply_pixel_flow_refinement(
+        self,
+        *,
+        dino_xy: Tuple[float, float],
+        flow_estimate: PixelFlowEstimate,
+        patch_px: float,
+        similarity: float,
+    ) -> Tuple[float, float, float]:
+        weight = float(
+            np.clip(getattr(self.runtime_config, "pixel_refine_weight", 0.85), 0.0, 1.0)
+        )
+        if weight <= 0.0:
+            return dino_xy[0], dino_xy[1], 0.0
+
+        flow_x, flow_y = flow_estimate.xy
+        dino_x, dino_y = float(dino_xy[0]), float(dino_xy[1])
+        dist = math.hypot(flow_x - dino_x, flow_y - dino_y)
+        gate = max(3.0, float(patch_px) * 1.5)
+        if dist > gate:
+            return dino_x, dino_y, 0.0
+
+        similarity_conf = float(np.clip((float(similarity) + 1.0) * 0.5, 0.0, 1.0))
+        error = max(0.0, float(flow_estimate.error))
+        max_error = max(
+            1e-6, float(getattr(self.runtime_config, "pixel_refine_max_error", 18.0))
+        )
+        error_conf = float(np.clip(1.0 - (error / max_error), 0.0, 1.0))
+        confidence = max(0.0, min(1.0, 0.5 * (similarity_conf + error_conf)))
+        alpha = weight * confidence
+        refined_x = (1.0 - alpha) * dino_x + alpha * flow_x
+        refined_y = (1.0 - alpha) * dino_y + alpha * flow_y
+        return float(refined_x), float(refined_y), float(confidence)
 
     def _should_accept_jump(
         self,

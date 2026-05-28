@@ -48,6 +48,10 @@ class DummyExtractor:
         return height, width
 
 
+class CoarsePatchDummyExtractor(DummyExtractor):
+    patch_size = 16
+
+
 def test_annotation_adapter_roundtrip_preserves_keypoints_and_masks(tmp_path):
     source_dir = tmp_path / "testvideo"
     source_dir.mkdir()
@@ -1072,6 +1076,72 @@ def test_gaussian_refine_shifts_keypoint_towards_secondary_peak(monkeypatch):
     assert len(results) == 1
     assert results[0]["visible"] is True
     assert results[0]["x"] == pytest.approx(2.231, abs=0.05)
+
+
+def test_pixel_flow_refine_moves_keypoint_with_subpatch_joint_motion(monkeypatch):
+    monkeypatch.setattr(
+        "annolid.tracking.dino_keypoint_tracker.Dinov3FeatureExtractor",
+        CoarsePatchDummyExtractor,
+    )
+    config = CutieDinoTrackerConfig(
+        pixel_refine_enabled=True,
+        pixel_refine_weight=1.0,
+        pixel_refine_window=15,
+        pixel_refine_max_error=100.0,
+        pixel_refine_max_jump_px=8.0,
+        mask_descriptor_weight=0.0,
+        appearance_bundle_weight=0.0,
+        baseline_similarity_weight=0.0,
+        structural_consistency_weight=0.0,
+        symmetry_penalty=0.0,
+        support_probe_weight=0.0,
+        motion_prior_penalty_weight=0.0,
+        motion_search_gain=0.0,
+        motion_search_flow_gain=0.0,
+        motion_search_miss_boost=0.0,
+        keypoint_refine_radius=0,
+    )
+    tracker = DinoKeypointTracker(
+        model_name="dummy",
+        runtime_config=config,
+        search_radius=1,
+        min_similarity=0.0,
+        momentum=0.0,
+        reference_weight=0.0,
+    )
+    extractor = tracker.extractor
+
+    start_features = torch.zeros((2, 2, 2), dtype=torch.float32)
+    start_features[:, 0, 0] = torch.tensor([1.0, 0.0], dtype=torch.float32)
+    update_features = torch.zeros((2, 2, 2), dtype=torch.float32)
+    update_features[:, 0, 0] = torch.tensor([1.0, 0.0], dtype=torch.float32)
+    extractor.set_queue([start_features, update_features])
+
+    start_frame = np.zeros((32, 32, 3), dtype=np.uint8)
+    start_frame[8:13, 8:13] = 255
+    update_frame = np.zeros((32, 32, 3), dtype=np.uint8)
+    update_frame[8:13, 10:15] = 255
+    start_image = Image.fromarray(start_frame)
+    update_image = Image.fromarray(update_frame)
+
+    registry = InstanceRegistry()
+    registry.register_keypoint(
+        KeypointState(
+            key="flyjoint",
+            instance_label="fly",
+            label="joint",
+            x=10.0,
+            y=10.0,
+        )
+    )
+
+    tracker.start(start_image, registry, {})
+    results = tracker.update(update_image, {})
+
+    assert len(results) == 1
+    assert results[0]["visible"] is True
+    assert results[0]["x"] == pytest.approx(12.0, abs=0.35)
+    assert results[0]["y"] == pytest.approx(10.0, abs=0.35)
 
 
 def test_motion_penalty_prefers_nearby_candidate_over_far_peak(monkeypatch):

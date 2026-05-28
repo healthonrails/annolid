@@ -1,6 +1,14 @@
 from annolid.tracking.configuration import CutieDinoTrackerConfig
 
 
+def test_fly_keypoint_preset_enables_pixel_refinement():
+    cfg = CutieDinoTrackerConfig.from_preset("fly_70fps_keypoints")
+
+    assert cfg.pixel_refine_enabled is True
+    assert cfg.pixel_refine_weight >= 0.9
+    assert cfg.motion_search_max_radius <= 6.0
+
+
 def test_kpseg_apply_mode_defaults_to_never():
     cfg = CutieDinoTrackerConfig()
     assert cfg.kpseg_apply_mode == "never"

@@ -59,7 +59,63 @@ TRACKER_PRESETS: Dict[str, Dict[str, object]] = {
         "keypoint_refine_radius": 1,
         "keypoint_refine_sigma": 1.25,
         "keypoint_refine_temperature": 0.3,
-    }
+        "pixel_refine_enabled": True,
+        "pixel_refine_weight": 0.85,
+        "pixel_refine_window": 15,
+        "pixel_refine_max_error": 18.0,
+        "pixel_refine_max_jump_px": 24.0,
+    },
+    "fly_70fps_keypoints": {
+        "use_cutie_tracking": True,
+        "restrict_to_initial_mask": False,
+        "mask_descriptor_weight": 0.0,
+        "mask_similarity_bonus": 0.08,
+        "max_mask_fallback_frames": 4,
+        "velocity_smoothing": 0.45,
+        "mask_enforce_position": True,
+        "mask_enforce_search_radius": 8,
+        "mask_enforce_snap_radius": 8,
+        "mask_enforce_reject_outside": True,
+        "motion_search_tighten": 0.65,
+        "motion_search_gain": 1.4,
+        "motion_search_flow_gain": 1.4,
+        "motion_search_min_radius": 1.0,
+        "motion_search_max_radius": 6.0,
+        "motion_search_miss_boost": 1.0,
+        "motion_prior_penalty_weight": 0.2,
+        "motion_prior_soft_radius_px": 8.0,
+        "motion_prior_radius_factor": 1.6,
+        "motion_prior_miss_relief": 1.0,
+        "motion_prior_flow_relief": 0.25,
+        "structural_consistency_weight": 0.25,
+        "appearance_bundle_radius": 2,
+        "appearance_bundle_size": 24,
+        "appearance_bundle_weight": 0.45,
+        "baseline_similarity_weight": 0.15,
+        "context_radius": 1,
+        "context_radius_large": 1,
+        "context_large_weight": 0.0,
+        "context_weight": 0.25,
+        "part_shared_weight": 0.1,
+        "part_shared_momentum": 0.08,
+        "max_candidate_tracks": 8,
+        "candidate_prune_ratio": 0.65,
+        "candidate_prune_min": 32,
+        "support_probe_count": 6,
+        "support_probe_sigma": 0.9,
+        "support_probe_radius": 2,
+        "support_probe_weight": 0.2,
+        "support_probe_mask_only": False,
+        "support_probe_mask_bonus": 0.0,
+        "keypoint_refine_radius": 1,
+        "keypoint_refine_sigma": 0.8,
+        "keypoint_refine_temperature": 0.2,
+        "pixel_refine_enabled": True,
+        "pixel_refine_weight": 0.95,
+        "pixel_refine_window": 11,
+        "pixel_refine_max_error": 12.0,
+        "pixel_refine_max_jump_px": 18.0,
+    },
 }
 
 
@@ -120,6 +176,11 @@ class CutieDinoTrackerConfig:
     keypoint_refine_radius: int = 0
     keypoint_refine_sigma: float = 1.25
     keypoint_refine_temperature: float = 0.35
+    pixel_refine_enabled: bool = True
+    pixel_refine_weight: float = 0.85
+    pixel_refine_window: int = 15
+    pixel_refine_max_error: float = 18.0
+    pixel_refine_max_jump_px: float = 24.0
     kpseg_apply_mode: str = "never"  # never|auto|always
     kpseg_min_reliable_frames: int = 5
     kpseg_reliable_ratio: float = 0.6
@@ -211,6 +272,15 @@ class CutieDinoTrackerConfig:
         self.keypoint_refine_temperature = max(
             1e-4, float(self.keypoint_refine_temperature)
         )
+        self.pixel_refine_enabled = bool(self.pixel_refine_enabled)
+        self.pixel_refine_weight = float(
+            min(1.0, max(0.0, float(self.pixel_refine_weight)))
+        )
+        self.pixel_refine_window = max(3, int(self.pixel_refine_window))
+        if self.pixel_refine_window % 2 == 0:
+            self.pixel_refine_window += 1
+        self.pixel_refine_max_error = max(0.0, float(self.pixel_refine_max_error))
+        self.pixel_refine_max_jump_px = max(0.0, float(self.pixel_refine_max_jump_px))
         mode = str(self.kpseg_apply_mode or "never").strip().lower()
         if mode not in ("never", "auto", "always"):
             mode = "never"
