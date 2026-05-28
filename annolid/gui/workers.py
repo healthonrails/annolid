@@ -903,7 +903,27 @@ class FlexibleWorker(QtCore.QObject):
 
     def request_stop(self):
         """Public helper to request a cooperative stop."""
-        self.stop_signal.emit()
+        self._stop()
+
+    def allows_force_terminate(self) -> bool:
+        """Return whether the target can be safely killed with QThread.terminate()."""
+        target = self._task_function
+        for candidate in (target, getattr(target, "__self__", None)):
+            if candidate is None:
+                continue
+            value = getattr(candidate, "allow_force_thread_terminate", None)
+            if value is not None:
+                return bool(value)
+            method = getattr(candidate, "allows_force_terminate", None)
+            if callable(method):
+                try:
+                    return bool(method())
+                except Exception:
+                    logger.debug(
+                        "FlexibleWorker target termination policy failed.",
+                        exc_info=True,
+                    )
+        return True
 
     def _inject_cancellation_kwargs(self, kwargs: dict) -> dict:
         """Inject pred_worker/stop_event if the task function supports them."""

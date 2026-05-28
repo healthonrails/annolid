@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from annolid.gui import workers as workers_mod
 from annolid.gui.mixins.prediction_progress_mixin import PredictionProgressMixin
+from annolid.gui.mixins import prediction_progress_mixin as progress_mod
 
 
 class _DummyPredictionProgress(PredictionProgressMixin):
@@ -73,6 +75,81 @@ def test_stop_prediction_watcher_queues_when_off_gui_thread(monkeypatch) -> None
     monkeypatch.setattr(obj, "_dispatch_to_gui_thread", _fake_dispatch)
     obj._stop_prediction_folder_watcher()
     assert len(queued) == 1
+
+
+def test_flexible_worker_request_stop_is_immediate() -> None:
+    class Target:
+        def __init__(self) -> None:
+            self.stop_requested = False
+
+        def run(self) -> str:
+            return "done"
+
+        def request_stop(self) -> None:
+            self.stop_requested = True
+
+    target = Target()
+    worker = workers_mod.FlexibleWorker(target.run)
+
+    worker.request_stop()
+
+    assert worker.is_stopped() is True
+    assert worker.stop_event.is_set() is True
+    assert target.stop_requested is True
+
+
+def test_flexible_worker_reads_target_termination_policy() -> None:
+    class Target:
+        allow_force_thread_terminate = False
+
+        def run(self) -> str:
+            return "done"
+
+    worker = workers_mod.FlexibleWorker(Target().run)
+
+    assert worker.allows_force_terminate() is False
+
+
+def test_force_stop_respects_worker_termination_policy(monkeypatch) -> None:
+    class FakeThread:
+        def __init__(self) -> None:
+            self.terminated = False
+
+        def isRunning(self) -> bool:
+            return True
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+    class FakeWorker:
+        stop_event = None
+
+        def is_stopped(self) -> bool:
+            return True
+
+        def allows_force_terminate(self) -> bool:
+            return False
+
+    scheduled = []
+    monkeypatch.setattr(progress_mod.QtCore, "QThread", FakeThread)
+    monkeypatch.setattr(
+        progress_mod.QtCore.QTimer,
+        "singleShot",
+        lambda delay, callback: scheduled.append((delay, callback)),
+    )
+
+    obj = _DummyPredictionProgress()
+    thread = FakeThread()
+    obj.seg_pred_thread = thread
+    obj.pred_worker = FakeWorker()
+    obj._force_stop_thread_ref = thread
+    obj._force_stop_attempts = 3
+    obj._prediction_stop_requested = True
+
+    obj._force_stop_prediction_thread()
+
+    assert thread.terminated is False
+    assert scheduled and scheduled[-1][0] == 5000
 
 
 def test_mark_missing_instance_frame_adds_and_deduplicates() -> None:

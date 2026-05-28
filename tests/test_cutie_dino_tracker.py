@@ -797,6 +797,76 @@ def test_mask_fallback_bonus_guides_assignment(monkeypatch):
     assert tracker._mask_miss_counts.get("animal") == 1
 
 
+def test_mask_fallback_keeps_previous_roi_when_mask_drops(monkeypatch):
+    monkeypatch.setattr(
+        "annolid.tracking.dino_keypoint_tracker.Dinov3FeatureExtractor",
+        DummyExtractor,
+    )
+    config = CutieDinoTrackerConfig(
+        mask_similarity_bonus=1.0,
+        max_mask_fallback_frames=2,
+        mask_dilation_iterations=0,
+        appearance_bundle_weight=0.0,
+        baseline_similarity_weight=0.0,
+        structural_consistency_weight=0.0,
+        symmetry_penalty=0.0,
+        support_probe_weight=0.0,
+        motion_prior_penalty_weight=0.0,
+        motion_search_gain=0.0,
+        motion_search_miss_boost=0.0,
+    )
+    tracker = DinoKeypointTracker(
+        model_name="dummy",
+        runtime_config=config,
+        search_radius=1,
+        min_similarity=0.0,
+        momentum=0.0,
+        reference_weight=0.0,
+    )
+    extractor = tracker.extractor
+
+    image = Image.fromarray(np.zeros((64, 64, 3), dtype=np.uint8))
+    registry = InstanceRegistry()
+    registry.register_keypoint(
+        KeypointState(
+            key="animalnose",
+            instance_label="animal",
+            label="nose",
+            x=30.0,
+            y=30.0,
+        )
+    )
+
+    mask = np.zeros((64, 64), dtype=bool)
+    mask[30, 30] = True
+    expected_roi = (14, 14, 47, 47)
+    roi_height = expected_roi[3] - expected_roi[1]
+    roi_width = expected_roi[2] - expected_roi[0]
+    start_features = torch.zeros((2, roi_height, roi_width), dtype=torch.float32)
+    start_features[:, 16, 16] = torch.tensor([1.0, 0.0], dtype=torch.float32)
+
+    update_features = torch.zeros((2, roi_height, roi_width), dtype=torch.float32)
+    update_features[:, 16, 16] = torch.tensor(
+        [0.6, math.sqrt(1.0 - 0.6**2)], dtype=torch.float32
+    )
+    update_features[:, 16, 17] = torch.tensor(
+        [0.95, math.sqrt(1.0 - 0.95**2)], dtype=torch.float32
+    )
+
+    extractor.set_queue([start_features, update_features])
+
+    tracker.start(image, registry, {"animal": mask})
+    tracker.prev_gray = None
+    assert tracker._roi_box == expected_roi
+
+    results = tracker.update(image, {})
+
+    assert tracker._roi_box == expected_roi
+    assert tracker._mask_miss_counts.get("animal") == 1
+    assert results[0]["visible"] is True
+    assert results[0]["x"] == pytest.approx(30.5, abs=1e-6)
+
+
 def test_symmetry_pairs_prevent_swaps(monkeypatch):
     monkeypatch.setattr(
         "annolid.tracking.dino_keypoint_tracker.Dinov3FeatureExtractor",

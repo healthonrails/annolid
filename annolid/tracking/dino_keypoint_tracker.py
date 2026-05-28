@@ -195,6 +195,7 @@ class DinoKeypointTracker:
         self._part_shared_counts: Dict[str, int] = {}
         self._last_norm_feats: Optional[torch.Tensor] = None
         self._last_grid_hw: Optional[Tuple[int, int]] = None
+        self._stop_requested = False
         self.keypoint_refine_radius = max(
             0, int(getattr(self.runtime_config, "keypoint_refine_radius", 0))
         )
@@ -207,9 +208,18 @@ class DinoKeypointTracker:
         )
         self.reset_state()
 
+    def request_stop(self) -> None:
+        """Request cooperative cancellation at the next tracker boundary."""
+        self._stop_requested = True
+
+    def is_stopped(self) -> bool:
+        """Return whether cooperative cancellation has been requested."""
+        return bool(self._stop_requested)
+
     def reset_state(self, *, preserve_manual_anchors: bool = False) -> None:
         """Restore tracker state to a clean slate prior to (re)starting."""
         self.tracks.clear()
+        self._stop_requested = False
         self.prev_gray = None
         self.prev_scale = (1.0, 1.0)
         self._last_patch_masks = {}
@@ -235,6 +245,8 @@ class DinoKeypointTracker:
     ) -> None:
         self.reset_state(preserve_manual_anchors=True)
         self._is_fresh_start = True  # Signal that the next update is the first
+        if self._stop_requested:
+            return
 
         polygons: List[List[Tuple[float, float]]] = []
         for instance in registry:
@@ -246,6 +258,8 @@ class DinoKeypointTracker:
             mask_lookup=mask_lookup,
             polygons=polygons,
         )
+        if self._stop_requested:
+            return
         normalized_feats = self._normalize_feature_grid(feats)
         context_map = self._compute_context_map(normalized_feats)
         cropped_masks = self._crop_masks_for_roi(mask_lookup)
@@ -339,6 +353,8 @@ class DinoKeypointTracker:
         image: Image.Image,
         mask_lookup: Optional[Dict[str, np.ndarray]] = None,
     ) -> List[Dict[str, object]]:
+        if self._stop_requested:
+            return []
         if not self.tracks:
             return []
 
@@ -348,6 +364,8 @@ class DinoKeypointTracker:
             mask_lookup=mask_lookup,
             polygons=None,
         )
+        if self._stop_requested:
+            return []
         roi_changed = self._roi_box != prev_roi_box
         grid_h, grid_w = grid_hw
         normalized_feats = self._normalize_feature_grid(feats)
@@ -1372,6 +1390,18 @@ class DinoKeypointTracker:
                 found = True
 
         if not found:
+            prev_left, prev_top, prev_right, prev_bottom = self._roi_box
+            if (
+                self.tracks
+                and 0 <= prev_left < prev_right <= width
+                and 0 <= prev_top < prev_bottom <= height
+            ):
+                return (
+                    int(prev_left),
+                    int(prev_top),
+                    int(prev_right),
+                    int(prev_bottom),
+                )
             return (0, 0, width, height)
 
         margin = max(self.patch_size * 2, 16)
@@ -2329,6 +2359,8 @@ class DinoKeypointTracker:
 class DinoKeypointVideoProcessor:
     """Video orchestrator coordinating instances, masks, and serialization."""
 
+    allow_force_thread_terminate = False
+
     def __init__(
         self,
         video_path: str,
@@ -2372,9 +2404,21 @@ class DinoKeypointVideoProcessor:
             runtime_config=self.config,
         )
         self.pred_worker = None
+        self._stop_requested = False
 
     def set_pred_worker(self, pred_worker) -> None:
         self.pred_worker = pred_worker
+
+    def request_stop(self) -> None:
+        """Request cooperative cancellation without killing the Qt worker thread."""
+        self._stop_requested = True
+        request_tracker_stop = getattr(self.tracker, "request_stop", None)
+        if callable(request_tracker_stop):
+            request_tracker_stop()
+
+    def allows_force_terminate(self) -> bool:
+        """DINO/Transformers/MPS work is not safe to kill with QThread.terminate()."""
+        return False
 
     def process_video(
         self,
@@ -2431,15 +2475,24 @@ class DinoKeypointVideoProcessor:
         initial_frame_array = self.video_loader.load_frame(initial_frame)
         if initial_frame_array is None:
             raise RuntimeError("Unable to load the initial frame for tracking.")
+        if self._should_stop():
+            logger.info("DINO tracking stopped before tracker initialization.")
+            return "Cutie + DINO tracking stopped early."
 
         initial_mask_lookup = self._mask_lookup_from_registry(registry)
         if self.mask_manager.enabled:
             self.mask_manager.prime(initial_frame, initial_frame_array, registry)
+        if self._should_stop():
+            logger.info("DINO tracking stopped before DINO feature extraction.")
+            return "Cutie + DINO tracking stopped early."
         self.tracker.start(
             Image.fromarray(initial_frame_array),
             registry,
             initial_mask_lookup,
         )
+        if self._should_stop():
+            logger.info("DINO tracking stopped after tracker initialization.")
+            return "Cutie + DINO tracking stopped early."
         self.adapter.write_annotation(
             frame_number=initial_frame,
             registry=registry,
@@ -2499,6 +2552,9 @@ class DinoKeypointVideoProcessor:
                 continue
 
             mask_results = self.mask_manager.update_masks(frame_number, frame, registry)
+            if self._should_stop():
+                stopped_early = True
+                break
             if mask_results:
                 self._apply_mask_results(registry, mask_results)
             mask_lookup = self._mask_lookup_from_registry(registry)
@@ -2507,6 +2563,9 @@ class DinoKeypointVideoProcessor:
                 Image.fromarray(frame),
                 mask_lookup,
             )
+            if self._should_stop():
+                stopped_early = True
+                break
             if tracker_results:
                 registry.apply_tracker_results(
                     tracker_results, frame_number=frame_number
@@ -2764,4 +2823,6 @@ class DinoKeypointVideoProcessor:
             self.config.progress_hook(processed, total)
 
     def _should_stop(self) -> bool:
+        if self._stop_requested:
+            return True
         return bool(self.pred_worker and self.pred_worker.is_stopped())

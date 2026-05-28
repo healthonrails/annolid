@@ -355,6 +355,26 @@ class PredictionProgressMixin:
             QtCore.QTimer.singleShot(5000, self._force_stop_prediction_thread)
             return
 
+        allows_force_terminate = True
+        if worker is not None:
+            policy = getattr(worker, "allows_force_terminate", None)
+            if callable(policy):
+                try:
+                    allows_force_terminate = bool(policy())
+                except Exception:
+                    logger.debug(
+                        "Failed to query prediction worker termination policy.",
+                        exc_info=True,
+                    )
+        if not allows_force_terminate:
+            self._force_stop_attempts = attempts + 1
+            logger.warning(
+                "Prediction worker is not safe to terminate; continuing cooperative stop wait (%s).",
+                self._force_stop_attempts,
+            )
+            QtCore.QTimer.singleShot(5000, self._force_stop_prediction_thread)
+            return
+
         logger.warning(
             "Prediction thread did not stop in time; terminating as a last resort."
         )

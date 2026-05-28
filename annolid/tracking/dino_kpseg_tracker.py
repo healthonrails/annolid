@@ -55,6 +55,8 @@ class _KPSEGInstanceContext:
 class DinoKPSEGVideoProcessor:
     """Video orchestrator: Cutie polygons + DinoKPSEG keypoints per instance."""
 
+    allow_force_thread_terminate = False
+
     def __init__(
         self,
         video_path: str,
@@ -161,6 +163,7 @@ class DinoKPSEGVideoProcessor:
         self._kpseg_enabled_by_instance: Dict[str, bool] = {}
         self._kpseg_good_streak: Dict[str, int] = {}
         self._kpseg_bad_streak: Dict[str, int] = {}
+        self._stop_requested = False
 
     def _reset_instance_id_state(self) -> None:
         self._instance_numeric_id_by_label = {}
@@ -216,6 +219,18 @@ class DinoKPSEGVideoProcessor:
 
     def set_pred_worker(self, pred_worker) -> None:
         self.pred_worker = pred_worker
+
+    def request_stop(self) -> None:
+        """Request cooperative cancellation without killing the Qt worker thread."""
+        self._stop_requested = True
+        tracker = getattr(self, "_keypoint_tracker", None)
+        request_tracker_stop = getattr(tracker, "request_stop", None)
+        if callable(request_tracker_stop):
+            request_tracker_stop()
+
+    def allows_force_terminate(self) -> bool:
+        """DINO/Transformers/MPS work is not safe to kill with QThread.terminate()."""
+        return False
 
     def process_video(
         self,
@@ -280,11 +295,17 @@ class DinoKPSEGVideoProcessor:
         self._kpseg_smoother.reset()
 
         seed_frame_rgb = self.video_loader.load_frame(manual_seed.frame_number)
+        if self._should_stop():
+            logger.info("DinoKPSEG tracking stopped before predictor initialization.")
+            return "Cutie + DinoKPSEG tracking stopped early."
         self._instance_display_labels.update(manual_seed.display_labels)
         if self.mask_manager.enabled:
             self.mask_manager.prime(
                 manual_seed.frame_number, seed_frame_rgb, manual_seed.registry
             )
+        if self._should_stop():
+            logger.info("DinoKPSEG tracking stopped before keypoint initialization.")
+            return "Cutie + DinoKPSEG tracking stopped early."
         mask_lookup = self._mask_lookup_from_registry(manual_seed.registry)
         has_seed_keypoints = any(
             bool(points)
@@ -328,6 +349,9 @@ class DinoKPSEGVideoProcessor:
                     registry = resume.registry
                     self._instance_display_labels.update(resume.display_labels)
                     frame_rgb = self.video_loader.load_frame(frame_number)
+                    if self._should_stop():
+                        stopped_early = True
+                        break
                     if self.mask_manager.enabled:
                         self.mask_manager.prime(frame_number, frame_rgb, registry)
                     mask_lookup = self._mask_lookup_from_registry(registry)
@@ -369,6 +393,9 @@ class DinoKPSEGVideoProcessor:
             mask_results = self.mask_manager.update_masks(
                 frame_number, frame_rgb, registry
             )
+            if self._should_stop():
+                stopped_early = True
+                break
             if mask_results:
                 self._apply_mask_results(registry, mask_results)
 
@@ -382,9 +409,15 @@ class DinoKPSEGVideoProcessor:
                     registry.apply_tracker_results(
                         tracker_results, frame_number=frame_number
                     )
+                if self._should_stop():
+                    stopped_early = True
+                    break
 
             frame_bgr = frame_rgb[:, :, ::-1]
             self._maybe_apply_kpseg(frame_bgr, registry, frame_number=frame_number)
+            if self._should_stop():
+                stopped_early = True
+                break
             self._write_annotation(frame_number, registry)
 
             processed += 1
@@ -406,6 +439,8 @@ class DinoKPSEGVideoProcessor:
             self.config.progress_hook(processed, total)
 
     def _should_stop(self) -> bool:
+        if self._stop_requested:
+            return True
         return bool(self.pred_worker and self.pred_worker.is_stopped())
 
     def _manual_annotation_frames(
