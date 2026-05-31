@@ -82,6 +82,12 @@ class ModelIdentityMixin:
         )
 
     @staticmethod
+    def _is_tapnext_model(identifier: str, weight: str) -> bool:
+        identifier = identifier.lower()
+        weight = weight.lower()
+        return identifier == "tapnext" or "tapnext" in identifier or "tapnext" in weight
+
+    @staticmethod
     def _is_dino_keypoint_model(identifier: str, weight: str) -> bool:
         identifier = identifier.lower()
         weight = weight.lower()
@@ -124,6 +130,7 @@ class ModelIdentityMixin:
             "dinov",
             "dino",
             "cotracker",
+            "tapnext",
             "cutie",
             "efficientvit",
             "mediapipe",

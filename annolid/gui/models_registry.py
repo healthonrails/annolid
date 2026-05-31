@@ -25,6 +25,7 @@ MODEL_REGISTRY = [
     ModelConfig("Cutie", "Cutie", "Cutie.pt"),
     ModelConfig("CoTracker", "CoTracker", "CoTracker.pt"),
     ModelConfig("CoWTracker", "CoWTracker", "facebook/cowtracker"),
+    ModelConfig("TAPNext (ONNX)", "TAPNext", "downloads/tapnext.onnx"),
     ModelConfig(
         "VideoMT ViT-S (ONNX)",
         "videomt",

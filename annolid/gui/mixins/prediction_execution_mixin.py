@@ -707,6 +707,8 @@ class PredictionExecutionMixin:
                 )
                 if self._is_cutie_tracking_model(model_name):
                     processor_kwargs.update(self._cutie_brightness_contrast_kwargs())
+                if self._is_tapnext_model(model_name, model_weight):
+                    processor_kwargs["tapnext_model_path"] = model_weight
                 try:
                     processor_cache_key = self._tracking_processor_cache_key(
                         self.video_file,
@@ -792,6 +794,7 @@ class PredictionExecutionMixin:
             is_point_tracking_model = bool(
                 self._is_cotracker_model(model_name, model_weight)
                 or self._is_cowtracker_model(model_name, model_weight)
+                or self._is_tapnext_model(model_name, model_weight)
                 or self._is_dino_kpseg_tracker_model(model_name, model_weight)
                 or self._is_dino_keypoint_model(model_name, model_weight)
             )
@@ -929,17 +932,21 @@ class PredictionExecutionMixin:
                     int(self.num_frames),
                     int(forced_end_frame) if has_forced_end else None,
                 )
-            if self._is_cotracker_model(model_name, model_weight):
-                # CoTracker can stream windows efficiently to the end of the video.
+            if self._is_cotracker_model(
+                model_name, model_weight
+            ) or self._is_tapnext_model(model_name, model_weight):
+                # Online point trackers can stream efficiently to the end.
                 end_frame = self.num_frames - 1
             if end_frame >= self.num_frames:
                 end_frame = self.num_frames - 1
             self._prediction_run_start_frame = int(inference_start_frame)
-            if self._is_cotracker_model(
-                model_name, model_weight
-            ) or self._is_cowtracker_model(model_name, model_weight):
-                # For CoTracker/CoWTracker, continue launching chunks until prediction
-                # reaches the true last frame.
+            if (
+                self._is_cotracker_model(model_name, model_weight)
+                or self._is_cowtracker_model(model_name, model_weight)
+                or self._is_tapnext_model(model_name, model_weight)
+            ):
+                # For point trackers, continue launching chunks until prediction reaches
+                # the true last frame.
                 self._prediction_auto_continue_to_end = True
                 self._prediction_target_end_frame = int(self.num_frames) - 1
             elif self._is_cutie_tracking_model(model_name):
@@ -1043,12 +1050,14 @@ class PredictionExecutionMixin:
                     if (
                         self._is_cotracker_model(model_name, model_weight)
                         or self._is_cowtracker_model(model_name, model_weight)
+                        or self._is_tapnext_model(model_name, model_weight)
                     )
                     else True,
                     mem_every=self.step_size,
                     point_tracking=(
                         self._is_cotracker_model(model_name, model_weight)
                         or self._is_cowtracker_model(model_name, model_weight)
+                        or self._is_tapnext_model(model_name, model_weight)
                     ),
                     has_occlusion=has_occlusion,
                 )

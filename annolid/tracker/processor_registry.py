@@ -10,6 +10,7 @@ ModelNamePredicate = Callable[[str], bool]
 CUTIE_BACKEND = "cutie"
 COWTRACKER_BACKEND = "cowtracker"
 COTRACKER_BACKEND = "cotracker"
+TAPNEXT_BACKEND = "tapnext"
 VIDEOMT_BACKEND = "videomt"
 DEFAULT_BACKEND = "default"
 
@@ -112,6 +113,12 @@ def _load_cotracker_processor() -> type:
     return CoTrackerProcessor
 
 
+def _load_tapnext_processor() -> type:
+    from annolid.tracker.tapnext_onnx.track import TapNextOnnxProcessor
+
+    return TapNextOnnxProcessor
+
+
 def _load_videomt_processor() -> type:
     from annolid.segmentation.videomt_onnx import VideoMTOnnxVideoProcessor
 
@@ -144,6 +151,13 @@ TRACKING_PROCESSOR_REGISTRY.register(
         name=COTRACKER_BACKEND,
         predicate=model_name_contains(COTRACKER_BACKEND),
         loader=_load_cotracker_processor,
+    )
+)
+TRACKING_PROCESSOR_REGISTRY.register(
+    TrackingBackendSpec(
+        name=TAPNEXT_BACKEND,
+        predicate=model_name_contains(TAPNEXT_BACKEND),
+        loader=_load_tapnext_processor,
     )
 )
 TRACKING_PROCESSOR_REGISTRY.register(

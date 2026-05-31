@@ -196,6 +196,31 @@ If that vendored subset is not present, CowTracker can also use an externally
 installed `vggt` package. See `annolid/tracker/cowtracker/README.md` for the
 required vendored file list and packaging notes.
 
+## TAPNext ONNX Setup
+
+Select **TAPNext (ONNX)** in the model dropdown. Annolid downloads the official
+TAPNext ONNX model on first use, verifies its SHA256 checksum, and caches it at:
+
+```bash
+~/.annolid/workspace/downloads/tapnext.onnx
+```
+
+The published model URL is:
+
+```bash
+https://github.com/healthonrails/annolid/releases/download/v1.6.6/tapnext.onnx
+```
+
+Expected checksum:
+
+```bash
+sha256:4fca0951802f0b745de254930c880938a74bf8b54b10786fc68d0ab4ba5c5300
+```
+
+Annolid runs the model in fixed-length clips, pads or batches query points to
+match the exported `Q` capacity, and writes tracked points as LabelMe JSON files
+like the CoTracker backend.
+
 ## Annotation Guide
 ![Annolid UI based on LabelMe](docs/imgs/annolid_ui.png)
 
