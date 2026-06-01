@@ -221,6 +221,9 @@ Annolid runs the model in fixed-length clips, pads or batches query points to
 match the exported `Q` capacity, and writes tracked points as LabelMe JSON files
 like the CoTracker backend.
 
+See the [TAPNext ONNX point tracking guide](docs/tapnext.md) for the full GUI
+workflow, prompt tips, output format, and troubleshooting notes.
+
 ## Annotation Guide
 ![Annolid UI based on LabelMe](docs/imgs/annolid_ui.png)
 
