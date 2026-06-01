@@ -12,6 +12,7 @@ from annolid.gui.mixins.viewer_tools_mixin import (
     _prepare_live_flybody_view_payload,
     _run_logged_subprocess,
 )
+from annolid.gui.controllers.menu import MenuController
 from annolid.gui.threejs_support import supports_threejs_canvas
 from qtpy import QtWidgets
 
@@ -304,6 +305,49 @@ def test_resolve_picked_3d_source_prefers_hinted_zarr_root(tmp_path: Path) -> No
     )
 
     assert resolved == str(zarr_root)
+
+
+def test_resolve_picked_3d_source_rejects_missing_zarr_path(tmp_path: Path) -> None:
+    widget = _DummyViewerHost()
+    missing_zarr = tmp_path / "missing_atlas.zarr"
+
+    resolved = widget._resolve_picked_3d_source(
+        selected_paths=[str(missing_zarr)],
+        current_dir="",
+        hinted_path="",
+    )
+
+    assert resolved is None
+
+
+def test_open_3d_viewer_routes_zarr_folder_to_threejs(
+    monkeypatch, tmp_path: Path
+) -> None:
+    widget = _DummyViewerHost()
+    zarr_root = tmp_path / "atlas_nissl_30um_image_registered.zarr"
+    zarr_root.mkdir(parents=True, exist_ok=True)
+    widget.video_loader = None
+    widget.video_file = None
+    widget.imagePath = ""
+    widget.filename = ""
+    monkeypatch.setattr(widget, "_detect_existing_3d_source", lambda: str(zarr_root))
+
+    widget.open_3d_viewer()
+
+    assert widget.threejs_manager.model_paths == [zarr_root]
+
+
+def test_file_menu_open_3d_file_uses_zarr_aware_picker(tmp_path: Path) -> None:
+    widget = _DummyViewerHost()
+    zarr_root = tmp_path / "atlas_nissl_30um_image_registered.zarr"
+    zarr_root.mkdir(parents=True, exist_ok=True)
+    widget._pick_3d_source_from_dialog = lambda: str(zarr_root)
+
+    controller = MenuController(widget)
+    controller._open_3d_file()
+
+    assert widget.threejs_manager.model_paths == [zarr_root]
+    assert widget.lastOpenDir == str(tmp_path)
 
 
 def test_handle_flybody_viewer_command_routes_start_and_stop(monkeypatch) -> None:

@@ -547,6 +547,38 @@ def test_build_zarr_simulation_payload_inverts_bright_background_histology(
 
 
 @requires_zarr
+def test_build_zarr_simulation_payload_uses_flat_array_axes_and_voxel_um(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+    window = _DummyWindow()
+    manager = ThreeJsManager(window, QtWidgets.QStackedWidget(window))
+
+    zarr_path = tmp_path / "atlas_nissl_30um_image_registered.zarr"
+    arr = zarr.open(str(zarr_path), mode="w", shape=(12, 16, 20), dtype="u1")
+    arr.attrs["axes"] = ["ML", "DV", "AP"]
+    arr.attrs["voxel_um"] = 30.0
+    data = np.zeros((12, 16, 20), dtype=np.uint8)
+    data[:, 2:14, 2:18] = 240
+    data[3:9, 4:12, 5:15] = 90
+    data[5:7, 6:10, 8:12] = 45
+    arr[:] = data
+
+    payload = manager._build_zarr_simulation_payload(zarr_path)
+
+    assert payload["metadata"]["axes"] == ["ml", "dv", "ap"]
+    assert payload["metadata"]["voxel_spacing_zyx"] == [30.0, 30.0, 30.0]
+    assert payload["metadata"]["voxel_spacing_xyz"] == [30.0, 30.0, 30.0]
+    assert payload["metadata"]["section_step_world"] == 30.0
+    assert payload["metadata"]["render_profile"] == "nissl_sections"
+    assert payload["metadata"]["intensity_inverted"] is True
+    assert payload["metadata"]["signal_polarity"] == "dark_on_light"
+    assert payload["metadata"]["volume_crop_origin_zyx"] != [0, 0, 0]
+    assert payload["metadata"]["volume_grid_shape"][1] < 16
+    assert payload["metadata"]["point_count"] > 0
+
+
+@requires_zarr
 def test_build_zarr_simulation_payload_falls_back_when_candidate_read_fails(
     tmp_path: Path, monkeypatch
 ) -> None:

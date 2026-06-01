@@ -2198,7 +2198,7 @@ class MenuController:
                 continue
 
     def _open_3d_file(self) -> None:
-        """Open a 3D model file dialog and load it in the Three.js viewer."""
+        """Open a 3D model, volume, or simulation source in the Three.js viewer."""
         manager = getattr(self._window, "threejs_manager", None)
         if manager is None and hasattr(self._window, "ensure_threejs_manager"):
             try:
@@ -2215,29 +2215,34 @@ class MenuController:
             )
             return
 
-        start_dir = getattr(self._window, "lastOpenDir", str(Path.home()))
-        filters = self._window.tr(
-            "3D Models (*.stl *.obj *.ply *.glb *.gltf *.csv *.xyz);;OBJ with Materials (*.obj *.mtl);;All Files (*)"
-        )
-        filename, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self._window,
-            self._window.tr("Open 3D Model"),
-            start_dir,
-            filters,
-        )
-        if not filename:
+        pick_source = getattr(self._window, "_pick_3d_source_from_dialog", None)
+        if callable(pick_source):
+            source_path = pick_source()
+        else:
+            start_dir = getattr(self._window, "lastOpenDir", str(Path.home()))
+            filters = self._window.tr(
+                "3D sources (*.ply *.csv *.xyz *.stl *.STL *.obj *.OBJ *.glb *.gltf *.zarr *.tif *.tiff *.json *.jpg *.jpeg *.png *.webp *.bmp *.gif);;All files (*.*)"
+            )
+            source_path, _ = QtWidgets.QFileDialog.getOpenFileName(
+                self._window,
+                self._window.tr("Open 3D Model/Simulation Source"),
+                start_dir,
+                filters,
+            )
+        if not source_path:
             return
 
-        # Update last open directory
-        self._window.lastOpenDir = str(Path(filename).parent)
-
-        # Load the 3D model
-        success = manager.show_model_in_viewer(filename)
+        path = Path(source_path)
+        self._window.lastOpenDir = str(path.parent)
+        if path.suffix.lower() == ".json":
+            success = manager.show_simulation_in_viewer(source_path)
+        else:
+            success = manager.show_model_in_viewer(source_path)
         if not success:
             QtWidgets.QMessageBox.warning(
                 self._window,
                 self._window.tr("Load Error"),
-                self._window.tr("Failed to load the 3D model: %1").replace(
-                    "%1", Path(filename).name
+                self._window.tr("Failed to load the 3D source: %1").replace(
+                    "%1", path.name
                 ),
             )

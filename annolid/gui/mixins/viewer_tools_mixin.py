@@ -186,17 +186,30 @@ class ViewerToolsMixin:
     ) -> str | None:
         for candidate in list(selected_paths or []):
             normalized = self._normalize_3d_source_path(candidate)
-            if normalized:
+            if self._is_openable_3d_source(normalized):
                 return normalized
         if hinted_path:
             normalized = self._normalize_3d_source_path(hinted_path)
-            if normalized:
+            if self._is_openable_3d_source(normalized):
                 return normalized
         if current_dir:
             normalized = self._normalize_3d_source_path(current_dir)
-            if normalized and normalized != ".":
+            if (
+                normalized
+                and normalized != "."
+                and self._is_openable_3d_source(normalized)
+            ):
                 return normalized
         return None
+
+    def _is_openable_3d_source(self, source_path: str | Path) -> bool:
+        path = Path(str(source_path or "").strip()).expanduser()
+        if not path.exists():
+            return False
+        if path.is_dir():
+            return path.suffix.lower() == ".zarr"
+        suffix = path.suffix.lower()
+        return suffix == ".json" or supports_threejs_canvas(path)
 
     def _resolve_threejs_manager(self):
         manager = getattr(self, "threejs_manager", None)
@@ -267,7 +280,9 @@ class ViewerToolsMixin:
         )
         dialog.setDirectory(start_dir)
         dialog.setNameFilter(filters)
-        dialog.setFileMode(QtWidgets.QFileDialog.ExistingFiles)
+        # AnyFile keeps the non-native dialog from treating .zarr stores only as
+        # navigable folders; selected paths are validated before use.
+        dialog.setFileMode(QtWidgets.QFileDialog.AnyFile)
         dialog.setOption(QtWidgets.QFileDialog.DontUseNativeDialog, True)
         dialog.setOption(QtWidgets.QFileDialog.ReadOnly, True)
         hinted_source = {"path": ""}

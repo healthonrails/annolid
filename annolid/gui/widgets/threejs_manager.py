@@ -1041,42 +1041,71 @@ class ThreeJsManager(QtCore.QObject):
         if sampled.size <= 0:
             raise RuntimeError(f"Zarr volume is empty: {source_path}")
 
-        finite = sampled[np.isfinite(sampled)]
+        dark_on_light_hint = self._zarr_prefers_dark_on_light(
+            source=source,
+            array=array,
+            source_path=source_path,
+        )
+        finite_mask = np.isfinite(sampled)
+        data_mask = np.array(finite_mask, dtype=bool, copy=True)
+        if dark_on_light_hint:
+            fill_value = self._zarr_array_fill_value(array)
+            if fill_value is not None:
+                data_mask &= sampled != float(fill_value)
+            if int(data_mask.sum()) <= 0:
+                data_mask = np.array(finite_mask, dtype=bool, copy=True)
+
+        finite = sampled[data_mask]
         if finite.size <= 0:
             raise RuntimeError(f"Zarr volume has no finite values: {source_path}")
         lo = float(np.min(finite))
         hi = float(np.max(finite))
         scale = hi - lo
+        normalized = np.zeros_like(sampled, dtype=np.float32)
         if scale <= 1e-8:
-            normalized = np.ones_like(sampled, dtype=np.float32)
+            normalized[data_mask] = 1.0
         else:
-            normalized = (sampled - lo) / scale
+            normalized[data_mask] = (sampled[data_mask] - lo) / scale
 
-        intensity_inverted = self._should_invert_zarr_signal(normalized)
+        intensity_inverted = bool(
+            dark_on_light_hint or self._should_invert_zarr_signal(normalized)
+        )
         if intensity_inverted:
-            normalized = 1.0 - normalized
+            normalized[data_mask] = 1.0 - normalized[data_mask]
+        render_profile = self._classify_zarr_render_profile(
+            source_path=source_path,
+            intensity_inverted=bool(intensity_inverted),
+        )
+        crop_origin = [0, 0, 0]
+        if render_profile in {"nissl_sections", "myelin_sections", "section_stack"}:
+            normalized, data_mask, crop_origin = self._crop_zarr_foreground_volume(
+                normalized=normalized,
+                data_mask=data_mask,
+                intensity_inverted=bool(intensity_inverted),
+                np_module=np,
+            )
         dense_volume = np.clip(np.round(normalized * 255.0), 0, 255).astype(np.uint8)
 
         threshold_quantile = 0.70 if intensity_inverted else 0.92
         threshold_floor = 0.10 if intensity_inverted else 0.18
         threshold = max(
             threshold_floor,
-            float(np.quantile(normalized[np.isfinite(normalized)], threshold_quantile)),
+            float(np.quantile(normalized[data_mask], threshold_quantile)),
         )
-        mask = np.isfinite(normalized) & (normalized >= threshold)
+        mask = data_mask & (normalized >= threshold)
         if int(mask.sum()) < 2000:
             threshold = max(
                 0.05 if intensity_inverted else 0.45,
                 float(
                     np.quantile(
-                        normalized[np.isfinite(normalized)],
+                        normalized[data_mask],
                         0.52 if intensity_inverted else 0.80,
                     )
                 ),
             )
-            mask = np.isfinite(normalized) & (normalized >= threshold)
+            mask = data_mask & (normalized >= threshold)
         if int(mask.sum()) <= 0:
-            mask = np.isfinite(normalized)
+            mask = data_mask
 
         coords = np.argwhere(mask)
         values = normalized[mask]
@@ -1094,20 +1123,10 @@ class ThreeJsManager(QtCore.QObject):
             intensity_inverted=bool(intensity_inverted),
         )
         points: list[dict[str, Any]] = []
-        sampled_spatial_shape = [
-            int(sampled_shape[idx] if idx < len(sampled_shape) else 1)
-            for idx in spatial_axes
-        ]
-        z_len = int(sampled_spatial_shape[-3]) if len(sampled_spatial_shape) >= 3 else 1
-        y_len = int(sampled_spatial_shape[-2]) if len(sampled_spatial_shape) >= 2 else 1
-        x_len = int(sampled_spatial_shape[-1]) if len(sampled_spatial_shape) >= 1 else 1
+        z_len, y_len, x_len = [int(v) for v in dense_volume.shape]
         z_scale = float(max(1, int(stride)) * float(spatial_spacing[0]))
         y_scale = float(max(1, int(stride)) * float(spatial_spacing[1]))
         x_scale = float(max(1, int(stride)) * float(spatial_spacing[2]))
-        render_profile = self._classify_zarr_render_profile(
-            source_path=source_path,
-            intensity_inverted=bool(intensity_inverted),
-        )
         interleaved_detected = "interleaved" in str(source_path.stem or "").lower()
         for idx, (z, y, x) in enumerate(coords):
             points.append(
@@ -1155,6 +1174,7 @@ class ThreeJsManager(QtCore.QObject):
                 ],
                 "volume_grid_shape": [int(v) for v in dense_volume.shape],
                 "volume_grid_base64": self._encode_zarr_volume_grid(dense_volume),
+                "volume_crop_origin_zyx": [int(v) for v in crop_origin],
                 "volume_histogram": histogram,
                 "volume_bounds": {
                     "x": [0.0, float(max(0, x_len - 1) * x_scale)],
@@ -1357,6 +1377,77 @@ class ThreeJsManager(QtCore.QObject):
         return "cinematic"
 
     @staticmethod
+    def _zarr_prefers_dark_on_light(
+        *, source: Any, array: Any, source_path: Path
+    ) -> bool:
+        stem = str(source_path.stem or "").lower()
+        if any(token in stem for token in ("nissl", "myelin", "histology")):
+            return True
+        for node in (array, source):
+            attrs = getattr(node, "attrs", None)
+            if attrs is None:
+                continue
+            stain = str(attrs.get("stain", "") or "").strip().lower()
+            if stain in {"nissl", "myelin"}:
+                return True
+            polarity = str(attrs.get("signal_polarity", "") or "").strip().lower()
+            if polarity in {"dark_on_light", "dark-on-light"}:
+                return True
+        return False
+
+    @staticmethod
+    def _zarr_array_fill_value(array: Any) -> float | None:
+        for attr_name in ("fill_value", "fillvalue"):
+            try:
+                value = getattr(array, attr_name)
+            except Exception:
+                value = None
+            if value is None:
+                continue
+            try:
+                parsed = float(value)
+            except Exception:
+                continue
+            if math.isfinite(parsed):
+                return parsed
+        return None
+
+    @staticmethod
+    def _crop_zarr_foreground_volume(
+        *,
+        normalized: Any,
+        data_mask: Any,
+        intensity_inverted: bool,
+        np_module: Any,
+    ) -> tuple[Any, Any, list[int]]:
+        np = np_module
+        if getattr(normalized, "ndim", 0) != 3 or normalized.size <= 0:
+            return normalized, data_mask, [0, 0, 0]
+        if not bool(intensity_inverted):
+            return normalized, data_mask, [0, 0, 0]
+        values = normalized[data_mask]
+        if values.size <= 0:
+            return normalized, data_mask, [0, 0, 0]
+        threshold = max(0.18, float(np.quantile(values, 0.20)))
+        foreground = data_mask & (normalized >= threshold)
+        if int(foreground.sum()) <= 0:
+            return normalized, data_mask, [0, 0, 0]
+        coords = np.argwhere(foreground)
+        mins = coords.min(axis=0)
+        maxs = coords.max(axis=0) + 1
+        margin = np.asarray([1, 3, 3], dtype=np.int64)
+        mins = np.maximum(mins - margin, 0)
+        maxs = np.minimum(maxs + margin, np.asarray(normalized.shape, dtype=np.int64))
+        if np.all(mins == 0) and np.all(maxs == np.asarray(normalized.shape)):
+            return normalized, data_mask, [0, 0, 0]
+        slices = tuple(slice(int(lo), int(hi)) for lo, hi in zip(mins, maxs))
+        return (
+            normalized[slices],
+            data_mask[slices],
+            [int(v) for v in mins.tolist()],
+        )
+
+    @staticmethod
     def _should_invert_zarr_signal(normalized: Any) -> bool:
         try:
             import numpy as np
@@ -1494,6 +1585,10 @@ class ThreeJsManager(QtCore.QObject):
             with_names = array.attrs.get("_ARRAY_DIMENSIONS")
             if isinstance(with_names, list):
                 candidate = with_names
+            else:
+                zarr_axes = array.attrs.get("axes")
+                if isinstance(zarr_axes, list):
+                    candidate = zarr_axes
         if isinstance(candidate, list):
             for item in candidate:
                 if isinstance(item, dict):
@@ -1582,6 +1677,13 @@ class ThreeJsManager(QtCore.QObject):
                                         parsed.append(1.0)
                                 spacing_by_axis = parsed
                                 break
+        if all(float(v) == 1.0 for v in spacing_by_axis):
+            attr_spacing = ThreeJsManager._zarr_spacing_from_attrs(
+                attrs=attrs,
+                ndim=len(shape),
+            )
+            if attr_spacing is not None:
+                spacing_by_axis = attr_spacing
         if axis_names and len(axis_names) == len(shape):
             resolved: dict[str, float] = {}
             for axis_index, axis_name in enumerate(axis_names):
@@ -1599,6 +1701,44 @@ class ThreeJsManager(QtCore.QObject):
         while len(spatial_values) < 3:
             spatial_values.insert(0, 1.0)
         return spatial_values[-3:]
+
+    @staticmethod
+    def _zarr_spacing_from_attrs(*, attrs: Any, ndim: int) -> list[float] | None:
+        if attrs is None or int(ndim) <= 0:
+            return None
+
+        def _positive_float(value: Any) -> float | None:
+            try:
+                parsed = float(value)
+            except Exception:
+                return None
+            if not math.isfinite(parsed) or parsed <= 0.0:
+                return None
+            return parsed
+
+        scalar_keys = ("voxel_um", "voxel_size_um")
+        for key in scalar_keys:
+            value = _positive_float(attrs.get(key))
+            if value is not None:
+                return [value for _ in range(int(ndim))]
+
+        sequence_keys = (
+            "voxel_spacing",
+            "voxel_size",
+            "spacing",
+            "resolution",
+            "scale",
+        )
+        for key in sequence_keys:
+            raw = attrs.get(key)
+            if not isinstance(raw, (list, tuple)) or len(raw) != int(ndim):
+                continue
+            parsed: list[float] = []
+            for value in raw:
+                spacing = _positive_float(value)
+                parsed.append(spacing if spacing is not None else 1.0)
+            return parsed
+        return None
 
     def _choose_zarr_multiscale_candidate(
         self, candidates: list[tuple[Any, str, Any]]
