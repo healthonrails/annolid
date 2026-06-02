@@ -256,6 +256,16 @@ function Test-GPU {
 # =============================================================================
 # Install ONNX Runtime (Windows, CUDA-aware)
 # =============================================================================
+function Uninstall-PythonPackages {
+    param([string[]]$Packages)
+
+    if ($script:UseUv) {
+        & $script:UvCmd pip uninstall @Packages | Out-Null
+    } else {
+        & pip uninstall -y @Packages | Out-Null
+    }
+}
+
 function Install-OnnxRuntime {
     Write-Step "Installing ONNX Runtime..."
 
@@ -265,10 +275,10 @@ function Install-OnnxRuntime {
         Write-Host "  Installing onnxruntime-gpu from CUDA 12 feed..."
         try {
             if ($script:UseUv) {
-                & $script:UvCmd pip uninstall -y onnxruntime-gpu onnxruntime-directml | Out-Null
+                Uninstall-PythonPackages @("onnxruntime-gpu", "onnxruntime-directml")
                 & $script:UvCmd pip install --upgrade --force-reinstall onnxruntime-gpu --extra-index-url $script:OnnxRuntimeCuda12ExtraIndexUrl
             } else {
-                & pip uninstall -y onnxruntime-gpu onnxruntime-directml | Out-Null
+                Uninstall-PythonPackages @("onnxruntime-gpu", "onnxruntime-directml")
                 & pip install --upgrade --force-reinstall onnxruntime-gpu --extra-index-url $script:OnnxRuntimeCuda12ExtraIndexUrl
             }
             Write-Success "onnxruntime-gpu (CUDA 12.x) installed"
@@ -281,10 +291,10 @@ function Install-OnnxRuntime {
     }
 
     if ($script:UseUv) {
-        & $script:UvCmd pip uninstall -y onnxruntime-gpu onnxruntime-directml | Out-Null
+        Uninstall-PythonPackages @("onnxruntime-gpu", "onnxruntime-directml")
         & $script:UvCmd pip install --upgrade --force-reinstall onnxruntime
     } else {
-        & pip uninstall -y onnxruntime-gpu onnxruntime-directml | Out-Null
+        Uninstall-PythonPackages @("onnxruntime-gpu", "onnxruntime-directml")
         & pip install --upgrade --force-reinstall onnxruntime
     }
     Write-Success "onnxruntime (CPU) installed"
@@ -531,10 +541,10 @@ function Repair-OnnxRuntime {
     Write-Warning-Msg "ONNX Runtime failed to import. Repairing runtime dependencies..."
 
     if ($script:UseUv) {
-        & $script:UvCmd pip uninstall -y onnxruntime onnxruntime-gpu onnxruntime-directml
+        Uninstall-PythonPackages @("onnxruntime", "onnxruntime-gpu", "onnxruntime-directml")
         & $script:UvCmd pip install --upgrade --force-reinstall msvc-runtime
     } else {
-        & pip uninstall -y onnxruntime onnxruntime-gpu onnxruntime-directml
+        Uninstall-PythonPackages @("onnxruntime", "onnxruntime-gpu", "onnxruntime-directml")
         & pip install --upgrade --force-reinstall msvc-runtime
     }
 

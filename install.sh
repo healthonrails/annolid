@@ -461,7 +461,7 @@ install_onnx_runtime() {
 
     if [[ "$HAS_NVIDIA_GPU" == true && "$HAS_CUDA12" == true && "$NO_GPU" == false ]]; then
         echo "  Installing onnxruntime-gpu for CUDA 12.x..."
-        $PIP_CMD uninstall -y onnxruntime-gpu >/dev/null 2>&1 || true
+        uninstall_packages onnxruntime-gpu
         if $PIP_CMD install --upgrade --force-reinstall onnxruntime-gpu --extra-index-url "$ONNXRUNTIME_CUDA12_EXTRA_INDEX_URL"; then
             print_success "onnxruntime-gpu installed"
             return
@@ -470,9 +470,17 @@ install_onnx_runtime() {
         print_warning "onnxruntime-gpu install failed. Falling back to CPU onnxruntime."
     fi
 
-    $PIP_CMD uninstall -y onnxruntime-gpu >/dev/null 2>&1 || true
+    uninstall_packages onnxruntime-gpu
     $PIP_CMD install --upgrade --force-reinstall onnxruntime
     print_success "onnxruntime installed"
+}
+
+uninstall_packages() {
+    if [[ "$USE_UV" == true && "$USE_CONDA" == false ]]; then
+        uv pip uninstall "$@" >/dev/null 2>&1 || true
+    else
+        pip uninstall -y "$@" >/dev/null 2>&1 || true
+    fi
 }
 
 # =============================================================================
