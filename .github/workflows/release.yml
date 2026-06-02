@@ -3,7 +3,7 @@ name: release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
   workflow_dispatch:
     inputs:
       build_binaries:
@@ -17,20 +17,15 @@ permissions:
 
 jobs:
   release:
-    if: startsWith(github.ref, 'refs/tags/')
-
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-
-    outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
-      release_id: ${{ steps.create_release.outputs.id }}
-      release_url: ${{ steps.create_release.outputs.html_url }}
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Validate tag matches package version
         run: |
+          set -euo pipefail
           pkg_version=$(python - <<'PY'
           import tomllib
           from pathlib import Path
@@ -44,104 +39,180 @@ jobs:
             exit 1
           fi
 
-      - name: Build Changelog
-        id: github_release
+      - name: Build changelog
+        id: changelog
         uses: mikepenz/release-changelog-builder-action@v4
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create or update GitHub release
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          release_name: ${{ github.ref_name }}
-          body: ${{ steps.github_release.outputs.changelog }}
+          name: ${{ github.ref_name }}
+          body: ${{ steps.changelog.outputs.changelog }}
+          fail_on_unmatched_files: true
 
-  publish:
+  publish-binaries:
     needs: [release]
-    if: github.event_name == 'workflow_dispatch' && inputs.build_binaries && startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.build_binaries))
 
     strategy:
+      fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest, windows-latest]
+        include:
+          - os: macos-latest
+            python-version: "3.11"
+            asset-name: Annolid-macOS
+            archive-name: Annolid-macOS.zip
+            executable: dist/annolid/annolid
+          - os: ubuntu-latest
+            python-version: "3.11"
+            asset-name: Annolid-Linux
+            archive-name: Annolid-Linux.tar.gz
+            executable: dist/annolid/annolid
+          - os: windows-latest
+            python-version: "3.11"
+            asset-name: Annolid-Windows
+            archive-name: Annolid-Windows.zip
+            executable: dist/annolid/annolid.exe
 
     runs-on: ${{ matrix.os }}
+
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - uses: conda-incubator/setup-miniconda@v3
-        with:
-          auto-update-conda: true
-          miniconda-version: "latest"
-          python-version: '3.11'
-
-      - name: Install project and build tooling
-        shell: bash -l {0}
+      - name: Free disk space on Linux
+        if: runner.os == 'Linux'
         run: |
-          pip install --upgrade pip
-          pip install . pyinstaller
+          set -euo pipefail
+          df -h
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc || true
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+          df -h
 
-      - name: Run pyinstaller
-        shell: bash -l {0}
+      - name: Install Linux GUI runtime dependencies
+        if: runner.os == 'Linux'
         run: |
-          pyinstaller annolid.spec
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            libegl1 \
+            libgl1 \
+            libxkbcommon-x11-0 \
+            libxcb-cursor0 \
+            libxcb-icccm4 \
+            libxcb-image0 \
+            libxcb-keysyms1 \
+            libxcb-render-util0 \
+            libxcb-xinerama0
 
-      - name: Upload release executable on macOS & Linux
-        id: upload_release_executable_macos_linux
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          upload_url: ${{ needs.release.outputs.upload_url }}
-          asset_path: ./dist/annolid
-          asset_name: annolid-${{ runner.os }}
-          asset_content_type: application/octet-stream
-        if: runner.os != 'Windows'
+          python-version: ${{ matrix.python-version }}
+          cache: pip
 
-      - name: Upload release executable on Windows
-        id: upload_release_executable_windows
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.release.outputs.upload_url }}
-          asset_path: ./dist/annolid.exe
-          asset_name: Annolid.exe
-          asset_content_type: application/octet-stream
-        if: runner.os == 'Windows'
-
-      - name: Set up Node.js (macOS)
-        if: runner.os == 'macOS'
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: Create dmg for macOS
+      - name: Install project and PyInstaller
         run: |
-          cd dist
-          npx create-dmg@5.4.0 Annolid.app || true
-          dmg="$(ls -1 *.dmg 2>/dev/null | head -n 1 || true)"
-          if [ -z "$dmg" ]; then
-            echo "create-dmg did not produce a .dmg file"
-            exit 1
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          if [ "${RUNNER_OS}" = "Linux" ]; then
+            python -m pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
           fi
-          mv "$dmg" Annolid.dmg
-        if: runner.os == 'macOS'
+          python -m pip install ".[gui]" pyinstaller
 
-      - name: Upload release app on macOS
-        id: upload_release_app_macos
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build onedir bundle
+        run: |
+          set -euo pipefail
+          pyinstaller --noconfirm --clean --log-level WARN annolid.spec
+
+      - name: Smoke test frozen CLI
+        run: |
+          set -euo pipefail
+          "${{ matrix.executable }}" --version
+          "${{ matrix.executable }}" --help
+
+      - name: Reject bundled model artifacts and heavy runtimes
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import sys
+
+          dist = Path("dist")
+          forbidden_suffixes = {
+              ".bin",
+              ".ckpt",
+              ".engine",
+              ".h5",
+              ".mlmodel",
+              ".onnx",
+              ".pth",
+              ".pt",
+              ".safetensors",
+              ".tflite",
+              ".weights",
+          }
+          forbidden_names = {
+              "checkpoints",
+              "diffusers",
+              "onnxruntime",
+              "runs",
+              "torch",
+              "torchvision",
+              "transformers",
+              "ultralytics",
+              "weights",
+          }
+          matches = []
+          for path in dist.rglob("*"):
+              parts = set(path.parts)
+              if path.is_file() and path.suffix.lower() in forbidden_suffixes:
+                  matches.append(str(path))
+              elif path.is_dir() and path.name in forbidden_names:
+                  matches.append(str(path))
+              elif forbidden_names.intersection(parts):
+                  matches.append(str(path))
+
+          if matches:
+              print("Forbidden large runtime/model artifacts were bundled:")
+              print("\n".join(matches[:100]))
+              if len(matches) > 100:
+                  print(f"... and {len(matches) - 100} more")
+              sys.exit(1)
+          print("Bundle artifact check passed.")
+          PY
+
+      - name: Create archive
+        run: |
+          set -euo pipefail
+          cd dist
+          if [ "${RUNNER_OS}" = "Linux" ]; then
+            tar -czf "${{ matrix.archive-name }}" annolid
+          elif [ "${RUNNER_OS}" = "macOS" ] && [ -d "Annolid.app" ]; then
+            python -m zipfile -c "${{ matrix.archive-name }}" annolid Annolid.app
+          else
+            python -m zipfile -c "${{ matrix.archive-name }}" annolid
+          fi
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
         with:
-          upload_url: ${{ needs.release.outputs.upload_url }}
-          asset_path: ./dist/Annolid.dmg
-          asset_name: Annolid.dmg
-          asset_content_type: application/octet-stream
-        if: runner.os == 'macOS'
+          name: ${{ matrix.asset-name }}
+          path: dist/${{ matrix.archive-name }}
+          if-no-files-found: error
+
+      - name: Upload archive to GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: dist/${{ matrix.archive-name }}
+          fail_on_unmatched_files: true
