@@ -226,12 +226,16 @@ function Test-GPU {
                 $smiHeader = & nvidia-smi 2>$null | Select-String -Pattern "CUDA Version:\s*([0-9]+\.[0-9]+)" | Select-Object -First 1
                 if ($smiHeader -and $smiHeader.Matches.Count -gt 0) {
                     $script:CudaVersion = $smiHeader.Matches[0].Groups[1].Value
-                    $script:HasCuda12 = $script:CudaVersion.StartsWith("12.")
+                    $cudaMajor = [int]($script:CudaVersion.Split(".")[0])
+                    $script:HasCuda12 = $cudaMajor -ge 12
                     Write-Info "Detected CUDA runtime version: $script:CudaVersion"
                     if ($script:HasCuda12) {
-                        Write-Success "CUDA 12.x detected; ONNX Runtime GPU (CUDA 12 feed) will be used."
+                        Write-Success "CUDA $script:CudaVersion detected; ONNX Runtime GPU (CUDA 12 feed) will be used."
+                        if ($cudaMajor -gt 12) {
+                            Write-Info "Using stable CUDA 12 ONNX Runtime wheels; NVIDIA drivers are backward compatible with CUDA 12 runtimes."
+                        }
                     } else {
-                        Write-Warning-Msg "CUDA $script:CudaVersion detected (not 12.x). ONNX Runtime CPU wheel will be used for compatibility."
+                        Write-Warning-Msg "CUDA $script:CudaVersion detected. ONNX Runtime GPU requires a CUDA 12-compatible NVIDIA driver."
                     }
                 } else {
                     Write-Warning-Msg "Unable to parse CUDA version from nvidia-smi output."
@@ -261,8 +265,10 @@ function Install-OnnxRuntime {
         Write-Host "  Installing onnxruntime-gpu from CUDA 12 feed..."
         try {
             if ($script:UseUv) {
+                & $script:UvCmd pip uninstall -y onnxruntime-gpu onnxruntime-directml | Out-Null
                 & $script:UvCmd pip install --upgrade --force-reinstall onnxruntime-gpu --extra-index-url $script:OnnxRuntimeCuda12ExtraIndexUrl
             } else {
+                & pip uninstall -y onnxruntime-gpu onnxruntime-directml | Out-Null
                 & pip install --upgrade --force-reinstall onnxruntime-gpu --extra-index-url $script:OnnxRuntimeCuda12ExtraIndexUrl
             }
             Write-Success "onnxruntime-gpu (CUDA 12.x) installed"
@@ -271,12 +277,14 @@ function Install-OnnxRuntime {
             Write-Warning-Msg "onnxruntime-gpu install failed. Falling back to CPU onnxruntime."
         }
     } elseif ($script:HasNvidiaGpu -and -not $NoGpu) {
-        Write-Info "Skipping onnxruntime-gpu because CUDA 12.x was not detected."
+        Write-Info "Skipping onnxruntime-gpu because a CUDA 12-compatible NVIDIA driver was not detected."
     }
 
     if ($script:UseUv) {
+        & $script:UvCmd pip uninstall -y onnxruntime-gpu onnxruntime-directml | Out-Null
         & $script:UvCmd pip install --upgrade --force-reinstall onnxruntime
     } else {
+        & pip uninstall -y onnxruntime-gpu onnxruntime-directml | Out-Null
         & pip install --upgrade --force-reinstall onnxruntime
     }
     Write-Success "onnxruntime (CPU) installed"

@@ -27,6 +27,8 @@ irm https://raw.githubusercontent.com/healthonrails/annolid/main/install.ps1 | i
 
 See [One-Line Installer](one_line_install_choices.md) for flags, extras, CPU/GPU choices, and non-interactive installs.
 
+The one-line installers also validate ONNX Runtime provider selection. On Linux and Windows, `onnxruntime-gpu` is installed when an NVIDIA driver reports CUDA 12.x or newer, including CUDA 13.x driver reports; otherwise Annolid uses CPU `onnxruntime`. On macOS, ONNX acceleration uses CoreML when available rather than a CUDA GPU wheel.
+
 ### Local `.venv` with `uv`
 
 For development or reproducible local work, use `uv` and a repository-local `.venv`:

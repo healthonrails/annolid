@@ -32,7 +32,10 @@ ANNOLID_REPO="https://github.com/healthonrails/annolid.git"
 USE_UV_PYTHON=false
 USE_UV=false
 HAS_NVIDIA_GPU=false
+HAS_CUDA12=false
+CUDA_VERSION=""
 PYTORCH_CUDA_INDEX_URL="https://download.pytorch.org/whl/cu124"
+ONNXRUNTIME_CUDA12_EXTRA_INDEX_URL="https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/"
 
 # Colors for output
 RED='\033[0;31m'
@@ -406,6 +409,8 @@ check_gpu() {
     if [[ "$NO_GPU" == true ]]; then
         print_info "GPU detection skipped (--no-gpu)."
         HAS_NVIDIA_GPU=false
+        HAS_CUDA12=false
+        CUDA_VERSION=""
         return
     fi
 
@@ -417,12 +422,57 @@ check_gpu() {
             HAS_NVIDIA_GPU=true
             print_success "NVIDIA GPU detected"
             echo "  $GPU_LINE"
+
+            CUDA_VERSION=$(nvidia-smi 2>/dev/null | sed -nE 's/.*CUDA Version:[[:space:]]*([0-9]+\.[0-9]+).*/\1/p' | head -1 || true)
+            CUDA_MAJOR="${CUDA_VERSION%%.*}"
+            if [[ "$CUDA_MAJOR" =~ ^[0-9]+$ && "$CUDA_MAJOR" -ge 12 ]]; then
+                HAS_CUDA12=true
+                print_success "CUDA $CUDA_VERSION detected; ONNX Runtime GPU will be installed."
+                if [[ "$CUDA_MAJOR" -gt 12 ]]; then
+                    print_info "Using stable CUDA 12 ONNX Runtime wheels; NVIDIA drivers are backward compatible with CUDA 12 runtimes."
+                fi
+            elif [[ -n "$CUDA_VERSION" ]]; then
+                HAS_CUDA12=false
+                print_warning "CUDA $CUDA_VERSION detected. ONNX Runtime GPU requires a CUDA 12-compatible NVIDIA driver."
+                print_info "Annolid will install CPU ONNX Runtime for compatibility."
+            else
+                HAS_CUDA12=false
+                print_warning "Unable to parse CUDA runtime version from nvidia-smi output."
+                print_info "Annolid will install CPU ONNX Runtime for compatibility."
+            fi
             return
         fi
     fi
 
     HAS_NVIDIA_GPU=false
+    HAS_CUDA12=false
+    CUDA_VERSION=""
     print_info "No NVIDIA GPU detected. Using default PyTorch build."
+    if [[ "$OS_TYPE" == "macos" ]]; then
+        print_info "macOS ONNX acceleration uses CoreML provider when available; there is no CUDA ONNX Runtime wheel for macOS."
+    fi
+}
+
+# =============================================================================
+# Install ONNX Runtime
+# =============================================================================
+install_onnx_runtime() {
+    print_step "Installing ONNX Runtime..."
+
+    if [[ "$HAS_NVIDIA_GPU" == true && "$HAS_CUDA12" == true && "$NO_GPU" == false ]]; then
+        echo "  Installing onnxruntime-gpu for CUDA 12.x..."
+        $PIP_CMD uninstall -y onnxruntime-gpu >/dev/null 2>&1 || true
+        if $PIP_CMD install --upgrade --force-reinstall onnxruntime-gpu --extra-index-url "$ONNXRUNTIME_CUDA12_EXTRA_INDEX_URL"; then
+            print_success "onnxruntime-gpu installed"
+            return
+        fi
+
+        print_warning "onnxruntime-gpu install failed. Falling back to CPU onnxruntime."
+    fi
+
+    $PIP_CMD uninstall -y onnxruntime-gpu >/dev/null 2>&1 || true
+    $PIP_CMD install --upgrade --force-reinstall onnxruntime
+    print_success "onnxruntime installed"
 }
 
 # =============================================================================
@@ -638,6 +688,8 @@ install_annolid() {
         print_warning "SAM-HQ installation failed. Segment Anything may have limited functionality."
     }
 
+    install_onnx_runtime
+
     print_success "Annolid installed"
 }
 
@@ -679,6 +731,27 @@ validate_installation() {
         python -c "import torch; cuda = torch.cuda.is_available(); print(f'  CUDA available: {cuda}')"
         if [[ "$IS_APPLE_SILICON" == true ]]; then
             python -c "import torch; mps = torch.backends.mps.is_available(); print(f'  MPS (Apple Silicon) available: {mps}')"
+        fi
+    fi
+
+    echo "  Checking ONNX Runtime providers..."
+    python -c "import onnxruntime as ort; providers = ort.get_available_providers(); print(f'  ONNX providers: {providers}')"
+
+    if [[ "$HAS_NVIDIA_GPU" == true && "$HAS_CUDA12" == true && "$NO_GPU" == false ]]; then
+        echo "  Verifying CUDAExecutionProvider..."
+        if python -c "import onnxruntime as ort; providers = set(ort.get_available_providers()); assert 'CUDAExecutionProvider' in providers, f'Missing CUDAExecutionProvider. Providers={providers}'"; then
+            print_success "CUDAExecutionProvider available"
+        else
+            print_error "CUDAExecutionProvider is missing despite CUDA 12.x detection."
+            echo "  Repair command:"
+            echo "    $PIP_CMD install --upgrade --force-reinstall onnxruntime-gpu --extra-index-url $ONNXRUNTIME_CUDA12_EXTRA_INDEX_URL"
+            exit 1
+        fi
+    elif [[ "$IS_APPLE_SILICON" == true && "$NO_GPU" == false ]]; then
+        if python -c "import onnxruntime as ort; raise SystemExit(0 if 'CoreMLExecutionProvider' in set(ort.get_available_providers()) else 1)"; then
+            print_success "CoreMLExecutionProvider available"
+        else
+            print_warning "CoreMLExecutionProvider is not available; ONNX models will use CPUExecutionProvider."
         fi
     fi
 

@@ -24,6 +24,7 @@ What the installer does:
 - Creates an isolated environment (`.venv` by default).
 - Installs dependencies and Annolid.
 - Detects GPU and installs CUDA-enabled PyTorch when appropriate.
+- Installs and validates ONNX Runtime providers.
 - Prompts for optional extras and launch.
 
 ## Quick decision table
@@ -159,6 +160,18 @@ Use this as a practical hardware guide before choosing flags.
 | Apple Silicon (M1/M2/M3) | Good local inference performance via MPS; stable for many annotation/tracking tasks. | Use default installer on macOS. |
 | CPU-only laptop/VM | Works for annotation and light inference, but slower for heavy models. | Use `--no-gpu` (Linux/macOS) or `-NoGpu` (Windows). |
 | Shared HPC/server node | Prefer reproducibility and explicit paths/env control. | Use `--no-interactive`, explicit `--install-dir`/`--venv-dir`, optionally `--use-conda`. |
+
+## ONNX Runtime CPU/GPU behavior
+
+Annolid uses ONNX Runtime for several model paths. The one-line installers keep the provider choice explicit:
+
+- Linux and Windows with an NVIDIA driver reporting CUDA 12.x or newer: install `onnxruntime-gpu` from the CUDA 12 package feed and validate that `CUDAExecutionProvider` is available.
+- Linux and Windows with CUDA 13.x driver reports: use the same stable CUDA 12 ONNX Runtime GPU wheel because NVIDIA drivers are backward compatible with CUDA 12 runtimes.
+- Linux and Windows without a CUDA 12-compatible NVIDIA driver: install CPU `onnxruntime` for compatibility.
+- macOS: install `onnxruntime`; ONNX acceleration uses `CoreMLExecutionProvider` when the installed wheel and macOS runtime expose it. There is no CUDA ONNX Runtime wheel for macOS.
+- `--no-gpu` / `-NoGpu`: skip GPU detection and install CPU ONNX Runtime.
+
+If a CUDA 12-compatible NVIDIA driver is detected but `CUDAExecutionProvider` is missing after installation, the installer exits with a repair command instead of silently accepting a CPU-only ONNX Runtime install.
 
 ### Device-specific tips
 
