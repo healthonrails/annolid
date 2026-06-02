@@ -176,7 +176,7 @@ class TapNextOnnxProcessor(BasePointTrackingProcessor):
             )
             return cached
         except Exception as exc:
-            tried = candidates + [TAPNEXT_ONNX_RELATIVE_PATH]
+            tried = list(dict.fromkeys(candidates + [TAPNEXT_ONNX_RELATIVE_PATH]))
             raise FileNotFoundError(
                 "TAPNext ONNX model not found locally and auto-download failed. "
                 f"Tried candidates: {tried}. Download URL: {TAPNEXT_ONNX_URL}. "

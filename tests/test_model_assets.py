@@ -53,3 +53,45 @@ def test_ensure_cached_model_asset_downloads_and_verifies_sha256(
     )
     assert out.is_file()
     assert out.read_bytes() == payload
+
+
+def test_ensure_cached_model_asset_retries_without_fuzzy_for_gdown_versions(
+    tmp_path: Path, monkeypatch
+) -> None:
+    payload = b"tapnext-onnx-test-payload"
+    expected = sha256(payload).hexdigest()
+    calls: list[dict[str, object]] = []
+
+    def _fake_cached_download(url: str, path: str, quiet: bool = True, **kwargs):
+        calls.append({"url": url, "path": path, "quiet": quiet, **kwargs})
+        if "fuzzy" in kwargs:
+            raise TypeError("download() got an unexpected keyword argument 'fuzzy'")
+        Path(path).write_bytes(payload)
+        return path
+
+    monkeypatch.setattr(
+        "annolid.utils.model_assets.gdown.cached_download",
+        _fake_cached_download,
+    )
+
+    out = model_assets.ensure_cached_model_asset(
+        file_name="tapnext.onnx",
+        url="https://github.com/healthonrails/annolid/releases/download/v1.6.6/tapnext.onnx",
+        expected_sha256=expected,
+        cache_dir=tmp_path / "downloads",
+    )
+
+    assert out.read_bytes() == payload
+    assert calls == [
+        {
+            "url": "https://github.com/healthonrails/annolid/releases/download/v1.6.6/tapnext.onnx",
+            "path": str(out),
+            "quiet": True,
+            "fuzzy": True,
+        },
+        {
+            "url": "https://github.com/healthonrails/annolid/releases/download/v1.6.6/tapnext.onnx",
+            "path": str(out),
+            "quiet": True,
+        },
+    ]

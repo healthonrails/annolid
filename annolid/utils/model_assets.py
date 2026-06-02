@@ -66,6 +66,16 @@ def md5sum(path: str | Path) -> str:
     return digest.hexdigest()
 
 
+def _cached_download(url: str, target: Path, *, quiet: bool, fuzzy: bool) -> None:
+    try:
+        gdown.cached_download(url, str(target), quiet=quiet, fuzzy=fuzzy)
+    except TypeError as exc:
+        message = str(exc)
+        if "fuzzy" not in message or "unexpected keyword argument" not in message:
+            raise
+        gdown.cached_download(url, str(target), quiet=quiet)
+
+
 def ensure_cached_model_asset(
     *,
     file_name: str,
@@ -100,7 +110,7 @@ def ensure_cached_model_asset(
         return target
 
     target.unlink(missing_ok=True)
-    gdown.cached_download(url, str(target), quiet=quiet, fuzzy=fuzzy)
+    _cached_download(url, target, quiet=quiet, fuzzy=fuzzy)
 
     if not target.is_file():
         raise RuntimeError(f"Failed to download model asset: {url}")
