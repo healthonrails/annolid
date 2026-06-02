@@ -32,7 +32,7 @@ Annolid is a deep learning toolkit for animal behavior analysis that brings anno
 
 Use Annolid to classify behavioral states such as freezing, digging, pup huddling, or social interaction while maintaining fine-grained tracking of individuals and body parts across long video sessions.
 
-> **Python support:** Annolid runs on Python 3.10–3.13. The toolkit is not yet validated on Python 3.14, where several binary wheels (PyQt, Pillow) are still pending upstream releases.
+> **Python support:** Annolid runs on Python 3.10–3.14 for the default GUI/core workflow. The optional remote network video path uses `ffpyplayer`; install `annolid[remote_video]` only when you need that feature, especially on Python 3.14 where native FFmpeg development libraries may be required.
 
 ## Key Features
 - Markerless multiple-animal tracking from a single annotated frame.
@@ -40,6 +40,7 @@ Use Annolid to classify behavioral states such as freezing, digging, pup huddlin
 - Interactive GUI for rapid annotation (LabelMe-based) plus automation with text prompts.
 - SVG overlay import for atlas/anatomy drawings and TIFF-family metadata-aware image loading.
 - Optional `large_image` extra for `tifffile`/`pyvips`/`openslide-python` backends when working with large TIFF-family datasets. The default install does not require these packages.
+- Optional `remote_video` extra for network video decoding through `ffpyplayer`. Local video workflows use the normal FFmpeg/imageio stack.
 - Behavioral state classification, keypoint tracking, and downstream analytics.
 - Works with pre-recorded video or real-time streams; supports GPU acceleration.
 - Optional EfficientTAM video tracking backend, fully integrated and auto-downloaded (no separate installation needed).
@@ -74,7 +75,7 @@ annolid  # launches the GUI
 
 ### 🚀 One-Line Installation (Recommended)
 
-Get Annolid running in minutes with our automated script. It handles downloading, environment setup, and dependency installation (including `uv` acceleration if available).
+Get Annolid running in minutes with the automated installer. It clones the repository, creates an isolated environment, bootstraps `uv` when needed, installs GUI dependencies, and validates the ONNX Runtime provider setup.
 
 **macOS / Linux:**
 ```bash
@@ -90,6 +91,7 @@ The script will:
 - Clone the repository.
 - Detect your OS and Hardware (Intel/Apple Silicon).
 - Create an isolated virtual environment.
+- Install and validate ONNX Runtime CPU/GPU providers.
 - Prompt for optional features (SAM3, Text-to-Speech, etc.).
 - Offer to launch Annolid immediately.
 

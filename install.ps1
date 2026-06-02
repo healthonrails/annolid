@@ -9,7 +9,7 @@
 # Options:
 #   -InstallDir DIR      Directory to install annolid (default: .\annolid)
 #   -VenvDir DIR         Directory for virtual environment (default: .venv)
-#   -Extras EXTRAS       Comma-separated extras: sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot (GUI extras are always included)
+#   -Extras EXTRAS       Comma-separated extras: large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot (GUI extras are always included)
 #   -NoGpu               Skip GPU/CUDA detection
 #   -NoInteractive       Skip all prompts and use defaults
 
@@ -64,7 +64,21 @@ function Prompt-YesNo {
 }
 
 function Show-Help {
-    Get-Help $PSCommandPath -Detailed
+    @"
+Annolid one-line installer for Windows PowerShell
+
+Usage:
+  irm https://raw.githubusercontent.com/healthonrails/annolid/main/install.ps1 | iex
+  .\install.ps1 [-InstallDir DIR] [-VenvDir DIR] [-Extras EXTRAS] [-NoGpu] [-NoInteractive]
+
+Options:
+  -InstallDir DIR      Directory to install Annolid (default: .\annolid)
+  -VenvDir DIR         Directory for virtual environment (default: .venv)
+  -Extras EXTRAS       Comma-separated extras: large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot
+  -NoGpu               Skip GPU/CUDA detection and install CPU ONNX Runtime
+  -NoInteractive       Skip prompts and use defaults
+  -Help                Show this help message
+"@ | Write-Host
     exit 0
 }
 
@@ -104,36 +118,58 @@ function Test-Git {
 function Test-Python {
     Write-Step "Checking Python installation..."
 
-    $preferredVersions = @("3.11", "3.12", "3.13", "3.10")
     $script:PythonCmd = $null
+    $script:PythonArgs = @()
     $script:PythonVersion = $null
 
-    foreach ($ver in $preferredVersions) {
-        foreach ($cmd in @("python$ver", "python")) {
-            try {
-                $actualVer = & $cmd -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null
-                if ($actualVer -eq $ver) {
-                    $script:PythonCmd = $cmd
-                    $script:PythonVersion = $actualVer
-                    Write-Host "  Found preferred: $cmd (version $actualVer)"
-                    break
-                }
-            } catch { continue }
+    $preferredCandidates = @(
+        @{ Command = "py"; Args = @("-3.11"); Version = "3.11" },
+        @{ Command = "py"; Args = @("-3.12"); Version = "3.12" },
+        @{ Command = "py"; Args = @("-3.13"); Version = "3.13" },
+        @{ Command = "py"; Args = @("-3.14"); Version = "3.14" },
+        @{ Command = "py"; Args = @("-3.10"); Version = "3.10" },
+        @{ Command = "python3.11"; Args = @(); Version = "3.11" },
+        @{ Command = "python3.12"; Args = @(); Version = "3.12" },
+        @{ Command = "python3.13"; Args = @(); Version = "3.13" },
+        @{ Command = "python3.14"; Args = @(); Version = "3.14" },
+        @{ Command = "python3.10"; Args = @(); Version = "3.10" },
+        @{ Command = "python"; Args = @(); Version = "" }
+    )
+
+    foreach ($candidate in $preferredCandidates) {
+        try {
+            $actualVer = & $candidate.Command @($candidate.Args) -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null
+            if (([string]::IsNullOrEmpty($candidate.Version)) -or $actualVer -eq $candidate.Version) {
+                $script:PythonCmd = $candidate.Command
+                $script:PythonArgs = @($candidate.Args)
+                $script:PythonVersion = $actualVer
+                $displayCmd = @($candidate.Command) + @($candidate.Args) -join " "
+                Write-Host "  Found preferred: $displayCmd (version $actualVer)"
+                break
+            }
+        } catch {
+            continue
         }
-        if ($script:PythonCmd) { break }
     }
 
     if (-not $script:PythonCmd) {
-        foreach ($cmd in @("python", "python3", "py")) {
+        $fallbackCandidates = @(
+            @{ Command = "python"; Args = @() },
+            @{ Command = "python3"; Args = @() },
+            @{ Command = "py"; Args = @() }
+        )
+
+        foreach ($candidate in $fallbackCandidates) {
             try {
-                $version = & $cmd --version 2>&1
+                $version = & $candidate.Command @($candidate.Args) --version 2>&1
                 if ($version -match "Python (\d+)\.(\d+)") {
                     $major = [int]$Matches[1]
                     $minor = [int]$Matches[2]
                     if ($major -ge 3 -and $minor -ge 10) {
-                        $script:PythonCmd = $cmd
+                        $script:PythonCmd = $candidate.Command
+                        $script:PythonArgs = @($candidate.Args)
                         $script:PythonVersion = "$major.$minor"
-                        Write-Host "  Found: $cmd (version $script:PythonVersion)"
+                        Write-Host "  Found: $script:PythonCmd (version $script:PythonVersion)"
                         break
                     }
                 }
@@ -149,13 +185,13 @@ function Test-Python {
         exit 1
     }
 
-    # PyTorch on Windows is currently most reliable with Python 3.11/3.12.
+    # Future Python versions may need a compatibility catch-up period.
     if ($script:PythonVersion -match "^(\d+)\.(\d+)$") {
         $major = [int]$Matches[1]
         $minor = [int]$Matches[2]
 
-        if ($major -eq 3 -and $minor -ge 13) {
-            Write-Warning-Msg "Python $script:PythonVersion detected. Annolid/PyTorch on Windows is more stable on Python 3.12."
+        if ($major -gt 3 -or ($major -eq 3 -and $minor -ge 15)) {
+            Write-Warning-Msg "Python $script:PythonVersion detected. Annolid is not yet validated on Python 3.15+."
             if ($script:UseUv) {
                 $script:UseUvPython = $true
                 $script:UvPythonVersion = "3.12"
@@ -441,7 +477,7 @@ function New-Venv {
             & $script:UvCmd venv $script:VenvPath
         }
     } else {
-        & $script:PythonCmd -m venv $script:VenvPath
+        & $script:PythonCmd @($script:PythonArgs) -m venv $script:VenvPath
     }
 
     $script:ActivateCmd = "$script:VenvPath\Scripts\Activate.ps1"

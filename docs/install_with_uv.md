@@ -4,7 +4,7 @@ This is the recommended development-style setup for this repository and matches 
 
 ## Prerequisites
 
-- Python 3.10 to 3.13 on your `PATH`
+- Python 3.10 to 3.14 on your `PATH`
 - `git`
 - `ffmpeg` recommended for video-heavy workflows
 - `uv` installed from <https://docs.astral.sh/uv/>
@@ -52,6 +52,22 @@ annolid-run --help
 annolid-run list-models
 ```
 
+## ONNX Runtime GPU Provider
+
+The editable install brings in CPU `onnxruntime` by default. On Linux or Windows machines with an NVIDIA driver reporting CUDA 12.x or newer, add the GPU provider after installing Annolid:
+
+```bash
+uv pip install --upgrade --force-reinstall onnxruntime-gpu --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/
+python -c "import onnxruntime as ort; print(ort.get_available_providers())"
+```
+
+The provider list should include `CUDAExecutionProvider`. If it does not, keep the CPU install until the NVIDIA driver/runtime mismatch is resolved:
+
+```bash
+uv pip uninstall onnxruntime-gpu
+uv pip install --upgrade --force-reinstall onnxruntime
+```
+
 ## Optional FlyBody Checkout
 
 If you want the simulation/FlyBody plugin path in the same `.venv`, install the
@@ -93,6 +109,7 @@ annolid
 - The current terminal command is `annolid-run`, not older `annolid-train` or `annolid-track` commands.
 - The repo’s local validation instructions assume a repository-local `.venv`.
 - Optional extras are defined in `pyproject.toml`; install only what you need.
+- Python 3.14 works for the default GUI/core install. The optional `remote_video` extra may require native FFmpeg development headers because it installs `ffpyplayer`.
 
 ## Troubleshooting
 

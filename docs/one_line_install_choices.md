@@ -34,12 +34,12 @@ Choose the flag set that matches your goal.
 | Goal | macOS / Linux | Windows (PowerShell) |
 | --- | --- | --- |
 | Default install | `curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh \| bash` | `irm https://raw.githubusercontent.com/healthonrails/annolid/main/install.ps1 \| iex` |
-| Skip GPU detection | `curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh \| bash -s -- --no-gpu` | `.\install.ps1 -NoGpu` |
-| Non-interactive install | `curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh \| bash -s -- --no-interactive` | `.\install.ps1 -NoInteractive` |
-| Install to custom folder | `curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh \| bash -s -- --install-dir /path/to/annolid` | `.\install.ps1 -InstallDir C:\\path\\to\\annolid` |
-| Custom venv location | `curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh \| bash -s -- --venv-dir /path/to/.venv` | `.\install.ps1 -VenvDir C:\\path\\to\\.venv` |
+| Skip GPU detection | `curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh \| bash -s -- --no-gpu` | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/healthonrails/annolid/main/install.ps1))) -NoGpu` |
+| Non-interactive install | `curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh \| bash -s -- --no-interactive` | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/healthonrails/annolid/main/install.ps1))) -NoInteractive` |
+| Install to custom folder | `curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh \| bash -s -- --install-dir /path/to/annolid` | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/healthonrails/annolid/main/install.ps1))) -InstallDir C:\\path\\to\\annolid` |
+| Custom venv location | `curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh \| bash -s -- --venv-dir /path/to/.venv` | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/healthonrails/annolid/main/install.ps1))) -VenvDir C:\\path\\to\\.venv` |
 | Use Conda env | `curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh \| bash -s -- --use-conda` | `Not supported in install.ps1` |
-| Enable optional extras | `curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh \| bash -s -- --extras sam3,text_to_speech` | `.\install.ps1 -Extras sam3,text_to_speech` |
+| Enable optional extras | `curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh \| bash -s -- --extras sam3,text_to_speech` | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/healthonrails/annolid/main/install.ps1))) -Extras sam3,text_to_speech` |
 
 ## Linux/macOS options in detail
 
@@ -83,7 +83,7 @@ curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.s
 For extra options, run:
 
 ```powershell
-Get-Help .\install.ps1 -Detailed
+.\install.ps1 -Help
 ```
 
 Examples:
@@ -91,6 +91,9 @@ Examples:
 ```powershell
 # Run installer from local script with explicit options
 .\install.ps1 -InstallDir C:\annolid -NoGpu -NoInteractive
+
+# Run remote installer with explicit options
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/healthonrails/annolid/main/install.ps1))) -NoGpu -NoInteractive
 
 # Install optional features
 .\install.ps1 -Extras sam3,image_editing,text_to_speech
@@ -103,6 +106,7 @@ Examples:
 Current supported extras:
 
 - `large_image`
+- `remote_video`
 - `sam3`
 - `image_editing`
 - `text_to_speech`
@@ -114,6 +118,7 @@ Current supported extras:
 | Extra | Install this when you need... | Example use case |
 |---|---|---|
 | `large_image` | TIFF/OME-TIFF metadata and optional region-streaming backends | You want large TIFF, BigTIFF, OME-TIFF, or virtual-slide style viewing without forcing those native libraries into every install. Leave it out for the default GUI install. |
+| `remote_video` | network/remote video decoding through `ffpyplayer` | You receive frames from Annolid's remote video player path. Leave it out for normal local video files and Python 3.14 default installs. |
 | `sam3` | the SAM3-related segmentation workflow/features in Annolid | You want stronger promptable segmentation on difficult frames and plan to use SAM3 tools in the GUI/CLI pipeline. |
 | `image_editing` | diffusion-based image editing/generation dependencies | You are preparing augmented training images (inpainting/background edits) as part of annotation or data curation. |
 | `text_to_speech` | built-in narration/read-aloud features | You want captions/notes read aloud during review, accessibility workflows, or hands-free labeling sessions. |
@@ -126,6 +131,7 @@ Current supported extras:
 - Most common research annotation setup: start with `sam3`.
 - Accessibility or narrated review: add `text_to_speech`.
 - Data augmentation/image synthesis workflows: add `image_editing`.
+- Remote network video decoding: add `remote_video`.
 - Only install `qwen3_embedding` if you explicitly use those embedding features.
 - If you use Annolid Bot integrations, add `annolid_bot`.
 
@@ -140,6 +146,10 @@ Use comma-separated values with no spaces, for example:
 The `large_image` extra installs the Python bindings, but `pyvips` and `openslide-python` may still require native system runtimes on your machine. This extra is optional; Annolid's normal GUI workflows do not depend on it.
 
 If those runtimes are not available, Annolid will still open the file and will fall back to `tifffile` when available, but navigation can be slower on very large TIFF files.
+
+### `remote_video` runtime note
+
+The `remote_video` extra installs `ffpyplayer`. On Python 3.14, `ffpyplayer` may need to build from source and require native FFmpeg development headers such as `libpostproc`. The default installer leaves this extra out so core GUI and local video workflows can install cleanly on Python 3.14.
 
 ## Recommended patterns
 
@@ -172,6 +182,13 @@ Annolid uses ONNX Runtime for several model paths. The one-line installers keep 
 - `--no-gpu` / `-NoGpu`: skip GPU detection and install CPU ONNX Runtime.
 
 If a CUDA 12-compatible NVIDIA driver is detected but `CUDAExecutionProvider` is missing after installation, the installer exits with a repair command instead of silently accepting a CPU-only ONNX Runtime install.
+
+Manual repair inside the installer-created environment:
+
+```bash
+uv pip install --upgrade --force-reinstall onnxruntime-gpu --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/
+python -c "import onnxruntime as ort; print(ort.get_available_providers())"
+```
 
 ### Device-specific tips
 

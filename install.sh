@@ -10,7 +10,7 @@
 # Options:
 #   --install-dir DIR   Directory to install annolid (default: ./annolid)
 #   --venv-dir DIR      Directory for virtual environment (default: .venv inside install-dir)
-#   --extras EXTRAS     Comma-separated optional extras: sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot (GUI extras are always included)
+#   --extras EXTRAS     Comma-separated optional extras: large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot (GUI extras are always included)
 #   --no-gpu            Skip GPU/CUDA detection
 #   --use-conda         Use conda instead of venv (requires conda/mamba)
 #   --no-interactive    Skip all prompts and use defaults
@@ -31,6 +31,7 @@ PYTHON_MIN_VERSION="3.10"
 ANNOLID_REPO="https://github.com/healthonrails/annolid.git"
 USE_UV_PYTHON=false
 USE_UV=false
+UV_CMD="uv"
 HAS_NVIDIA_GPU=false
 HAS_CUDA12=false
 CUDA_VERSION=""
@@ -78,9 +79,38 @@ print_info() {
     echo -e "${CYAN}ℹ $1${NC}"
 }
 
+print_usage() {
+    cat <<'EOF'
+Annolid one-line installer for macOS and Linux
+
+Usage:
+  curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh | bash
+  curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh | bash -s -- [OPTIONS]
+
+Options:
+  --install-dir DIR   Directory to install annolid (default: ./annolid)
+  --venv-dir DIR      Directory for virtual environment (default: .venv inside install-dir)
+  --extras EXTRAS     Comma-separated optional extras: large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot
+  --no-gpu            Skip GPU/CUDA detection and install CPU ONNX Runtime
+  --use-conda         Use conda instead of venv (requires conda/mamba)
+  --no-interactive    Skip prompts and use defaults
+  --help              Show this help message
+EOF
+}
+
 show_help() {
-    head -18 "$0" | tail -16
+    print_usage
     exit 0
+}
+
+require_arg_value() {
+    local option="$1"
+    local value="${2:-}"
+    if [[ -z "$value" || "$value" == --* ]]; then
+        print_error "$option requires a value."
+        print_usage
+        exit 1
+    fi
 }
 
 # Wrapper for read that works when script is piped via curl | bash
@@ -149,14 +179,17 @@ prompt_yes_no() {
 while [[ $# -gt 0 ]]; do
     case $1 in
         --install-dir)
+            require_arg_value "$1" "${2:-}"
             INSTALL_DIR="$2"
             shift 2
             ;;
         --venv-dir)
+            require_arg_value "$1" "${2:-}"
             VENV_DIR="$2"
             shift 2
             ;;
         --extras)
+            require_arg_value "$1" "${2:-}"
             EXTRAS="$2"
             shift 2
             ;;
@@ -266,7 +299,7 @@ check_git() {
 check_python() {
     print_step "Checking Python installation..."
 
-    PREFERRED_VERSIONS=("3.11" "3.12" "3.13" "3.10")
+    PREFERRED_VERSIONS=("3.11" "3.12" "3.13" "3.14" "3.10")
     PYTHON_CMD=""
     PYTHON_VERSION=""
 
@@ -322,8 +355,11 @@ check_python() {
         exit 1
     fi
 
-    if [[ "$PYTHON_MAJOR" -eq 3 && "$PYTHON_MINOR" -ge 14 ]]; then
-        print_warning "Python 3.14+ detected. Many packages don't have wheels for 3.14 yet."
+    if [[ "$PYTHON_MAJOR" -eq 3 && "$PYTHON_MINOR" -eq 14 ]]; then
+        print_info "Python 3.14 detected. Annolid supports the default GUI/core install on Python 3.14."
+        print_info "Remote network video decoding still needs the optional remote_video extra and native FFmpeg development libraries."
+    elif [[ "$PYTHON_MAJOR" -gt 3 || ( "$PYTHON_MAJOR" -eq 3 && "$PYTHON_MINOR" -ge 15 ) ]]; then
+        print_warning "Python $PYTHON_VERSION detected. Annolid is not yet validated on Python 3.15+."
         echo ""
         echo "  Recommended: Install Python 3.11 or 3.12 for best compatibility."
         if [[ "$OS_TYPE" == "macos" ]]; then
@@ -333,7 +369,7 @@ check_python() {
         fi
         echo ""
 
-        if command -v uv &> /dev/null; then
+        if [[ "$USE_UV" == true ]]; then
             echo "  uv can download a compatible Python version automatically."
             if prompt_yes_no "  Use uv to install with Python 3.11?" "y"; then
                 PYTHON_VERSION="3.11"
@@ -477,7 +513,7 @@ install_onnx_runtime() {
 
 uninstall_packages() {
     if [[ "$USE_UV" == true && "$USE_CONDA" == false ]]; then
-        uv pip uninstall "$@" >/dev/null 2>&1 || true
+        "$UV_CMD" pip uninstall "$@" >/dev/null 2>&1 || true
     else
         pip uninstall -y "$@" >/dev/null 2>&1 || true
     fi
@@ -494,7 +530,8 @@ check_uv() {
     print_step "Checking for uv (fast package installer)..."
 
     if command -v uv &> /dev/null; then
-        UV_VERSION=$(uv --version)
+        UV_CMD="$(command -v uv)"
+        UV_VERSION=$("$UV_CMD" --version)
         echo "  Found: $UV_VERSION"
         USE_UV=true
         return
@@ -502,8 +539,25 @@ check_uv() {
 
     print_warning "uv not found. Installing via official installer..."
     if curl -LsSf https://astral.sh/uv/install.sh | sh; then
-        if command -v uv &> /dev/null; then
-            UV_VERSION=$(uv --version)
+        UV_CANDIDATES=(
+            "$HOME/.local/bin/uv"
+            "$HOME/.cargo/bin/uv"
+            "/opt/homebrew/bin/uv"
+            "/usr/local/bin/uv"
+        )
+        for candidate in "${UV_CANDIDATES[@]}"; do
+            if [[ -x "$candidate" ]]; then
+                export PATH="$(dirname "$candidate"):$PATH"
+                UV_CMD="$candidate"
+                break
+            fi
+        done
+
+        if command -v uv &> /dev/null || [[ -x "$UV_CMD" ]]; then
+            if command -v uv &> /dev/null; then
+                UV_CMD="$(command -v uv)"
+            fi
+            UV_VERSION=$("$UV_CMD" --version)
             print_success "uv installed: $UV_VERSION"
             USE_UV=true
         else
@@ -629,9 +683,9 @@ create_venv() {
 
     elif [[ "$USE_UV" == true ]]; then
         if [[ "$USE_UV_PYTHON" == true ]]; then
-            uv venv "$VENV_PATH" --python 3.11
+            "$UV_CMD" venv "$VENV_PATH" --python 3.11
         else
-            uv venv "$VENV_PATH" --python "$PYTHON_VERSION"
+            "$UV_CMD" venv "$VENV_PATH" --python "$PYTHON_VERSION"
         fi
         ACTIVATE_CMD="source $VENV_PATH/bin/activate"
 
@@ -657,7 +711,7 @@ install_annolid() {
     fi
 
     if [[ "$USE_UV" == true && "$USE_CONDA" == false ]]; then
-        PIP_CMD="uv pip"
+        PIP_CMD="$UV_CMD pip"
     else
         PIP_CMD="pip"
     fi
@@ -817,10 +871,10 @@ main() {
     print_header
     detect_os
     check_git
+    check_uv
     check_python
     check_ffmpeg
     check_gpu
-    check_uv
     interactive_config
     clone_repo
     create_venv

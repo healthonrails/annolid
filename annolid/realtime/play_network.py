@@ -21,7 +21,14 @@ from tree_config.utils import (
     get_yaml,
     yaml_dumps as orig_yaml_dumps,
 )
-from ffpyplayer.pic import Image, SWScale
+
+try:
+    from ffpyplayer.pic import Image, SWScale
+except Exception as exc:
+    raise RuntimeError(
+        "Remote video playback requires ffpyplayer. Install Annolid with "
+        "the `remote_video` extra before importing annolid.realtime.play_network."
+    ) from exc
 
 
 def yaml_loads(value):

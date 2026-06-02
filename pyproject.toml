@@ -21,6 +21,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Operating System :: OS Independent",
 ]
 
@@ -58,7 +59,7 @@ dependencies = [
     'psutil>=5.9.8',
     'pyserial>=3.5',
     'pyzmq>=25.1.2',
-    'ffpyplayer>=4.5.0',
+    'ffpyplayer>=4.5.0; python_version < "3.14"',
     'tree-config>=0.6.0',
     'Pillow>=9.3.0,<12.0',
     'chardet>=5.2.0,<6.0.0',
@@ -114,6 +115,11 @@ mediapipe = [
 cowtracker = [
     # VGGT/CowTracker dependency used by the bundled third-party backend.
     "safetensors>=0.4.0",
+]
+
+remote_video = [
+    # Optional network/remote video decoding path.
+    "ffpyplayer>=4.5.0",
 ]
 
 annolid_bot = [

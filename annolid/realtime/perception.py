@@ -291,7 +291,8 @@ def _load_ffpyplayer_pic():
     except Exception as exc:
         raise RuntimeError(
             "Remote video decoding requires ffpyplayer. "
-            "Install with `pip install ffpyplayer` or use a local camera/video source."
+            "Install Annolid with the `remote_video` extra or use a local "
+            "camera/video source."
         ) from exc
     return _Image, _SWScale
 

@@ -5,7 +5,7 @@ Annolid currently exposes two main commands after install:
 - `annolid`: launch the desktop GUI
 - `annolid-run`: run model and workflow plugins from the terminal
 
-Annolid requires Python 3.10 or newer. In practice, Python 3.11 is the safest default for new environments.
+Annolid requires Python 3.10 or newer and supports Python 3.10 through 3.14 for the default GUI/core workflow. In practice, Python 3.11 or 3.12 remains the safest default for new shared lab environments.
 
 ## Recommended Paths
 
@@ -29,6 +29,18 @@ See [One-Line Installer](one_line_install_choices.md) for flags, extras, CPU/GPU
 
 The one-line installers also validate ONNX Runtime provider selection. On Linux and Windows, `onnxruntime-gpu` is installed when an NVIDIA driver reports CUDA 12.x or newer, including CUDA 13.x driver reports; otherwise Annolid uses CPU `onnxruntime`. On macOS, ONNX acceleration uses CoreML when available rather than a CUDA GPU wheel.
 
+For a non-interactive CPU baseline, use:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh | bash -s -- --no-gpu --no-interactive
+```
+
+On Windows PowerShell:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/healthonrails/annolid/main/install.ps1))) -NoGpu -NoInteractive
+```
+
 ### Local `.venv` with `uv`
 
 For development or reproducible local work, use `uv` and a repository-local `.venv`:
@@ -42,6 +54,13 @@ uv pip install -e ".[gui]"
 ```
 
 The dedicated guide is [uv Setup](install_with_uv.md).
+
+If you want ONNX Runtime GPU support in a manual `uv` environment on Linux or Windows, install Annolid first and then add the GPU wheel:
+
+```bash
+uv pip install --upgrade --force-reinstall onnxruntime-gpu --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/
+python -c "import onnxruntime as ort; print(ort.get_available_providers())"
+```
 
 ### pip / venv
 
@@ -87,6 +106,7 @@ Useful extras currently defined in `pyproject.toml` include:
 - `qwen3_embedding`: embedding-related utilities
 - `mediapipe`: MediaPipe-based workflows
 - `cowtracker`: CowTracker backend dependency
+- `remote_video`: network/remote video decoding through `ffpyplayer`
 - `annolid_bot`: Annolid Bot integrations such as MCP, Playwright, WhatsApp bridge support, and Google Drive/Calendar dependencies
 
 Example:
@@ -105,6 +125,16 @@ The `large_image` extra installs the Python packages, but some platforms also ne
 - `openslide-python` needs a working OpenSlide runtime
 
 If those native libraries are missing, Annolid falls back to `tifffile` when available. If the full `large_image` extra is not installed, Annolid still starts normally and falls back to the standard Qt/Pillow image path instead of requiring large-image packages at startup.
+
+### Note on `remote_video`
+
+`remote_video` is optional. Annolid's default install does not require `ffpyplayer`, which keeps Python 3.14 installs from failing when no compatible `ffpyplayer` wheel is available. Install it only if you use Annolid's network/remote video decoding path:
+
+```bash
+pip install -e ".[remote_video]"
+```
+
+On Python 3.14, `ffpyplayer` may build from source and require native FFmpeg development headers such as `libpostproc`.
 
 ## Verify the Install
 
@@ -130,6 +160,7 @@ annolid-run list-models
 ## Common Post-install Notes
 
 - Install FFmpeg if video import/export or codec support is incomplete.
+- If ONNX Runtime GPU validation fails, activate the installer-created environment and rerun the repair command printed by the installer.
 - If you use Annolid Bot with MCP or browser automation, install the `annolid_bot` extra.
 - If `qtpy.QtBindingsNotFoundError` appears, install the `gui` extra in the active environment.
 - The `gui` extra now installs `PySide6` as the default Qt binding.
