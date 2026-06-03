@@ -206,6 +206,15 @@ body.white-theme {
   max-width: min(32vw, 300px);
 }
 
+#annolidThreeCategoryPanel.is-volume-layers {
+  left: 12px;
+  right: auto;
+  top: 72px;
+  min-width: 220px;
+  max-width: min(32vw, 320px);
+  z-index: 945;
+}
+
 #annolidThreeVolumePanel {
   top: 180px;
   min-width: 290px;
@@ -246,6 +255,55 @@ body.white-theme {
 
 .three-toggle-row input[type="checkbox"] {
   accent-color: #d19a54;
+}
+
+.three-layer-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 8px;
+  margin-top: 7px;
+  font-size: 12px;
+}
+
+.three-layer-row input[type="checkbox"] {
+  accent-color: #7bc6ff;
+}
+
+.three-layer-row.is-removed {
+  opacity: 0.58;
+}
+
+.three-layer-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.three-layer-action,
+.three-layer-actions button {
+  height: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  cursor: pointer;
+}
+
+.three-layer-action {
+  width: 28px;
+  padding: 0;
+}
+
+.three-layer-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+
+.three-layer-actions button {
+  padding: 0 9px;
 }
 
 body[data-threejs-simulation="1"] #annolidThreeHints {

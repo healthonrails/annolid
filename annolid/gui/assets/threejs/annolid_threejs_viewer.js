@@ -677,6 +677,7 @@ async function boot() {
     let volumeRenderFrameHandle = 0;
     let volumeSlicePlaybackTimer = null;
     let activeRaymarchMaterial = null;
+    let volumeLayerState = new Map();
     let frameTimeEmaMs = 16.6;
     let adaptiveRaymarchFactor = 1.0;
     let flybodyControlsMoved = false;
@@ -939,6 +940,7 @@ async function boot() {
       if (!legendEl || !categoryPanelEl) return;
       legendEl.innerHTML = "";
       categoryPanelEl.innerHTML = "";
+      categoryPanelEl.classList.remove("is-volume-layers");
       const categories = Array.from(
         new Set(
           Array.from(simulationBodyPartMap.values()).map((entry) => String(entry.category || "body"))
@@ -998,6 +1000,97 @@ async function boot() {
         categoryPanelEl.appendChild(toggleRow);
       });
       updateBodyPartVisibility();
+    };
+
+    const rebuildVolumeLayerUI = () => {
+      if (!categoryPanelEl || !simulationPayload) return;
+      const adapter = String((simulationPayload && simulationPayload.adapter) || "");
+      const metadata = (simulationPayload && simulationPayload.metadata) || {};
+      const isVolumeAdapter = adapter === "zarr-volume" || adapter === "tiff-volume";
+      if (!isVolumeAdapter) return;
+      const layers = getVolumeLayerEntries(metadata);
+      if (!layers.length) {
+        categoryPanelEl.hidden = true;
+        categoryPanelEl.innerHTML = "";
+        return;
+      }
+      ensureVolumeLayerState(metadata);
+      categoryPanelEl.hidden = false;
+      categoryPanelEl.classList.add("is-volume-layers");
+      categoryPanelEl.innerHTML = "";
+
+      const title = document.createElement("div");
+      title.className = "three-panel-title";
+      title.textContent = "Volume Layers";
+      categoryPanelEl.appendChild(title);
+
+      layers.forEach((layer, index) => {
+        const id = getVolumeLayerId(layer, `layer_${index}`);
+        const state = volumeLayerState.get(id) || { visible: true, removed: false };
+        const row = document.createElement("div");
+        row.className = "three-layer-row";
+        if (state.removed) {
+          row.classList.add("is-removed");
+        }
+
+        const toggle = document.createElement("input");
+        toggle.type = "checkbox";
+        toggle.checked = state.visible !== false && state.removed !== true;
+        toggle.disabled = state.removed === true;
+        toggle.title = "Show or hide this layer";
+        toggle.addEventListener("change", () => {
+          volumeLayerState.set(id, {
+            visible: Boolean(toggle.checked),
+            removed: state.removed === true,
+          });
+          renderSimulationFrame(simulationFrameIndex);
+          rebuildVolumeLayerUI();
+        });
+
+        const label = document.createElement("span");
+        label.className = "three-layer-label";
+        const role = String(layer.layer_role || id || "layer");
+        const name = String(layer.layer_name || role);
+        label.textContent = state.removed ? `${name} (removed)` : name;
+        label.title = `${role}: ${String(layer.source_path || "")}`;
+
+        const removeBtn = document.createElement("button");
+        removeBtn.className = "three-layer-action";
+        removeBtn.type = "button";
+        removeBtn.textContent = state.removed ? "+" : "x";
+        removeBtn.title = state.removed ? "Add layer back to this view" : "Remove layer from this view";
+        removeBtn.addEventListener("click", () => {
+          volumeLayerState.set(id, {
+            visible: true,
+            removed: state.removed !== true,
+          });
+          renderSimulationFrame(simulationFrameIndex);
+          rebuildVolumeLayerUI();
+        });
+
+        row.appendChild(toggle);
+        row.appendChild(label);
+        row.appendChild(removeBtn);
+        categoryPanelEl.appendChild(row);
+      });
+
+      const actions = document.createElement("div");
+      actions.className = "three-layer-actions";
+      const addAllBtn = document.createElement("button");
+      addAllBtn.type = "button";
+      addAllBtn.textContent = "Add All";
+      addAllBtn.addEventListener("click", () => {
+        layers.forEach((layer, index) => {
+          volumeLayerState.set(getVolumeLayerId(layer, `layer_${index}`), {
+            visible: true,
+            removed: false,
+          });
+        });
+        renderSimulationFrame(simulationFrameIndex);
+        rebuildVolumeLayerUI();
+      });
+      actions.appendChild(addAllBtn);
+      categoryPanelEl.appendChild(actions);
     };
 
     const stopSimulationPlayback = () => {
@@ -1100,6 +1193,80 @@ async function boot() {
       } catch (_err) {
         return null;
       }
+    };
+
+    const getVolumeOverlayLayers = (metadata) => {
+      const raw = Array.isArray(metadata && metadata.volume_layers)
+        ? metadata.volume_layers
+        : [];
+      return raw.filter((layer) => layer && typeof layer === "object");
+    };
+
+    const getVolumeLayerId = (metadata, fallback) => {
+      const direct = String(
+        (metadata && (metadata.layer_id || metadata.layerId || metadata.layer_role)) ||
+        fallback ||
+        ""
+      ).trim();
+      if (direct) return direct;
+      return String((metadata && metadata.source_path) || "volume");
+    };
+
+    const getVolumeLayerEntries = (metadata) => {
+      if (!metadata || typeof metadata !== "object") return [];
+      const base = Object.assign({}, metadata, {
+        layer_id: getVolumeLayerId(metadata, "reference"),
+        layer_role: String(metadata.layer_role || "reference"),
+        layer_name: String(metadata.layer_name || "Reference"),
+      });
+      return [base].concat(getVolumeOverlayLayers(metadata));
+    };
+
+    const ensureVolumeLayerState = (metadata) => {
+      getVolumeLayerEntries(metadata).forEach((layer, index) => {
+        const id = getVolumeLayerId(layer, `layer_${index}`);
+        if (!volumeLayerState.has(id)) {
+          volumeLayerState.set(id, { visible: true, removed: false });
+        }
+      });
+    };
+
+    const volumeLayerIsRenderable = (metadata, fallback) => {
+      const id = getVolumeLayerId(metadata, fallback);
+      const state = volumeLayerState.get(id);
+      return !state || (state.visible !== false && state.removed !== true);
+    };
+
+    const applyVolumeOrientationToGroup = (group, metadata) => {
+      if (!group) return;
+      const orientation = String(
+        (metadata && metadata.volume_orientation) || ""
+      ).trim().toLowerCase();
+      group.matrix.identity();
+      group.matrixAutoUpdate = true;
+      group.position.set(0, 0, 0);
+      group.rotation.set(0, 0, 0);
+      group.scale.set(1, 1, 1);
+      if (orientation === "asr") {
+        group.matrixAutoUpdate = false;
+        // TIFF payload coordinates are encoded as x=right, y=-axis1, z=-axis0.
+        // For ASR atlas metadata, axis1 is superior and axis0 is anterior, so
+        // flip those signs without swapping axes.
+        group.matrix.set(
+          1, 0, 0, 0,
+          0, -1, 0, 0,
+          0, 0, -1, 0,
+          0, 0, 0, 1
+        );
+      }
+    };
+
+    const createVolumeLayerGroup = (metadata, fallback) => {
+      const group = new THREE.Group();
+      group.name = `volume-layer:${getVolumeLayerId(metadata, fallback)}`;
+      applyVolumeOrientationToGroup(group, metadata);
+      simulationVolumeRoot.add(group);
+      return group;
     };
 
     const getVolumeLabelIdLut = (metadata) => {
@@ -1891,7 +2058,7 @@ async function boot() {
       controls.update();
     };
 
-    const renderVolumeSlabPlane = (orderedPoints, metadata, state) => {
+    const renderVolumeSlabPlane = (orderedPoints, metadata, state, targetGroup = simulationSlices) => {
       const effectiveState = buildEffectiveVolumeState(state, metadata);
       const isLabelVolume = Boolean(metadata && metadata.label_volume);
       const labelLut = isLabelVolume ? getVolumeLabelIdLut(metadata) : [];
@@ -2043,13 +2210,13 @@ async function boot() {
         } else if (slab.axis === "y") {
           plane.rotation.x = -Math.PI / 2;
         }
-        simulationSlices.add(plane);
+        targetGroup.add(plane);
         renderedPlanes += 1;
       }
 
     };
 
-    const renderVolumeRaymarch = (metadata, state) => {
+    const renderVolumeRaymarch = (metadata, state, targetGroup = simulationVolumeRoot, trackActiveMaterial = true) => {
       const effectiveState = buildEffectiveVolumeState(state, metadata);
       const isLabelVolume = Boolean(metadata && metadata.label_volume);
       const texture = getVolumeTexture(THREE, metadata);
@@ -2395,8 +2562,10 @@ async function boot() {
       const mesh = new THREE.Mesh(geometry, material);
       mesh.scale.copy(size);
       mesh.position.copy(center);
-      simulationVolumeRoot.add(mesh);
-      activeRaymarchMaterial = material;
+      targetGroup.add(mesh);
+      if (trackActiveMaterial) {
+        activeRaymarchMaterial = material;
+      }
     };
 
     const refreshVolumePanelLayout = () => {
@@ -3200,6 +3369,7 @@ async function boot() {
       volumeRenderState = null;
       volumePanelMoved = false;
       activeRaymarchMaterial = null;
+      volumeLayerState = new Map();
       if (volumePanelEl) {
         volumePanelEl.hidden = true;
         volumePanelEl.innerHTML = "";
@@ -3213,7 +3383,7 @@ async function boot() {
       syncVolumeToolbarButton();
     };
 
-    const renderZarrGaussianSplatPoints = (orderedPoints, showPoints) => {
+    const renderZarrGaussianSplatPoints = (orderedPoints, showPoints, targetGroup = simulationPoints) => {
       if (!showPoints || !Array.isArray(orderedPoints) || orderedPoints.length <= 0) {
         return;
       }
@@ -3311,7 +3481,28 @@ async function boot() {
         alphaTest: String(state.pointTexture || "glow") === "section" ? 0.005 : 0.02,
       });
       const splatPoints = new THREE.Points(geometry, material);
-      simulationPoints.add(splatPoints);
+      targetGroup.add(splatPoints);
+    };
+
+    const renderVolumeLayer = ({
+      metadata,
+      state,
+      orderedPoints = [],
+      targetGroup,
+      showPoints = true,
+      trackActiveMaterial = false,
+    }) => {
+      if (!metadata || !targetGroup) return;
+      const renderStyle = getMetadataResolvedRenderStyle(state, metadata);
+      if (renderStyle === "raymarch") {
+        renderVolumeRaymarch(metadata, state, targetGroup, trackActiveMaterial);
+      }
+      if (renderStyle === "slab" || renderStyle === "hybrid") {
+        renderVolumeSlabPlane(orderedPoints, metadata, state, targetGroup);
+      }
+      if (renderStyle === "points" || renderStyle === "hybrid") {
+        renderZarrGaussianSplatPoints(orderedPoints, showPoints, targetGroup);
+      }
     };
 
     const renderSimulationFrame = (index) => {
@@ -3355,6 +3546,7 @@ async function boot() {
       const pointMap = new Map();
       const orderedPoints = Array.isArray(frame.points) ? frame.points : [];
       if (useGaussianSplat) {
+        ensureVolumeLayerState(metadata);
         orderedPoints.forEach((pt, ptIdx) => {
           if (!pt || typeof pt !== "object") return;
           const x = Number(pt.x);
@@ -3364,16 +3556,49 @@ async function boot() {
           const label = String(pt.label || `point_${ptIdx}`);
           pointMap.set(label, new THREE.Vector3(x, y, z));
         });
-        const renderStyle = getMetadataResolvedRenderStyle(effectiveVolumeState, metadata);
-        if (renderStyle === "raymarch") {
-          renderVolumeRaymarch(metadata, effectiveVolumeState);
+        const baseLayerGroup = volumeLayerIsRenderable(metadata, "reference")
+          ? createVolumeLayerGroup(metadata, "reference")
+          : null;
+        if (baseLayerGroup) {
+          renderVolumeLayer({
+            metadata,
+            state: effectiveVolumeState,
+            orderedPoints,
+            targetGroup: baseLayerGroup,
+            showPoints,
+            trackActiveMaterial: true,
+          });
         }
-        if (renderStyle === "slab" || renderStyle === "hybrid") {
-          renderVolumeSlabPlane(orderedPoints, metadata, effectiveVolumeState);
-        }
-        if (renderStyle === "points" || renderStyle === "hybrid") {
-          renderZarrGaussianSplatPoints(orderedPoints, showPoints);
-        }
+        getVolumeOverlayLayers(metadata).forEach((layerMetadata, layerIndex) => {
+          if (!volumeLayerIsRenderable(layerMetadata, `overlay_${layerIndex}`)) {
+            return;
+          }
+          const layerState = buildEffectiveVolumeState(
+            Object.assign(
+              {},
+              getVolumeRenderDefaults(layerMetadata),
+              {
+                clipAxis: effectiveVolumeState.clipAxis,
+                clipCenter: effectiveVolumeState.clipCenter,
+                clipThickness: effectiveVolumeState.clipThickness,
+                clipInvert: effectiveVolumeState.clipInvert,
+                sliceAxis: effectiveVolumeState.sliceAxis,
+                slicePosition: effectiveVolumeState.slicePosition,
+                sectionEmphasis: effectiveVolumeState.sectionEmphasis,
+              }
+            ),
+            layerMetadata
+          );
+          const layerGroup = createVolumeLayerGroup(layerMetadata, `overlay_${layerIndex}`);
+          renderVolumeLayer({
+            metadata: layerMetadata,
+            state: layerState,
+            orderedPoints: [],
+            targetGroup: layerGroup,
+            showPoints,
+            trackActiveMaterial: false,
+          });
+        });
       } else {
         orderedPoints.forEach((pt, ptIdx) => {
           if (!pt || typeof pt !== "object") return;
@@ -3501,6 +3726,7 @@ async function boot() {
       const adapter = String((payload && payload.adapter) || "");
       const metadata = (payload && payload.metadata) || {};
       if (adapter === "zarr-volume" || adapter === "tiff-volume") {
+        ensureVolumeLayerState(metadata);
         volumeRenderDefaults = getVolumeRenderDefaults(metadata);
         volumeRenderState = Object.assign(
           {},
@@ -3511,6 +3737,7 @@ async function boot() {
         stopVolumeSlicePlayback();
         volumeRenderDefaults = null;
         volumeRenderState = null;
+        volumeLayerState = new Map();
       }
       simulationActiveBehavior = String(
         (((payload.metadata || {}).run_metadata || {}).behavior || "")
@@ -3545,8 +3772,10 @@ async function boot() {
       if (categoryPanelEl) {
         categoryPanelEl.hidden = true;
         categoryPanelEl.innerHTML = "";
+        categoryPanelEl.classList.remove("is-volume-layers");
       }
       renderVolumePanel();
+      rebuildVolumeLayerUI();
       if (simulationRoot.parent !== root) {
         root.add(simulationRoot);
       }
@@ -3587,7 +3816,9 @@ async function boot() {
       if (!shouldReloadMesh) {
         if (!payload.mesh || payload.mesh.type !== "flybody_parts") {
           if (legendEl) legendEl.hidden = true;
-          if (categoryPanelEl) categoryPanelEl.hidden = true;
+          if (categoryPanelEl && !(adapter === "zarr-volume" || adapter === "tiff-volume")) {
+            categoryPanelEl.hidden = true;
+          }
         }
       } else if (payload.mesh && payload.mesh.type === "flybody_parts" && Array.isArray(payload.mesh.parts)) {
         const loader = new OBJLoader();
@@ -3685,7 +3916,9 @@ async function boot() {
 
       if (!payload.mesh || payload.mesh.type !== "flybody_parts") {
         if (legendEl) legendEl.hidden = true;
-        if (categoryPanelEl) categoryPanelEl.hidden = true;
+        if (categoryPanelEl && !(adapter === "zarr-volume" || adapter === "tiff-volume")) {
+          categoryPanelEl.hidden = true;
+        }
       }
       if (timelineSlider) {
         const frameCount = Array.isArray(payload.frames) ? payload.frames.length : 0;

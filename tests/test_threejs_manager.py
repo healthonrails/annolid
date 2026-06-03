@@ -340,6 +340,93 @@ def test_build_tiff_simulation_payload_detects_label_ids_volume(tmp_path: Path) 
 
 
 @requires_tifffile
+def test_build_tiff_overlay_payload_uses_reference_and_annotation_layers(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+    window = _DummyWindow()
+    manager = ThreeJsManager(window, QtWidgets.QStackedWidget(window))
+
+    reference_path = tmp_path / "reference.tif"
+    annotation_path = tmp_path / "annotation.tif"
+    metadata_path = tmp_path / "metadata.json"
+    reference = np.zeros((10, 12, 14), dtype=np.uint16)
+    reference[2:8, 3:10, 4:12] = 1200
+    annotation = np.zeros((10, 12, 14), dtype=np.uint16)
+    annotation[2:7, 3:9, 4:10] = 151
+    annotation[6:9, 7:11, 8:13] = 188
+    tifffile.imwrite(str(reference_path), reference)
+    tifffile.imwrite(str(annotation_path), annotation)
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "name": "kim_mouse_25um_olfactory_bulb",
+                "resolution_um": [25.0, 25.0, 25.0],
+                "included_ids": [151, 188],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = manager._build_tiff_overlay_simulation_payload(
+        reference_path=reference_path,
+        annotation_path=annotation_path,
+        metadata_path=metadata_path,
+    )
+
+    metadata = payload["metadata"]
+    assert payload["adapter"] == "tiff-volume"
+    assert metadata["volume_overlay"] is True
+    assert metadata["layer_role"] == "reference"
+    assert metadata["volume_layer_count"] == 2
+    assert metadata["atlas_overlay_metadata"]["included_ids"] == [151, 188]
+    assert metadata["volume_orientation"] == "zyx"
+    assert metadata["overlay_validation"]["orientation"] == "zyx"
+    assert metadata["volume_grid_shape"] == [10, 12, 14]
+    assert len(metadata["volume_layers"]) == 1
+    layer = metadata["volume_layers"][0]
+    assert layer["layer_id"] == "annotation"
+    assert layer["layer_role"] == "annotation"
+    assert layer["volume_orientation"] == "zyx"
+    assert layer["label_volume"] is True
+    assert layer["render_mode"] == "label_ids"
+    assert layer["volume_grid_shape"] == [10, 12, 14]
+    assert layer["volume_label_id_lut"]
+    assert layer["volume_render_defaults"]["blend_mode"] == "normal"
+    assert layer["volume_render_defaults"]["render_style"] == "raymarch"
+
+
+def test_normalize_atlas_orientation_accepts_kim_asr_metadata() -> None:
+    assert ThreeJsManager._normalize_atlas_orientation({"orientation": "asr"}) == "asr"
+    assert ThreeJsManager._normalize_atlas_orientation({"orientation": "bad"}) == "zyx"
+
+
+@requires_tifffile
+def test_resolve_tiff_payload_detects_reference_annotation_siblings(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+    window = _DummyWindow()
+    manager = ThreeJsManager(window, QtWidgets.QStackedWidget(window))
+
+    reference_path = tmp_path / "reference.tif"
+    annotation_path = tmp_path / "annotation.tif"
+    data = np.zeros((4, 4, 4), dtype=np.uint8)
+    data[1:3, 1:3, 1:3] = 10
+    labels = np.zeros((4, 4, 4), dtype=np.uint16)
+    labels[1:3, 1:3, 1:3] = 151
+    labels[2:4, 2:4, 2:4] = 188
+    tifffile.imwrite(str(reference_path), data)
+    tifffile.imwrite(str(annotation_path), labels)
+
+    payload_path = manager._resolve_tiff_simulation_payload(reference_path)
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+
+    assert payload["metadata"]["volume_overlay"] is True
+    assert payload["metadata"]["volume_layers"][0]["layer_role"] == "annotation"
+
+
+@requires_tifffile
 def test_build_tiff_simulation_payload_loads_allen_ontology_colors(
     tmp_path: Path,
 ) -> None:

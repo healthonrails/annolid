@@ -177,6 +177,17 @@ def test_threejs_viewer_supports_zarr_gaussian_splat_render_mode():
     assert "u_useShading" in source
     assert "interleaved_detected" in source
     assert "volumeFocusSlab" in source
+    assert "getVolumeOverlayLayers" in source
+    assert "metadata.volume_layers" in source
+    assert "getVolumeLayerEntries" in source
+    assert "rebuildVolumeLayerUI" in source
+    assert "volumeLayerState" in source
+    assert "applyVolumeOrientationToGroup" in source
+    assert 'orientation === "asr"' in source
+    assert "createVolumeLayerGroup(layerMetadata" in source
+    assert "renderVolumeLayer" in source
+    assert "trackActiveMaterial: true" in source
+    assert "trackActiveMaterial: false" in source
     css_source = (
         repo_root
         / "annolid"
@@ -188,3 +199,5 @@ def test_threejs_viewer_supports_zarr_gaussian_splat_render_mode():
     assert "cursor: move;" in css_source
     assert ".three-volume-card" in css_source
     assert ".three-volume-quick-presets" in css_source
+    assert "three-layer-row" in css_source
+    assert "three-layer-action" in css_source

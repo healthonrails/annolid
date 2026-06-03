@@ -28,6 +28,7 @@ class ThreeJsManager(QtCore.QObject):
     _ZARR_MAX_POINTS = 120_000
     _ZARR_MULTISCALE_MAX_VOXELS = 16_000_000
     _TIFF_TARGET_SAMPLED_VOXELS = 1_000_000
+    _TIFF_PAYLOAD_CACHE_VERSION = "tiff-volume-overlay-raymarch-v1"
 
     def __init__(
         self, window: "AnnolidWindow", viewer_stack: QtWidgets.QStackedWidget
@@ -133,21 +134,180 @@ class ThreeJsManager(QtCore.QObject):
         return out_path
 
     def _resolve_tiff_simulation_payload(self, path: Path) -> Path:
-        cache_key = str(path.resolve())
-        mtime_ns = int(path.stat().st_mtime_ns)
+        overlay_paths = self._resolve_tiff_overlay_paths(path)
+        cache_paths = [path]
+        if overlay_paths is not None:
+            cache_paths = [overlay_paths["reference"], overlay_paths["annotation"]]
+            metadata_path = overlay_paths.get("metadata")
+            if metadata_path is not None:
+                cache_paths.append(metadata_path)
+        cache_key = "|".join(
+            [self._TIFF_PAYLOAD_CACHE_VERSION] + [str(p.resolve()) for p in cache_paths]
+        )
+        mtime_ns = max(int(p.stat().st_mtime_ns) for p in cache_paths)
         cached = self._tiff_payload_cache.get(cache_key)
         if cached is not None and int(cached[0]) == mtime_ns and cached[1].exists():
             return cached[1]
-        payload = self._build_tiff_simulation_payload(path)
+        if overlay_paths is not None:
+            payload = self._build_tiff_overlay_simulation_payload(
+                reference_path=overlay_paths["reference"],
+                annotation_path=overlay_paths["annotation"],
+                metadata_path=overlay_paths.get("metadata"),
+            )
+            output_stem = overlay_paths["reference"].stem
+        else:
+            payload = self._build_tiff_simulation_payload(path)
+            output_stem = path.stem
         out_dir = Path(tempfile.gettempdir()) / "annolid_threejs_tiff"
         out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / f"{path.stem}_threejs_payload.json"
+        out_path = out_dir / (
+            f"{output_stem}_{self._TIFF_PAYLOAD_CACHE_VERSION}_threejs_payload.json"
+        )
         out_path.write_text(
             json.dumps(payload, separators=(",", ":")),
             encoding="utf-8",
         )
         self._tiff_payload_cache[cache_key] = (mtime_ns, out_path)
         return out_path
+
+    @staticmethod
+    def _resolve_tiff_overlay_paths(path: Path) -> dict[str, Path] | None:
+        """Detect atlas-style reference/annotation TIFF siblings."""
+        suffix = path.suffix.lower()
+        if suffix not in {".tif", ".tiff"}:
+            return None
+        base = path.parent
+        stem = path.stem.lower()
+
+        def _first_existing(names: list[str]) -> Path | None:
+            for name in names:
+                candidate = base / name
+                if candidate.exists() and candidate.is_file():
+                    return candidate
+            return None
+
+        reference = _first_existing(["reference.tif", "reference.tiff"])
+        annotation = _first_existing(["annotation.tif", "annotation.tiff"])
+        if reference is None or annotation is None:
+            if any(k in stem for k in ("reference", "image")):
+                annotation = annotation or _first_existing(
+                    [
+                        path.name.replace("reference", "annotation"),
+                        path.name.replace("Reference", "Annotation"),
+                        path.name.replace("_image", "_annotation"),
+                        path.name.replace("_reference", "_annotation"),
+                    ]
+                )
+                reference = reference or path
+            elif any(k in stem for k in ("annotation", "label", "atlas")):
+                reference = reference or _first_existing(
+                    [
+                        path.name.replace("annotation", "reference"),
+                        path.name.replace("Annotation", "Reference"),
+                        path.name.replace("_labels", "_reference"),
+                        path.name.replace("_label", "_reference"),
+                        path.name.replace("_atlas", "_reference"),
+                    ]
+                )
+                annotation = annotation or path
+        if reference is None or annotation is None:
+            return None
+        try:
+            if reference.resolve() == annotation.resolve():
+                return None
+        except Exception:
+            return None
+        metadata = _first_existing(["metadata.json", "atlas_metadata.json"])
+        result: dict[str, Path] = {
+            "reference": reference,
+            "annotation": annotation,
+        }
+        if metadata is not None:
+            result["metadata"] = metadata
+        return result
+
+    def _build_tiff_overlay_simulation_payload(
+        self,
+        *,
+        reference_path: Path,
+        annotation_path: Path,
+        metadata_path: Path | None = None,
+    ) -> dict[str, Any]:
+        reference_payload = self._build_tiff_simulation_payload(reference_path)
+        annotation_payload = self._build_tiff_simulation_payload(annotation_path)
+        reference_metadata = dict(reference_payload.get("metadata") or {})
+        annotation_metadata = dict(annotation_payload.get("metadata") or {})
+        atlas_metadata: dict[str, Any] = {}
+        if metadata_path is not None:
+            try:
+                parsed = json.loads(metadata_path.read_text(encoding="utf-8"))
+                if isinstance(parsed, dict):
+                    atlas_metadata = parsed
+            except Exception as exc:
+                logger.warning(
+                    "Unable to read atlas overlay metadata %s: %s", metadata_path, exc
+                )
+
+        reference_shape = reference_metadata.get("volume_grid_shape")
+        annotation_shape = annotation_metadata.get("volume_grid_shape")
+        if reference_shape != annotation_shape:
+            raise RuntimeError(
+                "Reference and annotation TIFF volumes must have the same sampled "
+                f"shape for overlay rendering: reference={reference_shape}, "
+                f"annotation={annotation_shape}"
+            )
+        orientation = self._normalize_atlas_orientation(atlas_metadata)
+
+        layer_defaults = dict(annotation_metadata.get("volume_render_defaults") or {})
+        # Keep atlas overlays on the same 3D texture path as the reference volume.
+        # Mixing reference raymarching with annotation slab planes makes aligned
+        # data look flipped because the slab canvas path has different UV origin
+        # semantics.
+        layer_defaults["render_style"] = "raymarch"
+        layer_defaults["opacity"] = min(
+            0.46, max(0.16, float(layer_defaults.get("opacity", 0.34)))
+        )
+        layer_defaults["density"] = min(
+            0.72, max(0.18, float(layer_defaults.get("density", 0.46)))
+        )
+        layer_defaults["blend_mode"] = "normal"
+        annotation_metadata["volume_render_defaults"] = layer_defaults
+        annotation_metadata["layer_id"] = "annotation"
+        annotation_metadata["layer_role"] = "annotation"
+        annotation_metadata["layer_name"] = annotation_path.stem
+        annotation_metadata["volume_orientation"] = orientation
+        annotation_metadata["volume_orientation_source"] = str(
+            metadata_path or annotation_path
+        )
+
+        reference_metadata["volume_overlay"] = True
+        reference_metadata["atlas_overlay_metadata"] = atlas_metadata
+        reference_metadata["volume_layers"] = [annotation_metadata]
+        reference_metadata["volume_layer_count"] = 2
+        reference_metadata["layer_id"] = "reference"
+        reference_metadata["layer_role"] = "reference"
+        reference_metadata["layer_name"] = reference_path.stem
+        reference_metadata["volume_orientation"] = orientation
+        reference_metadata["volume_orientation_source"] = str(
+            metadata_path or reference_path
+        )
+        reference_metadata["overlay_validation"] = {
+            "reference_shape_zyx": reference_metadata.get("shape"),
+            "annotation_shape_zyx": annotation_metadata.get("shape"),
+            "reference_grid_shape_zyx": reference_shape,
+            "annotation_grid_shape_zyx": annotation_shape,
+            "orientation": orientation,
+        }
+        reference_payload["metadata"] = reference_metadata
+        reference_payload["adapter"] = "tiff-volume"
+        return reference_payload
+
+    @staticmethod
+    def _normalize_atlas_orientation(metadata: dict[str, Any]) -> str:
+        value = str(metadata.get("orientation", "") or "").strip().lower()
+        if len(value) == 3 and all(ch in "lrasip" for ch in value):
+            return value
+        return "zyx"
 
     def _build_tiff_simulation_payload(self, path: Path) -> dict[str, Any]:
         try:
