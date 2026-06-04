@@ -28,7 +28,7 @@ class ThreeJsManager(QtCore.QObject):
     _ZARR_MAX_POINTS = 120_000
     _ZARR_MULTISCALE_MAX_VOXELS = 16_000_000
     _TIFF_TARGET_SAMPLED_VOXELS = 1_000_000
-    _TIFF_PAYLOAD_CACHE_VERSION = "tiff-volume-overlay-raymarch-v1"
+    _TIFF_PAYLOAD_CACHE_VERSION = "tiff-volume-spacing-v2"
 
     def __init__(
         self, window: "AnnolidWindow", viewer_stack: QtWidgets.QStackedWidget
@@ -76,7 +76,11 @@ class ThreeJsManager(QtCore.QObject):
                 viewer.load_simulation_payload(payload_path, title=path.stem)
             elif is_tiff_source:
                 payload_path = self._resolve_tiff_simulation_payload(path)
-                viewer.load_simulation_payload(payload_path, title=path.stem)
+                viewer.load_simulation_payload(
+                    payload_path,
+                    title=path.stem,
+                    asset_roots=self._atlas_asset_roots_for_tiff(path),
+                )
             else:
                 viewer.load_model(
                     path,
@@ -141,6 +145,9 @@ class ThreeJsManager(QtCore.QObject):
             metadata_path = overlay_paths.get("metadata")
             if metadata_path is not None:
                 cache_paths.append(metadata_path)
+            cache_paths.extend(
+                self._candidate_atlas_catalog_paths(overlay_paths["reference"].parent)
+            )
         cache_key = "|".join(
             [self._TIFF_PAYLOAD_CACHE_VERSION] + [str(p.resolve()) for p in cache_paths]
         )
@@ -171,6 +178,31 @@ class ThreeJsManager(QtCore.QObject):
         return out_path
 
     @staticmethod
+    def _atlas_asset_roots_for_tiff(path: Path) -> dict[str, Path]:
+        source_dir = path.parent
+        mesh_dir = source_dir / "meshes"
+        if mesh_dir.exists() and mesh_dir.is_dir():
+            return {"atlas_meshes": mesh_dir}
+        return {}
+
+    @staticmethod
+    def _candidate_atlas_catalog_paths(source_dir: Path) -> list[Path]:
+        candidates: list[Path] = []
+        for name in (
+            "structures.json",
+            "structures.csv",
+            "metadata.json",
+            "atlas_metadata.json",
+        ):
+            path = source_dir / name
+            if path.exists() and path.is_file():
+                candidates.append(path)
+        mesh_dir = source_dir / "meshes"
+        if mesh_dir.exists() and mesh_dir.is_dir():
+            candidates.append(mesh_dir)
+        return candidates
+
+    @staticmethod
     def _resolve_tiff_overlay_paths(path: Path) -> dict[str, Path] | None:
         """Detect atlas-style reference/annotation TIFF siblings."""
         suffix = path.suffix.lower()
@@ -178,6 +210,7 @@ class ThreeJsManager(QtCore.QObject):
             return None
         base = path.parent
         stem = path.stem.lower()
+        selected_name = path.name.lower()
 
         def _first_existing(names: list[str]) -> Path | None:
             for name in names:
@@ -186,11 +219,28 @@ class ThreeJsManager(QtCore.QObject):
                     return candidate
             return None
 
-        reference = _first_existing(["reference.tif", "reference.tiff"])
-        annotation = _first_existing(["annotation.tif", "annotation.tiff"])
+        def _first_changed_existing(names: list[str]) -> Path | None:
+            for name in names:
+                if name == path.name:
+                    continue
+                candidate = base / name
+                if candidate.exists() and candidate.is_file():
+                    return candidate
+            return None
+
+        generic_reference = _first_existing(["reference.tif", "reference.tiff"])
+        generic_annotation = _first_existing(["annotation.tif", "annotation.tiff"])
+        reference: Path | None = None
+        annotation: Path | None = None
+        if selected_name in {"reference.tif", "reference.tiff"}:
+            reference = path
+            annotation = generic_annotation
+        elif selected_name in {"annotation.tif", "annotation.tiff"}:
+            reference = generic_reference
+            annotation = path
         if reference is None or annotation is None:
-            if any(k in stem for k in ("reference", "image")):
-                annotation = annotation or _first_existing(
+            if "reference" in stem or "_image" in stem:
+                annotation = annotation or _first_changed_existing(
                     [
                         path.name.replace("reference", "annotation"),
                         path.name.replace("Reference", "Annotation"),
@@ -200,7 +250,7 @@ class ThreeJsManager(QtCore.QObject):
                 )
                 reference = reference or path
             elif any(k in stem for k in ("annotation", "label", "atlas")):
-                reference = reference or _first_existing(
+                reference = reference or _first_changed_existing(
                     [
                         path.name.replace("annotation", "reference"),
                         path.name.replace("Annotation", "Reference"),
@@ -298,9 +348,108 @@ class ThreeJsManager(QtCore.QObject):
             "annotation_grid_shape_zyx": annotation_shape,
             "orientation": orientation,
         }
+        atlas_catalog = self._load_atlas_region_catalog(
+            source_dir=reference_path.parent,
+            annotation_metadata=annotation_metadata,
+        )
+        if atlas_catalog:
+            annotation_metadata["atlas_region_layers"] = atlas_catalog
+            annotation_metadata["atlas_mesh_alias"] = "atlas_meshes"
+            reference_metadata["atlas_region_layers"] = atlas_catalog
+            reference_metadata["atlas_region_count"] = int(len(atlas_catalog))
+            reference_metadata["atlas_mesh_alias"] = "atlas_meshes"
         reference_payload["metadata"] = reference_metadata
         reference_payload["adapter"] = "tiff-volume"
         return reference_payload
+
+    @staticmethod
+    def _load_atlas_region_catalog(
+        *,
+        source_dir: Path,
+        annotation_metadata: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        structures = ThreeJsManager._load_atlas_structures(source_dir)
+        if not structures:
+            return []
+        mesh_dir = source_dir / "meshes"
+        label_ids = annotation_metadata.get("volume_label_id_lut")
+        wanted_ids = (
+            {
+                int(v)
+                for v in label_ids
+                if isinstance(v, (int, float)) or str(v).strip().isdigit()
+            }
+            if isinstance(label_ids, list)
+            else set()
+        )
+        rows: list[dict[str, Any]] = []
+        for region_id in sorted(structures):
+            if wanted_ids and region_id not in wanted_ids:
+                continue
+            structure = structures[region_id]
+            mesh_path = mesh_dir / f"{region_id}.obj"
+            rgb = structure.get("rgb_triplet")
+            color: list[int] | None = None
+            if isinstance(rgb, list) and len(rgb) >= 3:
+                try:
+                    color = [int(float(rgb[0])), int(float(rgb[1])), int(float(rgb[2]))]
+                except Exception:
+                    color = None
+            row: dict[str, Any] = {
+                "id": int(region_id),
+                "name": str(structure.get("name") or f"Region {region_id}"),
+                "acronym": str(structure.get("acronym") or region_id),
+                "structure_id_path": structure.get("structure_id_path") or [],
+                "parent_structure_id": structure.get("parent_structure_id"),
+                "has_mesh": bool(mesh_path.exists() and mesh_path.is_file()),
+            }
+            if color is not None:
+                row["color"] = color
+            if row["has_mesh"]:
+                row["mesh_path"] = f"atlas_meshes/{mesh_path.name}"
+                try:
+                    row["mesh_size_bytes"] = int(mesh_path.stat().st_size)
+                except Exception:
+                    pass
+            rows.append(row)
+        return rows
+
+    @staticmethod
+    def _load_atlas_structures(source_dir: Path) -> dict[int, dict[str, Any]]:
+        json_path = source_dir / "structures.json"
+        csv_path = source_dir / "structures.csv"
+        structures: dict[int, dict[str, Any]] = {}
+        if json_path.exists() and json_path.is_file():
+            try:
+                parsed = json.loads(json_path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                logger.warning("Unable to read atlas structures %s: %s", json_path, exc)
+                parsed = None
+            if isinstance(parsed, list):
+                for item in parsed:
+                    if not isinstance(item, dict):
+                        continue
+                    region_id = ThreeJsManager._extract_label_id_from_record(item)
+                    if region_id is None:
+                        continue
+                    structures[int(region_id)] = dict(item)
+        if csv_path.exists() and csv_path.is_file():
+            try:
+                with csv_path.open(newline="", encoding="utf-8-sig") as handle:
+                    reader = csv.DictReader(handle)
+                    for item in reader:
+                        if not isinstance(item, dict):
+                            continue
+                        region_id = ThreeJsManager._extract_label_id_from_record(item)
+                        if region_id is None:
+                            continue
+                        existing = structures.setdefault(int(region_id), {})
+                        for key, value in item.items():
+                            if value not in (None, ""):
+                                existing.setdefault(str(key), value)
+            except Exception as exc:
+                logger.warning("Unable to read atlas structures %s: %s", csv_path, exc)
+        return structures
 
     @staticmethod
     def _normalize_atlas_orientation(metadata: dict[str, Any]) -> str:
@@ -565,7 +714,10 @@ class ThreeJsManager(QtCore.QObject):
 
         with tifffile.TiffFile(str(path)) as tif:
             volume = np.asarray(tif.asarray())
-            spacing_zyx = ThreeJsManager._resolve_tiff_spacing_zyx(tif=tif)
+            spacing_zyx = ThreeJsManager._resolve_tiff_spacing_zyx(
+                tif=tif,
+                source_path=path,
+            )
 
         volume = np.squeeze(volume)
         if volume.ndim == 2:
@@ -1046,14 +1198,23 @@ class ThreeJsManager(QtCore.QObject):
         )
 
     @staticmethod
-    def _resolve_tiff_spacing_zyx(*, tif: Any) -> list[float]:
+    def _resolve_tiff_spacing_zyx(
+        *,
+        tif: Any,
+        source_path: Path | None = None,
+    ) -> list[float]:
         spacing_zyx = [1.0, 1.0, 1.0]
+        filename_spacing = ThreeJsManager._resolve_tiff_spacing_from_filename(
+            source_path
+        )
+        if filename_spacing is not None:
+            return filename_spacing
         try:
             page0 = tif.pages[0]
         except Exception:
             return spacing_zyx
 
-        def _resolution_to_spacing(value: Any) -> float:
+        def _resolution_to_spacing(value: Any) -> float | None:
             try:
                 num, den = value
                 num_f = float(num)
@@ -1061,34 +1222,69 @@ class ThreeJsManager(QtCore.QObject):
                 if num_f > 0.0:
                     return den_f / num_f
             except Exception:
-                return 1.0
-            return 1.0
+                return None
+            return None
 
-        try:
-            xres_tag = page0.tags.get("XResolution")
-            if xres_tag is not None:
-                spacing_zyx[2] = float(
-                    _resolution_to_spacing(getattr(xres_tag, "value", None))
-                )
-        except Exception:
-            pass
-        try:
-            yres_tag = page0.tags.get("YResolution")
-            if yres_tag is not None:
-                spacing_zyx[1] = float(
-                    _resolution_to_spacing(getattr(yres_tag, "value", None))
-                )
-        except Exception:
-            pass
-
+        z_spacing: float | None = None
         try:
             imagej = getattr(tif, "imagej_metadata", None)
-            z_spacing = imagej.get("spacing") if isinstance(imagej, dict) else None
-            if z_spacing is not None:
-                spacing_zyx[0] = float(z_spacing)
+            raw_z_spacing = imagej.get("spacing") if isinstance(imagej, dict) else None
+            if raw_z_spacing is not None:
+                z_spacing = float(raw_z_spacing)
         except Exception:
             pass
+        if z_spacing is not None:
+            spacing_zyx[0] = float(z_spacing)
+
+        # XResolution/YResolution are often inherited from display/print DPI
+        # metadata such as 72 DPI. Without an explicit z spacing, using those
+        # values as voxel spacing flattens real 3D stacks into thin lines.
+        if z_spacing is not None:
+            try:
+                xres_tag = page0.tags.get("XResolution")
+                x_spacing = (
+                    _resolution_to_spacing(getattr(xres_tag, "value", None))
+                    if xres_tag is not None
+                    else None
+                )
+                if x_spacing is not None:
+                    spacing_zyx[2] = float(x_spacing)
+            except Exception:
+                pass
+            try:
+                yres_tag = page0.tags.get("YResolution")
+                y_spacing = (
+                    _resolution_to_spacing(getattr(yres_tag, "value", None))
+                    if yres_tag is not None
+                    else None
+                )
+                if y_spacing is not None:
+                    spacing_zyx[1] = float(y_spacing)
+            except Exception:
+                pass
         return [max(1e-6, float(v)) for v in spacing_zyx]
+
+    @staticmethod
+    def _resolve_tiff_spacing_from_filename(path: Path | None) -> list[float] | None:
+        if path is None:
+            return None
+        name = str(path.name or "")
+        patterns = (
+            r"(?i)(?:^|[_\-])res(?:olution)?[_\-]?([0-9]+(?:\.[0-9]+)?)\s*(?:u|µ)?m(?:$|[_\-.])",
+            r"(?i)(?:^|[_\-])voxel[_\-]?([0-9]+(?:\.[0-9]+)?)\s*(?:u|µ)?m(?:$|[_\-.])",
+            r"(?i)(?:^|[_\-])spacing[_\-]?([0-9]+(?:\.[0-9]+)?)\s*(?:u|µ)?m(?:$|[_\-.])",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, name)
+            if match is None:
+                continue
+            try:
+                spacing = float(match.group(1))
+            except Exception:
+                continue
+            if spacing > 0.0:
+                return [spacing, spacing, spacing]
+        return None
 
     def _build_zarr_simulation_payload(self, path: Path) -> dict[str, Any]:
         try:

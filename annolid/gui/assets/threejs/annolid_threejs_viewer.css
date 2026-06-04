@@ -298,12 +298,115 @@ body.white-theme {
 
 .three-layer-actions {
   display: flex;
+  gap: 6px;
   justify-content: flex-end;
   margin-top: 10px;
 }
 
 .three-layer-actions button {
   padding: 0 9px;
+}
+
+.three-atlas-title {
+  margin-top: 14px;
+}
+
+.three-atlas-tools {
+  margin-top: 8px;
+}
+
+.three-atlas-search {
+  width: 100%;
+  height: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.24);
+  color: #fff;
+  padding: 0 9px;
+  font-size: 12px;
+  outline: none;
+}
+
+.three-atlas-search:focus {
+  border-color: rgba(123, 198, 255, 0.72);
+}
+
+.three-atlas-summary {
+  color: rgba(231, 237, 247, 0.68);
+  font-size: 11px;
+  margin-top: 7px;
+}
+
+.three-atlas-region-list {
+  max-height: 320px;
+  overflow: auto;
+  margin-top: 7px;
+  padding-right: 2px;
+}
+
+.three-atlas-region-row {
+  display: grid;
+  grid-template-columns: 18px 12px minmax(0, 1fr) 58px;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  font-size: 12px;
+}
+
+.three-atlas-region-row input[type="checkbox"] {
+  accent-color: #7bc6ff;
+}
+
+.three-atlas-region-row.is-hidden {
+  opacity: 0.55;
+}
+
+.three-atlas-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+.three-atlas-region-label {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(34px, auto) minmax(0, 1fr);
+  gap: 6px;
+  align-items: baseline;
+}
+
+.three-atlas-region-primary,
+.three-atlas-region-secondary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.three-atlas-region-primary {
+  color: #f4d48d;
+  font-weight: 650;
+}
+
+.three-atlas-region-secondary {
+  color: rgba(231, 237, 247, 0.82);
+}
+
+.three-atlas-mesh-action {
+  height: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  cursor: pointer;
+  padding: 0 7px;
+  font-size: 11px;
+}
+
+.three-atlas-mesh-action:disabled {
+  opacity: 0.42;
+  cursor: default;
 }
 
 body[data-threejs-simulation="1"] #annolidThreeHints {

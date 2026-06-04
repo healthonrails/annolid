@@ -474,7 +474,13 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
             (time.perf_counter() - started) * 1000.0,
         )
 
-    def load_simulation_payload(self, payload_path: str | Path, *, title: str) -> None:
+    def load_simulation_payload(
+        self,
+        payload_path: str | Path,
+        *,
+        title: str,
+        asset_roots: dict[str, str | Path] | None = None,
+    ) -> None:
         path = Path(payload_path)
         if not path.exists():
             raise FileNotFoundError(f"Simulation payload not found: {path}")
@@ -484,7 +490,7 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
         started = time.perf_counter()
         self._current_path = path
         base = _ensure_threejs_http_server()
-        model_url = _register_threejs_http_model(path)
+        model_url = _register_threejs_http_model(path, asset_roots=asset_roots)
         base_url = QtCore.QUrl(base + "/")
         html = self._build_viewer_html(
             title=title,
@@ -502,7 +508,11 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
         )
 
     def update_simulation_payload(
-        self, payload_path: str | Path, *, title: str
+        self,
+        payload_path: str | Path,
+        *,
+        title: str,
+        asset_roots: dict[str, str | Path] | None = None,
     ) -> None:
         path = Path(payload_path)
         if not path.exists():
@@ -511,7 +521,7 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
             raise RuntimeError("Qt WebEngine is unavailable")
 
         self._current_path = path
-        model_url = _register_threejs_http_model(path)
+        model_url = _register_threejs_http_model(path, asset_roots=asset_roots)
         page = self._web_view.page()
 
         def _apply_update(ready: object) -> None:

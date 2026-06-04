@@ -18,6 +18,7 @@ _THREEJS_HTTP_PORT: Optional[int] = None
 _THREEJS_HTTP_THREAD: Optional[threading.Thread] = None
 _THREEJS_HTTP_LOCK = threading.Lock()
 _THREEJS_HTTP_TOKENS: dict[str, Path] = {}
+_THREEJS_HTTP_TOKEN_ASSET_ROOTS: dict[str, dict[str, Path]] = {}
 _THREEJS_HTTP_ASSET_CACHE: dict[str, tuple[int, bytes]] = {}
 _THREEJS_HTTP_TOKEN_CREATED_AT: dict[str, float] = {}
 _THREEJS_HTTP_MAX_TOKENS = 512
@@ -106,6 +107,7 @@ def _prune_threejs_http_tokens(*, now_ts: float | None = None) -> None:
     for token in expired:
         _THREEJS_HTTP_TOKEN_CREATED_AT.pop(token, None)
         _THREEJS_HTTP_TOKENS.pop(token, None)
+        _THREEJS_HTTP_TOKEN_ASSET_ROOTS.pop(token, None)
     if len(_THREEJS_HTTP_TOKENS) <= _THREEJS_HTTP_MAX_TOKENS:
         return
     oldest = sorted(
@@ -116,6 +118,7 @@ def _prune_threejs_http_tokens(*, now_ts: float | None = None) -> None:
     for token, _created_at in oldest[:to_remove]:
         _THREEJS_HTTP_TOKEN_CREATED_AT.pop(token, None)
         _THREEJS_HTTP_TOKENS.pop(token, None)
+        _THREEJS_HTTP_TOKEN_ASSET_ROOTS.pop(token, None)
 
 
 def _threejs_asset_path(filename: str) -> Optional[Path]:
@@ -236,6 +239,7 @@ def _ensure_threejs_http_server() -> str:
                 with _THREEJS_HTTP_LOCK:
                     _prune_threejs_http_tokens()
                     base_file_path = _THREEJS_HTTP_TOKENS.get(token)
+                    asset_roots = dict(_THREEJS_HTTP_TOKEN_ASSET_ROOTS.get(token) or {})
                 if base_file_path is None:
                     logger.warning("Token not found: %s", token)
                     self.send_error(404)
@@ -255,7 +259,22 @@ def _ensure_threejs_http_server() -> str:
                     # Serve a related file in the same directory
                     requested_filename = parts[1]
                     model_dir = base_file_path.parent
-                    file_path = model_dir / requested_filename
+                    requested_parts = Path(requested_filename).parts
+                    asset_root: Path | None = None
+                    if requested_parts:
+                        alias = requested_parts[0]
+                        asset_root = asset_roots.get(alias)
+                    if asset_root is not None:
+                        relative_asset = (
+                            Path(*requested_parts[1:])
+                            if len(requested_parts) > 1
+                            else Path()
+                        )
+                        file_path = asset_root / relative_asset
+                        allowed_root = asset_root
+                    else:
+                        file_path = model_dir / requested_filename
+                        allowed_root = model_dir
 
                     logger.info(
                         "Related file request: %s, full_path=%s, exists=%s",
@@ -266,13 +285,13 @@ def _ensure_threejs_http_server() -> str:
 
                     # Security check: only serve files in the same directory or subdirectories
                     try:
-                        file_path.resolve().relative_to(model_dir.resolve())
+                        file_path.resolve().relative_to(allowed_root.resolve())
                     except ValueError:
                         # File is outside the model directory
                         logger.warning(
-                            "Security violation: requested file %s is outside model directory %s",
+                            "Security violation: requested file %s is outside allowed root %s",
                             file_path,
-                            model_dir,
+                            allowed_root,
                         )
                         self.send_error(403)
                         return
@@ -339,12 +358,26 @@ def _ensure_threejs_http_server() -> str:
         return f"http://127.0.0.1:{_THREEJS_HTTP_PORT}"
 
 
-def _register_threejs_http_model(path: Path) -> str:
+def _register_threejs_http_model(
+    path: Path,
+    *,
+    asset_roots: dict[str, str | Path] | None = None,
+) -> str:
     base = _ensure_threejs_http_server()
     token = uuid.uuid4().hex
+    normalized_asset_roots: dict[str, Path] = {}
+    for alias, root in (asset_roots or {}).items():
+        safe_alias = str(alias or "").strip().strip("/")
+        if not safe_alias or "/" in safe_alias or "\\" in safe_alias:
+            continue
+        root_path = Path(root)
+        if root_path.exists() and root_path.is_dir():
+            normalized_asset_roots[safe_alias] = root_path
     with _THREEJS_HTTP_LOCK:
         _prune_threejs_http_tokens()
         _THREEJS_HTTP_TOKENS[token] = path
+        if normalized_asset_roots:
+            _THREEJS_HTTP_TOKEN_ASSET_ROOTS[token] = normalized_asset_roots
         _THREEJS_HTTP_TOKEN_CREATED_AT[token] = time.time()
     return f"{base}/model/{token}/{path.name}"
 

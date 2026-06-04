@@ -71,8 +71,12 @@ class _DummyViewer:
         self.calls: list[tuple[Path, str | None]] = []
 
     def load_simulation_payload(
-        self, path: str | Path, title: str | None = None
+        self,
+        path: str | Path,
+        title: str | None = None,
+        asset_roots: dict[str, str | Path] | None = None,
     ) -> None:
+        _ = asset_roots
         self.calls.append((Path(path), title))
 
 
@@ -93,8 +97,12 @@ class _DummyModelViewer:
         self.model_calls.append(Path(path))
 
     def load_simulation_payload(
-        self, path: str | Path, title: str | None = None
+        self,
+        path: str | Path,
+        title: str | None = None,
+        asset_roots: dict[str, str | Path] | None = None,
     ) -> None:
+        _ = asset_roots
         self.sim_calls.append((Path(path), title))
 
 
@@ -367,6 +375,43 @@ def test_build_tiff_overlay_payload_uses_reference_and_annotation_layers(
         ),
         encoding="utf-8",
     )
+    (tmp_path / "structures.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": 151,
+                    "name": "Area X",
+                    "acronym": "Area X",
+                    "rgb_triplet": [12, 34, 220],
+                    "structure_id_path": [999, 2, 151],
+                },
+                {
+                    "id": 188,
+                    "name": "Hippocampus",
+                    "acronym": "HP",
+                    "rgb_triplet": [176, 108, 108],
+                    "structure_id_path": [999, 1, 188],
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "structures.csv").write_text(
+        "\n".join(
+            [
+                "id,name,acronym,structure_id_path,parent_structure_id",
+                "151,Area X,Area X,/999/2/151/,2",
+                "188,Hippocampus,HP,/999/1/188/,1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    mesh_dir = tmp_path / "meshes"
+    mesh_dir.mkdir()
+    (mesh_dir / "151.obj").write_text(
+        "o AreaX\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n",
+        encoding="utf-8",
+    )
 
     payload = manager._build_tiff_overlay_simulation_payload(
         reference_path=reference_path,
@@ -383,6 +428,13 @@ def test_build_tiff_overlay_payload_uses_reference_and_annotation_layers(
     assert metadata["volume_orientation"] == "zyx"
     assert metadata["overlay_validation"]["orientation"] == "zyx"
     assert metadata["volume_grid_shape"] == [10, 12, 14]
+    assert metadata["atlas_region_count"] == 2
+    assert metadata["atlas_mesh_alias"] == "atlas_meshes"
+    assert metadata["atlas_region_layers"][0]["id"] == 151
+    assert metadata["atlas_region_layers"][0]["name"] == "Area X"
+    assert metadata["atlas_region_layers"][0]["color"] == [12, 34, 220]
+    assert metadata["atlas_region_layers"][0]["has_mesh"] is True
+    assert metadata["atlas_region_layers"][0]["mesh_path"] == "atlas_meshes/151.obj"
     assert len(metadata["volume_layers"]) == 1
     layer = metadata["volume_layers"][0]
     assert layer["layer_id"] == "annotation"
@@ -391,6 +443,7 @@ def test_build_tiff_overlay_payload_uses_reference_and_annotation_layers(
     assert layer["label_volume"] is True
     assert layer["render_mode"] == "label_ids"
     assert layer["volume_grid_shape"] == [10, 12, 14]
+    assert layer["atlas_region_layers"][0]["id"] == 151
     assert layer["volume_label_id_lut"]
     assert layer["volume_render_defaults"]["blend_mode"] == "normal"
     assert layer["volume_render_defaults"]["render_style"] == "raymarch"
@@ -424,6 +477,90 @@ def test_resolve_tiff_payload_detects_reference_annotation_siblings(
 
     assert payload["metadata"]["volume_overlay"] is True
     assert payload["metadata"]["volume_layers"][0]["layer_role"] == "annotation"
+
+
+@requires_tifffile
+def test_resolve_tiff_payload_does_not_replace_unrelated_tiff_with_atlas_siblings(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+    window = _DummyWindow()
+    manager = ThreeJsManager(window, QtWidgets.QStackedWidget(window))
+
+    reference_path = tmp_path / "reference.tif"
+    annotation_path = tmp_path / "annotation.tif"
+    image_path = tmp_path / "sub-BC08_res-25um_channel-green.tif"
+    data = np.zeros((4, 4, 4), dtype=np.uint8)
+    data[1:3, 1:3, 1:3] = 10
+    labels = np.zeros((4, 4, 4), dtype=np.uint16)
+    labels[1:3, 1:3, 1:3] = 151
+    standalone = np.zeros((4, 4, 4), dtype=np.uint16)
+    standalone[2:4, 2:4, 2:4] = 255
+    tifffile.imwrite(str(reference_path), data)
+    tifffile.imwrite(str(annotation_path), labels)
+    tifffile.imwrite(str(image_path), standalone)
+
+    assert manager._resolve_tiff_overlay_paths(image_path) is None
+
+    payload_path = manager._resolve_tiff_simulation_payload(image_path)
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+
+    metadata = payload["metadata"]
+    assert metadata["source_path"] == str(image_path)
+    assert "volume_overlay" not in metadata
+    assert "volume_layers" not in metadata
+
+
+@requires_tifffile
+def test_build_tiff_payload_uses_filename_resolution_for_isotropic_stack(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+    window = _DummyWindow()
+    manager = ThreeJsManager(window, QtWidgets.QStackedWidget(window))
+
+    tif_path = tmp_path / "sub-BC08_res-25um_channel-green.tif"
+    data = np.zeros((12, 10, 8), dtype=np.uint16)
+    data[3:9, 2:8, 2:6] = 300
+    tifffile.imwrite(
+        str(tif_path),
+        data,
+        resolution=(72, 72),
+        resolutionunit="INCH",
+    )
+
+    payload = manager._build_tiff_simulation_payload(tif_path)
+
+    assert payload["metadata"]["shape"] == [12, 10, 8]
+    assert payload["metadata"]["voxel_spacing_zyx"] == [25.0, 25.0, 25.0]
+    assert payload["metadata"]["voxel_spacing_xyz"] == [25.0, 25.0, 25.0]
+    assert payload["metadata"]["section_step_world"] == 25.0
+
+
+@requires_tifffile
+def test_build_tiff_payload_ignores_display_dpi_without_volume_spacing(
+    tmp_path: Path,
+) -> None:
+    _ensure_qapp()
+    window = _DummyWindow()
+    manager = ThreeJsManager(window, QtWidgets.QStackedWidget(window))
+
+    tif_path = tmp_path / "plain_channel-green.tif"
+    data = np.zeros((12, 10, 8), dtype=np.uint16)
+    data[3:9, 2:8, 2:6] = 300
+    tifffile.imwrite(
+        str(tif_path),
+        data,
+        resolution=(72, 72),
+        resolutionunit="INCH",
+    )
+
+    payload = manager._build_tiff_simulation_payload(tif_path)
+
+    assert payload["metadata"]["shape"] == [12, 10, 8]
+    assert payload["metadata"]["voxel_spacing_zyx"] == [1.0, 1.0, 1.0]
+    assert payload["metadata"]["voxel_spacing_xyz"] == [1.0, 1.0, 1.0]
+    assert payload["metadata"]["section_step_world"] == 1.0
 
 
 @requires_tifffile

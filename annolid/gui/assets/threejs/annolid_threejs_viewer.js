@@ -644,6 +644,7 @@ async function boot() {
     const simulationModelRoot = new THREE.Group();
     const simulationBodyPartsRoot = new THREE.Group();
     const simulationVolumeRoot = new THREE.Group();
+    const atlasMeshRoot = new THREE.Group();
     const simulationSlices = new THREE.Group();
     const simulationPoints = new THREE.Group();
     const simulationEdges = new THREE.Group();
@@ -653,6 +654,7 @@ async function boot() {
     simulationRoot.add(simulationModelRoot);
     simulationRoot.add(simulationBodyPartsRoot);
     simulationRoot.add(simulationVolumeRoot);
+    simulationRoot.add(atlasMeshRoot);
     simulationRoot.add(simulationSlices);
     simulationRoot.add(simulationPoints);
     simulationRoot.add(simulationEdges);
@@ -678,6 +680,10 @@ async function boot() {
     let volumeSlicePlaybackTimer = null;
     let activeRaymarchMaterial = null;
     let volumeLayerState = new Map();
+    let atlasRegionState = new Map();
+    let atlasMeshMap = new Map();
+    let atlasRegionFilter = "";
+    let atlasCatalogKey = "";
     let frameTimeEmaMs = 16.6;
     let adaptiveRaymarchFactor = 1.0;
     let flybodyControlsMoved = false;
@@ -936,11 +942,156 @@ async function boot() {
       });
     };
 
+    const normalizeAtlasColor = (entry) => {
+      const color = entry && (entry.color || entry.rgb_triplet);
+      if (Array.isArray(color) && color.length >= 3) {
+        const r = Math.max(0, Math.min(255, Math.round(Number(color[0]) || 0)));
+        const g = Math.max(0, Math.min(255, Math.round(Number(color[1]) || 0)));
+        const b = Math.max(0, Math.min(255, Math.round(Number(color[2]) || 0)));
+        return `rgb(${r}, ${g}, ${b})`;
+      }
+      return "#7bc6ff";
+    };
+
+    const getAtlasRegionEntries = (metadata) => {
+      const direct = Array.isArray(metadata && metadata.atlas_region_layers)
+        ? metadata.atlas_region_layers
+        : [];
+      if (direct.length) {
+        return direct.filter((entry) => entry && typeof entry === "object");
+      }
+      const overlays = getVolumeOverlayLayers(metadata);
+      for (let index = 0; index < overlays.length; index += 1) {
+        const layer = overlays[index];
+        if (Array.isArray(layer && layer.atlas_region_layers)) {
+          return layer.atlas_region_layers.filter((entry) => entry && typeof entry === "object");
+        }
+      }
+      return [];
+    };
+
+    const getAtlasRegionId = (entry) => String(entry && entry.id != null ? entry.id : "").trim();
+
+    const ensureAtlasRegionState = (metadata) => {
+      getAtlasRegionEntries(metadata).forEach((entry) => {
+        const id = getAtlasRegionId(entry);
+        if (!id || atlasRegionState.has(id)) return;
+        atlasRegionState.set(id, { visible: true, meshVisible: false });
+      });
+    };
+
+    const getAtlasRegionStateSignature = () => {
+      if (!atlasRegionState || atlasRegionState.size <= 0) return "none";
+      return Array.from(atlasRegionState.entries())
+        .map(([id, state]) => `${id}:${state && state.visible === false ? 0 : 1}:${state && state.meshVisible === true ? 1 : 0}`)
+        .sort()
+        .join("|");
+    };
+
+    const invalidateVolumeLabelColorCaches = () => {
+      volumeLabelColorTableCache = null;
+      volumeLabelColorTextureCache = null;
+    };
+
+    const setAtlasRegionVisible = (entry, visible) => {
+      const id = getAtlasRegionId(entry);
+      if (!id) return;
+      const prev = atlasRegionState.get(id) || { visible: true, meshVisible: false };
+      atlasRegionState.set(id, Object.assign({}, prev, { visible: Boolean(visible) }));
+      invalidateVolumeLabelColorCaches();
+      renderSimulationFrame(simulationFrameIndex);
+      rebuildVolumeLayerUI();
+    };
+
+    const setAllAtlasRegionsVisible = (metadata, visible) => {
+      getAtlasRegionEntries(metadata).forEach((entry) => {
+        const id = getAtlasRegionId(entry);
+        if (!id) return;
+        const prev = atlasRegionState.get(id) || { visible: true, meshVisible: false };
+        atlasRegionState.set(id, Object.assign({}, prev, { visible: Boolean(visible) }));
+      });
+      invalidateVolumeLabelColorCaches();
+      renderSimulationFrame(simulationFrameIndex);
+      rebuildVolumeLayerUI();
+    };
+
+    const setAtlasMeshVisible = (entry, visible) => {
+      const id = getAtlasRegionId(entry);
+      if (!id) return;
+      const prev = atlasRegionState.get(id) || { visible: true, meshVisible: false };
+      atlasRegionState.set(id, Object.assign({}, prev, { meshVisible: Boolean(visible) }));
+      updateAtlasMeshOverlay(entry);
+      rebuildVolumeLayerUI();
+    };
+
+    const buildAtlasMeshMaterial = (entry) => {
+      const color = new THREE.Color(normalizeAtlasColor(entry));
+      return new THREE.MeshStandardMaterial({
+        color,
+        roughness: 0.72,
+        metalness: 0.02,
+        transparent: true,
+        opacity: 0.34,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      });
+    };
+
+    const updateAtlasMeshOverlay = (entry) => {
+      if (!entry || !entry.mesh_path) return;
+      const id = getAtlasRegionId(entry);
+      if (!id) return;
+      const state = atlasRegionState.get(id) || { visible: true, meshVisible: false };
+      const existing = atlasMeshMap.get(id);
+      if (state.meshVisible !== true) {
+        if (existing && existing.group) {
+          clearGroupAndDispose(existing.group);
+          atlasMeshRoot.remove(existing.group);
+        }
+        atlasMeshMap.delete(id);
+        return;
+      }
+      if (existing && existing.group) {
+        existing.group.visible = true;
+        return;
+      }
+      const meshUrl = new URL(String(entry.mesh_path || ""), modelUrl).toString();
+      const loader = new OBJLoader();
+      loader.load(
+        meshUrl,
+        (obj) => {
+          const group = new THREE.Group();
+          group.name = `atlas-region-mesh:${id}`;
+          const material = buildAtlasMeshMaterial(entry);
+          obj.traverse((child) => {
+            if (child && child.isMesh) {
+              child.material = material.clone();
+              child.castShadow = false;
+              child.receiveShadow = false;
+            }
+          });
+          group.add(obj);
+          applyVolumeOrientationToGroup(group, (simulationPayload && simulationPayload.metadata) || {});
+          atlasMeshRoot.add(group);
+          atlasMeshMap.set(id, { group });
+          setStatus(`Loaded atlas mesh ${String(entry.acronym || id)}`);
+        },
+        undefined,
+        (err) => {
+          console.warn("Failed to load atlas region mesh:", id, err);
+          const prev = atlasRegionState.get(id) || { visible: true, meshVisible: false };
+          atlasRegionState.set(id, Object.assign({}, prev, { meshVisible: false }));
+          rebuildVolumeLayerUI();
+        }
+      );
+    };
+
     const rebuildSimulationCategoryUI = () => {
       if (!legendEl || !categoryPanelEl) return;
       legendEl.innerHTML = "";
       categoryPanelEl.innerHTML = "";
       categoryPanelEl.classList.remove("is-volume-layers");
+      categoryPanelEl.classList.remove("is-atlas-layers");
       const categories = Array.from(
         new Set(
           Array.from(simulationBodyPartMap.values()).map((entry) => String(entry.category || "body"))
@@ -1015,8 +1166,10 @@ async function boot() {
         return;
       }
       ensureVolumeLayerState(metadata);
+      ensureAtlasRegionState(metadata);
       categoryPanelEl.hidden = false;
       categoryPanelEl.classList.add("is-volume-layers");
+      categoryPanelEl.classList.add("is-atlas-layers");
       categoryPanelEl.innerHTML = "";
 
       const title = document.createElement("div");
@@ -1091,6 +1244,121 @@ async function boot() {
       });
       actions.appendChild(addAllBtn);
       categoryPanelEl.appendChild(actions);
+
+      const atlasRegions = getAtlasRegionEntries(metadata);
+      if (atlasRegions.length > 0) {
+        const regionTitle = document.createElement("div");
+        regionTitle.className = "three-panel-title three-atlas-title";
+        regionTitle.textContent = "Atlas Regions";
+        categoryPanelEl.appendChild(regionTitle);
+
+        const tools = document.createElement("div");
+        tools.className = "three-atlas-tools";
+        const search = document.createElement("input");
+        search.type = "search";
+        search.className = "three-atlas-search";
+        search.placeholder = "Search regions";
+        search.value = atlasRegionFilter;
+        search.addEventListener("input", () => {
+          atlasRegionFilter = String(search.value || "").trim().toLowerCase();
+          rebuildVolumeLayerUI();
+        });
+        tools.appendChild(search);
+        categoryPanelEl.appendChild(tools);
+
+        const query = atlasRegionFilter;
+        const filtered = atlasRegions.filter((entry) => {
+          if (!query) return true;
+          const text = [
+            entry.id,
+            entry.acronym,
+            entry.name,
+            entry.parent_structure_id,
+            Array.isArray(entry.structure_id_path) ? entry.structure_id_path.join("/") : entry.structure_id_path,
+          ].join(" ").toLowerCase();
+          return text.includes(query);
+        });
+
+        const summary = document.createElement("div");
+        summary.className = "three-atlas-summary";
+        const meshCount = atlasRegions.filter((entry) => entry && entry.has_mesh).length;
+        summary.textContent = `${filtered.length} / ${atlasRegions.length} regions · ${meshCount} meshes`;
+        categoryPanelEl.appendChild(summary);
+
+        const regionList = document.createElement("div");
+        regionList.className = "three-atlas-region-list";
+        filtered.slice(0, 80).forEach((entry) => {
+          const id = getAtlasRegionId(entry);
+          if (!id) return;
+          const regionState = atlasRegionState.get(id) || { visible: true, meshVisible: false };
+          const row = document.createElement("div");
+          row.className = "three-atlas-region-row";
+          if (regionState.visible === false) {
+            row.classList.add("is-hidden");
+          }
+
+          const visibleToggle = document.createElement("input");
+          visibleToggle.type = "checkbox";
+          visibleToggle.checked = regionState.visible !== false;
+          visibleToggle.title = "Show atlas label";
+          visibleToggle.addEventListener("change", () => {
+            setAtlasRegionVisible(entry, visibleToggle.checked);
+          });
+
+          const swatch = document.createElement("span");
+          swatch.className = "three-atlas-swatch";
+          swatch.style.background = normalizeAtlasColor(entry);
+
+          const labelWrap = document.createElement("div");
+          labelWrap.className = "three-atlas-region-label";
+          const primary = document.createElement("span");
+          primary.className = "three-atlas-region-primary";
+          primary.textContent = String(entry.acronym || id);
+          const secondary = document.createElement("span");
+          secondary.className = "three-atlas-region-secondary";
+          secondary.textContent = String(entry.name || `Region ${id}`);
+          labelWrap.title = `${id}: ${secondary.textContent}`;
+          labelWrap.appendChild(primary);
+          labelWrap.appendChild(secondary);
+
+          const meshBtn = document.createElement("button");
+          meshBtn.type = "button";
+          meshBtn.className = "three-atlas-mesh-action";
+          meshBtn.textContent = regionState.meshVisible === true ? "Mesh On" : "Mesh";
+          meshBtn.disabled = entry.has_mesh !== true || !entry.mesh_path;
+          meshBtn.title = meshBtn.disabled ? "No mesh for this region" : "Toggle region mesh";
+          meshBtn.addEventListener("click", () => {
+            setAtlasMeshVisible(entry, regionState.meshVisible !== true);
+          });
+
+          row.appendChild(visibleToggle);
+          row.appendChild(swatch);
+          row.appendChild(labelWrap);
+          row.appendChild(meshBtn);
+          regionList.appendChild(row);
+        });
+        if (filtered.length > 80) {
+          const limit = document.createElement("div");
+          limit.className = "three-atlas-summary";
+          limit.textContent = `Showing first 80 matches`;
+          regionList.appendChild(limit);
+        }
+        categoryPanelEl.appendChild(regionList);
+
+        const atlasActions = document.createElement("div");
+        atlasActions.className = "three-layer-actions";
+        const showAllRegions = document.createElement("button");
+        showAllRegions.type = "button";
+        showAllRegions.textContent = "Show Labels";
+        showAllRegions.addEventListener("click", () => setAllAtlasRegionsVisible(metadata, true));
+        const hideAllRegions = document.createElement("button");
+        hideAllRegions.type = "button";
+        hideAllRegions.textContent = "Hide Labels";
+        hideAllRegions.addEventListener("click", () => setAllAtlasRegionsVisible(metadata, false));
+        atlasActions.appendChild(showAllRegions);
+        atlasActions.appendChild(hideAllRegions);
+        categoryPanelEl.appendChild(atlasActions);
+      }
     };
 
     const stopSimulationPlayback = () => {
@@ -1362,6 +1630,17 @@ async function boot() {
           `${canonicalLabelId}:${rgba.map((v) => Math.round(clamp01(v) * 255)).join(",")}`
         );
       });
+      getAtlasRegionEntries(metadata).forEach((entry) => {
+        const labelId = Number(entry && entry.id);
+        if (!Number.isFinite(labelId) || labelId <= 0) return;
+        const state = atlasRegionState.get(String(Math.floor(labelId)));
+        if (state && state.visible === false) {
+          const canonicalLabelId = Math.floor(labelId);
+          const rgba = [0, 0, 0, 0];
+          map.set(canonicalLabelId, rgba);
+          signatureParts.push(`${canonicalLabelId}:hidden`);
+        }
+      });
       signatureParts.sort();
       return { map, signature: signatureParts.join("|") || "none" };
     };
@@ -1421,6 +1700,7 @@ async function boot() {
         `${seed}`,
         `${Math.round(saturation * 1000)}`,
         overrides.signature,
+        getAtlasRegionStateSignature(),
       ].join("|");
       if (volumeLabelColorTableCache && volumeLabelColorTableCache.key === cacheKey) {
         return volumeLabelColorTableCache.value;
@@ -3370,6 +3650,11 @@ async function boot() {
       volumePanelMoved = false;
       activeRaymarchMaterial = null;
       volumeLayerState = new Map();
+      atlasRegionState = new Map();
+      atlasMeshMap = new Map();
+      atlasRegionFilter = "";
+      atlasCatalogKey = "";
+      clearGroupAndDispose(atlasMeshRoot);
       if (volumePanelEl) {
         volumePanelEl.hidden = true;
         volumePanelEl.innerHTML = "";
@@ -3726,7 +4011,20 @@ async function boot() {
       const adapter = String((payload && payload.adapter) || "");
       const metadata = (payload && payload.metadata) || {};
       if (adapter === "zarr-volume" || adapter === "tiff-volume") {
+        const nextAtlasCatalogKey = [
+          String(metadata.source_path || ""),
+          String(metadata.atlas_region_count || ""),
+          String((metadata.atlas_region_layers || []).length || ""),
+        ].join("|");
+        if (nextAtlasCatalogKey !== atlasCatalogKey) {
+          atlasRegionState = new Map();
+          atlasMeshMap = new Map();
+          atlasRegionFilter = "";
+          clearGroupAndDispose(atlasMeshRoot);
+          atlasCatalogKey = nextAtlasCatalogKey;
+        }
         ensureVolumeLayerState(metadata);
+        ensureAtlasRegionState(metadata);
         volumeRenderDefaults = getVolumeRenderDefaults(metadata);
         volumeRenderState = Object.assign(
           {},
@@ -3738,6 +4036,11 @@ async function boot() {
         volumeRenderDefaults = null;
         volumeRenderState = null;
         volumeLayerState = new Map();
+        atlasRegionState = new Map();
+        atlasMeshMap = new Map();
+        atlasRegionFilter = "";
+        atlasCatalogKey = "";
+        clearGroupAndDispose(atlasMeshRoot);
       }
       simulationActiveBehavior = String(
         (((payload.metadata || {}).run_metadata || {}).behavior || "")
@@ -3773,6 +4076,7 @@ async function boot() {
         categoryPanelEl.hidden = true;
         categoryPanelEl.innerHTML = "";
         categoryPanelEl.classList.remove("is-volume-layers");
+        categoryPanelEl.classList.remove("is-atlas-layers");
       }
       renderVolumePanel();
       rebuildVolumeLayerUI();

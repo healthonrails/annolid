@@ -27,12 +27,17 @@ from annolid.gui.widgets import threejs_viewer_server as srv  # noqa: E402
 def test_prune_threejs_http_tokens_removes_expired_and_limits_size() -> None:
     original_tokens = dict(srv._THREEJS_HTTP_TOKENS)  # noqa: SLF001
     original_created = dict(srv._THREEJS_HTTP_TOKEN_CREATED_AT)  # noqa: SLF001
+    original_roots = dict(srv._THREEJS_HTTP_TOKEN_ASSET_ROOTS)  # noqa: SLF001
     try:
         srv._THREEJS_HTTP_TOKENS.clear()  # noqa: SLF001
+        srv._THREEJS_HTTP_TOKEN_ASSET_ROOTS.clear()  # noqa: SLF001
         srv._THREEJS_HTTP_TOKEN_CREATED_AT.clear()  # noqa: SLF001
         now = 1000.0
         # one expired
         srv._THREEJS_HTTP_TOKENS["old"] = Path("/tmp/a.obj")  # noqa: SLF001
+        srv._THREEJS_HTTP_TOKEN_ASSET_ROOTS["old"] = {  # noqa: SLF001
+            "atlas_meshes": Path("/tmp/meshes")
+        }
         srv._THREEJS_HTTP_TOKEN_CREATED_AT["old"] = (  # noqa: SLF001
             now - srv._THREEJS_HTTP_TOKEN_TTL_SECONDS - 1  # noqa: SLF001
         )
@@ -44,12 +49,44 @@ def test_prune_threejs_http_tokens_removes_expired_and_limits_size() -> None:
 
         srv._prune_threejs_http_tokens(now_ts=now)  # noqa: SLF001
         assert "old" not in srv._THREEJS_HTTP_TOKENS  # noqa: SLF001
+        assert "old" not in srv._THREEJS_HTTP_TOKEN_ASSET_ROOTS  # noqa: SLF001
         assert len(srv._THREEJS_HTTP_TOKENS) <= srv._THREEJS_HTTP_MAX_TOKENS  # noqa: SLF001
     finally:
         srv._THREEJS_HTTP_TOKENS.clear()  # noqa: SLF001
         srv._THREEJS_HTTP_TOKENS.update(original_tokens)  # noqa: SLF001
+        srv._THREEJS_HTTP_TOKEN_ASSET_ROOTS.clear()  # noqa: SLF001
+        srv._THREEJS_HTTP_TOKEN_ASSET_ROOTS.update(original_roots)  # noqa: SLF001
         srv._THREEJS_HTTP_TOKEN_CREATED_AT.clear()  # noqa: SLF001
         srv._THREEJS_HTTP_TOKEN_CREATED_AT.update(original_created)  # noqa: SLF001
+
+
+def test_register_threejs_http_model_records_token_scoped_asset_roots(
+    tmp_path: Path,
+) -> None:
+    payload_path = tmp_path / "payload.json"
+    payload_path.write_text("{}", encoding="utf-8")
+    mesh_dir = tmp_path / "meshes"
+    mesh_dir.mkdir()
+
+    url = srv._register_threejs_http_model(  # noqa: SLF001
+        payload_path,
+        asset_roots={
+            "atlas_meshes": mesh_dir,
+            "../bad": mesh_dir,
+            "missing": tmp_path / "missing",
+        },
+    )
+    token = url.split("/model/", 1)[1].split("/", 1)[0]
+
+    try:
+        assert srv._THREEJS_HTTP_TOKENS[token] == payload_path  # noqa: SLF001
+        assert srv._THREEJS_HTTP_TOKEN_ASSET_ROOTS[token] == {  # noqa: SLF001
+            "atlas_meshes": mesh_dir
+        }
+    finally:
+        srv._THREEJS_HTTP_TOKENS.pop(token, None)  # noqa: SLF001
+        srv._THREEJS_HTTP_TOKEN_ASSET_ROOTS.pop(token, None)  # noqa: SLF001
+        srv._THREEJS_HTTP_TOKEN_CREATED_AT.pop(token, None)  # noqa: SLF001
 
 
 def test_threejs_allowed_model_suffixes_include_core_formats() -> None:
