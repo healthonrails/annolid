@@ -9,6 +9,7 @@ import numpy as np
 from qtpy import QtWidgets
 
 import yaml
+from annolid.segmentation.SAM.sam3.prompt_builder import normalize_text_prompt
 from annolid.utils.annotation_compat import shape_to_mask
 from annolid.utils.logger import logger
 
@@ -847,7 +848,9 @@ class Sam3Manager:
         if sam3_checkpoint:
             # Ensure the SAM3 Agent image path uses the same checkpoint
             os.environ["SAM3_CKPT_PATH"] = sam3_checkpoint
-        text_prompt = text_prompt or self.window._current_text_prompt()
+        text_prompt = normalize_text_prompt(
+            text_prompt or self.window._current_text_prompt()
+        )
 
         logger.info(
             "Using SAM3 with checkpoint '%s'",

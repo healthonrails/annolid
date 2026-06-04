@@ -19,7 +19,11 @@ from scipy.optimize import linear_sum_assignment
 from annolid.segmentation.SAM.sam_v2 import BaseSAMVideoProcessor
 from annolid.utils.annotation_compat import shape_to_mask
 from annolid.utils.logger import logger
-from .prompt_builder import build_prompts_from_annotations, label_hints_from_ids
+from .prompt_builder import (
+    build_prompts_from_annotations,
+    label_hints_from_ids,
+    normalize_text_prompt,
+)
 from .recovery import (
     expected_track_ids_for_frame,
     missing_track_ids_for_frame,
@@ -546,7 +550,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
             telemetry_jsonl_path=telemetry_jsonl_path,
         )
 
-        self.text_prompt = cfg.text_prompt
+        self.text_prompt = normalize_text_prompt(cfg.text_prompt)
         self.checkpoint_path = self._sanitize_checkpoint_path(
             cfg.checkpoint_path)
         self.bpe_path = _default_bpe_path()
@@ -1193,6 +1197,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         Build a prompt transaction that keeps semantic prompts together.
         Sequencing rules: text + boxes + masks in one semantic request, then points.
         """
+        normalized_text = normalize_text_prompt(text)
         normalized_boxes = boxes if self._has_prompt_items(boxes) else None
         normalized_masks = mask_inputs if self._has_prompt_items(mask_inputs) else None
         normalized_points = points if self._has_prompt_items(points) else None
@@ -1213,10 +1218,14 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         )
 
         steps: List[Dict[str, Any]] = []
-        if self._has_text_prompt(text) or normalized_boxes is not None or normalized_masks is not None:
+        if (
+            normalized_text is not None
+            or normalized_boxes is not None
+            or normalized_masks is not None
+        ):
             semantic_step: Dict[str, Any] = {"kind": "semantic"}
-            if self._has_text_prompt(text):
-                semantic_step["text"] = str(text).strip()
+            if normalized_text is not None:
+                semantic_step["text"] = normalized_text
             if normalized_boxes is not None:
                 semantic_step["bounding_boxes"] = normalized_boxes
                 semantic_step["bounding_box_labels"] = safe_box_labels

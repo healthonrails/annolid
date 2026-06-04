@@ -100,12 +100,12 @@ def test_process_video_with_agent_disables_output_artifacts_by_default(
 
     frames, masks = sam3_adapter.process_video_with_agent(
         video_path=tmp_path / "video.mp4",
-        agent_prompt="mouse",
+        agent_prompt=" mouse. pup, mouse ",
     )
 
     assert (frames, masks) == (3, 7)
     assert captured["video_path"] == str(tmp_path / "video.mp4")
-    assert captured["prompt"] == "mouse"
+    assert captured["prompt"] == "mouse, pup"
     assert captured["output_dir"] is None
 
 

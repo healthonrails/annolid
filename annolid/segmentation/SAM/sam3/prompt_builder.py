@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
@@ -7,6 +8,43 @@ import cv2
 import numpy as np
 
 from annolid.utils.logger import logger
+
+_TEXT_PROMPT_SEPARATOR_RE = re.compile(r"[,.;\n]+")
+
+
+def split_text_prompts(text_prompt: Optional[str]) -> List[str]:
+    """Split a user-entered SAM3 text prompt into ordered, unique phrases."""
+    if text_prompt is None:
+        return []
+    seen = set()
+    prompts: List[str] = []
+    for raw_prompt in _TEXT_PROMPT_SEPARATOR_RE.split(str(text_prompt)):
+        prompt = raw_prompt.strip()
+        if not prompt or prompt in seen:
+            continue
+        seen.add(prompt)
+        prompts.append(prompt)
+    return prompts
+
+
+def normalize_text_prompt(text_prompt: Optional[str]) -> Optional[str]:
+    """Return the canonical SAM3 prompt string or None for an empty prompt."""
+    prompts = split_text_prompts(text_prompt)
+    if not prompts:
+        return None
+    return ", ".join(prompts)
+
+
+def require_text_prompt(
+    text_prompt: Optional[str],
+    *,
+    context: str = "SAM3",
+) -> str:
+    """Normalize a required SAM3 text prompt or raise an actionable error."""
+    prompt = normalize_text_prompt(text_prompt)
+    if prompt is None:
+        raise ValueError(f"{context} requires a text prompt.")
+    return prompt
 
 
 @dataclass
@@ -66,6 +104,7 @@ def build_prompts_from_annotations(
     first_frame_index: Callable[[], int],
     shape_points_to_mask: Callable[[List[List[float]], Tuple[int, int, int], str], np.ndarray],
 ) -> PromptBuildResult:
+    text_prompt = normalize_text_prompt(text_prompt)
     if not annotations:
         if text_prompt:
             logger.info(

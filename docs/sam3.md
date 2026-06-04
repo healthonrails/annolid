@@ -43,6 +43,9 @@ SAM3 runs in two main modes.
 
 2. Text-only mode:
 - Uses a text prompt (for example, `mouse`) and runs SAM3.1 windowed propagation.
+- Multiple phrases can be entered with commas, periods, semicolons, or new
+  lines. Annolid removes empty and duplicate phrases before sending the prompt
+  to SAM3.
 - This is the fallback when no usable geometric prompts (box/point/polygon) exist.
 
 ## Annolid Bot workflow for long videos
@@ -147,6 +150,7 @@ Field guide:
 
 - `video=` or `path=` points to the source video
 - `prompt=` or `text_prompt=` provides the text prompt
+  - Use commas, periods, semicolons, or new lines to separate multiple phrases.
 - `model=` selects from the AI Models dropdown list in the main window
 - `to_frame=` jumps tracking to a target frame when you want a bounded run
 

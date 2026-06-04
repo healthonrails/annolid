@@ -27,6 +27,7 @@ from .agent_video_orchestrator import (
     TrackingConfig,
     run_agent_seeded_sam3_video,
 )
+from .prompt_builder import normalize_text_prompt, require_text_prompt
 
 
 class SAM3VideoProcessor(Sam3SessionManager):
@@ -58,6 +59,7 @@ class SAM3VideoProcessor(Sam3SessionManager):
     ):
         self.annotations = annotations or []
         self.target_device = device
+        text_prompt = normalize_text_prompt(text_prompt)
         config = Sam3SessionConfig(
             checkpoint_path=checkpoint_path,
             text_prompt=text_prompt,
@@ -179,6 +181,7 @@ def process_video(
     Returns:
         A short status string for the GUI.
     """
+    text_prompt = normalize_text_prompt(text_prompt)
     annotations, id_to_labels = load_manual_seed_annotations_from_video(video_path)
     processor = SAM3VideoProcessor(
         video_dir=video_path,
@@ -239,7 +242,10 @@ def process_video_with_agent(
     Returns a short status string for the GUI/CLI.
     """
     agent_cfg = AgentConfig(
-        prompt=agent_prompt,
+        prompt=require_text_prompt(
+            agent_prompt,
+            context="SAM3 agent video tracking",
+        ),
         det_thresh=agent_det_thresh,
         window_size=window_size,
         stride=stride,

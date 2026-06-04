@@ -21,6 +21,7 @@ from annolid.utils.llm_settings import resolve_llm_config
 from annolid.core.agent.providers.openai_compat import resolve_openai_compat
 
 from annolid.segmentation.SAM.sam3.session import Sam3SessionConfig, Sam3SessionManager
+from .prompt_builder import require_text_prompt
 from .sam3.agent.client_llm import send_generate_request as _send_generate_request
 from .video_window_inference import _iter_video_windows
 from .window_refresh import run_mid_window_refresh
@@ -40,6 +41,12 @@ class AgentConfig:
     llm_provider: Optional[str] = None
     llm_model: Optional[str] = None
     llm_profile: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        self.prompt = require_text_prompt(
+            self.prompt,
+            context="SAM3 agent video tracking",
+        )
 
 
 @dataclass
