@@ -37,13 +37,10 @@ dependencies = [
     'gdown',
     'opencv-contrib-python>=4.1.2.30',
     'PyYAML>=5.3',
-    'sounddevice>=0.4.6',
-    'librosa>=0.10.1',
     'torch>=2.5.0',
     'torchvision>=0.20.0',
     'pandas>=1.1.3',
     'pycocotools>=2.0.2',
-    'tensorboard>=2.3.0',
     'imgviz>=1.7.5',
     'imageio>=2.8.0',
     'tqdm>=4.64.0',
@@ -51,26 +48,17 @@ dependencies = [
     'imageio-ffmpeg>=0.4.2',
     'qimage2ndarray>=1.8',
     'qtpy>=2.4.0',
-    'tokenizers',
     'omegaconf>=2.3.0',
     'hydra-core>=1.3.2',
-    'timm>=0.9.7',
     'h5py>=3.15.1',
     'psutil>=5.9.8',
-    'pyserial>=3.5',
-    'pyzmq>=25.1.2',
-    'ffpyplayer>=4.5.0; python_version < "3.14"',
     'tree-config>=0.6.0',
     'Pillow>=9.3.0,<12.0',
     'chardet>=5.2.0,<6.0.0',
     'transformers>=4.45.1',
-    'openai>=1.40.0',
-    'ultralytics>=8.4.0',
-    'lap',
     'huggingface-hub>=0.22.0',
     'jsonschema>=4.20.0',
     'onnxruntime>=1.23.2',
-    'anthropic>=0.49.0',
     # Optional dependency: install SAM / SAM-HQ separately (see README.md).
 ]
 
@@ -78,6 +66,40 @@ dependencies = [
 gui = [
     # Default GUI binding. Code routes Qt access through qtpy for compatibility.
     "PySide6>=6.7.0",
+]
+
+audio = [
+    # Voice recording/playback and audio-feature extraction are optional.
+    "sounddevice>=0.4.6",
+    "librosa>=0.10.1",
+]
+
+ai_chat = [
+    # Cloud/hosted LLM providers are optional; Ollama/local paths do not need these.
+    "openai>=1.40.0",
+    "anthropic>=0.49.0",
+]
+
+training = [
+    # Training dashboards and projector workflows.
+    "tensorboard>=2.3.0",
+]
+
+yolo = [
+    # YOLO/YOLOE training and LabelMe export workflows.
+    "ultralytics>=8.4.0",
+    "lap",
+]
+
+realtime = [
+    # Hardware/streaming control paths.
+    "pyserial>=3.5",
+    "pyzmq>=25.1.2",
+]
+
+onnx_gpu = [
+    # Windows/Linux CUDA provider; installers still validate provider availability.
+    "onnxruntime-gpu>=1.23.2",
 ]
 
 large_image = [
@@ -90,6 +112,8 @@ large_image = [
 sam3 = [
     "iopath>=0.1.9",
     "ftfy>=6.1.1",
+    "tokenizers",
+    "timm>=0.9.7",
 ]
 
 image_editing = [
@@ -101,6 +125,8 @@ image_editing = [
 text_to_speech = [
     "pocket-tts>=1.0.0",
     "pymupdf",
+    "sounddevice>=0.4.6",
+    "librosa>=0.10.1",
 ]
 
 qwen3_embedding = [
@@ -119,11 +145,13 @@ cowtracker = [
 
 remote_video = [
     # Optional network/remote video decoding path.
-    "ffpyplayer>=4.5.0",
+    'ffpyplayer>=4.5.0; python_version < "3.14"',
 ]
 
 annolid_bot = [
     # Primary Annolid Bot bundle: channels + integrations.
+    "openai>=1.40.0",
+    "anthropic>=0.49.0",
     "croniter>=2.0.5",
     "scrapling>=0.2.96",
     "mcp>=1.0.0",
@@ -137,6 +165,46 @@ annolid_bot = [
 
 memory = [
     # Vector DB and fast memory features
+    "lancedb>=0.6.0",
+    "pyarrow>=14.0.1",
+    "tantivy>=0.21.1",
+]
+
+all = [
+    "sounddevice>=0.4.6",
+    "librosa>=0.10.1",
+    "openai>=1.40.0",
+    "anthropic>=0.49.0",
+    "tensorboard>=2.3.0",
+    "ultralytics>=8.4.0",
+    "lap",
+    "pyserial>=3.5",
+    "pyzmq>=25.1.2",
+    'ffpyplayer>=4.5.0; python_version < "3.14"',
+    "tifffile>=2024.8.30",
+    "pyvips>=2.2.3",
+    "openslide-python>=1.3.1",
+    "iopath>=0.1.9",
+    "ftfy>=6.1.1",
+    "tokenizers",
+    "timm>=0.9.7",
+    "diffusers>=0.32.0",
+    "accelerate>=0.27.0",
+    "safetensors>=0.4.0",
+    "pocket-tts>=1.0.0",
+    "pymupdf",
+    "transformers>=4.57.0",
+    "qwen-vl-utils>=0.0.14",
+    "mediapipe>=0.10.0",
+    "croniter>=2.0.5",
+    "scrapling>=0.2.96",
+    "mcp>=1.0.0",
+    "websockets>=12.0",
+    "playwright>=1.45.0",
+    "qrcode>=7.4.2",
+    "google-api-python-client>=2.150.0",
+    "google-auth>=2.35.0",
+    "google-auth-oauthlib>=1.2.1",
     "lancedb>=0.6.0",
     "pyarrow>=14.0.1",
     "tantivy>=0.21.1",
@@ -158,6 +226,9 @@ where = ["."]
 include = ["annolid*"]
 exclude = ["build*", "dist*", "docs*", "demo*", "tests*"]
 
+[tool.setuptools]
+include-package-data = false
+
 [tool.setuptools.package-data]
 annolid = [
     "**/*.js",
@@ -174,6 +245,25 @@ annolid = [
     "core/agent/skills/**/*.sh",
     "core/agent/workspace/**/*.md",
     "core/agent/workspace/**/*.sh",
+]
+
+[tool.setuptools.exclude-package-data]
+annolid = [
+    "depth/checkpoints/**",
+    "detector/countgd/checkpoints/**",
+    "motion/weights/**",
+    "realtime/models/**",
+    "realtime/runs/**",
+    "realtime/yolo11n*.mlpackage/**",
+    "realtime/*openvino_model/**",
+    "segmentation/MEDIAR/weights/**",
+    "segmentation/SAM/segment-anything-2/.github/**",
+    "segmentation/SAM/segment-anything-2/SAM_2.egg-info/**",
+    "segmentation/SAM/segment-anything-2/checkpoints/**",
+    "segmentation/SAM/segment-anything-2/demo/**",
+    "segmentation/SAM/segment-anything-2/notebooks/**",
+    "segmentation/SAM/segment-anything-2/training/**",
+    "segmentation/cutie_vos/weights/**",
 ]
 
 [tool.ruff]

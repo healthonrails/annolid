@@ -10,7 +10,7 @@
 # Options:
 #   --install-dir DIR   Directory to install annolid (default: ./annolid)
 #   --venv-dir DIR      Directory for virtual environment (default: .venv inside install-dir)
-#   --extras EXTRAS     Comma-separated optional extras: large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot (GUI extras are always included)
+#   --extras EXTRAS     Comma-separated optional extras: audio,ai_chat,training,yolo,realtime,large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot,memory,all (GUI extras are always included)
 #   --no-gpu            Skip GPU/CUDA detection
 #   --use-conda         Use conda instead of venv (requires conda/mamba)
 #   --no-interactive    Skip all prompts and use defaults
@@ -90,7 +90,7 @@ Usage:
 Options:
   --install-dir DIR   Directory to install annolid (default: ./annolid)
   --venv-dir DIR      Directory for virtual environment (default: .venv inside install-dir)
-  --extras EXTRAS     Comma-separated optional extras: large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot
+  --extras EXTRAS     Comma-separated optional extras: audio,ai_chat,training,yolo,realtime,large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot,memory,all
   --no-gpu            Skip GPU/CUDA detection and install CPU ONNX Runtime
   --use-conda         Use conda instead of venv (requires conda/mamba)
   --no-interactive    Skip prompts and use defaults
@@ -601,12 +601,28 @@ interactive_config() {
         SELECTED_EXTRAS+=("sam3")
     fi
 
+    if prompt_yes_no "    Include YOLO/YOLOE workflows and training dashboards?" "n"; then
+        SELECTED_EXTRAS+=("yolo" "training")
+    fi
+
+    if prompt_yes_no "    Include hosted AI chat providers?" "n"; then
+        SELECTED_EXTRAS+=("ai_chat")
+    fi
+
     if prompt_yes_no "    Include image editing (diffusion models)?" "n"; then
         SELECTED_EXTRAS+=("image_editing")
     fi
 
+    if prompt_yes_no "    Include audio helpers?" "n"; then
+        SELECTED_EXTRAS+=("audio")
+    fi
+
     if prompt_yes_no "    Include text-to-speech?" "n"; then
         SELECTED_EXTRAS+=("text_to_speech")
+    fi
+
+    if prompt_yes_no "    Include realtime hardware/streaming integrations?" "n"; then
+        SELECTED_EXTRAS+=("realtime")
     fi
 
     if prompt_yes_no "    Include Annolid Bot integrations (WhatsApp + Google Calendar + MCP)?" "n"; then

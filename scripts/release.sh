@@ -99,6 +99,7 @@ if [[ "$SKIP_CHECKS" -eq 0 ]]; then
   echo "Running release checks..."
   python -m pytest
   python -m build
+  python scripts/check_distribution_artifacts.py dist/*
   python -m twine check dist/*
 fi
 

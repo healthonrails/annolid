@@ -63,6 +63,7 @@ jobs:
 
       - name: Verify distributions
         run: |
+          python scripts/check_distribution_artifacts.py dist/*
           twine check dist/*
 
       - name: Publish to PyPI

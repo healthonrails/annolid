@@ -105,6 +105,11 @@ Examples:
 
 Current supported extras:
 
+- `audio`
+- `ai_chat`
+- `training`
+- `yolo`
+- `realtime`
 - `large_image`
 - `remote_video`
 - `sam3`
@@ -112,11 +117,18 @@ Current supported extras:
 - `text_to_speech`
 - `qwen3_embedding`
 - `annolid_bot`
+- `memory`
+- `all`
 
 ### What each extra is for (with example use cases)
 
 | Extra | Install this when you need... | Example use case |
 |---|---|---|
+| `audio` | audio decoding/playback helpers | You want waveform-derived behavior features, microphone recording, or sound playback without installing audio stacks in every lab workstation. |
+| `ai_chat` | hosted OpenAI-compatible or Anthropic provider SDKs | You use GPT/OpenRouter/Claude-style providers instead of only local/Ollama-compatible paths. |
+| `training` | TensorBoard dashboards and projector views | You train models from Annolid and want live training curves or embedding projector output. |
+| `yolo` | Ultralytics YOLO/YOLOE workflows | You train YOLO models, run YOLOE prompt inference, or export YOLO detections to LabelMe JSON. |
+| `realtime` | serial/ZMQ realtime hardware integrations | You use Bpod, realtime streams, or ZMQ control paths. |
 | `large_image` | TIFF/OME-TIFF metadata and optional region-streaming backends | You want large TIFF, BigTIFF, OME-TIFF, or virtual-slide style viewing without forcing those native libraries into every install. Leave it out for the default GUI install. |
 | `remote_video` | network/remote video decoding through `ffpyplayer` | You receive frames from Annolid's remote video player path. Leave it out for normal local video files and Python 3.14 default installs. |
 | `sam3` | the SAM3-related segmentation workflow/features in Annolid | You want stronger promptable segmentation on difficult frames and plan to use SAM3 tools in the GUI/CLI pipeline. |
@@ -124,14 +136,19 @@ Current supported extras:
 | `text_to_speech` | built-in narration/read-aloud features | You want captions/notes read aloud during review, accessibility workflows, or hands-free labeling sessions. |
 | `qwen3_embedding` | Qwen3-based embedding/multimodal utilities | You plan to run embedding-powered retrieval/comparison flows that rely on the Qwen3 stack. |
 | `annolid_bot` | bundled Annolid Bot integrations (WhatsApp + Google Drive/Calendar + MCP) | You want background services/integrations without installing each Bot extra individually. |
+| `memory` | vector database dependencies for fast Annolid Bot memory | You want LanceDB-backed semantic memory rather than the lightweight lexical path. |
+| `all` | full-feature workstation profile | You are setting up a maintained lab machine where install size is less important than having every optional integration ready. |
 
 ### Practical install suggestions
 
 - Minimal install (fastest, lowest dependency footprint): no extras.
 - Most common research annotation setup: start with `sam3`.
+- Common training workstation: add `yolo,training`.
+- Hosted AI chat providers: add `ai_chat`.
 - Accessibility or narrated review: add `text_to_speech`.
 - Data augmentation/image synthesis workflows: add `image_editing`.
 - Remote network video decoding: add `remote_video`.
+- Realtime hardware/streaming workflows: add `realtime`.
 - Only install `qwen3_embedding` if you explicitly use those embedding features.
 - If you use Annolid Bot integrations, add `annolid_bot`.
 

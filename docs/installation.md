@@ -99,6 +99,12 @@ pip install -e ".[gui]"
 Useful extras currently defined in `pyproject.toml` include:
 
 - `gui`: Qt bindings for the desktop application
+- `audio`: audio loading/playback helpers (`librosa`, `sounddevice`)
+- `ai_chat`: OpenAI-compatible and Anthropic SDKs for hosted LLM providers
+- `training`: TensorBoard support for training dashboards and projector views
+- `yolo`: Ultralytics YOLO/YOLOE workflows and tracker matching helpers
+- `realtime`: serial and ZMQ dependencies for realtime/hardware integrations
+- `onnx_gpu`: Windows/Linux ONNX Runtime CUDA provider
 - `large_image`: TIFF/OME-TIFF metadata and optional streaming backends (`tifffile`, `pyvips`, `openslide-python`)
 - `sam3`: SAM3-related dependencies
 - `image_editing`: diffusion/image-editing features
@@ -108,12 +114,21 @@ Useful extras currently defined in `pyproject.toml` include:
 - `cowtracker`: CowTracker backend dependency
 - `remote_video`: network/remote video decoding through `ffpyplayer`
 - `annolid_bot`: Annolid Bot integrations such as MCP, Playwright, WhatsApp bridge support, and Google Drive/Calendar dependencies
+- `memory`: vector database dependencies for fast Annolid Bot memory
+- `all`: convenience profile for full-feature workstations
 
 Example:
 
 ```bash
-pip install -e ".[gui,large_image,annolid_bot,text_to_speech]"
+pip install -e ".[gui,sam3,yolo,training,ai_chat]"
 ```
+
+Annolid follows the same practical split used by mature annotation tools:
+the default install keeps annotation, local video, tracking, and ONNX CPU paths
+usable, while cloud providers, YOLO, audio, realtime hardware, large-image
+backends, and heavyweight integrations are explicit extras. If a feature is
+not installed, Annolid should start normally and show an install hint when that
+feature is opened.
 
 ### Note on `large_image`
 
@@ -161,6 +176,9 @@ annolid-run list-models
 
 - Install FFmpeg if video import/export or codec support is incomplete.
 - If ONNX Runtime GPU validation fails, activate the installer-created environment and rerun the repair command printed by the installer.
+- If YOLO/YOLOE commands are missing, install `annolid[yolo]`.
+- If hosted LLM providers are unavailable, install `annolid[ai_chat]`.
+- If audio recording/playback is unavailable, install `annolid[audio]` or `annolid[text_to_speech]`.
 - If you use Annolid Bot with MCP or browser automation, install the `annolid_bot` extra.
 - If `qtpy.QtBindingsNotFoundError` appears, install the `gui` extra in the active environment.
 - The `gui` extra now installs `PySide6` as the default Qt binding.

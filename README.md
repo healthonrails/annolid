@@ -41,6 +41,7 @@ Use Annolid to classify behavioral states such as freezing, digging, pup huddlin
 - SVG overlay import for atlas/anatomy drawings and TIFF-family metadata-aware image loading.
 - Optional `large_image` extra for `tifffile`/`pyvips`/`openslide-python` backends when working with large TIFF-family datasets. The default install does not require these packages.
 - Optional `remote_video` extra for network video decoding through `ffpyplayer`. Local video workflows use the normal FFmpeg/imageio stack.
+- Optional feature profiles keep installs predictable: use `annolid[yolo]` for YOLO/YOLOE workflows, `annolid[ai_chat]` for hosted LLM providers, `annolid[audio]` or `annolid[text_to_speech]` for audio features, and `annolid[realtime]` for serial/ZMQ hardware paths.
 - Behavioral state classification, keypoint tracking, and downstream analytics.
 - Works with pre-recorded video or real-time streams; supports GPU acceleration.
 - Optional EfficientTAM video tracking backend, fully integrated and auto-downloaded (no separate installation needed).

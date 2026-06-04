@@ -8,7 +8,6 @@ prune demo
 prune tests
 prune docs/source/_build
 prune docs/source/_templates
-prune annolid/motion/weights
 prune docs/tutorials/Untitled.ipynb
 prune docs/tutorials/.ipynb_checkpoints
 include environment.yml
@@ -18,6 +17,22 @@ recursive-include annolid *.png *.jpg *.jpeg *.gif *.svg *.ico *.icns
 include annolid/annotation/labels_interaction
 
 # Exclude editor settings, local env files, and build artifacts (even if present locally).
+prune annolid/depth/checkpoints
+prune annolid/motion/weights
+prune annolid/detector/countgd/checkpoints
+prune annolid/segmentation/MEDIAR/weights
+prune annolid/segmentation/SAM/segment-anything-2/.github
+prune annolid/segmentation/SAM/segment-anything-2/SAM_2.egg-info
+prune annolid/segmentation/SAM/segment-anything-2/checkpoints
+prune annolid/segmentation/SAM/segment-anything-2/demo
+prune annolid/segmentation/SAM/segment-anything-2/notebooks
+prune annolid/segmentation/SAM/segment-anything-2/training
+prune annolid/segmentation/cutie_vos/weights
+prune annolid/realtime/runs
+prune annolid/realtime/models
+prune annolid/realtime/yolo11n-seg.mlpackage
+prune annolid/realtime/yolo11n-seg_openvino_model
+prune annolid/realtime/yolo11n.mlpackage
 prune .vscode
 prune annolid/.vscode
 exclude .env
@@ -25,3 +40,14 @@ exclude .webui_secret_key
 global-exclude *.py[cod]
 global-exclude __pycache__/*
 global-exclude .DS_Store
+global-exclude *.bin
+global-exclude *.ckpt
+global-exclude *.engine
+global-exclude *.h5
+global-exclude *.mlmodel
+global-exclude *.onnx
+global-exclude *.pth
+global-exclude *.pt
+global-exclude *.safetensors
+global-exclude *.tflite
+global-exclude *.weights
