@@ -25,6 +25,8 @@ from contextlib import asynccontextmanager
 
 if TYPE_CHECKING:
     from annolid.realtime.mediapipe_engine import MediaPipeEngine
+    from ultralytics import YOLO
+    from ultralytics.engine.results import Masks
 
 from collections import deque
 from enum import Enum, auto
@@ -44,9 +46,6 @@ from tree_config.utils import (
 )
 from pycocotools import mask as maskUtils
 
-from ultralytics.engine.results import Masks
-from ultralytics import YOLO
-
 from annolid.utils.logger import logger
 from annolid.utils.log_paths import resolve_annolid_realtime_logs_root
 from annolid.yolo import configure_ultralytics_cache, resolve_weight_path
@@ -56,6 +55,18 @@ from annolid.realtime.config import Config
 
 
 # --- Configuration and Validation ---
+
+
+def _load_ultralytics_yolo_class():
+    try:
+        from ultralytics import YOLO  # type: ignore
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "Ultralytics is required for realtime YOLO inference. "
+            "Install it with `pip install .[yolo]` or `pip install .[test]` "
+            "when running the full test suite."
+        ) from exc
+    return YOLO
 
 
 # --- Recording State Management ---
@@ -1751,7 +1762,7 @@ class PerceptionProcess:
 
     def __init__(self, config: Config):
         self.config = config
-        self.model: Optional[Union[YOLO, "MediaPipeEngine"]] = None
+        self.model: Optional[Union["YOLO", "MediaPipeEngine"]] = None
         self.class_names: Optional[List[str]] = None
         self.keypoint_labels: Optional[List[str]] = None
 
@@ -1787,7 +1798,7 @@ class PerceptionProcess:
             self._on_recording_state_change
         )
 
-    def _extract_keypoint_labels(self, model: YOLO) -> Optional[List[str]]:
+    def _extract_keypoint_labels(self, model: "YOLO") -> Optional[List[str]]:
         """Attempt to extract keypoint labels from the loaded YOLO model."""
 
         def _normalize_labels(source) -> Optional[List[str]]:
@@ -1863,7 +1874,7 @@ class PerceptionProcess:
         )
 
     @asynccontextmanager
-    async def _model_context(self) -> AsyncIterator[Union[YOLO, "MediaPipeEngine"]]:
+    async def _model_context(self) -> AsyncIterator[Union["YOLO", "MediaPipeEngine"]]:
         """Context manager for perception model."""
         try:
             model_ref = str(self.config.model_base_name)
@@ -1882,6 +1893,7 @@ class PerceptionProcess:
                 self.config.enable_pose = True  # Usually true for Mediapipe
                 yield model
             else:
+                YOLO = _load_ultralytics_yolo_class()
                 model_ref = str(resolve_weight_path(model_ref))
                 logger.info("Loading YOLO model: %s", model_ref)
                 model = await asyncio.to_thread(YOLO, model_ref)
@@ -1916,6 +1928,7 @@ class PerceptionProcess:
         if not self.config.viewer_only:
             # Verify model exists or download
             model_ref = str(resolve_weight_path(self.config.model_base_name))
+            YOLO = _load_ultralytics_yolo_class()
             model_path = Path(model_ref)
             if (
                 not (model_path.is_file() or model_path.is_dir())
@@ -2160,7 +2173,7 @@ class PerceptionProcess:
             raise
 
     def _encode_mask(
-        self, masks_obj: Masks, detection_index: int
+        self, masks_obj: "Masks", detection_index: int
     ) -> Optional[Dict[str, Any]]:
         """
         Encodes a single mask from a Masks object based on the configured strategy.
