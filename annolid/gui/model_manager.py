@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Callable, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from annolid.utils.annotation_compat import AI_MODELS as MODELS
 from qtpy import QtCore, QtWidgets
@@ -11,6 +11,18 @@ from annolid.gui.models_registry import (
     get_runtime_model_registry,
 )
 from annolid.utils.logger import logger
+
+
+RECOMMENDED_AI_MODEL_NAMES: Tuple[str, ...] = (
+    "SegmentAnything (Edge)",
+    "Cutie",
+    "SAM3",
+    "Cutie + DINOv3 Keypoint Segmentation",
+    "DINOv3 Keypoint Segmentation",
+    "TAPNext (ONNX)",
+    "YOLO11n",
+    "MediaPipe Pose",
+)
 
 
 class AIModelManager(QtCore.QObject):
@@ -34,6 +46,7 @@ class AIModelManager(QtCore.QObject):
         self._canvas_getter = canvas_getter
 
         self._browse_custom_label = parent.tr("Browse Custom Model…")
+        self._more_models_label = parent.tr("More models...")
         self._missing_custom_weights_logged: Set[str] = set()
         self._custom_model_configs: List[ModelConfig] = self._load_custom_models()
         self._auto_discovered_configs: List[ModelConfig] = []
@@ -131,27 +144,6 @@ class AIModelManager(QtCore.QObject):
                 settings=self._settings,
             )
 
-            for model in MODELS:
-                combo.addItem(model.name)
-
-            for cfg in self._runtime_registry:
-                name = cfg.display_name
-                if combo.findText(name) == -1:
-                    combo.addItem(name)
-                idx = combo.findText(name)
-                if idx >= 0:
-                    reason = get_model_unavailable_reason(cfg)
-                    model_obj = combo.model()
-                    item = model_obj.item(idx) if hasattr(model_obj, "item") else None
-                    if reason:
-                        combo.setItemData(idx, reason, QtCore.Qt.ToolTipRole)
-                        if item is not None:
-                            item.setEnabled(False)
-                    else:
-                        combo.setItemData(idx, "", QtCore.Qt.ToolTipRole)
-                        if item is not None:
-                            item.setEnabled(True)
-
             existing_weights = set()
             for cfg in self._runtime_registry:
                 if cfg.weight_file:
@@ -159,6 +151,9 @@ class AIModelManager(QtCore.QObject):
                         existing_weights.add(str(Path(cfg.weight_file).resolve()))
                     except Exception:
                         existing_weights.add(str(cfg.weight_file))
+
+            for name in self._visible_model_names(preserve):
+                self._add_model_combo_item(name)
 
             for cfg in self._auto_discovered_configs:
                 try:
@@ -171,11 +166,14 @@ class AIModelManager(QtCore.QObject):
 
                 name = cfg.display_name
                 if combo.findText(name) == -1:
-                    combo.addItem(name)
+                    self._add_model_combo_item(name)
 
             for name in self.custom_model_names:
                 if combo.findText(name) == -1:
-                    combo.addItem(name)
+                    self._add_model_combo_item(name)
+
+            if combo.findText(self._more_models_label) == -1:
+                combo.addItem(self._more_models_label)
 
             if combo.findText(self._browse_custom_label) == -1:
                 combo.addItem(self._browse_custom_label)
@@ -214,14 +212,15 @@ class AIModelManager(QtCore.QObject):
 
     def _handle_index_changed(self) -> None:
         current_text = self._combo.currentText()
+        if current_text == self._more_models_label:
+            previous = self._last_selection
+            self._restore_combo_text(previous)
+            self._prompt_for_model_from_catalog()
+            return
+
         if current_text == self._browse_custom_label:
             previous = self._last_selection
-            self._combo.blockSignals(True)
-            if previous and self._combo.findText(previous) != -1:
-                self._combo.setCurrentIndex(self._combo.findText(previous))
-            elif self._combo.count() > 0:
-                self._combo.setCurrentIndex(0)
-            self._combo.blockSignals(False)
+            self._restore_combo_text(previous)
             self._prompt_for_custom_model()
             return
 
@@ -250,6 +249,12 @@ class AIModelManager(QtCore.QObject):
                 name=current_text,
                 _custom_ai_models=self.custom_model_names,
             )
+
+    def _prompt_for_model_from_catalog(self) -> None:
+        selected = self._select_model_from_catalog()
+        if selected:
+            self._refresh_combo(selected)
+            self._handle_index_changed()
 
     def _prompt_for_custom_model(self) -> None:
         parent_widget = self._get_parent_widget()
@@ -328,6 +333,209 @@ class AIModelManager(QtCore.QObject):
             (cfg for cfg in self.all_model_configs if cfg.display_name == display_name),
             None,
         )
+
+    def _legacy_model_names(self) -> List[str]:
+        return [
+            str(getattr(model, "name", "")).strip()
+            for model in MODELS
+            if str(getattr(model, "name", "")).strip()
+        ]
+
+    def _all_model_names(self) -> List[str]:
+        seen: Set[str] = set()
+        names: List[str] = []
+        for name in self._legacy_model_names():
+            if name not in seen:
+                seen.add(name)
+                names.append(name)
+        for cfg in self.all_model_configs:
+            if cfg.display_name not in seen:
+                seen.add(cfg.display_name)
+                names.append(cfg.display_name)
+        return names
+
+    def _visible_model_names(self, preserve: Optional[str]) -> List[str]:
+        """Return a short toolbar list while keeping current/default selections."""
+        all_names = set(self._all_model_names())
+        visible: List[str] = []
+
+        def append(name: Optional[str]) -> None:
+            if not name:
+                return
+            if name not in all_names:
+                return
+            if name not in visible:
+                visible.append(name)
+
+        append(preserve)
+        append(self._config.get("ai", {}).get("default"))
+        for name in RECOMMENDED_AI_MODEL_NAMES:
+            append(name)
+        return visible
+
+    def _add_model_combo_item(self, name: str) -> None:
+        if self._combo.findText(name) != -1:
+            return
+        self._combo.addItem(name)
+        idx = self._combo.findText(name)
+        cfg = self._find_model_config(name)
+        if cfg is not None:
+            self._set_model_item_availability(idx, cfg)
+
+    def _set_model_item_availability(self, idx: int, cfg: ModelConfig) -> None:
+        if idx < 0:
+            return
+        reason = get_model_unavailable_reason(cfg)
+        model_obj = self._combo.model()
+        item = model_obj.item(idx) if hasattr(model_obj, "item") else None
+        if reason:
+            self._combo.setItemData(idx, reason, QtCore.Qt.ToolTipRole)
+            if item is not None:
+                item.setEnabled(False)
+        else:
+            self._combo.setItemData(idx, "", QtCore.Qt.ToolTipRole)
+            if item is not None:
+                item.setEnabled(True)
+
+    def _restore_combo_text(self, text: Optional[str]) -> None:
+        self._combo.blockSignals(True)
+        try:
+            if text and self._combo.findText(text) != -1:
+                self._combo.setCurrentIndex(self._combo.findText(text))
+            elif self._combo.count() > 0:
+                self._combo.setCurrentIndex(0)
+        finally:
+            self._combo.blockSignals(False)
+
+    def _select_model_from_catalog(self) -> Optional[str]:
+        parent_widget = self._get_parent_widget()
+        dialog = QtWidgets.QDialog(parent_widget)
+        dialog.setWindowTitle(self.tr("Choose AI Model"))
+        dialog.resize(560, 520)
+
+        layout = QtWidgets.QVBoxLayout(dialog)
+        search = QtWidgets.QLineEdit(dialog)
+        search.setPlaceholderText(self.tr("Search models"))
+        layout.addWidget(search)
+
+        tree = QtWidgets.QTreeWidget(dialog)
+        tree.setColumnCount(2)
+        tree.setHeaderLabels([self.tr("Model"), self.tr("Type")])
+        tree.setRootIsDecorated(True)
+        tree.setAlternatingRowColors(True)
+        layout.addWidget(tree)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
+            parent=dialog,
+        )
+        select_button = buttons.button(QtWidgets.QDialogButtonBox.Ok)
+        if select_button is not None:
+            select_button.setText(self.tr("Select"))
+            select_button.setEnabled(False)
+        layout.addWidget(buttons)
+
+        entries = self._catalog_entries()
+
+        def selected_model_name() -> Optional[str]:
+            item = tree.currentItem()
+            if item is None or item.isDisabled():
+                return None
+            name = item.data(0, QtCore.Qt.UserRole)
+            return str(name) if name else None
+
+        def update_select_button() -> None:
+            if select_button is not None:
+                select_button.setEnabled(selected_model_name() is not None)
+
+        def rebuild(filter_text: str = "") -> None:
+            normalized_filter = filter_text.strip().lower()
+            tree.clear()
+            groups: Dict[str, QtWidgets.QTreeWidgetItem] = {}
+            current_name = self._last_selection or self._combo.currentText()
+
+            for name, group, cfg in entries:
+                haystack = f"{name} {group}".lower()
+                if normalized_filter and normalized_filter not in haystack:
+                    continue
+                parent_item = groups.get(group)
+                if parent_item is None:
+                    parent_item = QtWidgets.QTreeWidgetItem([group, ""])
+                    parent_item.setFlags(
+                        parent_item.flags() & ~QtCore.Qt.ItemIsSelectable
+                    )
+                    tree.addTopLevelItem(parent_item)
+                    groups[group] = parent_item
+
+                item = QtWidgets.QTreeWidgetItem([name, group])
+                item.setData(0, QtCore.Qt.UserRole, name)
+                if cfg is not None:
+                    reason = get_model_unavailable_reason(cfg)
+                    if reason:
+                        item.setDisabled(True)
+                        item.setToolTip(0, reason)
+                parent_item.addChild(item)
+                if name == current_name:
+                    tree.setCurrentItem(item)
+
+            tree.expandAll()
+            tree.resizeColumnToContents(0)
+            update_select_button()
+
+        def accept_current() -> None:
+            if selected_model_name() is not None:
+                dialog.accept()
+
+        search.textChanged.connect(rebuild)
+        tree.currentItemChanged.connect(lambda *_: update_select_button())
+        tree.itemDoubleClicked.connect(lambda *_: accept_current())
+        buttons.accepted.connect(accept_current)
+        buttons.rejected.connect(dialog.reject)
+
+        rebuild()
+        search.setFocus()
+
+        if not dialog.exec_():
+            return None
+        return selected_model_name()
+
+    def _catalog_entries(self) -> List[Tuple[str, str, Optional[ModelConfig]]]:
+        entries: List[Tuple[str, str, Optional[ModelConfig]]] = []
+        seen: Set[str] = set()
+
+        def append(name: str, group: str, cfg: Optional[ModelConfig]) -> None:
+            if not name or name in seen:
+                return
+            seen.add(name)
+            entries.append((name, group, cfg))
+
+        for name in self._legacy_model_names():
+            append(name, self.tr("Point prompts"), None)
+
+        custom_names = {cfg.display_name for cfg in self._available_custom_models}
+        discovered_names = {cfg.display_name for cfg in self._auto_discovered_configs}
+        for cfg in self.all_model_configs:
+            if cfg.display_name in custom_names:
+                group = self.tr("Custom models")
+            elif cfg.display_name in discovered_names:
+                group = self.tr("Recent training runs")
+            else:
+                group = self._model_group_label(cfg)
+            append(cfg.display_name, group, cfg)
+
+        return entries
+
+    def _model_group_label(self, cfg: ModelConfig) -> str:
+        text = f"{cfg.display_name} {cfg.identifier} {cfg.weight_file}".lower()
+        if "yolo" in text:
+            return self.tr("YOLO / prompted detection")
+        if "dino" in text or "cutie" in text or "tracker" in text or "videomt" in text:
+            return self.tr("Tracking and video segmentation")
+        if "mediapipe" in text:
+            return self.tr("Pose and realtime")
+        if "sam" in text or "efficient" in text:
+            return self.tr("Segmentation")
+        return self.tr("Other models")
 
     def _is_custom_model(self, model: ModelConfig) -> bool:
         return model in self._custom_model_configs
