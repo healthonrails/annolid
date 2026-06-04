@@ -99,6 +99,7 @@ pip install -e ".[gui]"
 Useful extras currently defined in `pyproject.toml` include:
 
 - `gui`: Qt bindings for the desktop application
+- `test`: dependencies needed to import and run the default test collection
 - `audio`: audio loading/playback helpers (`librosa`, `sounddevice`)
 - `ai_chat`: OpenAI-compatible and Anthropic SDKs for hosted LLM providers
 - `training`: TensorBoard support for training dashboards and projector views
