@@ -161,6 +161,8 @@ def test_threejs_viewer_supports_zarr_gaussian_splat_render_mode():
     assert "volume_grid_base64" in source
     assert "volumeHistologyDefaults" in source
     assert "histology_defaults" in source
+    assert "napari_reference" in source
+    assert "Napari Reference" in source
     assert 'value="raymarch"' in source
     assert "volumeSectionEmphasis" in source
     assert "resolveAutoSectionEmphasis" in source

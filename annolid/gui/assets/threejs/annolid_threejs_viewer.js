@@ -1941,6 +1941,38 @@ async function boot() {
           renderStyle: "points",
           sectionEmphasis: "auto",
         },
+        napari_reference: {
+          intensity: 2.15,
+          contrast: 1.08,
+          gamma: 0.68,
+          opacity: 0.82,
+          size: 0.028,
+          threshold: 0.003,
+          density: 0.84,
+          saturation: 0.0,
+          tfLow: 0.0,
+          tfMid: 0.56,
+          tfHigh: 1.0,
+          palette: "grayscale",
+          blendMode: "normal",
+          pointTexture: "section",
+          backgroundTheme: "dark",
+          renderStyle: "raymarch",
+          sectionEmphasis: "neutral",
+          raymarchSteps: 400,
+          raymarchStepScale: 0.85,
+          raymarchJitter: 0.15,
+          raymarchGradientOpacity: true,
+          raymarchGradientFactor: 1.8,
+          raymarchShading: true,
+          raymarchAmbient: 0.78,
+          raymarchDiffuse: 0.72,
+          raymarchSpecular: 0.1,
+          raymarchSpecularPower: 16.0,
+          raymarchLightX: 0.2,
+          raymarchLightY: 0.35,
+          raymarchLightZ: 0.92,
+        },
         histology_defaults: {
           intensity: 1.18,
           contrast: 1.52,
@@ -2988,6 +3020,7 @@ async function boot() {
           <label for="volumePreset">Preset</label>
           <select id="volumePreset">
             <option value="cinematic">Cinematic</option>
+            <option value="napari_reference">Napari Reference</option>
             <option value="histology_defaults">Histology Defaults</option>
             <option value="section_stack">Section Stack</option>
             <option value="nissl_sections">Nissl Sections</option>

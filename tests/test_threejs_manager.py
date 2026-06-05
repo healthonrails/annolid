@@ -435,6 +435,16 @@ def test_build_tiff_overlay_payload_uses_reference_and_annotation_layers(
     assert metadata["atlas_region_layers"][0]["color"] == [12, 34, 220]
     assert metadata["atlas_region_layers"][0]["has_mesh"] is True
     assert metadata["atlas_region_layers"][0]["mesh_path"] == "atlas_meshes/151.obj"
+    reference_defaults = metadata["volume_render_defaults"]
+    assert reference_defaults["preset"] == "napari_reference"
+    assert reference_defaults["render_style"] == "raymarch"
+    assert reference_defaults["palette"] == "grayscale"
+    assert reference_defaults["background_theme"] == "dark"
+    assert reference_defaults["threshold"] < 0.05
+    assert reference_defaults["density"] >= 0.7
+    assert reference_defaults["opacity"] >= 0.8
+    assert reference_defaults["tf_mid"] >= 0.5
+    assert reference_defaults["gradient_opacity"] is True
     assert len(metadata["volume_layers"]) == 1
     layer = metadata["volume_layers"][0]
     assert layer["layer_id"] == "annotation"

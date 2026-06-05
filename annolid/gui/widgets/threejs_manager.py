@@ -28,7 +28,7 @@ class ThreeJsManager(QtCore.QObject):
     _ZARR_MAX_POINTS = 120_000
     _ZARR_MULTISCALE_MAX_VOXELS = 16_000_000
     _TIFF_TARGET_SAMPLED_VOXELS = 1_000_000
-    _TIFF_PAYLOAD_CACHE_VERSION = "tiff-volume-spacing-v2"
+    _TIFF_PAYLOAD_CACHE_VERSION = "tiff-volume-spacing-v2-napari-reference-v2"
 
     def __init__(
         self, window: "AnnolidWindow", viewer_stack: QtWidgets.QStackedWidget
@@ -307,6 +307,9 @@ class ThreeJsManager(QtCore.QObject):
                 f"annotation={annotation_shape}"
             )
         orientation = self._normalize_atlas_orientation(atlas_metadata)
+        reference_metadata["volume_render_defaults"] = (
+            self._build_napari_reference_volume_render_defaults()
+        )
 
         layer_defaults = dict(annotation_metadata.get("volume_render_defaults") or {})
         # Keep atlas overlays on the same 3D texture path as the reference volume.
@@ -361,6 +364,44 @@ class ThreeJsManager(QtCore.QObject):
         reference_payload["metadata"] = reference_metadata
         reference_payload["adapter"] = "tiff-volume"
         return reference_payload
+
+    @staticmethod
+    def _build_napari_reference_volume_render_defaults() -> dict[str, Any]:
+        return {
+            "preset": "napari_reference",
+            "render_style": "raymarch",
+            "intensity": 2.15,
+            "contrast": 1.08,
+            "gamma": 0.68,
+            "opacity": 0.82,
+            "size": 0.028,
+            "threshold": 0.003,
+            "density": 0.84,
+            "saturation": 0.0,
+            "tf_low": 0.0,
+            "tf_mid": 0.56,
+            "tf_high": 1.0,
+            "clip_axis": "none",
+            "clip_center": 0.5,
+            "clip_thickness": 1.0,
+            "clip_invert": False,
+            "palette": "grayscale",
+            "blend_mode": "normal",
+            "point_texture": "section",
+            "background_theme": "dark",
+            "section_emphasis": "neutral",
+            "raymarch_steps": 400,
+            "raymarch_step_scale": 0.85,
+            "raymarch_jitter": 0.15,
+            "gradient_opacity": True,
+            "gradient_opacity_factor": 1.8,
+            "use_shading": True,
+            "ambient_strength": 0.78,
+            "diffuse_strength": 0.72,
+            "specular_strength": 0.1,
+            "specular_power": 16.0,
+            "light_direction": [0.2, 0.35, 0.92],
+        }
 
     @staticmethod
     def _load_atlas_region_catalog(
