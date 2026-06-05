@@ -354,6 +354,7 @@ class ThreeJsManager(QtCore.QObject):
         atlas_catalog = self._load_atlas_region_catalog(
             source_dir=reference_path.parent,
             annotation_metadata=annotation_metadata,
+            atlas_metadata=atlas_metadata,
         )
         if atlas_catalog:
             annotation_metadata["atlas_region_layers"] = atlas_catalog
@@ -408,8 +409,12 @@ class ThreeJsManager(QtCore.QObject):
         *,
         source_dir: Path,
         annotation_metadata: dict[str, Any],
+        atlas_metadata: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        structures = ThreeJsManager._load_atlas_structures(source_dir)
+        structures = ThreeJsManager._load_atlas_structures(
+            source_dir,
+            atlas_metadata=atlas_metadata,
+        )
         if not structures:
             return []
         mesh_dir = source_dir / "meshes"
@@ -429,13 +434,10 @@ class ThreeJsManager(QtCore.QObject):
                 continue
             structure = structures[region_id]
             mesh_path = mesh_dir / f"{region_id}.obj"
-            rgb = structure.get("rgb_triplet")
             color: list[int] | None = None
-            if isinstance(rgb, list) and len(rgb) >= 3:
-                try:
-                    color = [int(float(rgb[0])), int(float(rgb[1])), int(float(rgb[2]))]
-                except Exception:
-                    color = None
+            rgba = ThreeJsManager._extract_label_color_from_record(structure)
+            if rgba is not None:
+                color = [int(rgba[0]), int(rgba[1]), int(rgba[2])]
             row: dict[str, Any] = {
                 "id": int(region_id),
                 "name": str(structure.get("name") or f"Region {region_id}"),
@@ -456,10 +458,80 @@ class ThreeJsManager(QtCore.QObject):
         return rows
 
     @staticmethod
-    def _load_atlas_structures(source_dir: Path) -> dict[int, dict[str, Any]]:
-        json_path = source_dir / "structures.json"
-        csv_path = source_dir / "structures.csv"
+    def _load_atlas_structures(
+        source_dir: Path,
+        *,
+        atlas_metadata: dict[str, Any] | None = None,
+    ) -> dict[int, dict[str, Any]]:
         structures: dict[int, dict[str, Any]] = {}
+        for structure_dir in ThreeJsManager._candidate_atlas_structure_dirs(
+            source_dir,
+            atlas_metadata=atlas_metadata,
+        ):
+            json_path = structure_dir / "structures.json"
+            csv_path = structure_dir / "structures.csv"
+            ThreeJsManager._read_atlas_structure_files(
+                json_path=json_path,
+                csv_path=csv_path,
+                structures=structures,
+            )
+        return structures
+
+    @staticmethod
+    def _candidate_atlas_structure_dirs(
+        source_dir: Path,
+        *,
+        atlas_metadata: dict[str, Any] | None = None,
+    ) -> list[Path]:
+        candidates: list[Path] = [source_dir]
+        names: list[str] = []
+        metadata = atlas_metadata or {}
+        for key in ("source_atlas", "atlas_name", "name"):
+            value = str(metadata.get(key, "") or "").strip()
+            if value and value not in names:
+                names.append(value)
+        search_roots = [
+            source_dir,
+            source_dir.parent,
+            Path.home() / ".brainglobe",
+        ]
+        for name in names:
+            for root in search_roots:
+                if not root.exists() or not root.is_dir():
+                    continue
+                direct = root / name
+                if direct.exists() and direct.is_dir():
+                    candidates.append(direct)
+                try:
+                    candidates.extend(
+                        sorted(
+                            (p for p in root.glob(f"{name}_v*") if p.is_dir()),
+                            key=lambda p: p.name,
+                            reverse=True,
+                        )
+                    )
+                except Exception:
+                    continue
+        unique: list[Path] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            try:
+                resolved = str(candidate.resolve())
+            except Exception:
+                resolved = str(candidate)
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            unique.append(candidate)
+        return unique
+
+    @staticmethod
+    def _read_atlas_structure_files(
+        *,
+        json_path: Path,
+        csv_path: Path,
+        structures: dict[int, dict[str, Any]],
+    ) -> None:
         if json_path.exists() and json_path.is_file():
             try:
                 parsed = json.loads(json_path.read_text(encoding="utf-8"))
@@ -473,7 +545,7 @@ class ThreeJsManager(QtCore.QObject):
                     region_id = ThreeJsManager._extract_label_id_from_record(item)
                     if region_id is None:
                         continue
-                    structures[int(region_id)] = dict(item)
+                    structures.setdefault(int(region_id), dict(item))
         if csv_path.exists() and csv_path.is_file():
             try:
                 with csv_path.open(newline="", encoding="utf-8-sig") as handle:
@@ -490,7 +562,6 @@ class ThreeJsManager(QtCore.QObject):
                                 existing.setdefault(str(key), value)
             except Exception as exc:
                 logger.warning("Unable to read atlas structures %s: %s", csv_path, exc)
-        return structures
 
     @staticmethod
     def _normalize_atlas_orientation(metadata: dict[str, Any]) -> str:
@@ -828,6 +899,7 @@ class ThreeJsManager(QtCore.QObject):
         text = str(value or "").strip()
         if not text:
             return None
+        text = re.sub(r"[\[\](){}]", " ", text)
         parts = [p for p in re.split(r"[\s,;|]+", text) if p]
         if len(parts) < 3:
             return None

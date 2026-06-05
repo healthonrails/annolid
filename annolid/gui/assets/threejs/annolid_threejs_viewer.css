@@ -351,10 +351,16 @@ body.white-theme {
   gap: 7px;
   min-height: 30px;
   font-size: 12px;
+  border-radius: 6px;
+  padding: 2px 3px;
 }
 
 .three-atlas-region-row input[type="checkbox"] {
   accent-color: #7bc6ff;
+}
+
+.three-atlas-region-row:hover {
+  background: rgba(255, 255, 255, 0.07);
 }
 
 .three-atlas-region-row.is-hidden {
@@ -362,10 +368,11 @@ body.white-theme {
 }
 
 .three-atlas-swatch {
-  width: 10px;
-  height: 10px;
+  width: 12px;
+  height: 12px;
   border-radius: 2px;
   border: 1px solid rgba(255, 255, 255, 0.3);
+  box-shadow: 0 0 10px rgba(123, 198, 255, 0.12);
 }
 
 .three-atlas-region-label {
@@ -407,6 +414,62 @@ body.white-theme {
 .three-atlas-mesh-action:disabled {
   opacity: 0.42;
   cursor: default;
+}
+
+#annolidThreeAtlasHover {
+  position: fixed;
+  z-index: 1250;
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  gap: 9px;
+  max-width: min(320px, calc(100vw - 24px));
+  padding: 10px 12px;
+  background: rgba(5, 8, 13, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  color: #f5f8ff;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(8px);
+  pointer-events: none;
+}
+
+#annolidThreeAtlasHover[hidden] {
+  display: none;
+}
+
+.three-atlas-hover-swatch {
+  width: 12px;
+  height: 38px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.32);
+  box-shadow: 0 0 14px rgba(255, 255, 255, 0.16);
+}
+
+.three-atlas-hover-body {
+  min-width: 0;
+}
+
+.three-atlas-hover-acronym {
+  font-size: 13px;
+  font-weight: 760;
+  line-height: 1.15;
+  color: #fff4bf;
+}
+
+.three-atlas-hover-name {
+  margin-top: 3px;
+  font-size: 12px;
+  line-height: 1.25;
+  color: rgba(245, 248, 255, 0.92);
+}
+
+.three-atlas-hover-meta {
+  margin-top: 4px;
+  font-size: 10px;
+  line-height: 1.2;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(225, 235, 250, 0.62);
 }
 
 body[data-threejs-simulation="1"] #annolidThreeHints {

@@ -189,6 +189,10 @@ def test_threejs_viewer_supports_zarr_gaussian_splat_render_mode():
     assert "three-atlas-search" in source
     assert "updateAtlasMeshOverlay" in source
     assert "atlasMeshRoot" in source
+    assert "getAtlasDisplayRgba" in source
+    assert "sampleAtlasRegionFromVolumeIntersection" in source
+    assert "showAtlasRegionTooltip" in source
+    assert "annolidThreeAtlasHover" in source
     assert "applyVolumeOrientationToGroup" in source
     assert 'orientation === "asr"' in source
     assert "createVolumeLayerGroup(layerMetadata" in source
@@ -210,3 +214,5 @@ def test_threejs_viewer_supports_zarr_gaussian_splat_render_mode():
     assert "three-layer-action" in css_source
     assert "three-atlas-region-row" in css_source
     assert "three-atlas-mesh-action" in css_source
+    assert "#annolidThreeAtlasHover" in css_source
+    assert ".three-atlas-hover-acronym" in css_source

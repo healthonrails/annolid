@@ -464,6 +464,36 @@ def test_normalize_atlas_orientation_accepts_kim_asr_metadata() -> None:
     assert ThreeJsManager._normalize_atlas_orientation({"orientation": "bad"}) == "zyx"
 
 
+def test_load_atlas_region_catalog_falls_back_to_brainglobe_cache(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / "home"
+    cache_dir = home / ".brainglobe" / "demo_mouse_25um_v1.0"
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "structures.csv").write_text(
+        "\n".join(
+            [
+                "id,name,acronym,rgb_triplet,structure_id_path,parent_structure_id",
+                '151,Accessory olfactory bulb,AOB,"[20, 180, 240]",/997/151/,997',
+                '188,Main olfactory bulb,MOB,"[240, 110, 40]",/997/188/,997',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+
+    catalog = ThreeJsManager._load_atlas_region_catalog(
+        source_dir=tmp_path / "atlas_crop",
+        annotation_metadata={"volume_label_id_lut": [151, 188]},
+        atlas_metadata={"source_atlas": "demo_mouse_25um"},
+    )
+
+    assert [entry["acronym"] for entry in catalog] == ["AOB", "MOB"]
+    assert catalog[0]["name"] == "Accessory olfactory bulb"
+    assert catalog[1]["color"] == [240, 110, 40]
+
+
 @requires_tifffile
 def test_resolve_tiff_payload_detects_reference_annotation_siblings(
     tmp_path: Path,

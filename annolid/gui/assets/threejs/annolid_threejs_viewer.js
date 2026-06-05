@@ -684,6 +684,10 @@ async function boot() {
     let atlasMeshMap = new Map();
     let atlasRegionFilter = "";
     let atlasCatalogKey = "";
+    let atlasRegionHoverTooltipEl = null;
+    let atlasRegionPanelHoverActive = false;
+    let hideAtlasRegionTooltip = () => {};
+    let onCanvasAtlasRegionHover = () => {};
     let frameTimeEmaMs = 16.6;
     let adaptiveRaymarchFactor = 1.0;
     let flybodyControlsMoved = false;
@@ -942,15 +946,42 @@ async function boot() {
       });
     };
 
-    const normalizeAtlasColor = (entry) => {
+    const normalizeAtlasColorRgba = (entry) => {
       const color = entry && (entry.color || entry.rgb_triplet);
       if (Array.isArray(color) && color.length >= 3) {
         const r = Math.max(0, Math.min(255, Math.round(Number(color[0]) || 0)));
         const g = Math.max(0, Math.min(255, Math.round(Number(color[1]) || 0)));
         const b = Math.max(0, Math.min(255, Math.round(Number(color[2]) || 0)));
-        return `rgb(${r}, ${g}, ${b})`;
+        return [r / 255, g / 255, b / 255, 1];
       }
-      return "#7bc6ff";
+      return [0.48, 0.78, 1.0, 1];
+    };
+
+    const getAtlasDisplayColor = (entry) => {
+      const rgba = normalizeAtlasColorRgba(entry);
+      const color = new THREE.Color(rgba[0], rgba[1], rgba[2]);
+      const hsl = {};
+      color.getHSL(hsl);
+      if (hsl.s < 0.08) {
+        const id = Math.max(1, Math.floor(Number(entry && entry.id) || 1));
+        const hue = (Math.sin(id * 12.9898 + 78.233) * 43758.5453) % 1;
+        color.setHSL(hue < 0 ? hue + 1 : hue, 0.82, 0.58);
+        return color;
+      }
+      const nextS = Math.max(0.58, Math.min(0.98, hsl.s * 1.22 + 0.08));
+      const nextL = Math.max(0.46, Math.min(0.72, hsl.l * 0.88 + 0.08));
+      color.setHSL(hsl.h, nextS, nextL);
+      return color;
+    };
+
+    const getAtlasDisplayRgba = (entry) => {
+      const color = getAtlasDisplayColor(entry);
+      return [color.r, color.g, color.b, 1.0];
+    };
+
+    const normalizeAtlasColor = (entry) => {
+      const color = getAtlasDisplayColor(entry);
+      return `#${color.getHexString()}`;
     };
 
     const getAtlasRegionEntries = (metadata) => {
@@ -971,6 +1002,83 @@ async function boot() {
     };
 
     const getAtlasRegionId = (entry) => String(entry && entry.id != null ? entry.id : "").trim();
+
+    const getAtlasRegionMap = (metadata) => {
+      const map = new Map();
+      getAtlasRegionEntries(metadata).forEach((entry) => {
+        const id = getAtlasRegionId(entry);
+        if (id) {
+          map.set(id, entry);
+        }
+      });
+      return map;
+    };
+
+    const ensureAtlasRegionHoverTooltip = () => {
+      if (atlasRegionHoverTooltipEl) {
+        return atlasRegionHoverTooltipEl;
+      }
+      const el = document.createElement("div");
+      el.id = "annolidThreeAtlasHover";
+      el.hidden = true;
+      document.body.appendChild(el);
+      atlasRegionHoverTooltipEl = el;
+      return el;
+    };
+
+    const escapeHtml = (value) =>
+      String(value == null ? "" : value).replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        "\"": "&quot;",
+        "'": "&#39;",
+      }[char] || char));
+
+    const formatAtlasRegionTooltip = (entry, fallbackId = "") => {
+      const id = getAtlasRegionId(entry) || String(fallbackId || "").trim();
+      const acronym = String((entry && entry.acronym) || id || "Region");
+      const name = String((entry && entry.name) || (id ? `Region ${id}` : "Unknown region"));
+      const path = Array.isArray(entry && entry.structure_id_path)
+        ? entry.structure_id_path.join(" / ")
+        : String((entry && entry.structure_id_path) || "");
+      const parent = String((entry && entry.parent_structure_id) || "");
+      return { id, acronym, name, path, parent };
+    };
+
+    const showAtlasRegionTooltip = (entry, x, y, fallbackId = "") => {
+      const tooltip = ensureAtlasRegionHoverTooltip();
+      const info = formatAtlasRegionTooltip(entry, fallbackId);
+      const color = normalizeAtlasColor(entry || { id: info.id });
+      tooltip.innerHTML = `
+        <div class="three-atlas-hover-swatch" style="background:${color}"></div>
+        <div class="three-atlas-hover-body">
+          <div class="three-atlas-hover-acronym">${escapeHtml(info.acronym)}</div>
+          <div class="three-atlas-hover-name">${escapeHtml(info.name)}</div>
+          ${info.id ? `<div class="three-atlas-hover-meta">ID ${escapeHtml(info.id)}</div>` : ""}
+          ${info.parent ? `<div class="three-atlas-hover-meta">Parent ${escapeHtml(info.parent)}</div>` : ""}
+        </div>
+      `;
+      tooltip.hidden = false;
+      const margin = 14;
+      const rect = tooltip.getBoundingClientRect();
+      const nextLeft = Math.min(
+        Math.max(8, Number(x) + margin),
+        Math.max(8, window.innerWidth - rect.width - 8)
+      );
+      const nextTop = Math.min(
+        Math.max(8, Number(y) + margin),
+        Math.max(8, window.innerHeight - rect.height - 8)
+      );
+      tooltip.style.left = `${Math.round(nextLeft)}px`;
+      tooltip.style.top = `${Math.round(nextTop)}px`;
+    };
+
+    hideAtlasRegionTooltip = () => {
+      if (atlasRegionHoverTooltipEl) {
+        atlasRegionHoverTooltipEl.hidden = true;
+      }
+    };
 
     const ensureAtlasRegionState = (metadata) => {
       getAtlasRegionEntries(metadata).forEach((entry) => {
@@ -1066,6 +1174,10 @@ async function boot() {
           obj.traverse((child) => {
             if (child && child.isMesh) {
               child.material = material.clone();
+              child.userData = Object.assign({}, child.userData || {}, {
+                regionId: id,
+                atlasRegionEntry: entry,
+              });
               child.castShadow = false;
               child.receiveShadow = false;
             }
@@ -1293,9 +1405,22 @@ async function boot() {
           const regionState = atlasRegionState.get(id) || { visible: true, meshVisible: false };
           const row = document.createElement("div");
           row.className = "three-atlas-region-row";
+          row.dataset.regionId = id;
           if (regionState.visible === false) {
             row.classList.add("is-hidden");
           }
+          row.addEventListener("pointerenter", (event) => {
+            atlasRegionPanelHoverActive = true;
+            showAtlasRegionTooltip(entry, event.clientX, event.clientY, id);
+          });
+          row.addEventListener("pointermove", (event) => {
+            atlasRegionPanelHoverActive = true;
+            showAtlasRegionTooltip(entry, event.clientX, event.clientY, id);
+          });
+          row.addEventListener("pointerleave", () => {
+            atlasRegionPanelHoverActive = false;
+            hideAtlasRegionTooltip();
+          });
 
           const visibleToggle = document.createElement("input");
           visibleToggle.type = "checkbox";
@@ -1633,13 +1758,19 @@ async function boot() {
       getAtlasRegionEntries(metadata).forEach((entry) => {
         const labelId = Number(entry && entry.id);
         if (!Number.isFinite(labelId) || labelId <= 0) return;
+        const canonicalLabelId = Math.floor(labelId);
         const state = atlasRegionState.get(String(Math.floor(labelId)));
         if (state && state.visible === false) {
-          const canonicalLabelId = Math.floor(labelId);
           const rgba = [0, 0, 0, 0];
           map.set(canonicalLabelId, rgba);
           signatureParts.push(`${canonicalLabelId}:hidden`);
+          return;
         }
+        const rgba = getAtlasDisplayRgba(entry);
+        map.set(canonicalLabelId, rgba);
+        signatureParts.push(
+          `${canonicalLabelId}:atlas:${rgba.map((v) => Math.round(clamp01(v) * 255)).join(",")}`
+        );
       });
       signatureParts.sort();
       return { map, signature: signatureParts.join("|") || "none" };
@@ -1759,6 +1890,127 @@ async function boot() {
       volumeLabelColorTextureCache = { key: textureKey, texture };
       return texture;
     };
+
+    const sampleLabelIndexAtTexPos = (metadata, texPos) => {
+      const volumeGrid = decodeVolumeGrid(metadata);
+      if (!volumeGrid || !volumeGrid.data || !Array.isArray(volumeGrid.shape)) {
+        return 0;
+      }
+      const [zCount, yCount, xCount] = volumeGrid.shape;
+      if (!zCount || !yCount || !xCount) {
+        return 0;
+      }
+      const xi = Math.max(0, Math.min(xCount - 1, Math.round(clamp01(texPos.x) * (xCount - 1))));
+      const yi = Math.max(0, Math.min(yCount - 1, Math.round(clamp01(texPos.y) * (yCount - 1))));
+      const zi = Math.max(0, Math.min(zCount - 1, Math.round(clamp01(texPos.z) * (zCount - 1))));
+      const raw = volumeGrid.data[zi * (yCount * xCount) + yi * xCount + xi];
+      return Math.max(0, Math.round(Number(raw) || 0));
+    };
+
+    const resolveLabelRegionInfo = (metadata, state, labelIndex) => {
+      if (!metadata || !metadata.label_volume || !Number.isFinite(labelIndex) || labelIndex <= 0) {
+        return null;
+      }
+      const labelLut = getVolumeLabelIdLut(metadata);
+      const labelId = labelLut[labelIndex - 1] || labelIndex;
+      if (!Number.isFinite(labelId) || labelId <= 0) {
+        return null;
+      }
+      const regionState = atlasRegionState.get(String(Math.floor(labelId)));
+      if (regionState && regionState.visible === false) {
+        return null;
+      }
+      const colorTable = getVolumeLabelColorTable(metadata, state);
+      const base = Math.max(0, Math.min(255, Math.floor(labelIndex))) * 4;
+      if (colorTable && colorTable.rgbaFloat[base + 3] <= 0) {
+        return null;
+      }
+      const localRegionMap = getAtlasRegionMap(metadata);
+      const rootRegionMap = getAtlasRegionMap((simulationPayload && simulationPayload.metadata) || {});
+      const entry =
+        localRegionMap.get(String(Math.floor(labelId))) ||
+        rootRegionMap.get(String(Math.floor(labelId))) ||
+        {
+          id: Math.floor(labelId),
+          acronym: String(Math.floor(labelId)),
+          name: `Region ${Math.floor(labelId)}`,
+        };
+      return { labelId: Math.floor(labelId), labelIndex: Math.floor(labelIndex), entry };
+    };
+
+    const sampleAtlasRegionFromVolumeIntersection = (intersection) => {
+      if (!intersection || !intersection.object) return null;
+      const mesh = intersection.object;
+      const metadata = mesh.userData && mesh.userData.volumeMetadata;
+      const state = mesh.userData && mesh.userData.volumeState;
+      if (!metadata || !metadata.label_volume) return null;
+      const startLocal = mesh.worldToLocal(intersection.point.clone());
+      const cameraLocal = mesh.worldToLocal(camera.position.clone());
+      const dir = startLocal.clone().sub(cameraLocal);
+      if (dir.lengthSq() <= 1e-10) return null;
+      dir.normalize();
+      const step = 1.0 / 96.0;
+      const cursor = startLocal.clone().addScaledVector(dir, step * 0.5);
+      for (let i = 0; i < 128; i += 1) {
+        const texPos = new THREE.Vector3(cursor.x + 0.5, cursor.y + 0.5, cursor.z + 0.5);
+        if (
+          texPos.x < 0 || texPos.x > 1 ||
+          texPos.y < 0 || texPos.y > 1 ||
+          texPos.z < 0 || texPos.z > 1
+        ) {
+          if (i > 0) break;
+        } else {
+          const labelIndex = sampleLabelIndexAtTexPos(metadata, texPos);
+          const info = resolveLabelRegionInfo(metadata, state, labelIndex);
+          if (info) return info;
+        }
+        cursor.addScaledVector(dir, step);
+      }
+      return null;
+    };
+
+    const atlasHoverRaycaster = new THREE.Raycaster();
+    const atlasHoverPointer = new THREE.Vector2();
+
+    const pickAtlasRegionAtPointer = (event) => {
+      const metadata = (simulationPayload && simulationPayload.metadata) || {};
+      if (!metadata || !getAtlasRegionEntries(metadata).length) return null;
+      const rect = canvas.getBoundingClientRect();
+      const width = Math.max(1, rect.width);
+      const height = Math.max(1, rect.height);
+      atlasHoverPointer.x = ((event.clientX - rect.left) / width) * 2 - 1;
+      atlasHoverPointer.y = -(((event.clientY - rect.top) / height) * 2 - 1);
+      atlasHoverRaycaster.setFromCamera(atlasHoverPointer, camera);
+      const intersections = atlasHoverRaycaster.intersectObjects(simulationVolumeRoot.children, true);
+      for (let index = 0; index < intersections.length; index += 1) {
+        const info = sampleAtlasRegionFromVolumeIntersection(intersections[index]);
+        if (info) return info;
+      }
+      const meshIntersections = atlasHoverRaycaster.intersectObjects(atlasMeshRoot.children, true);
+      for (let index = 0; index < meshIntersections.length; index += 1) {
+        const regionId = resolveRegionIdForObject(meshIntersections[index].object);
+        if (!regionId) continue;
+        const entry = getAtlasRegionMap(metadata).get(regionId);
+        if (entry) return { labelId: Number(regionId), labelIndex: 0, entry };
+      }
+      return null;
+    };
+
+    onCanvasAtlasRegionHover = (event) => {
+      if (atlasRegionPanelHoverActive) {
+        return;
+      }
+      const info = pickAtlasRegionAtPointer(event);
+      if (!info || !info.entry) {
+        hideAtlasRegionTooltip();
+        canvas.style.cursor = "";
+        return;
+      }
+      showAtlasRegionTooltip(info.entry, event.clientX, event.clientY, info.labelId);
+      canvas.style.cursor = "crosshair";
+    };
+    canvas.addEventListener("pointermove", onCanvasAtlasRegionHover, { passive: true });
+    canvas.addEventListener("pointerleave", hideAtlasRegionTooltip);
 
     const getLabelColorRgba = (labelId, metadata, state) => {
       const id = Math.max(0, Math.floor(Number(labelId) || 0));
@@ -2874,6 +3126,12 @@ async function boot() {
       const mesh = new THREE.Mesh(geometry, material);
       mesh.scale.copy(size);
       mesh.position.copy(center);
+      mesh.userData = Object.assign({}, mesh.userData || {}, {
+        isVolumeRaymarchMesh: true,
+        volumeMetadata: metadata,
+        volumeState: effectiveState,
+        volumeLayerRole: String((metadata && metadata.layer_role) || ""),
+      });
       targetGroup.add(mesh);
       if (trackActiveMaterial) {
         activeRaymarchMaterial = material;
@@ -5069,7 +5327,10 @@ async function boot() {
     const disposeViewer = () => {
       stopVolumeSlicePlayback();
       stopMoveDrag();
+      hideAtlasRegionTooltip();
       canvas.removeEventListener("pointerdown", startMoveDrag);
+      canvas.removeEventListener("pointermove", onCanvasAtlasRegionHover);
+      canvas.removeEventListener("pointerleave", hideAtlasRegionTooltip);
       window.removeEventListener("pointermove", onMoveDrag);
       window.removeEventListener("pointerup", stopMoveDrag);
       window.removeEventListener("pointercancel", stopMoveDrag);
