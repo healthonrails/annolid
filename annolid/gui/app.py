@@ -561,9 +561,8 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
 
     def _startup_annolid_bot(self) -> None:
         """Start Annolid Bot when the main window opens."""
-        if os.environ.get("ANNOLID_DISABLE_BOT_AUTOSTART"):
-            return
-        if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("CI"):
+        if not self._should_autostart_annolid_bot():
+            logger.info("Annolid Bot hidden background autostart skipped.")
             return
         try:
             manager = self.ensure_ai_chat_manager()
@@ -573,6 +572,32 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
             )
         except Exception as exc:
             logger.warning("Failed to auto-start Annolid Bot: %s", exc)
+
+    def _should_autostart_annolid_bot(self) -> bool:
+        """Return whether hidden Annolid Bot services should start at GUI launch."""
+        if os.environ.get("ANNOLID_DISABLE_BOT_AUTOSTART"):
+            return False
+        if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("CI"):
+            return False
+        if not bool(getattr(self, "_agent_mode_enabled", True)):
+            return False
+
+        env_opt_in = str(os.environ.get("ANNOLID_ENABLE_BOT_AUTOSTART", "")).strip()
+        if env_opt_in:
+            return env_opt_in.lower() in {"1", "true", "yes", "on"}
+
+        try:
+            if self.settings.contains("ui/bot_autostart"):
+                return bool(self.settings.value("ui/bot_autostart", False, type=bool))
+        except Exception:
+            pass
+
+        # On Windows, hidden background channel startup can make the Qt GUI look
+        # permanently busy during launch. Keep manual Bot opening available.
+        if os.name == "nt":
+            return False
+
+        return True
 
     def _restore_last_worked_file_if_available(self) -> None:
         """Cache last worked file from settings; restore only after opening its folder."""

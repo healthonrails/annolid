@@ -1708,6 +1708,98 @@ def test_startup_annolid_bot_respects_disable_env(monkeypatch) -> None:
         window.close()
 
 
+def test_startup_annolid_bot_skips_windows_hidden_autostart_by_default(
+    monkeypatch,
+) -> None:
+    _ensure_qapp()
+
+    import annolid.gui.app as app_module
+    from annolid.gui.app import AnnolidWindow
+
+    window = AnnolidWindow(config={})
+    called = {"count": 0}
+    try:
+        manager = getattr(window, "ai_chat_manager", None)
+        assert manager is not None
+
+        def _unexpected_start(*args, **kwargs):
+            _ = args, kwargs
+            called["count"] += 1
+
+        monkeypatch.setattr(manager, "initialize_annolid_bot", _unexpected_start)
+        monkeypatch.delenv("ANNOLID_DISABLE_BOT_AUTOSTART", raising=False)
+        monkeypatch.delenv("ANNOLID_ENABLE_BOT_AUTOSTART", raising=False)
+        monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+        monkeypatch.delenv("CI", raising=False)
+        monkeypatch.setattr(app_module.os, "name", "nt")
+
+        window._startup_annolid_bot()
+
+        assert called["count"] == 0
+    finally:
+        window.close()
+
+
+def test_startup_annolid_bot_allows_windows_explicit_autostart(monkeypatch) -> None:
+    _ensure_qapp()
+
+    import annolid.gui.app as app_module
+    from annolid.gui.app import AnnolidWindow
+
+    window = AnnolidWindow(config={})
+    called = {"count": 0}
+    try:
+        manager = getattr(window, "ai_chat_manager", None)
+        assert manager is not None
+
+        def _count_start(*args, **kwargs):
+            _ = args, kwargs
+            called["count"] += 1
+
+        monkeypatch.setattr(manager, "initialize_annolid_bot", _count_start)
+        monkeypatch.delenv("ANNOLID_DISABLE_BOT_AUTOSTART", raising=False)
+        monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+        monkeypatch.delenv("CI", raising=False)
+        monkeypatch.setenv("ANNOLID_ENABLE_BOT_AUTOSTART", "1")
+        monkeypatch.setattr(app_module.os, "name", "nt")
+        window._agent_mode_enabled = True
+
+        window._startup_annolid_bot()
+
+        assert called["count"] == 1
+    finally:
+        window.close()
+
+
+def test_startup_annolid_bot_respects_agent_mode_disabled(monkeypatch) -> None:
+    _ensure_qapp()
+
+    from annolid.gui.app import AnnolidWindow
+
+    window = AnnolidWindow(config={})
+    called = {"count": 0}
+    try:
+        manager = getattr(window, "ai_chat_manager", None)
+        assert manager is not None
+
+        def _unexpected_start(*args, **kwargs):
+            _ = args, kwargs
+            called["count"] += 1
+
+        monkeypatch.setattr(manager, "initialize_annolid_bot", _unexpected_start)
+        monkeypatch.delenv("ANNOLID_DISABLE_BOT_AUTOSTART", raising=False)
+        monkeypatch.delenv("ANNOLID_ENABLE_BOT_AUTOSTART", raising=False)
+        monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+        monkeypatch.delenv("CI", raising=False)
+        window._agent_mode_enabled = False
+
+        window._startup_annolid_bot()
+
+        assert called["count"] == 0
+    finally:
+        window.close()
+
+
 def test_window_close_runs_cleanup_once(monkeypatch) -> None:
     _ensure_qapp()
 

@@ -56,6 +56,27 @@ or running repeatable workflows through the agent stack.
 - memory-backed agent behavior,
 - security and operational guardrails.
 
+## GUI Startup
+
+Open **AI & Models -> Annolid Bot...** when you want to use the chat dock or
+start Bot-backed background services. On Windows, Annolid does not auto-start
+hidden Bot background services during GUI launch by default, because optional
+channel startup can make Qt appear busy before the first user interaction. To
+restore hidden startup for a configured Windows automation machine, set:
+
+```bash
+set ANNOLID_ENABLE_BOT_AUTOSTART=1
+```
+
+In PowerShell, use:
+
+```powershell
+$env:ANNOLID_ENABLE_BOT_AUTOSTART = "1"
+```
+
+`ANNOLID_DISABLE_BOT_AUTOSTART=1` still disables hidden startup on every
+platform.
+
 ## Dream Memory Runs
 
 Annolid Bot now supports phase-based Dreaming memory maintenance commands in chat:
