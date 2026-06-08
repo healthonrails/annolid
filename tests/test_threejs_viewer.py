@@ -193,6 +193,30 @@ def test_threejs_viewer_supports_zarr_gaussian_splat_render_mode():
     assert "sampleAtlasRegionFromVolumeIntersection" in source
     assert "showAtlasRegionTooltip" in source
     assert "annolidThreeAtlasHover" in source
+    assert "labelBoundaryStrength" in source
+    assert "surfaceWeight" in source
+    assert "syncAtlasMeshOverlays" in source
+    assert "buildAtlasMeshGuideVolumeState" in source
+    assert "meshVisible: false" in source
+    assert "nextState.opacity = Math.min" not in source
+    assert "getAtlasMeshCropTransform" in source
+    assert "transformAtlasMeshToCroppedVolume" in source
+    assert "atlas_mesh_coordinate_space" in source
+    assert "atlas_zyx_um" in source
+    assert "computeVertexNormals" in source
+    assert "flatShading = false" in source
+    assert "setAllAtlasMeshesVisible" in source
+    assert "Show Meshes" in source
+    assert "Hide Meshes" in source
+    assert "updateAtlasMeshDebugState" in source
+    assert "__annolidThreeAtlasMeshDebug" in source
+    assert "threejsAtlasMeshDebug" in source
+    assert "currentState.meshVisible !== true" in source
+    assert (
+        'mesh.renderOrder = isLabelVolume || layerRole === "annotation" ? 20 : 10'
+        in source
+    )
+    assert "depthTest: !isLabelVolume" in source
     assert "applyVolumeOrientationToGroup" in source
     assert 'orientation === "asr"' in source
     assert "createVolumeLayerGroup(layerMetadata" in source

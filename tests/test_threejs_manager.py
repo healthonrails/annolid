@@ -370,6 +370,7 @@ def test_build_tiff_overlay_payload_uses_reference_and_annotation_layers(
             {
                 "name": "kim_mouse_25um_olfactory_bulb",
                 "resolution_um": [25.0, 25.0, 25.0],
+                "crop_bbox_zyx": [2, 12, 3, 15, 4, 18],
                 "included_ids": [151, 188],
             }
         ),
@@ -426,6 +427,14 @@ def test_build_tiff_overlay_payload_uses_reference_and_annotation_layers(
     assert metadata["volume_layer_count"] == 2
     assert metadata["atlas_overlay_metadata"]["included_ids"] == [151, 188]
     assert metadata["volume_orientation"] == "zyx"
+    assert metadata["atlas_crop_bbox_zyx"] == [2, 12, 3, 15, 4, 18]
+    assert metadata["atlas_resolution_zyx_um"] == [25.0, 25.0, 25.0]
+    assert metadata["atlas_mesh_coordinate_space"] == "atlas_zyx_um"
+    assert metadata["voxel_spacing_zyx"] == [25.0, 25.0, 25.0]
+    assert metadata["voxel_spacing_xyz"] == [25.0, 25.0, 25.0]
+    assert metadata["volume_bounds"]["x"] == [0.0, 325.0]
+    assert metadata["volume_bounds"]["y"] == [-275.0, 0.0]
+    assert metadata["volume_bounds"]["z"] == [-225.0, 0.0]
     assert metadata["overlay_validation"]["orientation"] == "zyx"
     assert metadata["volume_grid_shape"] == [10, 12, 14]
     assert metadata["atlas_region_count"] == 2
@@ -450,6 +459,11 @@ def test_build_tiff_overlay_payload_uses_reference_and_annotation_layers(
     assert layer["layer_id"] == "annotation"
     assert layer["layer_role"] == "annotation"
     assert layer["volume_orientation"] == "zyx"
+    assert layer["atlas_crop_bbox_zyx"] == [2, 12, 3, 15, 4, 18]
+    assert layer["atlas_resolution_zyx_um"] == [25.0, 25.0, 25.0]
+    assert layer["atlas_mesh_coordinate_space"] == "atlas_zyx_um"
+    assert layer["voxel_spacing_zyx"] == [25.0, 25.0, 25.0]
+    assert layer["volume_bounds"] == metadata["volume_bounds"]
     assert layer["label_volume"] is True
     assert layer["render_mode"] == "label_ids"
     assert layer["volume_grid_shape"] == [10, 12, 14]
@@ -457,11 +471,36 @@ def test_build_tiff_overlay_payload_uses_reference_and_annotation_layers(
     assert layer["volume_label_id_lut"]
     assert layer["volume_render_defaults"]["blend_mode"] == "normal"
     assert layer["volume_render_defaults"]["render_style"] == "raymarch"
+    assert layer["volume_render_defaults"]["opacity"] >= 0.64
+    assert layer["volume_render_defaults"]["density"] >= 0.9
+    assert layer["volume_render_defaults"]["saturation"] >= 1.18
+    assert layer["volume_render_defaults"]["gradient_opacity"] is True
+    assert layer["volume_render_defaults"]["use_shading"] is True
 
 
 def test_normalize_atlas_orientation_accepts_kim_asr_metadata() -> None:
     assert ThreeJsManager._normalize_atlas_orientation({"orientation": "asr"}) == "asr"
     assert ThreeJsManager._normalize_atlas_orientation({"orientation": "bad"}) == "zyx"
+
+
+def test_normalize_atlas_crop_bbox_accepts_min_and_max_corners() -> None:
+    assert ThreeJsManager._normalize_atlas_crop_bbox_zyx(
+        {"crop_bbox_zyx": [25, 91, 133, 125, 262, 323]}
+    ) == [25, 125, 91, 262, 133, 323]
+
+
+def test_atlas_asset_roots_prefer_cropped_smooth_meshes(tmp_path: Path) -> None:
+    source = tmp_path / "reference.tif"
+    source.write_bytes(b"")
+    mesh_dir = tmp_path / "meshes"
+    smooth_mesh_dir = tmp_path / "meshes_cropped_smooth"
+    mesh_dir.mkdir()
+    smooth_mesh_dir.mkdir()
+
+    assert ThreeJsManager._atlas_mesh_dir_for_source(tmp_path) == smooth_mesh_dir
+    assert ThreeJsManager._atlas_asset_roots_for_tiff(source) == {
+        "atlas_meshes": smooth_mesh_dir
+    }
 
 
 def test_load_atlas_region_catalog_falls_back_to_brainglobe_cache(

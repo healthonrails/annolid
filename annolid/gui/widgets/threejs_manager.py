@@ -28,7 +28,7 @@ class ThreeJsManager(QtCore.QObject):
     _ZARR_MAX_POINTS = 120_000
     _ZARR_MULTISCALE_MAX_VOXELS = 16_000_000
     _TIFF_TARGET_SAMPLED_VOXELS = 1_000_000
-    _TIFF_PAYLOAD_CACHE_VERSION = "tiff-volume-spacing-v2-napari-reference-v2"
+    _TIFF_PAYLOAD_CACHE_VERSION = "tiff-volume-spacing-v2-napari-reference-v4"
 
     def __init__(
         self, window: "AnnolidWindow", viewer_stack: QtWidgets.QStackedWidget
@@ -179,11 +179,17 @@ class ThreeJsManager(QtCore.QObject):
 
     @staticmethod
     def _atlas_asset_roots_for_tiff(path: Path) -> dict[str, Path]:
-        source_dir = path.parent
-        mesh_dir = source_dir / "meshes"
+        mesh_dir = ThreeJsManager._atlas_mesh_dir_for_source(path.parent)
         if mesh_dir.exists() and mesh_dir.is_dir():
             return {"atlas_meshes": mesh_dir}
         return {}
+
+    @staticmethod
+    def _atlas_mesh_dir_for_source(source_dir: Path) -> Path:
+        smooth_mesh_dir = source_dir / "meshes_cropped_smooth"
+        if smooth_mesh_dir.exists() and smooth_mesh_dir.is_dir():
+            return smooth_mesh_dir
+        return source_dir / "meshes"
 
     @staticmethod
     def _candidate_atlas_catalog_paths(source_dir: Path) -> list[Path]:
@@ -197,7 +203,7 @@ class ThreeJsManager(QtCore.QObject):
             path = source_dir / name
             if path.exists() and path.is_file():
                 candidates.append(path)
-        mesh_dir = source_dir / "meshes"
+        mesh_dir = ThreeJsManager._atlas_mesh_dir_for_source(source_dir)
         if mesh_dir.exists() and mesh_dir.is_dir():
             candidates.append(mesh_dir)
         return candidates
@@ -285,8 +291,6 @@ class ThreeJsManager(QtCore.QObject):
     ) -> dict[str, Any]:
         reference_payload = self._build_tiff_simulation_payload(reference_path)
         annotation_payload = self._build_tiff_simulation_payload(annotation_path)
-        reference_metadata = dict(reference_payload.get("metadata") or {})
-        annotation_metadata = dict(annotation_payload.get("metadata") or {})
         atlas_metadata: dict[str, Any] = {}
         if metadata_path is not None:
             try:
@@ -297,6 +301,19 @@ class ThreeJsManager(QtCore.QObject):
                 logger.warning(
                     "Unable to read atlas overlay metadata %s: %s", metadata_path, exc
                 )
+        atlas_resolution_zyx = self._normalize_atlas_resolution_zyx(atlas_metadata)
+        self._apply_tiff_payload_world_spacing(
+            reference_payload,
+            atlas_resolution_zyx,
+            source=str(metadata_path or reference_path),
+        )
+        self._apply_tiff_payload_world_spacing(
+            annotation_payload,
+            atlas_resolution_zyx,
+            source=str(metadata_path or annotation_path),
+        )
+        reference_metadata = dict(reference_payload.get("metadata") or {})
+        annotation_metadata = dict(annotation_payload.get("metadata") or {})
 
         reference_shape = reference_metadata.get("volume_grid_shape")
         annotation_shape = annotation_metadata.get("volume_grid_shape")
@@ -307,6 +324,7 @@ class ThreeJsManager(QtCore.QObject):
                 f"annotation={annotation_shape}"
             )
         orientation = self._normalize_atlas_orientation(atlas_metadata)
+        atlas_crop_bbox_zyx = self._normalize_atlas_crop_bbox_zyx(atlas_metadata)
         reference_metadata["volume_render_defaults"] = (
             self._build_napari_reference_volume_render_defaults()
         )
@@ -317,11 +335,43 @@ class ThreeJsManager(QtCore.QObject):
         # data look flipped because the slab canvas path has different UV origin
         # semantics.
         layer_defaults["render_style"] = "raymarch"
-        layer_defaults["opacity"] = min(
-            0.46, max(0.16, float(layer_defaults.get("opacity", 0.34)))
+        layer_defaults["opacity"] = max(
+            0.64, min(0.82, float(layer_defaults.get("opacity", 0.68)))
         )
-        layer_defaults["density"] = min(
-            0.72, max(0.18, float(layer_defaults.get("density", 0.46)))
+        layer_defaults["density"] = max(
+            0.9, min(1.0, float(layer_defaults.get("density", 1.0)))
+        )
+        layer_defaults["saturation"] = max(
+            1.18, min(1.6, float(layer_defaults.get("saturation", 1.28)))
+        )
+        layer_defaults["raymarch_steps"] = max(
+            300, min(520, int(float(layer_defaults.get("raymarch_steps", 360))))
+        )
+        layer_defaults["raymarch_step_scale"] = float(
+            layer_defaults.get("raymarch_step_scale", 0.78)
+        )
+        layer_defaults["raymarch_jitter"] = float(
+            layer_defaults.get("raymarch_jitter", 0.08)
+        )
+        layer_defaults["gradient_opacity"] = True
+        layer_defaults["gradient_opacity_factor"] = float(
+            layer_defaults.get("gradient_opacity_factor", 3.4)
+        )
+        layer_defaults["use_shading"] = True
+        layer_defaults["ambient_strength"] = float(
+            layer_defaults.get("ambient_strength", 0.52)
+        )
+        layer_defaults["diffuse_strength"] = float(
+            layer_defaults.get("diffuse_strength", 0.96)
+        )
+        layer_defaults["specular_strength"] = float(
+            layer_defaults.get("specular_strength", 0.18)
+        )
+        layer_defaults["specular_power"] = float(
+            layer_defaults.get("specular_power", 22.0)
+        )
+        layer_defaults["light_direction"] = layer_defaults.get(
+            "light_direction", [-0.28, 0.42, 0.86]
         )
         layer_defaults["blend_mode"] = "normal"
         annotation_metadata["volume_render_defaults"] = layer_defaults
@@ -332,6 +382,10 @@ class ThreeJsManager(QtCore.QObject):
         annotation_metadata["volume_orientation_source"] = str(
             metadata_path or annotation_path
         )
+        if atlas_crop_bbox_zyx is not None:
+            annotation_metadata["atlas_crop_bbox_zyx"] = atlas_crop_bbox_zyx
+            annotation_metadata["atlas_resolution_zyx_um"] = atlas_resolution_zyx
+            annotation_metadata["atlas_mesh_coordinate_space"] = "atlas_zyx_um"
 
         reference_metadata["volume_overlay"] = True
         reference_metadata["atlas_overlay_metadata"] = atlas_metadata
@@ -344,6 +398,10 @@ class ThreeJsManager(QtCore.QObject):
         reference_metadata["volume_orientation_source"] = str(
             metadata_path or reference_path
         )
+        if atlas_crop_bbox_zyx is not None:
+            reference_metadata["atlas_crop_bbox_zyx"] = atlas_crop_bbox_zyx
+            reference_metadata["atlas_resolution_zyx_um"] = atlas_resolution_zyx
+            reference_metadata["atlas_mesh_coordinate_space"] = "atlas_zyx_um"
         reference_metadata["overlay_validation"] = {
             "reference_shape_zyx": reference_metadata.get("shape"),
             "annotation_shape_zyx": annotation_metadata.get("shape"),
@@ -365,6 +423,101 @@ class ThreeJsManager(QtCore.QObject):
         reference_payload["metadata"] = reference_metadata
         reference_payload["adapter"] = "tiff-volume"
         return reference_payload
+
+    @staticmethod
+    def _normalize_atlas_crop_bbox_zyx(
+        atlas_metadata: dict[str, Any],
+    ) -> list[int] | None:
+        raw = atlas_metadata.get("crop_bbox_zyx")
+        if not isinstance(raw, (list, tuple)) or len(raw) != 6:
+            return None
+        try:
+            values = [int(v) for v in raw]
+        except Exception:
+            return None
+        candidates = [
+            # Pairwise bounds: [z0, z1, y0, y1, x0, x1].
+            [values[0], values[1], values[2], values[3], values[4], values[5]],
+            # Min corner followed by max corner: [z0, y0, x0, z1, y1, x1].
+            [values[0], values[3], values[1], values[4], values[2], values[5]],
+        ]
+        for candidate in candidates:
+            z0, z1, y0, y1, x0, x1 = candidate
+            if z1 > z0 and y1 > y0 and x1 > x0:
+                return candidate
+        return None
+
+    @staticmethod
+    def _normalize_atlas_resolution_zyx(
+        atlas_metadata: dict[str, Any],
+    ) -> list[float]:
+        raw = atlas_metadata.get("resolution_um")
+        if not isinstance(raw, (list, tuple)) or len(raw) < 3:
+            return [1.0, 1.0, 1.0]
+        try:
+            values = [max(1e-6, float(v)) for v in raw[:3]]
+        except Exception:
+            return [1.0, 1.0, 1.0]
+        return values
+
+    @staticmethod
+    def _apply_tiff_payload_world_spacing(
+        payload: dict[str, Any],
+        spacing_zyx: list[float],
+        *,
+        source: str,
+    ) -> None:
+        """Update TIFF payload world coordinates from atlas metadata spacing."""
+        metadata = payload.get("metadata")
+        if not isinstance(metadata, dict):
+            return
+        shape = metadata.get("volume_grid_shape")
+        if not isinstance(shape, list) or len(shape) != 3:
+            return
+        try:
+            z_len, y_len, x_len = [max(1, int(v)) for v in shape]
+            z_spacing, y_spacing, x_spacing = [max(1e-6, float(v)) for v in spacing_zyx]
+            stride = max(1, int(metadata.get("downsample_stride", 1)))
+        except Exception:
+            return
+
+        old_spacing_raw = metadata.get("voxel_spacing_zyx")
+        try:
+            old_z_spacing, old_y_spacing, old_x_spacing = [
+                max(1e-6, float(v)) for v in old_spacing_raw
+            ]
+        except Exception:
+            old_z_spacing = old_y_spacing = old_x_spacing = 1.0
+
+        old_z_scale = stride * old_z_spacing
+        old_y_scale = stride * old_y_spacing
+        old_x_scale = stride * old_x_spacing
+        z_scale = stride * z_spacing
+        y_scale = stride * y_spacing
+        x_scale = stride * x_spacing
+
+        metadata["voxel_spacing_zyx"] = [z_spacing, y_spacing, x_spacing]
+        metadata["voxel_spacing_xyz"] = [x_spacing, y_spacing, z_spacing]
+        metadata["volume_spacing_source"] = source
+        metadata["section_step_world"] = float(z_scale)
+        metadata["volume_bounds"] = {
+            "x": [0.0, float(max(0, x_len - 1) * x_scale)],
+            "y": [float(-max(0, y_len - 1) * y_scale), 0.0],
+            "z": [float(-max(0, z_len - 1) * z_scale), 0.0],
+        }
+
+        for frame in payload.get("frames", []) or []:
+            if not isinstance(frame, dict):
+                continue
+            for point in frame.get("points", []) or []:
+                if not isinstance(point, dict):
+                    continue
+                try:
+                    point["x"] = float(point.get("x", 0.0)) / old_x_scale * x_scale
+                    point["y"] = float(point.get("y", 0.0)) / old_y_scale * y_scale
+                    point["z"] = float(point.get("z", 0.0)) / old_z_scale * z_scale
+                except Exception:
+                    continue
 
     @staticmethod
     def _build_napari_reference_volume_render_defaults() -> dict[str, Any]:
@@ -417,7 +570,7 @@ class ThreeJsManager(QtCore.QObject):
         )
         if not structures:
             return []
-        mesh_dir = source_dir / "meshes"
+        mesh_dir = ThreeJsManager._atlas_mesh_dir_for_source(source_dir)
         label_ids = annotation_metadata.get("volume_label_id_lut")
         wanted_ids = (
             {
@@ -854,11 +1007,11 @@ class ThreeJsManager(QtCore.QObject):
                 "intensity": 1.0,
                 "contrast": 1.0,
                 "gamma": 1.0,
-                "opacity": 0.9,
+                "opacity": 0.72,
                 "size": 0.032,
                 "threshold": 0.0,
                 "density": 1.0,
-                "saturation": 1.0,
+                "saturation": 1.28,
                 "tf_low": 0.0,
                 "tf_mid": 0.5,
                 "tf_high": 1.0,
@@ -873,12 +1026,18 @@ class ThreeJsManager(QtCore.QObject):
             },
             profile="cinematic",
         )
-        defaults["render_style"] = "slab"
-        defaults["gradient_opacity"] = False
-        defaults["use_shading"] = False
-        defaults["raymarch_steps"] = 180
-        defaults["raymarch_step_scale"] = 1.0
-        defaults["raymarch_jitter"] = 0.0
+        defaults["render_style"] = "raymarch"
+        defaults["gradient_opacity"] = True
+        defaults["gradient_opacity_factor"] = 3.4
+        defaults["use_shading"] = True
+        defaults["raymarch_steps"] = 360
+        defaults["raymarch_step_scale"] = 0.78
+        defaults["raymarch_jitter"] = 0.08
+        defaults["ambient_strength"] = 0.52
+        defaults["diffuse_strength"] = 0.96
+        defaults["specular_strength"] = 0.18
+        defaults["specular_power"] = 22.0
+        defaults["light_direction"] = [-0.28, 0.42, 0.86]
         defaults["section_emphasis"] = "neutral"
         return defaults
 

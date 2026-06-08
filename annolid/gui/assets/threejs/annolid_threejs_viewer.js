@@ -1081,10 +1081,14 @@ async function boot() {
     };
 
     const ensureAtlasRegionState = (metadata) => {
-      getAtlasRegionEntries(metadata).forEach((entry) => {
+      const entries = getAtlasRegionEntries(metadata);
+      entries.forEach((entry) => {
         const id = getAtlasRegionId(entry);
         if (!id || atlasRegionState.has(id)) return;
-        atlasRegionState.set(id, { visible: true, meshVisible: false });
+        atlasRegionState.set(id, {
+          visible: true,
+          meshVisible: false,
+        });
       });
     };
 
@@ -1099,6 +1103,34 @@ async function boot() {
     const invalidateVolumeLabelColorCaches = () => {
       volumeLabelColorTableCache = null;
       volumeLabelColorTextureCache = null;
+    };
+
+    const updateAtlasMeshDebugState = () => {
+      const box = new THREE.Box3().setFromObject(atlasMeshRoot);
+      const hasBounds = !box.isEmpty();
+      const center = new THREE.Vector3();
+      const size = new THREE.Vector3();
+      if (hasBounds) {
+        box.getCenter(center);
+        box.getSize(size);
+      }
+      const debugState = {
+        meshCount: atlasMeshMap.size,
+        childCount: atlasMeshRoot.children.length,
+        hasBounds,
+        bounds: hasBounds
+          ? {
+              min: [box.min.x, box.min.y, box.min.z],
+              max: [box.max.x, box.max.y, box.max.z],
+              center: [center.x, center.y, center.z],
+              size: [size.x, size.y, size.z],
+            }
+          : null,
+      };
+      window.__annolidThreeAtlasMeshDebug = debugState;
+      if (document && document.body) {
+        document.body.dataset.threejsAtlasMeshDebug = JSON.stringify(debugState);
+      }
     };
 
     const setAtlasRegionVisible = (entry, visible) => {
@@ -1123,6 +1155,18 @@ async function boot() {
       rebuildVolumeLayerUI();
     };
 
+    const setAllAtlasMeshesVisible = (metadata, visible) => {
+      getAtlasRegionEntries(metadata).forEach((entry) => {
+        if (!entry || entry.has_mesh !== true || !entry.mesh_path) return;
+        const id = getAtlasRegionId(entry);
+        if (!id) return;
+        const prev = atlasRegionState.get(id) || { visible: true, meshVisible: false };
+        atlasRegionState.set(id, Object.assign({}, prev, { meshVisible: Boolean(visible) }));
+        updateAtlasMeshOverlay(entry);
+      });
+      rebuildVolumeLayerUI();
+    };
+
     const setAtlasMeshVisible = (entry, visible) => {
       const id = getAtlasRegionId(entry);
       if (!id) return;
@@ -1136,12 +1180,67 @@ async function boot() {
       const color = new THREE.Color(normalizeAtlasColor(entry));
       return new THREE.MeshStandardMaterial({
         color,
-        roughness: 0.72,
+        emissive: color.clone().multiplyScalar(0.18),
+        roughness: 0.54,
         metalness: 0.02,
         transparent: true,
-        opacity: 0.34,
+        opacity: 0.54,
         depthWrite: false,
         side: THREE.DoubleSide,
+      });
+    };
+
+    const getAtlasMeshCropTransform = (metadata) => {
+      const bbox = Array.isArray(metadata && metadata.atlas_crop_bbox_zyx)
+        ? metadata.atlas_crop_bbox_zyx.map((value) => Number(value))
+        : [];
+      const spacing = Array.isArray(metadata && metadata.atlas_resolution_zyx_um)
+        ? metadata.atlas_resolution_zyx_um.map((value) => Number(value))
+        : [];
+      if (bbox.length !== 6 || spacing.length < 3 || bbox.some((value) => !Number.isFinite(value))) {
+        return null;
+      }
+      if (spacing.slice(0, 3).some((value) => !Number.isFinite(value) || value <= 0)) {
+        return null;
+      }
+      return {
+        zOriginUm: bbox[0] * spacing[0],
+        yOriginUm: bbox[2] * spacing[1],
+        xOriginUm: bbox[4] * spacing[2],
+      };
+    };
+
+    const transformAtlasMeshToCroppedVolume = (obj, metadata) => {
+      if (!obj || String((metadata && metadata.atlas_mesh_coordinate_space) || "") !== "atlas_zyx_um") {
+        return;
+      }
+      const transform = getAtlasMeshCropTransform(metadata);
+      if (!transform) return;
+      obj.traverse((child) => {
+        if (!child || !child.isMesh || !child.geometry) return;
+        const position = child.geometry.getAttribute("position");
+        if (!position) return;
+        for (let i = 0; i < position.count; i += 1) {
+          const atlasZUm = position.getX(i);
+          const atlasYUm = position.getY(i);
+          const atlasXUm = position.getZ(i);
+          position.setXYZ(
+            i,
+            atlasXUm - transform.xOriginUm,
+            -(atlasYUm - transform.yOriginUm),
+            -(atlasZUm - transform.zOriginUm)
+          );
+        }
+        position.needsUpdate = true;
+        if (typeof child.geometry.computeVertexNormals === "function") {
+          child.geometry.computeVertexNormals();
+        }
+        if (typeof child.geometry.computeBoundingBox === "function") {
+          child.geometry.computeBoundingBox();
+        }
+        if (typeof child.geometry.computeBoundingSphere === "function") {
+          child.geometry.computeBoundingSphere();
+        }
       });
     };
 
@@ -1157,10 +1256,12 @@ async function boot() {
           atlasMeshRoot.remove(existing.group);
         }
         atlasMeshMap.delete(id);
+        updateAtlasMeshDebugState();
         return;
       }
       if (existing && existing.group) {
         existing.group.visible = true;
+        updateAtlasMeshDebugState();
         return;
       }
       const meshUrl = new URL(String(entry.mesh_path || ""), modelUrl).toString();
@@ -1168,16 +1269,31 @@ async function boot() {
       loader.load(
         meshUrl,
         (obj) => {
+          const currentState = atlasRegionState.get(id) || {
+            visible: true,
+            meshVisible: false,
+          };
+          if (currentState.meshVisible !== true) {
+            clearGroupAndDispose(obj);
+            return;
+          }
           const group = new THREE.Group();
           group.name = `atlas-region-mesh:${id}`;
           const material = buildAtlasMeshMaterial(entry);
+          transformAtlasMeshToCroppedVolume(obj, (simulationPayload && simulationPayload.metadata) || {});
           obj.traverse((child) => {
             if (child && child.isMesh) {
+              if (child.geometry && typeof child.geometry.computeVertexNormals === "function") {
+                child.geometry.computeVertexNormals();
+              }
               child.material = material.clone();
+              child.material.flatShading = false;
+              child.material.needsUpdate = true;
               child.userData = Object.assign({}, child.userData || {}, {
                 regionId: id,
                 atlasRegionEntry: entry,
               });
+              child.renderOrder = 8;
               child.castShadow = false;
               child.receiveShadow = false;
             }
@@ -1186,6 +1302,7 @@ async function boot() {
           applyVolumeOrientationToGroup(group, (simulationPayload && simulationPayload.metadata) || {});
           atlasMeshRoot.add(group);
           atlasMeshMap.set(id, { group });
+          updateAtlasMeshDebugState();
           setStatus(`Loaded atlas mesh ${String(entry.acronym || id)}`);
         },
         undefined,
@@ -1193,9 +1310,25 @@ async function boot() {
           console.warn("Failed to load atlas region mesh:", id, err);
           const prev = atlasRegionState.get(id) || { visible: true, meshVisible: false };
           atlasRegionState.set(id, Object.assign({}, prev, { meshVisible: false }));
+          updateAtlasMeshDebugState();
           rebuildVolumeLayerUI();
         }
       );
+    };
+
+    const syncAtlasMeshOverlays = (metadata) => {
+      getAtlasRegionEntries(metadata).forEach((entry) => {
+        const id = getAtlasRegionId(entry);
+        if (!id) return;
+        const state = atlasRegionState.get(id) || { visible: true, meshVisible: false };
+        if (state.meshVisible === true || atlasMeshMap.has(id)) {
+          updateAtlasMeshOverlay(entry);
+        }
+      });
+    };
+
+    const buildAtlasMeshGuideVolumeState = (state, metadata) => {
+      return state;
     };
 
     const rebuildSimulationCategoryUI = () => {
@@ -1279,6 +1412,7 @@ async function boot() {
       }
       ensureVolumeLayerState(metadata);
       ensureAtlasRegionState(metadata);
+      syncAtlasMeshOverlays(metadata);
       categoryPanelEl.hidden = false;
       categoryPanelEl.classList.add("is-volume-layers");
       categoryPanelEl.classList.add("is-atlas-layers");
@@ -1480,8 +1614,20 @@ async function boot() {
         hideAllRegions.type = "button";
         hideAllRegions.textContent = "Hide Labels";
         hideAllRegions.addEventListener("click", () => setAllAtlasRegionsVisible(metadata, false));
+        const showAllMeshes = document.createElement("button");
+        showAllMeshes.type = "button";
+        showAllMeshes.textContent = "Show Meshes";
+        showAllMeshes.disabled = meshCount <= 0;
+        showAllMeshes.addEventListener("click", () => setAllAtlasMeshesVisible(metadata, true));
+        const hideAllMeshes = document.createElement("button");
+        hideAllMeshes.type = "button";
+        hideAllMeshes.textContent = "Hide Meshes";
+        hideAllMeshes.disabled = meshCount <= 0;
+        hideAllMeshes.addEventListener("click", () => setAllAtlasMeshesVisible(metadata, false));
         atlasActions.appendChild(showAllRegions);
         atlasActions.appendChild(hideAllRegions);
+        atlasActions.appendChild(showAllMeshes);
+        atlasActions.appendChild(hideAllMeshes);
         categoryPanelEl.appendChild(atlasActions);
       }
     };
@@ -2831,10 +2977,12 @@ async function boot() {
       const paletteIndex = Math.max(0, paletteNames.indexOf(String(effectiveState.palette || "section_ink")));
       const clipAxisIndex = { none: 0, x: 1, y: 2, z: 3 }[String(effectiveState.clipAxis || "none")] || 0;
       const geometry = new THREE.BoxGeometry(1, 1, 1);
+      const layerRole = String((metadata && metadata.layer_role) || "");
       const material = new THREE.ShaderMaterial({
         side: THREE.BackSide,
         transparent: true,
         depthWrite: false,
+        depthTest: !isLabelVolume,
         uniforms: {
           u_data: { value: texture },
           u_labelColors: { value: labelColorTexture },
@@ -3065,6 +3213,22 @@ async function boot() {
             return color * shade + vec3(u_specularStrength * spec);
           }
 
+          float labelBoundaryStrength(vec3 texPos, float rawValue) {
+            if (rawValue <= 0.0) return 0.0;
+            vec3 dx = vec3(u_texel.x, 0.0, 0.0);
+            vec3 dy = vec3(0.0, u_texel.y, 0.0);
+            vec3 dz = vec3(0.0, 0.0, u_texel.z);
+            float edge = 0.0;
+            float eps = 0.0015;
+            edge += step(eps, abs(texture(u_data, clamp(texPos + dx, 0.0, 1.0)).r - rawValue));
+            edge += step(eps, abs(texture(u_data, clamp(texPos - dx, 0.0, 1.0)).r - rawValue));
+            edge += step(eps, abs(texture(u_data, clamp(texPos + dy, 0.0, 1.0)).r - rawValue));
+            edge += step(eps, abs(texture(u_data, clamp(texPos - dy, 0.0, 1.0)).r - rawValue));
+            edge += step(eps, abs(texture(u_data, clamp(texPos + dz, 0.0, 1.0)).r - rawValue));
+            edge += step(eps, abs(texture(u_data, clamp(texPos - dz, 0.0, 1.0)).r - rawValue));
+            return clamp(edge / 3.0, 0.0, 1.0);
+          }
+
           void main() {
             vec3 rayDir = normalize(vDirection);
             vec2 bounds = hitBox(vOrigin, rayDir);
@@ -3085,9 +3249,27 @@ async function boot() {
                 if (u_labelVolume > 0.5) {
                   vec4 labelColor = lookupLabelColor(raw);
                   if (labelColor.a > 0.001) {
-                    float extinction = max(0.02, u_density) * 1.6;
-                    float alpha = (1.0 - exp(-extinction * delta * 16.0)) * clamp(u_opacity, 0.0, 1.0) * labelColor.a;
-                    accum.rgb += (1.0 - accum.a) * alpha * labelColor.rgb;
+                    vec3 grad = computeGradient(texPos);
+                    float gradMag = length(grad);
+                    float boundary = labelBoundaryStrength(texPos, raw);
+                    float surface = max(boundary, clamp(gradMag * 36.0, 0.0, 1.0));
+                    vec3 color = labelColor.rgb;
+                    if (u_useShading > 0.5 && gradMag > 1e-6) {
+                      vec3 shaded = shadeColor(color, grad, -rayDir);
+                      color = mix(color * max(0.38, u_ambientStrength), shaded, clamp(surface * 1.25, 0.0, 1.0));
+                    }
+                    float rim = 0.0;
+                    if (gradMag > 1e-6) {
+                      rim = pow(1.0 - abs(dot(normalize(grad), -rayDir)), 1.8);
+                    }
+                    color = clamp(color + vec3(rim * surface * 0.08), 0.0, 1.0);
+                    float surfaceWeight = mix(0.14, 1.0, surface);
+                    if (u_useGradientOpacity > 0.5) {
+                      surfaceWeight *= clamp(0.55 + surface * u_gradientOpacityFactor * 0.42, 0.25, 2.2);
+                    }
+                    float extinction = max(0.02, u_density) * surfaceWeight * 2.4;
+                    float alpha = (1.0 - exp(-extinction * delta * 22.0)) * clamp(u_opacity, 0.0, 1.0) * labelColor.a;
+                    accum.rgb += (1.0 - accum.a) * alpha * color;
                     accum.a += (1.0 - accum.a) * alpha;
                     if (accum.a >= 0.98) break;
                   }
@@ -3126,11 +3308,12 @@ async function boot() {
       const mesh = new THREE.Mesh(geometry, material);
       mesh.scale.copy(size);
       mesh.position.copy(center);
+      mesh.renderOrder = isLabelVolume || layerRole === "annotation" ? 20 : 10;
       mesh.userData = Object.assign({}, mesh.userData || {}, {
         isVolumeRaymarchMesh: true,
         volumeMetadata: metadata,
         volumeState: effectiveState,
-        volumeLayerRole: String((metadata && metadata.layer_role) || ""),
+        volumeLayerRole: layerRole,
       });
       targetGroup.add(mesh);
       if (trackActiveMaterial) {
@@ -4069,12 +4252,13 @@ async function boot() {
       trackActiveMaterial = false,
     }) => {
       if (!metadata || !targetGroup) return;
-      const renderStyle = getMetadataResolvedRenderStyle(state, metadata);
+      const renderState = buildAtlasMeshGuideVolumeState(state, metadata);
+      const renderStyle = getMetadataResolvedRenderStyle(renderState, metadata);
       if (renderStyle === "raymarch") {
-        renderVolumeRaymarch(metadata, state, targetGroup, trackActiveMaterial);
+        renderVolumeRaymarch(metadata, renderState, targetGroup, trackActiveMaterial);
       }
       if (renderStyle === "slab" || renderStyle === "hybrid") {
-        renderVolumeSlabPlane(orderedPoints, metadata, state, targetGroup);
+        renderVolumeSlabPlane(orderedPoints, metadata, renderState, targetGroup);
       }
       if (renderStyle === "points" || renderStyle === "hybrid") {
         renderZarrGaussianSplatPoints(orderedPoints, showPoints, targetGroup);
@@ -4316,6 +4500,7 @@ async function boot() {
         }
         ensureVolumeLayerState(metadata);
         ensureAtlasRegionState(metadata);
+        syncAtlasMeshOverlays(metadata);
         volumeRenderDefaults = getVolumeRenderDefaults(metadata);
         volumeRenderState = Object.assign(
           {},
