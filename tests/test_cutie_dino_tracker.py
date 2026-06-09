@@ -1418,6 +1418,9 @@ def test_body_prior_rejects_ear_to_tail_swap_on_mask(monkeypatch):
         motion_search_miss_boost=0.0,
         keypoint_refine_radius=0,
         mask_enforce_position=False,
+        dinov3_positional_debias=False,
+        dinov3_backward_consistency=False,
+        keypoint_cluster_refine=False,
     )
 
     tracker = DinoKeypointTracker(
