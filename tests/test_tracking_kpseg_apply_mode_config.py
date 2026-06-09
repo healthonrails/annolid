@@ -7,6 +7,8 @@ def test_fly_keypoint_preset_enables_pixel_refinement():
     assert cfg.pixel_refine_enabled is True
     assert cfg.pixel_refine_weight >= 0.9
     assert cfg.motion_search_max_radius <= 6.0
+    assert cfg.dinov3_positional_debias is True
+    assert cfg.dinov3_positional_debias_strength > 0.0
 
 
 def test_kpseg_apply_mode_defaults_to_never():

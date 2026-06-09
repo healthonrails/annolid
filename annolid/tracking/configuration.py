@@ -56,6 +56,9 @@ TRACKER_PRESETS: Dict[str, Dict[str, object]] = {
         "support_probe_weight": 0.45,
         "support_probe_mask_only": True,
         "support_probe_mask_bonus": 0.05,
+        "dinov3_positional_debias": True,
+        "dinov3_positional_debias_components": 6,
+        "dinov3_positional_debias_strength": 0.35,
         "keypoint_refine_radius": 1,
         "keypoint_refine_sigma": 1.25,
         "keypoint_refine_temperature": 0.3,
@@ -107,6 +110,9 @@ TRACKER_PRESETS: Dict[str, Dict[str, object]] = {
         "support_probe_weight": 0.2,
         "support_probe_mask_only": False,
         "support_probe_mask_bonus": 0.0,
+        "dinov3_positional_debias": True,
+        "dinov3_positional_debias_components": 6,
+        "dinov3_positional_debias_strength": 0.5,
         "keypoint_refine_radius": 1,
         "keypoint_refine_sigma": 0.8,
         "keypoint_refine_temperature": 0.2,
@@ -173,6 +179,9 @@ class CutieDinoTrackerConfig:
     support_probe_weight: float = 0.35
     support_probe_mask_only: bool = True
     support_probe_mask_bonus: float = 0.05
+    dinov3_positional_debias: bool = False
+    dinov3_positional_debias_components: int = 6
+    dinov3_positional_debias_strength: float = 0.0
     keypoint_refine_radius: int = 0
     keypoint_refine_sigma: float = 1.25
     keypoint_refine_temperature: float = 0.35
@@ -272,6 +281,15 @@ class CutieDinoTrackerConfig:
         self.keypoint_refine_temperature = max(
             1e-4, float(self.keypoint_refine_temperature)
         )
+        self.dinov3_positional_debias = bool(self.dinov3_positional_debias)
+        self.dinov3_positional_debias_components = max(
+            1, int(self.dinov3_positional_debias_components)
+        )
+        self.dinov3_positional_debias_strength = float(
+            min(1.0, max(0.0, float(self.dinov3_positional_debias_strength)))
+        )
+        if not self.dinov3_positional_debias:
+            self.dinov3_positional_debias_strength = 0.0
         self.pixel_refine_enabled = bool(self.pixel_refine_enabled)
         self.pixel_refine_weight = float(
             min(1.0, max(0.0, float(self.pixel_refine_weight)))

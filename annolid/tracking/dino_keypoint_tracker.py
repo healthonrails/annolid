@@ -266,13 +266,13 @@ class DinoKeypointTracker:
         )
         if self._stop_requested:
             return
-        normalized_feats = self._normalize_feature_grid(feats)
-        context_map = self._compute_context_map(normalized_feats)
+        matching_feats = self._prepare_matching_feature_grid(feats)
+        context_map = self._compute_context_map(matching_feats)
         cropped_masks = self._crop_masks_for_roi(mask_lookup)
         self._last_patch_masks = {}
         self._mask_miss_counts = {}
         mask_cache = self._build_mask_cache(
-            feats,
+            matching_feats,
             cropped_masks,
             grid_hw,
             allow_fallback=False,
@@ -288,11 +288,9 @@ class DinoKeypointTracker:
                 patch_rc = self._pixel_to_patch(
                     keypoint.x, keypoint.y, scale_x, scale_y, grid_hw
                 )
-                base_desc = self._normalize_descriptor(
-                    feats[:, patch_rc[0], patch_rc[1]]
-                )
+                base_desc = matching_feats[:, patch_rc[0], patch_rc[1]].detach().clone()
                 reference_desc = self._reference_descriptor(
-                    feats, patch_rc, grid_hw, base_desc
+                    matching_feats, patch_rc, grid_hw, base_desc
                 )
                 self._update_manual_anchor_codebook(keypoint.key, reference_desc)
                 mask_descriptor = None
@@ -325,14 +323,14 @@ class DinoKeypointTracker:
                 )
 
                 track.appearance_codebook = self._collect_appearance_codebook(
-                    feats, patch_rc
+                    matching_feats, patch_rc
                 )
                 if track.appearance_codebook is not None:
                     baseline = torch.matmul(track.appearance_codebook, track.descriptor)
                     track.baseline_similarity = float(baseline.max().item())
                 track.support_probes = self._sample_support_probes(
                     track.key,
-                    feats,
+                    matching_feats,
                     patch_rc,
                     grid_hw,
                     patch_mask,
@@ -374,10 +372,10 @@ class DinoKeypointTracker:
             return []
         roi_changed = self._roi_box != prev_roi_box
         grid_h, grid_w = grid_hw
-        normalized_feats = self._normalize_feature_grid(feats)
-        self._last_norm_feats = normalized_feats
+        matching_feats = self._prepare_matching_feature_grid(feats)
+        self._last_norm_feats = matching_feats
         self._last_grid_hw = grid_hw
-        context_map = self._compute_context_map(normalized_feats)
+        context_map = self._compute_context_map(matching_feats)
         inv_scale_x = 1.0 / max(scale_x, 1e-6)
         inv_scale_y = 1.0 / max(scale_y, 1e-6)
         patch_size = float(self.patch_size)
@@ -389,7 +387,7 @@ class DinoKeypointTracker:
         ) * patch_size * inv_scale_y + self._roi_offset[1]
         cropped_masks = self._crop_masks_for_roi(mask_lookup)
         mask_cache = self._build_mask_cache(
-            feats,
+            matching_feats,
             cropped_masks,
             grid_hw,
             allow_fallback=True,
@@ -585,7 +583,7 @@ class DinoKeypointTracker:
                 if track.context_descriptor.device != feats.device:
                     track.context_descriptor = track.context_descriptor.to(feats.device)
 
-            region_feats = feats[:, r_min : r_max + 1, c_min : c_max + 1]
+            region_feats = matching_feats[:, r_min : r_max + 1, c_min : c_max + 1]
             region_h, region_w = region_feats.shape[1:]
             region_flat = region_feats.reshape(region_feats.shape[0], -1).transpose(
                 0, 1
@@ -629,9 +627,9 @@ class DinoKeypointTracker:
                 else sims_current[:0]
             )
 
-            norm_region_flat = normalized_feats[
+            norm_region_flat = matching_feats[
                 :, r_min : r_max + 1, c_min : c_max + 1
-            ].reshape(normalized_feats.shape[0], -1)
+            ].reshape(matching_feats.shape[0], -1)
             candidate_descs = (
                 norm_region_flat[:, candidate_indices]
                 if candidate_indices.numel() > 0
@@ -713,9 +711,9 @@ class DinoKeypointTracker:
                     candidate_score += self._support_score(
                         track,
                         (r, c),
-                        feats,
+                        matching_feats,
                         patch_mask,
-                        normalized_feats=normalized_feats,
+                        normalized_feats=matching_feats,
                     )
                 candidate_list.append(
                     Candidate(
@@ -866,7 +864,7 @@ class DinoKeypointTracker:
                         grid_hw,
                     )
                     rr, cc = track.patch_rc
-                    new_desc = normalized_feats[:, rr, cc].detach().clone()
+                    new_desc = matching_feats[:, rr, cc].detach().clone()
                     combined_conf = max(
                         similarity_conf,
                         float(refine_confidence),
@@ -933,7 +931,7 @@ class DinoKeypointTracker:
                             ),
                         )
                     self._refresh_support_probes(
-                        track, feats, normalized_feats=normalized_feats
+                        track, matching_feats, normalized_feats=matching_feats
                     )
                     self._update_support_probe_mask_flags(track, patch_mask)
                     if pixel_refine_confidence > 0.0:
@@ -1415,6 +1413,111 @@ class DinoKeypointTracker:
     def _normalize_feature_grid(feats: torch.Tensor) -> torch.Tensor:
         norms = torch.sqrt((feats * feats).sum(dim=0, keepdim=True))
         return feats / (norms + 1e-12)
+
+    def _prepare_matching_feature_grid(self, feats: torch.Tensor) -> torch.Tensor:
+        normalized = self._normalize_feature_grid(feats)
+        if not bool(getattr(self.runtime_config, "dinov3_positional_debias", False)):
+            return normalized
+        strength = float(
+            np.clip(
+                getattr(self.runtime_config, "dinov3_positional_debias_strength", 0.0),
+                0.0,
+                1.0,
+            )
+        )
+        if strength <= 0.0:
+            return normalized
+        components = max(
+            1,
+            int(getattr(self.runtime_config, "dinov3_positional_debias_components", 6)),
+        )
+        return self._positionally_debias_feature_grid(
+            normalized,
+            components=components,
+            strength=strength,
+        )
+
+    def _positionally_debias_feature_grid(
+        self,
+        feats: torch.Tensor,
+        *,
+        components: int,
+        strength: float,
+    ) -> torch.Tensor:
+        """Suppress low-dimensional coordinate-correlated DINO responses."""
+        if feats.dim() != 3:
+            return feats
+        channels, grid_h, grid_w = feats.shape
+        if channels <= 0 or grid_h * grid_w <= 2:
+            return feats
+        basis = self._coordinate_debias_basis(
+            grid_h,
+            grid_w,
+            components=components,
+            device=feats.device,
+            dtype=feats.dtype,
+        )
+        if basis is None or basis.numel() == 0:
+            return feats
+
+        flat = feats.reshape(channels, -1).transpose(0, 1)
+        positional_component = basis @ (basis.transpose(0, 1) @ flat)
+        debiased = flat - float(strength) * positional_component
+        debiased = debiased.transpose(0, 1).reshape_as(feats)
+        return self._normalize_feature_grid(debiased)
+
+    @staticmethod
+    def _coordinate_debias_basis(
+        grid_h: int,
+        grid_w: int,
+        *,
+        components: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> Optional[torch.Tensor]:
+        if grid_h <= 0 or grid_w <= 0 or components <= 0:
+            return None
+        y_coords = torch.linspace(-1.0, 1.0, grid_h, device=device, dtype=dtype)
+        x_coords = torch.linspace(-1.0, 1.0, grid_w, device=device, dtype=dtype)
+        yy, xx = torch.meshgrid(y_coords, x_coords, indexing="ij")
+        raw_terms = (
+            xx,
+            yy,
+            xx * yy,
+            xx.square(),
+            yy.square(),
+            xx.square() - yy.square(),
+            torch.sin(math.pi * xx),
+            torch.sin(math.pi * yy),
+            torch.cos(math.pi * xx),
+            torch.cos(math.pi * yy),
+        )
+        columns: List[torch.Tensor] = []
+        for term in raw_terms:
+            col = term.reshape(-1)
+            col = col - col.mean()
+            norm = col.norm()
+            if float(norm.item()) <= 1e-12:
+                continue
+            columns.append(col / norm)
+            if len(columns) >= components:
+                break
+        if not columns:
+            return None
+        orthonormal: List[torch.Tensor] = []
+        for col in columns:
+            vec = col
+            for basis_col in orthonormal:
+                vec = vec - torch.dot(vec, basis_col) * basis_col
+            norm = vec.norm()
+            if float(norm.item()) <= 1e-12:
+                continue
+            orthonormal.append(vec / norm)
+            if len(orthonormal) >= components:
+                break
+        if not orthonormal:
+            return None
+        return torch.stack(orthonormal, dim=1)
 
     @staticmethod
     def _avg_pool_descriptor_map(

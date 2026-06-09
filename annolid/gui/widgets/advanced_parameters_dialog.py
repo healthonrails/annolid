@@ -435,6 +435,27 @@ class AdvancedParametersDialog(QDialog):
             float(getattr(self._tracker_config, "keypoint_refine_temperature", 0.35))
         )
 
+        self.dinov3_positional_debias_checkbox = QCheckBox("DINOv3 positional debias")
+        self.dinov3_positional_debias_checkbox.setChecked(
+            bool(getattr(self._tracker_config, "dinov3_positional_debias", False))
+        )
+
+        self.dinov3_positional_debias_components_spinbox = QSpinBox()
+        self.dinov3_positional_debias_components_spinbox.setRange(1, 10)
+        self.dinov3_positional_debias_components_spinbox.setSingleStep(1)
+        self.dinov3_positional_debias_components_spinbox.setValue(
+            int(getattr(self._tracker_config, "dinov3_positional_debias_components", 6))
+        )
+
+        self.dinov3_positional_debias_strength_spinbox = QDoubleSpinBox()
+        self.dinov3_positional_debias_strength_spinbox.setRange(0.0, 1.0)
+        self.dinov3_positional_debias_strength_spinbox.setSingleStep(0.05)
+        self.dinov3_positional_debias_strength_spinbox.setValue(
+            float(
+                getattr(self._tracker_config, "dinov3_positional_debias_strength", 0.0)
+            )
+        )
+
         self.mask_enforce_radius_spinbox = QSpinBox()
         self.mask_enforce_radius_spinbox.setRange(1, 256)
         self.mask_enforce_radius_spinbox.setSingleStep(1)
@@ -556,6 +577,26 @@ class AdvancedParametersDialog(QDialog):
             self._wrap_with_hint(
                 self.keypoint_refine_temperature_spinbox,
                 "Softmax temperature over candidate scores (lower = sharper peak).",
+            ),
+        )
+        tracker_form.addRow(
+            self._wrap_checkbox(
+                self.dinov3_positional_debias_checkbox,
+                "Suppress coordinate-correlated DINO feature responses before matching.",
+            )
+        )
+        tracker_form.addRow(
+            "Debias components",
+            self._wrap_with_hint(
+                self.dinov3_positional_debias_components_spinbox,
+                "Number of low-dimensional positional terms to remove.",
+            ),
+        )
+        tracker_form.addRow(
+            "Debias strength",
+            self._wrap_with_hint(
+                self.dinov3_positional_debias_strength_spinbox,
+                "0 disables projection; 1 removes the full estimated positional component.",
             ),
         )
         tracker_form.addRow(
@@ -739,6 +780,15 @@ class AdvancedParametersDialog(QDialog):
         self.keypoint_refine_sigma_spinbox.setValue(float(cfg.keypoint_refine_sigma))
         self.keypoint_refine_temperature_spinbox.setValue(
             float(cfg.keypoint_refine_temperature)
+        )
+        self.dinov3_positional_debias_checkbox.setChecked(
+            bool(cfg.dinov3_positional_debias)
+        )
+        self.dinov3_positional_debias_components_spinbox.setValue(
+            int(cfg.dinov3_positional_debias_components)
+        )
+        self.dinov3_positional_debias_strength_spinbox.setValue(
+            float(cfg.dinov3_positional_debias_strength)
         )
         self.mask_enforce_checkbox.setChecked(bool(cfg.mask_enforce_position))
         self.mask_enforce_radius_spinbox.setValue(int(cfg.mask_enforce_snap_radius))
@@ -1120,6 +1170,9 @@ class AdvancedParametersDialog(QDialog):
             "keypoint_refine_radius": self.keypoint_refine_radius_spinbox.value(),
             "keypoint_refine_sigma": self.keypoint_refine_sigma_spinbox.value(),
             "keypoint_refine_temperature": self.keypoint_refine_temperature_spinbox.value(),
+            "dinov3_positional_debias": self.dinov3_positional_debias_checkbox.isChecked(),
+            "dinov3_positional_debias_components": self.dinov3_positional_debias_components_spinbox.value(),
+            "dinov3_positional_debias_strength": self.dinov3_positional_debias_strength_spinbox.value(),
             "mask_enforce_position": self.mask_enforce_checkbox.isChecked(),
             "mask_enforce_search_radius": snap_radius,
             "mask_enforce_snap_radius": snap_radius,

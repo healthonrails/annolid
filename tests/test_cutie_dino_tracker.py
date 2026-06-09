@@ -1144,6 +1144,73 @@ def test_pixel_flow_refine_moves_keypoint_with_subpatch_joint_motion(monkeypatch
     assert results[0]["y"] == pytest.approx(10.0, abs=0.35)
 
 
+def test_positional_debias_prefers_semantic_match_over_coordinate_bias(monkeypatch):
+    monkeypatch.setattr(
+        "annolid.tracking.dino_keypoint_tracker.Dinov3FeatureExtractor",
+        DummyExtractor,
+    )
+    config = CutieDinoTrackerConfig(
+        dinov3_positional_debias=True,
+        dinov3_positional_debias_components=2,
+        dinov3_positional_debias_strength=1.0,
+        pixel_refine_enabled=False,
+        mask_descriptor_weight=0.0,
+        appearance_bundle_weight=0.0,
+        baseline_similarity_weight=0.0,
+        structural_consistency_weight=0.0,
+        symmetry_penalty=0.0,
+        support_probe_weight=0.0,
+        motion_prior_penalty_weight=0.0,
+        motion_search_gain=0.0,
+        motion_search_flow_gain=0.0,
+        motion_search_miss_boost=0.0,
+        keypoint_refine_radius=0,
+        context_weight=0.0,
+        part_shared_weight=0.0,
+    )
+    tracker = DinoKeypointTracker(
+        model_name="dummy",
+        runtime_config=config,
+        search_radius=4,
+        min_similarity=0.0,
+        momentum=0.0,
+        reference_weight=0.0,
+    )
+    extractor = tracker.extractor
+
+    def coordinate_biased_features(semantic_col: int) -> torch.Tensor:
+        features = torch.zeros((2, 1, 5), dtype=torch.float32)
+        features[1, 0, :] = torch.linspace(-2.0, 2.0, 5)
+        features[0, 0, semantic_col] = 1.0
+        return features
+
+    start_features = coordinate_biased_features(1)
+    update_features = coordinate_biased_features(3)
+    extractor.set_queue([start_features, update_features])
+
+    frame = np.zeros((1, 5, 3), dtype=np.uint8)
+    image = Image.fromarray(frame)
+
+    registry = InstanceRegistry()
+    registry.register_keypoint(
+        KeypointState(
+            key="animalnose",
+            instance_label="animal",
+            label="nose",
+            x=1.0,
+            y=0.0,
+        )
+    )
+
+    tracker.start(image, registry, {})
+    tracker.prev_gray = None
+    results = tracker.update(image, {})
+
+    assert len(results) == 1
+    assert results[0]["visible"] is True
+    assert tracker.tracks["animalnose"].patch_rc == (0, 3)
+
+
 def test_motion_penalty_prefers_nearby_candidate_over_far_peak(monkeypatch):
     monkeypatch.setattr(
         "annolid.tracking.dino_keypoint_tracker.Dinov3FeatureExtractor",

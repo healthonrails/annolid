@@ -46,6 +46,7 @@ Open Tools → Advanced Parameters to fine‑tune tracking:
 - Clamp keypoints to instance mask and Mask snap radius: keep points inside their masks; increase radius to be more permissive near edges.
 - Search tighten, Velocity gain, Flow gain, Min/Max radius, Miss boost: tune the motion prior (uses optical flow and recent velocity).
 - Motion prior weight/soft radius/factor/miss relief/flow relief: adjust how strongly the motion prior penalizes unlikely jumps.
+- DINOv3 positional debias: suppress low-dimensional coordinate bias in DINO features before matching, useful when a keypoint repeatedly snaps to the same image location instead of the same body part.
 - Keypoint refine radius/sigma/temperature: track a small patch neighborhood around each keypoint and report the Gaussian‑weighted centroid (sub‑patch smoothing).
 
 Defaults work well on most videos; increase Search tighten and reduce Max radius for tighter, slower motion; do the opposite for fast motion.
