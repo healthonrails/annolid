@@ -476,7 +476,7 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
             )
             is_valid, errors, warnings = validate_model_registry_entries(registry)
             for message in warnings:
-                logger.warning("Model registry warning: %s", message)
+                logger.info("Model registry notice: %s", message)
             if not is_valid:
                 for message in errors:
                     logger.error("Model registry error: %s", message)
@@ -562,7 +562,7 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
     def _startup_annolid_bot(self) -> None:
         """Start Annolid Bot when the main window opens."""
         if not self._should_autostart_annolid_bot():
-            logger.info("Annolid Bot hidden background autostart skipped.")
+            logger.debug("Annolid Bot hidden background autostart skipped.")
             return
         try:
             manager = self.ensure_ai_chat_manager()

@@ -22,6 +22,7 @@ from annolid.tracking.domain import (
 from annolid.tracking.dino_keypoint_tracker import (
     DinoKeypointTracker,
     DinoKeypointVideoProcessor,
+    RefineRegion,
     SupportProbe,
 )
 
@@ -971,6 +972,9 @@ def test_support_probes_prefer_contextual_candidate(monkeypatch):
         structural_consistency_weight=0.0,
         symmetry_penalty=0.0,
         mask_similarity_bonus=0.0,
+        dinov3_positional_debias=False,
+        dinov3_backward_consistency=False,
+        keypoint_cluster_refine=False,
     )
 
     tracker = DinoKeypointTracker(
@@ -1034,6 +1038,9 @@ def test_gaussian_refine_shifts_keypoint_towards_secondary_peak(monkeypatch):
         motion_search_miss_boost=0.0,
         mask_similarity_bonus=0.0,
         velocity_smoothing=0.0,
+        dinov3_positional_debias=False,
+        dinov3_backward_consistency=False,
+        keypoint_cluster_refine=False,
     )
     tracker = DinoKeypointTracker(
         model_name="dummy",
@@ -1211,6 +1218,111 @@ def test_positional_debias_prefers_semantic_match_over_coordinate_bias(monkeypat
     assert tracker.tracks["animalnose"].patch_rc == (0, 3)
 
 
+def test_backward_consistency_prefers_candidate_mapping_to_previous_keypoint(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "annolid.tracking.dino_keypoint_tracker.Dinov3FeatureExtractor",
+        DummyExtractor,
+    )
+    config = CutieDinoTrackerConfig(
+        dinov3_backward_consistency=True,
+        dinov3_backward_consistency_weight=0.3,
+        dinov3_backward_consistency_tolerance=0,
+        pixel_refine_enabled=False,
+        mask_descriptor_weight=0.0,
+        appearance_bundle_weight=0.0,
+        baseline_similarity_weight=0.0,
+        structural_consistency_weight=0.0,
+        symmetry_penalty=0.0,
+        support_probe_weight=0.0,
+        motion_prior_penalty_weight=0.0,
+        motion_search_gain=0.0,
+        motion_search_flow_gain=0.0,
+        motion_search_miss_boost=0.0,
+        keypoint_refine_radius=0,
+        context_weight=0.0,
+        part_shared_weight=0.0,
+    )
+    tracker = DinoKeypointTracker(
+        model_name="dummy",
+        runtime_config=config,
+        search_radius=4,
+        min_similarity=0.0,
+        momentum=0.0,
+        reference_weight=0.0,
+    )
+    extractor = tracker.extractor
+
+    start_features = torch.zeros((3, 1, 5), dtype=torch.float32)
+    start_features[:, 0, 1] = torch.tensor([1.0, 0.0, 0.0], dtype=torch.float32)
+    start_features[:, 0, 3] = torch.tensor(
+        [0.95, math.sqrt(1.0 - 0.95**2), 0.0], dtype=torch.float32
+    )
+
+    update_features = torch.zeros((3, 1, 5), dtype=torch.float32)
+    update_features[:, 0, 2] = torch.tensor(
+        [0.93, 0.0, math.sqrt(1.0 - 0.93**2)], dtype=torch.float32
+    )
+    update_features[:, 0, 4] = torch.tensor(
+        [0.95, math.sqrt(1.0 - 0.95**2), 0.0], dtype=torch.float32
+    )
+
+    extractor.set_queue([start_features, update_features])
+
+    frame = np.zeros((1, 5, 3), dtype=np.uint8)
+    image = Image.fromarray(frame)
+
+    registry = InstanceRegistry()
+    registry.register_keypoint(
+        KeypointState(
+            key="animalnose",
+            instance_label="animal",
+            label="nose",
+            x=1.0,
+            y=0.0,
+        )
+    )
+
+    tracker.start(image, registry, {})
+    tracker.prev_gray = None
+    results = tracker.update(image, {})
+
+    assert len(results) == 1
+    assert results[0]["visible"] is True
+    assert tracker.tracks["animalnose"].patch_rc == (0, 2)
+
+
+def test_connected_peak_refine_aggregates_only_seed_component():
+    config = CutieDinoTrackerConfig(
+        keypoint_cluster_refine=True,
+        keypoint_cluster_refine_radius=2,
+        keypoint_cluster_refine_drop=0.12,
+        keypoint_refine_temperature=0.2,
+    )
+    tracker = object.__new__(DinoKeypointTracker)
+    tracker.runtime_config = config
+    tracker.keypoint_refine_temperature = config.keypoint_refine_temperature
+
+    refine_region = RefineRegion(
+        logits=np.array([[0.0, 1.0, 0.94, 0.2, 0.98]], dtype=np.float32),
+        r_min=0,
+        c_min=0,
+        valid_mask=None,
+    )
+    refined_x, refined_y, confidence = tracker._refine_keypoint_xy_from_connected_peak(
+        center_rc=(0, 1),
+        fallback_xy=(1.0, 0.0),
+        refine_region=refine_region,
+        patch_centers_x=np.arange(5, dtype=np.float32),
+        patch_centers_y=np.array([0.0], dtype=np.float32),
+    )
+
+    assert 1.0 < refined_x < 2.0
+    assert refined_y == pytest.approx(0.0)
+    assert confidence > 0.0
+
+
 def test_motion_penalty_prefers_nearby_candidate_over_far_peak(monkeypatch):
     monkeypatch.setattr(
         "annolid.tracking.dino_keypoint_tracker.Dinov3FeatureExtractor",
@@ -1237,6 +1349,9 @@ def test_motion_penalty_prefers_nearby_candidate_over_far_peak(monkeypatch):
         motion_prior_radius_factor=1.0,
         motion_prior_miss_relief=0.0,
         motion_prior_flow_relief=0.0,
+        dinov3_positional_debias=False,
+        dinov3_backward_consistency=False,
+        keypoint_cluster_refine=False,
     )
 
     tracker = DinoKeypointTracker(

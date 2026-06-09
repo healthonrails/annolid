@@ -456,6 +456,41 @@ class AdvancedParametersDialog(QDialog):
             )
         )
 
+        self.dinov3_backward_consistency_checkbox = QCheckBox(
+            "DINOv3 backward consistency"
+        )
+        self.dinov3_backward_consistency_checkbox.setChecked(
+            bool(getattr(self._tracker_config, "dinov3_backward_consistency", False))
+        )
+
+        self.dinov3_backward_consistency_weight_spinbox = QDoubleSpinBox()
+        self.dinov3_backward_consistency_weight_spinbox.setRange(0.0, 1.0)
+        self.dinov3_backward_consistency_weight_spinbox.setSingleStep(0.05)
+        self.dinov3_backward_consistency_weight_spinbox.setValue(
+            float(
+                getattr(self._tracker_config, "dinov3_backward_consistency_weight", 0.0)
+            )
+        )
+
+        self.keypoint_cluster_refine_checkbox = QCheckBox("Coherent peak refinement")
+        self.keypoint_cluster_refine_checkbox.setChecked(
+            bool(getattr(self._tracker_config, "keypoint_cluster_refine", False))
+        )
+
+        self.keypoint_cluster_refine_radius_spinbox = QSpinBox()
+        self.keypoint_cluster_refine_radius_spinbox.setRange(0, 8)
+        self.keypoint_cluster_refine_radius_spinbox.setSingleStep(1)
+        self.keypoint_cluster_refine_radius_spinbox.setValue(
+            int(getattr(self._tracker_config, "keypoint_cluster_refine_radius", 1))
+        )
+
+        self.keypoint_cluster_refine_drop_spinbox = QDoubleSpinBox()
+        self.keypoint_cluster_refine_drop_spinbox.setRange(0.0, 1.0)
+        self.keypoint_cluster_refine_drop_spinbox.setSingleStep(0.01)
+        self.keypoint_cluster_refine_drop_spinbox.setValue(
+            float(getattr(self._tracker_config, "keypoint_cluster_refine_drop", 0.1))
+        )
+
         self.mask_enforce_radius_spinbox = QSpinBox()
         self.mask_enforce_radius_spinbox.setRange(1, 256)
         self.mask_enforce_radius_spinbox.setSingleStep(1)
@@ -597,6 +632,39 @@ class AdvancedParametersDialog(QDialog):
             self._wrap_with_hint(
                 self.dinov3_positional_debias_strength_spinbox,
                 "0 disables projection; 1 removes the full estimated positional component.",
+            ),
+        )
+        tracker_form.addRow(
+            self._wrap_checkbox(
+                self.dinov3_backward_consistency_checkbox,
+                "Reward candidates that map back to the previous keypoint patch.",
+            )
+        )
+        tracker_form.addRow(
+            "Backward weight",
+            self._wrap_with_hint(
+                self.dinov3_backward_consistency_weight_spinbox,
+                "Score weight for backward nearest-neighbor agreement.",
+            ),
+        )
+        tracker_form.addRow(
+            self._wrap_checkbox(
+                self.keypoint_cluster_refine_checkbox,
+                "Aggregate the connected local similarity peak around the selected seed.",
+            )
+        )
+        tracker_form.addRow(
+            "Peak radius",
+            self._wrap_with_hint(
+                self.keypoint_cluster_refine_radius_spinbox,
+                "Patch radius for connected peak aggregation.",
+            ),
+        )
+        tracker_form.addRow(
+            "Peak drop",
+            self._wrap_with_hint(
+                self.keypoint_cluster_refine_drop_spinbox,
+                "Maximum score drop from the seed patch kept in the connected peak.",
             ),
         )
         tracker_form.addRow(
@@ -789,6 +857,21 @@ class AdvancedParametersDialog(QDialog):
         )
         self.dinov3_positional_debias_strength_spinbox.setValue(
             float(cfg.dinov3_positional_debias_strength)
+        )
+        self.dinov3_backward_consistency_checkbox.setChecked(
+            bool(cfg.dinov3_backward_consistency)
+        )
+        self.dinov3_backward_consistency_weight_spinbox.setValue(
+            float(cfg.dinov3_backward_consistency_weight)
+        )
+        self.keypoint_cluster_refine_checkbox.setChecked(
+            bool(cfg.keypoint_cluster_refine)
+        )
+        self.keypoint_cluster_refine_radius_spinbox.setValue(
+            int(cfg.keypoint_cluster_refine_radius)
+        )
+        self.keypoint_cluster_refine_drop_spinbox.setValue(
+            float(cfg.keypoint_cluster_refine_drop)
         )
         self.mask_enforce_checkbox.setChecked(bool(cfg.mask_enforce_position))
         self.mask_enforce_radius_spinbox.setValue(int(cfg.mask_enforce_snap_radius))
@@ -1173,6 +1256,11 @@ class AdvancedParametersDialog(QDialog):
             "dinov3_positional_debias": self.dinov3_positional_debias_checkbox.isChecked(),
             "dinov3_positional_debias_components": self.dinov3_positional_debias_components_spinbox.value(),
             "dinov3_positional_debias_strength": self.dinov3_positional_debias_strength_spinbox.value(),
+            "dinov3_backward_consistency": self.dinov3_backward_consistency_checkbox.isChecked(),
+            "dinov3_backward_consistency_weight": self.dinov3_backward_consistency_weight_spinbox.value(),
+            "keypoint_cluster_refine": self.keypoint_cluster_refine_checkbox.isChecked(),
+            "keypoint_cluster_refine_radius": self.keypoint_cluster_refine_radius_spinbox.value(),
+            "keypoint_cluster_refine_drop": self.keypoint_cluster_refine_drop_spinbox.value(),
             "mask_enforce_position": self.mask_enforce_checkbox.isChecked(),
             "mask_enforce_search_radius": snap_radius,
             "mask_enforce_snap_radius": snap_radius,

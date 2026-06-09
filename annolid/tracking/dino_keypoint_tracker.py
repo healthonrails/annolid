@@ -201,6 +201,7 @@ class DinoKeypointTracker:
         self._part_shared_counts: Dict[str, int] = {}
         self._last_norm_feats: Optional[torch.Tensor] = None
         self._last_grid_hw: Optional[Tuple[int, int]] = None
+        self._prev_matching_feats: Optional[torch.Tensor] = None
         self._stop_requested = False
         self.keypoint_refine_radius = max(
             0, int(getattr(self.runtime_config, "keypoint_refine_radius", 0))
@@ -242,6 +243,7 @@ class DinoKeypointTracker:
         self._part_shared_counts = {}
         self._last_norm_feats = None
         self._last_grid_hw = None
+        self._prev_matching_feats = None
 
     def start(
         self,
@@ -267,6 +269,7 @@ class DinoKeypointTracker:
         if self._stop_requested:
             return
         matching_feats = self._prepare_matching_feature_grid(feats)
+        self._prev_matching_feats = matching_feats.detach()
         context_map = self._compute_context_map(matching_feats)
         cropped_masks = self._crop_masks_for_roi(mask_lookup)
         self._last_patch_masks = {}
@@ -372,6 +375,13 @@ class DinoKeypointTracker:
             return []
         roi_changed = self._roi_box != prev_roi_box
         grid_h, grid_w = grid_hw
+        prev_matching_feats = self._prev_matching_feats
+        if (
+            roi_changed
+            or prev_matching_feats is None
+            or tuple(prev_matching_feats.shape[1:]) != tuple(grid_hw)
+        ):
+            prev_matching_feats = None
         matching_feats = self._prepare_matching_feature_grid(feats)
         self._last_norm_feats = matching_feats
         self._last_grid_hw = grid_hw
@@ -448,10 +458,26 @@ class DinoKeypointTracker:
         support_weight = float(
             max(0.0, getattr(self.runtime_config, "support_probe_weight", 0.0))
         )
+        backward_weight = float(
+            max(
+                0.0,
+                getattr(self.runtime_config, "dinov3_backward_consistency_weight", 0.0),
+            )
+        )
         velocity_smoothing = float(
             np.clip(getattr(self.runtime_config, "velocity_smoothing", 0.0), 0.0, 1.0)
         )
         use_body_prior = struct_weight > 0.0
+        use_backward_consistency = (
+            backward_weight > 0.0
+            and bool(getattr(self.runtime_config, "dinov3_backward_consistency", False))
+            and prev_matching_feats is not None
+        )
+        use_cluster_refine = (
+            bool(getattr(self.runtime_config, "keypoint_cluster_refine", False))
+            and int(getattr(self.runtime_config, "keypoint_cluster_refine_radius", 0))
+            > 0
+        )
 
         track_candidates: Dict[str, List[Candidate]] = {}
         refine_regions: Dict[str, RefineRegion] = {}
@@ -715,6 +741,12 @@ class DinoKeypointTracker:
                         patch_mask,
                         normalized_feats=matching_feats,
                     )
+                if use_backward_consistency and prev_matching_feats is not None:
+                    candidate_score += self._backward_consistency_score(
+                        candidate_desc,
+                        previous_feats=prev_matching_feats,
+                        previous_rc=(prev_r, prev_c),
+                    )
                 candidate_list.append(
                     Candidate(
                         rc=(r, c),
@@ -726,7 +758,7 @@ class DinoKeypointTracker:
                 )
 
             refine_region: Optional[RefineRegion] = None
-            if self.keypoint_refine_radius > 0:
+            if self.keypoint_refine_radius > 0 or use_cluster_refine:
                 refine_logits = sims.reshape(region_h, region_w).detach().cpu().numpy()
                 if mask_region is not None:
                     refine_logits = refine_logits + mask_region.astype(
@@ -768,10 +800,22 @@ class DinoKeypointTracker:
             else:
                 x, y = assignment.xy
                 refine_confidence = 0.0
+                cluster_refine_confidence = 0.0
                 body_prior_rejected = False
                 if self.keypoint_refine_radius > 0:
                     refined_x, refined_y, refine_confidence = (
                         self._refine_keypoint_xy_from_region(
+                            center_rc=assignment.rc,
+                            fallback_xy=(x, y),
+                            refine_region=refine_regions.get(track.key),
+                            patch_centers_x=patch_centers_x,
+                            patch_centers_y=patch_centers_y,
+                        )
+                    )
+                    x, y = refined_x, refined_y
+                if use_cluster_refine:
+                    refined_x, refined_y, cluster_refine_confidence = (
+                        self._refine_keypoint_xy_from_connected_peak(
                             center_rc=assignment.rc,
                             fallback_xy=(x, y),
                             refine_region=refine_regions.get(track.key),
@@ -868,6 +912,7 @@ class DinoKeypointTracker:
                     combined_conf = max(
                         similarity_conf,
                         float(refine_confidence),
+                        float(cluster_refine_confidence),
                         float(pixel_refine_confidence),
                     )
                     effective_momentum = self.momentum * combined_conf
@@ -973,6 +1018,7 @@ class DinoKeypointTracker:
 
         if self._is_fresh_start:
             self._is_fresh_start = False  # Clear the fresh start flag
+        self._prev_matching_feats = matching_feats.detach()
         return results
 
     def apply_external_corrections(
@@ -1152,6 +1198,150 @@ class DinoKeypointTracker:
 
         confidence = float(np.clip(max_weight / total, 0.0, 1.0))
         return (sum_x / total, sum_y / total, confidence)
+
+    def _refine_keypoint_xy_from_connected_peak(
+        self,
+        *,
+        center_rc: Tuple[int, int],
+        fallback_xy: Tuple[float, float],
+        refine_region: Optional[RefineRegion],
+        patch_centers_x: np.ndarray,
+        patch_centers_y: np.ndarray,
+    ) -> Tuple[float, float, float]:
+        radius = int(getattr(self.runtime_config, "keypoint_cluster_refine_radius", 0))
+        if radius <= 0 or refine_region is None:
+            return fallback_xy[0], fallback_xy[1], 0.0
+
+        logits = refine_region.logits
+        if logits.size == 0:
+            return fallback_xy[0], fallback_xy[1], 0.0
+
+        local_r = int(center_rc[0] - refine_region.r_min)
+        local_c = int(center_rc[1] - refine_region.c_min)
+        if (
+            local_r < 0
+            or local_c < 0
+            or local_r >= int(logits.shape[0])
+            or local_c >= int(logits.shape[1])
+        ):
+            return fallback_xy[0], fallback_xy[1], 0.0
+
+        valid_mask = refine_region.valid_mask
+        if valid_mask is not None and not bool(valid_mask[local_r, local_c]):
+            return fallback_xy[0], fallback_xy[1], 0.0
+
+        r_start = max(0, local_r - radius)
+        r_end = min(int(logits.shape[0]) - 1, local_r + radius)
+        c_start = max(0, local_c - radius)
+        c_end = min(int(logits.shape[1]) - 1, local_c + radius)
+        center_score = float(logits[local_r, local_c])
+        threshold = center_score - float(
+            max(0.0, getattr(self.runtime_config, "keypoint_cluster_refine_drop", 0.1))
+        )
+
+        stack = [(local_r, local_c)]
+        visited: Set[Tuple[int, int]] = set()
+        component: List[Tuple[int, int, float]] = []
+        while stack:
+            r_idx, c_idx = stack.pop()
+            key = (r_idx, c_idx)
+            if key in visited:
+                continue
+            visited.add(key)
+            if r_idx < r_start or r_idx > r_end or c_idx < c_start or c_idx > c_end:
+                continue
+            if valid_mask is not None and not bool(valid_mask[r_idx, c_idx]):
+                continue
+            score = float(logits[r_idx, c_idx])
+            if score < threshold:
+                continue
+            component.append((r_idx, c_idx, score))
+            for dr in (-1, 0, 1):
+                for dc in (-1, 0, 1):
+                    if dr == 0 and dc == 0:
+                        continue
+                    stack.append((r_idx + dr, c_idx + dc))
+
+        if len(component) <= 1:
+            return fallback_xy[0], fallback_xy[1], 0.0
+
+        max_similarity = max(item[2] for item in component)
+        temperature = max(1e-4, float(self.keypoint_refine_temperature))
+        total = 0.0
+        sum_x = 0.0
+        sum_y = 0.0
+        for r_idx, c_idx, similarity in component:
+            global_r = int(refine_region.r_min + r_idx)
+            global_c = int(refine_region.c_min + c_idx)
+            if (
+                global_r < 0
+                or global_c < 0
+                or global_r >= len(patch_centers_y)
+                or global_c >= len(patch_centers_x)
+            ):
+                continue
+            weight = math.exp((float(similarity) - float(max_similarity)) / temperature)
+            total += weight
+            sum_x += weight * float(patch_centers_x[global_c])
+            sum_y += weight * float(patch_centers_y[global_r])
+        if total <= 1e-12:
+            return fallback_xy[0], fallback_xy[1], 0.0
+
+        max_area = float((2 * radius + 1) * (2 * radius + 1))
+        confidence = float(np.clip(len(component) / max_area, 0.0, 1.0))
+        return (sum_x / total, sum_y / total, confidence)
+
+    def _backward_consistency_score(
+        self,
+        candidate_desc: torch.Tensor,
+        *,
+        previous_feats: torch.Tensor,
+        previous_rc: Tuple[int, int],
+    ) -> float:
+        weight = float(
+            max(
+                0.0,
+                getattr(self.runtime_config, "dinov3_backward_consistency_weight", 0.0),
+            )
+        )
+        if weight <= 0.0 or previous_feats.dim() != 3:
+            return 0.0
+        if candidate_desc.device != previous_feats.device:
+            candidate_desc = candidate_desc.to(previous_feats.device)
+
+        prev_flat = previous_feats.reshape(previous_feats.shape[0], -1)
+        if prev_flat.numel() == 0:
+            return 0.0
+        sims = torch.matmul(candidate_desc, prev_flat)
+        best_idx = int(torch.argmax(sims).item())
+        best_sim = max(0.0, float(sims[best_idx].item()))
+        if best_sim <= 0.0:
+            return 0.0
+
+        grid_h, grid_w = previous_feats.shape[1:]
+        if grid_h <= 0 or grid_w <= 0:
+            return 0.0
+        best_r = int(best_idx // grid_w)
+        best_c = int(best_idx % grid_w)
+        dist = math.hypot(
+            float(best_r - previous_rc[0]), float(best_c - previous_rc[1])
+        )
+        tolerance = max(
+            0,
+            int(
+                getattr(
+                    self.runtime_config,
+                    "dinov3_backward_consistency_tolerance",
+                    1,
+                )
+            ),
+        )
+        if dist <= float(tolerance):
+            return weight * best_sim
+
+        radius = max(1.0, float(self.search_radius))
+        penalty = min(1.0, (dist - float(tolerance)) / radius)
+        return -weight * best_sim * penalty
 
     def _track_pixel_flow(
         self,

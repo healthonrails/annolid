@@ -9,6 +9,19 @@ def test_fly_keypoint_preset_enables_pixel_refinement():
     assert cfg.motion_search_max_radius <= 6.0
     assert cfg.dinov3_positional_debias is True
     assert cfg.dinov3_positional_debias_strength > 0.0
+    assert cfg.dinov3_backward_consistency is True
+    assert cfg.dinov3_backward_consistency_weight > 0.0
+    assert cfg.keypoint_cluster_refine is True
+
+
+def test_insid3_dinov3_methods_default_to_enabled():
+    cfg = CutieDinoTrackerConfig()
+
+    assert cfg.dinov3_positional_debias is True
+    assert cfg.dinov3_positional_debias_strength > 0.0
+    assert cfg.dinov3_backward_consistency is True
+    assert cfg.dinov3_backward_consistency_weight > 0.0
+    assert cfg.keypoint_cluster_refine is True
 
 
 def test_kpseg_apply_mode_defaults_to_never():

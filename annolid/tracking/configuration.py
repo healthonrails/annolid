@@ -59,6 +59,12 @@ TRACKER_PRESETS: Dict[str, Dict[str, object]] = {
         "dinov3_positional_debias": True,
         "dinov3_positional_debias_components": 6,
         "dinov3_positional_debias_strength": 0.35,
+        "dinov3_backward_consistency": True,
+        "dinov3_backward_consistency_weight": 0.15,
+        "dinov3_backward_consistency_tolerance": 1,
+        "keypoint_cluster_refine": True,
+        "keypoint_cluster_refine_radius": 2,
+        "keypoint_cluster_refine_drop": 0.12,
         "keypoint_refine_radius": 1,
         "keypoint_refine_sigma": 1.25,
         "keypoint_refine_temperature": 0.3,
@@ -113,6 +119,12 @@ TRACKER_PRESETS: Dict[str, Dict[str, object]] = {
         "dinov3_positional_debias": True,
         "dinov3_positional_debias_components": 6,
         "dinov3_positional_debias_strength": 0.5,
+        "dinov3_backward_consistency": True,
+        "dinov3_backward_consistency_weight": 0.2,
+        "dinov3_backward_consistency_tolerance": 1,
+        "keypoint_cluster_refine": True,
+        "keypoint_cluster_refine_radius": 1,
+        "keypoint_cluster_refine_drop": 0.08,
         "keypoint_refine_radius": 1,
         "keypoint_refine_sigma": 0.8,
         "keypoint_refine_temperature": 0.2,
@@ -179,9 +191,15 @@ class CutieDinoTrackerConfig:
     support_probe_weight: float = 0.35
     support_probe_mask_only: bool = True
     support_probe_mask_bonus: float = 0.05
-    dinov3_positional_debias: bool = False
+    dinov3_positional_debias: bool = True
     dinov3_positional_debias_components: int = 6
-    dinov3_positional_debias_strength: float = 0.0
+    dinov3_positional_debias_strength: float = 0.35
+    dinov3_backward_consistency: bool = True
+    dinov3_backward_consistency_weight: float = 0.15
+    dinov3_backward_consistency_tolerance: int = 1
+    keypoint_cluster_refine: bool = True
+    keypoint_cluster_refine_radius: int = 1
+    keypoint_cluster_refine_drop: float = 0.1
     keypoint_refine_radius: int = 0
     keypoint_refine_sigma: float = 1.25
     keypoint_refine_temperature: float = 0.35
@@ -290,6 +308,22 @@ class CutieDinoTrackerConfig:
         )
         if not self.dinov3_positional_debias:
             self.dinov3_positional_debias_strength = 0.0
+        self.dinov3_backward_consistency = bool(self.dinov3_backward_consistency)
+        self.dinov3_backward_consistency_weight = float(
+            min(1.0, max(0.0, float(self.dinov3_backward_consistency_weight)))
+        )
+        self.dinov3_backward_consistency_tolerance = max(
+            0, int(self.dinov3_backward_consistency_tolerance)
+        )
+        if not self.dinov3_backward_consistency:
+            self.dinov3_backward_consistency_weight = 0.0
+        self.keypoint_cluster_refine = bool(self.keypoint_cluster_refine)
+        self.keypoint_cluster_refine_radius = max(
+            0, int(self.keypoint_cluster_refine_radius)
+        )
+        self.keypoint_cluster_refine_drop = max(
+            0.0, float(self.keypoint_cluster_refine_drop)
+        )
         self.pixel_refine_enabled = bool(self.pixel_refine_enabled)
         self.pixel_refine_weight = float(
             min(1.0, max(0.0, float(self.pixel_refine_weight)))
