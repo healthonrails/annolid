@@ -1218,6 +1218,34 @@ def test_positional_debias_prefers_semantic_match_over_coordinate_bias(monkeypat
     assert tracker.tracks["animalnose"].patch_rc == (0, 3)
 
 
+def test_positional_debias_uses_svd_channel_basis_when_available():
+    tracker = object.__new__(DinoKeypointTracker)
+
+    def svd_basis(_feats, *, components):
+        assert components == 1
+        return torch.tensor([[0.0], [1.0]], dtype=torch.float32)
+
+    tracker._svd_positional_debias_basis = svd_basis
+
+    features = torch.tensor(
+        [
+            [[1.0, 0.0, 1.0]],
+            [[0.5, 2.0, -0.5]],
+        ],
+        dtype=torch.float32,
+    )
+
+    debiased = tracker._positionally_debias_feature_grid(
+        DinoKeypointTracker._normalize_feature_grid(features),
+        components=1,
+        strength=1.0,
+    )
+
+    assert torch.max(torch.abs(debiased[1])).item() == pytest.approx(0.0, abs=1e-6)
+    assert debiased[0, 0, 0].item() == pytest.approx(1.0, abs=1e-6)
+    assert debiased[0, 0, 2].item() == pytest.approx(1.0, abs=1e-6)
+
+
 def test_backward_consistency_prefers_candidate_mapping_to_previous_keypoint(
     monkeypatch,
 ):

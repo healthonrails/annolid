@@ -15,6 +15,13 @@ import math
 
 from annolid.data.videos import CV2Video
 from annolid.features import Dinov3Config, Dinov3FeatureExtractor
+from annolid.features.dinov3_feature_grid import (
+    apply_channel_debias_basis,
+    coordinate_debias_basis,
+    extract_feature_grid,
+    normalize_feature_grid,
+    svd_positional_basis,
+)
 from annolid.tracking.annotation_adapter import AnnotationAdapter
 from annolid.tracking.configuration import CutieDinoTrackerConfig
 from annolid.tracking.cutie_mask_manager import CutieMaskManager, MaskResult
@@ -202,6 +209,9 @@ class DinoKeypointTracker:
         self._last_norm_feats: Optional[torch.Tensor] = None
         self._last_grid_hw: Optional[Tuple[int, int]] = None
         self._prev_matching_feats: Optional[torch.Tensor] = None
+        self._svd_positional_basis_cache: Dict[
+            Tuple[str, int, int, int, int], torch.Tensor
+        ] = {}
         self._stop_requested = False
         self.keypoint_refine_radius = max(
             0, int(getattr(self.runtime_config, "keypoint_refine_radius", 0))
@@ -1601,8 +1611,7 @@ class DinoKeypointTracker:
 
     @staticmethod
     def _normalize_feature_grid(feats: torch.Tensor) -> torch.Tensor:
-        norms = torch.sqrt((feats * feats).sum(dim=0, keepdim=True))
-        return feats / (norms + 1e-12)
+        return normalize_feature_grid(feats)
 
     def _prepare_matching_feature_grid(self, feats: torch.Tensor) -> torch.Tensor:
         normalized = self._normalize_feature_grid(feats)
@@ -1634,13 +1643,24 @@ class DinoKeypointTracker:
         components: int,
         strength: float,
     ) -> torch.Tensor:
-        """Suppress low-dimensional coordinate-correlated DINO responses."""
+        """Suppress low-dimensional positional DINO responses."""
         if feats.dim() != 3:
             return feats
         channels, grid_h, grid_w = feats.shape
         if channels <= 0 or grid_h * grid_w <= 2:
             return feats
-        basis = self._coordinate_debias_basis(
+        svd_basis = self._svd_positional_debias_basis(
+            feats,
+            components=components,
+        )
+        if svd_basis is not None and svd_basis.numel() > 0:
+            return self._apply_channel_debias_basis(
+                feats,
+                svd_basis,
+                strength=strength,
+            )
+
+        basis = coordinate_debias_basis(
             grid_h,
             grid_w,
             components=components,
@@ -1656,58 +1676,40 @@ class DinoKeypointTracker:
         debiased = debiased.transpose(0, 1).reshape_as(feats)
         return self._normalize_feature_grid(debiased)
 
-    @staticmethod
-    def _coordinate_debias_basis(
-        grid_h: int,
-        grid_w: int,
+    def _svd_positional_debias_basis(
+        self,
+        feats: torch.Tensor,
         *,
         components: int,
-        device: torch.device,
-        dtype: torch.dtype,
     ) -> Optional[torch.Tensor]:
-        if grid_h <= 0 or grid_w <= 0 or components <= 0:
-            return None
-        y_coords = torch.linspace(-1.0, 1.0, grid_h, device=device, dtype=dtype)
-        x_coords = torch.linspace(-1.0, 1.0, grid_w, device=device, dtype=dtype)
-        yy, xx = torch.meshgrid(y_coords, x_coords, indexing="ij")
-        raw_terms = (
-            xx,
-            yy,
-            xx * yy,
-            xx.square(),
-            yy.square(),
-            xx.square() - yy.square(),
-            torch.sin(math.pi * xx),
-            torch.sin(math.pi * yy),
-            torch.cos(math.pi * xx),
-            torch.cos(math.pi * yy),
+        """Build an INSID3-style channel basis from a blank DINO response."""
+        channels, grid_h, grid_w = feats.shape
+        roi_w, roi_h = self._roi_size
+        if roi_w <= 0 or roi_h <= 0:
+            roi_w = max(1, int(grid_w * self.patch_size))
+            roi_h = max(1, int(grid_h * self.patch_size))
+        model_key = str(getattr(getattr(self.extractor, "cfg", None), "model_name", ""))
+        basis = svd_positional_basis(
+            extractor=self.extractor,
+            feature_shape=(int(channels), int(grid_h), int(grid_w)),
+            patch_size=int(self.patch_size),
+            components=int(components),
+            cache=self._svd_positional_basis_cache,
+            model_key=model_key,
+            image_size=(int(roi_w), int(roi_h)),
         )
-        columns: List[torch.Tensor] = []
-        for term in raw_terms:
-            col = term.reshape(-1)
-            col = col - col.mean()
-            norm = col.norm()
-            if float(norm.item()) <= 1e-12:
-                continue
-            columns.append(col / norm)
-            if len(columns) >= components:
-                break
-        if not columns:
+        if basis is None:
             return None
-        orthonormal: List[torch.Tensor] = []
-        for col in columns:
-            vec = col
-            for basis_col in orthonormal:
-                vec = vec - torch.dot(vec, basis_col) * basis_col
-            norm = vec.norm()
-            if float(norm.item()) <= 1e-12:
-                continue
-            orthonormal.append(vec / norm)
-            if len(orthonormal) >= components:
-                break
-        if not orthonormal:
-            return None
-        return torch.stack(orthonormal, dim=1)
+        return basis.to(device=feats.device, dtype=feats.dtype)
+
+    def _apply_channel_debias_basis(
+        self,
+        feats: torch.Tensor,
+        basis: torch.Tensor,
+        *,
+        strength: float,
+    ) -> torch.Tensor:
+        return apply_channel_debias_basis(feats, basis, strength=strength)
 
     @staticmethod
     def _avg_pool_descriptor_map(
@@ -1750,12 +1752,7 @@ class DinoKeypointTracker:
         return self._normalize_feature_grid(combined)
 
     def _extract_features(self, image: Image.Image) -> torch.Tensor:
-        feats = self.extractor.extract(image, return_layer="all", normalize=True)
-        if isinstance(feats, np.ndarray):
-            feats = torch.from_numpy(feats)
-        if feats.dim() == 4:  # [L, D, H, W]
-            feats = feats[-2:].mean(dim=0)
-        return feats
+        return extract_feature_grid(self.extractor, image)
 
     def _prepare_roi_inputs(
         self,

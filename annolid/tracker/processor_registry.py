@@ -12,6 +12,7 @@ COWTRACKER_BACKEND = "cowtracker"
 COTRACKER_BACKEND = "cotracker"
 TAPNEXT_BACKEND = "tapnext"
 VIDEOMT_BACKEND = "videomt"
+INSID3_BACKEND = "insid3"
 DEFAULT_BACKEND = "default"
 
 
@@ -125,6 +126,12 @@ def _load_videomt_processor() -> type:
     return VideoMTOnnxVideoProcessor
 
 
+def _load_insid3_processor() -> type:
+    from annolid.segmentation.insid3_video import Insid3VideoProcessor
+
+    return Insid3VideoProcessor
+
+
 def _load_default_processor() -> type:
     from annolid.segmentation.SAM.edge_sam_bg import VideoProcessor
 
@@ -165,6 +172,13 @@ TRACKING_PROCESSOR_REGISTRY.register(
         name=VIDEOMT_BACKEND,
         predicate=model_name_contains(VIDEOMT_BACKEND),
         loader=_load_videomt_processor,
+    )
+)
+TRACKING_PROCESSOR_REGISTRY.register(
+    TrackingBackendSpec(
+        name=INSID3_BACKEND,
+        predicate=model_name_contains(INSID3_BACKEND),
+        loader=_load_insid3_processor,
     )
 )
 TRACKING_PROCESSOR_REGISTRY.register(

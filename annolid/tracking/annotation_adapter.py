@@ -35,6 +35,7 @@ class AnnotationAdapter:
     image_width: int
     description: str = "Cutie+DINO"
     persist_json: bool = True
+    mask_description: str = "Cutie"
 
     def load_initial_state(self, annotation_dir: Path) -> Tuple[int, InstanceRegistry]:
         json_files = find_manual_seed_json_files(str(annotation_dir))
@@ -136,7 +137,7 @@ class AnnotationAdapter:
                     label=self._mask_label(instance.label),
                     shape_type="polygon",
                     flags={"instance_label": instance.label},
-                    description="Cutie",
+                    description=self.mask_description,
                 )
                 mask_shape.points = [
                     [float(x), float(y)]

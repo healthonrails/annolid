@@ -8,6 +8,7 @@ from annolid.segmentation.cutie_vos.runtime import (
     resolve_tracking_video_processor_class,
 )
 from annolid.tracker.processor_registry import (
+    INSID3_BACKEND,
     TrackingBackendSpec,
     TrackingProcessorRegistry,
     VIDEOMT_BACKEND,
@@ -80,3 +81,9 @@ def test_runtime_videomt_backend_is_registered() -> None:
     resolved = resolve_tracking_video_processor_class("videomt")
     assert resolved.__name__ == "VideoMTOnnxVideoProcessor"
     assert VIDEOMT_BACKEND == "videomt"
+
+
+def test_runtime_insid3_backend_is_registered() -> None:
+    resolved = resolve_tracking_video_processor_class("insid3_video")
+    assert resolved.__name__ == "Insid3VideoProcessor"
+    assert INSID3_BACKEND == "insid3"
