@@ -1,9 +1,10 @@
 # INSID3 Video Segmentation
 
-INSID3 Video is a training-free DINOv3 segmentation backend for videos. It uses
-one manually labeled polygon frame as an in-context reference, then segments each
-target frame with DINO feature matching, positional debiasing, patch clustering,
-and cluster aggregation.
+INSID3 Video is a training-free DINOv3 segmentation backend for videos inspired
+by [INSID3: Training-Free In-Context Segmentation with DINOv3](https://arxiv.org/abs/2603.28480).
+It uses one manually labeled polygon frame as an in-context reference, then
+segments each target frame with DINO feature matching, positional debiasing,
+patch clustering, and cluster aggregation.
 
 ## Requirements
 
@@ -59,6 +60,10 @@ The backend accepts runtime keyword arguments when constructed from scripts:
 - `insid3_tau`
 - `insid3_merge_threshold`
 - `insid3_max_cluster_area_growth`
+- `insid3_max_seed_area_growth`
+- `insid3_label_competition_margin`
+- `insid3_search_bbox_padding`
+- `insid3_spatial_prior_weight`
 - `insid3_crf_refine`
 - `insid3_crf_backend` (`auto`, `crf`, or `opencv`)
 - `insid3_crf_band_px`
@@ -69,5 +74,26 @@ Lower `insid3_short_side` values are faster. Higher `insid3_tau` values split
 clusters more aggressively. Higher `insid3_merge_threshold` values make the
 final mask more conservative. Lower `insid3_max_cluster_area_growth` values
 reject larger cluster expansions relative to the reference-matched candidate
-patches. Smaller `insid3_crf_band_px` values restrict refinement closer to the
-predicted boundary; larger values allow more boundary movement.
+patches. Lower `insid3_max_seed_area_growth` values keep predicted body-part
+masks closer to the manually labeled seed area. Lower
+`insid3_search_bbox_padding` values keep each body-part prediction closer to the
+same label in the previous frame; larger values allow faster motion. Smaller
+`insid3_crf_band_px` values restrict refinement closer to the predicted
+boundary; larger values allow more boundary movement.
+
+## References
+
+If you use this INSID3-style Annolid backend, cite the original INSID3 paper:
+
+```bibtex
+@misc{cuttano2026insid3,
+  title={INSID3: Training-Free In-Context Segmentation with DINOv3},
+  author={Cuttano, Claudia and Trivigno, Gabriele and Reich, Christoph and
+          Cremers, Daniel and Masone, Carlo and Roth, Stefan},
+  year={2026},
+  eprint={2603.28480},
+  archivePrefix={arXiv},
+  primaryClass={cs.CV},
+  doi={10.48550/arXiv.2603.28480}
+}
+```

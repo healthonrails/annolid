@@ -141,6 +141,9 @@ def test_candidate_localization_requires_backward_match_to_reference_mask():
             mask=torch.tensor([[True, False, False]]),
             prototype=torch.tensor([1.0, 0.0]),
             features=ref_features,
+            seed_area=1,
+            seed_shape=(1, 3),
+            seed_bbox=(0, 0, 0, 0),
         ),
         prototype_similarity=torch.einsum(
             "chw,c->hw",
@@ -150,6 +153,85 @@ def test_candidate_localization_requires_backward_match_to_reference_mask():
     )
 
     np.testing.assert_array_equal(candidate.numpy(), np.array([[True, False, False]]))
+
+
+def test_label_competition_prevents_body_part_cross_assignment(monkeypatch):
+    monkeypatch.setattr(
+        "annolid.segmentation.insid3_video._sklearn_agglomerative_labels",
+        lambda _features, _tau: None,
+    )
+    extractor = _FakeExtractor()
+    segmenter = Insid3VideoSegmenter(
+        config=Insid3VideoConfig(
+            tau=0.95,
+            merge_threshold=0.2,
+            label_competition_margin=0.0,
+        ),
+        extractor=extractor,
+    )
+    reference_features = torch.tensor(
+        [
+            [[1.0, 0.0]],
+            [[0.0, 1.0]],
+        ],
+        dtype=torch.float32,
+    )
+    target_features = torch.tensor(
+        [
+            [[1.0, 0.0]],
+            [[0.0, 1.0]],
+        ],
+        dtype=torch.float32,
+    )
+    extractor.queue(reference_features)
+    extractor.queue(target_features)
+
+    image = Image.fromarray(np.zeros((1, 2, 3), dtype=np.uint8))
+    references = segmenter.build_references(
+        image,
+        {
+            "head": np.array([[1, 0]], dtype=bool),
+            "front_leg_right": np.array([[0, 1]], dtype=bool),
+        },
+    )
+    predictions = segmenter.segment(image, references, output_size=(1, 2))
+
+    np.testing.assert_array_equal(predictions["head"], np.array([[True, False]]))
+    np.testing.assert_array_equal(
+        predictions["front_leg_right"],
+        np.array([[False, True]]),
+    )
+
+
+def test_seed_area_prior_caps_runaway_body_part_mask():
+    segmenter = Insid3VideoSegmenter(
+        config=Insid3VideoConfig(max_seed_area_growth=2.0, spatial_prior_weight=1.0),
+        extractor=_FakeExtractor(),
+    )
+    mask = np.ones((10, 10), dtype=bool)
+    score = np.ones((10, 10), dtype=np.float32)
+    prior = np.zeros((10, 10), dtype=bool)
+    prior[1:3, 1:3] = True
+    reference = _ReferenceObject(
+        label="hind_leg_right",
+        mask=torch.ones((1, 1), dtype=torch.bool),
+        prototype=torch.tensor([1.0]),
+        features=torch.ones((1, 1, 1)),
+        seed_area=4,
+        seed_shape=(10, 10),
+        seed_bbox=(1, 1, 2, 2),
+    )
+
+    regularized = segmenter._regularize_pixel_mask(
+        mask=mask,
+        score=score,
+        reference=reference,
+        output_size=(10, 10),
+        prior_mask=prior,
+    )
+
+    assert int(np.count_nonzero(regularized)) <= 8
+    assert regularized[1:3, 1:3].any()
 
 
 def test_crf_refiner_disabled_returns_mask_copy():
@@ -203,6 +285,30 @@ def test_insid3_processor_parses_crf_runtime_options(tmp_path, monkeypatch):
     assert processor.config.crf_band_px == 3
     assert processor.config.crf_p_core == 0.9
     assert processor.config.crf_iterations == 5
+
+
+def test_insid3_processor_parses_shape_prior_runtime_options(tmp_path, monkeypatch):
+    monkeypatch.setattr("annolid.segmentation.insid3_video.CV2Video", _FakeVideo)
+    monkeypatch.setattr(
+        "annolid.segmentation.insid3_video.Dinov3FeatureExtractor",
+        _SharedFakeExtractor,
+    )
+    video_path = tmp_path / "demo.mp4"
+    video_path.write_bytes(b"")
+
+    processor = Insid3VideoProcessor(
+        video_path=str(video_path),
+        results_folder=str(tmp_path / "demo"),
+        insid3_max_seed_area_growth=2.5,
+        insid3_label_competition_margin=0.01,
+        insid3_search_bbox_padding=0.5,
+        insid3_spatial_prior_weight=0.4,
+    )
+
+    assert processor.config.max_seed_area_growth == 2.5
+    assert processor.config.label_competition_margin == 0.01
+    assert processor.config.search_bbox_padding == 0.5
+    assert processor.config.spatial_prior_weight == 0.4
 
 
 def test_insid3_video_processor_writes_labelme_predictions(tmp_path, monkeypatch):

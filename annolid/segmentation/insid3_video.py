@@ -39,7 +39,11 @@ class Insid3VideoConfig:
     tau: float = 0.6
     merge_threshold: float = 0.2
     max_cluster_area_growth: float = 8.0
+    max_seed_area_growth: float = 3.0
     min_seed_pixels: int = 1
+    label_competition_margin: float = 0.02
+    search_bbox_padding: float = 0.75
+    spatial_prior_weight: float = 0.25
     crf_refine: bool = False
     crf_backend: str = "auto"
     crf_band_px: int = 10
@@ -54,6 +58,9 @@ class _ReferenceObject:
     mask: torch.Tensor
     prototype: torch.Tensor
     features: torch.Tensor
+    seed_area: int
+    seed_shape: Tuple[int, int]
+    seed_bbox: Tuple[int, int, int, int]
 
 
 class Insid3VideoSegmenter:
@@ -104,12 +111,21 @@ class Insid3VideoSegmenter:
                 continue
             fg = debiased[:, mask]
             prototype = F.normalize(fg.mean(dim=1), p=2, dim=0)
+            seed_bbox = _mask_bbox(np.asarray(mask_np, dtype=bool))
+            if seed_bbox is None:
+                continue
             refs.append(
                 _ReferenceObject(
                     label=label,
                     mask=mask,
                     prototype=prototype,
                     features=debiased.detach(),
+                    seed_area=int(np.count_nonzero(mask_np)),
+                    seed_shape=(
+                        int(np.asarray(mask_np).shape[0]),
+                        int(np.asarray(mask_np).shape[1]),
+                    ),
+                    seed_bbox=seed_bbox,
                 )
             )
         return refs
@@ -121,6 +137,7 @@ class Insid3VideoSegmenter:
         references: Sequence[_ReferenceObject],
         *,
         output_size: Tuple[int, int],
+        priors: Optional[Dict[str, np.ndarray]] = None,
     ) -> Dict[str, np.ndarray]:
         feats = self._extract_features(image)
         debiased = self._debias_feature_grid(feats)
@@ -144,7 +161,18 @@ class Insid3VideoSegmenter:
 
         predictions: Dict[str, np.ndarray] = {}
         image_arr = np.asarray(image.convert("RGB"), dtype=np.uint8)
-        for ref in references:
+        sim_maps = torch.stack(
+            [torch.einsum("chw,c->hw", debiased, ref.prototype) for ref in references],
+            dim=0,
+        )
+        best_label_sim = sim_maps.max(dim=0).values
+        for ref_idx, ref in enumerate(references):
+            sim = sim_maps[ref_idx]
+            competition_mask = None
+            if len(references) > 1:
+                competition_mask = sim >= (
+                    best_label_sim - float(self.config.label_competition_margin)
+                )
             patch_mask = self._predict_patch_mask(
                 feats=feats,
                 debiased=debiased,
@@ -152,9 +180,20 @@ class Insid3VideoSegmenter:
                 original_prototypes=original_prototypes,
                 debiased_prototypes=debiased_prototypes,
                 reference=ref,
+                prototype_similarity=sim,
+                label_competition_mask=competition_mask,
                 num_clusters=num_clusters,
             )
             mask = self._upsample_mask(patch_mask, output_size)
+            score = self._upsample_score_map(sim, output_size)
+            prior = priors.get(ref.label) if priors else None
+            mask = self._regularize_pixel_mask(
+                mask=mask,
+                score=score,
+                reference=ref,
+                output_size=output_size,
+                prior_mask=prior,
+            )
             predictions[ref.label] = self.mask_refiner.refine(image_arr, mask)
         return predictions
 
@@ -227,6 +266,80 @@ class Insid3VideoSegmenter:
         )[0, 0]
         return (up > 0.5).cpu().numpy().astype(bool)
 
+    @staticmethod
+    def _upsample_score_map(
+        score: torch.Tensor, output_size: Tuple[int, int]
+    ) -> np.ndarray:
+        height, width = int(output_size[0]), int(output_size[1])
+        up = F.interpolate(
+            score[None, None].float(),
+            size=(height, width),
+            mode="bilinear",
+            align_corners=False,
+        )[0, 0]
+        out = up.detach().cpu().numpy().astype(np.float32)
+        finite = np.isfinite(out)
+        if not bool(finite.any()):
+            return np.zeros((height, width), dtype=np.float32)
+        low = float(np.nanmin(out[finite]))
+        high = float(np.nanmax(out[finite]))
+        if high <= low:
+            return np.zeros((height, width), dtype=np.float32)
+        return ((out - low) / (high - low)).clip(0.0, 1.0)
+
+    def _regularize_pixel_mask(
+        self,
+        *,
+        mask: np.ndarray,
+        score: np.ndarray,
+        reference: _ReferenceObject,
+        output_size: Tuple[int, int],
+        prior_mask: Optional[np.ndarray],
+    ) -> np.ndarray:
+        mask_bool = np.asarray(mask, dtype=bool)
+        if not bool(mask_bool.any()):
+            return mask_bool
+
+        height, width = int(output_size[0]), int(output_size[1])
+        scale_y = height / max(1, int(reference.seed_shape[0]))
+        scale_x = width / max(1, int(reference.seed_shape[1]))
+        max_area = int(
+            max(
+                reference.seed_area + 1,
+                reference.seed_area
+                * scale_x
+                * scale_y
+                * max(1.0, float(self.config.max_seed_area_growth)),
+            )
+        )
+
+        anchor_mask = _scaled_seed_mask(reference, (height, width))
+        if prior_mask is not None and np.asarray(prior_mask).shape == mask_bool.shape:
+            prior_bool = np.asarray(prior_mask, dtype=bool)
+            if bool(prior_bool.any()):
+                anchor_mask = prior_bool
+                roi_mask = _expanded_bbox_mask(
+                    prior_bool,
+                    padding=float(self.config.search_bbox_padding),
+                )
+                restricted = mask_bool & roi_mask
+                if bool(restricted.any()):
+                    mask_bool = restricted
+
+        if int(np.count_nonzero(mask_bool)) <= max_area:
+            return _keep_components_near_anchor(mask_bool, anchor_mask)
+
+        capped = _cap_mask_area(
+            mask=mask_bool,
+            score=score,
+            anchor_mask=anchor_mask,
+            max_area=max_area,
+            spatial_prior_weight=float(self.config.spatial_prior_weight),
+        )
+        if bool(capped.any()):
+            return _keep_components_near_anchor(capped, anchor_mask)
+        return _keep_components_near_anchor(mask_bool, anchor_mask)
+
     def _predict_patch_mask(
         self,
         *,
@@ -236,14 +349,17 @@ class Insid3VideoSegmenter:
         original_prototypes: torch.Tensor,
         debiased_prototypes: torch.Tensor,
         reference: _ReferenceObject,
+        prototype_similarity: torch.Tensor,
+        label_competition_mask: Optional[torch.Tensor],
         num_clusters: int,
     ) -> torch.Tensor:
-        sim = torch.einsum("chw,c->hw", debiased, reference.prototype)
         candidate_mask = self._locate_candidate_mask(
             debiased=debiased,
             reference=reference,
-            prototype_similarity=sim,
+            prototype_similarity=prototype_similarity,
         )
+        if label_competition_mask is not None:
+            candidate_mask = candidate_mask & label_competition_mask
         matched_mask = candidate_mask & (cluster_labels >= 0)
         if not bool(matched_mask.any()):
             return candidate_mask
@@ -271,7 +387,7 @@ class Insid3VideoSegmenter:
         for cluster_id in range(num_clusters):
             idx = cluster_labels == cluster_id
             if bool(idx.any()):
-                cross_sim[cluster_id] = sim[idx].mean()
+                cross_sim[cluster_id] = prototype_similarity[idx].mean()
 
         combined = cross_sim * intra_sim
         area_weights[seed_id] = 1.0
@@ -282,21 +398,29 @@ class Insid3VideoSegmenter:
         final_mask[valid] = combined[cluster_labels[valid]] > float(
             self.config.merge_threshold
         )
+        if label_competition_mask is not None:
+            final_mask = final_mask & label_competition_mask
         if not bool(final_mask.any()):
             return candidate_mask
         candidate_area = int(candidate_mask.sum().item())
         final_area = int(final_mask.sum().item())
+        reference_area = max(1, int(reference.mask.sum().item()))
         max_growth = max(1.0, float(self.config.max_cluster_area_growth))
-        if candidate_area > 0 and final_area > max(
-            candidate_area + 1, candidate_area * max_growth
-        ):
+        max_seed_growth = max(1.0, float(self.config.max_seed_area_growth))
+        if (
+            candidate_area > 0
+            and final_area > max(candidate_area + 1, candidate_area * max_growth)
+        ) or final_area > max(reference_area + 1, reference_area * max_seed_growth):
             logger.debug(
                 "INSID3 cluster aggregation rejected runaway mask for '%s': "
-                "candidate_area=%s final_area=%s max_growth=%.2f",
+                "candidate_area=%s reference_area=%s final_area=%s "
+                "max_growth=%.2f max_seed_growth=%.2f",
                 reference.label,
                 candidate_area,
+                reference_area,
                 final_area,
                 max_growth,
+                max_seed_growth,
             )
             return candidate_mask
         return final_mask
@@ -408,6 +532,136 @@ def _neighbor_connected_component_labels(
     return labels
 
 
+def _mask_bbox(mask: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
+    ys, xs = np.nonzero(np.asarray(mask, dtype=bool))
+    if xs.size == 0 or ys.size == 0:
+        return None
+    return (int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max()))
+
+
+def _scaled_seed_mask(
+    reference: _ReferenceObject,
+    output_size: Tuple[int, int],
+) -> np.ndarray:
+    height, width = int(output_size[0]), int(output_size[1])
+    x1, y1, x2, y2 = reference.seed_bbox
+    src_h, src_w = reference.seed_shape
+    scale_x = width / max(1, int(src_w))
+    scale_y = height / max(1, int(src_h))
+    sx1 = int(np.clip(np.floor(x1 * scale_x), 0, width - 1))
+    sx2 = int(np.clip(np.ceil((x2 + 1) * scale_x) - 1, 0, width - 1))
+    sy1 = int(np.clip(np.floor(y1 * scale_y), 0, height - 1))
+    sy2 = int(np.clip(np.ceil((y2 + 1) * scale_y) - 1, 0, height - 1))
+    out = np.zeros((height, width), dtype=bool)
+    out[sy1 : sy2 + 1, sx1 : sx2 + 1] = True
+    return out
+
+
+def _expanded_bbox_mask(mask: np.ndarray, *, padding: float) -> np.ndarray:
+    mask_bool = np.asarray(mask, dtype=bool)
+    bbox = _mask_bbox(mask_bool)
+    out = np.zeros_like(mask_bool, dtype=bool)
+    if bbox is None:
+        return out
+    x1, y1, x2, y2 = bbox
+    height, width = mask_bool.shape
+    box_w = max(1, x2 - x1 + 1)
+    box_h = max(1, y2 - y1 + 1)
+    pad_x = int(round(box_w * max(0.0, float(padding))))
+    pad_y = int(round(box_h * max(0.0, float(padding))))
+    rx1 = max(0, x1 - pad_x)
+    rx2 = min(width - 1, x2 + pad_x)
+    ry1 = max(0, y1 - pad_y)
+    ry2 = min(height - 1, y2 + pad_y)
+    out[ry1 : ry2 + 1, rx1 : rx2 + 1] = True
+    return out
+
+
+def _keep_components_near_anchor(
+    mask: np.ndarray, anchor_mask: np.ndarray
+) -> np.ndarray:
+    mask_bool = np.asarray(mask, dtype=bool)
+    if not bool(mask_bool.any()):
+        return mask_bool
+    anchor_bool = np.asarray(anchor_mask, dtype=bool)
+    num_labels, labels = _connected_components(mask_bool)
+    if num_labels <= 2:
+        return mask_bool
+
+    keep = np.zeros_like(mask_bool, dtype=bool)
+    best_label = 0
+    best_score = -1.0
+    anchor_yx = np.column_stack(np.nonzero(anchor_bool))
+    anchor_center = (
+        anchor_yx.mean(axis=0)
+        if anchor_yx.size
+        else np.array(mask_bool.shape, dtype=np.float32) / 2.0
+    )
+    max_dist = max(float(max(mask_bool.shape)), 1.0)
+    for label_idx in range(1, num_labels):
+        component = labels == label_idx
+        overlap = int(np.logical_and(component, anchor_bool).sum())
+        yx = np.column_stack(np.nonzero(component))
+        center = yx.mean(axis=0)
+        distance = float(np.linalg.norm(center - anchor_center)) / max_dist
+        score = float(overlap) - distance
+        if score > best_score:
+            best_score = score
+            best_label = label_idx
+    if best_label > 0:
+        keep[labels == best_label] = True
+        return keep
+    return mask_bool
+
+
+def _cap_mask_area(
+    *,
+    mask: np.ndarray,
+    score: np.ndarray,
+    anchor_mask: np.ndarray,
+    max_area: int,
+    spatial_prior_weight: float,
+) -> np.ndarray:
+    mask_bool = np.asarray(mask, dtype=bool)
+    count = int(np.count_nonzero(mask_bool))
+    if count <= max_area:
+        return mask_bool.copy()
+
+    score_arr = np.asarray(score, dtype=np.float32)
+    if score_arr.shape != mask_bool.shape:
+        score_arr = np.zeros_like(mask_bool, dtype=np.float32)
+    yx = np.column_stack(np.nonzero(mask_bool))
+    if yx.size == 0:
+        return mask_bool.copy()
+
+    anchor_yx = np.column_stack(np.nonzero(np.asarray(anchor_mask, dtype=bool)))
+    anchor_center = (
+        anchor_yx.mean(axis=0)
+        if anchor_yx.size
+        else np.array(mask_bool.shape, dtype=np.float32) / 2.0
+    )
+    distance = np.linalg.norm(yx.astype(np.float32) - anchor_center, axis=1)
+    distance = distance / max(float(max(mask_bool.shape)), 1.0)
+    ranking = score_arr[mask_bool] - float(spatial_prior_weight) * distance
+    keep_count = max(1, min(int(max_area), count))
+    keep_indices = np.argpartition(ranking, -keep_count)[-keep_count:]
+    capped = np.zeros_like(mask_bool, dtype=bool)
+    capped[yx[keep_indices, 0], yx[keep_indices, 1]] = True
+    return capped
+
+
+def _connected_components(mask: np.ndarray) -> tuple[int, np.ndarray]:
+    try:
+        import cv2
+
+        return cv2.connectedComponents(np.asarray(mask, dtype=np.uint8), connectivity=8)
+    except Exception:
+        from scipy import ndimage
+
+        labels, count = ndimage.label(np.asarray(mask, dtype=bool))
+        return int(count) + 1, labels.astype(np.int32, copy=False)
+
+
 class Insid3VideoProcessor:
     """Annolid video processor wrapper for INSID3-style segmentation."""
 
@@ -468,6 +722,30 @@ class Insid3VideoProcessor:
                 runtime.pop(
                     "insid3_max_cluster_area_growth",
                     runtime.pop("max_cluster_area_growth", 8.0),
+                )
+            ),
+            max_seed_area_growth=float(
+                runtime.pop(
+                    "insid3_max_seed_area_growth",
+                    runtime.pop("max_seed_area_growth", 3.0),
+                )
+            ),
+            label_competition_margin=float(
+                runtime.pop(
+                    "insid3_label_competition_margin",
+                    runtime.pop("label_competition_margin", 0.02),
+                )
+            ),
+            search_bbox_padding=float(
+                runtime.pop(
+                    "insid3_search_bbox_padding",
+                    runtime.pop("search_bbox_padding", 0.75),
+                )
+            ),
+            spatial_prior_weight=float(
+                runtime.pop(
+                    "insid3_spatial_prior_weight",
+                    runtime.pop("spatial_prior_weight", 0.25),
                 )
             ),
             crf_refine=_runtime_bool(
@@ -539,6 +817,9 @@ class Insid3VideoProcessor:
             int(self.video_loader.get_width()),
         )
         written = 0
+        prior_masks: Dict[str, np.ndarray] = {
+            label: np.asarray(mask, dtype=bool).copy() for label, mask in masks.items()
+        }
         for offset, frame_number in enumerate(
             range(start_frame, end_frame + 1), start=1
         ):
@@ -549,6 +830,7 @@ class Insid3VideoProcessor:
                 frame_image,
                 references,
                 output_size=output_size,
+                priors=prior_masks,
             )
             frame_registry = InstanceRegistry()
             for label, mask in masks_by_label.items():
@@ -563,6 +845,9 @@ class Insid3VideoProcessor:
                 registry=frame_registry,
                 output_dir=self.results_folder,
             )
+            for label, mask in masks_by_label.items():
+                if np.asarray(mask).any():
+                    prior_masks[label] = np.asarray(mask, dtype=bool).copy()
             written += 1
             self._report_progress(offset, total)
 
