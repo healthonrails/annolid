@@ -17,7 +17,10 @@ from annolid.gui.flybody_support import (
     pick_ready_flybody_runtime,
     summarize_flybody_status,
 )
-from annolid.gui.models_registry import PATCH_SIMILARITY_MODELS
+from annolid.gui.widgets.dino_training_ui_shared import (
+    configure_dino_model_combo,
+    selected_dino_model_identifier,
+)
 from annolid.gui.threejs_support import supports_threejs_canvas
 from annolid.gui.threejs_examples import (
     attach_flybody_floor,
@@ -1108,12 +1111,11 @@ class ViewerToolsMixin:
         layout = QtWidgets.QFormLayout(dialog)
 
         model_combo = QtWidgets.QComboBox(dialog)
-        for cfg in PATCH_SIMILARITY_MODELS:
-            model_combo.addItem(cfg.display_name, cfg.identifier)
-
-        current_index = model_combo.findData(self.pca_map_model)
-        if current_index >= 0:
-            model_combo.setCurrentIndex(current_index)
+        configure_dino_model_combo(
+            model_combo,
+            default_identifier=self.pca_map_model,
+            editable=True,
+        )
 
         alpha_spin = QtWidgets.QDoubleSpinBox(dialog)
         alpha_spin.setRange(0.05, 1.0)
@@ -1138,7 +1140,7 @@ class ViewerToolsMixin:
         buttons.rejected.connect(dialog.reject)
 
         if dialog.exec_() == QtWidgets.QDialog.Accepted:
-            self.pca_map_model = model_combo.currentData()
+            self.pca_map_model = selected_dino_model_identifier(model_combo)
             self.pca_map_alpha = alpha_spin.value()
             self.pca_map_clusters = cluster_spin.value()
             self.settings.setValue("pca_map/model", self.pca_map_model)

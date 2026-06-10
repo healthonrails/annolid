@@ -61,6 +61,7 @@ from annolid.gui.features import (
 )
 
 from annolid.annotation.pose_schema import PoseSchema
+from annolid.features.dino_models import resolve_dino_model_id
 from annolid.gui.model_manager import AIModelManager
 from annolid.gui.models_registry import (
     PATCH_SIMILARITY_DEFAULT_MODEL,
@@ -516,7 +517,7 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         return controller
 
     def _initialize_dino_defaults(self) -> None:
-        self.patch_similarity_model = str(
+        self.patch_similarity_model = resolve_dino_model_id(
             self.settings.value(
                 "patch_similarity/model", PATCH_SIMILARITY_DEFAULT_MODEL
             )
@@ -525,7 +526,7 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
             self.settings.value("patch_similarity/alpha", 0.55)
         )
         self.patch_similarity_alpha = min(max(self.patch_similarity_alpha, 0.05), 1.0)
-        self.pca_map_model = str(
+        self.pca_map_model = resolve_dino_model_id(
             self.settings.value(
                 "pca_map/model",
                 self.patch_similarity_model or PATCH_SIMILARITY_DEFAULT_MODEL,

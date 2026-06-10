@@ -10,7 +10,7 @@ This tutorial shows how to track labeled body-part keypoints through a video usi
 - Internet access for the first run to download DINOv3 weights from Hugging Face, or a local cache at `DINOV3_LOCATION`.
 - Python package `transformers>=4.39` available in your environment (required by the DINOv3 extractor).
 
-Tip: If the DINOv3 checkpoint is gated, run `huggingface-cli login` once in your shell, or pre‑download the model into a folder and set `DINOV3_LOCATION=/path/to/cache`.
+Tip: If the DINOv3 checkpoint is gated, accept the model license on Hugging Face and run `hf auth login` once in your shell, or set `HF_TOKEN`.
 
 ## 1. Prepare the initial frame
 1. Open your video in Annolid and navigate to the frame you want to start from.
@@ -22,12 +22,39 @@ Notes on keypoint naming:
 - To enable symmetry constraints (prevent left/right swaps), set `symmetry_pairs` in `CutieDinoTrackerConfig`, e.g. `symmetry_pairs=(("leftear","rightear"),)`.
 - Annolid stores instance/keypoint association in the shape list; adding points while your instance is selected ensures correct linkage.
 
-## 2. Choose the DINOv3 backbone (once)
-- Open Tools → Patch Similarity Settings…
-- Pick a DINO model. Recommended starting point: “DINOv3 ViT‑S/16 (gated)”.
-- Adjust overlay opacity if you plan to use the heatmap tool; this setting is also used by keypoint tracking to select the backbone.
+## 2. Choose and cache the DINOv3 backbone
+Open **Tools → Advanced Parameters → Tracker → DINO feature model** and pick a model. Recommended starting point: **DINOv3 ViT-S/16 (gated, recommended)**. You can also paste a Hugging Face model id into this editable field.
 
-Behind the scenes, Annolid uses the same DINO model for both patch similarity overlays and keypoint tracking.
+Common choices:
+
+| Model | Best use |
+| --- | --- |
+| `facebook/dinov3-vits16-pretrain-lvd1689m` | Default interactive tracking; fastest DINOv3 option. |
+| `facebook/dinov3-vits16plus-pretrain-lvd1689m` | Slightly stronger descriptors with modest extra memory. |
+| `facebook/dinov3-vitb16-pretrain-lvd1426` | Medium offline runs when ViT-S is not distinctive enough. |
+| `facebook/dinov3-vitl16-pretrain-lvd1689m` | Higher-memory offline runs. |
+| `facebook/dinov3-vith16plus-pretrain-lvd1689m` or `facebook/dinov3-vit7b16-pretrain-lvd1689m` | Specialized high-memory workflows; pre-download before long videos. |
+
+To list the supported catalog:
+
+```bash
+annolid-run dinov3-models --list
+```
+
+To pre-download the default model before opening the GUI:
+
+```bash
+annolid-run dinov3-models --model facebook/dinov3-vits16-pretrain-lvd1689m
+```
+
+To use a shared local Hugging Face cache:
+
+```bash
+export DINOV3_LOCATION=/path/to/hf-cache
+annolid-run dinov3-models --model facebook/dinov3-vits16-pretrain-lvd1689m
+```
+
+The patch similarity and PCA map tools still have their own model setting under **Tools → Patch Similarity Settings** and **Tools → PCA Feature Map Settings**.
 
 ## 3. Start DINOv3 keypoint tracking
 1. In the model dropdown (top toolbar), select “DINOv3 Keypoint Tracker”.
@@ -43,6 +70,7 @@ Outputs (written live):
 
 ## 4. Advanced parameters (optional)
 Open Tools → Advanced Parameters to fine‑tune tracking:
+- DINO feature model: choose the DINOv3 backbone used for video keypoint tracking. Larger models can improve matching but increase download size, startup time, and memory use.
 - Clamp keypoints to instance mask and Mask snap radius: keep points inside their masks; increase radius to be more permissive near edges.
 - Search tighten, Velocity gain, Flow gain, Min/Max radius, Miss boost: tune the motion prior (uses optical flow and recent velocity).
 - Motion prior weight/soft radius/factor/miss relief/flow relief: adjust how strongly the motion prior penalizes unlikely jumps.
@@ -61,7 +89,7 @@ Defaults work well on most videos; increase Search tighten and reduce Max radius
 - Keep keypoint labels consistent across individuals and sessions.
 - Add 2–4 reliable anchor keypoints per instance (e.g., nose, ears, tail_base) for robust tracking.
 - Good lighting and moderate resolution (short side ≈ 768 px) help DINO descriptors remain distinctive.
-- If DINO downloads are blocked, set `DINOV3_LOCATION` to a local folder containing the model checkpoint; see the log for the exact model id in use.
+- If DINO downloads are blocked, run `annolid-run dinov3-models --local-files-only --model <model-id>` to verify that the checkpoint is already cached; see the log for the exact model id in use.
 
 ## Programmatic use (optional)
 You can run the tracker from Python for scripted workflows:

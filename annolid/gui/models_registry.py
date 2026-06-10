@@ -7,6 +7,10 @@ from annolid.utils.model_assets import (
     candidate_model_paths,
     resolve_existing_model_path,
 )
+from annolid.features.dino_models import (
+    DEFAULT_DINO_FEATURE_MODEL_ID,
+    iter_dino_feature_models,
+)
 
 
 @dataclass
@@ -91,30 +95,13 @@ MODEL_REGISTRY = [
 
 
 # Registry for patch-similarity (DINO) backbones. These identifiers correspond
-# to Hugging Face model IDs and may require gated-access for certain DINOv3
-# checkpoints.
+# to Hugging Face model IDs and may require gated access for DINOv3 checkpoints.
 PATCH_SIMILARITY_MODELS = [
-    ModelConfig("DINOv2 Base (open)", "facebook/dinov2-base", ""),
-    ModelConfig("DINOv2 Large (open)", "facebook/dinov2-large", ""),
-    ModelConfig(
-        "DINOv3 ViT-S/16 (gated)", "facebook/dinov3-vits16-pretrain-lvd1689m", ""
-    ),
-    ModelConfig(
-        "DINOv3 ViT-S/16+ (gated)", "facebook/dinov3-vits16plus-pretrain-lvd1689m", ""
-    ),
-    ModelConfig(
-        "DINOv3 ViT-L/16 (gated)", "facebook/dinov3-vitl16-pretrain-lvd1689m", ""
-    ),
-    ModelConfig(
-        "DINOv3 ViT-H/16+ (gated)", "facebook/dinov3-vith16plus-pretrain-lvd1689m", ""
-    ),
-    ModelConfig(
-        "DINOv3 ViT-7B/16 (gated)", "facebook/dinov3-vit7b16-pretrain-lvd1689m", ""
-    ),
-    ModelConfig("NVIDIA RADIOv4-SO400M", "nvidia/C-RADIOv4-SO400M", ""),
+    ModelConfig(model.display_name, model.model_id, "")
+    for model in iter_dino_feature_models()
 ]
 
-PATCH_SIMILARITY_DEFAULT_MODEL = PATCH_SIMILARITY_MODELS[2].identifier
+PATCH_SIMILARITY_DEFAULT_MODEL = DEFAULT_DINO_FEATURE_MODEL_ID
 
 
 MODEL_PATH_DEFAULTS: Dict[str, str] = {

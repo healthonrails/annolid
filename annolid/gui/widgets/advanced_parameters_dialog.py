@@ -20,6 +20,10 @@ from qtpy.QtWidgets import (
 )
 
 from annolid.tracking.configuration import CutieDinoTrackerConfig
+from annolid.gui.widgets.dino_training_ui_shared import (
+    configure_dino_model_combo,
+    selected_dino_model_identifier,
+)
 
 
 class AdvancedParametersDialog(QDialog):
@@ -409,6 +413,22 @@ class AdvancedParametersDialog(QDialog):
         else:
             self.tracker_preset_combo.setCurrentText(self._CUSTOM_TRACKER_PRESET)
 
+        self.dino_model_combo = QComboBox()
+        configure_dino_model_combo(
+            self.dino_model_combo,
+            default_identifier=str(
+                getattr(
+                    self._tracker_config,
+                    "patch_model_name",
+                    getattr(self._tracker_config, "dinov3_model_name", ""),
+                )
+            ),
+            editable=True,
+        )
+        self.dino_model_combo.setToolTip(
+            "Choose a DINO feature backbone or paste a Hugging Face model id."
+        )
+
         self.mask_enforce_checkbox = QCheckBox("Clamp keypoints to instance mask")
         self.mask_enforce_checkbox.setChecked(
             bool(self._tracker_config.mask_enforce_position)
@@ -585,6 +605,13 @@ class AdvancedParametersDialog(QDialog):
             self._wrap_with_hint(
                 self.tracker_preset_combo,
                 "Choose a tuned preset (e.g. rodents at 30fps with occlusions) or keep custom values.",
+            ),
+        )
+        tracker_form.addRow(
+            "DINO feature model",
+            self._wrap_with_hint(
+                self.dino_model_combo,
+                "Default ViT-S/16 is fastest. Larger gated DINOv3 models may improve descriptors but require Hugging Face access and more memory.",
             ),
         )
         tracker_form.addRow(
@@ -1248,8 +1275,11 @@ class AdvancedParametersDialog(QDialog):
             selected = str(self.tracker_preset_combo.currentText()).strip()
             if selected and selected != self._CUSTOM_TRACKER_PRESET:
                 preset = selected
+        selected_dino_model = selected_dino_model_identifier(self.dino_model_combo)
         self._tracker_settings = {
             "tracker_preset": preset,
+            "patch_model_name": selected_dino_model,
+            "dinov3_model_name": selected_dino_model,
             "keypoint_refine_radius": self.keypoint_refine_radius_spinbox.value(),
             "keypoint_refine_sigma": self.keypoint_refine_sigma_spinbox.value(),
             "keypoint_refine_temperature": self.keypoint_refine_temperature_spinbox.value(),

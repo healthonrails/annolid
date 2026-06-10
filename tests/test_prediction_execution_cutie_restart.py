@@ -2,7 +2,9 @@ from types import SimpleNamespace
 
 from qtpy import QtWidgets
 
+from annolid.gui.mixins.model_identity_mixin import ModelIdentityMixin
 from annolid.gui.mixins.prediction_execution_mixin import PredictionExecutionMixin
+from annolid.tracking.configuration import CutieDinoTrackerConfig
 
 
 def test_cutie_start_prefers_existing_predictions() -> None:
@@ -61,6 +63,35 @@ def test_tracking_processor_cache_key_is_stable_for_kwarg_order() -> None:
         {"t_max_value": 5, "results_folder": "/tmp/clip"},
     )
     assert key_a == key_b
+
+
+def test_insid3_tracking_processor_kwargs_use_selected_dino_model() -> None:
+    class _Host(PredictionExecutionMixin, ModelIdentityMixin):
+        pass
+
+    selected_model = "facebook/dinov3-vitl16-pretrain-lvd1689m"
+    host = _Host()
+    host.tracker_runtime_config = CutieDinoTrackerConfig(
+        patch_model_name=selected_model
+    )
+    host.patch_similarity_model = "facebook/dinov3-vits16-pretrain-lvd1689m"
+
+    kwargs = host._dino_model_kwargs_for_tracking_processor(
+        "insid3_video",
+        "INSID3_VIDEO_DINOV3",
+    )
+
+    assert kwargs == {
+        "patch_model_name": selected_model,
+        "dinov3_model_name": selected_model,
+    }
+    assert (
+        host._dino_model_kwargs_for_tracking_processor(
+            "Cutie",
+            "cutie-base-mega.pth",
+        )
+        == {}
+    )
 
 
 def test_sam3_start_uses_first_manual_seed_plus_one() -> None:

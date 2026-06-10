@@ -5,7 +5,10 @@ from typing import Iterable, Sequence, Tuple
 
 from qtpy import QtWidgets
 
-from annolid.gui.models_registry import PATCH_SIMILARITY_MODELS
+from annolid.features.dino_models import (
+    iter_dino_feature_models,
+    resolve_dino_model_id,
+)
 from annolid.segmentation.dino_kpseg import defaults as dino_defaults
 
 
@@ -39,13 +42,27 @@ def configure_dino_model_combo(
     combo: QtWidgets.QComboBox,
     *,
     default_identifier: str,
+    editable: bool = False,
 ) -> None:
     combo.clear()
-    for cfg in PATCH_SIMILARITY_MODELS:
-        combo.addItem(cfg.display_name, cfg.identifier)
-    idx = combo.findData(str(default_identifier))
+    for model in iter_dino_feature_models():
+        combo.addItem(model.display_name, model.model_id)
+    combo.setEditable(bool(editable))
+    default_model = resolve_dino_model_id(default_identifier)
+    idx = combo.findData(default_model)
     if idx >= 0:
         combo.setCurrentIndex(idx)
+    elif default_identifier:
+        combo.setCurrentText(str(default_identifier))
+
+
+def selected_dino_model_identifier(combo: QtWidgets.QComboBox) -> str:
+    text = str(combo.currentText() or "").strip()
+    data = str(combo.currentData() or "").strip()
+    for model in iter_dino_feature_models():
+        if text == model.display_name:
+            return model.model_id
+    return resolve_dino_model_id(text or data)
 
 
 def configure_dino_head_type_combo(

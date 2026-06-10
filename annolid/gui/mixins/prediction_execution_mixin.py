@@ -10,7 +10,8 @@ from pathlib import Path
 import cv2
 from qtpy import QtCore, QtWidgets
 
-from annolid.gui.models_registry import PATCH_SIMILARITY_MODELS
+from annolid.features.dino_models import resolve_dino_model_from_runtime
+from annolid.gui.models_registry import PATCH_SIMILARITY_DEFAULT_MODEL
 from annolid.gui.workers import FlexibleWorker
 from annolid.infrastructure import AnnotationStore
 from annolid.infrastructure.filesystem import (
@@ -19,8 +20,6 @@ from annolid.infrastructure.filesystem import (
 from annolid.utils.image_adjustments import normalize_brightness_contrast_value
 from annolid.utils.logger import logger
 from annolid.utils.qt2cv import convert_cv_image_to_qt_image
-
-PATCH_SIMILARITY_DEFAULT_MODEL = PATCH_SIMILARITY_MODELS[2].identifier
 
 
 class PredictionExecutionMixin:
@@ -113,6 +112,24 @@ class PredictionExecutionMixin:
             sorted((str(key), repr(value)) for key, value in processor_kwargs.items())
         )
         return (str(video_path), str(model_name or ""), normalized_kwargs)
+
+    def _dino_model_kwargs_for_tracking_processor(
+        self,
+        model_name: str | None,
+        model_weight: str | None,
+    ) -> dict[str, str]:
+        """Return DINO model kwargs for generic DINO-backed video processors."""
+        if not self._is_insid3_model(str(model_name or ""), str(model_weight or "")):
+            return {}
+        selected_dino_model = resolve_dino_model_from_runtime(
+            self.tracker_runtime_config,
+            fallback=getattr(self, "patch_similarity_model", None)
+            or PATCH_SIMILARITY_DEFAULT_MODEL,
+        )
+        return {
+            "patch_model_name": selected_dino_model,
+            "dinov3_model_name": selected_dino_model,
+        }
 
     @staticmethod
     def _is_cutie_missing_instance_message(message: str | None) -> bool:
@@ -458,6 +475,13 @@ class PredictionExecutionMixin:
                         video_path=self.video_file,
                         result_folder=self.video_results_folder,
                         kpseg_weights=resolved,
+                        tracker_model_name=str(
+                            resolve_dino_model_from_runtime(
+                                fresh_tracker_config,
+                                fallback=PATCH_SIMILARITY_DEFAULT_MODEL,
+                            )
+                            or PATCH_SIMILARITY_DEFAULT_MODEL
+                        ),
                         device=None,
                         runtime_config=fresh_tracker_config,
                     )
@@ -483,10 +507,16 @@ class PredictionExecutionMixin:
                     DinoKeypointVideoProcessor,
                 )
 
-                dino_model = (
-                    self.patch_similarity_model or PATCH_SIMILARITY_DEFAULT_MODEL
-                )
                 fresh_tracker_config = copy.deepcopy(self.tracker_runtime_config)
+                dino_model = str(
+                    resolve_dino_model_from_runtime(
+                        fresh_tracker_config,
+                        fallback=self.patch_similarity_model
+                        or PATCH_SIMILARITY_DEFAULT_MODEL,
+                    )
+                    or self.patch_similarity_model
+                    or PATCH_SIMILARITY_DEFAULT_MODEL
+                )
                 try:
                     self.video_processor = DinoKeypointVideoProcessor(
                         video_path=self.video_file,
@@ -709,6 +739,16 @@ class PredictionExecutionMixin:
                     processor_kwargs.update(self._cutie_brightness_contrast_kwargs())
                 if self._is_tapnext_model(model_name, model_weight):
                     processor_kwargs["tapnext_model_path"] = model_weight
+                dino_model_kwargs = self._dino_model_kwargs_for_tracking_processor(
+                    model_name,
+                    model_weight,
+                )
+                if dino_model_kwargs:
+                    processor_kwargs.update(dino_model_kwargs)
+                    logger.info(
+                        "Using DINO feature model '%s' for INSID3 video prediction.",
+                        dino_model_kwargs["patch_model_name"],
+                    )
                 try:
                     processor_cache_key = self._tracking_processor_cache_key(
                         self.video_file,

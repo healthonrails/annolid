@@ -14,6 +14,10 @@ from PIL import Image
 from annolid.annotation.masks import mask_to_polygons
 from annolid.data.videos import CV2Video
 from annolid.features import Dinov3Config, Dinov3FeatureExtractor
+from annolid.features.dino_models import (
+    DEFAULT_DINOV3_MODEL_ID,
+    resolve_dino_model_from_runtime,
+)
 from annolid.features.dinov3_feature_grid import (
     apply_channel_debias_basis,
     extract_feature_grid,
@@ -33,7 +37,7 @@ from annolid.utils.logger import logger
 class Insid3VideoConfig:
     """Runtime parameters for INSID3-style video segmentation."""
 
-    model_name: str = "facebook/dinov3-vits16-pretrain-lvd1689m"
+    model_name: str = DEFAULT_DINOV3_MODEL_ID
     short_side: int = 768
     svd_components: int = 20
     tau: float = 0.6
@@ -695,15 +699,12 @@ class Insid3VideoProcessor:
             for key, value in kwargs.items()
             if key not in self._RUNTIME_KWARG_EXCLUDE
         }
-        model_name = str(
-            runtime.pop(
-                "patch_model_name",
-                runtime.pop(
-                    "dinov3_model_name",
-                    "facebook/dinov3-vits16-pretrain-lvd1689m",
-                ),
-            )
+        model_name = resolve_dino_model_from_runtime(
+            runtime,
+            fallback=DEFAULT_DINOV3_MODEL_ID,
         )
+        runtime.pop("patch_model_name", None)
+        runtime.pop("dinov3_model_name", None)
         self.config = Insid3VideoConfig(
             model_name=model_name,
             short_side=int(

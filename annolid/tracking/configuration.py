@@ -5,6 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Tuple
 
+from annolid.features.dino_models import (
+    DEFAULT_DINO_FEATURE_MODEL_ID,
+    set_dino_model_on_runtime,
+)
+
 ProgressHook = Callable[[int, int], None]
 ErrorHook = Callable[[Exception], None]
 
@@ -258,6 +263,8 @@ class CutieDinoTrackerConfig:
     error_hook: Optional[ErrorHook] = None
     analytics_hook: Optional[Callable[[dict], None]] = None
     persist_labelme_json: bool = False
+    patch_model_name: str = DEFAULT_DINO_FEATURE_MODEL_ID
+    dinov3_model_name: str = DEFAULT_DINO_FEATURE_MODEL_ID
 
     @classmethod
     def available_presets(cls) -> Tuple[str, ...]:
@@ -278,6 +285,8 @@ class CutieDinoTrackerConfig:
     def __post_init__(self) -> None:
         if self.tracker_preset:
             self._apply_preset_defaults(str(self.tracker_preset))
+
+        set_dino_model_on_runtime(self, self.patch_model_name or self.dinov3_model_name)
 
         if self.mask_enforce_snap_radius is None:
             self.mask_enforce_snap_radius = int(self.mask_enforce_search_radius)

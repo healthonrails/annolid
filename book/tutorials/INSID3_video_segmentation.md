@@ -14,13 +14,31 @@ patch clustering, and cluster aggregation.
   access.
 - The usual Annolid Python environment with PyTorch and OpenCV.
 
+List the supported feature backbones with:
+
+```bash
+annolid-run dinov3-models --list --dinov3-only
+```
+
+Pre-download the default checkpoint before a long run with:
+
+```bash
+annolid-run dinov3-models --model facebook/dinov3-vits16-pretrain-lvd1689m
+```
+
+For gated DINOv3 checkpoints, accept the model license on Hugging Face and
+authenticate with `hf auth login` or `HF_TOKEN`. `DINOV3_LOCATION=/path/to/cache`
+can point Annolid at a shared Hugging Face cache.
+
 ## GUI Workflow
 
 1. Open the video.
 2. Draw polygon masks for the objects on a clear reference frame.
 3. Save the frame so Annolid creates the PNG and JSON seed pair.
 4. Select **INSID3 Video (DINOv3)** in the model dropdown.
-5. Run prediction for the desired frame range.
+5. Optional: open **Tools → Advanced Parameters → Tracker → DINO feature model**
+   to choose a different DINOv3 checkpoint or paste a Hugging Face model id.
+6. Run prediction for the desired frame range.
 
 Annolid writes predicted frames to the video folder's AnnotationStore NDJSON
 file, for example `mouse_annotations.ndjson`, instead of creating one JSON file
@@ -70,7 +88,9 @@ The backend accepts runtime keyword arguments when constructed from scripts:
 - `insid3_crf_p_core`
 - `insid3_crf_iterations`
 
-Lower `insid3_short_side` values are faster. Higher `insid3_tau` values split
+Use `patch_model_name` or `dinov3_model_name` to select the same model id shown
+by `annolid-run dinov3-models --list`. Lower `insid3_short_side` values are faster.
+Higher `insid3_tau` values split
 clusters more aggressively. Higher `insid3_merge_threshold` values make the
 final mask more conservative. Lower `insid3_max_cluster_area_growth` values
 reject larger cluster expansions relative to the reference-matched candidate

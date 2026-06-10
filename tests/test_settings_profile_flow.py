@@ -6,7 +6,9 @@ from types import SimpleNamespace
 
 from qtpy import QtCore, QtWidgets
 
+from annolid.gui.mixins.core_interaction_mixin import CoreInteractionMixin
 from annolid.gui.widgets.advanced_parameters_dialog import AdvancedParametersDialog
+from annolid.tracking.configuration import CutieDinoTrackerConfig
 from annolid.gui.widgets import settings_profile_flow as spf
 from annolid.interfaces.memory.adapters.settings_model import SettingsProfile
 
@@ -61,6 +63,14 @@ class _DummyWindow:
 
     def statusBar(self):
         return self._status_bar
+
+
+class _DummySam3Manager:
+    def dialog_defaults(self, _config):
+        return {}
+
+    def apply_dialog_results(self, _dialog, _config):
+        return None
 
 
 def test_apply_optical_flow_profile(monkeypatch, tmp_path) -> None:
@@ -295,3 +305,72 @@ def test_advanced_parameters_dialog_sam3_runtime_includes_window_handoff_flags()
     assert runtime["use_explicit_window_reseed"] is True
     assert runtime["allow_private_state_mutation"] is False
     assert float(runtime["boundary_mask_match_iou_threshold"]) == 0.6
+
+
+def test_set_advanced_params_applies_dino_model_to_tracking_and_settings(
+    monkeypatch, tmp_path
+) -> None:
+    _ensure_qapp()
+    selected_model = "facebook/dinov3-vitl16-pretrain-lvd1689m"
+
+    class _FakeAdvancedDialog:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def load_window_state(self, *_args, **_kwargs):
+            return None
+
+        def exec_(self):
+            return QtWidgets.QDialog.Accepted
+
+        def get_epsilon_value(self):
+            return 2.0
+
+        def is_automatic_pause_enabled(self):
+            return False
+
+        def get_t_max_value(self):
+            return 5
+
+        def is_cpu_only_enabled(self):
+            return False
+
+        def is_save_video_with_color_mask_enabled(self):
+            return False
+
+        def is_auto_recovery_missing_instances_enabled(self):
+            return True
+
+        def is_compute_optiocal_flow_enabled(self):
+            return True
+
+        def get_optical_flow_backend(self):
+            return "farneback"
+
+        def is_follow_prediction_progress_enabled(self):
+            return True
+
+        def get_videomt_settings(self):
+            return {}
+
+        def get_tracker_settings(self):
+            return {
+                "patch_model_name": selected_model,
+                "dinov3_model_name": selected_model,
+            }
+
+    monkeypatch.setattr(
+        "annolid.gui.mixins.core_interaction_mixin.AdvancedParametersDialog",
+        _FakeAdvancedDialog,
+    )
+
+    window = _DummyWindow(str(tmp_path / "settings.ini"))
+    window.sam3_manager = _DummySam3Manager()
+    window.tracker_runtime_config = CutieDinoTrackerConfig()
+
+    CoreInteractionMixin.set_advanced_params(window)
+
+    assert window.tracker_runtime_config.patch_model_name == selected_model
+    assert window.tracker_runtime_config.dinov3_model_name == selected_model
+    assert window.patch_similarity_model == selected_model
+    assert window.settings.value("patch_similarity/model") == selected_model

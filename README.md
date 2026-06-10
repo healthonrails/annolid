@@ -274,6 +274,7 @@ Large TIFF sessions also expose a unified `Layers` dock built from the shared la
 - Featured demo: [Tracking Four Interacting Mice with One Labeled Frame | 10-Minute Experiment](https://youtu.be/PNbPA649r78)
 - Behavior workflow tutorial: [Behavior labeling with Timeline, Flags, and Annolid Bot](docs/tutorials/behavior_timeline_flags_bot.md)
 - DINOv3 Keypoint Tracking tutorial: book/tutorials/DINOv3_keypoint_tracking.md
+- DINOv3 model selection/download helper: `annolid-run dinov3-models --list`
 [![Effortless Multiple Instance Tracking using Annolid: Beginner's Tutorial](https://annolid.com/assets/images/annolid_gui.png)](https://www.youtube.com/embed/ry9bnaajKCs?si=o_rdLobKeKb4-LWX)
 
 ![Effortlessly Create Polygon Labels for Objects using Segment Anything Models](docs/imgs/annolid_with_segment_anything.gif)

@@ -10,6 +10,11 @@ import torch
 import torch.nn.functional as F
 from PIL import Image, ImageOps
 
+from annolid.features.dino_models import (
+    DEFAULT_DINOV3_MODEL_ID,
+    resolve_dinov3_model_id,
+)
+
 try:  # transformers is an optional dependency
     from transformers import AutoImageProcessor, AutoModel
 except ImportError as exc:  # pragma: no cover - informative path
@@ -59,7 +64,7 @@ class Dinov3Config:
         full depth reported by the checkpoint configuration.
     """
 
-    model_name: str = "facebook/dinov3-vits16-pretrain-lvd1689m"
+    model_name: str = DEFAULT_DINOV3_MODEL_ID
     short_side: int = 768
     patch_size: int = 16
     cache_dir: Optional[str] = None
@@ -67,16 +72,6 @@ class Dinov3Config:
     use_amp: bool = True
     return_layer: Literal["last", "all"] = "last"
     layers: Optional[Iterable[int]] = None
-
-
-LEGACY_ALIAS_TO_HF_ID = {
-    "dinov3_vits16": "facebook/dinov3-vits16-pretrain-lvd1689m",
-    "dinov3_vits16plus": "facebook/dinov3-vits16plus-pretrain-lvd1689m",
-    "dinov3_vitb16": "facebook/dinov3-vitb16-pretrain-lvd1426",
-    "dinov3_vitl16": "facebook/dinov3-vitl16-pretrain-lvd1689m",
-    "dinov3_vith16plus": "facebook/dinov3-vith16plus-pretrain-lvd1689m",
-    "dinov3_vit7b16": "facebook/dinov3-vit7b16-pretrain-lvd1689m",
-}
 
 
 class Dinov3FeatureExtractor:
@@ -107,9 +102,7 @@ class Dinov3FeatureExtractor:
         self.cfg = config or Dinov3Config()
 
         # Resolve model identifier and cache directory
-        self.model_id = LEGACY_ALIAS_TO_HF_ID.get(
-            self.cfg.model_name, self.cfg.model_name
-        )
+        self.model_id = resolve_dinov3_model_id(self.cfg.model_name)
         cache_env = os.getenv("DINOV3_LOCATION")
         self.cache_dir = self.cfg.cache_dir or cache_env or None
 
@@ -206,7 +199,9 @@ class Dinov3FeatureExtractor:
         except Exception as exc:  # pragma: no cover - informative path
             hint = (
                 "Failed to load DINOv3 via transformers. Ensure 'transformers' is installed "
-                "and the requested checkpoint is available (network or local cache)."
+                "and the requested checkpoint is available (network or local cache). "
+                "You can pre-download a checkpoint with "
+                "`annolid-run dinov3-models --model <model-id>`."
             )
             raise RuntimeError(f"DINOv3 load error: {exc}. {hint}")
 

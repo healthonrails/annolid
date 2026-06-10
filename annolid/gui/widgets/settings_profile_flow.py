@@ -6,6 +6,7 @@ from typing import Callable, Optional
 
 from qtpy import QtCore, QtWidgets
 
+from annolid.features.dino_models import resolve_dino_model_id
 from annolid.interfaces.memory.adapters.settings_model import SettingsProfile
 from annolid.interfaces.memory.adapters.workspace import WorkspaceMemoryAdapter
 
@@ -241,7 +242,8 @@ def _apply_sam3d(window, profile: SettingsProfile) -> None:
 
 def _apply_patch_similarity(window, profile: SettingsProfile) -> None:
     payload = dict(profile.settings or {})
-    model = str(payload.get("model", payload.get("patch_similarity/model", "")) or "")
+    raw_model = payload.get("model", payload.get("patch_similarity/model", ""))
+    model = resolve_dino_model_id(raw_model) if str(raw_model or "").strip() else ""
     alpha = float(payload.get("alpha", payload.get("patch_similarity/alpha", 0.55)))
     if model:
         window.patch_similarity_model = model
@@ -252,7 +254,8 @@ def _apply_patch_similarity(window, profile: SettingsProfile) -> None:
 
 def _apply_pca_map(window, profile: SettingsProfile) -> None:
     payload = dict(profile.settings or {})
-    model = str(payload.get("model", payload.get("pca_map/model", "")) or "")
+    raw_model = payload.get("model", payload.get("pca_map/model", ""))
+    model = resolve_dino_model_id(raw_model) if str(raw_model or "").strip() else ""
     alpha = float(payload.get("alpha", payload.get("pca_map/alpha", 0.65)))
     clusters = int(payload.get("clusters", payload.get("pca_map/clusters", 0)))
     if model:

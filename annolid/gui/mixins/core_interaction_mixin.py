@@ -5,6 +5,7 @@ from typing import Optional
 
 from qtpy import QtCore, QtWidgets
 
+from annolid.features.dino_models import set_dino_model_on_runtime
 from annolid.gui.widgets.advanced_parameters_dialog import AdvancedParametersDialog
 from annolid.gui.widgets.segment_editor import SegmentEditorDialog
 from annolid.utils.logger import logger
@@ -185,6 +186,23 @@ class CoreInteractionMixin:
         tracker_settings = advanced_params_dialog.get_tracker_settings()
         for key, value in tracker_settings.items():
             setattr(self.tracker_runtime_config, key, value)
+        selected_dino_model = set_dino_model_on_runtime(
+            self.tracker_runtime_config,
+            tracker_settings,
+        )
+        if selected_dino_model:
+            self.patch_similarity_model = selected_dino_model
+            try:
+                self.settings.setValue("patch_similarity/model", selected_dino_model)
+            except Exception:
+                logger.debug(
+                    "Unable to persist DINO feature model selection.",
+                    exc_info=True,
+                )
+            logger.info(
+                "Set DINO feature model for tracking to: %s",
+                selected_dino_model,
+            )
 
         self.sam3_manager.apply_dialog_results(advanced_params_dialog, self._config)
 

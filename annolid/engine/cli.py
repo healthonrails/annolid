@@ -15,7 +15,7 @@ class _AnnolidHelpFormatter(
 
 
 _ROOT_COMMAND_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("Models", ("list-models", "train", "predict")),
+    ("Models", ("list-models", "dinov3-models", "train", "predict")),
     (
         "Agent",
         (
@@ -81,6 +81,8 @@ def _root_help_epilog() -> str:
     return (
         "Quick start:\n"
         "  annolid-run list-models\n"
+        "  annolid-run dinov3-models --list\n"
+        "  annolid-run dinov3-models --model facebook/dinov3-vits16-pretrain-lvd1689m\n"
         "  annolid-run train <model> --help-model\n"
         "  annolid-run predict <model> --help-model\n"
         "  annolid-run agent-status\n"
@@ -88,7 +90,7 @@ def _root_help_epilog() -> str:
         "  annolid-run agent-capabilities\n"
         "  annolid-run help train\n\n"
         "Common areas:\n"
-        "  Models: train, predict, list-models\n"
+        "  Models: train, predict, list-models, dinov3-models\n"
         "  Agent: agent, agent-behavior, agent-status, agent-capabilities, agent-security-*, agent-cron-*\n"
         "  Data: collect-labels, index-to-yolo, import-deeplabcut-training-data\n"
         "  Utilities: citations-*, validate-agent-output, validate-agent-tools"
@@ -323,6 +325,7 @@ def _format_root_help(parser: argparse.ArgumentParser) -> str:
         "",
         "Quick start:",
         "  annolid-run list-models",
+        "  annolid-run dinov3-models --list",
         "  annolid-run train <model> --help-model",
         "  annolid-run predict <model> --help-model",
         "  annolid-run agent-status",
@@ -376,6 +379,67 @@ def _cmd_list_models(_: argparse.Namespace) -> int:
     ]
     print(json.dumps(rows, indent=2))
     return 0
+
+
+def _cmd_dinov3_models(args: argparse.Namespace) -> int:
+    from annolid.features.dino_models import (
+        DEFAULT_DINOV3_MODEL_ID,
+        download_dino_model,
+        iter_dino_feature_models,
+        resolve_dino_model_id,
+    )
+
+    if bool(getattr(args, "list", False)):
+        rows = [
+            {
+                "display_name": model.display_name,
+                "model_id": model.model_id,
+                "family": model.family,
+                "gated": model.gated,
+                "aliases": list(model.aliases),
+                "note": model.note,
+            }
+            for model in iter_dino_feature_models(
+                dinov3_only=bool(getattr(args, "dinov3_only", False))
+            )
+        ]
+        print(json.dumps(rows, indent=2))
+        return 0
+
+    requested = list(getattr(args, "model", None) or [])
+    if not requested:
+        requested = [DEFAULT_DINOV3_MODEL_ID]
+
+    results: list[dict[str, str]] = []
+    exit_code = 0
+    for raw_model in requested:
+        model_id = resolve_dino_model_id(raw_model)
+        try:
+            snapshot_path = download_dino_model(
+                model_id,
+                cache_dir=getattr(args, "cache_dir", None),
+                local_files_only=bool(getattr(args, "local_files_only", False)),
+            )
+        except Exception as exc:
+            exit_code = 1
+            results.append(
+                {
+                    "model_id": model_id,
+                    "status": "error",
+                    "error": str(exc),
+                }
+            )
+            print(f"[annolid-run] {exc}", file=sys.stderr)
+            continue
+        results.append(
+            {
+                "model_id": model_id,
+                "status": "available",
+                "path": str(snapshot_path),
+            }
+        )
+    print(json.dumps(results, indent=2))
+    return exit_code
 
 
 def _cmd_validate_agent_output(args: argparse.Namespace) -> int:
@@ -1878,6 +1942,40 @@ def _build_root_parser() -> argparse.ArgumentParser:
 
     list_p = sub.add_parser("list-models", help="List available model plugins.")
     list_p.set_defaults(_handler=_cmd_list_models)
+
+    dinov3_p = sub.add_parser(
+        "dinov3-models",
+        help="List or pre-download DINOv3 feature backbones.",
+    )
+    dinov3_p.add_argument(
+        "--list",
+        action="store_true",
+        help="List supported DINO-family feature backbones as JSON.",
+    )
+    dinov3_p.add_argument(
+        "--dinov3-only",
+        action="store_true",
+        help="With --list, hide compatible non-DINOv3 backbones.",
+    )
+    dinov3_p.add_argument(
+        "--model",
+        action="append",
+        help=(
+            "Model id, display name, or alias to download. May be repeated. "
+            "Defaults to the recommended DINOv3 ViT-S/16 checkpoint."
+        ),
+    )
+    dinov3_p.add_argument(
+        "--cache-dir",
+        default=None,
+        help="Optional Hugging Face cache directory. DINOV3_LOCATION is also honored.",
+    )
+    dinov3_p.add_argument(
+        "--local-files-only",
+        action="store_true",
+        help="Verify the model is already cached without network access.",
+    )
+    dinov3_p.set_defaults(_handler=_cmd_dinov3_models)
 
     val_p = sub.add_parser(
         "validate-agent-output",

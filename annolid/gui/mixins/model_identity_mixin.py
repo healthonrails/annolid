@@ -119,6 +119,11 @@ class ModelIdentityMixin:
         )
 
     @staticmethod
+    def _is_insid3_model(identifier: str, weight: str) -> bool:
+        key = f"{identifier or ''} {weight or ''}".lower()
+        return "insid3" in key
+
+    @staticmethod
     def _is_yolo_model(identifier: str, weight: str) -> bool:
         identifier = identifier.lower()
         weight = weight.lower()

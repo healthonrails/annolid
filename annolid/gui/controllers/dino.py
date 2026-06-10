@@ -12,9 +12,11 @@ from annolid.gui.dino_patch_service import (
     DinoPCAMapService,
     DinoPCARequest,
 )
-from annolid.gui.models_registry import (
-    PATCH_SIMILARITY_MODELS,
-    PATCH_SIMILARITY_DEFAULT_MODEL,
+from annolid.features.dino_models import resolve_dino_model_id
+from annolid.gui.models_registry import PATCH_SIMILARITY_DEFAULT_MODEL
+from annolid.gui.widgets.dino_training_ui_shared import (
+    configure_dino_model_combo,
+    selected_dino_model_identifier,
 )
 from annolid.utils.logger import logger
 
@@ -52,7 +54,7 @@ class DinoController(QtCore.QObject):
             return
         settings = window.settings
 
-        window.patch_similarity_model = str(
+        window.patch_similarity_model = resolve_dino_model_id(
             settings.value("patch_similarity/model", PATCH_SIMILARITY_DEFAULT_MODEL)
         )
         window.patch_similarity_alpha = float(
@@ -62,7 +64,7 @@ class DinoController(QtCore.QObject):
             max(window.patch_similarity_alpha, 0.05), 1.0
         )
 
-        window.pca_map_model = str(
+        window.pca_map_model = resolve_dino_model_id(
             settings.value(
                 "pca_map/model",
                 window.patch_similarity_model or PATCH_SIMILARITY_DEFAULT_MODEL,
@@ -160,12 +162,11 @@ class DinoController(QtCore.QObject):
         layout = QtWidgets.QFormLayout(dialog)
 
         model_combo = QtWidgets.QComboBox(dialog)
-        for cfg in PATCH_SIMILARITY_MODELS:
-            model_combo.addItem(cfg.display_name, cfg.identifier)
-
-        current_index = model_combo.findData(window.patch_similarity_model)
-        if current_index >= 0:
-            model_combo.setCurrentIndex(current_index)
+        configure_dino_model_combo(
+            model_combo,
+            default_identifier=window.patch_similarity_model,
+            editable=True,
+        )
 
         alpha_spin = QtWidgets.QDoubleSpinBox(dialog)
         alpha_spin.setRange(0.05, 1.0)
@@ -185,7 +186,7 @@ class DinoController(QtCore.QObject):
         buttons.rejected.connect(dialog.reject)
 
         if dialog.exec_() == QtWidgets.QDialog.Accepted:
-            window.patch_similarity_model = model_combo.currentData()
+            window.patch_similarity_model = selected_dino_model_identifier(model_combo)
             window.patch_similarity_alpha = alpha_spin.value()
             window.settings.setValue(
                 "patch_similarity/model", window.patch_similarity_model
@@ -205,12 +206,11 @@ class DinoController(QtCore.QObject):
         layout = QtWidgets.QFormLayout(dialog)
 
         model_combo = QtWidgets.QComboBox(dialog)
-        for cfg in PATCH_SIMILARITY_MODELS:
-            model_combo.addItem(cfg.display_name, cfg.identifier)
-
-        current_index = model_combo.findData(window.pca_map_model)
-        if current_index >= 0:
-            model_combo.setCurrentIndex(current_index)
+        configure_dino_model_combo(
+            model_combo,
+            default_identifier=window.pca_map_model,
+            editable=True,
+        )
 
         alpha_spin = QtWidgets.QDoubleSpinBox(dialog)
         alpha_spin.setRange(0.05, 1.0)
@@ -235,7 +235,7 @@ class DinoController(QtCore.QObject):
         buttons.rejected.connect(dialog.reject)
 
         if dialog.exec_() == QtWidgets.QDialog.Accepted:
-            window.pca_map_model = model_combo.currentData()
+            window.pca_map_model = selected_dino_model_identifier(model_combo)
             window.pca_map_alpha = alpha_spin.value()
             window.pca_map_clusters = cluster_spin.value()
             window.settings.setValue("pca_map/model", window.pca_map_model)
