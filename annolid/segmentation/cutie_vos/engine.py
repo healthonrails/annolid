@@ -2,7 +2,6 @@
 
 import cv2
 import torch
-import gdown
 import numpy as np
 from pathlib import Path
 from typing import Dict, Optional, Iterator, Tuple, Union
@@ -18,6 +17,7 @@ from annolid.segmentation.cutie_vos.interactive_utils import image_to_torch, tor
 
 from annolid.utils.logger import logger
 from annolid.utils.devices import get_device  # For device selection
+from annolid.utils.model_assets import ensure_cached_model_asset
 
 
 class CutieEngine:
@@ -88,8 +88,12 @@ class CutieEngine:
             logger.info(
                 f"Cutie model weights not found at {model_path}. Downloading...")
             try:
-                gdown.cached_download(
-                    self._REMOTE_MODEL_URL, str(model_path), md5=self._MD5)
+                ensure_cached_model_asset(
+                    file_name=model_path.name,
+                    url=self._REMOTE_MODEL_URL,
+                    expected_md5=self._MD5,
+                    cache_dir=weights_dir,
+                )
                 logger.info(f"Cutie model downloaded to {model_path}")
             except Exception as e:
                 logger.error(

@@ -79,6 +79,87 @@ def test_cutie_processor_allows_disabling_legacy_missing_fill(
     assert processor.auto_fill_missing_instances is False
 
 
+def test_cutie_initialize_model_uses_shared_md5_downloader(
+    monkeypatch, tmp_path
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    class _OpenDict:
+        def __init__(self, cfg):
+            self.cfg = cfg
+
+        def __enter__(self):
+            return self.cfg
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _DummyCutie:
+        def __init__(self, cfg):
+            self.cfg = cfg
+            self.loaded_weights = None
+
+        def to(self, device):
+            self.device = device
+            return self
+
+        def eval(self):
+            return self
+
+        def load_weights(self, weights):
+            self.loaded_weights = weights
+
+    def _fake_ensure_cached_model_asset(**kwargs):
+        calls.append(kwargs)
+        return Path(kwargs["cache_dir"]) / kwargs["file_name"]
+
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    processor.current_folder = str(tmp_path)
+    processor.max_mem_frames = 7
+    processor.mem_every = 3
+    processor.device = "cpu"
+
+    monkeypatch.setattr(
+        cutie_predict,
+        "ensure_cached_model_asset",
+        _fake_ensure_cached_model_asset,
+    )
+    monkeypatch.setattr(cutie_predict.torch.cuda, "empty_cache", lambda: None)
+    monkeypatch.setattr(
+        cutie_predict.torch,
+        "load",
+        lambda *args, **kwargs: {"ok": True},
+    )
+    monkeypatch.setattr(cutie_predict, "initialize", lambda **kwargs: None)
+    monkeypatch.setattr(cutie_predict, "compose", lambda **kwargs: _EasyDict())
+    monkeypatch.setattr(cutie_predict, "open_dict", lambda cfg: _OpenDict(cfg))
+    monkeypatch.setattr(cutie_predict, "CUTIE", _DummyCutie)
+    monkeypatch.setattr(
+        cutie_predict.GlobalHydra,
+        "instance",
+        lambda: types.SimpleNamespace(
+            is_initialized=lambda: False,
+            clear=lambda: None,
+        ),
+    )
+
+    cutie_model, cfg = processor._initialize_model()
+
+    expected_path = tmp_path / "weights" / "cutie-base-mega.pth"
+    assert cfg.weights == str(expected_path)
+    assert cfg["max_mem_frames"] == 7
+    assert cfg["mem_every"] == 3
+    assert cutie_model.loaded_weights == {"ok": True}
+    assert calls == [
+        {
+            "file_name": "cutie-base-mega.pth",
+            "url": CutieCoreVideoProcessor._REMOTE_MODEL_URL,
+            "expected_md5": CutieCoreVideoProcessor._MD5,
+            "cache_dir": tmp_path / "weights",
+        }
+    ]
+
+
 def test_count_tracking_instances_uses_only_active_seed_labels() -> None:
     processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
     processor._seed_segment_lookup = {

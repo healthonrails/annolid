@@ -2,7 +2,6 @@ import csv
 import os
 import cv2
 import torch
-import gdown
 import json
 import numpy as np
 from bisect import bisect_right
@@ -32,6 +31,7 @@ from annolid.utils.image_adjustments import (
     compute_brightness_contrast_linear_transform,
 )
 from annolid.utils.logger import logger
+from annolid.utils.model_assets import ensure_cached_model_asset
 from annolid.utils.zone_shapes import is_zone_shape_payload
 from annolid.motion.optical_flow import (
     compute_optical_flow,
@@ -1553,11 +1553,15 @@ class CutieCoreVideoProcessor:
                 version_base="1.3.2", config_path="config", job_name="eval_config"
             )
             cfg = compose(config_name="eval_config")
-            model_path = os.path.join(
-                self.current_folder, "weights/cutie-base-mega.pth"
-            )
-            if not os.path.exists(model_path):
-                gdown.cached_download(self._REMOTE_MODEL_URL, model_path, md5=self._MD5)
+            model_path = Path(self.current_folder) / "weights" / "cutie-base-mega.pth"
+            if not model_path.exists():
+                model_path = ensure_cached_model_asset(
+                    file_name=model_path.name,
+                    url=self._REMOTE_MODEL_URL,
+                    expected_md5=self._MD5,
+                    cache_dir=model_path.parent,
+                )
+            model_path = str(model_path)
             with open_dict(cfg):
                 cfg["weights"] = model_path
                 cfg["max_mem_frames"] = self.max_mem_frames

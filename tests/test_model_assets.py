@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from hashlib import sha256
+from hashlib import md5, sha256
 from pathlib import Path
 
 from annolid.utils import model_assets
@@ -94,4 +94,41 @@ def test_ensure_cached_model_asset_retries_without_fuzzy_for_gdown_versions(
             "path": str(out),
             "quiet": True,
         },
+    ]
+
+
+def test_ensure_cached_model_asset_verifies_md5_without_forwarding_to_gdown(
+    tmp_path: Path, monkeypatch
+) -> None:
+    payload = b"cutie-pth-test-payload"
+    expected = md5(payload).hexdigest()  # noqa: S324 - testing legacy checksum flow
+    calls: list[dict[str, object]] = []
+
+    def _fake_cached_download(url: str, path: str, quiet: bool = True, **kwargs):
+        calls.append({"url": url, "path": path, "quiet": quiet, **kwargs})
+        if "md5" in kwargs:
+            raise TypeError("download() got an unexpected keyword argument 'md5'")
+        Path(path).write_bytes(payload)
+        return path
+
+    monkeypatch.setattr(
+        "annolid.utils.model_assets.gdown.cached_download",
+        _fake_cached_download,
+    )
+
+    out = model_assets.ensure_cached_model_asset(
+        file_name="cutie-base-mega.pth",
+        url="https://github.com/hkchengrex/Cutie/releases/download/v1.0/cutie-base-mega.pth",
+        expected_md5=expected,
+        cache_dir=tmp_path / "downloads",
+    )
+
+    assert out.read_bytes() == payload
+    assert calls == [
+        {
+            "url": "https://github.com/hkchengrex/Cutie/releases/download/v1.0/cutie-base-mega.pth",
+            "path": str(out),
+            "quiet": True,
+            "fuzzy": True,
+        }
     ]
