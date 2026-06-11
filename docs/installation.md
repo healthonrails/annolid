@@ -29,6 +29,18 @@ See [One-Line Installer](one_line_install_choices.md) for flags, extras, CPU/GPU
 
 The one-line installers also validate ONNX Runtime provider selection. On Linux and Windows, `onnxruntime-gpu` is installed when an NVIDIA driver reports CUDA 12.x or newer, including CUDA 13.x driver reports; otherwise Annolid uses CPU `onnxruntime`. On macOS, ONNX acceleration uses CoreML when available rather than a CUDA GPU wheel.
 
+Named installer profiles keep common setups reproducible:
+
+- `minimal` / `gui`: default GUI/core annotation setup
+- `workstation`: GUI plus `sam3,yolo,training`
+- `full`: GUI plus the `all` extra
+
+Example workstation install:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh | bash -s -- --profile workstation
+```
+
 For a non-interactive CPU baseline, use:
 
 ```bash
@@ -130,6 +142,11 @@ usable, while cloud providers, YOLO, audio, realtime hardware, large-image
 backends, and heavyweight integrations are explicit extras. If a feature is
 not installed, Annolid should start normally and show an install hint when that
 feature is opened.
+
+The one-line installers also keep optional SAM-HQ out of the default path.
+SAM-HQ is attempted only when a SAM-related extra such as `sam3` or the `all`
+profile is selected. This avoids a default GitHub source install on machines
+that only need the GUI/core annotation workflow.
 
 ### Note on `large_image`
 

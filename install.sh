@@ -10,6 +10,7 @@
 # Options:
 #   --install-dir DIR   Directory to install annolid (default: ./annolid)
 #   --venv-dir DIR      Directory for virtual environment (default: .venv inside install-dir)
+#   --profile PROFILE   Install profile: minimal,gui,workstation,full (default: gui)
 #   --extras EXTRAS     Comma-separated optional extras: audio,ai_chat,training,yolo,realtime,large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot,memory,all (GUI extras are always included)
 #   --no-gpu            Skip GPU/CUDA detection
 #   --use-conda         Use conda instead of venv (requires conda/mamba)
@@ -24,6 +25,7 @@ set -e
 INSTALL_DIR=""
 VENV_DIR=".venv"
 EXTRAS=""
+PROFILE="gui"
 NO_GPU=false
 USE_CONDA=false
 NO_INTERACTIVE=false
@@ -90,6 +92,7 @@ Usage:
 Options:
   --install-dir DIR   Directory to install annolid (default: ./annolid)
   --venv-dir DIR      Directory for virtual environment (default: .venv inside install-dir)
+  --profile PROFILE   Install profile: minimal,gui,workstation,full (default: gui)
   --extras EXTRAS     Comma-separated optional extras: audio,ai_chat,training,yolo,realtime,large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot,memory,all
   --no-gpu            Skip GPU/CUDA detection and install CPU ONNX Runtime
   --use-conda         Use conda instead of venv (requires conda/mamba)
@@ -186,6 +189,11 @@ while [[ $# -gt 0 ]]; do
         --venv-dir)
             require_arg_value "$1" "${2:-}"
             VENV_DIR="$2"
+            shift 2
+            ;;
+        --profile)
+            require_arg_value "$1" "${2:-}"
+            PROFILE="$2"
             shift 2
             ;;
         --extras)
@@ -637,6 +645,50 @@ interactive_config() {
     echo ""
 }
 
+profile_extras() {
+    case "$PROFILE" in
+        minimal|gui)
+            echo ""
+            ;;
+        workstation)
+            echo "sam3,yolo,training"
+            ;;
+        full)
+            echo "all"
+            ;;
+        *)
+            print_error "Unknown install profile: $PROFILE"
+            echo "  Supported profiles: minimal, gui, workstation, full"
+            exit 1
+            ;;
+    esac
+}
+
+merge_extras() {
+    local profile_values="$1"
+    local requested_values="$2"
+    local merged=()
+    local value
+    local existing
+
+    IFS=',' read -ra values <<< "${profile_values},${requested_values}"
+    for value in "${values[@]}"; do
+        value="$(echo "$value" | tr -d '[:space:]')"
+        [[ -z "$value" ]] && continue
+        existing=",${merged[*]},"
+        existing="${existing// /,}"
+        if [[ "$existing" != *",${value},"* ]]; then
+            merged+=("$value")
+        fi
+    done
+
+    if [[ ${#merged[@]} -gt 0 ]]; then
+        (IFS=,; echo "${merged[*]}")
+    else
+        echo ""
+    fi
+}
+
 # =============================================================================
 # Clone Repository
 # =============================================================================
@@ -746,29 +798,34 @@ install_annolid() {
     fi
 
     # GUI dependencies are always installed so `annolid` can launch immediately.
-    INSTALL_EXTRAS="gui"
-    if [[ -n "$EXTRAS" ]]; then
-        NORMALIZED_EXTRAS="$(echo "$EXTRAS" | tr -d '[:space:]')"
-        if [[ -n "$NORMALIZED_EXTRAS" && ",$NORMALIZED_EXTRAS," != *",gui,"* ]]; then
-            INSTALL_EXTRAS="gui,${NORMALIZED_EXTRAS}"
-        elif [[ -n "$NORMALIZED_EXTRAS" ]]; then
-            INSTALL_EXTRAS="$NORMALIZED_EXTRAS"
-        fi
-    fi
+    PROFILE_EXTRAS="$(profile_extras)"
+    NORMALIZED_EXTRAS="$(merge_extras "$PROFILE_EXTRAS" "$EXTRAS")"
+    INSTALL_EXTRAS="$(merge_extras "gui" "$NORMALIZED_EXTRAS")"
     INSTALL_TARGET="-e .[${INSTALL_EXTRAS}]"
+    echo "  Profile: $PROFILE"
     echo "  Including extras: $INSTALL_EXTRAS"
 
     echo "  Installing annolid (this may take a few minutes)..."
     $PIP_CMD install $INSTALL_TARGET
 
-    echo "  Installing SAM-HQ..."
-    $PIP_CMD install "segment-anything @ git+https://github.com/SysCV/sam-hq.git" || {
-        print_warning "SAM-HQ installation failed. Segment Anything may have limited functionality."
-    }
+    if extra_selected "sam3" || extra_selected "sam" || extra_selected "segment_anything" || extra_selected "all"; then
+        echo "  Installing SAM-HQ..."
+        $PIP_CMD install "segment-anything @ git+https://github.com/SysCV/sam-hq.git" || {
+            print_warning "SAM-HQ installation failed. Segment Anything may have limited functionality."
+        }
+    else
+        print_info "Skipping optional SAM-HQ install. Add --extras sam3 when needed."
+    fi
 
     install_onnx_runtime
 
     print_success "Annolid installed"
+}
+
+extra_selected() {
+    local needle="$1"
+    local selected=",${INSTALL_EXTRAS},"
+    [[ "$selected" == *",${needle},"* ]]
 }
 
 # =============================================================================

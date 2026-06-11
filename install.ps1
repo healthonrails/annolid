@@ -4,11 +4,12 @@
 #   irm https://raw.githubusercontent.com/healthonrails/annolid/main/install.ps1 | iex
 #
 # Usage (with options):
-#   .\install.ps1 [-InstallDir DIR] [-Extras EXTRAS] [-NoGpu] [-NoInteractive]
+#   .\install.ps1 [-InstallDir DIR] [-VenvDir DIR] [-Profile PROFILE] [-Extras EXTRAS] [-NoGpu] [-NoInteractive]
 #
 # Options:
 #   -InstallDir DIR      Directory to install annolid (default: .\annolid)
 #   -VenvDir DIR         Directory for virtual environment (default: .venv)
+#   -Profile PROFILE     Install profile: minimal, gui, workstation, full (default: gui)
 #   -Extras EXTRAS       Comma-separated extras: audio,ai_chat,training,yolo,realtime,large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot,memory,all (GUI extras are always included)
 #   -NoGpu               Skip GPU/CUDA detection
 #   -NoInteractive       Skip all prompts and use defaults
@@ -16,6 +17,8 @@
 param(
     [string]$InstallDir = "",
     [string]$VenvDir = ".venv",
+    [ValidateSet("minimal", "gui", "workstation", "full")]
+    [string]$Profile = "gui",
     [string]$Extras = "",
     [switch]$NoGpu,
     [switch]$NoInteractive,
@@ -69,11 +72,12 @@ Annolid one-line installer for Windows PowerShell
 
 Usage:
   irm https://raw.githubusercontent.com/healthonrails/annolid/main/install.ps1 | iex
-  .\install.ps1 [-InstallDir DIR] [-VenvDir DIR] [-Extras EXTRAS] [-NoGpu] [-NoInteractive]
+  .\install.ps1 [-InstallDir DIR] [-VenvDir DIR] [-Profile PROFILE] [-Extras EXTRAS] [-NoGpu] [-NoInteractive]
 
 Options:
   -InstallDir DIR      Directory to install Annolid (default: .\annolid)
   -VenvDir DIR         Directory for virtual environment (default: .venv)
+  -Profile PROFILE     Install profile: minimal, gui, workstation, full (default: gui)
   -Extras EXTRAS       Comma-separated extras: audio,ai_chat,training,yolo,realtime,large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot,memory,all
   -NoGpu               Skip GPU/CUDA detection and install CPU ONNX Runtime
   -NoInteractive       Skip prompts and use defaults
@@ -433,6 +437,39 @@ function Get-InteractiveConfig {
     Write-Host ""
 }
 
+function Get-ProfileExtras {
+    param([string]$ProfileName)
+
+    switch ($ProfileName) {
+        "minimal" { return @() }
+        "gui" { return @() }
+        "workstation" { return @("sam3", "yolo", "training") }
+        "full" { return @("all") }
+        default {
+            Write-Error-Msg "Unknown install profile: $ProfileName"
+            Write-Host "  Supported profiles: minimal, gui, workstation, full"
+            exit 1
+        }
+    }
+}
+
+function Merge-Extras {
+    param([string[]]$Values)
+
+    $merged = New-Object System.Collections.Generic.List[string]
+    foreach ($item in $Values) {
+        if ([string]::IsNullOrWhiteSpace($item)) { continue }
+        foreach ($value in $item.Split(",")) {
+            $normalized = $value.Trim()
+            if ([string]::IsNullOrEmpty($normalized)) { continue }
+            if (-not ($merged -contains $normalized)) {
+                $merged.Add($normalized)
+            }
+        }
+    }
+    return @($merged)
+}
+
 # =============================================================================
 # Clone Repository
 # =============================================================================
@@ -528,14 +565,11 @@ function Install-Annolid {
     }
 
     # GUI dependencies are always installed so `annolid` can launch immediately.
-    $installExtras = @("gui")
-    if (-not [string]::IsNullOrEmpty($Extras)) {
-        $requestedExtras = $Extras.Split(",") | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" }
-        $installExtras += $requestedExtras
-    }
-    $installExtras = $installExtras | Select-Object -Unique
+    $profileExtras = Get-ProfileExtras $Profile
+    $installExtras = Merge-Extras (@("gui") + $profileExtras + @($Extras))
     $extrasCsv = $installExtras -join ","
     $installTarget = "-e .[$extrasCsv]"
+    Write-Host "  Profile: $Profile"
     Write-Host "  Including extras: $extrasCsv"
 
     Write-Host "  Installing annolid (this may take a few minutes)..."
@@ -545,20 +579,39 @@ function Install-Annolid {
         & pip install $installTarget
     }
 
-    Write-Host "  Installing SAM-HQ..."
-    try {
-        if ($script:UseUv) {
-            & $script:UvCmd pip install "segment-anything @ git+https://github.com/SysCV/sam-hq.git"
-        } else {
-            & pip install "segment-anything @ git+https://github.com/SysCV/sam-hq.git"
+    if (Test-ExtraSelected $installExtras @("sam3", "sam", "segment_anything", "all")) {
+        Write-Host "  Installing SAM-HQ..."
+        try {
+            if ($script:UseUv) {
+                & $script:UvCmd pip install "segment-anything @ git+https://github.com/SysCV/sam-hq.git"
+            } else {
+                & pip install "segment-anything @ git+https://github.com/SysCV/sam-hq.git"
+            }
+        } catch {
+            Write-Warning-Msg "SAM-HQ installation failed."
         }
-    } catch {
-        Write-Warning-Msg "SAM-HQ installation failed."
+    } else {
+        Write-Info "Skipping optional SAM-HQ install. Add -Extras sam3 when needed."
     }
 
     Install-OnnxRuntime
 
     Write-Success "Annolid installed"
+}
+
+function Test-ExtraSelected {
+    param(
+        [string[]]$SelectedExtras,
+        [string[]]$Needles
+    )
+
+    $selected = @($SelectedExtras | ForEach-Object { $_.Trim().ToLowerInvariant() })
+    foreach ($needle in $Needles) {
+        if ($selected -contains $needle.ToLowerInvariant()) {
+            return $true
+        }
+    }
+    return $false
 }
 
 # =============================================================================

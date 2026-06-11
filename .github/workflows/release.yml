@@ -143,53 +143,7 @@ jobs:
       - name: Reject bundled model artifacts and heavy runtimes
         run: |
           set -euo pipefail
-          python - <<'PY'
-          from pathlib import Path
-          import sys
-
-          dist = Path("dist")
-          forbidden_suffixes = {
-              ".bin",
-              ".ckpt",
-              ".engine",
-              ".h5",
-              ".mlmodel",
-              ".onnx",
-              ".pth",
-              ".pt",
-              ".safetensors",
-              ".tflite",
-              ".weights",
-          }
-          forbidden_names = {
-              "checkpoints",
-              "diffusers",
-              "onnxruntime",
-              "runs",
-              "torch",
-              "torchvision",
-              "transformers",
-              "ultralytics",
-              "weights",
-          }
-          matches = []
-          for path in dist.rglob("*"):
-              parts = set(path.parts)
-              if path.is_file() and path.suffix.lower() in forbidden_suffixes:
-                  matches.append(str(path))
-              elif path.is_dir() and path.name in forbidden_names:
-                  matches.append(str(path))
-              elif forbidden_names.intersection(parts):
-                  matches.append(str(path))
-
-          if matches:
-              print("Forbidden large runtime/model artifacts were bundled:")
-              print("\n".join(matches[:100]))
-              if len(matches) > 100:
-                  print(f"... and {len(matches) - 100} more")
-              sys.exit(1)
-          print("Bundle artifact check passed.")
-          PY
+          python scripts/check_distribution_artifacts.py --kind bundle dist
 
       - name: Create archive
         run: |

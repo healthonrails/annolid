@@ -24,6 +24,32 @@ def test_distribution_guard_allows_normal_package_files() -> None:
     assert not is_forbidden_member("annolid/icons/icon.png")
 
 
+def test_bundle_guard_rejects_heavy_runtime_modules() -> None:
+    assert is_forbidden_member(
+        "annolid/_internal/torch/lib/libtorch_cpu.dylib",
+        artifact_kind="bundle",
+    )
+    assert is_forbidden_member(
+        "annolid/_internal/transformers/models/auto.py",
+        artifact_kind="bundle",
+    )
+    assert is_forbidden_member(
+        "annolid/_internal/onnxruntime/capi/libonnxruntime.so",
+        artifact_kind="bundle",
+    )
+
+
+def test_distribution_guard_does_not_use_bundle_only_runtime_names() -> None:
+    assert not is_forbidden_member(
+        "annolid-1.0.0/annolid/configs/runs/yolo_train.yaml",
+        artifact_kind="distribution",
+    )
+    assert is_forbidden_member(
+        "annolid/_internal/runs/yolo_train.yaml",
+        artifact_kind="bundle",
+    )
+
+
 def test_distribution_guard_scans_tar_and_wheel(tmp_path: Path) -> None:
     tar_path = tmp_path / "annolid-1.0.0.tar.gz"
     with tarfile.open(tar_path, "w:gz") as archive:
@@ -40,3 +66,15 @@ def test_distribution_guard_scans_tar_and_wheel(tmp_path: Path) -> None:
 
     assert len(matches) == 1
     assert "model.onnx" in matches[0]
+
+
+def test_bundle_guard_scans_directory(tmp_path: Path) -> None:
+    bundle_dir = tmp_path / "dist"
+    runtime_dir = bundle_dir / "annolid" / "_internal" / "torch"
+    runtime_dir.mkdir(parents=True)
+    (runtime_dir / "__init__.py").write_text("", encoding="utf-8")
+
+    matches = find_forbidden_members([bundle_dir], artifact_kind="bundle")
+
+    assert len(matches) == 2
+    assert all("torch" in match for match in matches)

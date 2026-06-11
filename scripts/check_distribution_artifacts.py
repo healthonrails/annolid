@@ -13,7 +13,10 @@ import sys
 import tarfile
 import zipfile
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Literal
+
+
+ArtifactKind = Literal["distribution", "bundle"]
 
 
 FORBIDDEN_SUFFIXES = {
@@ -55,6 +58,21 @@ FORBIDDEN_FRAGMENTS = {
     "openvino_model",
 }
 
+BUNDLE_FORBIDDEN_NAMES = FORBIDDEN_NAMES | {
+    "diffusers",
+    "onnxruntime",
+    "runs",
+    "torch",
+    "torchvision",
+    "transformers",
+    "ultralytics",
+}
+
+BUNDLE_FORBIDDEN_FRAGMENTS = FORBIDDEN_FRAGMENTS | {
+    "onnxruntime",
+    "torchvision",
+}
+
 
 def _normalize_archive_member(name: str) -> str:
     return str(name or "").replace("\\", "/").lstrip("./")
@@ -68,16 +86,24 @@ def _strip_archive_root(name: str) -> str:
     return normalized
 
 
-def is_forbidden_member(name: str) -> bool:
+def is_forbidden_member(
+    name: str, artifact_kind: ArtifactKind = "distribution"
+) -> bool:
     normalized = _normalize_archive_member(name)
     without_root = _strip_archive_root(normalized)
     parts = {part for part in without_root.split("/") if part}
     suffix = Path(without_root).suffix.lower()
+    forbidden_names = (
+        BUNDLE_FORBIDDEN_NAMES if artifact_kind == "bundle" else FORBIDDEN_NAMES
+    )
+    forbidden_fragments = (
+        BUNDLE_FORBIDDEN_FRAGMENTS if artifact_kind == "bundle" else FORBIDDEN_FRAGMENTS
+    )
     if suffix in FORBIDDEN_SUFFIXES:
         return True
-    if parts.intersection(FORBIDDEN_NAMES):
+    if parts.intersection(forbidden_names):
         return True
-    return any(fragment in without_root for fragment in FORBIDDEN_FRAGMENTS)
+    return any(fragment in without_root for fragment in forbidden_fragments)
 
 
 def iter_distribution_members(path: Path) -> Iterable[str]:
@@ -100,11 +126,13 @@ def iter_distribution_members(path: Path) -> Iterable[str]:
     raise ValueError(f"Unsupported distribution artifact: {path}")
 
 
-def find_forbidden_members(paths: Iterable[Path]) -> list[str]:
+def find_forbidden_members(
+    paths: Iterable[Path], artifact_kind: ArtifactKind = "distribution"
+) -> list[str]:
     matches: list[str] = []
     for path in paths:
         for member in iter_distribution_members(path):
-            if is_forbidden_member(member):
+            if is_forbidden_member(member, artifact_kind=artifact_kind):
                 matches.append(f"{path}: {member}")
     return sorted(matches)
 
@@ -116,6 +144,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "paths", nargs="+", help="Distribution archives or directories."
     )
+    parser.add_argument(
+        "--kind",
+        choices=("distribution", "bundle"),
+        default="distribution",
+        help=(
+            "Artifact policy to apply. Use 'bundle' for frozen desktop app "
+            "folders/archives that must exclude heavyweight runtimes."
+        ),
+    )
     args = parser.parse_args(argv)
 
     paths = [Path(item).expanduser() for item in args.paths]
@@ -125,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
         print("\n".join(missing), file=sys.stderr)
         return 2
 
-    matches = find_forbidden_members(paths)
+    matches = find_forbidden_members(paths, artifact_kind=args.kind)
     if matches:
         print("Forbidden model/runtime artifacts found:", file=sys.stderr)
         print("\n".join(matches[:100]), file=sys.stderr)

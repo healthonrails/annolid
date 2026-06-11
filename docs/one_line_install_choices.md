@@ -36,6 +36,7 @@ Choose the flag set that matches your goal.
 | Default install | `curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh \| bash` | `irm https://raw.githubusercontent.com/healthonrails/annolid/main/install.ps1 \| iex` |
 | Skip GPU detection | `curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh \| bash -s -- --no-gpu` | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/healthonrails/annolid/main/install.ps1))) -NoGpu` |
 | Non-interactive install | `curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh \| bash -s -- --no-interactive` | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/healthonrails/annolid/main/install.ps1))) -NoInteractive` |
+| Named profile | `curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh \| bash -s -- --profile workstation` | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/healthonrails/annolid/main/install.ps1))) -Profile workstation` |
 | Install to custom folder | `curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh \| bash -s -- --install-dir /path/to/annolid` | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/healthonrails/annolid/main/install.ps1))) -InstallDir C:\\path\\to\\annolid` |
 | Custom venv location | `curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh \| bash -s -- --venv-dir /path/to/.venv` | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/healthonrails/annolid/main/install.ps1))) -VenvDir C:\\path\\to\\.venv` |
 | Use Conda env | `curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh \| bash -s -- --use-conda` | `Not supported in install.ps1` |
@@ -47,6 +48,7 @@ Choose the flag set that matches your goal.
 
 - `--install-dir DIR`
 - `--venv-dir DIR`
+- `--profile minimal|gui|workstation|full`
 - `--extras EXTRAS`
 - `--no-gpu`
 - `--use-conda`
@@ -75,6 +77,7 @@ curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.s
 
 - `-InstallDir DIR`
 - `-VenvDir DIR`
+- `-Profile minimal|gui|workstation|full`
 - `-Extras EXTRAS`
 - `-NoGpu`
 - `-NoInteractive`
@@ -102,6 +105,19 @@ Examples:
 ## Optional extras (`--extras` / `-Extras`)
 
 `gui` is installed by default by the one-line installers, so `annolid` launches without additional flags.
+
+Named profiles provide stable defaults for common machines:
+
+| Profile | Installed optional extras | Use this for |
+|---|---|---|
+| `minimal` | none beyond the required GUI extra | Fastest default GUI/core annotation setup. |
+| `gui` | none beyond the required GUI extra | Default profile; same behavior as omitting `--profile` / `-Profile`. |
+| `workstation` | `sam3,yolo,training` | Maintained research workstations that need promptable segmentation, YOLO workflows, and training dashboards. |
+| `full` | `all` | Fully provisioned lab machines where dependency size is less important than breadth. |
+
+Explicit extras are merged with the selected profile. For example,
+`--profile workstation --extras ai_chat,text_to_speech` installs
+`gui,sam3,yolo,training,ai_chat,text_to_speech`.
 
 Current supported extras:
 
@@ -131,7 +147,7 @@ Current supported extras:
 | `realtime` | serial/ZMQ realtime hardware integrations | You use Bpod, realtime streams, or ZMQ control paths. |
 | `large_image` | TIFF/OME-TIFF metadata and optional region-streaming backends | You want large TIFF, BigTIFF, OME-TIFF, or virtual-slide style viewing without forcing those native libraries into every install. Leave it out for the default GUI install. |
 | `remote_video` | network/remote video decoding through `ffpyplayer` | You receive frames from Annolid's remote video player path. Leave it out for normal local video files and Python 3.14 default installs. |
-| `sam3` | the SAM3-related segmentation workflow/features in Annolid | You want stronger promptable segmentation on difficult frames and plan to use SAM3 tools in the GUI/CLI pipeline. |
+| `sam3` | the SAM3-related segmentation workflow/features in Annolid | You want stronger promptable segmentation on difficult frames and plan to use SAM3 tools in the GUI/CLI pipeline. The installer also attempts the optional SAM-HQ dependency for this profile. |
 | `image_editing` | diffusion-based image editing/generation dependencies | You are preparing augmented training images (inpainting/background edits) as part of annotation or data curation. |
 | `text_to_speech` | built-in narration/read-aloud features | You want captions/notes read aloud during review, accessibility workflows, or hands-free labeling sessions. |
 | `qwen3_embedding` | Qwen3-based embedding/multimodal utilities | You plan to run embedding-powered retrieval/comparison flows that rely on the Qwen3 stack. |
@@ -142,7 +158,7 @@ Current supported extras:
 ### Practical install suggestions
 
 - Minimal install (fastest, lowest dependency footprint): no extras.
-- Most common research annotation setup: start with `sam3`.
+- Most common research annotation setup: start without extras; add `sam3` only when promptable SAM workflows are needed.
 - Common training workstation: add `yolo,training`.
 - Hosted AI chat providers: add `ai_chat`.
 - Accessibility or narrated review: add `text_to_speech`.
@@ -167,6 +183,10 @@ If those runtimes are not available, Annolid will still open the file and will f
 ### `remote_video` runtime note
 
 The `remote_video` extra installs `ffpyplayer`. On Python 3.14, `ffpyplayer` may need to build from source and require native FFmpeg development headers such as `libpostproc`. The default installer leaves this extra out so core GUI and local video workflows can install cleanly on Python 3.14.
+
+### SAM-HQ runtime note
+
+The one-line installers no longer install SAM-HQ during the default GUI setup. SAM-HQ is attempted only when a SAM-related profile such as `--extras sam3` / `-Extras sam3` or `all` is selected. This keeps the default installer independent of an extra GitHub source install and makes locked-down lab workstations easier to bootstrap.
 
 ## Recommended patterns
 
