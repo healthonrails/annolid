@@ -747,7 +747,16 @@ function Test-Installation {
     }
 
     Write-Host "  Checking AI polygon model path..."
-    & python -c "import os; os.environ.setdefault('KMP_DUPLICATE_LIB_OK','TRUE'); import numpy as np; from annolid.utils.annotation_compat import get_ai_models; Model = get_ai_models()[0]; m = Model(); m.set_image(np.zeros((64, 64, 3), dtype=np.uint8)); pts = np.array([[16,16],[48,48]], dtype=np.float32); labels = np.array([1,1], dtype=np.int32); poly = m.predict_polygon_from_points(pts, labels); print(f'  AI polygon check OK (points={len(poly)})')"
+    & python -c "import importlib.util; parent = importlib.util.find_spec('pycocotools'); raise SystemExit(0 if parent and importlib.util.find_spec('pycocotools.mask') else 1)" 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        & python -c "import os; os.environ.setdefault('KMP_DUPLICATE_LIB_OK','TRUE'); import numpy as np; from annolid.utils.annotation_compat import get_ai_models; Model = get_ai_models()[0]; m = Model(); m.set_image(np.zeros((64, 64, 3), dtype=np.uint8)); pts = np.array([[16,16],[48,48]], dtype=np.float32); labels = np.array([1,1], dtype=np.int32); poly = m.predict_polygon_from_points(pts, labels); print(f'  AI polygon check OK (points={len(poly)})')"
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error-Msg "AI polygon validation failed despite optional pycocotools being installed."
+            exit 1
+        }
+    } else {
+        Write-Info "Skipping AI polygon check; optional pycocotools is not installed in this profile."
+    }
 
     Write-Success "Installation validated"
 }
@@ -762,15 +771,16 @@ function Write-InstallReport {
 
     $script:InstallReportPath = Join-Path $script:InstallDir "annolid-install-report.json"
     $packageManager = if ($script:UseUv) { "uv" } else { "pip" }
-    $pythonVersion = (& python -c "import platform; print(platform.python_version())").Trim()
+    $pythonVersionOutput = & python -c "import platform; print(platform.python_version())" 2>$null
+    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace(($pythonVersionOutput -join ""))) {
+        $pythonVersion = (($pythonVersionOutput -join "")).Trim()
+    } else {
+        $pythonVersion = $script:PythonVersion
+    }
     $onnxProviders = @()
-    try {
-        $providersJson = & python -c "import json, os; os.environ.setdefault('KMP_DUPLICATE_LIB_OK','TRUE'); import onnxruntime as ort; print(json.dumps(ort.get_available_providers()))" 2>$null
-        if (-not [string]::IsNullOrWhiteSpace($providersJson)) {
-            $onnxProviders = @($providersJson | ConvertFrom-Json)
-        }
-    } catch {
-        $onnxProviders = @()
+    $providersJson = & python -c "import json, os; os.environ.setdefault('KMP_DUPLICATE_LIB_OK','TRUE'); import onnxruntime as ort; print(json.dumps(ort.get_available_providers()))" 2>$null
+    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace(($providersJson -join ""))) {
+        $onnxProviders = @(($providersJson -join "") | ConvertFrom-Json)
     }
 
     $report = [ordered]@{

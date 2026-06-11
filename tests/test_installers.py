@@ -75,6 +75,38 @@ def test_powershell_installer_does_not_require_torch_for_onnx_repair() -> None:
     assert "import onnxruntime as ort" in repair_block
 
 
+def test_powershell_installer_skips_ai_polygon_check_without_pycocotools() -> None:
+    script = (ROOT / "install.ps1").read_text(encoding="utf-8")
+    validation_block = script[
+        script.index("function Test-Installation") : script.index(
+            "function Write-InstallReport"
+        )
+    ]
+
+    assert "Checking AI polygon model path" in validation_block
+    assert "find_spec('pycocotools')" in validation_block
+    assert "find_spec('pycocotools.mask')" in validation_block
+    assert (
+        "Skipping AI polygon check; optional pycocotools is not installed"
+        in validation_block
+    )
+    assert "AI polygon validation failed" in validation_block
+
+
+def test_powershell_install_report_handles_empty_python_version_output() -> None:
+    script = (ROOT / "install.ps1").read_text(encoding="utf-8")
+    report_block = script[
+        script.index("function Write-InstallReport") : script.index(
+            "function Write-Summary"
+        )
+    ]
+
+    assert "$pythonVersionOutput =" in report_block
+    assert "$pythonVersion = $script:PythonVersion" in report_block
+    assert ".Trim()" in report_block
+    assert "$pythonVersion = (& python" not in report_block
+
+
 def test_installer_gpu_decision_uses_cuda12_provider_validation() -> None:
     bash_script = (ROOT / "install.sh").read_text(encoding="utf-8")
     powershell_script = (ROOT / "install.ps1").read_text(encoding="utf-8")
