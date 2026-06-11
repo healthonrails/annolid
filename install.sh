@@ -11,7 +11,7 @@
 #   --install-dir DIR   Directory to install annolid (default: ./annolid)
 #   --venv-dir DIR      Directory for virtual environment (default: .venv inside install-dir)
 #   --profile PROFILE   Install profile: minimal,gui,workstation,full (default: gui)
-#   --extras EXTRAS     Comma-separated optional extras: audio,ai_chat,training,yolo,realtime,large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot,memory,all (GUI extras are always included)
+#   --extras EXTRAS     Comma-separated optional extras: audio,ai_chat,training,yolo,cutie,realtime,large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot,memory,all (GUI extras are always included)
 #   --no-gpu            Skip GPU/CUDA detection
 #   --use-conda         Use conda instead of venv (requires conda/mamba)
 #   --no-interactive    Skip all prompts and use defaults
@@ -93,7 +93,7 @@ Options:
   --install-dir DIR   Directory to install annolid (default: ./annolid)
   --venv-dir DIR      Directory for virtual environment (default: .venv inside install-dir)
   --profile PROFILE   Install profile: minimal,gui,workstation,full (default: gui)
-  --extras EXTRAS     Comma-separated optional extras: audio,ai_chat,training,yolo,realtime,large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot,memory,all
+  --extras EXTRAS     Comma-separated optional extras: audio,ai_chat,training,yolo,cutie,realtime,large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot,memory,all
   --no-gpu            Skip GPU/CUDA detection and install CPU ONNX Runtime
   --use-conda         Use conda instead of venv (requires conda/mamba)
   --no-interactive    Skip prompts and use defaults
@@ -651,7 +651,7 @@ profile_extras() {
             echo ""
             ;;
         workstation)
-            echo "sam3,yolo,training"
+            echo "cutie,sam3,yolo,training"
             ;;
         full)
             echo "all"

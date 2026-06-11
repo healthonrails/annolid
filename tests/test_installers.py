@@ -24,7 +24,7 @@ def test_bash_installer_defines_named_profiles() -> None:
     assert 'PROFILE="gui"' in script
     assert "profile_extras()" in script
     assert "workstation)" in script
-    assert "sam3,yolo,training" in script
+    assert "cutie,sam3,yolo,training" in script
     assert "full)" in script
     assert "all" in script
     assert 'merge_extras "gui"' in script
@@ -46,7 +46,7 @@ def test_powershell_installer_defines_named_profiles() -> None:
     assert '[ValidateSet("minimal", "gui", "workstation", "full")]' in script
     assert '[string]$Profile = "gui"' in script
     assert "Get-ProfileExtras" in script
-    assert '"workstation" { return @("sam3", "yolo", "training") }' in script
+    assert '"workstation" { return @("cutie", "sam3", "yolo", "training") }' in script
     assert '"full" { return @("all") }' in script
     assert "Merge-Extras" in script
 

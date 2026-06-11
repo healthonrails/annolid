@@ -32,7 +32,7 @@ The one-line installers also validate ONNX Runtime provider selection. On Linux 
 Named installer profiles keep common setups reproducible:
 
 - `minimal` / `gui`: default GUI/core annotation setup
-- `workstation`: GUI plus `sam3,yolo,training`
+- `workstation`: GUI plus `cutie,sam3,yolo,training`
 - `full`: GUI plus the `all` extra
 
 Example workstation install:
@@ -116,6 +116,7 @@ Useful extras currently defined in `pyproject.toml` include:
 - `ai_chat`: OpenAI-compatible and Anthropic SDKs for hosted LLM providers
 - `training`: TensorBoard support for training dashboards and projector views
 - `yolo`: Ultralytics YOLO/YOLOE workflows and tracker matching helpers
+- `cutie`: Cutie video object segmentation tracking runtime
 - `realtime`: serial and ZMQ dependencies for realtime/hardware integrations
 - `onnx_gpu`: Windows/Linux ONNX Runtime CUDA provider
 - `large_image`: TIFF/OME-TIFF metadata and optional streaming backends (`tifffile`, `pyvips`, `openslide-python`)
@@ -147,6 +148,13 @@ The one-line installers also keep optional SAM-HQ out of the default path.
 SAM-HQ is attempted only when a SAM-related extra such as `sam3` or the `all`
 profile is selected. This avoids a default GitHub source install on machines
 that only need the GUI/core annotation workflow.
+
+Cutie tracking is also repairable from a minimal/default install. If a user
+starts Cutie tracking and one of the Cutie runtime packages is missing, Annolid
+attempts to install the missing packages into the active environment and then
+continues loading the tracker. Set `ANNOLID_AUTO_INSTALL_CUTIE_DEPS=0` to
+disable automatic installation and show the exact `python -m pip install ...`
+command instead.
 
 ### Note on `large_image`
 

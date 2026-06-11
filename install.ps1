@@ -10,7 +10,7 @@
 #   -InstallDir DIR      Directory to install annolid (default: .\annolid)
 #   -VenvDir DIR         Directory for virtual environment (default: .venv)
 #   -Profile PROFILE     Install profile: minimal, gui, workstation, full (default: gui)
-#   -Extras EXTRAS       Comma-separated extras: audio,ai_chat,training,yolo,realtime,large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot,memory,all (GUI extras are always included)
+#   -Extras EXTRAS       Comma-separated extras: audio,ai_chat,training,yolo,cutie,realtime,large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot,memory,all (GUI extras are always included)
 #   -NoGpu               Skip GPU/CUDA detection
 #   -NoInteractive       Skip all prompts and use defaults
 
@@ -78,7 +78,7 @@ Options:
   -InstallDir DIR      Directory to install Annolid (default: .\annolid)
   -VenvDir DIR         Directory for virtual environment (default: .venv)
   -Profile PROFILE     Install profile: minimal, gui, workstation, full (default: gui)
-  -Extras EXTRAS       Comma-separated extras: audio,ai_chat,training,yolo,realtime,large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot,memory,all
+  -Extras EXTRAS       Comma-separated extras: audio,ai_chat,training,yolo,cutie,realtime,large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot,memory,all
   -NoGpu               Skip GPU/CUDA detection and install CPU ONNX Runtime
   -NoInteractive       Skip prompts and use defaults
   -Help                Show this help message
@@ -443,7 +443,7 @@ function Get-ProfileExtras {
     switch ($ProfileName) {
         "minimal" { return @() }
         "gui" { return @() }
-        "workstation" { return @("sam3", "yolo", "training") }
+        "workstation" { return @("cutie", "sam3", "yolo", "training") }
         "full" { return @("all") }
         default {
             Write-Error-Msg "Unknown install profile: $ProfileName"

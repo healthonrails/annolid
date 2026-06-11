@@ -3,6 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Optional
 
+from annolid.segmentation.cutie_vos.dependencies import (
+    ensure_cutie_runtime_dependencies,
+)
+
+ensure_cutie_runtime_dependencies()
+
 from annolid.data.videos import CV2Video
 from annolid.segmentation.cutie_vos.predict import CutieCoreVideoProcessor
 from annolid.utils.logger import logger

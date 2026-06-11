@@ -112,7 +112,7 @@ Named profiles provide stable defaults for common machines:
 |---|---|---|
 | `minimal` | none beyond the required GUI extra | Fastest default GUI/core annotation setup. |
 | `gui` | none beyond the required GUI extra | Default profile; same behavior as omitting `--profile` / `-Profile`. |
-| `workstation` | `sam3,yolo,training` | Maintained research workstations that need promptable segmentation, YOLO workflows, and training dashboards. |
+| `workstation` | `cutie,sam3,yolo,training` | Maintained research workstations that need Cutie tracking, promptable segmentation, YOLO workflows, and training dashboards. |
 | `full` | `all` | Fully provisioned lab machines where dependency size is less important than breadth. |
 
 Explicit extras are merged with the selected profile. For example,
@@ -125,6 +125,7 @@ Current supported extras:
 - `ai_chat`
 - `training`
 - `yolo`
+- `cutie`
 - `realtime`
 - `large_image`
 - `remote_video`
@@ -144,6 +145,7 @@ Current supported extras:
 | `ai_chat` | hosted OpenAI-compatible or Anthropic provider SDKs | You use GPT/OpenRouter/Claude-style providers instead of only local/Ollama-compatible paths. |
 | `training` | TensorBoard dashboards and projector views | You train models from Annolid and want live training curves or embedding projector output. |
 | `yolo` | Ultralytics YOLO/YOLOE workflows | You train YOLO models, run YOLOE prompt inference, or export YOLO detections to LabelMe JSON. |
+| `cutie` | Cutie video object segmentation tracking runtime | You run Cutie tracking on minimal installs and want the required Python packages installed up front. Minimal/default installs can still auto-install missing Cutie packages on first use. |
 | `realtime` | serial/ZMQ realtime hardware integrations | You use Bpod, realtime streams, or ZMQ control paths. |
 | `large_image` | TIFF/OME-TIFF metadata and optional region-streaming backends | You want large TIFF, BigTIFF, OME-TIFF, or virtual-slide style viewing without forcing those native libraries into every install. Leave it out for the default GUI install. |
 | `remote_video` | network/remote video decoding through `ffpyplayer` | You receive frames from Annolid's remote video player path. Leave it out for normal local video files and Python 3.14 default installs. |
@@ -158,7 +160,7 @@ Current supported extras:
 ### Practical install suggestions
 
 - Minimal install (fastest, lowest dependency footprint): no extras.
-- Most common research annotation setup: start without extras; add `sam3` only when promptable SAM workflows are needed.
+- Most common research annotation setup: start without extras; add `cutie` or `sam3` only when those workflows are needed.
 - Common training workstation: add `yolo,training`.
 - Hosted AI chat providers: add `ai_chat`.
 - Accessibility or narrated review: add `text_to_speech`.
@@ -187,6 +189,15 @@ The `remote_video` extra installs `ffpyplayer`. On Python 3.14, `ffpyplayer` may
 ### SAM-HQ runtime note
 
 The one-line installers no longer install SAM-HQ during the default GUI setup. SAM-HQ is attempted only when a SAM-related profile such as `--extras sam3` / `-Extras sam3` or `all` is selected. This keeps the default installer independent of an extra GitHub source install and makes locked-down lab workstations easier to bootstrap.
+
+### Cutie runtime note
+
+The `cutie` extra installs the Python runtime packages used by Cutie tracking.
+If a minimal/default install tries to run Cutie tracking and one of those
+packages is missing, Annolid attempts to install the missing packages into the
+active environment before loading the tracker. Set
+`ANNOLID_AUTO_INSTALL_CUTIE_DEPS=0` to disable that automatic repair and show
+the exact `python -m pip install ...` command instead.
 
 ## Recommended patterns
 

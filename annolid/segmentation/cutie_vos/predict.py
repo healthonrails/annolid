@@ -1,5 +1,11 @@
 import csv
 import os
+from annolid.segmentation.cutie_vos.dependencies import (
+    ensure_cutie_runtime_dependencies,
+)
+
+ensure_cutie_runtime_dependencies()
+
 import cv2
 import torch
 import json

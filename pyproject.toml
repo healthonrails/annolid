@@ -103,6 +103,18 @@ yolo = [
     "lap",
 ]
 
+cutie = [
+    # Video object segmentation tracking runtime.
+    "opencv-contrib-python>=4.1.2.30",
+    "torch>=2.5.0",
+    "torchvision>=0.20.0",
+    "omegaconf>=2.3.0",
+    "hydra-core>=1.3.2",
+    "Pillow>=9.3.0,<12.0",
+    "pycocotools>=2.0.2",
+    "einops>=0.6.0",
+]
+
 realtime = [
     # Hardware/streaming control paths.
     "pyserial>=3.5",
@@ -184,6 +196,14 @@ memory = [
 
 all = [
     "matplotlib>=3.7.0",
+    "opencv-contrib-python>=4.1.2.30",
+    "torch>=2.5.0",
+    "torchvision>=0.20.0",
+    "omegaconf>=2.3.0",
+    "hydra-core>=1.3.2",
+    "Pillow>=9.3.0,<12.0",
+    "pycocotools>=2.0.2",
+    "einops>=0.6.0",
     "sounddevice>=0.4.6",
     "librosa>=0.10.1",
     "openai>=1.40.0",
