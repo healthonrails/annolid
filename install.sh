@@ -11,7 +11,7 @@
 #   --install-dir DIR   Directory to install annolid (default: ./annolid)
 #   --venv-dir DIR      Directory for virtual environment (default: .venv inside install-dir)
 #   --profile PROFILE   Install profile: minimal,gui,workstation,full (default: gui)
-#   --extras EXTRAS     Comma-separated optional extras: audio,ai_chat,training,yolo,cutie,realtime,large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot,memory,all (GUI extras are always included)
+#   --extras EXTRAS     Comma-separated optional extras: audio,ai_chat,training,ml,tracking,yolo,cutie,realtime,large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot,bot,memory,all (GUI extras are always included)
 #   --no-gpu            Skip GPU/CUDA detection
 #   --use-conda         Use conda instead of venv (requires conda/mamba)
 #   --no-interactive    Skip all prompts and use defaults
@@ -37,6 +37,9 @@ UV_CMD="uv"
 HAS_NVIDIA_GPU=false
 HAS_CUDA12=false
 CUDA_VERSION=""
+INSTALL_REPORT_PATH=""
+SAM_HQ_STATUS="not_requested"
+FAILED_OPTIONAL_STEPS=""
 PYTORCH_CUDA_INDEX_URL="https://download.pytorch.org/whl/cu124"
 ONNXRUNTIME_CUDA12_EXTRA_INDEX_URL="https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/"
 
@@ -81,6 +84,15 @@ print_info() {
     echo -e "${CYAN}ℹ $1${NC}"
 }
 
+record_optional_failure() {
+    local step="$1"
+    if [[ -z "$FAILED_OPTIONAL_STEPS" ]]; then
+        FAILED_OPTIONAL_STEPS="$step"
+    elif [[ ",$FAILED_OPTIONAL_STEPS," != *",$step,"* ]]; then
+        FAILED_OPTIONAL_STEPS="${FAILED_OPTIONAL_STEPS},${step}"
+    fi
+}
+
 print_usage() {
     cat <<'EOF'
 Annolid one-line installer for macOS and Linux
@@ -93,7 +105,7 @@ Options:
   --install-dir DIR   Directory to install annolid (default: ./annolid)
   --venv-dir DIR      Directory for virtual environment (default: .venv inside install-dir)
   --profile PROFILE   Install profile: minimal,gui,workstation,full (default: gui)
-  --extras EXTRAS     Comma-separated optional extras: audio,ai_chat,training,yolo,cutie,realtime,large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot,memory,all
+  --extras EXTRAS     Comma-separated optional extras: audio,ai_chat,training,ml,tracking,yolo,cutie,realtime,large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot,bot,memory,all
   --no-gpu            Skip GPU/CUDA detection and install CPU ONNX Runtime
   --use-conda         Use conda instead of venv (requires conda/mamba)
   --no-interactive    Skip prompts and use defaults
@@ -651,7 +663,7 @@ profile_extras() {
             echo ""
             ;;
         workstation)
-            echo "cutie,sam3,yolo,training"
+            echo "tracking,sam3,training"
             ;;
         full)
             echo "all"
@@ -810,10 +822,16 @@ install_annolid() {
 
     if extra_selected "sam3" || extra_selected "sam" || extra_selected "segment_anything" || extra_selected "all"; then
         echo "  Installing SAM-HQ..."
-        $PIP_CMD install "segment-anything @ git+https://github.com/SysCV/sam-hq.git" || {
+        SAM_HQ_STATUS="requested"
+        if $PIP_CMD install "segment-anything @ git+https://github.com/SysCV/sam-hq.git"; then
+            SAM_HQ_STATUS="installed"
+        else
+            SAM_HQ_STATUS="failed"
+            record_optional_failure "sam_hq"
             print_warning "SAM-HQ installation failed. Segment Anything may have limited functionality."
-        }
+        fi
     else
+        SAM_HQ_STATUS="skipped"
         print_info "Skipping optional SAM-HQ install. Add --extras sam3 when needed."
     fi
 
@@ -859,14 +877,16 @@ validate_installation() {
         exit 1
     fi
 
-    echo "  Checking PyTorch..."
-    python -c "import torch; print(f'  PyTorch version: {torch.__version__}')"
-
-    if [[ "$NO_GPU" == false ]]; then
-        python -c "import torch; cuda = torch.cuda.is_available(); print(f'  CUDA available: {cuda}')"
-        if [[ "$IS_APPLE_SILICON" == true ]]; then
-            python -c "import torch; mps = torch.backends.mps.is_available(); print(f'  MPS (Apple Silicon) available: {mps}')"
+    echo "  Checking PyTorch availability..."
+    if python -c "import torch; print(f'  PyTorch version: {torch.__version__}')"; then
+        if [[ "$NO_GPU" == false ]]; then
+            python -c "import torch; cuda = torch.cuda.is_available(); print(f'  CUDA available: {cuda}')"
+            if [[ "$IS_APPLE_SILICON" == true ]]; then
+                python -c "import torch; mps = torch.backends.mps.is_available(); print(f'  MPS (Apple Silicon) available: {mps}')"
+            fi
         fi
+    else
+        print_info "PyTorch not installed; optional ML/tracking features will install or report their requirements on first use."
     fi
 
     echo "  Checking ONNX Runtime providers..."
@@ -894,6 +914,99 @@ validate_installation() {
 }
 
 # =============================================================================
+# Install Report
+# =============================================================================
+write_install_report() {
+    print_step "Writing machine-readable install report..."
+
+    if [[ "$USE_CONDA" == true ]]; then
+        eval "$(conda shell.bash hook)"
+        conda activate annolid-env
+    else
+        source "$VENV_PATH/bin/activate"
+    fi
+
+    if [[ "$USE_CONDA" == true ]]; then
+        PACKAGE_MANAGER="conda"
+    elif [[ "$USE_UV" == true ]]; then
+        PACKAGE_MANAGER="uv"
+    else
+        PACKAGE_MANAGER="pip"
+    fi
+
+    INSTALL_REPORT_PATH="$INSTALL_DIR/annolid-install-report.json"
+    REPORT_PROFILE="$PROFILE" \
+    REPORT_EXTRAS="$INSTALL_EXTRAS" \
+    REPORT_INSTALL_DIR="$INSTALL_DIR" \
+    REPORT_VENV_PATH="$VENV_PATH" \
+    REPORT_OS_TYPE="$OS_TYPE" \
+    REPORT_DISTRO="$DISTRO" \
+    REPORT_ARCH="$ARCH" \
+    REPORT_PACKAGE_MANAGER="$PACKAGE_MANAGER" \
+    REPORT_GPU_REQUESTED="$([[ "$NO_GPU" == true ]] && echo "false" || echo "true")" \
+    REPORT_HAS_NVIDIA_GPU="$HAS_NVIDIA_GPU" \
+    REPORT_HAS_CUDA12="$HAS_CUDA12" \
+    REPORT_CUDA_VERSION="$CUDA_VERSION" \
+    REPORT_SAM_HQ_STATUS="$SAM_HQ_STATUS" \
+    REPORT_FAILED_OPTIONAL_STEPS="$FAILED_OPTIONAL_STEPS" \
+    REPORT_PATH="$INSTALL_REPORT_PATH" \
+    python - <<'PY'
+from __future__ import annotations
+
+import json
+import os
+import platform
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+def as_bool(value: str) -> bool:
+    return value.lower() in {"1", "true", "yes"}
+
+
+providers: list[str] = []
+try:
+    import onnxruntime as ort
+
+    providers = list(ort.get_available_providers())
+except Exception:
+    providers = []
+
+failed_steps = [
+    item.strip()
+    for item in os.environ.get("REPORT_FAILED_OPTIONAL_STEPS", "").split(",")
+    if item.strip()
+]
+report = {
+    "profile": os.environ["REPORT_PROFILE"],
+    "extras": [
+        item.strip()
+        for item in os.environ.get("REPORT_EXTRAS", "").split(",")
+        if item.strip()
+    ],
+    "install_dir": os.environ["REPORT_INSTALL_DIR"],
+    "venv_path": os.environ["REPORT_VENV_PATH"],
+    "python_version": platform.python_version(),
+    "os": os.environ["REPORT_OS_TYPE"],
+    "distro": os.environ["REPORT_DISTRO"],
+    "arch": os.environ["REPORT_ARCH"],
+    "package_manager": os.environ["REPORT_PACKAGE_MANAGER"],
+    "gpu_requested": as_bool(os.environ["REPORT_GPU_REQUESTED"]),
+    "has_nvidia_gpu": as_bool(os.environ["REPORT_HAS_NVIDIA_GPU"]),
+    "has_cuda12_driver": as_bool(os.environ["REPORT_HAS_CUDA12"]),
+    "cuda_version": os.environ.get("REPORT_CUDA_VERSION") or None,
+    "onnx_providers": providers,
+    "sam_hq_status": os.environ["REPORT_SAM_HQ_STATUS"],
+    "failed_optional_steps": failed_steps,
+    "created_at": datetime.now(timezone.utc).isoformat(),
+}
+path = Path(os.environ["REPORT_PATH"])
+path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+    print_success "Install report written to $INSTALL_REPORT_PATH"
+}
+
+# =============================================================================
 # Print Summary
 # =============================================================================
 print_summary() {
@@ -903,6 +1016,7 @@ print_summary() {
     echo -e "${GREEN}╚══════════════════════════════════════════════════════════════╝${NC}"
     echo ""
     echo "Annolid has been installed to: $INSTALL_DIR"
+    echo "Install report: $INSTALL_REPORT_PATH"
     echo ""
     echo "To get started:"
     echo ""
@@ -953,6 +1067,7 @@ main() {
     create_venv
     install_annolid
     validate_installation
+    write_install_report
     print_summary
 }
 

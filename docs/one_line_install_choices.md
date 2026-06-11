@@ -112,17 +112,19 @@ Named profiles provide stable defaults for common machines:
 |---|---|---|
 | `minimal` | none beyond the required GUI extra | Fastest default GUI/core annotation setup. |
 | `gui` | none beyond the required GUI extra | Default profile; same behavior as omitting `--profile` / `-Profile`. |
-| `workstation` | `cutie,sam3,yolo,training` | Maintained research workstations that need Cutie tracking, promptable segmentation, YOLO workflows, and training dashboards. |
+| `workstation` | `tracking,sam3,training` | Maintained research workstations that need common tracking runtimes, promptable segmentation, and training dashboards. |
 | `full` | `all` | Fully provisioned lab machines where dependency size is less important than breadth. |
 
 Explicit extras are merged with the selected profile. For example,
 `--profile workstation --extras ai_chat,text_to_speech` installs
-`gui,sam3,yolo,training,ai_chat,text_to_speech`.
+`gui,tracking,sam3,training,ai_chat,text_to_speech`.
 
 Current supported extras:
 
 - `audio`
 - `ai_chat`
+- `ml`
+- `tracking`
 - `training`
 - `yolo`
 - `cutie`
@@ -134,6 +136,7 @@ Current supported extras:
 - `text_to_speech`
 - `qwen3_embedding`
 - `annolid_bot`
+- `bot`
 - `memory`
 - `all`
 
@@ -143,6 +146,8 @@ Current supported extras:
 |---|---|---|
 | `audio` | audio decoding/playback helpers | You want waveform-derived behavior features, microphone recording, or sound playback without installing audio stacks in every lab workstation. |
 | `ai_chat` | hosted OpenAI-compatible or Anthropic provider SDKs | You use GPT/OpenRouter/Claude-style providers instead of only local/Ollama-compatible paths. |
+| `ml` | general ML/model runtime dependencies | You need PyTorch, Transformers, Hugging Face Hub, ONNX Runtime, Hydra/OmegaConf, and model tooling but do not want every optional workflow. |
+| `tracking` | common tracking workstation dependencies | You need PyTorch, ONNX Runtime, Cutie-style config dependencies, and YOLO matching helpers on a maintained workstation. |
 | `training` | TensorBoard dashboards and projector views | You train models from Annolid and want live training curves or embedding projector output. |
 | `yolo` | Ultralytics YOLO/YOLOE workflows | You train YOLO models, run YOLOE prompt inference, or export YOLO detections to LabelMe JSON. |
 | `cutie` | Cutie video object segmentation tracking runtime | You run Cutie tracking on minimal installs and want the required Python packages installed up front. Minimal/default installs can still auto-install missing Cutie packages on first use. |
@@ -154,6 +159,7 @@ Current supported extras:
 | `text_to_speech` | built-in narration/read-aloud features | You want captions/notes read aloud during review, accessibility workflows, or hands-free labeling sessions. |
 | `qwen3_embedding` | Qwen3-based embedding/multimodal utilities | You plan to run embedding-powered retrieval/comparison flows that rely on the Qwen3 stack. |
 | `annolid_bot` | bundled Annolid Bot integrations (WhatsApp + Google Drive/Calendar + MCP) | You want background services/integrations without installing each Bot extra individually. |
+| `bot` | Annolid Bot integrations plus memory dependencies | You want provider SDKs, channel integrations, MCP, browser automation, and LanceDB-backed memory in one extra. |
 | `memory` | vector database dependencies for fast Annolid Bot memory | You want LanceDB-backed semantic memory rather than the lightweight lexical path. |
 | `all` | full-feature workstation profile | You are setting up a maintained lab machine where install size is less important than having every optional integration ready. |
 

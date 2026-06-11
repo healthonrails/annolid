@@ -10,7 +10,7 @@
 #   -InstallDir DIR      Directory to install annolid (default: .\annolid)
 #   -VenvDir DIR         Directory for virtual environment (default: .venv)
 #   -Profile PROFILE     Install profile: minimal, gui, workstation, full (default: gui)
-#   -Extras EXTRAS       Comma-separated extras: audio,ai_chat,training,yolo,cutie,realtime,large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot,memory,all (GUI extras are always included)
+#   -Extras EXTRAS       Comma-separated extras: audio,ai_chat,training,ml,tracking,yolo,cutie,realtime,large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot,bot,memory,all (GUI extras are always included)
 #   -NoGpu               Skip GPU/CUDA detection
 #   -NoInteractive       Skip all prompts and use defaults
 
@@ -33,6 +33,10 @@ $script:UvPythonVersion = $null
 $script:HasNvidiaGpu = $false
 $script:HasCuda12 = $false
 $script:CudaVersion = $null
+$script:InstallExtras = @()
+$script:InstallReportPath = $null
+$script:SamHqStatus = "not_requested"
+$script:FailedOptionalSteps = @()
 $script:PytorchCudaIndexUrl = "https://download.pytorch.org/whl/cu124"
 $script:OnnxRuntimeCuda12ExtraIndexUrl = "https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/"
 
@@ -53,6 +57,13 @@ function Write-Warning-Msg { param([string]$Message); Write-Host "!! $Message" -
 function Write-Error-Msg { param([string]$Message); Write-Host "XX $Message" -ForegroundColor Red }
 function Write-Success { param([string]$Message); Write-Host "OK $Message" -ForegroundColor Green }
 function Write-Info { param([string]$Message); Write-Host "-- $Message" -ForegroundColor Cyan }
+
+function Add-OptionalFailure {
+    param([string]$Step)
+    if (-not ($script:FailedOptionalSteps -contains $Step)) {
+        $script:FailedOptionalSteps += $Step
+    }
+}
 
 function Prompt-YesNo {
     param([string]$Prompt, [bool]$Default = $false)
@@ -78,7 +89,7 @@ Options:
   -InstallDir DIR      Directory to install Annolid (default: .\annolid)
   -VenvDir DIR         Directory for virtual environment (default: .venv)
   -Profile PROFILE     Install profile: minimal, gui, workstation, full (default: gui)
-  -Extras EXTRAS       Comma-separated extras: audio,ai_chat,training,yolo,cutie,realtime,large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot,memory,all
+  -Extras EXTRAS       Comma-separated extras: audio,ai_chat,training,ml,tracking,yolo,cutie,realtime,large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot,bot,memory,all
   -NoGpu               Skip GPU/CUDA detection and install CPU ONNX Runtime
   -NoInteractive       Skip prompts and use defaults
   -Help                Show this help message
@@ -443,7 +454,7 @@ function Get-ProfileExtras {
     switch ($ProfileName) {
         "minimal" { return @() }
         "gui" { return @() }
-        "workstation" { return @("cutie", "sam3", "yolo", "training") }
+        "workstation" { return @("tracking", "sam3", "training") }
         "full" { return @("all") }
         default {
             Write-Error-Msg "Unknown install profile: $ProfileName"
@@ -567,6 +578,7 @@ function Install-Annolid {
     # GUI dependencies are always installed so `annolid` can launch immediately.
     $profileExtras = Get-ProfileExtras $Profile
     $installExtras = Merge-Extras (@("gui") + $profileExtras + @($Extras))
+    $script:InstallExtras = $installExtras
     $extrasCsv = $installExtras -join ","
     $installTarget = "-e .[$extrasCsv]"
     Write-Host "  Profile: $Profile"
@@ -581,16 +593,21 @@ function Install-Annolid {
 
     if (Test-ExtraSelected $installExtras @("sam3", "sam", "segment_anything", "all")) {
         Write-Host "  Installing SAM-HQ..."
+        $script:SamHqStatus = "requested"
         try {
             if ($script:UseUv) {
                 & $script:UvCmd pip install "segment-anything @ git+https://github.com/SysCV/sam-hq.git"
             } else {
                 & pip install "segment-anything @ git+https://github.com/SysCV/sam-hq.git"
             }
+            $script:SamHqStatus = "installed"
         } catch {
+            $script:SamHqStatus = "failed"
+            Add-OptionalFailure "sam_hq"
             Write-Warning-Msg "SAM-HQ installation failed."
         }
     } else {
+        $script:SamHqStatus = "skipped"
         Write-Info "Skipping optional SAM-HQ install. Add -Extras sam3 when needed."
     }
 
@@ -624,7 +641,7 @@ function Repair-OnnxRuntime {
 
     $ortImportOk = $true
     try {
-        & python -c "import os; os.environ.setdefault('KMP_DUPLICATE_LIB_OK','TRUE'); import torch; import onnxruntime as ort; print(f'  ONNX Runtime: {ort.__version__}')"
+        & python -c "import os; os.environ.setdefault('KMP_DUPLICATE_LIB_OK','TRUE'); import onnxruntime as ort; print(f'  ONNX Runtime: {ort.__version__}')"
     } catch {
         $ortImportOk = $false
     }
@@ -661,7 +678,7 @@ function Repair-OnnxRuntime {
     }
 
     try {
-        & python -c "import os; os.environ.setdefault('KMP_DUPLICATE_LIB_OK','TRUE'); import torch; import onnxruntime as ort; providers = ort.get_available_providers(); print(f'  ONNX Runtime repaired: {ort.__version__}'); print(f'  Providers: {providers}')"
+        & python -c "import os; os.environ.setdefault('KMP_DUPLICATE_LIB_OK','TRUE'); import onnxruntime as ort; providers = ort.get_available_providers(); print(f'  ONNX Runtime repaired: {ort.__version__}'); print(f'  Providers: {providers}')"
         Write-Success "ONNX Runtime repaired successfully"
     } catch {
         Write-Error-Msg "ONNX Runtime still fails to import."
@@ -699,11 +716,18 @@ function Test-Installation {
         exit 1
     }
 
-    Write-Host "  Checking PyTorch..."
-    & python -c "import torch; print(f'  PyTorch version: {torch.__version__}')"
+    Write-Host "  Checking PyTorch availability..."
+    $torchOk = $true
+    try {
+        & python -c "import torch; print(f'  PyTorch version: {torch.__version__}')"
+    } catch {
+        $torchOk = $false
+    }
 
-    if (-not $NoGpu) {
+    if ($torchOk -and -not $NoGpu) {
         & python -c "import torch; cuda = torch.cuda.is_available(); print(f'  CUDA available: {cuda}')"
+    } elseif (-not $torchOk) {
+        Write-Info "PyTorch not installed; optional ML/tracking features will install or report their requirements on first use."
     }
 
     Write-Host "  Checking ONNX Runtime providers..."
@@ -729,6 +753,51 @@ function Test-Installation {
 }
 
 # =============================================================================
+# Install Report
+# =============================================================================
+function Write-InstallReport {
+    Write-Step "Writing machine-readable install report..."
+
+    . $script:ActivateCmd
+
+    $script:InstallReportPath = Join-Path $script:InstallDir "annolid-install-report.json"
+    $packageManager = if ($script:UseUv) { "uv" } else { "pip" }
+    $pythonVersion = (& python -c "import platform; print(platform.python_version())").Trim()
+    $onnxProviders = @()
+    try {
+        $providersJson = & python -c "import json, os; os.environ.setdefault('KMP_DUPLICATE_LIB_OK','TRUE'); import onnxruntime as ort; print(json.dumps(ort.get_available_providers()))" 2>$null
+        if (-not [string]::IsNullOrWhiteSpace($providersJson)) {
+            $onnxProviders = @($providersJson | ConvertFrom-Json)
+        }
+    } catch {
+        $onnxProviders = @()
+    }
+
+    $report = [ordered]@{
+        profile = $Profile
+        extras = @($script:InstallExtras)
+        install_dir = $script:InstallDir
+        venv_path = $script:VenvPath
+        python_version = $pythonVersion
+        os = "windows"
+        distro = "windows"
+        arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+        package_manager = $packageManager
+        gpu_requested = (-not [bool]$NoGpu)
+        has_nvidia_gpu = [bool]$script:HasNvidiaGpu
+        has_cuda12_driver = [bool]$script:HasCuda12
+        cuda_version = $script:CudaVersion
+        onnx_providers = @($onnxProviders)
+        sam_hq_status = $script:SamHqStatus
+        failed_optional_steps = @($script:FailedOptionalSteps)
+        created_at = [DateTimeOffset]::UtcNow.ToString("o")
+    }
+
+    $report | ConvertTo-Json -Depth 4 | Set-Content -Path $script:InstallReportPath -Encoding UTF8
+    Write-Success "Install report written to $script:InstallReportPath"
+}
+
+# =============================================================================
 # Print Summary
 # =============================================================================
 function Write-Summary {
@@ -738,6 +807,7 @@ function Write-Summary {
     Write-Host "==================================================================" -ForegroundColor Green
     Write-Host ""
     Write-Host "Annolid has been installed to: $script:InstallDir"
+    Write-Host "Install report: $script:InstallReportPath"
     Write-Host ""
     Write-Host "To get started:"
     Write-Host ""
@@ -781,4 +851,5 @@ New-Venv
 Install-Annolid
 Repair-OnnxRuntime
 Test-Installation
+Write-InstallReport
 Write-Summary

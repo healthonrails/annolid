@@ -13,7 +13,6 @@ from collections import deque, defaultdict
 from shapely.geometry import Point, Polygon
 from annolid.segmentation.SAM.sam_hq import SamHQSegmenter
 from annolid.gui.shape import MaskShape
-from annolid.segmentation.cutie_vos.predict import CutieCoreVideoProcessor
 from annolid.utils.logger import logger
 from annolid.utils.annotation_store import AnnotationStoreError, load_labelme_json
 from annolid.motion.optical_flow import optical_flow_settings_from
@@ -98,6 +97,12 @@ def random_sample_outside_edges(polygon, num_points):
             sampled_points.append((x, y))
 
     return np.array(sampled_points)
+
+
+def _get_cutie_core_video_processor_class():
+    from annolid.segmentation.cutie_vos.predict import CutieCoreVideoProcessor
+
+    return CutieCoreVideoProcessor
 
 
 def find_bbox_center(polygon_points):
@@ -224,7 +229,8 @@ class VideoProcessor:
     def reset_cutie_processor(self, mem_every=5):
         """Reset or create a new Cutie core processor for the current video."""
         logger.debug(f"Resetting Cutie core processor for video: {self.video_path}")
-        self.cutie_processor = CutieCoreVideoProcessor(
+        cutie_processor_cls = _get_cutie_core_video_processor_class()
+        self.cutie_processor = cutie_processor_cls(
             self.video_path,
             mem_every=mem_every,
             debug=False,
@@ -247,7 +253,8 @@ class VideoProcessor:
     def process_video_with_cutite(
         self, frames_to_propagate=100, mem_every=5, has_occlusion=False, start_frame=0
     ):
-        seed_frames = CutieCoreVideoProcessor.discover_seed_frames(
+        cutie_processor_cls = _get_cutie_core_video_processor_class()
+        seed_frames = cutie_processor_cls.discover_seed_frames(
             self.video_path, self.results_folder
         )
         if not seed_frames:

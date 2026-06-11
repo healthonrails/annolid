@@ -1,5 +1,7 @@
 # Installation
 
+Packaging, installer tiers, frozen app policy, and release artifact rules are documented in [Packaging and Distribution](packaging.md).
+
 Annolid currently exposes two main commands after install:
 
 - `annolid`: launch the desktop GUI
@@ -32,7 +34,7 @@ The one-line installers also validate ONNX Runtime provider selection. On Linux 
 Named installer profiles keep common setups reproducible:
 
 - `minimal` / `gui`: default GUI/core annotation setup
-- `workstation`: GUI plus `cutie,sam3,yolo,training`
+- `workstation`: GUI plus `tracking,sam3,training`
 - `full`: GUI plus the `all` extra
 
 Example workstation install:
@@ -111,12 +113,14 @@ pip install -e ".[gui]"
 Useful extras currently defined in `pyproject.toml` include:
 
 - `gui`: Qt bindings for the desktop application
+- `ml`: general ML/model runtime dependencies such as PyTorch, Transformers, Hugging Face Hub, ONNX Runtime, Hydra/OmegaConf, and COCO tooling
 - `test`: dependencies needed to import and run the default test collection
 - `audio`: audio loading/playback helpers (`librosa`, `sounddevice`)
 - `ai_chat`: OpenAI-compatible and Anthropic SDKs for hosted LLM providers
 - `training`: TensorBoard support for training dashboards and projector views
 - `yolo`: Ultralytics YOLO/YOLOE workflows and tracker matching helpers
 - `cutie`: Cutie video object segmentation tracking runtime
+- `tracking`: common tracking workstation runtime, including PyTorch, ONNX Runtime, Cutie-style config dependencies, and YOLO matching helpers
 - `realtime`: serial and ZMQ dependencies for realtime/hardware integrations
 - `onnx_gpu`: Windows/Linux ONNX Runtime CUDA provider
 - `large_image`: TIFF/OME-TIFF metadata and optional streaming backends (`tifffile`, `pyvips`, `openslide-python`)
@@ -128,6 +132,7 @@ Useful extras currently defined in `pyproject.toml` include:
 - `cowtracker`: CowTracker backend dependency
 - `remote_video`: network/remote video decoding through `ffpyplayer`
 - `annolid_bot`: Annolid Bot integrations such as MCP, Playwright, WhatsApp bridge support, and Google Drive/Calendar dependencies
+- `bot`: Annolid Bot integrations plus memory dependencies
 - `memory`: vector database dependencies for fast Annolid Bot memory
 - `all`: convenience profile for full-feature workstations
 
@@ -138,11 +143,13 @@ pip install -e ".[gui,sam3,yolo,training,ai_chat]"
 ```
 
 Annolid follows the same practical split used by mature annotation tools:
-the default install keeps annotation, local video, tracking, and ONNX CPU paths
-usable, while cloud providers, YOLO, audio, realtime hardware, large-image
-backends, and heavyweight integrations are explicit extras. If a feature is
-not installed, Annolid should start normally and show an install hint when that
-feature is opened.
+the base `annolid` package is the core tier, and `annolid[gui]` is the default
+desktop tier. The default installer keeps GUI annotation and local video setup
+usable while model-heavy runtimes such as PyTorch, Transformers, YOLO,
+SAM-related packages, Cutie dependencies, hosted AI providers, realtime
+hardware, large-image backends, and Bot integrations are explicit extras. If a
+feature is not installed, Annolid should start normally and show an install
+hint when that feature is opened.
 
 The one-line installers also keep optional SAM-HQ out of the default path.
 SAM-HQ is attempted only when a SAM-related extra such as `sam3` or the `all`

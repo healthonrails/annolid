@@ -157,16 +157,65 @@ jobs:
             python -m zipfile -c "${{ matrix.archive-name }}" annolid
           fi
 
+      - name: Create release manifest and checksum
+        env:
+          ARCHIVE_NAME: ${{ matrix.archive-name }}
+          ASSET_NAME: ${{ matrix.asset-name }}
+          TAG_NAME: ${{ github.ref_name }}
+          RELEASE_OS: ${{ runner.os }}
+          PYTHON_VERSION: ${{ matrix.python-version }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import platform
+          from pathlib import Path
+
+          archive = Path("dist") / os.environ["ARCHIVE_NAME"]
+          digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+          checksum_path = Path(f"{archive}.sha256")
+          checksum_path.write_text(f"{digest}  {archive.name}\n", encoding="utf-8")
+
+          manifest = {
+              "tag": os.environ["TAG_NAME"],
+              "asset_name": os.environ["ASSET_NAME"],
+              "archive": archive.name,
+              "sha256": digest,
+              "os": os.environ["RELEASE_OS"],
+              "architecture": platform.machine(),
+              "python_version": os.environ["PYTHON_VERSION"],
+              "bundle_format": "pyinstaller-onedir-archive",
+              "signing_status": "unsigned-ci-build",
+              "minimum_runtime_notes": (
+                  "See docs/packaging.md for current platform runtime and "
+                  "signing status."
+              ),
+          }
+          manifest_path = Path("dist") / f"{os.environ['ASSET_NAME']}-manifest.json"
+          manifest_path.write_text(
+              json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset-name }}
-          path: dist/${{ matrix.archive-name }}
+          path: |
+            dist/${{ matrix.archive-name }}
+            dist/${{ matrix.archive-name }}.sha256
+            dist/${{ matrix.asset-name }}-manifest.json
           if-no-files-found: error
 
       - name: Upload archive to GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          files: dist/${{ matrix.archive-name }}
+          files: |
+            dist/${{ matrix.archive-name }}
+            dist/${{ matrix.archive-name }}.sha256
+            dist/${{ matrix.asset-name }}-manifest.json
           fail_on_unmatched_files: true

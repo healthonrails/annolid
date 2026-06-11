@@ -1,5 +1,7 @@
 # Releasing Annolid
 
+Packaging tiers, artifact policy, signing status, and desktop binary expectations are documented in [Packaging and Distribution](docs/packaging.md).
+
 This repository publishes:
 - **PyPI distributions** from GitHub Releases (`.github/workflows/annolid-publish.yml`).
 - **Platform executables** via manual workflow dispatch on a `v*` tag (`.github/workflows/release.yml`).

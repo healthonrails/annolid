@@ -43,7 +43,7 @@ Use Annolid to classify behavioral states such as freezing, digging, pup huddlin
 - Optional `remote_video` extra for network video decoding through `ffpyplayer`. Local video workflows use the normal FFmpeg/imageio stack.
 - Optional `cutie` extra for Cutie tracking runtime dependencies. Minimal/default installs try to install missing Cutie packages on first Cutie use.
 - Optional `sam3` extra for SAM-related workflows. The one-line installers attempt SAM-HQ only when a SAM/full profile is requested, not during the default GUI setup.
-- Optional feature profiles keep installs predictable: use `annolid[yolo]` for YOLO/YOLOE workflows, `annolid[ai_chat]` for hosted LLM providers, `annolid[audio]` or `annolid[text_to_speech]` for audio features, and `annolid[realtime]` for serial/ZMQ hardware paths.
+- Optional feature profiles keep installs predictable: use `annolid[ml]` for general model runtimes, `annolid[tracking]` for tracking workstations, `annolid[yolo]` for YOLO/YOLOE workflows, `annolid[ai_chat]` for hosted LLM providers, `annolid[bot]` for Bot integrations plus memory, `annolid[audio]` or `annolid[text_to_speech]` for audio features, and `annolid[realtime]` for serial/ZMQ hardware paths.
 - Behavioral state classification, keypoint tracking, and downstream analytics.
 - Works with pre-recorded video or real-time streams; supports GPU acceleration.
 - Optional EfficientTAM video tracking backend, fully integrated and auto-downloaded (no separate installation needed).
