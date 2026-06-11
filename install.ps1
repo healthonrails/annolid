@@ -58,6 +58,13 @@ function Write-Error-Msg { param([string]$Message); Write-Host "XX $Message" -Fo
 function Write-Success { param([string]$Message); Write-Host "OK $Message" -ForegroundColor Green }
 function Write-Info { param([string]$Message); Write-Host "-- $Message" -ForegroundColor Cyan }
 
+function Convert-CommandOutputToString {
+    param([object]$Value)
+
+    if ($null -eq $Value) { return "" }
+    return [string]::Join("", @($Value))
+}
+
 function Add-OptionalFailure {
     param([string]$Step)
     if (-not ($script:FailedOptionalSteps -contains $Step)) {
@@ -453,7 +460,7 @@ function Get-ProfileExtras {
 
     switch ($ProfileName) {
         "minimal" { return @() }
-        "gui" { return @() }
+        "gui" { return @("ml", "tracking", "cutie") }
         "workstation" { return @("tracking", "sam3", "training") }
         "full" { return @("all") }
         default {
@@ -769,42 +776,53 @@ function Write-InstallReport {
 
     . $script:ActivateCmd
 
-    $script:InstallReportPath = Join-Path $script:InstallDir "annolid-install-report.json"
-    $packageManager = if ($script:UseUv) { "uv" } else { "pip" }
-    $pythonVersionOutput = & python -c "import platform; print(platform.python_version())" 2>$null
-    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace(($pythonVersionOutput -join ""))) {
-        $pythonVersion = (($pythonVersionOutput -join "")).Trim()
-    } else {
-        $pythonVersion = $script:PythonVersion
-    }
-    $onnxProviders = @()
-    $providersJson = & python -c "import json, os; os.environ.setdefault('KMP_DUPLICATE_LIB_OK','TRUE'); import onnxruntime as ort; print(json.dumps(ort.get_available_providers()))" 2>$null
-    if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace(($providersJson -join ""))) {
-        $onnxProviders = @(($providersJson -join "") | ConvertFrom-Json)
-    }
+    try {
+        $script:InstallReportPath = Join-Path $script:InstallDir "annolid-install-report.json"
+        $packageManager = if ($script:UseUv) { "uv" } else { "pip" }
+        $pythonVersionOutput = & python -c "import platform; print(platform.python_version())" 2>$null
+        $pythonVersionText = Convert-CommandOutputToString $pythonVersionOutput
+        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($pythonVersionText)) {
+            $pythonVersion = $pythonVersionText.Trim()
+        } else {
+            $pythonVersion = if ([string]::IsNullOrWhiteSpace($script:PythonVersion)) { "unknown" } else { $script:PythonVersion }
+        }
+        $onnxProviders = @()
+        $providersJson = & python -c "import json, os; os.environ.setdefault('KMP_DUPLICATE_LIB_OK','TRUE'); import onnxruntime as ort; print(json.dumps(ort.get_available_providers()))" 2>$null
+        $providersText = Convert-CommandOutputToString $providersJson
+        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($providersText)) {
+            $onnxProviders = @($providersText | ConvertFrom-Json)
+        }
 
-    $report = [ordered]@{
-        profile = $Profile
-        extras = @($script:InstallExtras)
-        install_dir = $script:InstallDir
-        venv_path = $script:VenvPath
-        python_version = $pythonVersion
-        os = "windows"
-        distro = "windows"
-        arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
-        package_manager = $packageManager
-        gpu_requested = (-not [bool]$NoGpu)
-        has_nvidia_gpu = [bool]$script:HasNvidiaGpu
-        has_cuda12_driver = [bool]$script:HasCuda12
-        cuda_version = $script:CudaVersion
-        onnx_providers = @($onnxProviders)
-        sam_hq_status = $script:SamHqStatus
-        failed_optional_steps = @($script:FailedOptionalSteps)
-        created_at = [DateTimeOffset]::UtcNow.ToString("o")
-    }
+        $archValue = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+        $arch = if ($null -ne $archValue) { [string]$archValue } elseif ($env:PROCESSOR_ARCHITECTURE) { $env:PROCESSOR_ARCHITECTURE } else { "unknown" }
+        $createdAt = Get-Date -Format "o"
 
-    $report | ConvertTo-Json -Depth 4 | Set-Content -Path $script:InstallReportPath -Encoding UTF8
-    Write-Success "Install report written to $script:InstallReportPath"
+        $report = [ordered]@{
+            profile = $Profile
+            extras = @($script:InstallExtras)
+            install_dir = $script:InstallDir
+            venv_path = $script:VenvPath
+            python_version = $pythonVersion
+            os = "windows"
+            distro = "windows"
+            arch = $arch
+            package_manager = $packageManager
+            gpu_requested = (-not [bool]$NoGpu)
+            has_nvidia_gpu = [bool]$script:HasNvidiaGpu
+            has_cuda12_driver = [bool]$script:HasCuda12
+            cuda_version = $script:CudaVersion
+            onnx_providers = @($onnxProviders)
+            sam_hq_status = $script:SamHqStatus
+            failed_optional_steps = @($script:FailedOptionalSteps)
+            created_at = $createdAt
+        }
+
+        $report | ConvertTo-Json -Depth 4 | Set-Content -Path $script:InstallReportPath -Encoding UTF8
+        Write-Success "Install report written to $script:InstallReportPath"
+    } catch {
+        $message = if ($_.Exception -and $_.Exception.Message) { $_.Exception.Message } else { "unknown error" }
+        Write-Warning-Msg "Install report could not be written: $message"
+    }
 }
 
 # =============================================================================

@@ -4,12 +4,12 @@ This document defines Annolid's install tiers, optional runtime contract, frozen
 
 ## Install Tiers
 
-Annolid keeps the default install useful without forcing every model runtime onto every workstation.
+Annolid keeps the default one-line installer useful for common tracking/model workflows while preserving a `minimal` profile for smaller GUI-only setup.
 
 | Tier | Command | Contract |
 |---|---|---|
-| Core | `pip install annolid` | Import-safe core package for non-GUI workflows and library use. Heavy model runtimes are not base dependencies. |
-| GUI | `pip install "annolid[gui]"` | Default desktop annotation and local video baseline. The one-line installers install this tier by default. |
+| Core | `pip install annolid` | Import-safe core package for non-GUI workflows and library use. Includes `pycocotools` so mask/RLE polygon paths are available by default. |
+| GUI | `pip install "annolid[gui]"` | Desktop annotation GUI binding. The one-line installer's default `gui` profile also installs `ml`, `tracking`, and `cutie`. |
 | ML | `pip install "annolid[ml]"` | General model runtime tier: PyTorch, TorchVision, Transformers, Hugging Face Hub, ONNX Runtime, Hydra/OmegaConf, COCO tooling, and shared model helpers. |
 | Tracking | `pip install "annolid[tracking]"` | Maintained tracking workstation tier with PyTorch, ONNX Runtime, Cutie-style config dependencies, YOLO matching helpers, and related image/model utilities. |
 | Training | `pip install "annolid[training]"` | Training dashboard support such as TensorBoard. |
@@ -25,7 +25,7 @@ The macOS/Linux and Windows one-line installers expose stable profiles:
 | Profile | Extras |
 |---|---|
 | `minimal` | `gui` only |
-| `gui` | `gui` only |
+| `gui` | `gui,ml,tracking,cutie` |
 | `workstation` | `gui,tracking,sam3,training` |
 | `full` | `gui,all` |
 

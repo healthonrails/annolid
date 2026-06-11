@@ -104,14 +104,14 @@ Examples:
 
 ## Optional extras (`--extras` / `-Extras`)
 
-`gui` is installed by default by the one-line installers, so `annolid` launches without additional flags.
+`gui` is the default one-line installer profile. It installs GUI support plus the `ml`, `tracking`, and `cutie` extras so common model and tracking workflows are available immediately.
 
 Named profiles provide stable defaults for common machines:
 
 | Profile | Installed optional extras | Use this for |
 |---|---|---|
-| `minimal` | none beyond the required GUI extra | Fastest default GUI/core annotation setup. |
-| `gui` | none beyond the required GUI extra | Default profile; same behavior as omitting `--profile` / `-Profile`. |
+| `minimal` | none beyond the required GUI extra | Fastest GUI/core annotation setup when model runtimes should be avoided. |
+| `gui` | `ml,tracking,cutie` | Default profile; same behavior as omitting `--profile` / `-Profile`. |
 | `workstation` | `tracking,sam3,training` | Maintained research workstations that need common tracking runtimes, promptable segmentation, and training dashboards. |
 | `full` | `all` | Fully provisioned lab machines where dependency size is less important than breadth. |
 
@@ -165,8 +165,8 @@ Current supported extras:
 
 ### Practical install suggestions
 
-- Minimal install (fastest, lowest dependency footprint): no extras.
-- Most common research annotation setup: start without extras; add `cutie` or `sam3` only when those workflows are needed.
+- Minimal install (fastest, lowest dependency footprint): use `--profile minimal` / `-Profile minimal`.
+- Most common research annotation and tracking setup: use the default installer profile.
 - Common training workstation: add `yolo,training`.
 - Hosted AI chat providers: add `ai_chat`.
 - Accessibility or narrated review: add `text_to_speech`.
@@ -199,11 +199,11 @@ The one-line installers no longer install SAM-HQ during the default GUI setup. S
 ### Cutie runtime note
 
 The `cutie` extra installs the Python runtime packages used by Cutie tracking.
-If a minimal/default install tries to run Cutie tracking and one of those
-packages is missing, Annolid attempts to install the missing packages into the
-active environment before loading the tracker. Set
-`ANNOLID_AUTO_INSTALL_CUTIE_DEPS=0` to disable that automatic repair and show
-the exact `python -m pip install ...` command instead.
+The default `gui` profile installs this extra up front. If a minimal install
+tries to run Cutie tracking and one of those packages is missing, Annolid
+attempts to install the missing packages into the active environment before
+loading the tracker. Set `ANNOLID_AUTO_INSTALL_CUTIE_DEPS=0` to disable that
+automatic repair and show the exact install command instead.
 
 ## Recommended patterns
 

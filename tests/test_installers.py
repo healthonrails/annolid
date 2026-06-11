@@ -24,6 +24,8 @@ def test_bash_installer_defines_named_profiles() -> None:
     assert "minimal,gui,workstation,full" in script
     assert 'PROFILE="gui"' in script
     assert "profile_extras()" in script
+    assert "gui)" in script
+    assert "ml,tracking,cutie" in script
     assert "workstation)" in script
     assert "tracking,sam3,training" in script
     assert "full)" in script
@@ -47,6 +49,7 @@ def test_powershell_installer_defines_named_profiles() -> None:
     assert '[ValidateSet("minimal", "gui", "workstation", "full")]' in script
     assert '[string]$Profile = "gui"' in script
     assert "Get-ProfileExtras" in script
+    assert '"gui" { return @("ml", "tracking", "cutie") }' in script
     assert '"workstation" { return @("tracking", "sam3", "training") }' in script
     assert '"full" { return @("all") }' in script
     assert "Merge-Extras" in script
@@ -102,9 +105,14 @@ def test_powershell_install_report_handles_empty_python_version_output() -> None
     ]
 
     assert "$pythonVersionOutput =" in report_block
-    assert "$pythonVersion = $script:PythonVersion" in report_block
+    assert "else { $script:PythonVersion }" in report_block
+    assert '"unknown"' in report_block
     assert ".Trim()" in report_block
     assert "$pythonVersion = (& python" not in report_block
+    assert "Convert-CommandOutputToString" in script
+    assert "OSArchitecture.ToString()" not in report_block
+    assert "UtcNow.ToString" not in report_block
+    assert "Install report could not be written" in report_block
 
 
 def test_installer_gpu_decision_uses_cuda12_provider_validation() -> None:
@@ -142,6 +150,7 @@ def test_pyproject_install_tiers_keep_heavy_ml_out_of_base() -> None:
     assert "transformers" not in base_names
     assert "huggingface-hub" not in base_names
     assert "onnxruntime" not in base_names
+    assert "pycocotools" in base_names
 
 
 def test_pyproject_defines_professional_optional_tiers() -> None:

@@ -33,7 +33,8 @@ The one-line installers also validate ONNX Runtime provider selection. On Linux 
 
 Named installer profiles keep common setups reproducible:
 
-- `minimal` / `gui`: default GUI/core annotation setup
+- `minimal`: GUI/core annotation setup with the smallest optional footprint
+- `gui`: default GUI plus `ml,tracking,cutie`
 - `workstation`: GUI plus `tracking,sam3,training`
 - `full`: GUI plus the `all` extra
 
@@ -142,22 +143,24 @@ Example:
 pip install -e ".[gui,sam3,yolo,training,ai_chat]"
 ```
 
-Annolid follows the same practical split used by mature annotation tools:
-the base `annolid` package is the core tier, and `annolid[gui]` is the default
-desktop tier. The default installer keeps GUI annotation and local video setup
-usable while model-heavy runtimes such as PyTorch, Transformers, YOLO,
-SAM-related packages, Cutie dependencies, hosted AI providers, realtime
-hardware, large-image backends, and Bot integrations are explicit extras. If a
-feature is not installed, Annolid should start normally and show an install
-hint when that feature is opened.
+Annolid's base package includes `pycocotools` so mask/RLE polygon paths are
+available in default installs. The one-line installer's default `gui` profile
+also installs the `ml`, `tracking`, and `cutie` extras so common model and
+tracking workflows are available immediately. Use `--profile minimal` /
+`-Profile minimal` only when you need the smallest GUI/core annotation setup.
+
+SAM-related packages, hosted AI providers, realtime hardware, large-image
+backends, Bot integrations, audio helpers, image editing, and text-to-speech
+remain explicit extras. If one of those features is not installed, Annolid
+should start normally and show an install hint when that feature is opened.
 
 The one-line installers also keep optional SAM-HQ out of the default path.
 SAM-HQ is attempted only when a SAM-related extra such as `sam3` or the `all`
 profile is selected. This avoids a default GitHub source install on machines
 that only need the GUI/core annotation workflow.
 
-Cutie tracking is also repairable from a minimal/default install. If a user
-starts Cutie tracking and one of the Cutie runtime packages is missing, Annolid
+Cutie tracking is also repairable from a minimal install. If a user starts
+Cutie tracking and one of the Cutie runtime packages is missing, Annolid
 attempts to install the missing packages into the active environment and then
 continues loading the tracker. Set `ANNOLID_AUTO_INSTALL_CUTIE_DEPS=0` to
 disable automatic installation and show the exact `python -m pip install ...`

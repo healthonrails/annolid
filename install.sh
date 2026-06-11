@@ -659,8 +659,11 @@ interactive_config() {
 
 profile_extras() {
     case "$PROFILE" in
-        minimal|gui)
+        minimal)
             echo ""
+            ;;
+        gui)
+            echo "ml,tracking,cutie"
             ;;
         workstation)
             echo "tracking,sam3,training"
