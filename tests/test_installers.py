@@ -125,6 +125,25 @@ def test_pyproject_defines_professional_optional_tiers() -> None:
     assert any(requirement.startswith("onnxruntime") for requirement in extras["all"])
 
 
+def test_pyproject_test_extra_preserves_full_collection_import_contract() -> None:
+    data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    test_requirements = data["project"]["optional-dependencies"]["test"]
+    test_names = {
+        requirement.split(">=")[0].split("[")[0] for requirement in test_requirements
+    }
+
+    assert {
+        "torch",
+        "torchvision",
+        "transformers",
+        "onnxruntime",
+        "omegaconf",
+        "hydra-core",
+        "pycocotools",
+        "einops",
+    }.issubset(test_names)
+
+
 def test_release_workflow_uses_shared_bundle_artifact_guard() -> None:
     workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
 

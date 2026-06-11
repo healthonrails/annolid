@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 
 import pytest
 
@@ -60,6 +61,36 @@ def test_ensure_cutie_runtime_dependencies_installs_missing_packages() -> None:
     assert calls
     assert calls[0][0][-1] == "missing-package>=1"
     assert calls[0][1]["capture_output"] is True
+
+
+def test_cutie_runtime_install_command_prefers_uv_for_active_python(
+    monkeypatch,
+) -> None:
+    calls = []
+    available = set()
+
+    monkeypatch.setattr(
+        "annolid.segmentation.cutie_vos.dependencies.shutil.which",
+        lambda name: "/usr/bin/uv" if name == "uv" else None,
+    )
+
+    def _finder(name: str):
+        return object() if name in available else None
+
+    def _runner(cmd, **kwargs):
+        calls.append(cmd)
+        available.add("missing_pkg")
+        return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+
+    ensure_cutie_runtime_dependencies(
+        finder=_finder,
+        runner=_runner,
+        dependencies=(RuntimeDependency("missing_pkg", "missing-package>=1"),),
+    )
+
+    assert calls
+    assert calls[0][:5] == ["/usr/bin/uv", "pip", "install", "--python", sys.executable]
+    assert calls[0][-1] == "missing-package>=1"
 
 
 def test_ensure_cutie_runtime_dependencies_can_disable_auto_install(

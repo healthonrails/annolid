@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -50,6 +51,9 @@ def missing_cutie_runtime_dependencies(
 
 
 def _install_command(package_specs: Sequence[str]) -> list[str]:
+    uv_cmd = shutil.which("uv")
+    if uv_cmd:
+        return [uv_cmd, "pip", "install", "--python", sys.executable, *package_specs]
     return [sys.executable, "-m", "pip", "install", *package_specs]
 
 
