@@ -2347,18 +2347,15 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
         if self.current is None:
             return
         drawing_shape = self.current.copy()
-        if len(self.line.points) < 2:
-            return
-        drawing_shape.addPoint(
-            point=self.line.points[1],
-            label=self.line.point_labels[1],
-        )
         try:
             if not self._ensure_ai_model_initialized():
                 logger.error(
                     "AI polygon model is not initialized; skipping prediction."
                 )
                 return
+            # The cursor endpoint is only a guide for the next click.  Using it as
+            # a prompt makes the live prediction differ from the committed polygon,
+            # so the polygon can appear to "fix itself" after a frame reload.
             prompt_points = [[point.x(), point.y()] for point in drawing_shape.points]
             point_labels = list(drawing_shape.point_labels or [])
             normalized_points = self._predict_ai_polygon_points(

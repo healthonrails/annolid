@@ -512,6 +512,55 @@ def test_ai_polygon_preview_paints_with_active_painter(monkeypatch):
     assert all(active_states)
 
 
+def test_ai_polygon_preview_ignores_uncommitted_hover_prompt(monkeypatch):
+    _ensure_qapp()
+
+    from annolid.gui.shape import Shape
+    from annolid.gui.widgets.canvas import Canvas
+
+    canvas = Canvas()
+    try:
+        image = QtGui.QImage(100, 80, QtGui.QImage.Format_RGB32)
+        image.fill(QtGui.QColor(90, 100, 110))
+        canvas.loadPixmap(QtGui.QPixmap.fromImage(image))
+        canvas.mode = canvas.CREATE
+        canvas.createMode = "ai_polygon"
+
+        current = Shape(shape_type="points")
+        current.addPoint(QtCore.QPointF(20, 20), label=1)
+        current.addPoint(QtCore.QPointF(30, 25), label=1)
+        canvas.current = current
+        canvas.line.points = [QtCore.QPointF(30, 25), QtCore.QPointF(90, 70)]
+        canvas.line.point_labels = [1, 1]
+
+        monkeypatch.setattr(
+            canvas, "_ensure_ai_model_initialized", lambda **kwargs: True
+        )
+
+        calls = []
+
+        class _RecordingMaskModel:
+            def predict_mask_from_points(self, points, point_labels):
+                calls.append((list(points), list(point_labels)))
+                mask = np.zeros((80, 100), dtype=np.uint8)
+                mask[12:35, 12:42] = 1
+                return mask
+
+        canvas._ai_model = _RecordingMaskModel()
+        target = QtGui.QPixmap(canvas.size())
+        target.fill(QtCore.Qt.transparent)
+        painter = QtGui.QPainter(target)
+        try:
+            canvas._paint_ai_polygon_preview(painter)
+        finally:
+            painter.end()
+
+        assert calls
+        assert calls[0] == ([[20.0, 20.0], [30.0, 25.0]], [1, 1])
+    finally:
+        canvas.close()
+
+
 def test_ai_mask_preview_paints_with_active_painter(monkeypatch):
     _ensure_qapp()
 
