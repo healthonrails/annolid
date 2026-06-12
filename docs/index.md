@@ -1,20 +1,20 @@
 <section class="ann-hero">
   <span class="ann-kicker">Annolid Documentation Portal</span>
-  <h1>Ship annotation and tracking workflows faster.</h1>
+  <h1>Run reproducible annotation and tracking workflows.</h1>
   <p>
-    Annolid combines a desktop GUI, a composable CLI, and agent-assisted tools
-    for real-world behavior analysis projects.
+    Annolid combines a desktop GUI, a composable CLI, and optional
+    agent-assisted tools for real-world behavior analysis projects.
   </p>
   <p>
-    Start with a stable local setup, then move into repeatable workflows,
-    memory-backed context, and deployment-ready operations.
+    Start with a stable local setup, label and review a small video, then move
+    into repeatable training, inference, behavior scoring, and automation.
   </p>
   <div class="ann-quick">
     <a href="getting_started/">Getting Started in 20 minutes</a>
     <a href="installation/">Install Annolid</a>
     <a href="install_with_uv/">Use <code>.venv</code> for development</a>
     <a href="workflows/">Follow core workflows</a>
-    <a href="behavior_agent_user_guide/">Use behavior-agent scoring</a>
+    <a href="behavior_agent_user_guide/">Use behavior-agent analysis</a>
     <a href="agent_annolid_run/">Run <code>annolid-run</code> from Annolid agents</a>
     <a href="sam3/">Track long videos with SAM3</a>
     <a href="tutorials/">Explore tutorials</a>
@@ -27,7 +27,7 @@
 <div class="ann-paths">
   <article class="ann-path">
     <strong>New Users</strong>
-    Start from installation and one-line setup paths, then run your first GUI project.
+    Start with installation and one-line setup paths, then run your first GUI project.
     <br />
     <a href="installation/">Installation</a> |
     <a href="one_line_install_choices/">One-Line Installer</a>
@@ -60,7 +60,7 @@
   </article>
   <article class="ann-card">
     <h3>Workflow Execution</h3>
-    <p>Run GUI and CLI tasks with explicit, reproducible command patterns.</p>
+    <p>Run GUI and CLI tasks with explicit command patterns that can be repeated.</p>
     <a href="workflows/">Open workflows</a>
   </article>
   <article class="ann-card">
@@ -95,14 +95,14 @@
   </article>
   <article class="ann-card">
     <h3>Operations</h3>
-    <p>Deploy docs/site assets and keep release and migration flows in sync.</p>
+    <p>Deploy docs and site assets, and keep release and migration flows in sync.</p>
     <a href="deployment/">Open deployment guide</a>
   </article>
 </div>
 
 ## Product Snapshot
 
-- Python package metadata supports `>=3.10`; CI/docs currently target Python 3.10-3.13.
+- Python package metadata supports `>=3.10`; the default GUI/core workflow is documented for Python 3.10-3.14.
 - Primary entry points are `annolid` (GUI) and `annolid-run` (CLI/plugins).
 - Memory subsystem includes GUI CRUD manager, structured settings profiles, and legacy-source migration tooling.
 - Annolid Bot supports multimodal chat and optional provider integrations in the GUI.

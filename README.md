@@ -1,4 +1,4 @@
-# annolid
+# Annolid
 
 [![Annolid Build](https://github.com/healthonrails/annolid/workflows/Annolid%20CI/badge.svg)](https://github.com/healthonrails/annolid/actions)
 [![Annolid Release](https://img.shields.io/github/v/release/healthonrails/annolid?display_name=tag)](https://github.com/healthonrails/annolid/releases/latest)
@@ -6,15 +6,16 @@
 [![Downloads](https://pepy.tech/badge/annolid)](https://pepy.tech/project/annolid)
 [![Arxiv](https://img.shields.io/badge/cs.CV-2403.18690-b31b1b?logo=arxiv&logoColor=red)](https://arxiv.org/abs/2403.18690)
 
-> Annotate, segment, and track multiple animals (or any research target) in video with a single toolchain.
+> Annotate, segment, track, and analyze animals or other research targets in video with one reproducible toolchain.
 
 ## Table of Contents
 - [Overview](#overview)
-- [Key Features](#key-features)
+- [What Annolid Is For](#what-annolid-is-for)
 - [Documentation & Support](#documentation--support)
 - [Quick Start](#quick-start)
-- [Installation Options](#installation-options)
+- [Installation](#installation)
 - [Using Annolid](#using-annolid)
+- [Core Workflows](#core-workflows)
 - [Annotation Guide](#annotation-guide)
 - [Labeling Best Practices](#labeling-best-practices)
 - [Tutorials & Examples](#tutorials--examples)
@@ -28,26 +29,23 @@
 - [License](#license)
 
 ## Overview
-Annolid is a deep learning toolkit for animal behavior analysis that brings annotation, instance segmentation, tracking, and behavior classification into a single workflow. It combines state-of-the-art models—including Cutie for video object segmentation, Segment Anything, and Grounding DINO—to deliver resilient, markerless tracking even when animals overlap, occlude each other, or are partially hidden by the environment.
+Annolid is a deep learning toolkit for behavior analysis and video annotation. It brings annotation, instance segmentation, tracking, keypoint workflows, behavior scoring, and downstream analysis into one GUI and CLI environment.
 
-Use Annolid to classify behavioral states such as freezing, digging, pup huddling, or social interaction while maintaining fine-grained tracking of individuals and body parts across long video sessions.
+The common path is practical and iterative: label a representative frame, propagate or track instances, review difficult frames, repair identities, and export annotations or metrics for analysis. Annolid is designed for real lab data, including overlap, occlusion, variable lighting, long videos, and projects where saved annotations need to remain readable and reproducible.
 
 > **Python support:** Annolid runs on Python 3.10–3.14 for the default GUI/core workflow. The optional remote network video path uses `ffpyplayer`; install `annolid[remote_video]` only when you need that feature, especially on Python 3.14 where native FFmpeg development libraries may be required.
 
-## Key Features
-- Markerless multiple-animal tracking from a single annotated frame.
-- Instance segmentation powered by modern foundation models and transfer learning.
-- Interactive GUI for rapid annotation (LabelMe-based) plus automation with text prompts.
-- SVG overlay import for atlas/anatomy drawings and TIFF-family metadata-aware image loading.
-- `pycocotools` is installed by default so mask/RLE polygon utilities work in the standard install.
-- Optional `large_image` extra for `tifffile`/`pyvips`/`openslide-python` backends when working with large TIFF-family datasets. The default install does not require these packages.
-- Optional `remote_video` extra for network video decoding through `ffpyplayer`. Local video workflows use the normal FFmpeg/imageio stack.
-- Optional `cutie` extra for Cutie tracking runtime dependencies. The one-line installer default profile installs `ml`, `tracking`, and `cutie`; minimal installs can still try to install missing Cutie packages on first Cutie use.
-- Optional `sam3` extra for SAM-related workflows. The one-line installers attempt SAM-HQ only when a SAM/full profile is requested, not during the default GUI setup.
-- Optional feature profiles keep installs predictable: use `annolid[ml]` for general model runtimes, `annolid[tracking]` for tracking workstations, `annolid[yolo]` for YOLO/YOLOE workflows, `annolid[ai_chat]` for hosted LLM providers, `annolid[bot]` for Bot integrations plus memory, `annolid[audio]` or `annolid[text_to_speech]` for audio features, and `annolid[realtime]` for serial/ZMQ hardware paths.
-- Behavioral state classification, keypoint tracking, and downstream analytics.
-- Works with pre-recorded video or real-time streams; supports GPU acceleration.
-- Optional EfficientTAM video tracking backend, fully integrated and auto-downloaded (no separate installation needed).
+## What Annolid Is For
+
+- Markerless multi-animal tracking from a small number of labeled frames.
+- LabelMe-compatible image and video annotation with polygons, keypoints, zones, and behavior events.
+- Foundation-model assisted segmentation and tracking workflows, including Cutie, SAM-family workflows, Grounding DINO, CoTracker-style point tracking, TAPNext ONNX, EfficientTAM, and CowTracker where installed.
+- Behavior scoring, timeline flags, zone analysis, time-budget summaries, and classifier workflows.
+- GUI-first review and correction, plus `annolid-run` CLI commands for reproducible model training, prediction, evaluation, and automation.
+- Optional Annolid Bot workflows for multimodal assistance, model/plugin execution, MCP tools, and lab automation integrations.
+- Large TIFF and atlas-overlay work with optional tiled backends for OME-TIFF, BigTIFF, SVG, and Illustrator/PDF-compatible overlays.
+
+Annolid keeps heavier runtime features behind extras so a standard GUI install stays usable on common lab machines. See [Installation](docs/installation.md) for the maintained extras and installer profiles.
 
 ## Documentation & Support
 - Latest documentation and user guide: [https://annolid.com](https://annolid.com) (mirror: [https://cplab.science/annolid](https://cplab.science/annolid))
@@ -61,9 +59,31 @@ Use Annolid to classify behavioral states such as freezing, digging, pup huddlin
   [https://youtu.be/PNbPA649r78](https://youtu.be/PNbPA649r78)
 - For more practical examples and walkthroughs, visit the [Annolid YouTube channel](https://www.youtube.com/@annolid).
 
-## Quick Start (Anaconda)
+## Quick Start
 
-If you prefer using [Anaconda](https://docs.anaconda.com/anaconda/install/index.html) to manage environments:
+The fastest maintained path is the one-line installer:
+
+**macOS / Linux:**
+
+```bash
+curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh | bash
+```
+
+**Windows PowerShell:**
+
+```powershell
+irm https://raw.githubusercontent.com/healthonrails/annolid/main/install.ps1 | iex
+```
+
+After installation:
+
+```bash
+annolid --help
+annolid-run --help
+annolid
+```
+
+If you prefer [Anaconda](https://docs.conda.io/projects/conda/en/latest/user-guide/install/index.html):
 
 ```bash
 conda create -n annolid-env python=3.11
@@ -75,32 +95,44 @@ pip install -e ".[gui]"
 annolid  # launches the GUI
 ```
 
+For source development, use a repository-local `.venv`:
+
+```bash
+git clone --recurse-submodules https://github.com/healthonrails/annolid.git
+cd annolid
+uv venv .venv --python 3.11
+source .venv/bin/activate
+uv pip install -e ".[gui]"
+annolid
+```
+
 ## Installation
 
-### 🚀 One-Line Installation (Recommended)
+### One-Line Installation (Recommended)
 
 Get Annolid running in minutes with the automated installer. It clones the repository, creates an isolated environment, bootstraps `uv` when needed, installs GUI dependencies, and validates the ONNX Runtime provider setup.
 
 **macOS / Linux:**
+
 ```bash
 curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh | bash
 ```
 
-**Windows (PowerShell):**
+**Windows PowerShell:**
+
 ```powershell
 irm https://raw.githubusercontent.com/healthonrails/annolid/main/install.ps1 | iex
 ```
 
 The script will:
 - Clone the repository.
-- Detect your OS and Hardware (Intel/Apple Silicon).
+- Detect your OS and hardware.
 - Create an isolated virtual environment.
 - Install and validate ONNX Runtime CPU/GPU providers.
-- Prompt for optional features (SAM3, Text-to-Speech, etc.).
+- Prompt for optional features such as SAM3 and text-to-speech when requested.
 - Offer to launch Annolid immediately.
 
-For a full breakdown of one-line installer choices (GPU vs CPU, interactive vs non-interactive, custom paths, Conda, and extras), see:
-- [One-Line Installer Choices (Detailed Guide)](docs/one_line_install_choices.md)
+For a full breakdown of one-line installer choices, including GPU vs CPU, interactive vs non-interactive, custom paths, Conda, and extras, see [One-Line Installer Choices](docs/one_line_install_choices.md).
 
 Common maintained workstation profile:
 
@@ -122,33 +154,14 @@ For advanced users, Docker, Conda, or manual Pip installation, please see the [D
   ```bash
   annolid --labels=/path/to/labels_custom.txt
   ```
-- Pick between Ollama, OpenAI GPT, or Google Gemini for caption chat features by opening the caption panel and clicking `Configure…` next to the model selector. API keys are stored in `~/.annolid/llm_settings.json`.
-- Open **AI & Models → Annolid Bot…** to launch a dedicated right-side WhatsApp-style multimodal chat dock (streaming chat, local `openai/whisper-tiny` speech-to-text for Talk/Record, voice talk/read controls, and one-click canvas/window sharing).
-- Draw shapes on a seed frame (commonly frame `0`) and mark them as zones directly in the label popup by enabling **Zone type** (or by using zone keywords in labels). Use **Video Tools → Zones** when you want bulk zone management, presets, or zone JSON save/load.
+- Draw shapes on a seed frame, often frame `0`, and use stable instance names when cross-frame identity matters.
+- Mark zones directly in the label popup with **Zone type**, or use **Video Tools → Zones** for bulk zone management, presets, and zone JSON save/load.
 - Use **View → Show Zones On All Frames** to control whether saved zone overlays are displayed across the full timeline.
-- Open **Video Tools → Zone Analysis** to export legacy place-preference CSVs, generic zone metrics, or a profile-aware assay summary for Phase 1 / Phase 2 workflows. See [Zone Analysis](docs/zone_analysis.md) and [Zone Analysis Workflow](docs/tutorials/zone_analysis_workflow.md).
-- For behavior scoring with shared behavior names across Flags, Timeline, and Annolid Bot (including timeline needle dragging and 1s segment labeling prompts), see [Behavior labeling with Timeline, Flags, and Annolid Bot](docs/tutorials/behavior_timeline_flags_bot.md).
-- The behavior tutorial includes a prompt cookbook for structured context fields (`video description`, `instances`, `experiment context`, `behavior definitions`, `focus points`) and free-form aggression-bout examples.
-- Open **AI & Models → Draft Research Paper with Swarm…** to seed Annolid Bot with the multi-agent paper-drafting workflow and an active PDF context when available.
-- In Annolid Bot, enable `Allow web` to let Annolid Bot use `web_search`/`web_fetch` tools for web browsing in that chat turn (requires `BRAVE_API_KEY` for search).
-- To show or hide intermediate tool/planning updates while Annolid Bot is thinking, open Annolid Bot settings and toggle `Agent Runtime → Enable intermediate progress stream`.
-- To cap slow tool calls in the agent loop, tune `Agent Runtime → Agent tool timeout` (seconds).
-- To force browser-first web handling, keep `Agent Runtime → Prefer MCP browser for web tasks` enabled.
-- Annolid Bot can now run model inference directly on videos via tools: use `video_list_inference_models` to discover compatible `predict` plugins, then `video_run_model_inference` to execute `annolid-run predict <model>` against a video path.
-- Annolid Bot can delegate coding work to long-lived Codex CLI sessions via `coding_session_start`; sessions default to read-only review mode and can opt into `workspace-write` when code edits are explicitly requested.
-- Annolid Bot can also run SAM3 agent-seeded long-video tracking via `sam3_agent_video_track` for occluded or drifting objects that need windowed reseeding. See the [SAM3 guide](docs/sam3.md) for the recommended workflow and output contract.
-- **ClawHub Skills**: Search and install agent skills from ClawHub directly in Annolid Bot. See the tutorials hub at <https://annolid.com/portal/tutorials/>.
-- **Model Context Protocol (MCP)**: Extend Annolid Bot with external tools and data sources. See the [MCP Configuration and Usage Tutorial](docs/mcp.md) for details.
-- **Large TIFF + atlas overlays**: For OME-TIFF / BigTIFF images and Illustrator-exported atlas drawings, see the [Large TIFF and Atlas Overlay Workflow](docs/atlas_overlay_workflow.md).
-- **Annolid Bot Extras Bundle**: Install common Annolid Bot optional integrations (WhatsApp + Google Drive + Google Calendar + MCP) with `pip install "annolid[annolid_bot]"`.
-- **Bot-assisted model training**: Annolid Bot can now discover trainable model families and launch background fine-tunes for workflows such as `dino_kpseg` and YOLO pose/segmentation through typed training tools on top of `annolid-run`.
-- **Bot-assisted dataset handling**: Annolid Bot can now inspect a dataset folder, distinguish between saved trainable configs and inferred dataset layouts, prepare LabelMe splits/specs, infer COCO specs, import DeepLabCut training data into Annolid/LabelMe format, export YOLO datasets from raw LabelMe or COCO folders, and train directly from `dataset_folder`, including auto-staging inferred COCO specs for DinoKPSEG when needed.
-- **Bot-assisted evaluation reports**: Annolid Bot can now read saved test/eval artifacts and generate paper-ready metric reports in JSON, Markdown, CSV, and LaTeX for DinoKPSEG, YOLO, and behavior-classifier workflows, including bootstrap confidence intervals for YOLO mAP when `predictions.json` and COCO-style annotations are available.
-- **Bot-assisted evaluation runs**: Annolid Bot can now start DinoKPSEG evaluation and YOLO validation jobs as managed background sessions, and YOLO validation can request `save_json` output so the later report step has enough structure for paper-grade uncertainty estimates.
-- **WhatsApp Channel**: Configure Annolid Bot with default local QR bridge mode (safer, no public webhook) or optional Cloud API mode. See <https://annolid.com/portal/tutorials/>.
-- **Zulip Channel**: Configure Annolid Bot for Zulip stream/PM messaging. See <https://annolid.com/portal/tutorials/>.
-- **Background Services Setup**: For optional Email/WhatsApp/Google Calendar startup and troubleshooting, see <https://annolid.com/portal/tutorials/>.
-- Summarise annotated behavior events into a timebudget report (GUI: *File → Behavior Time Budget*; CLI example with 60 s bins and a project schema):
+- Open **Video Tools → Zone Analysis** to export legacy place-preference CSVs, generic zone metrics, or profile-aware assay summaries. See [Zone Analysis](docs/zone_analysis.md) and [Zone Analysis Workflow](docs/tutorials/zone_analysis_workflow.md).
+- For behavior scoring with shared behavior names across Flags, Timeline, and Annolid Bot, see [Behavior labeling with Timeline, Flags, and Annolid Bot](docs/tutorials/behavior_timeline_flags_bot.md).
+- Use `annolid-run list-models`, `annolid-run help train`, and `annolid-run help predict` for CLI model workflows.
+- Open **AI & Models → Annolid Bot…** when you need multimodal chat, typed model/plugin execution, MCP integrations, or optional lab-automation channels. See [Agent and Automation](docs/agent_and_automation.md), [MCP](docs/mcp.md), and [Annolid Agent and annolid-run](docs/agent_annolid_run.md).
+- Summarize annotated behavior events into a time-budget report (GUI: *File → Behavior Time Budget*; CLI example with 60 s bins and a project schema):
   ```bash
   python -m annolid.behavior.time_budget exported_events.csv \
       --schema project.annolid.json \
@@ -166,6 +179,15 @@ For advanced users, Docker, Conda, or manual Pip installation, please see the [D
   ```bash
   ffmpeg -i input.mp4 -vcodec libx264 output_compressed.mp4
   ```
+
+## Core Workflows
+
+- [Getting Started](docs/getting_started.md): shortest path from install to a working GUI session.
+- [Workflows](docs/workflows.md): supported GUI, Bot, CLI, behavior, depth, 3D, identity-repair, and simulation paths.
+- [Tutorials](docs/tutorials.md): maintained walkthroughs and notebooks.
+- [TAPNext ONNX point tracking](docs/tapnext.md): point-seeded tracking workflow and model-cache behavior.
+- [SAM3 guide](docs/sam3.md): SAM3 tracking and agent-assisted long-video tracking.
+- [Large TIFF and Atlas Overlay Workflow](docs/atlas_overlay_workflow.md): large image and vector overlay workflow.
 
 ## Video Depth Anything
 

@@ -1,6 +1,17 @@
 # Workflows
 
-This page summarizes the main workflows that are supported by the current Annolid codebase.
+This page summarizes the main workflows supported by Annolid today. Start with the standard GUI workflow unless you already know you need a CLI, agent, or specialized model path.
+
+## Workflow Selection
+
+| Goal | Start Here |
+| --- | --- |
+| Label and track animals in a video | [Standard GUI Video Workflow](#1-standard-gui-video-workflow) |
+| Run model training, prediction, or evaluation from scripts | [CLI Model Workflow](#3-cli-model-workflow) |
+| Score behavior events or time budgets | [Behavior Analysis Workflow](#4-behavior-analysis-workflow) |
+| Repair identity switches after tracking | [Identity Repair Workflow](#identity-repair-workflow) |
+| Use Annolid Bot or external tools | [Annolid Bot Workflow](#2-annolid-bot-workflow) |
+| Estimate depth or build 3D outputs | [Depth Workflow](#5-depth-workflow) and [Optional 3D Workflows](#6-optional-3d-workflows) |
 
 ## 1. Standard GUI Video Workflow
 
@@ -18,11 +29,13 @@ Practical notes:
 
 - Direct video labeling is supported; frame extraction is optional, not mandatory.
 - Use stable instance labels when cross-frame identity matters.
+- Save early and often; the LabelMe-compatible JSON files are the reviewable project contract.
 - When using shape propagation, `Rename & Propagate` can switch a selected
   shape to another existing shape label from the dialog. If two shapes with
   different labels are selected, Annolid swaps those labels across the
   propagation range instead of renaming both identities to one label.
 - Review overlap, occlusion, and high-motion segments before scaling to long runs.
+- Validate a small representative segment before committing compute time to an entire recording.
 
 ## 2. Annolid Bot Workflow
 
@@ -37,6 +50,8 @@ Current bot workflow highlights:
 - model/plugin execution against videos through bot tools,
 - Box file operations through natural-language requests such as listing, searching, downloading, or uploading project files,
 - draft-and-send support for configured Zulip targets from the bot UI.
+
+Install optional Bot dependencies only when you need them. See [Installation](installation.md) for the `annolid_bot`, `bot`, `ai_chat`, and related extras.
 
 When you use background integrations such as Zulip, WhatsApp, calendar services, or Box, the agent config is loaded from the Annolid agent config path, not the LLM settings file.
 
@@ -82,6 +97,12 @@ annolid-run train dino_kpseg --run-config annolid/configs/runs/dino_kpseg_train.
 If you want the GUI agent to perform read-only CLI inspection or explicitly
 invoke Annolid-native commands, use the dedicated typed tool flow described in
 [Annolid Agent and annolid-run](agent_annolid_run.md).
+
+Recommended practice:
+
+- Run `annolid-run help <command> <model>` before a new job.
+- Keep run configs under version control for repeated studies.
+- Validate on a small dataset split before scaling training or inference.
 
 ## 4. Behavior Analysis Workflow
 
@@ -165,6 +186,8 @@ For difficult multi-animal sessions where identity can flip after overlap/occlus
 
 See [Identity Governor](identity_governor.md).
 
+Dry-run the policy first. Review the generated correction report before applying changes to downstream analysis files.
+
 ## 5. Depth Workflow
 
 The current GUI includes Video Depth Anything integration.
@@ -211,7 +234,8 @@ See [Simulation and FlyBody](simulation_flybody.md).
 
 ## Recommended Operating Pattern
 
-- Keep changes incremental.
+- Keep annotation and model changes incremental.
 - Prefer short label -> run -> review loops.
 - Treat on-disk annotation files as the contract.
 - Validate new model workflows on a small subset before scaling to a full dataset.
+- Record model weights, run configs, prompts, and exported CSV locations with the project so results can be reproduced later.

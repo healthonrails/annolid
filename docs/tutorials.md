@@ -1,6 +1,18 @@
 # Tutorials
 
-This page points to the practical tutorial material that exists in the repository today.
+This page points to practical tutorial material that exists in the repository today. Use [Getting Started](getting_started.md) first if you have not yet verified that Annolid opens a video and saves annotations in your environment.
+
+## Choose a Tutorial Path
+
+| If you need to... | Use |
+| --- | --- |
+| Learn the basic GUI tracking loop | [Tracking four interacting mice with one labeled frame](https://youtu.be/PNbPA649r78) and [Workflows](workflows.md) |
+| Downsample or preprocess videos | [GUI video downsample workflow](tutorials/video_downsample_workflow.md) and [Video Processing with FFmpeg](tutorials/video_ffmpeg_processing.md) |
+| Score behavior events | [Behavior labeling with Timeline, Flags, and Annolid Bot](tutorials/behavior_timeline_flags_bot.md) |
+| Define zones and export zone metrics | [Draw zones quickstart](tutorials/draw_zones_quickstart.md) and [Zone analysis workflow](tutorials/zone_analysis_workflow.md) |
+| Correct tracking drift or missing frames | [Segment-based batch tracking](tutorials/segment-based-batch-tracking.md) and [Tracking correction with SAM3 Agent and Annolid Bot](tutorials/tracking_correction_with_sam3_bot.md) |
+| Train or evaluate models | Notebook tutorials in `docs/tutorials/` and model-specific `annolid-run help` output |
+| Run realtime camera workflows | [Realtime Wireless Camera Detection](tutorials/realtime_wireless_camera_detection.md) and [Multi-Camera Realtime Detection](tutorials/multi_camera_realtime.md) |
 
 ## Video Walkthroughs
 
@@ -16,10 +28,14 @@ This page points to the practical tutorial material that exists in the repositor
 - [Tracking correction with SAM3 Agent and Annolid Bot](tutorials/tracking_correction_with_sam3_bot.md)
 - [Draw zones quickstart (GUI)](tutorials/draw_zones_quickstart.md)
 - [Zone analysis workflow](tutorials/zone_analysis_workflow.md)
+- [TCN behavior classification from pose features](tutorials/tcn_behavior_pipeline.md)
+- [Multi-camera realtime detection](tutorials/multi_camera_realtime.md)
 - [LabelMe to YOLO class mapping](tutorials/Labelme_to_YOLO_class_map.md)
 - [Sandboxed shell for Annolid Bot](tutorials/sandboxed_shell.md)
 - [MCP setup and usage](mcp.md)
 - [SAM 3D integration](sam3d.md)
+- [TAPNext ONNX point tracking](tapnext.md)
+- [Large TIFF and atlas overlays](atlas_overlay_workflow.md)
 
 ## Notebook Tutorials in `docs/tutorials/`
 
@@ -41,6 +57,7 @@ Representative notebooks currently tracked in the repo:
 - Start with the GUI/video workflow if you are labeling or reviewing data interactively.
 - Use the notebook tutorials when you need training, evaluation, or post-processing examples.
 - Use the markdown guides when you need an operational setup such as MCP, sandboxed shell execution, or batch tracking.
+- Use `annolid-run help train <model>` or `annolid-run help predict <model>` when a tutorial mentions a model backend and you need the current command-line options.
 
 ## Repository-first Note
 

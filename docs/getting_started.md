@@ -1,6 +1,6 @@
 # Getting Started
 
-Use this page as the fastest path from install to a working Annolid session.
+Use this page as the fastest path from installation to a verified Annolid session. The goal is not to finish a full project in one pass; it is to prove that your environment opens videos, saves annotations, and can run the command-line tools you will need later.
 
 ## 20-Minute Path
 
@@ -14,7 +14,7 @@ Use this page as the fastest path from install to a working Annolid session.
 6. Run tracking/propagation and review identity consistency.
 7. Export results for downstream analysis.
 
-If this flow works, your environment is ready for full projects.
+If this flow works, your environment is ready for full projects. If it fails, keep the video short and resolve the installation or codec issue before scaling to long recordings.
 
 ## Quick Environment Check
 
@@ -33,14 +33,16 @@ annolid --help
 annolid-run list-models
 ```
 
+For a user install that does not need source editing, prefer the one-line installer or the `pip install "annolid[gui]"` path in [Installation](installation.md).
+
 ## First GUI Session Checklist
 
-- Open video
-- Pick representative frame
-- Add labels/shapes/keypoints
-- Track forward/backward
-- Fix errors early (occlusion, swaps, overlap)
-- Save and export
+- Open a short video.
+- Pick a representative seed frame.
+- Add labels, polygons, boxes, keypoints, zones, or behavior flags as needed.
+- Track or propagate forward/backward from the seed frame.
+- Review overlap, occlusion, swaps, and high-motion sections early.
+- Save LabelMe-compatible JSON files and export any analysis CSVs you need.
 
 See [Workflows](workflows.md) for detailed operating patterns.
 
@@ -65,6 +67,9 @@ If you want Annolid Bot to drive those commands for you, use the typed
 
 ## Optional Next Layers
 
+- Zone analysis and assay summaries: [Zone Analysis](zone_analysis.md)
+- TAPNext ONNX point tracking: [TAPNext ONNX Point Tracking](tapnext.md)
+- SAM3 tracking and correction: [SAM3](sam3.md)
 - Memory subsystem for reusable context: [Memory Subsystem](memory.md)
 - Agent integrations and MCP tools: [MCP](mcp.md)
 - Security hardening for agents/secrets: [Agent Security](agent_security.md)
@@ -76,3 +81,4 @@ If you want Annolid Bot to drive those commands for you, use the typed
 - `qtpy.QtBindingsNotFoundError`: install with `.[gui]` extra.
 - Missing codecs or video issues: install FFmpeg for your platform.
 - Plugin/model command errors: check active environment and run `annolid-run --help`.
+- Model downloads fail on first use: keep the exact traceback and retry from the active environment; many model paths download into `~/.annolid/workspace/downloads/`.
