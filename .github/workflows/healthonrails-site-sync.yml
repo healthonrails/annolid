@@ -49,7 +49,7 @@ jobs:
       SITE_BRANCH: gh-pages
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -132,7 +132,7 @@ jobs:
 
       - name: Set up Python 3.11
         if: steps.token.outputs.has_token == 'true'
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -145,7 +145,7 @@ jobs:
 
       - name: Set up uv cache
         if: steps.token.outputs.has_token == 'true'
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/uv
           key: ${{ runner.os }}-uv-${{ hashFiles('book/requirements.txt', 'docs/requirements_mkdocs.txt') }}
