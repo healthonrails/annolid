@@ -109,7 +109,7 @@ Examples:
 Named profiles provide stable defaults for common machines:
 
 | Profile | Installed optional extras | Use this for |
-|---|---|---|
+| --- | --- | --- |
 | `minimal` | none beyond the required GUI extra | Fastest GUI/core annotation setup when model runtimes should be avoided. |
 | `gui` | `ml,tracking,cutie` | Default profile; same behavior as omitting `--profile` / `-Profile`. |
 | `workstation` | `tracking,sam3,training` | Maintained research workstations that need common tracking runtimes, promptable segmentation, and training dashboards. |
@@ -143,7 +143,7 @@ Current supported extras:
 ### What each extra is for (with example use cases)
 
 | Extra | Install this when you need... | Example use case |
-|---|---|---|
+| --- | --- | --- |
 | `audio` | audio decoding/playback helpers | You want waveform-derived behavior features, microphone recording, or sound playback without installing audio stacks in every lab workstation. |
 | `ai_chat` | hosted OpenAI-compatible or Anthropic provider SDKs | You use GPT/OpenRouter/Claude-style providers instead of only local/Ollama-compatible paths. |
 | `ml` | general ML/model runtime dependencies | You need PyTorch, Transformers, Hugging Face Hub, ONNX Runtime, Hydra/OmegaConf, and model tooling but do not want every optional workflow. |
@@ -219,7 +219,7 @@ automatic repair and show the exact install command instead.
 Use this as a practical hardware guide before choosing flags.
 
 | Device / Platform | Recommendation | Suggested installer choice |
-|---|---|---|
+| --- | --- | --- |
 | NVIDIA GPU workstation (Linux/Windows) | Best performance for training + large-batch inference. Keep CUDA drivers current. | Use default installer (do **not** pass `--no-gpu` / `-NoGpu`). |
 | Apple Silicon (M1/M2/M3) | Good local inference performance via MPS; stable for many annotation/tracking tasks. | Use default installer on macOS. |
 | CPU-only laptop/VM | Works for annotation and light inference, but slower for heavy models. | Use `--no-gpu` (Linux/macOS) or `-NoGpu` (Windows). |

@@ -22,7 +22,7 @@ canonical documentation and site paths.
 ## Legacy to Canonical URL Mapping
 
 | Legacy URL | Canonical URL |
-|---|---|
+| --- | --- |
 | `https://annolid.com/content/README.html` | `https://annolid.com/` |
 | `https://annolid.com/content/how_to_install.html` | `https://annolid.com/installation/` |
 | `https://annolid.com/extract_frames.html` | `https://annolid.com/workflows/` |
@@ -31,7 +31,7 @@ canonical documentation and site paths.
 ## Route Ownership and Mirrors
 
 | Public Path Prefix | Source | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `/` | `website/` + docs compatibility routes | Landing page at root; root docs routes are preserved for compatibility. |
 | `/portal/` | `docs/` (MkDocs) | Canonical docs namespace for stable links. |
 | `/book/` | `book/` (Jupyter Book) | Dedicated Jupyter Book surface. |
@@ -40,7 +40,7 @@ canonical documentation and site paths.
 ## Repository Source Mapping (Legacy Content to Canonical Docs)
 
 | Legacy Source File | Canonical File |
-|---|---|
+| --- | --- |
 | `book/content/how_to_install.md` | `docs/installation.md` |
 | `docs/source/install.md` | `docs/installation.md` |
 | `book/content/extract_frames.md` | `docs/workflows.md` |
