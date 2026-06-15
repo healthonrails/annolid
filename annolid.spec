@@ -167,7 +167,12 @@ a = Analysis(
         ("annolid/icons/*", "annolid/icons"),
         ("annolid/gui/assets/*", "annolid/gui/assets"),
     ],
-    hiddenimports=[],
+    # The launcher and stable namespace packages defer imports with importlib.
+    hiddenimports=[
+        "annolid.gui.app",
+        "annolid.domain.project_schema",
+        "annolid.infrastructure.persistence",
+    ],
     hookspath=[],
     runtime_hooks=[],
     excludes=EXCLUDED_MODULES,
