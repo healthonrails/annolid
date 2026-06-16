@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import io
 import tarfile
+import tomllib
 import zipfile
 from pathlib import Path
+
+from setuptools import find_namespace_packages
 
 from scripts.check_distribution_artifacts import (
     find_forbidden_members,
@@ -47,6 +50,30 @@ def test_distribution_guard_does_not_use_bundle_only_runtime_names() -> None:
     assert is_forbidden_member(
         "annolid/_internal/runs/yolo_train.yaml",
         artifact_kind="bundle",
+    )
+
+
+def test_package_discovery_excludes_release_forbidden_source_trees() -> None:
+    data = tomllib.loads((Path("pyproject.toml")).read_text(encoding="utf-8"))
+    package_find = data["tool"]["setuptools"]["packages"]["find"]
+    packages = set(
+        find_namespace_packages(
+            where=package_find["where"][0],
+            include=package_find["include"],
+            exclude=package_find["exclude"],
+        )
+    )
+
+    forbidden_prefixes = (
+        "annolid.segmentation.SAM.segment-anything-2.demo",
+        "annolid.segmentation.SAM.segment-anything-2.training",
+        "annolid.segmentation.cutie_vos.weights",
+    )
+
+    assert not any(
+        package == prefix or package.startswith(f"{prefix}.")
+        for package in packages
+        for prefix in forbidden_prefixes
     )
 
 

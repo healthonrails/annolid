@@ -306,7 +306,25 @@ annolid-run = "annolid.engine.cli:main"
 # you would change this to: where = ["src"]
 where = ["."]
 include = ["annolid*"]
-exclude = ["build*", "dist*", "docs*", "demo*", "tests*"]
+exclude = [
+    "build*",
+    "dist*",
+    "docs*",
+    "demo*",
+    "tests*",
+    "annolid.depth.checkpoints*",
+    "annolid.detector.countgd.checkpoints*",
+    "annolid.motion.weights*",
+    "annolid.realtime.models*",
+    "annolid.realtime.runs*",
+    "annolid.segmentation.MEDIAR.weights*",
+    "annolid.segmentation.SAM.segment-anything-2.SAM_2.egg-info*",
+    "annolid.segmentation.SAM.segment-anything-2.checkpoints*",
+    "annolid.segmentation.SAM.segment-anything-2.demo*",
+    "annolid.segmentation.SAM.segment-anything-2.notebooks*",
+    "annolid.segmentation.SAM.segment-anything-2.training*",
+    "annolid.segmentation.cutie_vos.weights*",
+]
 
 [tool.setuptools]
 include-package-data = false
