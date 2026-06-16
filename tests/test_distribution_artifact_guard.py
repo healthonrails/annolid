@@ -4,6 +4,7 @@ import io
 import tarfile
 import tomllib
 import zipfile
+from fnmatch import fnmatch
 from pathlib import Path
 
 from setuptools import find_namespace_packages
@@ -74,6 +75,28 @@ def test_package_discovery_excludes_release_forbidden_source_trees() -> None:
         package == prefix or package.startswith(f"{prefix}.")
         for package in packages
         for prefix in forbidden_prefixes
+    )
+
+
+def test_package_data_declares_runtime_assets() -> None:
+    data = tomllib.loads((Path("pyproject.toml")).read_text(encoding="utf-8"))
+    package_data = data["tool"]["setuptools"]["package-data"]["annolid"]
+
+    required_assets = (
+        "annotation/labels.txt",
+        "configs/deep_sort.yaml",
+        "configs/coco_labels.yaml",
+        "configs/pose_schema.json",
+        "configs/runs/yolo_train.yaml",
+        "gui/assets/pdfjs/annolid_viewer.css",
+        "gui/assets/threejs/annolid_threejs_viewer.css",
+        "gui/assets/threejs/points_3d.html",
+        "tracker/configs/botsort.yaml",
+    )
+
+    assert all(
+        any(fnmatch(asset, pattern) for pattern in package_data)
+        for asset in required_assets
     )
 
 

@@ -340,11 +340,20 @@ annolid = [
     "**/*.ico",
     "**/*.icns",
     "**/*.qrc",
+    "**/*.css",
+    "**/*.html",
+    "**/*.txt",
+    "**/*.yaml",
+    "**/*.yml",
+    "annotation/labels_interaction",
+    "configs/*.json",
     "core/output/schema/*.json",
     "core/agent/skills/**/*.md",
     "core/agent/skills/**/*.sh",
     "core/agent/workspace/**/*.md",
     "core/agent/workspace/**/*.sh",
+    "detector/configs/*.json",
+    "tracker/cowtracker/cowtracker/thirdparty/vggt/VENDORED_MANIFEST.json",
 ]
 
 [tool.setuptools.exclude-package-data]
