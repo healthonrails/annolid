@@ -48,7 +48,11 @@ from pycocotools import mask as maskUtils
 
 from annolid.utils.logger import logger
 from annolid.utils.log_paths import resolve_annolid_realtime_logs_root
-from annolid.yolo import configure_ultralytics_cache, resolve_weight_path
+from annolid.yolo import (
+    configure_ultralytics_cache,
+    import_ultralytics_symbol,
+    resolve_weight_path,
+)
 from annolid.realtime.config import Config
 # Late import to avoid dependency issues
 # from annolid.realtime.mediapipe_engine import MediaPipeEngine
@@ -58,15 +62,7 @@ from annolid.realtime.config import Config
 
 
 def _load_ultralytics_yolo_class():
-    try:
-        from ultralytics import YOLO  # type: ignore
-    except ModuleNotFoundError as exc:
-        raise RuntimeError(
-            "Ultralytics is required for realtime YOLO inference. "
-            "Install it with `pip install .[yolo]` or `pip install .[test]` "
-            "when running the full test suite."
-        ) from exc
-    return YOLO
+    return import_ultralytics_symbol("YOLO", purpose="realtime YOLO inference")
 
 
 # --- Recording State Management ---

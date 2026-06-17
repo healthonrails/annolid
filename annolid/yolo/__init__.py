@@ -8,9 +8,11 @@ behave consistently.
 from .runtime import (  # noqa: F401
     YOLOModelSpec,
     configure_ultralytics_cache,
+    ensure_yolo_runtime,
     ensure_ultralytics_asset_cached,
     get_cache_root,
     get_ultralytics_weights_cache_dir,
+    import_ultralytics_symbol,
     load_yolo_model,
     resolve_weight_path,
     select_backend,
@@ -19,9 +21,11 @@ from .runtime import (  # noqa: F401
 __all__ = [
     "YOLOModelSpec",
     "configure_ultralytics_cache",
+    "ensure_yolo_runtime",
     "ensure_ultralytics_asset_cached",
     "get_cache_root",
     "get_ultralytics_weights_cache_dir",
+    "import_ultralytics_symbol",
     "load_yolo_model",
     "resolve_weight_path",
     "select_backend",

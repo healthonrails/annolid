@@ -13,7 +13,11 @@ from annolid.annotation.polygons import simplify_polygons
 from annolid.gui.shape import Shape
 from annolid.utils.logger import logger
 from annolid.annotation.pose_schema import PoseSchema
-from annolid.yolo import configure_ultralytics_cache, resolve_weight_path
+from annolid.yolo import (
+    configure_ultralytics_cache,
+    import_ultralytics_symbol,
+    resolve_weight_path,
+)
 from annolid.utils.annotation_store import AnnotationStore
 from annolid.segmentation.dino_kpseg.inference_bridge import (
     extract_results as extract_dino_kpseg_results,
@@ -313,17 +317,8 @@ class InferenceProcessor:
         model_name_lower = model_ref.lower()
 
         if self.model_type == "yolo":
-            from annolid.infrastructure.capabilities import ensure_capability
-
-            try:
-                ensure_capability("yolo")
-                from ultralytics import YOLO, YOLOE  # type: ignore
-            except ModuleNotFoundError as exc:
-                raise ModuleNotFoundError(
-                    "YOLO inference requires the optional dependency 'ultralytics'. "
-                    "Install it (e.g. `pip install ultralytics`) to use YOLO models."
-                ) from exc
             if "yoloe" in model_name_lower:
+                YOLOE = import_ultralytics_symbol("YOLOE", purpose="YOLOE inference")
                 model = YOLOE(model_ref)
                 if filtered_classes and bool(getattr(self, "_yoloe_text_prompt", True)):
                     # YOLOE-26 text prompting requires a TorchScript text encoder asset
@@ -339,6 +334,7 @@ class InferenceProcessor:
                         filtered_classes, model.get_text_pe(filtered_classes)
                     )
             else:
+                YOLO = import_ultralytics_symbol("YOLO", purpose="YOLO inference")
                 model = YOLO(model_ref)
                 if (
                     filtered_classes
@@ -354,16 +350,12 @@ class InferenceProcessor:
                         )
             return model
         if self.model_type == "sam":
-            from annolid.infrastructure.capabilities import ensure_capability
-
-            try:
-                ensure_capability("yolo")
-                from ultralytics import SAM  # type: ignore
-            except ModuleNotFoundError as exc:
-                raise ModuleNotFoundError(
-                    "SAM inference via `annolid.segmentation.yolos.InferenceProcessor` requires "
-                    "the optional dependency 'ultralytics'. Install it (e.g. `pip install ultralytics`)."
-                ) from exc
+            SAM = import_ultralytics_symbol(
+                "SAM",
+                purpose=(
+                    "SAM inference via `annolid.segmentation.yolos.InferenceProcessor`"
+                ),
+            )
             model = SAM(model_ref)
             model.info()
             return model
@@ -557,7 +549,11 @@ class InferenceProcessor:
         # Use visual prompts if supported by the model (YOLOE)
         if visual_prompts is not None and "yoloe" in self.model_name.lower():
             try:
-                from ultralytics.models.yolo.yoloe import YOLOEVPSegPredictor
+                YOLOEVPSegPredictor = import_ultralytics_symbol(
+                    "YOLOEVPSegPredictor",
+                    module_name="ultralytics.models.yolo.yoloe",
+                    purpose="YOLOE visual prompt inference",
+                )
 
                 logger.info("Running prediction with visual prompts.")
                 results = self.model.predict(
@@ -877,8 +873,10 @@ class InferenceProcessor:
                         and "yoloe" in self.model_name.lower()
                     ):
                         try:
-                            from ultralytics.models.yolo.yoloe import (
-                                YOLOEVPSegPredictor,
+                            YOLOEVPSegPredictor = import_ultralytics_symbol(
+                                "YOLOEVPSegPredictor",
+                                module_name="ultralytics.models.yolo.yoloe",
+                                purpose="YOLOE visual prompt inference",
                             )
 
                             results = self.model.predict(

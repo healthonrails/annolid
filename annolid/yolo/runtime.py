@@ -1,11 +1,11 @@
 from dataclasses import dataclass
+import importlib
 import os
 import shutil
 from pathlib import Path
-from typing import Iterable, Optional, Tuple
+from typing import Any, Iterable, Optional, Tuple
 
-import torch
-
+from annolid.infrastructure.capabilities import ensure_capability
 from annolid.utils.logger import logger
 
 
@@ -100,6 +100,36 @@ def configure_ultralytics_cache(weights_dir: Optional[Path] = None) -> Path:
     return target
 
 
+def ensure_yolo_runtime() -> tuple[str, ...]:
+    """Ensure the optional Ultralytics YOLO runtime is available."""
+    return ensure_capability("yolo")
+
+
+def import_ultralytics_symbol(
+    symbol_name: str,
+    *,
+    module_name: str = "ultralytics",
+    purpose: str = "YOLO",
+) -> Any:
+    """Import an Ultralytics symbol after running Annolid's YOLO capability check."""
+    ensure_yolo_runtime()
+    configure_ultralytics_cache()
+    try:
+        module = importlib.import_module(module_name)
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            f"{purpose} requires the optional YOLO runtime. "
+            'Install it with `python -m pip install "annolid[yolo]"`.'
+        ) from exc
+
+    try:
+        return getattr(module, symbol_name)
+    except AttributeError as exc:
+        raise RuntimeError(
+            f"Installed Ultralytics runtime does not provide {module_name}.{symbol_name}."
+        ) from exc
+
+
 def ensure_ultralytics_asset_cached(asset_name: str) -> Path:
     """
     Ensure an Ultralytics GitHub asset is present inside Annolid's Ultralytics weights cache.
@@ -122,6 +152,7 @@ def ensure_ultralytics_asset_cached(asset_name: str) -> Path:
         return target
 
     try:
+        ensure_yolo_runtime()
         from ultralytics.utils.downloads import attempt_download_asset  # type: ignore
     except Exception as exc:
         raise RuntimeError("Ultralytics is required to download YOLO assets.") from exc
@@ -150,7 +181,7 @@ class YOLOModelSpec:
     """Resolved configuration for loading a YOLO model."""
 
     weight_path: Path
-    device: torch.device
+    device: Any
     backend: str
 
 
@@ -291,6 +322,8 @@ def select_backend(
 
     The selection order follows TensorRT (if installed) -> CUDA -> CPU.
     """
+    import torch
+
     resolved = resolve_weight_path(weight_name, search_roots=search_roots)
 
     # CoreML packages are tied to Apple devices and should bypass CUDA/TensorRT selection.
@@ -347,7 +380,7 @@ def load_yolo_model(weight_name: str, search_roots: Optional[Iterable[Path]] = N
     """
     configure_ultralytics_cache()
     spec = select_backend(weight_name, search_roots=search_roots)
-    from ultralytics import YOLO  # Imported lazily to avoid heavy import cost.
+    YOLO = import_ultralytics_symbol("YOLO", purpose="YOLO inference")
 
     model = YOLO(str(spec.weight_path))
     if (

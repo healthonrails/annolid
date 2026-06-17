@@ -188,17 +188,14 @@ class YOLOUltralyticsPlugin(ModelPluginBase):
         )
 
     def predict(self, args: argparse.Namespace) -> int:
-        from annolid.infrastructure.capabilities import ensure_capability
-        from annolid.yolo import configure_ultralytics_cache, resolve_weight_path
+        from annolid.yolo import (
+            configure_ultralytics_cache,
+            import_ultralytics_symbol,
+            resolve_weight_path,
+        )
 
         configure_ultralytics_cache()
-        try:
-            ensure_capability("yolo")
-            from ultralytics import YOLO  # type: ignore
-        except Exception as exc:
-            raise RuntimeError(
-                "YOLO inference requires the optional dependency 'ultralytics'."
-            ) from exc
+        YOLO = import_ultralytics_symbol("YOLO", purpose="YOLO inference")
 
         weight_path = resolve_weight_path(str(args.weights))
         model = YOLO(str(weight_path))

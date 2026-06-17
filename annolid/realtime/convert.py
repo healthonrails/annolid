@@ -9,14 +9,9 @@ DEFAULT_FORMAT = "openvino"
 
 
 def _load_yolo_class():
-    try:
-        from ultralytics import YOLO  # type: ignore
-    except ModuleNotFoundError as exc:
-        raise RuntimeError(
-            "Ultralytics is required to export realtime YOLO models. "
-            "Install it with `pip install .[yolo]` or `pip install ultralytics`."
-        ) from exc
-    return YOLO
+    from annolid.yolo import import_ultralytics_symbol
+
+    return import_ultralytics_symbol("YOLO", purpose="realtime YOLO export")
 
 
 def export_yolo_model(
