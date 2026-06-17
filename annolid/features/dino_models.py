@@ -136,13 +136,19 @@ def resolve_dino_model_from_runtime(
     fallback: object = DEFAULT_DINO_FEATURE_MODEL_ID,
 ) -> str:
     """Resolve the selected DINO model from runtime config aliases."""
+    resolved_values: list[str] = []
     for key in DINO_MODEL_RUNTIME_KEYS:
         if isinstance(runtime, dict):
             raw = runtime.get(key)
         else:
             raw = getattr(runtime, key, None)
         if str(raw or "").strip():
-            return resolve_dino_model_id(raw)
+            resolved_values.append(resolve_dino_model_id(raw))
+    for model_id in resolved_values:
+        if model_id != DEFAULT_DINO_FEATURE_MODEL_ID:
+            return model_id
+    if resolved_values:
+        return resolved_values[0]
     return resolve_dino_model_id(fallback)
 
 

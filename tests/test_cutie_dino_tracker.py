@@ -22,6 +22,7 @@ from annolid.tracking.domain import (
 from annolid.tracking.dino_keypoint_tracker import (
     DinoKeypointTracker,
     DinoKeypointVideoProcessor,
+    PixelRefineOptions,
     RefineRegion,
     SupportProbe,
 )
@@ -31,6 +32,7 @@ class DummyExtractor:
     patch_size = 1
 
     def __init__(self, _cfg):
+        self.cfg = _cfg
         self._queue: List[torch.Tensor] = []
 
     def set_queue(self, tensors: List[torch.Tensor]) -> None:
@@ -51,6 +53,61 @@ class DummyExtractor:
 
 class CoarsePatchDummyExtractor(DummyExtractor):
     patch_size = 16
+
+
+def test_tracker_uses_runtime_dino_model_when_constructor_is_default(monkeypatch):
+    monkeypatch.setattr(
+        "annolid.tracking.dino_keypoint_tracker.Dinov3FeatureExtractor",
+        DummyExtractor,
+    )
+    selected_model = "facebook/dinov3-vitl16-pretrain-lvd1689m"
+    config = CutieDinoTrackerConfig(dinov3_model_name=selected_model)
+
+    tracker = DinoKeypointTracker(
+        model_name="facebook/dinov3-vits16-pretrain-lvd1689m",
+        runtime_config=config,
+    )
+
+    assert tracker.extractor.cfg.model_name == selected_model
+    assert config.patch_model_name == selected_model
+    assert config.dinov3_model_name == selected_model
+
+
+def test_tracker_explicit_constructor_dino_model_wins(monkeypatch):
+    monkeypatch.setattr(
+        "annolid.tracking.dino_keypoint_tracker.Dinov3FeatureExtractor",
+        DummyExtractor,
+    )
+    selected_model = "facebook/dinov3-vitl16-pretrain-lvd1689m"
+    explicit_model = "facebook/dinov3-vitb16-pretrain-lvd1426"
+    config = CutieDinoTrackerConfig(dinov3_model_name=selected_model)
+
+    tracker = DinoKeypointTracker(
+        model_name=explicit_model,
+        runtime_config=config,
+    )
+
+    assert tracker.extractor.cfg.model_name == explicit_model
+    assert config.patch_model_name == explicit_model
+    assert config.dinov3_model_name == explicit_model
+
+
+def test_pixel_refine_options_normalize_runtime_values() -> None:
+    config = CutieDinoTrackerConfig(
+        pixel_refine_enabled=True,
+        pixel_refine_weight=2.0,
+        pixel_refine_window=10,
+        pixel_refine_max_error=-1.0,
+        pixel_refine_max_jump_px=-3.0,
+    )
+
+    options = PixelRefineOptions.from_runtime(config)
+
+    assert options.enabled is True
+    assert options.weight == 1.0
+    assert options.window == 11
+    assert options.max_error == 0.0
+    assert options.max_jump_px == 0.0
 
 
 def test_annotation_adapter_roundtrip_preserves_keypoints_and_masks(tmp_path):

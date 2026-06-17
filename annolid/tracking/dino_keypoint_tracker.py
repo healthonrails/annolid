@@ -15,6 +15,12 @@ import math
 
 from annolid.data.videos import CV2Video
 from annolid.features import Dinov3Config, Dinov3FeatureExtractor
+from annolid.features.dino_models import (
+    DEFAULT_DINO_FEATURE_MODEL_ID,
+    resolve_dino_model_from_runtime,
+    resolve_dino_model_id,
+    set_dino_model_on_runtime,
+)
 from annolid.features.dinov3_feature_grid import (
     apply_channel_debias_basis,
     coordinate_debias_basis,
@@ -110,6 +116,41 @@ class PixelFlowEstimate:
     error: float
 
 
+@dataclass(frozen=True)
+class PixelRefineOptions:
+    enabled: bool
+    weight: float
+    window: int
+    max_error: float
+    max_jump_px: float
+
+    @classmethod
+    def from_runtime(
+        cls, runtime_config: CutieDinoTrackerConfig
+    ) -> "PixelRefineOptions":
+        window = max(3, int(getattr(runtime_config, "pixel_refine_window", 15)))
+        if window % 2 == 0:
+            window += 1
+        return cls(
+            enabled=bool(getattr(runtime_config, "pixel_refine_enabled", True)),
+            weight=float(
+                np.clip(
+                    getattr(runtime_config, "pixel_refine_weight", 0.85),
+                    0.0,
+                    1.0,
+                )
+            ),
+            window=int(window),
+            max_error=max(
+                0.0, float(getattr(runtime_config, "pixel_refine_max_error", 18.0))
+            ),
+            max_jump_px=max(
+                0.0,
+                float(getattr(runtime_config, "pixel_refine_max_jump_px", 24.0)),
+            ),
+        )
+
+
 @dataclass
 class BodyPrior:
     centroid_rc: Tuple[float, float]
@@ -160,6 +201,8 @@ class DinoKeypointTracker:
         reference_support_radius: int = 0,
         reference_center_weight: float = 1.0,
     ) -> None:
+        self.runtime_config = runtime_config or CutieDinoTrackerConfig()
+        model_name = self._resolve_model_name(model_name, self.runtime_config)
         cfg = Dinov3Config(
             model_name=model_name,
             short_side=short_side,
@@ -167,7 +210,6 @@ class DinoKeypointTracker:
             layers=(-2, -1),
         )
         self.extractor = Dinov3FeatureExtractor(cfg)
-        self.runtime_config = runtime_config or CutieDinoTrackerConfig()
         self.search_radius = max(1, int(search_radius))
         self.min_similarity = float(min_similarity)
         self.momentum = float(np.clip(momentum, 0.0, 1.0))
@@ -223,7 +265,42 @@ class DinoKeypointTracker:
             1e-4,
             float(getattr(self.runtime_config, "keypoint_refine_temperature", 0.35)),
         )
+        self.pixel_refine_options = PixelRefineOptions.from_runtime(self.runtime_config)
         self.reset_state()
+
+    @staticmethod
+    def _resolve_model_name(
+        model_name: object,
+        runtime_config: CutieDinoTrackerConfig,
+    ) -> str:
+        """
+        Resolve the DINO feature backbone at the tracker boundary.
+
+        Explicit non-default constructor values win, while a default/empty
+        constructor value defers to the selected runtime config model. This
+        keeps GUI Advanced Parameters selections effective even if an older
+        caller still passes the historical default model string.
+        """
+        constructor_model = resolve_dino_model_id(model_name)
+        runtime_model = resolve_dino_model_from_runtime(
+            runtime_config,
+            fallback=constructor_model,
+        )
+        selected = (
+            runtime_model
+            if constructor_model == DEFAULT_DINO_FEATURE_MODEL_ID
+            else constructor_model
+        )
+        return set_dino_model_on_runtime(runtime_config, selected)
+
+    def _get_pixel_refine_options(self) -> PixelRefineOptions:
+        options = getattr(self, "pixel_refine_options", None)
+        if isinstance(options, PixelRefineOptions):
+            return options
+        runtime_config = getattr(self, "runtime_config", CutieDinoTrackerConfig())
+        options = PixelRefineOptions.from_runtime(runtime_config)
+        self.pixel_refine_options = options
+        return options
 
     def request_stop(self) -> None:
         """Request cooperative cancellation at the next tracker boundary."""
@@ -1359,7 +1436,8 @@ class DinoKeypointTracker:
         frame_gray: np.ndarray,
         xy: Tuple[float, float],
     ) -> Optional[PixelFlowEstimate]:
-        if not bool(getattr(self.runtime_config, "pixel_refine_enabled", True)):
+        options = self._get_pixel_refine_options()
+        if not options.enabled:
             return None
         if prev_gray is None or frame_gray is None:
             return None
@@ -1370,16 +1448,13 @@ class DinoKeypointTracker:
         if not (0.0 <= x < width and 0.0 <= y < height):
             return None
 
-        win = max(3, int(getattr(self.runtime_config, "pixel_refine_window", 15)))
-        if win % 2 == 0:
-            win += 1
         prev_pts = np.array([[[x, y]]], dtype=np.float32)
         next_pts, status, err = cv2.calcOpticalFlowPyrLK(
             prev_gray,
             frame_gray,
             prev_pts,
             None,
-            winSize=(win, win),
+            winSize=(options.window, options.window),
             maxLevel=2,
             criteria=(
                 cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT,
@@ -1398,17 +1473,13 @@ class DinoKeypointTracker:
             return None
 
         jump = math.hypot(nx - x, ny - y)
-        max_jump = float(getattr(self.runtime_config, "pixel_refine_max_jump_px", 24.0))
-        if max_jump > 0.0 and jump > max_jump:
+        if options.max_jump_px > 0.0 and jump > options.max_jump_px:
             return None
 
         error = 0.0
         if err is not None:
             error = float(err.reshape(-1)[0])
-            max_error = float(
-                getattr(self.runtime_config, "pixel_refine_max_error", 18.0)
-            )
-            if max_error > 0.0 and error > max_error:
+            if options.max_error > 0.0 and error > options.max_error:
                 return None
         return PixelFlowEstimate(xy=(nx, ny), error=error)
 
@@ -1420,9 +1491,8 @@ class DinoKeypointTracker:
         patch_px: float,
         similarity: float,
     ) -> Tuple[float, float, float]:
-        weight = float(
-            np.clip(getattr(self.runtime_config, "pixel_refine_weight", 0.85), 0.0, 1.0)
-        )
+        options = self._get_pixel_refine_options()
+        weight = float(options.weight)
         if weight <= 0.0:
             return dino_xy[0], dino_xy[1], 0.0
 
@@ -1435,9 +1505,7 @@ class DinoKeypointTracker:
 
         similarity_conf = float(np.clip((float(similarity) + 1.0) * 0.5, 0.0, 1.0))
         error = max(0.0, float(flow_estimate.error))
-        max_error = max(
-            1e-6, float(getattr(self.runtime_config, "pixel_refine_max_error", 18.0))
-        )
+        max_error = max(1e-6, float(options.max_error))
         error_conf = float(np.clip(1.0 - (error / max_error), 0.0, 1.0))
         confidence = max(0.0, min(1.0, 0.5 * (similarity_conf + error_conf)))
         alpha = weight * confidence

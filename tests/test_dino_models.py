@@ -43,6 +43,26 @@ def test_dino_runtime_helpers_resolve_and_sync_aliases() -> None:
     assert runtime["dinov3_model_name"] == selected
 
 
+def test_dino_runtime_resolver_prefers_non_default_alias() -> None:
+    runtime = {
+        "patch_model_name": dino_models.DEFAULT_DINO_FEATURE_MODEL_ID,
+        "dinov3_model_name": "dinov3_vitl16",
+    }
+
+    assert (
+        dino_models.resolve_dino_model_from_runtime(runtime)
+        == "facebook/dinov3-vitl16-pretrain-lvd1689m"
+    )
+
+
+def test_cutie_dino_config_keeps_dinov3_model_when_patch_default() -> None:
+    selected = "facebook/dinov3-vitl16-pretrain-lvd1689m"
+    cfg = CutieDinoTrackerConfig(dinov3_model_name=selected)
+
+    assert cfg.patch_model_name == selected
+    assert cfg.dinov3_model_name == selected
+
+
 def test_download_dino_model_uses_cache_dir_and_resolved_id(
     monkeypatch, tmp_path: Path
 ) -> None:

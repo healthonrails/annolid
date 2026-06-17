@@ -7,6 +7,7 @@ from typing import Callable, Dict, Optional, Tuple
 
 from annolid.features.dino_models import (
     DEFAULT_DINO_FEATURE_MODEL_ID,
+    resolve_dino_model_from_runtime,
     set_dino_model_on_runtime,
 )
 
@@ -286,7 +287,7 @@ class CutieDinoTrackerConfig:
         if self.tracker_preset:
             self._apply_preset_defaults(str(self.tracker_preset))
 
-        set_dino_model_on_runtime(self, self.patch_model_name or self.dinov3_model_name)
+        set_dino_model_on_runtime(self, resolve_dino_model_from_runtime(self))
 
         if self.mask_enforce_snap_radius is None:
             self.mask_enforce_snap_radius = int(self.mask_enforce_search_radius)
