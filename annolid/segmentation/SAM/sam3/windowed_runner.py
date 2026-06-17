@@ -7,7 +7,7 @@ import torch
 
 def normalize_window_schedule(
     *,
-    window_size: int,
+    window_size: Optional[int],
     stride: Optional[int],
 ) -> Tuple[int, int]:
     window_size = max(1, int(window_size or 1))

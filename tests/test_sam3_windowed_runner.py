@@ -27,6 +27,16 @@ def test_resolve_window_schedule_uses_user_values() -> None:
     assert schedule == (9, 3)
 
 
+def test_resolve_window_schedule_auto_scales_for_long_cpu_videos() -> None:
+    schedule = resolve_window_schedule(
+        resolved_device=torch.device("cpu"),
+        total_frames=2400,
+        user_window_size=None,
+        user_stride=None,
+    )
+    assert schedule == (32, 26)
+
+
 def test_compute_window_reuse_shift_uses_true_overlap() -> None:
     assert (
         compute_window_reuse_shift(

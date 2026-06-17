@@ -21,7 +21,7 @@ class Sam3RuntimeOptions:
     device: Optional[str]
     score_threshold_detection: Optional[float]
     new_det_thresh: Optional[float]
-    sliding_window_size: int
+    sliding_window_size: Optional[int]
     sliding_window_stride: Optional[int]
     compile_model: bool
     offload_video_to_cpu: bool
@@ -164,10 +164,8 @@ class Sam3Manager:
             self._pick(
                 getattr(self, "sliding_window_size", None),
                 sam3_cfg.get("sliding_window_size"),
-            ),
-            default=5,
+            )
         )
-        sliding_window_size = max(1, int(sliding_window_size or 5))
         sliding_window_stride = self._parse_optional_int(
             self._pick(
                 getattr(self, "sliding_window_stride", None),
@@ -249,9 +247,9 @@ class Sam3Manager:
                 getattr(self, "agent_window_size", None),
                 agent_cfg.get("window_size"),
             ),
-            default=sliding_window_size,
+            default=sliding_window_size or 5,
         )
-        agent_window_size = max(1, int(agent_window_size or sliding_window_size))
+        agent_window_size = max(1, int(agent_window_size or 5))
         agent_stride = self._parse_optional_int(
             self._pick(getattr(self, "agent_stride", None), agent_cfg.get("stride")),
             default=sliding_window_stride,

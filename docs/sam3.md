@@ -218,7 +218,8 @@ Key properties:
 - Reads frames from the source video timeline when input is an `.mp4`.
 - Streams overlapping windows sequentially from the video instead of seeking back to each window start.
 - Reuses the temporary window frame directory and only trims stale tail files between windows.
-- Chooses larger default windows automatically for long CPU/CUDA runs when the user did not override `window_size` or `stride`.
+- Chooses larger default windows automatically for long CPU/CUDA runs when `window_size` and `stride` are not configured.
+- Uses the configured `window_size` and `stride` exactly when you set them from the GUI config, advanced parameters, or bot/tool arguments.
 - Uses overlapping windows by default (`stride = window_size - 1`) for boundary robustness.
 - Carries visual prompt boxes from nearest neighbor mask frames across windows.
 - Reacquires missed frames with visual+text prompts after the primary pass.

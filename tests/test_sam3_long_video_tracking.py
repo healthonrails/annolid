@@ -81,6 +81,20 @@ def test_iter_video_windows_streams_sequentially_without_seeking(monkeypatch) ->
     assert [int(window[0][0, 0, 0]) for _, _, window in windows] == [0, 2]
 
 
+def test_iter_video_windows_rejects_invalid_schedule() -> None:
+    with pytest.raises(ValueError, match="window_size"):
+        list(_iter_video_windows("/tmp/fake.mp4", window_size=0, stride=1))
+    with pytest.raises(ValueError, match="stride"):
+        list(_iter_video_windows("/tmp/fake.mp4", window_size=3, stride=0))
+
+
+def test_agent_config_rejects_invalid_window_schedule() -> None:
+    with pytest.raises(ValueError, match="window_size"):
+        agent_video_orchestrator.AgentConfig(prompt="mouse", window_size=0)
+    with pytest.raises(ValueError, match="stride"):
+        agent_video_orchestrator.AgentConfig(prompt="mouse", window_size=3, stride=0)
+
+
 def test_process_video_with_agent_disables_output_artifacts_by_default(
     monkeypatch, tmp_path
 ) -> None:

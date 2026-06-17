@@ -6,10 +6,9 @@ later add interactive prompts without changing call sites.
 
 from __future__ import annotations
 
-import os
 import gc
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union, Any
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -53,7 +52,7 @@ class SAM3VideoProcessor(Sam3SessionManager):
         use_explicit_window_reseed: bool = True,
         boundary_mask_match_iou_threshold: float = 0.2,
         allow_private_state_mutation: bool = False,
-        sliding_window_size: int = 5,
+        sliding_window_size: Optional[int] = None,
         sliding_window_stride: Optional[int] = None,
         use_sliding_window_for_text_prompt: bool = True,
     ):
@@ -166,7 +165,7 @@ def process_video(
     use_explicit_window_reseed: bool = True,
     boundary_mask_match_iou_threshold: float = 0.2,
     allow_private_state_mutation: bool = False,
-    sliding_window_size: int = 5,
+    sliding_window_size: Optional[int] = None,
     sliding_window_stride: Optional[int] = None,
     use_sliding_window_for_text_prompt: bool = True,
 ) -> str:

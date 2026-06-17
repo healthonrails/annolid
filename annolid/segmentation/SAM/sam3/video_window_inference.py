@@ -26,8 +26,21 @@ def _iter_video_windows(
     Yields:
         (start_frame_idx, end_frame_idx_exclusive, frames)
     """
+    try:
+        window_size = int(window_size)
+    except Exception as exc:
+        raise ValueError(f"window_size must be a positive integer: {window_size!r}") from exc
+    if window_size <= 0:
+        raise ValueError(f"window_size must be a positive integer: {window_size!r}")
+
     if stride is None:
         stride = window_size
+    try:
+        stride = int(stride)
+    except Exception as exc:
+        raise ValueError(f"stride must be a positive integer: {stride!r}") from exc
+    if stride <= 0:
+        raise ValueError(f"stride must be a positive integer: {stride!r}")
 
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():

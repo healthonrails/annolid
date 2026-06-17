@@ -47,6 +47,37 @@ class AgentConfig:
             self.prompt,
             context="SAM3 agent video tracking",
         )
+        try:
+            self.window_size = int(self.window_size)
+        except Exception as exc:
+            raise ValueError(
+                f"SAM3 agent window_size must be a positive integer: {self.window_size!r}"
+            ) from exc
+        if self.window_size <= 0:
+            raise ValueError(
+                f"SAM3 agent window_size must be a positive integer: {self.window_size!r}"
+            )
+        if self.stride is not None:
+            try:
+                self.stride = int(self.stride)
+            except Exception as exc:
+                raise ValueError(
+                    f"SAM3 agent stride must be a positive integer: {self.stride!r}"
+                ) from exc
+            if self.stride <= 0:
+                raise ValueError(
+                    f"SAM3 agent stride must be a positive integer: {self.stride!r}"
+                )
+        try:
+            self.max_generations = int(self.max_generations)
+        except Exception as exc:
+            raise ValueError(
+                f"SAM3 agent max_generations must be a positive integer: {self.max_generations!r}"
+            ) from exc
+        if self.max_generations <= 0:
+            raise ValueError(
+                f"SAM3 agent max_generations must be a positive integer: {self.max_generations!r}"
+            )
 
 
 @dataclass
@@ -388,7 +419,6 @@ def run_agent_seeded_sam3_video(
         ):
             if not frames:
                 continue
-            window_end_idx = int(end_idx)
             first_frame = frames[0]
             frame_path = tmpdir_path / f"frame_{start_idx:09}.png"
             _save_frame_to_tmp(first_frame, frame_path)

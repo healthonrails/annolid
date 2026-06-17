@@ -387,7 +387,7 @@ class Sam3SessionConfig:
     compile_model: bool = False
     offload_video_to_cpu: bool = True
     async_loading_frames: bool = False  # keep memory usage low; no preloading
-    sliding_window_size: int = 5
+    sliding_window_size: Optional[int] = None
     sliding_window_stride: Optional[int] = None
     use_sliding_window_for_text_prompt: bool = False
     # Runtime safety flags.
@@ -439,7 +439,7 @@ def _resolve_session_config(
     compile_model: bool,
     offload_video_to_cpu: bool,
     async_loading_frames: bool,
-    sliding_window_size: int,
+    sliding_window_size: Optional[int],
     sliding_window_stride: Optional[int],
     use_sliding_window_for_text_prompt: bool,
     use_explicit_window_reseed: Optional[bool],
@@ -510,7 +510,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
         compile_model: bool = False,
         offload_video_to_cpu: bool = True,
         async_loading_frames: bool = False,
-        sliding_window_size: int = 5,
+        sliding_window_size: Optional[int] = None,
         sliding_window_stride: Optional[int] = None,
         use_sliding_window_for_text_prompt: bool = True,
         use_explicit_window_reseed: Optional[bool] = None,
@@ -2626,7 +2626,7 @@ class Sam3SessionManager(BaseSAMVideoProcessor):
     @staticmethod
     def _normalize_window_schedule(
         *,
-        window_size: int,
+        window_size: Optional[int],
         stride: Optional[int],
     ) -> Tuple[int, int]:
         return normalize_window_schedule(window_size=window_size, stride=stride)
