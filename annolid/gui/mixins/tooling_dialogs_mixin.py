@@ -18,7 +18,6 @@ from annolid.gui.keypoint_catalog import (
 )
 from annolid.gui.cursor_utils import set_widget_busy_cursor
 from annolid.gui.window_base import newAction
-from annolid.postprocessing.video_timestamp_annotator import process_directory
 from annolid.utils.logger import logger
 
 
@@ -346,6 +345,10 @@ class ToolingDialogsMixin:
         if not folder:
             return
         try:
+            from annolid.postprocessing.video_timestamp_annotator import (
+                process_directory,
+            )
+
             process_directory(Path(folder))
             QtWidgets.QMessageBox.information(
                 self,

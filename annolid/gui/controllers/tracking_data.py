@@ -4,13 +4,26 @@ from pathlib import Path
 import time
 from typing import TYPE_CHECKING, Optional
 
-import pandas as pd
 from qtpy import QtCore
 
 from annolid.utils.logger import logger
 
 if TYPE_CHECKING:
+    import pandas as pd
+
     from annolid.gui.app import AnnolidWindow
+
+
+class _PandasProxy:
+    """Import pandas only when CSV-backed tracking data is used."""
+
+    def __getattr__(self, name: str):
+        import pandas as pandas
+
+        return getattr(pandas, name)
+
+
+pd = _PandasProxy()
 
 
 class _TrackingSidecarWorker(QtCore.QObject):
@@ -72,7 +85,7 @@ class TrackingDataController:
 
     def __init__(self, window: "AnnolidWindow") -> None:
         self._window = window
-        self._tracking_df: pd.DataFrame | None = None
+        self._tracking_df: "pd.DataFrame | None" = None
         self._tracking_frame_slices: dict[int, tuple[int, int]] | None = None
         self._tracking_frame_indices: dict[int, tuple[int, ...]] | None = None
         self._tracking_csv_path: Path | None = None
@@ -88,7 +101,7 @@ class TrackingDataController:
         )
 
     @property
-    def tracking_dataframe(self) -> pd.DataFrame | None:
+    def tracking_dataframe(self) -> "pd.DataFrame | None":
         return self._tracking_df
 
     def tracking_rows_for_frame(self, frame_number: int) -> list[dict]:
@@ -175,7 +188,7 @@ class TrackingDataController:
             return
         self._apply_tracking_dataframe(df)
 
-    def _apply_tracking_dataframe(self, df: pd.DataFrame) -> None:
+    def _apply_tracking_dataframe(self, df: "pd.DataFrame") -> None:
         if "frame_number" not in df.columns and "Unnamed: 0" in df.columns:
             df.rename(columns={"Unnamed: 0": "frame_number"}, inplace=True)
         if "frame_number" not in df.columns:
@@ -297,7 +310,7 @@ class TrackingDataController:
 
     @staticmethod
     def _extract_behavior_rows_from_dataframe(
-        df_behaviors: pd.DataFrame,
+        df_behaviors: "pd.DataFrame",
     ) -> list[tuple[Optional[float], float, Optional[str], str, str]]:
         rows: list[tuple[Optional[float], float, Optional[str], str, str]] = []
         for payload in df_behaviors.to_dict(orient="records"):
@@ -397,7 +410,7 @@ class TrackingDataController:
         return payload
 
     def _build_tracking_frame_slices(
-        self, df: pd.DataFrame
+        self, df: "pd.DataFrame"
     ) -> dict[int, tuple[int, int]]:
         if "frame_number" not in df.columns or df.empty:
             return {}
@@ -433,7 +446,7 @@ class TrackingDataController:
         return frame_slices
 
     def _build_tracking_frame_index(
-        self, df: pd.DataFrame
+        self, df: "pd.DataFrame"
     ) -> dict[int, tuple[int, ...]]:
         if "frame_number" not in df.columns or df.empty:
             return {}
@@ -661,5 +674,5 @@ class TrackingDataController:
             self._fallback_load_behavior_from_store()
 
         labels_df = payload.get("labels_df")
-        if isinstance(labels_df, pd.DataFrame):
+        if labels_df is not None and isinstance(labels_df, pd.DataFrame):
             w._df = labels_df

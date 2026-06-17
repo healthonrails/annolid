@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import pandas as pd
 from qtpy import QtCore, QtWidgets
 
 from annolid.domain import (
@@ -656,6 +655,8 @@ class ProjectWorkflowMixin:
 
     def _load_labels(self, labels_csv_file):
         """Load labels from the given CSV file."""
+        import pandas as pd
+
         self._df = pd.read_csv(labels_csv_file)
         self._df.rename(columns={"Unnamed: 0": "frame_number"}, inplace=True)
 

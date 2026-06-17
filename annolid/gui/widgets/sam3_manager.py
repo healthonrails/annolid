@@ -830,6 +830,9 @@ class Sam3Manager:
         Returns a callable or None if setup fails before worker start.
         """
         try:
+            from annolid.infrastructure.capabilities import ensure_capability
+
+            ensure_capability("sam3")
             from annolid.segmentation.SAM.sam3 import adapter as sam3_adapter
             from annolid.segmentation.SAM.sam_v2 import (
                 load_manual_seed_annotations_from_video,

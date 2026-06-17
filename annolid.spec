@@ -40,6 +40,17 @@ ML_RUNTIME_EXCLUDES = [
     "jax",
     "jaxlib",
     "mxnet",
+    # Scientific/training stacks are installed only for workflows that need them.
+    "h5py",
+    "matplotlib",
+    "numba",
+    "pandas",
+    "scikit_image",
+    "skimage",
+    "scikit_learn",
+    "sklearn",
+    "scipy",
+    "tensorboard",
 ]
 
 OPTIONAL_MODEL_STACK_EXCLUDES = [

@@ -1,4 +1,3 @@
-import pandas as pd
 import os
 from annolid.annotation.keypoints import save_labels
 from annolid.annotation.masks import mask_to_polygons
@@ -107,6 +106,8 @@ class TracksResults:
     """Representing the tracking results."""
 
     def __init__(self, video_file: str = None, tracking_csv: str = None) -> None:
+        import pandas as pd
+
         self.tracking_csv = tracking_csv
         self.video_file = video_file
         if Path(self.tracking_csv).exists:

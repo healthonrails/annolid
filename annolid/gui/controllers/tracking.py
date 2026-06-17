@@ -3,12 +3,12 @@ from typing import Optional, TYPE_CHECKING
 
 from qtpy import QtCore, QtWidgets
 
-from annolid.jobs.tracking_worker import TrackingWorker
 from annolid.gui.workers import TrackAllWorker
 from annolid.utils.logger import logger
 
 if TYPE_CHECKING:
     from annolid.gui.app import AnnolidWindow
+    from annolid.jobs.tracking_worker import TrackingWorker
 
 
 class TrackingController(QtCore.QObject):
@@ -17,12 +17,12 @@ class TrackingController(QtCore.QObject):
     def __init__(self, window: "AnnolidWindow") -> None:
         super().__init__(window)
         self._window = window
-        self._active_worker: Optional[TrackingWorker] = None
-        self._previous_connected_worker: Optional[TrackingWorker] = None
+        self._active_worker: Optional["TrackingWorker"] = None
+        self._previous_connected_worker: Optional["TrackingWorker"] = None
         self._track_all_worker: Optional[TrackAllWorker] = None
 
     @property
-    def active_worker(self) -> Optional[TrackingWorker]:
+    def active_worker(self) -> Optional["TrackingWorker"]:
         return self._active_worker
 
     def is_tracking_busy(self) -> bool:
@@ -38,10 +38,10 @@ class TrackingController(QtCore.QObject):
         track_all = self._track_all_worker
         return bool(track_all and track_all.isRunning())
 
-    @QtCore.Slot(TrackingWorker, Path)
+    @QtCore.Slot(object, Path)
     def start_tracking(
         self,
-        worker_instance: TrackingWorker,
+        worker_instance: "TrackingWorker",
         video_path: Path,
     ) -> None:
         if self.is_tracking_busy():
@@ -316,7 +316,7 @@ class TrackingController(QtCore.QObject):
     # Internal helpers
     # ------------------------------------------------------------------ #
     def _connect_signals_to_active_worker(
-        self, worker_instance: Optional[TrackingWorker]
+        self, worker_instance: Optional["TrackingWorker"]
     ) -> None:
         if not worker_instance:
             logger.warning("Attempted to connect signals to a null worker instance.")
@@ -357,7 +357,7 @@ class TrackingController(QtCore.QObject):
             worker_instance.__class__.__name__,
         )
 
-    def _disconnect_worker_signals(self, worker: TrackingWorker) -> None:
+    def _disconnect_worker_signals(self, worker: "TrackingWorker") -> None:
         try:
             worker.progress.disconnect(self._update_main_status_progress)
         except (TypeError, RuntimeError):

@@ -7,7 +7,6 @@ from qtpy import QtCore, QtWidgets
 
 from annolid.features.dino_models import set_dino_model_on_runtime
 from annolid.gui.widgets.advanced_parameters_dialog import AdvancedParametersDialog
-from annolid.gui.widgets.segment_editor import SegmentEditorDialog
 from annolid.utils.logger import logger
 
 
@@ -56,6 +55,8 @@ class CoreInteractionMixin:
         initial_segment_dicts = [
             s.to_dict() for s in self._current_video_defined_segments
         ]
+
+        from annolid.gui.widgets.segment_editor import SegmentEditorDialog
 
         dialog = SegmentEditorDialog(
             active_video_path=Path(self.video_file),

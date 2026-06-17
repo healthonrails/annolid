@@ -159,6 +159,7 @@ def test_pyproject_defines_professional_optional_tiers() -> None:
 
     assert {"gui", "ml", "tracking", "training", "bot", "all"}.issubset(extras)
     assert any(requirement.startswith("transformers") for requirement in extras["ml"])
+    assert any(requirement.startswith("torch") for requirement in extras["sam3"])
     assert any(
         requirement.startswith("onnxruntime") for requirement in extras["tracking"]
     )
@@ -191,6 +192,17 @@ def test_release_workflow_uses_shared_bundle_artifact_guard() -> None:
     assert "scripts/check_distribution_artifacts.py --kind bundle dist" in workflow
     assert "forbidden_suffixes" not in workflow
     assert "forbidden_names" not in workflow
+
+
+def test_release_workflow_builds_unix_desktop_archives_only() -> None:
+    workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+
+    assert "macos-latest" in workflow
+    assert "ubuntu-latest" in workflow
+    assert "windows-latest" not in workflow
+    assert "Annolid-Windows.zip" not in workflow
+    assert "download.pytorch.org/whl/cpu" not in workflow
+    assert "torch torchvision" not in workflow
 
 
 def test_release_workflow_uploads_checksums_and_manifest() -> None:

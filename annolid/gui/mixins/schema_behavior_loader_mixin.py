@@ -3,8 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-import pandas as pd
-
 from annolid.annotation.pose_schema import PoseSchema
 from annolid.domain import (
     DEFAULT_SCHEMA_FILENAME,
@@ -80,6 +78,8 @@ class SchemaBehaviorLoaderMixin:
 
     def _load_behavior(self, behavior_csv_file: str) -> None:
         """Load behavior events from CSV and populate the slider timeline."""
+        import pandas as pd
+
         df_behaviors = pd.read_csv(behavior_csv_file)
         required_columns = {"Recording time", "Event", "Behavior"}
 
@@ -157,6 +157,8 @@ class SchemaBehaviorLoaderMixin:
 
     def _load_deeplabcut_table(self, behavior_csv_file: str) -> bool:
         """Load DeepLabCut tracking results stored as a multi-index CSV."""
+        import pandas as pd
+
         try:
             df_dlc = pd.read_csv(
                 behavior_csv_file,

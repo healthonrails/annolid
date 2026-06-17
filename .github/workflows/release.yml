@@ -71,11 +71,6 @@ jobs:
             asset-name: Annolid-Linux
             archive-name: Annolid-Linux.tar.gz
             executable: dist/annolid/annolid
-          - os: windows-latest
-            python-version: "3.11"
-            asset-name: Annolid-Windows
-            archive-name: Annolid-Windows.zip
-            executable: dist/annolid/annolid.exe
 
     runs-on: ${{ matrix.os }}
 
@@ -124,9 +119,6 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          if [ "${RUNNER_OS}" = "Linux" ]; then
-            python -m pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
-          fi
           python -m pip install ".[gui]" pyinstaller
 
       - name: Build onedir bundle

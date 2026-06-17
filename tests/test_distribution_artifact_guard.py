@@ -41,6 +41,14 @@ def test_bundle_guard_rejects_heavy_runtime_modules() -> None:
         "annolid/_internal/onnxruntime/capi/libonnxruntime.so",
         artifact_kind="bundle",
     )
+    assert is_forbidden_member(
+        "annolid/_internal/scipy/optimize/_linear_sum_assignment.so",
+        artifact_kind="bundle",
+    )
+    assert is_forbidden_member(
+        "annolid/_internal/pandas/_libs/algos.so",
+        artifact_kind="bundle",
+    )
 
 
 def test_distribution_guard_does_not_use_bundle_only_runtime_names() -> None:

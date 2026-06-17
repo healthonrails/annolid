@@ -33,6 +33,21 @@ The default profile is `gui`. SAM-HQ is attempted only when a SAM-related extra 
 
 Each successful installer run writes `annolid-install-report.json` in the install directory. The report includes the selected profile, resolved extras, Python version, OS, architecture, package manager, GPU decision, ONNX Runtime providers, SAM-HQ status, and failed optional steps.
 
+## Desktop Bundle Contract
+
+The frozen desktop archives are intentionally lean Unix-style annotation
+bundles. Current release binaries are built for macOS and Linux only, and their
+baseline contract is opening media/annotations and drawing/editing polygons.
+They must not bundle ML frameworks, training stacks, model checkpoints,
+generated runs, or optional service clients.
+
+When a user opens a model, tracking, bot, large-image, remote-video, or other
+optional workflow, Annolid checks that workflow's runtime at the boundary where
+the feature is launched. In a normal Python environment, missing optional
+packages may be installed into that active environment. In a frozen desktop
+bundle, Annolid reports the missing imports and the matching `pip install`
+command instead of mutating the bundle.
+
 ## Optional Runtime Behavior
 
 Frozen apps and lean installs intentionally exclude heavy optional runtimes. Code that opens optional workflows should use the central capability checker in `annolid.infrastructure.capabilities` to report:
@@ -42,7 +57,15 @@ Frozen apps and lean installs intentionally exclude heavy optional runtimes. Cod
 - the exact install command,
 - and the documentation link.
 
-Cutie tracking also has first-use dependency repair. If Cutie packages are missing and `ANNOLID_AUTO_INSTALL_CUTIE_DEPS` is not disabled, Annolid attempts to install the required packages into the active environment before loading the tracker. Set `ANNOLID_AUTO_INSTALL_CUTIE_DEPS=0` to make the workflow fail fast with an install command instead.
+Optional runtime repair is controlled by `ANNOLID_AUTO_INSTALL_OPTIONAL_DEPS`.
+Set `ANNOLID_AUTO_INSTALL_OPTIONAL_DEPS=0` to make optional workflows fail fast
+with an install command instead of trying to install missing packages.
+
+Cutie tracking keeps its narrower compatibility switch as well. If Cutie
+packages are missing and `ANNOLID_AUTO_INSTALL_CUTIE_DEPS` is not disabled,
+Annolid attempts to install the required packages into the active environment
+before loading the tracker. Set `ANNOLID_AUTO_INSTALL_CUTIE_DEPS=0` to make the
+workflow fail fast with an install command instead.
 
 ## Artifact Policy
 
@@ -60,7 +83,6 @@ The same policy rejects forbidden model suffixes such as `.pt`, `.pth`, `.onnx`,
 Current GitHub release binaries are PyInstaller onedir archives:
 
 - macOS: `Annolid-macOS.zip`
-- Windows: `Annolid-Windows.zip`
 - Linux: `Annolid-Linux.tar.gz`
 
 Each archive is uploaded with:
@@ -72,7 +94,8 @@ Each archive is uploaded with:
 Signing and native installer packaging are staged but not yet treated as complete:
 
 - macOS target: signed `.app`, notarized `.dmg`, with an explicit arm64/x86_64 or universal binary decision.
-- Windows target: signed `.msi` or MSIX, plus zip fallback.
+- Windows target: source/venv installation remains supported, but frozen
+  Windows desktop archives are not published by the current release workflow.
 - Linux target: AppImage first, then `.deb`/`.rpm` if demand justifies maintaining native packages.
 
 Until signing identities and native packaging jobs are configured, release manifests mark CI-built desktop archives as `unsigned-ci-build`.

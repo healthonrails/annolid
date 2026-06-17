@@ -1,35 +1,45 @@
-"""
-Controllers package for Annolid GUI.
+"""Lazy controller exports for Annolid GUI."""
 
-This package contains controllers that handle UI interactions
-and coordinate operations between the UI and domain services.
-"""
+from __future__ import annotations
 
-from .annotation_controller import AnnotationController
-from .inference_controller import InferenceController
-from .project_controller import ProjectController
-from .video_controller import VideoController
-from .tracking import TrackingController
-from .menu import MenuController
-from .flags import FlagsController
-from .tracking_data import TrackingDataController
-
-__all__ = [
-    "AnnotationController",
-    "InferenceController",
-    "ProjectController",
-    "VideoController",
-    "TrackingController",
-    "MenuController",
-    "FlagsController",
-    "DinoController",
-    "TrackingDataController",
-]
+from typing import Any
 
 
-def __getattr__(name: str):
-    if name == "DinoController":
-        from .dino import DinoController
+_EXPORTS = {
+    "AnnotationController": (
+        "annolid.gui.controllers.annotation_controller",
+        "AnnotationController",
+    ),
+    "InferenceController": (
+        "annolid.gui.controllers.inference_controller",
+        "InferenceController",
+    ),
+    "ProjectController": (
+        "annolid.gui.controllers.project_controller",
+        "ProjectController",
+    ),
+    "VideoController": ("annolid.gui.controllers.video_controller", "VideoController"),
+    "TrackingController": ("annolid.gui.controllers.tracking", "TrackingController"),
+    "MenuController": ("annolid.gui.controllers.menu", "MenuController"),
+    "FlagsController": ("annolid.gui.controllers.flags", "FlagsController"),
+    "DinoController": ("annolid.gui.controllers.dino", "DinoController"),
+    "TrackingDataController": (
+        "annolid.gui.controllers.tracking_data",
+        "TrackingDataController",
+    ),
+}
 
-        return DinoController
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name: str) -> Any:
+    try:
+        module_name, attr_name = _EXPORTS[name]
+    except KeyError as exc:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
+
+    from importlib import import_module
+
+    value = getattr(import_module(module_name), attr_name)
+    globals()[name] = value
+    return value

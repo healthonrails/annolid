@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-import pandas as pd
 from qtpy import QtCore, QtGui
 
 from annolid.gui.shape import Shape
@@ -178,6 +177,8 @@ class FramePlaybackMixin:
         """
         if self._df_deeplabcut is None or self._df_deeplabcut.empty:
             return
+
+        import pandas as pd
 
         if is_multi_animal is None:
             is_multi_animal = getattr(self, "_df_deeplabcut_multi_animal", False)

@@ -60,8 +60,16 @@ FORBIDDEN_FRAGMENTS = {
 
 BUNDLE_FORBIDDEN_NAMES = FORBIDDEN_NAMES | {
     "diffusers",
+    "h5py",
+    "matplotlib",
+    "numba",
     "onnxruntime",
+    "pandas",
     "runs",
+    "scipy",
+    "skimage",
+    "sklearn",
+    "tensorboard",
     "torch",
     "torchvision",
     "transformers",
@@ -69,7 +77,13 @@ BUNDLE_FORBIDDEN_NAMES = FORBIDDEN_NAMES | {
 }
 
 BUNDLE_FORBIDDEN_FRAGMENTS = FORBIDDEN_FRAGMENTS | {
+    "matplotlib",
     "onnxruntime",
+    "pandas",
+    "scikit_image",
+    "scikit_learn",
+    "scipy",
+    "tensorboard",
     "torchvision",
 }
 

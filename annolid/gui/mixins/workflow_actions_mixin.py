@@ -10,12 +10,9 @@ from annolid.annotation import coco2labelme, labelme2coco
 from annolid.gui.tensorboard import VisualizationWindow, ensure_tensorboard
 from annolid.gui.widgets.progressing_dialog import ProgressingWindow
 from annolid.gui.widgets.training_dashboard import TrainingDashboardDialog
-from annolid.gui.widgets.quality_control_dialog import QualityControlDialog
 from annolid.gui.widgets.convert_coco_dialog import ConvertCOODialog
 from annolid.gui.widgets.convert_coco2labelme_dialog import ConvertCOCO2LabelMeDialog
 from annolid.gui.widgets.glitter2_dialog import Glitter2Dialog
-from annolid.postprocessing.glitter import tracks2nix
-from annolid.postprocessing.quality_control import TracksResults
 from annolid.utils.runs import shared_runs_root
 
 
@@ -184,6 +181,9 @@ class WorkflowActionsMixin:
         webbrowser.open(url)
 
     def quality_control(self):
+        from annolid.gui.widgets.quality_control_dialog import QualityControlDialog
+        from annolid.postprocessing.quality_control import TracksResults
+
         video_file = None
         tracking_results = None
         skip_num_frames = None
@@ -263,6 +263,8 @@ class WorkflowActionsMixin:
 
         if out_nix_csv_file is None:
             out_nix_csv_file = tracking_results.replace(".csv", "_nix.csv")
+
+        from annolid.postprocessing.glitter import tracks2nix
 
         tracks2nix(
             video_file,

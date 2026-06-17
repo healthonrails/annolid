@@ -313,7 +313,10 @@ class InferenceProcessor:
         model_name_lower = model_ref.lower()
 
         if self.model_type == "yolo":
+            from annolid.infrastructure.capabilities import ensure_capability
+
             try:
+                ensure_capability("yolo")
                 from ultralytics import YOLO, YOLOE  # type: ignore
             except ModuleNotFoundError as exc:
                 raise ModuleNotFoundError(
@@ -351,7 +354,10 @@ class InferenceProcessor:
                         )
             return model
         if self.model_type == "sam":
+            from annolid.infrastructure.capabilities import ensure_capability
+
             try:
+                ensure_capability("yolo")
                 from ultralytics import SAM  # type: ignore
             except ModuleNotFoundError as exc:
                 raise ModuleNotFoundError(

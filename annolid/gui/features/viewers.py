@@ -78,6 +78,75 @@ class _LazyAIChatManager:
         return getattr(self._manager, "ai_chat_dock", None)
 
 
+class _LazySam2Manager:
+    """SAM2 manager facade that keeps SAM2 setup off the GUI startup path."""
+
+    def __init__(self, window) -> None:
+        self._window = window
+        self._manager = None
+
+    def _resolve(self):
+        if self._manager is None:
+            from annolid.gui.widgets.sam2_manager import Sam2Manager
+
+            self._manager = Sam2Manager(self._window)
+        return self._manager
+
+    @staticmethod
+    def is_sam2_model(identifier: str, weight: str) -> bool:
+        key = f"{identifier or ''} {weight or ''}".lower()
+        return "sam2_hiera" in key
+
+    def build_video_processor(self, *args, **kwargs):
+        return self._resolve().build_video_processor(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._resolve(), name)
+
+
+class _LazySam3Manager:
+    """SAM3 manager facade that loads SAM3 support only on first use."""
+
+    def __init__(self, window) -> None:
+        self._window = window
+        self._manager = None
+
+    def _resolve(self):
+        if self._manager is None:
+            from annolid.gui.widgets.sam3_manager import Sam3Manager
+
+            self._manager = Sam3Manager(self._window)
+        return self._manager
+
+    @staticmethod
+    def is_sam3_model(identifier: str, weight: str) -> bool:
+        key = f"{identifier or ''} {weight or ''}".lower()
+        return "sam3" in key
+
+    def close_session(self):
+        if self._manager is None:
+            return None
+        return self._manager.close_session()
+
+    @property
+    def sam3_session(self):
+        if self._manager is None:
+            return None
+        return getattr(self._manager, "sam3_session", None)
+
+    def build_video_processor(self, *args, **kwargs):
+        return self._resolve().build_video_processor(*args, **kwargs)
+
+    def dialog_defaults(self, *args, **kwargs):
+        return self._resolve().dialog_defaults(*args, **kwargs)
+
+    def apply_dialog_results(self, *args, **kwargs):
+        return self._resolve().apply_dialog_results(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._resolve(), name)
+
+
 def ensure_pdf_manager(window):
     manager = getattr(window, "pdf_manager", None)
     if manager is not None:
@@ -159,8 +228,6 @@ def setup_viewers_feature(deps: GuiFeatureDeps) -> ViewersFeatureState:
     """Create the canvas viewer stack and viewer managers."""
     from annolid.gui.widgets.tiled_image_view import TiledImageView
     from annolid.gui.widgets.optical_flow_manager import OpticalFlowManager
-    from annolid.gui.widgets.sam2_manager import Sam2Manager
-    from annolid.gui.widgets.sam3_manager import Sam3Manager
 
     window = deps.window
     window._viewer_stack = QtWidgets.QStackedWidget()
@@ -177,8 +244,8 @@ def setup_viewers_feature(deps: GuiFeatureDeps) -> ViewersFeatureState:
     window.depth_manager = None
     window.optical_flow_manager = OpticalFlowManager(window)
     window.sam3d_manager = None
-    window.sam2_manager = Sam2Manager(window)
-    window.sam3_manager = Sam3Manager(window)
+    window.sam2_manager = _LazySam2Manager(window)
+    window.sam3_manager = _LazySam3Manager(window)
     window.realtime_manager = None
     window.ai_chat_manager = _LazyAIChatManager(window)
 

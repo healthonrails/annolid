@@ -188,10 +188,12 @@ class YOLOUltralyticsPlugin(ModelPluginBase):
         )
 
     def predict(self, args: argparse.Namespace) -> int:
+        from annolid.infrastructure.capabilities import ensure_capability
         from annolid.yolo import configure_ultralytics_cache, resolve_weight_path
 
         configure_ultralytics_cache()
         try:
+            ensure_capability("yolo")
             from ultralytics import YOLO  # type: ignore
         except Exception as exc:
             raise RuntimeError(

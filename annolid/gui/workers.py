@@ -20,7 +20,6 @@ import zmq
 from qtpy import QtCore, QtGui
 from qtpy.QtCore import QThread, Signal, QObject
 
-from annolid.annotation.labelme2csv import convert_json_to_csv
 from annolid.data.videos import extract_frames_from_videos
 from annolid.gui.label_file import LabelFile
 from annolid.jobs.tracking_jobs import TrackingSegment
@@ -305,6 +304,8 @@ class TrackAllWorker(QThread):
 
         if successful_segments > 0:
             try:
+                from annolid.annotation.labelme2csv import convert_json_to_csv
+
                 convert_json_to_csv(str(output_folder))
             except Exception as exc:
                 csv_error = f"CSV conversion failed for {video_name}: {exc}"
@@ -576,6 +577,8 @@ class TrackAllWorker(QThread):
                 return False
 
             try:
+                from annolid.annotation.labelme2csv import convert_json_to_csv
+
                 convert_json_to_csv(str(output_folder))
             except Exception as exc:
                 self.error.emit(

@@ -2,7 +2,6 @@ import ast
 import cv2
 import numpy as np
 import pycocotools.mask as mask_util
-from scipy import ndimage
 
 
 def binary_mask_to_coco_rle(binary_mask):
@@ -161,7 +160,9 @@ def calculate_mask_centroid(mask):
         rle = [mask_array]
         mask_array = mask_util.decode(rle)
     # Calculate the center of mass of the binary mask
-    center_of_mass = ndimage.measurements.center_of_mass(mask_array)
+    from scipy import ndimage
+
+    center_of_mass = ndimage.center_of_mass(mask_array)
 
     # Convert the center of mass to the original image coordinates
     x = int(center_of_mass[1])
