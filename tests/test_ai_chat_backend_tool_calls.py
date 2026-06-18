@@ -3542,6 +3542,23 @@ def test_parse_direct_gui_command_variants() -> None:
     assert parsed_label_defined["args"]["sample_frames_per_segment"] == 5
     assert parsed_label_defined["args"]["use_defined_behavior_list"] is True
 
+    parsed_bracketed_defined_labels = task._parse_direct_gui_command(
+        "label behavior in /Users/chenyang/Downloads/test_annolid_videos_batch/mouse.mp4 "
+        "from defined list [rearing,walking,grooming] every 1s"
+    )
+    assert parsed_bracketed_defined_labels["name"] == "label_behavior_segments"
+    assert (
+        parsed_bracketed_defined_labels["args"]["path"]
+        == "/Users/chenyang/Downloads/test_annolid_videos_batch/mouse.mp4"
+    )
+    assert parsed_bracketed_defined_labels["args"]["behavior_labels"] == [
+        "rearing",
+        "walking",
+        "grooming",
+    ]
+    assert parsed_bracketed_defined_labels["args"]["use_defined_behavior_list"] is True
+    assert parsed_bracketed_defined_labels["args"]["segment_seconds"] == 1.0
+
     parsed_label_colon = task._parse_direct_gui_command(
         "label behavior in mouse.mp4 behaviors: walking, rearing, grooming every 1s"
     )

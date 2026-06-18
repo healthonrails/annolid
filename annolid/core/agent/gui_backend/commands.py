@@ -398,6 +398,8 @@ def _extract_behavior_subject_term(text: str) -> str:
 
 def _split_behavior_labels(text: str) -> list[str]:
     labels_text = str(text or "").strip()
+    labels_text = _strip_wrapping_quotes(labels_text)
+    labels_text = labels_text.strip("[](){}")
     labels_text = re.split(
         r"\b(?:every|timeline|uniform|overwrite|replace|"
         r"from\s+defined\s+list|from\s+schema|from\s+flags|"
@@ -411,9 +413,9 @@ def _split_behavior_labels(text: str) -> list[str]:
         flags=re.IGNORECASE,
     )[0].strip()
     return [
-        p.strip().strip("\"'`").strip(" .")
+        p.strip().strip("\"'`").strip(" [](){}.")
         for p in re.split(r",|;|\band\b", labels_text, flags=re.IGNORECASE)
-        if p.strip().strip("\"'`").strip(" .")
+        if p.strip().strip("\"'`").strip(" [](){}.")
     ]
 
 
@@ -421,6 +423,17 @@ def _extract_behavior_labels_clause(text: str) -> list[str]:
     raw = str(text or "")
     if not raw:
         return []
+    defined_match = re.search(
+        r"\bfrom\s+(?:the\s+)?defined\s+(?:behavior\s+)?list\s*"
+        r"(?P<labels>\[[^\]]+\]|\([^)]+\)|\{[^}]+\})",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if defined_match is not None:
+        labels_text = str(defined_match.group("labels") or "").strip()
+        labels = _split_behavior_labels(labels_text)
+        if labels:
+            return labels
     match = re.search(
         r"\b(?:(?:with\s+labels?|labels?)\s*(?:(?::|=)\s*)?|"
         r"behaviors?(?:\s+list)?\s*(?::|=)\s*)"
@@ -449,10 +462,17 @@ def _strip_behavior_labels_clause(text: str) -> str:
     if not raw:
         return ""
     cleaned = re.sub(
+        r"\s+\bfrom\s+(?:the\s+)?defined\s+(?:behavior\s+)?list\s*"
+        r"(?:\[[^\]]+\]|\([^)]+\)|\{[^}]+\})",
+        "",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
         r"\s+\b(?:(?:with\s+labels?|labels?)\s*(?:(?::|=)\s*)?|"
         r"behaviors?(?:\s+list)?\s*(?::|=)\s*).+$",
         "",
-        raw,
+        cleaned,
         flags=re.IGNORECASE,
     )
     return str(cleaned or "").strip()

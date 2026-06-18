@@ -82,6 +82,12 @@ You can also provide explicit labels:
 Label behavior in /path/to/video.mp4 with labels grooming, rearing, walking every 1s
 ```
 
+Explicit labels may be comma-, semicolon-, or newline-separated. Annolid trims
+duplicates and accepts case, space, hyphen, and underscore variants in model
+responses. The reserved label `no_behavior` is not written as a timeline
+behavior; it marks a reviewed segment where none of the listed behaviors is
+clearly visible.
+
 What Annolid writes:
 
 - timeline intervals per segment label,

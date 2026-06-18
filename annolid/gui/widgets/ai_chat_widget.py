@@ -54,6 +54,14 @@ from annolid.behavior.event_utils import (
     infer_aggression_sub_event_counts_from_text,
     parse_aggression_sub_event_counts,
 )
+from annolid.behavior.labels import (
+    NO_BEHAVIOR_LABEL,
+    behavior_label_key,
+    canonicalize_behavior_label,
+    is_no_behavior_label,
+    normalize_behavior_label_list,
+    text_indicates_no_behavior,
+)
 from annolid.behavior.segment_labeling import (
     behavior_label_provider_request_interval,
     behavior_label_rate_limit_backoff_seconds,
@@ -3956,25 +3964,26 @@ class AIChatWidget(QtWidgets.QWidget):
 
     @staticmethod
     def _normalize_behavior_labels(labels: List[str]) -> List[str]:
-        seen = set()
-        normalized: List[str] = []
-        for raw in labels:
-            value = str(raw or "").strip()
-            if not value:
-                continue
-            key = value.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            normalized.append(value)
-        return normalized
+        return normalize_behavior_label_list(labels)
 
     @staticmethod
     def _is_placeholder_behavior_label(label: str) -> bool:
         value = str(label or "").strip().lower()
         if not value:
             return True
+        key = behavior_label_key(value)
         if re.fullmatch(r"behavior[_\-\s]?\d+", value):
+            return True
+        if re.fullmatch(r"behavior_\d+", key):
+            return True
+        video_ext_tokens = {"mp4", "avi", "mov", "mkv", "m4v", "wmv", "flv"}
+        if (
+            value.startswith(("behavior in ", "behaviour in "))
+            or key.startswith(("behavior_in_", "behaviour_in_"))
+        ) and (
+            re.search(r"\.(?:mp4|avi|mov|mkv|m4v|wmv|flv)\b", value) is not None
+            or bool(video_ext_tokens.intersection(key.split("_")))
+        ):
             return True
         return value in {"behavior", "behaviour", "label", "placeholder"}
 
@@ -4128,6 +4137,7 @@ class AIChatWidget(QtWidgets.QWidget):
         labels: List[str],
     ) -> Dict[str, Any]:
         raw = str(text or "").strip()
+        labels = normalize_behavior_label_list(labels)
         if not labels:
             return {"label": "", "confidence": 0.0}
 
@@ -4165,23 +4175,13 @@ class AIChatWidget(QtWidgets.QWidget):
                     conf = float(conf_val)
                 except Exception:
                     conf = 0.0
+                description = str(payload.get("description") or "").strip()
                 if label_val:
-                    no_behavior_values = {
-                        "no_behavior",
-                        "no behavior",
-                        "none",
-                        "none of the above",
-                        "other",
-                        "background",
-                    }
-                    if (
-                        label_val.strip().lower().replace("_", " ")
-                        in no_behavior_values
-                    ):
-                        description = str(payload.get("description") or "").strip()
+                    canonical_label = canonicalize_behavior_label(label_val, labels)
+                    if canonical_label == NO_BEHAVIOR_LABEL:
                         parsed = {
                             "label": "",
-                            "classification": "no_behavior",
+                            "classification": NO_BEHAVIOR_LABEL,
                             "confidence": max(0.0, min(1.0, conf)),
                             "no_behavior": True,
                             "model_label": label_val,
@@ -4189,37 +4189,50 @@ class AIChatWidget(QtWidgets.QWidget):
                         if description:
                             parsed["description"] = description
                         return parsed
-                    for candidate in labels:
-                        if candidate.lower() == label_val.lower():
-                            parsed_sub_events = parse_aggression_sub_event_counts(
-                                payload.get("sub_events")
-                                or payload.get("subevents")
-                                or payload.get("aggression_sub_events")
-                            )
-                            if not parsed_sub_events:
-                                parsed_sub_events = (
-                                    infer_aggression_sub_event_counts_from_text(
-                                        str(payload.get("description") or "")
-                                    )
+                    if canonical_label:
+                        parsed_sub_events = parse_aggression_sub_event_counts(
+                            payload.get("sub_events")
+                            or payload.get("subevents")
+                            or payload.get("aggression_sub_events")
+                        )
+                        if not parsed_sub_events:
+                            parsed_sub_events = (
+                                infer_aggression_sub_event_counts_from_text(
+                                    str(payload.get("description") or "")
                                 )
-                            parsed: Dict[str, Any] = {
-                                "label": candidate,
-                                "classification": candidate,
-                                "confidence": max(0.0, min(1.0, conf)),
-                            }
-                            description = str(payload.get("description") or "").strip()
-                            if description:
-                                parsed["description"] = description
-                            if parsed_sub_events:
-                                parsed["aggression_sub_events"] = parsed_sub_events
-                            return parsed
-                    description = str(payload.get("description") or "").strip()
+                            )
+                        parsed: Dict[str, Any] = {
+                            "label": canonical_label,
+                            "classification": canonical_label,
+                            "confidence": max(0.0, min(1.0, conf)),
+                        }
+                        if description:
+                            parsed["description"] = description
+                        if parsed_sub_events:
+                            parsed["aggression_sub_events"] = parsed_sub_events
+                        return parsed
                     parsed = {
                         "label": "",
                         "classification": "",
                         "confidence": max(0.0, min(1.0, conf)),
                         "unmatched_label": label_val,
                         "unmatched_text": raw,
+                    }
+                    if description:
+                        parsed["description"] = description
+                    return parsed
+                no_behavior_text = " ".join(
+                    str(payload.get(key) or "").strip()
+                    for key in ("description", "reason", "evidence", "explanation")
+                    if str(payload.get(key) or "").strip()
+                )
+                if text_indicates_no_behavior(no_behavior_text):
+                    parsed = {
+                        "label": "",
+                        "classification": NO_BEHAVIOR_LABEL,
+                        "confidence": max(0.0, min(1.0, conf)),
+                        "no_behavior": True,
+                        "model_label": "",
                     }
                     if description:
                         parsed["description"] = description
@@ -4241,7 +4254,60 @@ class AIChatWidget(QtWidgets.QWidget):
                 )
             )
 
-        for candidate in labels:
+        explicit_label = ""
+        explicit_match = re.search(
+            r"(?:^|[\n\r])\s*"
+            r"(?:label|classification|behavior|behaviour|prediction)"
+            r"\s*(?::|=|is)\s*[\"'`]*(?P<label>[^\n\r,;\"'`{}]+)",
+            raw,
+            flags=re.IGNORECASE,
+        )
+        if explicit_match is not None:
+            explicit_label = str(explicit_match.group("label") or "").strip()
+        else:
+            terminal_match = re.search(
+                r"(?:^|[\n\r])\s*[\"'`]*(?P<label>[A-Za-z][A-Za-z0-9 _-]{1,80})"
+                r"[\"'`]*\s*$",
+                raw,
+                flags=re.IGNORECASE,
+            )
+            if terminal_match is not None:
+                explicit_label = str(terminal_match.group("label") or "").strip()
+
+        if explicit_label:
+            canonical_label = canonicalize_behavior_label(explicit_label, labels)
+            if canonical_label == NO_BEHAVIOR_LABEL:
+                return {
+                    "label": "",
+                    "classification": NO_BEHAVIOR_LABEL,
+                    "confidence": 0.6,
+                    "description": raw,
+                    "no_behavior": True,
+                    "model_label": explicit_label,
+                }
+            if canonical_label:
+                return {
+                    "label": canonical_label,
+                    "classification": canonical_label,
+                    "confidence": 0.6,
+                    "description": raw,
+                    "aggression_sub_events": infer_aggression_sub_event_counts_from_text(
+                        raw
+                    ),
+                }
+
+        mention_fallback_blockers = (
+            "allowed label",
+            "available label",
+            "defined behavior list",
+            "choose exactly",
+            "thinking process",
+            "previous response",
+        )
+        allow_short_mention_fallback = len(raw) <= 240 and not any(
+            token in raw.lower() for token in mention_fallback_blockers
+        )
+        for candidate in labels if allow_short_mention_fallback else []:
             if _label_mentioned(candidate, raw):
                 return {
                     "label": candidate,
@@ -4252,6 +4318,15 @@ class AIChatWidget(QtWidgets.QWidget):
                         raw
                     ),
                 }
+        if is_no_behavior_label(raw):
+            return {
+                "label": "",
+                "classification": NO_BEHAVIOR_LABEL,
+                "confidence": 0.6,
+                "description": raw,
+                "no_behavior": True,
+                "model_label": raw,
+            }
         return {
             "label": "",
             "confidence": 0.0,

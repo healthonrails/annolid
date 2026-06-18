@@ -9,6 +9,7 @@ from pathlib import Path
 import textwrap
 
 from annolid.behavior.labeling_skill import behavior_labeling_prompt_guidance
+from annolid.behavior.labels import normalize_behavior_label_list
 
 _PROMPT_DIR = Path.home() / ".annolid"
 _PROMPT_FILE = _PROMPT_DIR / "behavior_prompt_template.txt"
@@ -207,17 +208,7 @@ def build_behavior_classification_prompt(
     Prompt for behavior classification with an observation-first narrative.
     """
 
-    normalized_labels: List[str] = []
-    seen = set()
-    for raw in behavior_labels:
-        label = str(raw or "").strip()
-        if not label:
-            continue
-        lowered = label.lower()
-        if lowered in seen:
-            continue
-        seen.add(lowered)
-        normalized_labels.append(label)
+    normalized_labels = normalize_behavior_label_list(behavior_labels)
 
     if normalized_labels:
         behavior_list = "\n".join(f"- {label}" for label in normalized_labels)

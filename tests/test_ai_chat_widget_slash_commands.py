@@ -498,6 +498,48 @@ def test_extract_prediction_from_model_text_preserves_no_behavior_alias() -> Non
     assert parsed["model_label"] == "background"
 
 
+def test_extract_prediction_from_model_text_accepts_label_slug_variants() -> None:
+    parsed = AIChatWidget._extract_prediction_from_model_text(
+        (
+            '{"label":"unsupported_rearing","confidence":0.74,'
+            '"description":"Mouse rears without forepaw support."}'
+        ),
+        ["grooming", "supported rearing", "unsupported rearing"],
+    )
+
+    assert parsed["label"] == "unsupported rearing"
+    assert parsed["classification"] == "unsupported rearing"
+    assert parsed["confidence"] == 0.74
+    assert parsed["description"] == "Mouse rears without forepaw support."
+
+
+def test_extract_prediction_from_model_text_accepts_plain_no_behavior_alias() -> None:
+    parsed = AIChatWidget._extract_prediction_from_model_text(
+        "No behavior.",
+        ["grooming", "supported rearing", "unsupported rearing"],
+    )
+
+    assert parsed["label"] == ""
+    assert parsed["classification"] == "no_behavior"
+    assert parsed["no_behavior"] is True
+
+
+def test_extract_prediction_from_model_text_uses_json_description_no_behavior() -> None:
+    parsed = AIChatWidget._extract_prediction_from_model_text(
+        (
+            '{"confidence":0.67,'
+            '"description":"No listed behavior is visible; the mouse is walking, not grooming."}'
+        ),
+        ["grooming", "supported rearing", "unsupported rearing"],
+    )
+
+    assert parsed["label"] == ""
+    assert parsed["classification"] == "no_behavior"
+    assert parsed["confidence"] == 0.67
+    assert parsed["no_behavior"] is True
+    assert "No listed behavior" in parsed["description"]
+
+
 def test_extract_prediction_from_model_text_preserves_unsupported_label_description() -> (
     None
 ):
@@ -555,6 +597,24 @@ def test_extract_prediction_from_model_text_does_not_default_to_first_label() ->
     assert parsed["label"] == ""
     assert parsed["confidence"] == 0.0
     assert "moving across" in parsed["unmatched_text"]
+
+
+def test_extract_prediction_from_model_text_ignores_verbose_allowed_label_echo() -> (
+    None
+):
+    parsed = AIChatWidget._extract_prediction_from_model_text(
+        (
+            "Thinking Process:\n"
+            "The available labels are `behavior in /tmp/mouse.mp4` and `no_behavior`.\n"
+            "The mouse appears mostly stationary. Since no specific behavior is visible, "
+            "I should choose between those options."
+        ),
+        ["behavior in /tmp/mouse.mp4"],
+    )
+
+    assert parsed["label"] == ""
+    assert parsed["confidence"] == 0.0
+    assert "available labels" in parsed["unmatched_text"]
 
 
 def test_chat_bubble_thinking_collapses_and_toggles() -> None:
@@ -1003,6 +1063,10 @@ def test_labels_from_project_schema_prefers_names_and_normalizes_underscores():
     class _Schema:
         behaviors = [
             _Behavior("behavior_1", "Behavior 1"),
+            _Behavior(
+                "behavior_in_users_chenyang_downloads_test_annolid_videos_batch_mouse_mp4",
+                "behavior_in_users_chenyang_downloads_test_annolid_videos_batch_mouse_mp4",
+            ),
             _Behavior("unsupported_rearing", "unsupported_rearing"),
             _Behavior("walking", "walking"),
         ]
@@ -1942,7 +2006,8 @@ def test_behavior_segment_vlm_worker_pauses_after_one_empty_text_only_model_segm
     assert result["empty_response_paused"] is True
     assert result["empty_response_segment_limit"] == 1
     assert result["skipped_segments"] == 1
-    assert len(requests) == 1
+    assert len(requests) == 2
+    assert "Your previous response was empty" in requests[1].text
 
 
 def test_behavior_segment_vlm_worker_appends_empty_tail_from_prior_segment(
@@ -2121,6 +2186,8 @@ def test_behavior_segment_vlm_worker_skips_no_behavior_response(
     finally:
         writer.release()
 
+    requests = []
+
     class _FakeAdapter:
         def __init__(self, **kwargs):
             self.kwargs = dict(kwargs)
@@ -2132,6 +2199,7 @@ def test_behavior_segment_vlm_worker_skips_no_behavior_response(
             return None
 
         def predict(self, request):
+            requests.append(request)
             return ModelResponse(
                 task="caption",
                 output={
@@ -2173,6 +2241,7 @@ def test_behavior_segment_vlm_worker_skips_no_behavior_response(
         == "no_behavior"
     )
     assert result["empty_response_paused"] is False
+    assert len(requests) == 1
 
 
 def test_behavior_segment_vlm_worker_saves_unclassified_model_description(
@@ -2464,6 +2533,89 @@ def test_behavior_segment_vlm_worker_routes_known_non_vision_model_to_caption_pr
     assert any(str(item.get("profile") or "") == "caption" for item in init_kwargs)
     assert all(item.get("provider") is None for item in init_kwargs)
     assert all(item.get("model") is None for item in init_kwargs)
+
+
+def test_behavior_segment_vlm_worker_repairs_missing_caption_profile_label(
+    monkeypatch, tmp_path: Path
+) -> None:
+    video_path = tmp_path / "mouse.avi"
+    writer = cv2.VideoWriter(
+        str(video_path),
+        cv2.VideoWriter_fourcc(*"MJPG"),
+        10.0,
+        (64, 48),
+    )
+    assert writer.isOpened()
+    try:
+        for idx in range(8):
+            frame = np.zeros((48, 64, 3), dtype=np.uint8)
+            frame[..., 1] = idx * 20
+            writer.write(frame)
+    finally:
+        writer.release()
+
+    requests = []
+
+    class _FakeAdapter:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+        def predict(self, request):
+            requests.append(request)
+            if len(requests) == 1:
+                return ModelResponse(
+                    task="caption",
+                    output={"text": '{"description":"Mouse appears upright."}'},
+                    text='{"description":"Mouse appears upright."}',
+                )
+            return ModelResponse(
+                task="caption",
+                output={
+                    "text": (
+                        '{"label":"rearing","classification":"rearing",'
+                        '"confidence":0.73,"description":"mouse appears upright"}'
+                    )
+                },
+                text=(
+                    '{"label":"rearing","classification":"rearing",'
+                    '"confidence":0.73,"description":"mouse appears upright"}'
+                ),
+            )
+
+    import annolid.core.models.adapters.llm_chat as llm_chat
+
+    monkeypatch.setattr(llm_chat, "LLMChatAdapter", _FakeAdapter)
+    monkeypatch.setattr(
+        AIChatWidget, "_sleep_with_stop", staticmethod(lambda *_: False)
+    )
+
+    widget = AIChatWidget.__new__(AIChatWidget)
+    result = widget._run_behavior_segment_vlm_worker(
+        video_path=str(video_path),
+        intervals=[{"start_frame": 0, "end_frame": 7, "subject": "mouse"}],
+        labels=["grooming", "rearing"],
+        sample_frames_per_segment=3,
+        llm_profile="",
+        llm_provider="nvidia",
+        llm_model="moonshotai/kimi-k2.6",
+    )
+
+    assert result["routed_to_caption_profile"] is True
+    assert result["skipped_segments"] == 0
+    assert len(requests) == 2
+    assert "Your previous response was empty" in requests[1].text
+    prediction = result["predictions"][0]
+    assert prediction["label"] == "rearing"
+    assert prediction["visual_evidence"]["model_attempt"] == (
+        "caption_profile_repair_with_image"
+    )
+    assert prediction["visual_evidence"]["fallback_reason"] == "repair_prompt"
 
 
 def test_behavior_segment_vlm_worker_infers_fly_subject_from_video_path(
@@ -2908,3 +3060,48 @@ def test_load_resumable_behavior_segment_predictions_filters_allowed_labels(
             "aggression_sub_events": {},
         }
     ]
+
+
+def test_load_resumable_behavior_segment_predictions_canonicalizes_saved_labels(
+    tmp_path: Path,
+) -> None:
+    video_path = tmp_path / "fly.mp4"
+    video_path.write_bytes(b"fake")
+    log_path = tmp_path / "fly_behavior_segment_labels.json"
+    log_path.write_text(
+        json.dumps(
+            {
+                "predictions": [
+                    {
+                        "start_frame": 0,
+                        "end_frame": 69,
+                        "label": "unsupported_rearing",
+                        "confidence": 0.8,
+                    }
+                ],
+                "skipped_predictions": [
+                    {
+                        "start_frame": 70,
+                        "end_frame": 139,
+                        "label": "background",
+                        "confidence": 0.7,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    widget = AIChatWidget.__new__(AIChatWidget)
+    result = widget._load_resumable_behavior_segment_predictions(
+        str(video_path),
+        labels=["unsupported rearing"],
+        segment_frames=70,
+        segment_seconds=1.0,
+        sample_frames_per_segment=9,
+    )
+
+    assert result["predictions"][0]["label"] == "unsupported rearing"
+    assert result["predictions"][0]["classification"] == "unsupported rearing"
+    assert result["skipped_predictions"][0]["label"] == "no_behavior"
+    assert result["skipped_predictions"][0]["classification"] == "no_behavior"

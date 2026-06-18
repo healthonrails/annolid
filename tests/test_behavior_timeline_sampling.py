@@ -7,7 +7,10 @@ from annolid.behavior.timeline_sampling import (
     timestamp_rows_to_timeline_intervals,
 )
 from annolid.behavior import prompting as behavior_prompting
-from annolid.behavior.segment_labeling import behavior_grid_system_prompt
+from annolid.behavior.segment_labeling import (
+    behavior_grid_system_prompt,
+    behavior_label_retry_prompt,
+)
 
 
 def test_compute_timeline_points_inclusive_endpoints():
@@ -66,6 +69,26 @@ def test_behavior_grid_system_prompt_uses_behavior_labeling_skill_rules():
     assert (
         "Use `no_behavior` when none of the listed behaviors is clearly visible."
         in prompt
+    )
+
+
+def test_behavior_label_prompts_normalize_allowed_labels_once() -> None:
+    labels = [" grooming ", "Grooming", "unsupported_rearing", "no behavior"]
+
+    prompt = behavior_prompting.build_behavior_classification_prompt(
+        behavior_labels=labels,
+        segment_label="00:00:00-00:00:01",
+    )
+    system_prompt = behavior_grid_system_prompt(labels)
+    retry_prompt = behavior_label_retry_prompt(prompt, labels)
+
+    assert prompt.count("- grooming") == 1
+    assert prompt.count("- unsupported_rearing") == 1
+    assert "- no_behavior" not in prompt
+    assert "Allowed labels: grooming, unsupported_rearing, no_behavior" in system_prompt
+    assert (
+        "Choose exactly one label from this list: grooming, unsupported_rearing, no_behavior."
+        in retry_prompt
     )
 
 

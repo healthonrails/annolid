@@ -174,6 +174,11 @@ Label behavior in mouse.mp4 with labels grooming, rearing, walking from defined 
 
 Annolid resolves the requested labels against the current behavior catalog when available, splits the video into 1-second segments, builds one annotated chronological frame grid per segment, and sends each grid to the selected VLM for a single JSON label decision. Each grid samples 4 frames by default; users can override this with phrases like `frames per grid 6` or the tool argument `sample_frames_per_segment=6`.
 
+During parsing, behavior labels are matched with case, space, hyphen, and
+underscore tolerance. `no_behavior` remains a reserved reviewed-segment marker
+when no listed behavior is visible, not a timeline behavior to train as a
+pose/keypoint or polygon class.
+
 In the GUI chat box, type `/behavior` to open the guided behavior-labeling
 form. The form lets you choose the active Annolid Bot provider/model, edit the
 behavior list, set segment duration and frames per grid, add protocol-specific

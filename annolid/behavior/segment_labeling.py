@@ -14,13 +14,18 @@ from typing import Any, Callable, Dict, List, Optional
 
 from annolid.behavior.event_utils import parse_aggression_sub_event_counts
 from annolid.behavior.labeling_skill import behavior_labeling_prompt_guidance
+from annolid.behavior.labels import (
+    NO_BEHAVIOR_LABEL,
+    allowed_behavior_labels,
+    canonicalize_behavior_label,
+    normalize_behavior_label_list,
+)
 from annolid.behavior import prompting as behavior_prompting
 from annolid.behavior.timeline_sampling import format_hhmmss
 from annolid.core.media.video import build_segment_frame_grid, save_rgb_image
 
 logger = logging.getLogger(__name__)
 _OLLAMA_MODEL_CAPABILITY_CACHE: Dict[tuple[str, str], Optional[bool]] = {}
-NO_BEHAVIOR_LABEL = "no_behavior"
 
 
 class BehaviorLabelRateLimitError(RuntimeError):
@@ -221,7 +226,20 @@ def behavior_label_attempt_plan(
                     "system_prompt": system_prompt,
                     **controls,
                 },
-            }
+            },
+            {
+                "name": "caption_profile_repair_with_image",
+                "text": behavior_label_prompt_text(
+                    retry_prompt,
+                    provider=provider,
+                    model=model,
+                ),
+                "params": {
+                    "temperature": 0.0,
+                    "use_annolid_bot_system": False,
+                    **controls,
+                },
+            },
         ]
 
     if _is_local_llm_provider(provider):
@@ -366,7 +384,7 @@ def behavior_grid_output_path(
 
 
 def behavior_label_retry_prompt(prompt: str, labels: List[str]) -> str:
-    labels_text = ", ".join([*(str(label) for label in labels), NO_BEHAVIOR_LABEL])
+    labels_text = ", ".join(allowed_behavior_labels(labels))
     return "\n".join(
         [
             str(prompt or "").strip(),
@@ -381,9 +399,7 @@ def behavior_label_retry_prompt(prompt: str, labels: List[str]) -> str:
 
 
 def behavior_grid_system_prompt(labels: List[str]) -> str:
-    labels_text = ", ".join(
-        [*(str(label) for label in labels if str(label).strip()), NO_BEHAVIOR_LABEL]
-    )
+    labels_text = ", ".join(allowed_behavior_labels(labels))
     lines = [
         "You are Annolid Bot.",
         "Analyze chronological frame-grid images for behavior labeling.",
@@ -487,6 +503,7 @@ def run_behavior_segment_vlm_worker(
     from annolid.core.models.adapters.llm_chat import LLMChatAdapter
     from annolid.core.models.base import ModelRequest
 
+    labels = normalize_behavior_label_list(labels)
     predictions: List[Dict[str, Any]] = []
     skipped_predictions: List[Dict[str, Any]] = []
     prior_prediction_records: List[Dict[str, Any]] = []
@@ -744,15 +761,17 @@ def run_behavior_segment_vlm_worker(
                     parsed = prediction_parser(raw, labels)
                     label = str(parsed.get("label") or "").strip()
                     model_description = str(parsed.get("description") or "").strip()
-                    if label:
+                    if label or bool(parsed.get("no_behavior")):
                         if attempt_name in {
                             "repair_with_image",
                             "local_vlm_retry_with_image",
+                            "caption_profile_repair_with_image",
                         }:
                             parsed.setdefault("fallback_reason", "repair_prompt")
                         break
                 allow_caption_rescue = (
                     not route_to_caption_profile
+                    and not bool(parsed.get("no_behavior"))
                     and not _is_local_llm_provider(primary_provider)
                 )
                 if not label and allow_caption_rescue:
@@ -931,27 +950,27 @@ def run_behavior_segment_vlm_worker(
                             or (prior_adjacent or {}).get("classification")
                             or ""
                         ).strip()
-                        allowed_labels = {
-                            str(candidate).strip().casefold()
-                            for candidate in labels
-                            if str(candidate).strip()
-                        }
+                        canonical_adjacent_label = canonicalize_behavior_label(
+                            adjacent_label,
+                            labels,
+                        )
                         is_short_adjacent_segment = (
                             prior_adjacent is not None
                             and segment_length > 0
                             and adjacent_length > 0
                             and segment_length < max(2, int(adjacent_length * 0.5))
-                            and adjacent_label.casefold() in allowed_labels
+                            and bool(canonical_adjacent_label)
+                            and canonical_adjacent_label != NO_BEHAVIOR_LABEL
                         )
                         if not is_short_adjacent_segment:
                             raise BehaviorLabelEmptyResponseError(
                                 "Provider returned empty text for all behavior-label "
                                 f"attempts on frames {start_frame}-{end_frame}."
                             )
-                        label = adjacent_label
+                        label = canonical_adjacent_label
                         parsed = {
-                            "label": adjacent_label,
-                            "classification": adjacent_label,
+                            "label": canonical_adjacent_label,
+                            "classification": canonical_adjacent_label,
                             "confidence": min(
                                 0.5,
                                 max(
@@ -1063,14 +1082,11 @@ def run_behavior_segment_vlm_worker(
                 classification_raw = str(
                     parsed.get("classification") or parsed.get("label") or label
                 ).strip()
-                label_lookup = {
-                    str(candidate).strip().casefold(): str(candidate).strip()
-                    for candidate in labels
-                    if str(candidate).strip()
-                }
-                parsed["classification"] = label_lookup.get(
-                    classification_raw.casefold(), label
+                canonical_classification = canonicalize_behavior_label(
+                    classification_raw,
+                    labels,
                 )
+                parsed["classification"] = canonical_classification or label
                 description = str(parsed.get("description") or "").strip()
                 fallback_reason = str(parsed.get("fallback_reason") or "").strip()
                 if not description:
@@ -1344,7 +1360,7 @@ def load_resumable_behavior_segment_predictions(
             "skipped_predictions": [],
         }
 
-    allowed = {str(label).strip().casefold() for label in labels if str(label).strip()}
+    allowed = normalize_behavior_label_list(labels)
     predictions: List[Dict[str, Any]] = []
     skipped_predictions: List[Dict[str, Any]] = []
     for raw in list(payload.get("predictions") or []):
@@ -1355,8 +1371,14 @@ def load_resumable_behavior_segment_predictions(
         except Exception:
             continue
         label = str(normalized.get("label") or "").strip()
-        if allowed and label.casefold() not in allowed:
+        canonical_label = canonicalize_behavior_label(label, allowed)
+        if canonical_label == NO_BEHAVIOR_LABEL:
             continue
+        if allowed and not canonical_label:
+            continue
+        if canonical_label:
+            normalized["label"] = canonical_label
+            normalized["classification"] = canonical_label
         try:
             start_frame = int(normalized.get("start_frame"))
             end_frame = int(normalized.get("end_frame"))
@@ -1374,6 +1396,11 @@ def load_resumable_behavior_segment_predictions(
             normalized = normalize_behavior_segment_prediction_for_log(raw)
         except Exception:
             continue
+        label = str(normalized.get("label") or "").strip()
+        canonical_label = canonicalize_behavior_label(label, allowed)
+        if canonical_label == NO_BEHAVIOR_LABEL:
+            normalized["label"] = NO_BEHAVIOR_LABEL
+            normalized["classification"] = NO_BEHAVIOR_LABEL
         try:
             start_frame = int(normalized.get("start_frame"))
             end_frame = int(normalized.get("end_frame"))
