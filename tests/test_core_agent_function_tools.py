@@ -2790,6 +2790,20 @@ def test_exec_start_foreground_returns_output(tmp_path: Path) -> None:
     assert "annolid-shell-ok" in payload["output"]
 
 
+def test_exec_start_blocks_private_network_targets(tmp_path: Path) -> None:
+    tool = ExecStartTool()
+    result = asyncio.run(
+        tool.execute(
+            command="curl -s http://169.254.169.254/latest/meta-data/",
+            working_dir=str(tmp_path),
+        )
+    )
+    payload = json.loads(result)
+
+    assert payload["ok"] is False
+    assert "private_or_internal_url_target" in payload["error"]
+
+
 def test_exec_process_write_poll_log_and_kill(tmp_path: Path) -> None:
     async def _run() -> None:
         start = ExecStartTool()
@@ -2843,6 +2857,32 @@ def test_exec_process_write_poll_log_and_kill(tmp_path: Path) -> None:
         sid_sleep = started_sleep["session_id"]
         killed = json.loads(await proc.execute(action="kill", session_id=sid_sleep))
         assert killed["ok"] is True
+
+    asyncio.run(_run())
+
+
+def test_exec_process_submit_blocks_private_network_targets(tmp_path: Path) -> None:
+    async def _run() -> None:
+        start = ExecStartTool()
+        proc = ExecProcessTool()
+        cmd = f"{shlex.quote(sys.executable)} -u -c 'import time; time.sleep(5)'"
+        started = json.loads(
+            await start.execute(command=cmd, working_dir=str(tmp_path))
+        )
+        assert started["ok"] is True
+        sid = started["session_id"]
+        try:
+            blocked = json.loads(
+                await proc.execute(
+                    action="submit",
+                    session_id=sid,
+                    text="curl http://169.254.169.254/latest/meta-data/",
+                )
+            )
+            assert blocked["ok"] is False
+            assert "private_or_internal_url_target" in blocked["error"]
+        finally:
+            await proc.execute(action="kill", session_id=sid)
 
     asyncio.run(_run())
 
@@ -3040,7 +3080,14 @@ def test_web_search_tool_coerces_string_count(monkeypatch) -> None:
 def test_web_fetch_tool_cleans_url_marks_untrusted_and_blocks_private_redirect(
     monkeypatch,
 ) -> None:
-    monkeypatch.setattr(web_tools, "_resolved_ips", lambda hostname: set())
+    def _fake_validate_public_web_url(url: str) -> tuple[bool, str]:
+        if "127.0.0.1" in str(url):
+            return False, "Blocked private or internal address: 127.0.0.1"
+        return True, ""
+
+    monkeypatch.setattr(
+        web_tools, "_validate_public_web_url", _fake_validate_public_web_url
+    )
 
     class _FakeResponse:
         status_code = 200

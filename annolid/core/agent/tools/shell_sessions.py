@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from annolid.core.agent.observability import emit_governance_event
+from annolid.core.agent.security_network import contains_private_url_target
 
 from .function_base import FunctionTool
 
@@ -52,10 +53,21 @@ class ShellSessionManager:
             r":\(\)\s*\{.*\};\s*:",
         ]
 
+    def _guard_private_url_target(self, text: str) -> str | None:
+        blocked, error = contains_private_url_target(text)
+        if not blocked:
+            return None
+        suffix = f": {error}" if error else ""
+        return f"private_or_internal_url_target{suffix}"
+
     def _guard_command(self, command: str) -> str | None:
-        cmd = str(command or "").strip().lower()
+        raw_cmd = str(command or "").strip()
+        cmd = raw_cmd.lower()
         if not cmd:
             return "empty_command"
+        private_url_error = self._guard_private_url_target(raw_cmd)
+        if private_url_error:
+            return private_url_error
         for pattern in self._deny_patterns:
             if re.search(pattern, cmd):
                 return "dangerous_command"
@@ -289,6 +301,13 @@ class ShellSessionManager:
         if sess.process.stdin is None:
             return {"ok": False, "error": "stdin_unavailable", "session_id": session_id}
         payload = str(text or "")
+        private_url_error = self._guard_private_url_target(payload)
+        if private_url_error:
+            return {
+                "ok": False,
+                "error": private_url_error,
+                "session_id": session_id,
+            }
         if submit:
             payload += "\n"
         try:

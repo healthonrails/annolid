@@ -2,78 +2,26 @@ from __future__ import annotations
 
 import contextlib
 import html
-import ipaddress
 import json
 import os
 import re
-import socket
 import time
 import urllib.parse
 from pathlib import Path
 from typing import Any
 
+from annolid.core.agent.security_network import validate_public_url_target
+
 from .function_base import FunctionTool
-from .common import _normalize, _resolve_write_path, _strip_tags, _validate_url
-
-
-_BLOCKED_HOSTNAMES = {"localhost", "localhost.localdomain"}
-_BLOCKED_NETWORKS = tuple(
-    ipaddress.ip_network(value)
-    for value in (
-        "0.0.0.0/8",
-        "10.0.0.0/8",
-        "100.64.0.0/10",
-        "127.0.0.0/8",
-        "169.254.0.0/16",
-        "172.16.0.0/12",
-        "192.168.0.0/16",
-        "::/128",
-        "::1/128",
-        "fc00::/7",
-        "fe80::/10",
-    )
-)
+from .common import _normalize, _resolve_write_path, _strip_tags
 
 
 def _clean_tool_url(url: object) -> str:
     return str(url or "").strip().strip("`'\"").strip()
 
 
-def _is_blocked_ip(host: str) -> bool:
-    try:
-        address = ipaddress.ip_address(host)
-    except ValueError:
-        return False
-    if not address.is_global:
-        return True
-    return any(address in network for network in _BLOCKED_NETWORKS)
-
-
-def _resolved_ips(hostname: str) -> set[str]:
-    try:
-        infos = socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
-    except OSError:
-        # Let the actual HTTP request surface DNS failures. This keeps mocked
-        # tests deterministic while still blocking private resolutions when
-        # the resolver can answer.
-        return set()
-    return {str(info[4][0]) for info in infos if info and info[4]}
-
-
 def _validate_public_web_url(url: str) -> tuple[bool, str]:
-    ok, err = _validate_url(url)
-    if not ok:
-        return ok, err
-    parsed = urllib.parse.urlparse(url)
-    hostname = str(parsed.hostname or "").strip().lower().rstrip(".")
-    if not hostname:
-        return False, "Missing hostname"
-    if hostname in _BLOCKED_HOSTNAMES or _is_blocked_ip(hostname):
-        return False, f"Blocked private or local hostname: {hostname}"
-    for address in _resolved_ips(hostname):
-        if _is_blocked_ip(address):
-            return False, f"Blocked private or local resolved address: {address}"
-    return True, ""
+    return validate_public_url_target(url)
 
 
 class WebSearchTool(FunctionTool):

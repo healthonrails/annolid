@@ -26,10 +26,19 @@ _BLOCKED_NETWORKS = tuple(
 _URL_RE = re.compile(r"https?://[^\s\"'`;|<>]+", re.IGNORECASE)
 
 
+def _normalize_address(
+    address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        return address.ipv4_mapped
+    return address
+
+
 def _is_blocked_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    if not address.is_global:
+    normalized = _normalize_address(address)
+    if not normalized.is_global:
         return True
-    return any(address in network for network in _BLOCKED_NETWORKS)
+    return any(normalized in network for network in _BLOCKED_NETWORKS)
 
 
 def validate_public_url_target(url: str) -> tuple[bool, str]:
