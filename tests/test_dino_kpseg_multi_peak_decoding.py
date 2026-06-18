@@ -29,3 +29,26 @@ def test_local_peaks_2d_falls_back_to_global_max() -> None:
     )
     assert coords == [(2, 0)]
     assert scores == pytest.approx([0.7])
+
+
+def test_local_peaks_2d_ignores_zero_background_plateaus() -> None:
+    heatmap = torch.zeros((4, 4), dtype=torch.float32)
+    heatmap[2, 1] = 0.4
+
+    coords, scores = DinoKPSEGPredictor._local_peaks_2d(
+        heatmap, topk=4, threshold=0.0, nms_radius=1
+    )
+
+    assert coords == [(1, 2)]
+    assert scores == pytest.approx([0.4])
+
+
+def test_local_peaks_2d_all_zero_heatmap_returns_single_fallback() -> None:
+    heatmap = torch.zeros((4, 4), dtype=torch.float32)
+
+    coords, scores = DinoKPSEGPredictor._local_peaks_2d(
+        heatmap, topk=4, threshold=0.0, nms_radius=1
+    )
+
+    assert coords == [(0, 0)]
+    assert scores == pytest.approx([0.0])

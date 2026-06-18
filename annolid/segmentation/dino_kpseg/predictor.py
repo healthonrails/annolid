@@ -297,7 +297,9 @@ class DinoKPSEGPredictor:
         )
         x_exp = (probs.sum(dim=1) * xs[None, :]).sum(dim=1) / norm
         y_exp = (probs.sum(dim=2) * ys[None, :]).sum(dim=1) / norm
-        return [(float(x), float(y)) for x, y in zip(x_exp.tolist(), y_exp.tolist())]
+        x_values = x_exp.detach().to("cpu").tolist()
+        y_values = y_exp.detach().to("cpu").tolist()
+        return [(float(x), float(y)) for x, y in zip(x_values, y_values)]
 
     @staticmethod
     def _argmax_coords(
@@ -315,7 +317,9 @@ class DinoKPSEGPredictor:
         scale = float(patch_size)
         x = (x + 0.5) * scale
         y = (y + 0.5) * scale
-        return [(float(x_i), float(y_i)) for x_i, y_i in zip(x.tolist(), y.tolist())]
+        x_values = x.detach().to("cpu").tolist()
+        y_values = y.detach().to("cpu").tolist()
+        return [(float(x_i), float(y_i)) for x_i, y_i in zip(x_values, y_values)]
 
     @staticmethod
     def _resolve_checkpoint_path(weight_path: str | Path) -> Path:
@@ -371,7 +375,14 @@ class DinoKPSEGPredictor:
                 stride=1,
                 padding=int(r),
             )[0, 0]
-        peaks = (heatmap >= thr) & (heatmap >= pooled)
+        if thr <= 0.0:
+            # Probability maps contain large zero-valued background plateaus.
+            # Treating those as peaks makes top-k NMS scan and emit background
+            # locations when callers intentionally use a permissive threshold.
+            score_mask = heatmap > 0.0
+        else:
+            score_mask = heatmap >= thr
+        peaks = score_mask & (heatmap >= pooled)
         ys, xs = torch.nonzero(peaks, as_tuple=True)
         if xs.numel() == 0:
             # Always return at least the global maximum, even if below threshold,
@@ -405,13 +416,13 @@ class DinoKPSEGPredictor:
 
         x = feats.unsqueeze(0).to(self.device, dtype=torch.float32)
         logits = self.head(x)[0]  # [K, H_p, W_p]
-        probs_raw = torch.sigmoid(logits).to("cpu")
+        probs_raw = torch.sigmoid(logits)
         probs = probs_raw
         if bool(tta_hflip):
             # Test-time augmentation: run a horizontal flip pass and average.
             x_flip = torch.flip(x, dims=[3])
             logits_flip = self.head(x_flip)[0]
-            probs_flip = torch.sigmoid(logits_flip).to("cpu")
+            probs_flip = torch.sigmoid(logits_flip)
             probs_flip = self._flip_probs_horizontal(probs_flip)
             probs_flip = self._restore_flip_semantics(probs_flip)
             probs_raw = self._merge_tta_probs(
@@ -600,7 +611,7 @@ class DinoKPSEGPredictor:
         masks_t = None
         if return_patch_masks:
             masks_t = probs >= thr
-            masks = masks_t.numpy().astype(np.uint8, copy=False)
+            masks = masks_t.detach().to("cpu").numpy().astype(np.uint8, copy=False)
 
         # Decode by peak location to avoid global-center drift on diffuse maps.
         coords_resized = self._argmax_coords(
@@ -609,7 +620,7 @@ class DinoKPSEGPredictor:
 
         # Scores from peak probability for consistency with prior outputs.
         flat = probs.view(probs.shape[0], -1)
-        scores = flat.max(dim=1).values.tolist()
+        scores = flat.max(dim=1).values.detach().to("cpu").tolist()
 
         keypoints_xy: List[Tuple[float, float]] = []
         h0, w0 = int(frame_shape[0]), int(frame_shape[1])
