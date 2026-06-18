@@ -102,6 +102,11 @@ class _EchoTool(FunctionTool):
         return str(kwargs.get("text", ""))
 
 
+class _EchoReplacementTool(_EchoTool):
+    async def execute(self, **kwargs) -> str:
+        return f"replacement:{kwargs.get('text', '')}"
+
+
 def _write_test_video(path: Path, *, fps: float = 10.0, frames: int = 8) -> None:
     width, height = 64, 48
     fourcc = cv2.VideoWriter_fourcc(*"MJPG")
@@ -285,11 +290,53 @@ def _write_coco_pose_dataset(root: Path) -> None:
 
 def test_function_registry_validate_and_execute() -> None:
     registry = FunctionToolRegistry()
-    registry.register(_EchoTool())
+    assert registry.register(_EchoTool()) is True
     bad = asyncio.run(registry.execute("echo", {"text": 123}))
     assert "Invalid parameters" in bad
     ok = asyncio.run(registry.execute("echo", {"text": "hi"}))
     assert ok == "hi"
+
+
+def test_function_registry_keeps_existing_tool_on_name_collision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        "annolid.core.agent.tools.function_registry.logger.warning",
+        lambda message, *args: warnings.append(message % args),
+    )
+    registry = FunctionToolRegistry()
+    original = _EchoTool()
+    replacement = _EchoReplacementTool()
+
+    assert registry.register(original) is True
+    assert registry.register(replacement) is False
+
+    assert registry.get("echo") is original
+    assert any("Tool name collision: echo" in warning for warning in warnings)
+    ok = asyncio.run(registry.execute("echo", {"text": "hi"}))
+    assert ok == "hi"
+
+
+def test_function_registry_can_replace_tool_explicitly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        "annolid.core.agent.tools.function_registry.logger.warning",
+        lambda message, *args: warnings.append(message % args),
+    )
+    registry = FunctionToolRegistry()
+    original = _EchoTool()
+    replacement = _EchoReplacementTool()
+
+    assert registry.register(original) is True
+    assert registry.register(replacement, replace=True) is True
+
+    assert registry.get("echo") is replacement
+    assert any("replaces existing" in warning for warning in warnings)
+    ok = asyncio.run(registry.execute("echo", {"text": "hi"}))
+    assert ok == "replacement:hi"
 
 
 def test_function_registry_throttles_repeated_workspace_boundary(
@@ -3553,6 +3600,66 @@ def test_register_nanobot_style_tools(tmp_path: Path) -> None:
     assert registry.has("bibtex_remove_entry")
     assert registry.has("clawhub_search_skills")
     assert registry.has("clawhub_install_skill")
+    assert registry.has("box") is False
+
+
+def test_register_nanobot_style_tools_honors_ignored_tool_names(
+    tmp_path: Path,
+) -> None:
+    registry = FunctionToolRegistry()
+    asyncio.run(
+        register_nanobot_style_tools(
+            registry,
+            allowed_dir=tmp_path,
+            ignored_tools=(
+                " read_file ",
+                "EXEC_START",
+                "annolid_train_start",
+                "cron",
+                "spawn_behavior_subagent",
+            ),
+        )
+    )
+
+    assert registry.has("read_file") is False
+    assert registry.has("exec_start") is False
+    assert registry.has("annolid_train_start") is False
+    assert registry.has("cron") is False
+    assert registry.has("spawn_behavior_subagent") is False
+    assert registry.has("write_file") is True
+    assert registry.has("message") is True
+
+
+def test_register_nanobot_style_tools_skips_ignored_optional_integrations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _unexpected_dependency_check() -> bool:
+        raise AssertionError("ignored optional tool should not run dependency checks")
+
+    monkeypatch.setattr(
+        "annolid.core.agent.tools.nanobot.GoogleCalendarTool.is_available",
+        _unexpected_dependency_check,
+    )
+    monkeypatch.setattr(
+        "annolid.core.agent.tools.nanobot.GoogleDriveTool.is_available",
+        _unexpected_dependency_check,
+    )
+
+    registry = FunctionToolRegistry()
+    asyncio.run(
+        register_nanobot_style_tools(
+            registry,
+            allowed_dir=tmp_path,
+            calendar_cfg=CalendarToolConfig(enabled=True, provider="google"),
+            google_drive_enabled=True,
+            box_cfg=BoxToolConfig(enabled=True, access_token="box-token"),
+            ignored_tools=("google_calendar", "google_drive", "box"),
+        )
+    )
+
+    assert registry.has("google_calendar") is False
+    assert registry.has("google_drive") is False
     assert registry.has("box") is False
 
 

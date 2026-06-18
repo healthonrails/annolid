@@ -234,6 +234,7 @@ class AgentLoop:
     _HIGH_RISK_TOOL_MESSAGING = frozenset(
         {"email", "list_emails", "read_email", "message", "camera_snapshot"}
     )
+    _HIGH_RISK_TOOL_RUNTIME_EXEC = frozenset({"exec", "exec_start", "exec_process"})
     _HIGH_RISK_TOOL_AUTOMATION = frozenset({"cron", "automation_schedule", "spawn"})
     _HIGH_RISK_TOOL_RUNTIME_AUTOMATION = frozenset({"automation_schedule", "spawn"})
     _FINAL_ANSWER_REPAIR_PROMPT = (
@@ -1855,7 +1856,7 @@ class AgentLoop:
             return ""
         candidate = set(executed_tools)
         candidate.add(str(tool_name or "").strip())
-        has_exec = "exec" in candidate
+        has_exec = bool(candidate.intersection(self._HIGH_RISK_TOOL_RUNTIME_EXEC))
         has_messaging = bool(candidate.intersection(self._HIGH_RISK_TOOL_MESSAGING))
         has_automation = bool(candidate.intersection(self._HIGH_RISK_TOOL_AUTOMATION))
         has_runtime_automation = bool(
@@ -1863,7 +1864,7 @@ class AgentLoop:
         )
         if has_exec and (has_messaging or has_automation):
             return (
-                "Blocked by safety policy: exec cannot be combined with "
+                "Blocked by safety policy: runtime execution cannot be combined with "
                 "messaging/automation tools without explicit high-risk intent."
             )
         if "read_file" in candidate and has_messaging and has_runtime_automation:

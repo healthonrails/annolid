@@ -256,6 +256,27 @@ class _ExecTool(FunctionTool):
         return f"exec:{kwargs.get('command', '')}"
 
 
+class _ExecStartTool(FunctionTool):
+    @property
+    def name(self) -> str:
+        return "exec_start"
+
+    @property
+    def description(self) -> str:
+        return "Start a long-running shell command."
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {"command": {"type": "string"}},
+            "required": ["command"],
+        }
+
+    async def execute(self, **kwargs: Any) -> str:
+        return f"exec-start:{kwargs.get('command', '')}"
+
+
 class _EmailTool(FunctionTool):
     @property
     def name(self) -> str:
@@ -464,6 +485,54 @@ def test_agent_loop_blocks_high_risk_tool_combo_without_explicit_intent() -> Non
     assert result.content == "done"
     assert len(result.tool_runs) == 2
     assert result.tool_runs[0].result.startswith("exec:")
+    assert "Blocked by safety policy" in result.tool_runs[1].result
+
+
+def test_agent_loop_blocks_session_exec_with_messaging_without_explicit_intent() -> (
+    None
+):
+    registry = FunctionToolRegistry()
+    registry.register(_ExecStartTool())
+    registry.register(_EmailTool())
+    state = {"n": 0}
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+        on_token: Optional[Callable[[str], None]] = None,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model, on_token
+        state["n"] += 1
+        if state["n"] == 1:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "c1",
+                        "name": "exec_start",
+                        "arguments": {"command": "tail -f app.log"},
+                    }
+                ],
+            }
+        if state["n"] == 2:
+            return {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "c2",
+                        "name": "email",
+                        "arguments": {"to": "a@example.com", "body": "hello"},
+                    }
+                ],
+            }
+        return {"content": "done"}
+
+    loop = AgentLoop(tools=registry, llm_callable=fake_llm, model="fake")
+    result = asyncio.run(loop.run("please monitor logs and email updates"))
+    assert result.content == "done"
+    assert len(result.tool_runs) == 2
+    assert result.tool_runs[0].result.startswith("exec-start:")
     assert "Blocked by safety policy" in result.tool_runs[1].result
 
 

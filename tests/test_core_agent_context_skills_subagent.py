@@ -283,6 +283,29 @@ def test_skills_loader_validates_manifest_at_load_time(tmp_path: Path) -> None:
     assert not any(s["name"] == "invalid_manifest" for s in available)
 
 
+def test_skills_loader_handles_malformed_nested_requires(tmp_path: Path) -> None:
+    skill_dir = tmp_path / "skills" / "bad_requires"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "description: bad nested requires\n"
+        'metadata: \'{"annolid": {"requires": "not-an-object"}}\'\n'
+        "---\n"
+        "Bad requirements metadata.\n",
+        encoding="utf-8",
+    )
+    loader = AgentSkillsLoader(tmp_path, builtin_skills_dir=tmp_path / "builtin")
+
+    available = loader.list_skills(filter_unavailable=True)
+    assert not any(s["name"] == "bad_requires" for s in available)
+
+    pool = loader.describe_skill_pool(preview_limit=10)
+    bad_row = next(
+        row for row in pool["unavailable_skills"] if row["name"] == "bad_requires"
+    )
+    assert "requires must be an object" in bad_row["reason"]
+
+
 def test_skills_loader_requires_signature_in_production(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

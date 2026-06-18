@@ -69,6 +69,34 @@ def test_policy_provider_model_override() -> None:
     assert resolved.allowed_tools == {"gui_context", "gui_open_video"}
 
 
+def test_policy_provider_override_keys_match_case_insensitively() -> None:
+    cfg = ToolsConfig(
+        profile="full",
+        by_provider={
+            "OpenRouter:GPT-5-Mini": ToolPolicyConfig(
+                profile="minimal",
+                allow=["GUI_OPEN_VIDEO"],
+                deny=["GUI_SHARED_IMAGE_PATH"],
+            )
+        },
+    )
+    all_tools = [
+        "gui_context",
+        "gui_shared_image_path",
+        "gui_open_video",
+        "read_file",
+        "exec",
+    ]
+    resolved = resolve_allowed_tools(
+        all_tool_names=all_tools,
+        tools_cfg=cfg,
+        provider="openrouter",
+        model="gpt-5-mini",
+    )
+    assert resolved.source == "openrouter:gpt-5-mini"
+    assert resolved.allowed_tools == {"gui_context", "gui_open_video"}
+
+
 def test_policy_wildcard_entries() -> None:
     cfg = ToolsConfig(
         profile="minimal",
@@ -93,6 +121,41 @@ def test_policy_wildcard_entries() -> None:
     assert "gui_open_pdf" in resolved.allowed_tools
     assert "gui_set_chat_prompt" not in resolved.allowed_tools
     assert "gui_send_chat_prompt" not in resolved.allowed_tools
+
+
+def test_policy_entries_match_case_insensitively() -> None:
+    cfg = ToolsConfig(
+        profile="minimal",
+        allow=["GROUP:FS", "WEB_*"],
+        deny=["READ_FILE", "WEB_FETCH"],
+    )
+    all_tools = [
+        "read_file",
+        "write_file",
+        "edit_file",
+        "rename_file",
+        "list_dir",
+        "code_search",
+        "code_explain",
+        "web_search",
+        "web_fetch",
+        "exec",
+    ]
+    resolved = resolve_allowed_tools(
+        all_tool_names=all_tools,
+        tools_cfg=cfg,
+        provider="ollama",
+        model="qwen3",
+    )
+    assert resolved.allowed_tools == {
+        "write_file",
+        "edit_file",
+        "rename_file",
+        "list_dir",
+        "code_search",
+        "code_explain",
+        "web_search",
+    }
 
 
 def test_policy_group_vcs_allows_git_and_github_tools() -> None:

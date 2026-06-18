@@ -394,22 +394,37 @@ def _apply_high_risk_guards(
 
 
 def _expand_entries(entries: Iterable[str], all_tool_names: Set[str]) -> Set[str]:
+    canonical_names = {
+        str(name).strip().lower(): str(name).strip()
+        for name in all_tool_names
+        if str(name).strip()
+    }
+    canonical_groups = {
+        str(group).strip().lower(): {
+            str(name).strip().lower() for name in names if str(name).strip()
+        }
+        for group, names in TOOL_GROUPS.items()
+    }
     expanded: Set[str] = set()
     for raw in entries:
-        item = str(raw or "").strip()
+        item = str(raw or "").strip().lower()
         if not item:
             continue
-        if item in TOOL_GROUPS:
+        if item in canonical_groups:
             expanded.update(
-                name for name in TOOL_GROUPS[item] if name in all_tool_names
+                canonical_names[name]
+                for name in canonical_groups[item]
+                if name in canonical_names
             )
             continue
-        if item in all_tool_names:
-            expanded.add(item)
+        if item in canonical_names:
+            expanded.add(canonical_names[item])
             continue
         if any(ch in item for ch in ("*", "?", "[")):
             expanded.update(
-                name for name in all_tool_names if fnmatch.fnmatchcase(name, item)
+                canonical
+                for name, canonical in canonical_names.items()
+                if fnmatch.fnmatchcase(name, item)
             )
     return expanded
 
@@ -467,9 +482,11 @@ def resolve_allowed_tools(
     explicit_markers: list[str] = list(tools_cfg.allow)
     provider_key = str(provider or "").strip().lower()
     model_key = str(model or "").strip().lower()
-    overrides: Dict[str, ToolPolicyConfig] = dict(
-        getattr(tools_cfg, "by_provider", {}) or {}
-    )
+    overrides: Dict[str, ToolPolicyConfig] = {
+        str(key or "").strip().lower(): value
+        for key, value in dict(getattr(tools_cfg, "by_provider", {}) or {}).items()
+        if str(key or "").strip()
+    }
     candidates = [
         f"{provider_key}:{model_key}",
         provider_key,

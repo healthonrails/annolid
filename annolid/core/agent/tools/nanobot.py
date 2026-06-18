@@ -13,8 +13,8 @@ from .citation import (
 )
 from .code import CodeExplainTool, CodeSearchTool
 from .clawhub import ClawHubInstallSkillTool, ClawHubSearchSkillsTool
-from .mcp import connect_mcp_servers
 from .cron import CronTool
+from .function_base import FunctionTool
 from .filesystem import (
     EditFileTool,
     ListDirTool,
@@ -34,6 +34,7 @@ from .function_video import (
     VideoSegmentTool,
     VideoSegmentFrameGridTool,
 )
+from .mcp import connect_mcp_servers
 from .function_sam3 import Sam3AgentVideoTrackTool
 from .git import (
     GitCliTool,
@@ -111,6 +112,10 @@ def _log_info_once(key: str, message: str) -> None:
     logger.info(message)
 
 
+def _normalize_ignored_tool_names(ignored_tools: Sequence[str]) -> set[str]:
+    return {str(name).strip().lower() for name in ignored_tools if str(name).strip()}
+
+
 async def register_nanobot_style_tools(
     registry: FunctionToolRegistry,
     *,
@@ -129,227 +134,239 @@ async def register_nanobot_style_tools(
     task_scheduler: "TaskScheduler | None" = None,
     ignored_tools: Sequence[str] = (),
 ) -> None:
-    """Register a Nanobot-like default tool set."""
+    """Register a Nanobot-like default tool set.
 
-    registry.register(
+    ``ignored_tools`` contains exact tool names to omit from this registration pass.
+    """
+
+    ignored_tool_names = _normalize_ignored_tool_names(ignored_tools)
+
+    def should_register_tool(name: str) -> bool:
+        return str(name).strip().lower() not in ignored_tool_names
+
+    def register_tool(tool: FunctionTool) -> bool:
+        if not should_register_tool(tool.name):
+            logger.debug("Skipping ignored Annolid Bot tool: %s", tool.name)
+            return False
+        registry.register(tool)
+        return True
+
+    register_tool(
         ReadFileTool(allowed_dir=allowed_dir, allowed_read_roots=allowed_read_roots)
     )
-    registry.register(
+    register_tool(
         ExtractPdfTextTool(
             allowed_dir=allowed_dir,
             allowed_read_roots=allowed_read_roots,
         )
     )
-    registry.register(
+    register_tool(
         OpenPdfTool(
             allowed_dir=allowed_dir,
             allowed_read_roots=allowed_read_roots,
         )
     )
-    registry.register(
+    register_tool(
         ExtractPdfImagesTool(
             allowed_dir=allowed_dir,
             allowed_read_roots=allowed_read_roots,
         )
     )
-    registry.register(WriteFileTool(allowed_dir=allowed_dir))
-    registry.register(EditFileTool(allowed_dir=allowed_dir))
-    registry.register(RenameFileTool(allowed_dir=allowed_dir))
-    registry.register(
+    register_tool(WriteFileTool(allowed_dir=allowed_dir))
+    register_tool(EditFileTool(allowed_dir=allowed_dir))
+    register_tool(RenameFileTool(allowed_dir=allowed_dir))
+    register_tool(
         ListDirTool(allowed_dir=allowed_dir, allowed_read_roots=allowed_read_roots)
     )
-    registry.register(
+    register_tool(
         CodeSearchTool(allowed_dir=allowed_dir, allowed_read_roots=allowed_read_roots)
     )
-    registry.register(
+    register_tool(
         CodeExplainTool(allowed_dir=allowed_dir, allowed_read_roots=allowed_read_roots)
     )
-    registry.register(MemorySearchTool(workspace=allowed_dir))
-    registry.register(MemoryGetTool(workspace=allowed_dir))
-    registry.register(MemorySetTool(workspace=allowed_dir))
-    registry.register(
+    register_tool(MemorySearchTool(workspace=allowed_dir))
+    register_tool(MemoryGetTool(workspace=allowed_dir))
+    register_tool(MemorySetTool(workspace=allowed_dir))
+    register_tool(
         GitStatusTool(allowed_dir=allowed_dir, allowed_read_roots=allowed_read_roots)
     )
-    registry.register(
+    register_tool(
         GitCliTool(allowed_dir=allowed_dir, allowed_read_roots=allowed_read_roots)
     )
-    registry.register(
+    register_tool(
         GitDiffTool(allowed_dir=allowed_dir, allowed_read_roots=allowed_read_roots)
     )
-    registry.register(
+    register_tool(
         GitLogTool(allowed_dir=allowed_dir, allowed_read_roots=allowed_read_roots)
     )
-    registry.register(
+    register_tool(
         GitHubPrStatusTool(
             allowed_dir=allowed_dir, allowed_read_roots=allowed_read_roots
         )
     )
-    registry.register(
+    register_tool(
         GitHubCliTool(allowed_dir=allowed_dir, allowed_read_roots=allowed_read_roots)
     )
-    registry.register(
+    register_tool(
         GitHubPrChecksTool(
             allowed_dir=allowed_dir, allowed_read_roots=allowed_read_roots
         )
     )
-    registry.register(SandboxedExecTool())
-    registry.register(ExecStartTool())
-    registry.register(ExecProcessTool())
-    registry.register(WebSearchTool())
-    registry.register(WebFetchTool())
-    registry.register(DownloadUrlTool(allowed_dir=allowed_dir))
-    registry.register(DownloadPdfTool(allowed_dir=allowed_dir))
-    registry.register(
+    register_tool(SandboxedExecTool())
+    register_tool(ExecStartTool())
+    register_tool(ExecProcessTool())
+    register_tool(WebSearchTool())
+    register_tool(WebFetchTool())
+    register_tool(DownloadUrlTool(allowed_dir=allowed_dir))
+    register_tool(DownloadPdfTool(allowed_dir=allowed_dir))
+    register_tool(
         BibtexListEntriesTool(
             allowed_dir=allowed_dir,
             allowed_read_roots=allowed_read_roots,
         )
     )
-    registry.register(BibtexUpsertEntryTool(allowed_dir=allowed_dir))
-    registry.register(BibtexRemoveEntryTool(allowed_dir=allowed_dir))
-    registry.register(ClawHubSearchSkillsTool(workspace=allowed_dir))
-    registry.register(ClawHubInstallSkillTool(workspace=allowed_dir))
-    registry.register(
+    register_tool(BibtexUpsertEntryTool(allowed_dir=allowed_dir))
+    register_tool(BibtexRemoveEntryTool(allowed_dir=allowed_dir))
+    register_tool(ClawHubSearchSkillsTool(workspace=allowed_dir))
+    register_tool(ClawHubInstallSkillTool(workspace=allowed_dir))
+    register_tool(
         VideoInfoTool(allowed_dir=allowed_dir, allowed_read_roots=allowed_read_roots)
     )
-    registry.register(
+    register_tool(
         VideoSampleFramesTool(
             allowed_dir=allowed_dir,
             allowed_read_roots=allowed_read_roots,
         )
     )
-    registry.register(
+    register_tool(
         VideoSegmentTool(allowed_dir=allowed_dir, allowed_read_roots=allowed_read_roots)
     )
-    registry.register(
+    register_tool(
         VideoProcessSegmentsTool(
             allowed_dir=allowed_dir,
             allowed_read_roots=allowed_read_roots,
         )
     )
-    registry.register(
+    register_tool(
         VideoSegmentFrameGridTool(
             allowed_dir=allowed_dir,
             allowed_read_roots=allowed_read_roots,
         )
     )
-    registry.register(
+    register_tool(
         VideoListInferenceModelsTool(
             allowed_dir=allowed_dir,
             allowed_read_roots=allowed_read_roots,
         )
     )
-    registry.register(
+    register_tool(
         VideoRunModelInferenceTool(
             allowed_dir=allowed_dir,
             allowed_read_roots=allowed_read_roots,
         )
     )
-    registry.register(
+    register_tool(
         Sam3AgentVideoTrackTool(
             allowed_dir=allowed_dir,
             allowed_read_roots=allowed_read_roots,
         )
     )
-    registry.register(
+    register_tool(
         VideoFFmpegProcessTool(
             allowed_dir=allowed_dir,
             allowed_read_roots=allowed_read_roots,
         )
     )
-    registry.register(CameraSnapshotTool(allowed_dir=allowed_dir))
-    registry.register(CodingSessionStartTool(workspace=allowed_dir))
-    registry.register(CodingSessionSendTool())
-    registry.register(CodingSessionPollTool())
-    registry.register(CodingSessionListTool())
-    registry.register(CodingSessionAbortTool())
-    registry.register(CodingSessionCloseTool())
-    registry.register(
+    register_tool(CameraSnapshotTool(allowed_dir=allowed_dir))
+    register_tool(CodingSessionStartTool(workspace=allowed_dir))
+    register_tool(CodingSessionSendTool())
+    register_tool(CodingSessionPollTool())
+    register_tool(CodingSessionListTool())
+    register_tool(CodingSessionAbortTool())
+    register_tool(CodingSessionCloseTool())
+    register_tool(
         AnnolidRunTool(
             allowed_dir=allowed_dir,
             allowed_read_roots=allowed_read_roots,
         )
     )
-    registry.register(
+    register_tool(
         AnnolidDatasetInspectTool(
             allowed_dir=allowed_dir,
             allowed_read_roots=allowed_read_roots,
         )
     )
-    registry.register(
+    register_tool(
         AnnolidDatasetPrepareTool(
             allowed_dir=allowed_dir,
             allowed_read_roots=allowed_read_roots,
         )
     )
-    registry.register(
+    register_tool(
         AnnolidEvalReportTool(
             allowed_dir=allowed_dir,
             allowed_read_roots=allowed_read_roots,
         )
     )
-    registry.register(
+    register_tool(
         AnnolidEvalStartTool(
             allowed_dir=allowed_dir,
             allowed_read_roots=allowed_read_roots,
         )
     )
-    registry.register(
+    register_tool(
         AnnolidNoveltyCheckTool(
             allowed_dir=allowed_dir,
             allowed_read_roots=allowed_read_roots,
         )
     )
-    registry.register(
+    register_tool(
         AnnolidPaperRunReportTool(
             allowed_dir=allowed_dir,
             allowed_read_roots=allowed_read_roots,
         )
     )
-    registry.register(AnnolidTrainModelsTool())
-    registry.register(
+    register_tool(AnnolidTrainModelsTool())
+    register_tool(
         AnnolidTrainHelpTool(
             allowed_dir=allowed_dir,
             allowed_read_roots=allowed_read_roots,
         )
     )
-    registry.register(
+    register_tool(
         AnnolidTrainStartTool(
             allowed_dir=allowed_dir,
             allowed_read_roots=allowed_read_roots,
         )
     )
-    registry.register(AutomationSchedulerTool(scheduler=task_scheduler))
-    registry.register(AdminSkillsRefreshTool())
-    registry.register(AdminMemoryFlushTool())
-    registry.register(AdminEvalRunTool())
-    registry.register(AdminUpdateRunTool())
+    register_tool(AutomationSchedulerTool(scheduler=task_scheduler))
+    register_tool(AdminSkillsRefreshTool())
+    register_tool(AdminMemoryFlushTool())
+    register_tool(AdminEvalRunTool())
+    register_tool(AdminUpdateRunTool())
 
-    registry.register(LiteratureSearchTool())
-    registry.register(DraftPaperSwarmTool())
+    register_tool(LiteratureSearchTool())
+    register_tool(DraftPaperSwarmTool())
 
-    if "message" not in ignored_tools:
-        registry.register(MessageTool(send_callback=send_callback))
-    if "spawn" not in ignored_tools:
-        registry.register(SpawnTool(spawn_callback=spawn_callback))
-    if "spawn_behavior_subagent" not in ignored_tools:
-        registry.register(SpawnBehaviorSubagentTool(spawn_callback=spawn_callback))
-    if "list_tasks" not in ignored_tools:
-        registry.register(ListTasksTool())
-    if "cancel_task" not in ignored_tools:
-        registry.register(CancelTaskTool())
-    if "run_swarm" not in ignored_tools:
-        registry.register(SwarmTool())
-    registry.register(CronTool(store_path=cron_store_path, send_callback=send_callback))
+    register_tool(MessageTool(send_callback=send_callback))
+    register_tool(SpawnTool(spawn_callback=spawn_callback))
+    register_tool(SpawnBehaviorSubagentTool(spawn_callback=spawn_callback))
+    register_tool(ListTasksTool())
+    register_tool(CancelTaskTool())
+    register_tool(SwarmTool())
+    register_tool(CronTool(store_path=cron_store_path, send_callback=send_callback))
 
-    if email_cfg and email_cfg.enabled:
+    email_tools_enabled = any(
+        should_register_tool(name) for name in ("email", "list_emails", "read_email")
+    )
+    if email_cfg and email_cfg.enabled and email_tools_enabled:
         attachment_roots: list[str | Path] = []
         if allowed_dir is not None:
             attachment_roots.append(allowed_dir)
         for root in allowed_read_roots or []:
             if str(root).strip():
                 attachment_roots.append(root)
-        registry.register(
+        register_tool(
             EmailTool(
                 smtp_host=email_cfg.smtp_host,
                 smtp_port=email_cfg.smtp_port,
@@ -360,7 +377,7 @@ async def register_nanobot_style_tools(
                 allowed_attachment_roots=attachment_roots,
             )
         )
-        registry.register(
+        register_tool(
             ListEmailsTool(
                 imap_host=email_cfg.imap_host,
                 imap_port=email_cfg.imap_port,
@@ -368,7 +385,7 @@ async def register_nanobot_style_tools(
                 password=email_cfg.password,
             )
         )
-        registry.register(
+        register_tool(
             ReadEmailTool(
                 imap_host=email_cfg.imap_host,
                 imap_port=email_cfg.imap_port,
@@ -377,7 +394,11 @@ async def register_nanobot_style_tools(
             )
         )
 
-    if calendar_cfg and calendar_cfg.enabled:
+    if (
+        calendar_cfg
+        and calendar_cfg.enabled
+        and should_register_tool("google_calendar")
+    ):
         credentials_file = (
             str(getattr(google_auth_cfg, "credentials_file", "") or "").strip()
             or calendar_cfg.credentials_file
@@ -414,7 +435,7 @@ async def register_nanobot_style_tools(
                 )
                 calendar_available = False
         if calendar_available:
-            registry.register(
+            register_tool(
                 GoogleCalendarTool(
                     credentials_file=credentials_file,
                     token_file=token_file,
@@ -430,8 +451,8 @@ async def register_nanobot_style_tools(
                 'Install optional extras with `pip install "annolid[google_calendar]"`.'
             )
 
-    if box_cfg and box_cfg.enabled:
-        registry.register(
+    if box_cfg and box_cfg.enabled and should_register_tool("box"):
+        register_tool(
             BoxTool(
                 access_token=box_cfg.access_token,
                 client_id=box_cfg.client_id,
@@ -453,7 +474,7 @@ async def register_nanobot_style_tools(
             "Google Calendar tool registered with Google OAuth backend.",
         )
 
-    if google_drive_enabled:
+    if google_drive_enabled and should_register_tool("google_drive"):
         credentials_file = str(
             getattr(google_auth_cfg, "credentials_file", "")
             or "~/.annolid/agent/google_oauth_credentials.json"
@@ -488,7 +509,7 @@ async def register_nanobot_style_tools(
             for root in allowed_read_roots or []:
                 if str(root).strip():
                     upload_roots.append(root)
-            registry.register(
+            register_tool(
                 GoogleDriveTool(
                     credentials_file=credentials_file,
                     token_file=token_file,
@@ -504,7 +525,12 @@ async def register_nanobot_style_tools(
             )
 
     if mcp_servers and stack:
+        before_mcp_tool_names = set(registry.tool_names)
         await connect_mcp_servers(mcp_servers, registry, stack)
+        for tool_name in set(registry.tool_names) - before_mcp_tool_names:
+            if not should_register_tool(tool_name):
+                logger.debug("Unregistering ignored MCP tool: %s", tool_name)
+                registry.unregister(tool_name)
 
 
 __all__ = ["register_nanobot_style_tools"]

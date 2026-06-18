@@ -556,7 +556,9 @@ class AgentSkillsLoader:
             allowed = {str(v).strip().lower() for v in allowed_os if str(v).strip()}
             if allowed and norm_current not in allowed:
                 return False
-        requires = skill_meta.get("requires", {})
+        requires, requires_error = self._get_requires_mapping(skill_meta)
+        if requires_error:
+            return False
         bins = requires.get("bins", [])
         if isinstance(bins, str):
             bins = [bins]
@@ -602,7 +604,10 @@ class AgentSkillsLoader:
         manifest_errors = skill_meta.get("__manifest_errors")
         if isinstance(manifest_errors, list) and manifest_errors:
             missing.append("MANIFEST: " + "; ".join(str(e) for e in manifest_errors))
-        requires = skill_meta.get("requires", {})
+        requires, requires_error = self._get_requires_mapping(skill_meta)
+        if requires_error:
+            missing.append(requires_error)
+            return ", ".join(missing)
         bins = requires.get("bins", [])
         if isinstance(bins, str):
             bins = [bins]
@@ -634,6 +639,15 @@ class AgentSkillsLoader:
                 if not self._config_path_truthy(config, str(key_path)):
                     missing.append(f"CONFIG: {key_path}")
         return ", ".join(missing)
+
+    @staticmethod
+    def _get_requires_mapping(skill_meta: dict) -> tuple[dict, str]:
+        requires = skill_meta.get("requires", {})
+        if requires is None:
+            return {}, ""
+        if isinstance(requires, dict):
+            return requires, ""
+        return {}, "requires must be an object"
 
     @staticmethod
     def _read_frontmatter(content: str) -> Dict[str, Any]:
