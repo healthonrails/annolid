@@ -43,6 +43,7 @@ def test_acp_stdio_bridge_initialize_and_shutdown_over_stdio(tmp_path: Path) -> 
     assert rows[0]["id"] == 1
     assert rows[0]["result"]["protocol"] == "annolid.acp.stdio"
     assert rows[0]["result"]["runtime"] == "acp"
+    assert "session.update" in rows[0]["result"]["capabilities"]["notifications"]
     assert rows[1]["id"] == 2
     assert rows[1]["result"]["shutdown"] is True
 
@@ -144,6 +145,66 @@ def test_acp_stdio_bridge_session_lifecycle_emits_notification(
     assert notifications
     assert notifications[-1]["params"]["status"] == "idle"
     assert notifications[-1]["params"]["text"] == "completed:review repo"
+
+
+def test_acp_stdio_bridge_rejects_cwd_outside_workspace_root(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    bridge = ACPStdioBridge(
+        workspace=workspace,
+        input_stream=io.StringIO(),
+        output_stream=io.StringIO(),
+    )
+
+    async def _run() -> None:
+        response = await bridge.handle_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 70,
+                "method": "newSession",
+                "params": {"cwd": str(outside)},
+            }
+        )
+        assert response is not None
+        assert response["error"]["code"] == -32602
+        assert response["error"]["data"]["field"] == "cwd"
+        assert "outside configured root" in response["error"]["data"]["reason"]
+
+    asyncio.run(_run())
+
+
+def test_acp_stdio_bridge_rejects_spawn_workspace_outside_root(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    bridge = ACPStdioBridge(
+        workspace=workspace,
+        input_stream=io.StringIO(),
+        output_stream=io.StringIO(),
+    )
+
+    async def _run() -> None:
+        response = await bridge.handle_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 71,
+                "method": "sessions.spawn",
+                "params": {"task": "review code", "workspace": str(outside)},
+            }
+        )
+        assert response is not None
+        assert response["error"]["code"] == -32602
+        assert response["error"]["data"]["field"] == "workspace"
+        assert "outside configured root" in response["error"]["data"]["reason"]
+
+    asyncio.run(_run())
 
 
 def test_agent_acp_bridge_operator_command(monkeypatch, tmp_path: Path) -> None:
@@ -353,6 +414,48 @@ def test_acp_stdio_bridge_accepts_openclaw_style_method_and_field_aliases(
         assert closed["result"]["closed"] is True
         assert meta.worker_task is not None
         await asyncio.wait_for(meta.worker_task, timeout=1.0)
+
+    asyncio.run(_run())
+
+
+def test_acp_stdio_bridge_reports_invalid_tail_messages_as_invalid_params(
+    tmp_path: Path,
+) -> None:
+    sessions_dir = tmp_path / "sessions"
+    session_manager = AgentSessionManager(sessions_dir=sessions_dir)
+    manager = CodingHarnessManager(
+        session_manager=session_manager,
+        invoke_turn=lambda **kwargs: (str(kwargs.get("prompt") or ""), "ok"),
+    )
+    bridge = ACPStdioBridge(
+        manager=manager,
+        workspace=tmp_path,
+        input_stream=io.StringIO(),
+        output_stream=io.StringIO(),
+    )
+
+    async def _run() -> None:
+        spawn = await bridge.handle_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 80,
+                "method": "sessions.spawn",
+                "params": {"task": "inspect"},
+            }
+        )
+        assert spawn is not None
+        session_id = spawn["result"]["session_id"]
+        polled = await bridge.handle_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 81,
+                "method": "sessions.poll",
+                "params": {"session_id": session_id, "tailMessages": "bad"},
+            }
+        )
+        assert polled is not None
+        assert polled["error"]["code"] == -32602
+        assert polled["error"]["data"]["field"] == "tail_messages"
 
     asyncio.run(_run())
 

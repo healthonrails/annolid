@@ -193,6 +193,11 @@ The stdio bridge:
 
 Annolid also bounds idle ACP client sessions so a long-running IDE process does not grow an unbounded in-memory session map.
 
+ACP session workspaces are bounded by the bridge workspace. Client `cwd` and
+`sessions.spawn.workspace` values may be the bridge root or a subdirectory under
+it; paths outside that root are rejected. Launch the bridge at the repository or
+parent workspace that should be available to the external client.
+
 ## Example IDE Launch Pattern
 
 If your editor supports custom stdio agent servers, the command usually looks like:

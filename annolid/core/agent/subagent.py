@@ -9,6 +9,7 @@ from typing import Any, Awaitable, Callable, Dict, Optional, Sequence
 
 from .acp import ACPRuntimeManager
 from .loop import AgentLoop
+from .workspace_paths import WorkspacePathError, resolve_workspace_dir
 from annolid.services.behavior_agent.subagents import (
     BehaviorSubagentProfile,
     resolve_behavior_subagent_profile,
@@ -305,7 +306,15 @@ class RuntimeSessionRouter:
     ) -> str:
         selected_runtime = str(runtime or "subagent").strip().lower()
         if selected_runtime == "acp":
-            resolved_workspace = workspace or str(self._workspace or Path.cwd())
+            try:
+                resolved_workspace = str(
+                    resolve_workspace_dir(
+                        workspace,
+                        root=self._workspace or Path.cwd(),
+                    )
+                )
+            except WorkspacePathError as exc:
+                return f"Error: {exc}"
             resolved_provider = str(provider or "codex_cli").strip().lower()
             resolved_model = str(model or "codex-cli/gpt-5.1-codex").strip()
             return await self._acp_manager.start(

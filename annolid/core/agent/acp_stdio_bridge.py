@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, TextIO
 
 from .acp import ACPRuntimeManager, get_acp_runtime_manager
+from .workspace_paths import WorkspacePathError, resolve_workspace_dir
 
 PROTOCOL_NAME = "annolid.acp.stdio"
 PROTOCOL_VERSION = "1.0"
@@ -184,7 +185,11 @@ class ACPStdioBridge:
                         "sessions_close",
                         "shutdown",
                     ],
-                    "notifications": ["sessions.updated", "session.updated"],
+                    "notifications": [
+                        "sessions.updated",
+                        "session.update",
+                        "session.updated",
+                    ],
                     "runtimes": ["acp"],
                     "session_runtime": "acp",
                     "sandboxModes": ["read-only", "workspace-write"],
@@ -289,6 +294,9 @@ class ACPStdioBridge:
                     "Invalid params",
                     data={"field": "task", "reason": "task is required"},
                 )
+            workspace = self._resolve_workspace_param(
+                normalized_params.get("workspace"), field="workspace"
+            )
             meta = await self._manager.start_session(
                 task=task,
                 label=self._optional_text(normalized_params.get("label")),
@@ -296,8 +304,7 @@ class ACPStdioBridge:
                 or "codex_cli",
                 model=self._optional_text(normalized_params.get("model"))
                 or "codex-cli/gpt-5.1-codex",
-                workspace=self._optional_text(normalized_params.get("workspace"))
-                or self._workspace,
+                workspace=workspace,
                 sandbox=self._optional_text(normalized_params.get("sandbox"))
                 or "read-only",
                 origin_channel=self._optional_text(
@@ -325,7 +332,13 @@ class ACPStdioBridge:
             session_id = self._required_text(normalized_params, "session_id")
             payload = await self._manager.poll(
                 session_id,
-                tail_messages=int(normalized_params.get("tail_messages") or 6),
+                tail_messages=self._bounded_int(
+                    normalized_params.get("tail_messages"),
+                    default=6,
+                    minimum=1,
+                    maximum=50,
+                    field="tail_messages",
+                ),
             )
             if not payload.get("ok", False):
                 raise ACPBridgeError(
@@ -439,6 +452,37 @@ class ACPStdioBridge:
     def _optional_text(value: Any) -> str:
         return str(value or "").strip()
 
+    def _resolve_workspace_param(self, value: Any, *, field: str) -> str:
+        try:
+            return str(resolve_workspace_dir(value, root=self._workspace))
+        except WorkspacePathError as exc:
+            raise ACPBridgeError(
+                -32602,
+                "Invalid params",
+                data={"field": field, "reason": str(exc)},
+            ) from exc
+
+    @staticmethod
+    def _bounded_int(
+        value: Any,
+        *,
+        default: int,
+        minimum: int,
+        maximum: int,
+        field: str,
+    ) -> int:
+        if value is None or value == "":
+            return int(default)
+        try:
+            resolved = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ACPBridgeError(
+                -32602,
+                "Invalid params",
+                data={"field": field, "reason": f"{field} must be an integer"},
+            ) from exc
+        return min(max(resolved, int(minimum)), int(maximum))
+
     @staticmethod
     def _session_payload(meta: Any) -> Dict[str, Any]:
         return {
@@ -473,7 +517,7 @@ class ACPStdioBridge:
         existing = self._get_client_session(reuse_session_id or "")
         if existing is not None:
             return existing
-        cwd = self._optional_text(params.get("cwd")) or self._workspace
+        cwd = self._resolve_workspace_param(params.get("cwd"), field="cwd")
         meta = self._meta_from_params(params)
         requested_key = self._optional_text(meta.get("sessionKey"))
         requested_label = self._optional_text(meta.get("sessionLabel"))

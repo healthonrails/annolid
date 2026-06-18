@@ -769,9 +769,10 @@ def test_runtime_session_router_dispatches_subagent_and_acp(tmp_path: Path) -> N
         async def close(self, task_id: str) -> bool:
             return task_id == "acp_1"
 
+    fake_acp = _FakeACP()
     router = RuntimeSessionRouter(
         subagent_manager=_FakeSubagent(),  # type: ignore[arg-type]
-        acp_manager=_FakeACP(),  # type: ignore[arg-type]
+        acp_manager=fake_acp,  # type: ignore[arg-type]
         workspace=tmp_path,
     )
 
@@ -786,6 +787,14 @@ def test_runtime_session_router_dispatches_subagent_and_acp(tmp_path: Path) -> N
         assert subagent_reply == "subagent-ok"
         assert acp_reply == "acp-ok"
         assert subagent_calls == ["inspect"]
+        assert fake_acp.calls[-1]["workspace"] == str(tmp_path.resolve())
+        outside_reply = await router.spawn(
+            task="code outside",
+            runtime="acp",
+            workspace=str(tmp_path.parent),
+        )
+        assert outside_reply.startswith("Error: ")
+        assert "outside configured root" in outside_reply
         rows = router.list_tasks()
         assert "sub_1" in rows
         assert "acp_1" in rows
