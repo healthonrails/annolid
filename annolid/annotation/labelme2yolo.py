@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import PIL.Image
 import shutil
+import yaml
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
 from random import Random
@@ -719,6 +720,19 @@ class Labelme2YOLO:
             return visibility_from_labelme_shape(shape)
         except Exception:
             return None
+
+    @staticmethod
+    def _yaml_scalar(value: object) -> str:
+        """Return a one-line YAML scalar for user-controlled labels and paths."""
+        dumped = yaml.safe_dump(
+            [str(value)],
+            default_flow_style=True,
+            sort_keys=False,
+            allow_unicode=True,
+        ).strip()
+        if dumped.startswith("[") and dumped.endswith("]"):
+            return dumped[1:-1].strip() or "''"
+        return repr(str(value))
 
     @staticmethod
     def _extend_bounds(
@@ -1498,12 +1512,14 @@ class Labelme2YOLO:
         # Construct the names section
         names_section = "names:\n"
         for label, label_id in self.label_to_id_dict.items():
-            names_section += f"  {label_id}: {label}\n"
+            names_section += f"  {label_id}: {self._yaml_scalar(label)}\n"
 
         # Write the YAML file content
         with open(yaml_path, "w+") as yaml_file:
             # Relative path to the dataset
-            yaml_file.write(f"path: ../{self.yolo_dataset_name}\n")
+            yaml_file.write(
+                f"path: {self._yaml_scalar(f'../{self.yolo_dataset_name}')}\n"
+            )
             yaml_file.write("train: images/train\n")
             yaml_file.write("val: images/val\n")
             # Include test set in the YAML
@@ -1518,7 +1534,7 @@ class Labelme2YOLO:
                     # Annolid internal mapping (kept for backwards compatibility)
                     yaml_file.write("kpt_labels:\n")
                     for idx, name in enumerate(self.keypoint_labels_order):
-                        yaml_file.write(f"  {idx}: {name}\n")
+                        yaml_file.write(f"  {idx}: {self._yaml_scalar(name)}\n")
 
                     # Ultralytics canonical mapping (per-class)
                     yaml_file.write("\n")
@@ -1526,7 +1542,7 @@ class Labelme2YOLO:
                     for class_id in sorted(self.label_to_id_dict.values()):
                         yaml_file.write(f"  {class_id}:\n")
                         for name in self.keypoint_labels_order:
-                            yaml_file.write(f"    - {name}\n")
+                            yaml_file.write(f"    - {self._yaml_scalar(name)}\n")
 
                 flip_idx = None
                 if self.pose_schema:

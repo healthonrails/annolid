@@ -2,9 +2,12 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 from PIL import Image
 
 from annolid.annotation.labelme2yolo import Labelme2YOLO
+from annolid.segmentation.dino_kpseg.data import load_yolo_pose_spec
+from annolid.segmentation.yolos import InferenceProcessor
 
 
 def _write_sample_annotation(tmp_path: Path) -> Path:
@@ -110,6 +113,56 @@ def test_labelme2yolo_pose_conversion(tmp_path):
     assert "kpt_labels" in yaml_text
     assert "0: head" in yaml_text
     assert "1: tail" in yaml_text
+
+
+def test_labelme2yolo_pose_yaml_preserves_yaml_sensitive_names(tmp_path: Path) -> None:
+    image_width = 100
+    image_height = 80
+    image_path = tmp_path / "sample.png"
+    Image.new("RGB", (image_width, image_height), color=(0, 0, 0)).save(image_path)
+
+    annotation = {
+        "imagePath": str(image_path),
+        "imageHeight": image_height,
+        "imageWidth": image_width,
+        "shapes": [
+            {
+                "label": "mouse #1",
+                "points": [[10, 20], [60, 20], [60, 50], [10, 50]],
+                "shape_type": "polygon",
+                "flags": {"instance_label": "mouse #1"},
+            },
+            {
+                "label": "mouse #1_nose # tip",
+                "points": [[20, 30]],
+                "shape_type": "point",
+            },
+            {
+                "label": "mouse #1_left: ear",
+                "points": [[55, 45]],
+                "shape_type": "point",
+            },
+        ],
+    }
+    (tmp_path / "sample.json").write_text(json.dumps(annotation), encoding="utf-8")
+
+    converter = Labelme2YOLO(str(tmp_path))
+    converter.create_yolo_dataset_dirs()
+    converter.json_to_text("train/", "sample.json")
+    converter.save_data_yaml()
+
+    yaml_path = tmp_path / "YOLO_dataset" / "data.yaml"
+    payload = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+    assert payload["names"][0] == "mouse #1"
+    assert payload["kpt_labels"] == {0: "nose # tip", 1: "left: ear"}
+    assert payload["kpt_names"][0] == ["nose # tip", "left: ear"]
+
+    spec = load_yolo_pose_spec(yaml_path)
+    assert spec.keypoint_names == ["nose # tip", "left: ear"]
+    assert InferenceProcessor._infer_keypoint_names_from_data_yaml(yaml_path) == [
+        "nose # tip",
+        "left: ear",
+    ]
 
 
 def test_labelme2yolo_pose_with_visibility(tmp_path):
