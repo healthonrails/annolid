@@ -1,6 +1,6 @@
 ---
-name: "Playwright MCP & Browser Search Optimization"
-description: "Optimization guide for extracting information and using MCP browser tools effectively."
+name: mcp-search
+description: "Extract and search web content using Playwright MCP browser tools as a fallback when native Annolid web tools fail. Use when the user needs complex JavaScript evaluation, DOM extraction, or headless browser automation that gui_web_run_steps cannot handle."
 ---
 
 # MCP Browser & Search Capabilities
