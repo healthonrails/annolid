@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
@@ -64,3 +65,34 @@ def test_import_ultralytics_symbol_reports_missing_symbol(monkeypatch) -> None:
 
     with pytest.raises(RuntimeError, match="does not provide ultralytics.YOLOE"):
         runtime.import_ultralytics_symbol("YOLOE")
+
+
+def test_resolve_weight_path_prefers_user_search_roots(tmp_path: Path) -> None:
+    weights_dir = tmp_path / "weights"
+    weights_dir.mkdir()
+    expected = weights_dir / "custom.pt"
+    expected.write_bytes(b"fake weights")
+
+    resolved = runtime.resolve_weight_path("custom", search_roots=[weights_dir])
+
+    assert resolved == expected
+
+
+def test_resolve_weight_path_returns_cache_target_for_ultralytics_asset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+
+    resolved = runtime.resolve_weight_path("yolo11n")
+
+    assert resolved == tmp_path / "annolid" / "ultralytics" / "weights" / "yolo11n.pt"
+
+
+def test_resolve_weight_path_keeps_explicit_unresolved_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    unresolved = Path("models") / "yolo11n.pt"
+
+    assert runtime.resolve_weight_path(str(unresolved)) == unresolved

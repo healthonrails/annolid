@@ -185,6 +185,63 @@ class YOLOModelSpec:
     backend: str
 
 
+def _normalize_weight_path(weight_name: str) -> Path:
+    weight_path = Path(weight_name)
+    if weight_path.suffix == "":
+        return weight_path.with_suffix(".pt")
+    return weight_path
+
+
+def _runtime_roots() -> tuple[Path, Path, Path]:
+    module_root = Path(__file__).resolve().parent  # annolid/yolo
+    annolid_root = module_root.parent  # annolid/
+    project_root = annolid_root.parent  # repo root
+    return module_root, annolid_root, project_root
+
+
+def _default_weight_search_roots() -> tuple[Path, ...]:
+    module_root, annolid_root, project_root = _runtime_roots()
+    package_roots = tuple(
+        annolid_root / subdir
+        for subdir in ("realtime", "segmentation", "detector", "gui")
+    )
+    return (
+        module_root,
+        annolid_root,
+        project_root,
+        Path.cwd(),
+        Path.home() / "Downloads",
+        get_ultralytics_weights_cache_dir(),
+        Path.home() / ".cache" / "ultralytics",
+        *package_roots,
+        project_root / "runs",
+        annolid_root / "runs",
+    )
+
+
+def _dedupe_paths(paths: Iterable[Path]) -> Iterable[Path]:
+    seen: set[Path] = set()
+    for path in paths:
+        if path in seen:
+            continue
+        seen.add(path)
+        yield path
+
+
+def _training_run_weight_paths(weight_name: str, weight_path: Path) -> Iterable[Path]:
+    _, _, project_root = _runtime_roots()
+    weight_lower = weight_name.lower()
+    run_dirs: Tuple[Tuple[str, str], ...] = (
+        ("pose", "runs/pose/train/weights/best.pt"),
+        ("segment", "runs/segment/train/weights/best.pt"),
+        ("detect", "runs/detect/train/weights/best.pt"),
+    )
+    for keyword, rel_path in run_dirs:
+        if keyword in weight_lower or weight_path.name == "best.pt":
+            yield project_root / rel_path
+            yield Path.home() / "Downloads" / rel_path
+
+
 def _candidate_weight_paths(
     weight_name: str, search_roots: Optional[Iterable[Path]] = None
 ) -> Iterable[Path]:
@@ -194,67 +251,50 @@ def _candidate_weight_paths(
     The search order prioritises user-provided paths, the Annolid project root,
     the current working directory, and common Ultralytics export locations.
     """
-    weight_path = Path(weight_name)
-    if weight_path.suffix == "":
-        weight_path = weight_path.with_suffix(".pt")
-    roots = []
+    weight_path = _normalize_weight_path(weight_name)
+    roots: list[Path] = []
     if search_roots:
         roots.extend(Path(root) for root in search_roots)
-
-    module_root = Path(__file__).resolve().parent  # annolid/yolo
-    annolid_root = module_root.parent  # annolid/
-    project_root = annolid_root.parent  # repo root
-
-    default_roots = [
-        module_root,
-        annolid_root,
-        project_root,
-        Path.cwd(),
-        Path.home() / "Downloads",
-        get_ultralytics_weights_cache_dir(),
-        Path.home() / ".cache" / "ultralytics",
-    ]
-
-    for subdir in ("realtime", "segmentation", "detector", "gui"):
-        default_roots.append(annolid_root / subdir)
-
-    default_roots.append(project_root / "runs")
-    default_roots.append(annolid_root / "runs")
-
-    seen_root = set()
-    for root in default_roots:
-        if root not in seen_root:
-            roots.append(root)
-            seen_root.add(root)
+    roots.extend(_default_weight_search_roots())
 
     seen = set()
 
     # Absolute or relative path provided by user.
     yield weight_path
 
-    for root in roots:
+    for root in _dedupe_paths(roots):
         candidate = (root / weight_path).resolve()
         if candidate in seen:
             continue
         seen.add(candidate)
         yield candidate
 
-    weight_lower = weight_name.lower()
-    run_dirs: Tuple[Tuple[str, str], ...] = (
-        ("pose", "runs/pose/train/weights/best.pt"),
-        ("segment", "runs/segment/train/weights/best.pt"),
-        ("detect", "runs/detect/train/weights/best.pt"),
-    )
-    for keyword, rel_path in run_dirs:
-        if keyword in weight_lower or weight_path.name == "best.pt":
-            candidate = project_root / rel_path
-            if candidate not in seen:
-                seen.add(candidate)
-                yield candidate
-            downloads_candidate = Path.home() / "Downloads" / rel_path
-            if downloads_candidate not in seen:
-                seen.add(downloads_candidate)
-                yield downloads_candidate
+    for candidate in _training_run_weight_paths(weight_name, weight_path):
+        if candidate not in seen:
+            seen.add(candidate)
+            yield candidate
+
+
+def _ultralytics_asset_cache_target(weight_name: str) -> Optional[Path]:
+    requested = str(weight_name or "").strip()
+    if not requested:
+        return None
+
+    requested_path = Path(requested)
+    requested_name = requested_path.name
+    has_path_separators = ("/" in requested) or ("\\" in requested)
+    is_remote = requested.startswith(("http://", "https://"))
+    candidate_name = requested_name if requested_path.suffix else f"{requested_name}.pt"
+    looks_like_ultralytics_asset = _looks_like_ultralytics_asset_weight(candidate_name)
+    if (
+        is_remote
+        or requested_path.is_absolute()
+        or has_path_separators
+        or not looks_like_ultralytics_asset
+    ):
+        return None
+
+    return get_ultralytics_weights_cache_dir() / candidate_name
 
 
 def resolve_weight_path(
@@ -282,24 +322,8 @@ def resolve_weight_path(
     # Ultralytics' internal download helper saves to the provided filename (defaulting to the
     # current working directory), so passing a cache path is the most reliable way to ensure
     # weights are cached for reuse across runs.
-    requested = str(weight_name or "").strip()
-    requested_path = Path(requested)
-    requested_name = requested_path.name
-    has_path_separators = ("/" in requested) or ("\\" in requested)
-    is_remote = requested.startswith(("http://", "https://"))
-    looks_like_ultralytics_asset = _looks_like_ultralytics_asset_weight(
-        requested_name if requested_path.suffix else f"{requested_name}.pt"
-    )
-    if (
-        requested
-        and not is_remote
-        and not requested_path.is_absolute()
-        and not has_path_separators
-        and looks_like_ultralytics_asset
-    ):
-        cache_target = get_ultralytics_weights_cache_dir() / (
-            requested_name if requested_path.suffix else f"{requested_name}.pt"
-        )
+    cache_target = _ultralytics_asset_cache_target(weight_name)
+    if cache_target is not None:
         logger.info(
             "YOLO weight '%s' not found; will download to cache path %s",
             weight_name,
