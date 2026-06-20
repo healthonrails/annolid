@@ -52,6 +52,7 @@ class SAM3VideoProcessor(Sam3SessionManager):
         use_explicit_window_reseed: bool = True,
         boundary_mask_match_iou_threshold: float = 0.2,
         allow_private_state_mutation: bool = False,
+        reject_implausible_masks: Optional[bool] = None,
         sliding_window_size: Optional[int] = None,
         sliding_window_stride: Optional[int] = None,
         use_sliding_window_for_text_prompt: bool = True,
@@ -76,6 +77,7 @@ class SAM3VideoProcessor(Sam3SessionManager):
             use_explicit_window_reseed=use_explicit_window_reseed,
             boundary_mask_match_iou_threshold=boundary_mask_match_iou_threshold,
             allow_private_state_mutation=allow_private_state_mutation,
+            reject_implausible_masks=reject_implausible_masks,
             sliding_window_size=sliding_window_size,
             sliding_window_stride=sliding_window_stride,
             use_sliding_window_for_text_prompt=use_sliding_window_for_text_prompt,
@@ -117,7 +119,8 @@ class SAM3VideoProcessor(Sam3SessionManager):
                 try:
                     gc.collect()
                     empty_cache = getattr(
-                        getattr(torch, "mps", None), "empty_cache", None)
+                        getattr(torch, "mps", None), "empty_cache", None
+                    )
                     if callable(empty_cache):
                         empty_cache()
                 except Exception:
@@ -165,6 +168,7 @@ def process_video(
     use_explicit_window_reseed: bool = True,
     boundary_mask_match_iou_threshold: float = 0.2,
     allow_private_state_mutation: bool = False,
+    reject_implausible_masks: Optional[bool] = None,
     sliding_window_size: Optional[int] = None,
     sliding_window_stride: Optional[int] = None,
     use_sliding_window_for_text_prompt: bool = True,
@@ -199,6 +203,7 @@ def process_video(
         use_explicit_window_reseed=use_explicit_window_reseed,
         boundary_mask_match_iou_threshold=boundary_mask_match_iou_threshold,
         allow_private_state_mutation=allow_private_state_mutation,
+        reject_implausible_masks=reject_implausible_masks,
         sliding_window_size=sliding_window_size,
         sliding_window_stride=sliding_window_stride,
         use_sliding_window_for_text_prompt=use_sliding_window_for_text_prompt,
@@ -230,6 +235,7 @@ def process_video_with_agent(
     use_vlm_boundary_id_correction: bool = True,
     vlm_boundary_match_iou_threshold: float = 0.2,
     allow_private_state_mutation: bool = False,
+    reject_implausible_masks: Optional[bool] = None,
     llm_provider: Optional[str] = None,
     llm_model: Optional[str] = None,
     llm_profile: Optional[str] = None,
@@ -270,6 +276,7 @@ def process_video_with_agent(
         use_vlm_boundary_id_correction=use_vlm_boundary_id_correction,
         vlm_boundary_match_iou_threshold=vlm_boundary_match_iou_threshold,
         allow_private_state_mutation=allow_private_state_mutation,
+        reject_implausible_masks=reject_implausible_masks,
     )
     frames, masks = run_agent_seeded_sam3_video(
         video_path=str(video_path),

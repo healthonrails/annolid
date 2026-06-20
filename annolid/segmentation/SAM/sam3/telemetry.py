@@ -83,6 +83,7 @@ def build_config_snapshot(config: Mapping[str, object]) -> Dict[str, object]:
         "use_explicit_window_reseed",
         "boundary_mask_match_iou_threshold",
         "allow_private_state_mutation",
+        "reject_implausible_masks",
         "offload_video_to_cpu",
         "async_loading_frames",
         "compile_model",

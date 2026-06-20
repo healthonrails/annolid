@@ -38,6 +38,7 @@ def test_config_snapshot_keeps_expected_keys() -> None:
             "multiplex_count": 8,
             "device": "cpu",
             "boundary_mask_match_iou_threshold": 0.25,
+            "reject_implausible_masks": False,
             "unknown_key": "ignored",
         }
     )
@@ -45,6 +46,7 @@ def test_config_snapshot_keeps_expected_keys() -> None:
     assert snapshot["multiplex_count"] == 8
     assert snapshot["device"] == "cpu"
     assert snapshot["boundary_mask_match_iou_threshold"] == 0.25
+    assert snapshot["reject_implausible_masks"] is False
     assert "unknown_key" not in snapshot
 
 

@@ -2654,6 +2654,7 @@ def test_sam3_agent_video_track_tool_executes_and_writes_summary(
     assert captured["window_size"] == 6
     assert captured["stride"] == 3
     assert captured["agent_det_thresh"] == 0.4
+    assert captured["reject_implausible_masks"] is False
     assert expected_summary.exists()
     assert json.loads(expected_summary.read_text(encoding="utf-8"))["ok"] is True
 
@@ -2688,6 +2689,7 @@ def test_sam3_agent_video_track_tool_dry_run_does_not_execute(
 
     assert payload["ok"] is True
     assert payload["dry_run"] is True
+    assert payload["config"]["reject_implausible_masks"] is False
     assert called is False
     assert not expected_output_dir.exists()
 

@@ -30,6 +30,25 @@ class AdvancedParametersDialog(QDialog):
     """Dialog exposing advanced segmentation and tracker controls."""
 
     _CUSTOM_TRACKER_PRESET = "<custom>"
+    _SAM31_DEFAULT_MAX_OBJECTS = 16
+    _SAM31_DEFAULT_MULTIPLEX_COUNT = 16
+    _SAM31_MAX_MULTIPLEX_COUNT = 16
+
+    @staticmethod
+    def _coerce_positive_int(
+        value: object,
+        *,
+        default: int,
+        maximum: Optional[int] = None,
+    ) -> int:
+        try:
+            parsed = int(value)
+        except Exception:
+            parsed = int(default)
+        parsed = max(1, parsed)
+        if maximum is not None:
+            parsed = min(parsed, int(maximum))
+        return int(parsed)
 
     def __init__(
         self,
@@ -119,6 +138,16 @@ class AdvancedParametersDialog(QDialog):
             0.2
             if raw_boundary_mask_match_iou_threshold is None
             else float(raw_boundary_mask_match_iou_threshold)
+        )
+        self.sam3_max_num_objects = self._coerce_positive_int(
+            sam3_runtime.get("max_num_objects"),
+            default=self._SAM31_DEFAULT_MAX_OBJECTS,
+            maximum=512,
+        )
+        self.sam3_multiplex_count = self._coerce_positive_int(
+            sam3_runtime.get("multiplex_count"),
+            default=self._SAM31_DEFAULT_MULTIPLEX_COUNT,
+            maximum=self._SAM31_MAX_MULTIPLEX_COUNT,
         )
 
         layout = QVBoxLayout()
@@ -989,6 +1018,20 @@ class AdvancedParametersDialog(QDialog):
             "Threshold for adding new detections during propagation."
         )
 
+        self.sam3_max_objects_spinbox = QSpinBox()
+        self.sam3_max_objects_spinbox.setRange(1, 512)
+        self.sam3_max_objects_spinbox.setValue(int(self.sam3_max_num_objects))
+        self.sam3_max_objects_spinbox.setToolTip(
+            "Maximum total objects SAM3.1 may track across multiplex buckets."
+        )
+
+        self.sam3_multiplex_count_spinbox = QSpinBox()
+        self.sam3_multiplex_count_spinbox.setRange(1, self._SAM31_MAX_MULTIPLEX_COUNT)
+        self.sam3_multiplex_count_spinbox.setValue(int(self.sam3_multiplex_count))
+        self.sam3_multiplex_count_spinbox.setToolTip(
+            "SAM3.1 object bucket size. Use 16 to process the full multiplex bucket in one pass."
+        )
+
         self.sam3_direction_combo = QComboBox()
         self.sam3_direction_combo.addItems(["forward", "backward", "both"])
         idx = self.sam3_direction_combo.findText(self.sam3_propagation_direction)
@@ -1116,6 +1159,20 @@ class AdvancedParametersDialog(QDialog):
             self._wrap_with_hint(
                 self.sam3_new_det_thresh_spinbox,
                 "Controls how easily new detections are added mid-sequence.",
+            ),
+        )
+        form.addRow(
+            "Max tracked objects",
+            self._wrap_with_hint(
+                self.sam3_max_objects_spinbox,
+                "Total object capacity for SAM3.1 video tracking. Increase for crowded videos; memory use grows with capacity.",
+            ),
+        )
+        form.addRow(
+            "Multiplex bucket size",
+            self._wrap_with_hint(
+                self.sam3_multiplex_count_spinbox,
+                "SAM3.1 can track up to 16 objects together per bucket. The default 16 uses the released model's full bucket.",
             ),
         )
         form.addRow(
@@ -1332,6 +1389,8 @@ class AdvancedParametersDialog(QDialog):
             if self.sam3_window_stride_spinbox.value() == 0
             else int(self.sam3_window_stride_spinbox.value())
         )
+        self.sam3_max_num_objects = int(self.sam3_max_objects_spinbox.value())
+        self.sam3_multiplex_count = int(self.sam3_multiplex_count_spinbox.value())
         self.sam3_agent_det_thresh = self.sam3_agent_det_thresh_spinbox.value()
         self.sam3_agent_window_size = int(self.sam3_agent_window_size_spinbox.value())
         self.sam3_agent_stride = (
@@ -1412,6 +1471,8 @@ class AdvancedParametersDialog(QDialog):
             "device": self.sam3_device_override,
             "sliding_window_size": self.sam3_sliding_window_size,
             "sliding_window_stride": self.sam3_sliding_window_stride,
+            "max_num_objects": int(self.sam3_max_num_objects),
+            "multiplex_count": int(self.sam3_multiplex_count),
             "compile_model": bool(self.sam3_compile_model),
             "offload_video_to_cpu": bool(self.sam3_offload_video_to_cpu),
             "use_explicit_window_reseed": bool(self.sam3_use_explicit_window_reseed),

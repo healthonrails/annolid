@@ -28,6 +28,7 @@ class Sam3RuntimeOptions:
     use_explicit_window_reseed: bool
     boundary_mask_match_iou_threshold: float
     allow_private_state_mutation: bool
+    reject_implausible_masks: Optional[bool]
     max_num_objects: int
     multiplex_count: int
     agent_det_thresh: Optional[float]
@@ -57,6 +58,7 @@ class Sam3Manager:
         self.use_explicit_window_reseed: Optional[bool] = None
         self.boundary_mask_match_iou_threshold: Optional[float] = None
         self.allow_private_state_mutation: Optional[bool] = None
+        self.reject_implausible_masks: Optional[bool] = None
         self.max_num_objects: Optional[int] = None
         self.multiplex_count: Optional[int] = None
         self.agent_det_thresh: Optional[float] = None
@@ -234,6 +236,15 @@ class Sam3Manager:
             ),
             False,
         )
+        raw_reject_implausible_masks = self._pick(
+            getattr(self, "reject_implausible_masks", None),
+            sam3_cfg.get("reject_implausible_masks"),
+        )
+        reject_implausible_masks = (
+            None
+            if raw_reject_implausible_masks is None
+            else self._parse_bool(raw_reject_implausible_masks, False)
+        )
 
         agent_det_thresh = self._parse_optional_float(
             self._pick(
@@ -274,13 +285,17 @@ class Sam3Manager:
             use_explicit_window_reseed=use_explicit_window_reseed,
             boundary_mask_match_iou_threshold=float(boundary_iou or 0.2),
             allow_private_state_mutation=allow_private_state_mutation,
+            reject_implausible_masks=reject_implausible_masks,
             max_num_objects=max(
                 1,
                 int(16 if max_num_objects is None else max_num_objects),
             ),
-            multiplex_count=max(
-                1,
-                int(16 if multiplex_count is None else multiplex_count),
+            multiplex_count=min(
+                16,
+                max(
+                    1,
+                    int(16 if multiplex_count is None else multiplex_count),
+                ),
             ),
             agent_det_thresh=agent_det_thresh,
             agent_window_size=agent_window_size,
@@ -392,6 +407,10 @@ class Sam3Manager:
             self.allow_private_state_mutation,
             sam3_cfg.get("allow_private_state_mutation"),
         )
+        reject_implausible_masks = _pick(
+            getattr(self, "reject_implausible_masks", None),
+            sam3_cfg.get("reject_implausible_masks"),
+        )
         max_num_objects = _pick(
             self.max_num_objects,
             sam3_cfg.get("max_num_objects"),
@@ -430,6 +449,7 @@ class Sam3Manager:
             "use_explicit_window_reseed": use_explicit_window_reseed,
             "boundary_mask_match_iou_threshold": boundary_mask_match_iou_threshold,
             "allow_private_state_mutation": allow_private_state_mutation,
+            "reject_implausible_masks": reject_implausible_masks,
             "max_num_objects": max_num_objects,
             "multiplex_count": multiplex_count,
             "agent_det_thresh": agent_det_thresh,
@@ -472,6 +492,14 @@ class Sam3Manager:
         self.allow_private_state_mutation = sam3_runtime.get(
             "allow_private_state_mutation"
         )
+        self.reject_implausible_masks = sam3_runtime.get(
+            "reject_implausible_masks",
+            getattr(self, "reject_implausible_masks", None),
+        )
+        if self.reject_implausible_masks is None:
+            self.reject_implausible_masks = (
+                (base_config or {}).get("sam3", {}).get("reject_implausible_masks")
+            )
         self.max_num_objects = sam3_runtime.get("max_num_objects", self.max_num_objects)
         self.multiplex_count = sam3_runtime.get("multiplex_count", self.multiplex_count)
         self.agent_det_thresh = sam3_runtime.get("agent_det_thresh")
@@ -496,6 +524,7 @@ class Sam3Manager:
             "use_explicit_window_reseed": self.use_explicit_window_reseed,
             "boundary_mask_match_iou_threshold": self.boundary_mask_match_iou_threshold,
             "allow_private_state_mutation": self.allow_private_state_mutation,
+            "reject_implausible_masks": getattr(self, "reject_implausible_masks", None),
             "max_num_objects": self.max_num_objects,
             "multiplex_count": self.multiplex_count,
         }
@@ -899,6 +928,7 @@ class Sam3Manager:
         use_explicit_window_reseed = options.use_explicit_window_reseed
         boundary_mask_match_iou_threshold = options.boundary_mask_match_iou_threshold
         allow_private_state_mutation = options.allow_private_state_mutation
+        reject_implausible_masks = options.reject_implausible_masks
         max_num_objects = options.max_num_objects
         multiplex_count = options.multiplex_count
         agent_det_thresh = options.agent_det_thresh
@@ -930,6 +960,7 @@ class Sam3Manager:
                     use_explicit_window_reseed=use_explicit_window_reseed,
                     boundary_mask_match_iou_threshold=boundary_mask_match_iou_threshold,
                     allow_private_state_mutation=allow_private_state_mutation,
+                    reject_implausible_masks=reject_implausible_masks,
                     sliding_window_size=sliding_window_size,
                     sliding_window_stride=sliding_window_stride,
                 )
@@ -975,6 +1006,7 @@ class Sam3Manager:
                         use_explicit_window_reseed=use_explicit_window_reseed,
                         boundary_mask_match_iou_threshold=boundary_mask_match_iou_threshold,
                         allow_private_state_mutation=allow_private_state_mutation,
+                        reject_implausible_masks=reject_implausible_masks,
                     )
                     if masks <= 0:
                         raise RuntimeError(

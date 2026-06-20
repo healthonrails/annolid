@@ -289,22 +289,42 @@ def test_advanced_parameters_dialog_sam3_runtime_includes_window_handoff_flags()
             "use_explicit_window_reseed": False,
             "allow_private_state_mutation": True,
             "boundary_mask_match_iou_threshold": 0.45,
+            "max_num_objects": 48,
+            "multiplex_count": 12,
         }
     )
 
     assert dialog.sam3_explicit_reseed_checkbox.isChecked() is False
     assert dialog.sam3_private_state_checkbox.isChecked() is True
     assert float(dialog.sam3_boundary_mask_match_iou_spinbox.value()) == 0.45
+    assert int(dialog.sam3_max_objects_spinbox.value()) == 48
+    assert int(dialog.sam3_multiplex_count_spinbox.value()) == 12
 
     dialog.sam3_explicit_reseed_checkbox.setChecked(True)
     dialog.sam3_private_state_checkbox.setChecked(False)
     dialog.sam3_boundary_mask_match_iou_spinbox.setValue(0.6)
+    dialog.sam3_max_objects_spinbox.setValue(64)
+    dialog.sam3_multiplex_count_spinbox.setValue(16)
     dialog._collect_values()
     runtime = dialog.get_sam3_runtime_settings()
 
     assert runtime["use_explicit_window_reseed"] is True
     assert runtime["allow_private_state_mutation"] is False
     assert float(runtime["boundary_mask_match_iou_threshold"]) == 0.6
+    assert int(runtime["max_num_objects"]) == 64
+    assert int(runtime["multiplex_count"]) == 16
+
+
+def test_advanced_parameters_dialog_clamps_sam31_multiplex_bucket() -> None:
+    _ensure_qapp()
+    dialog = AdvancedParametersDialog(
+        sam3_runtime={
+            "max_num_objects": 32,
+            "multiplex_count": 99,
+        }
+    )
+
+    assert int(dialog.sam3_multiplex_count_spinbox.value()) == 16
 
 
 def test_set_advanced_params_applies_dino_model_to_tracking_and_settings(

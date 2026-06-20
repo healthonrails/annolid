@@ -73,6 +73,7 @@ class Sam3AgentVideoTrackTool(FunctionTool):
                     "maximum": 1.0,
                 },
                 "allow_private_state_mutation": {"type": "boolean"},
+                "reject_implausible_masks": {"type": "boolean"},
                 "llm_provider": {"type": "string"},
                 "llm_model": {"type": "string"},
                 "llm_profile": {"type": "string"},
@@ -104,6 +105,7 @@ class Sam3AgentVideoTrackTool(FunctionTool):
         use_explicit_window_reseed: bool = True,
         boundary_mask_match_iou_threshold: float = 0.2,
         allow_private_state_mutation: bool = False,
+        reject_implausible_masks: bool = False,
         llm_provider: str | None = None,
         llm_model: str | None = None,
         llm_profile: str | None = None,
@@ -173,6 +175,7 @@ class Sam3AgentVideoTrackTool(FunctionTool):
                             "allow_private_state_mutation": bool(
                                 allow_private_state_mutation
                             ),
+                            "reject_implausible_masks": bool(reject_implausible_masks),
                             "llm_provider": llm_provider,
                             "llm_model": llm_model,
                             "llm_profile": llm_profile,
@@ -210,6 +213,7 @@ class Sam3AgentVideoTrackTool(FunctionTool):
                     boundary_mask_match_iou_threshold
                 ),
                 allow_private_state_mutation=bool(allow_private_state_mutation),
+                reject_implausible_masks=bool(reject_implausible_masks),
                 llm_provider=llm_provider,
                 llm_model=llm_model,
                 llm_profile=llm_profile,
@@ -243,6 +247,7 @@ class Sam3AgentVideoTrackTool(FunctionTool):
                         boundary_mask_match_iou_threshold
                     ),
                     "allow_private_state_mutation": bool(allow_private_state_mutation),
+                    "reject_implausible_masks": bool(reject_implausible_masks),
                     "llm_provider": llm_provider,
                     "llm_model": llm_model,
                     "llm_profile": llm_profile,

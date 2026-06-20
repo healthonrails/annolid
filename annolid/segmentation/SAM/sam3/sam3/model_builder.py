@@ -13,7 +13,7 @@ This module provides factory functions for building SAM3 models:
 
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Optional, Union
 
 import torch
 import torch.nn as nn
@@ -53,7 +53,6 @@ from sam3.model.sam3_video_inference import Sam3VideoInferenceWithInstanceIntera
 from sam3.model.sam3_video_predictor import Sam3VideoPredictorMultiGPU
 from sam3.model.text_encoder_ve import VETextEncoder
 from sam3.model.tokenizer_ve import SimpleTokenizer
-from sam3.model.video_tracking_multiplex import VideoTrackingDynamicMultiplex
 from sam3.model.vitdet import ViT
 from sam3.model.vl_combiner import SAM3VLBackbone, SAM3VLBackboneTri, TriHeadVisionOnly
 from sam3.sam.transformer import RoPEAttention
@@ -75,7 +74,9 @@ _setup_tf32()
 
 def _default_bpe_path() -> str:
     """Return the bundled BPE vocab path without requiring pkg_resources."""
-    return str(Path(__file__).resolve().parent / "assets" / "bpe_simple_vocab_16e6.txt.gz")
+    return str(
+        Path(__file__).resolve().parent / "assets" / "bpe_simple_vocab_16e6.txt.gz"
+    )
 
 
 def _read_int_env(name: str, default: int) -> int:
@@ -128,6 +129,15 @@ def _resolve_hotstart_params(
         unmatch = min(unmatch, delay)
         dup = min(dup, delay)
     return int(delay), int(unmatch), int(dup)
+
+
+def _resolve_optional_float(value: Optional[float], default: float) -> float:
+    if value is None:
+        return float(default)
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
 
 
 def _create_position_encoding(precompute_resolution=None):
@@ -312,17 +322,7 @@ def _create_segmentation_head(compile_mode=None, use_fa3=False):
 
 def _create_geometry_encoder():
     """Create geometry encoder with all its components."""
-    # Create position encoding for geometry encoder
     geo_pos_enc = _create_position_encoding()
-    # Create CX block for fuser
-    cx_block = CXBlock(
-        dim=256,
-        kernel_size=7,
-        padding=3,
-        layer_scale_init_value=1.0e-06,
-        use_dwconv=True,
-    )
-    # Create geometry encoder layer
     geo_layer = TransformerEncoderLayer(
         activation="relu",
         d_model=256,
@@ -1151,6 +1151,8 @@ def build_sam3_multiplex_video_predictor(
     bpe_path: Optional[str] = None,
     max_num_objects: int = 16,
     multiplex_count: int = 16,
+    score_threshold_detection: Optional[float] = None,
+    new_det_thresh: Optional[float] = None,
     use_fa3: bool = True,
     use_rope_real: bool = True,
     compile: bool = False,
@@ -1176,6 +1178,8 @@ def build_sam3_multiplex_video_predictor(
         bpe_path: Path to the BPE tokenizer vocabulary
         max_num_objects: Maximum number of tracked objects
         multiplex_count: Number of objects per multiplex bucket
+        score_threshold_detection: Detection score threshold passed to SAM3.1
+        new_det_thresh: New-object detection threshold passed to SAM3.1
         use_fa3: Whether to use FlashAttention 3
         use_rope_real: Whether to use real-valued RoPE (for compile compat)
         compile: Whether to enable torch.compile on model components
@@ -1258,11 +1262,13 @@ def build_sam3_multiplex_video_predictor(
     demo_model = Sam3MultiplexTrackingWithInteractivity(
         tracker=sam2_predictor,
         detector=detector,
-        score_threshold_detection=0.4,
+        score_threshold_detection=_resolve_optional_float(
+            score_threshold_detection, 0.4
+        ),
         det_nms_thresh=0.1,
         det_nms_use_iom=True,
         assoc_iou_thresh=0.1,
-        new_det_thresh=0.65,
+        new_det_thresh=_resolve_optional_float(new_det_thresh, 0.65),
         hotstart_delay=resolved_hotstart_delay,
         hotstart_unmatch_thresh=resolved_hotstart_unmatch,
         hotstart_dup_thresh=resolved_hotstart_dup,
@@ -1340,6 +1346,8 @@ def build_sam3_predictor(
     warm_up: bool = False,
     max_num_objects: int = 16,
     multiplex_count: int = 16,
+    score_threshold_detection: Optional[float] = None,
+    new_det_thresh: Optional[float] = None,
     use_fa3: bool = True,
     use_rope_real: bool = True,
     async_loading_frames: bool = True,
@@ -1360,6 +1368,8 @@ def build_sam3_predictor(
         warm_up: Run warm-up compilation passes
         max_num_objects: Maximum tracked objects (SAM 3.1 only)
         multiplex_count: Objects per multiplex bucket (SAM 3.1 only)
+        score_threshold_detection: Detection score threshold (SAM 3.1 only)
+        new_det_thresh: New-object detection threshold (SAM 3.1 only)
         use_fa3: Use Flash Attention 3
         use_rope_real: Use real-valued RoPE for compile compatibility
         async_loading_frames: Load video frames asynchronously
@@ -1408,6 +1418,8 @@ def build_sam3_predictor(
             bpe_path=bpe_path,
             max_num_objects=max_num_objects,
             multiplex_count=multiplex_count,
+            score_threshold_detection=score_threshold_detection,
+            new_det_thresh=new_det_thresh,
             use_fa3=use_fa3,
             use_rope_real=use_rope_real,
             compile=compile,

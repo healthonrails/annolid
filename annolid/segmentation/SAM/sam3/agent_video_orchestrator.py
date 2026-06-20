@@ -98,6 +98,7 @@ class TrackingConfig:
     use_vlm_boundary_id_correction: bool = True
     vlm_boundary_match_iou_threshold: float = 0.2
     allow_private_state_mutation: bool = False
+    reject_implausible_masks: Optional[bool] = None
     epsilon_for_polygon: float = 2.0
     max_frame_num_to_track: Optional[int] = None
 
@@ -108,7 +109,9 @@ def _save_frame_to_tmp(frame, dst_path: Path) -> None:
     Image.fromarray(rgb).save(dst_path)
 
 
-def _boxes_from_agent_output(outputs: Dict[str, object], det_thresh: float) -> Tuple[List[List[float]], List[float]]:
+def _boxes_from_agent_output(
+    outputs: Dict[str, object], det_thresh: float
+) -> Tuple[List[List[float]], List[float]]:
     """
     Convert agent JSON outputs (normalized xywh) to absolute xyxy boxes and
     filter by detection score.
@@ -166,7 +169,9 @@ def _filter_duplicate_boxes(
 ) -> List[List[float]]:
     filtered: List[List[float]] = []
     for candidate in candidate_boxes:
-        if any(_box_iou_xyxy(candidate, prev) >= iou_threshold for prev in existing_boxes):
+        if any(
+            _box_iou_xyxy(candidate, prev) >= iou_threshold for prev in existing_boxes
+        ):
             continue
         filtered.append(candidate)
     return filtered
@@ -276,7 +281,9 @@ def _resolve_vlm_boundary_box_labels(
         gid = assigned.get(int(det_idx))
         if gid is not None:
             labels.append(int(gid))
-            hints.append(str(id_to_labels.get(int(gid)) or f"{prompt_prefix}_{int(gid)}"))
+            hints.append(
+                str(id_to_labels.get(int(gid)) or f"{prompt_prefix}_{int(gid)}")
+            )
             continue
         while next_local_id in used_ids:
             next_local_id += 1
@@ -327,7 +334,10 @@ def _call_run_agent_on_frame(
         return _run_agent_on_frame(frame_path, agent_cfg, send_request)
     except TypeError as exc:
         message = str(exc)
-        if "positional arguments" not in message and "positional argument" not in message:
+        if (
+            "positional arguments" not in message
+            and "positional argument" not in message
+        ):
             raise
         return _run_agent_on_frame(frame_path, agent_cfg)
 
@@ -393,6 +403,7 @@ def run_agent_seeded_sam3_video(
         use_explicit_window_reseed=tracking_cfg.use_explicit_window_reseed,
         boundary_mask_match_iou_threshold=tracking_cfg.boundary_mask_match_iou_threshold,
         allow_private_state_mutation=tracking_cfg.allow_private_state_mutation,
+        reject_implausible_masks=tracking_cfg.reject_implausible_masks,
         async_loading_frames=False,
         sliding_window_size=agent_cfg.window_size,
         sliding_window_stride=agent_cfg.stride,
@@ -457,18 +468,22 @@ def run_agent_seeded_sam3_video(
                     ):
                         frame_h, frame_w = first_frame.shape[:2]
                         try:
-                            boundary_bundle = session._build_boundary_reseed_prompt_bundle(
-                                frame_idx=int(start_idx),
-                                frame_width=float(frame_w),
-                                frame_height=float(frame_h),
-                                source_frame_idx=int(previous_window_end_idx) - 1,
+                            boundary_bundle = (
+                                session._build_boundary_reseed_prompt_bundle(
+                                    frame_idx=int(start_idx),
+                                    frame_width=float(frame_w),
+                                    frame_height=float(frame_h),
+                                    source_frame_idx=int(previous_window_end_idx) - 1,
+                                )
                             )
                         except Exception:
                             boundary_bundle = None
                         if boundary_bundle is not None:
                             boundary_allowed_gids = {
                                 int(v)
-                                for v in (getattr(boundary_bundle, "track_ids", []) or [])
+                                for v in (
+                                    getattr(boundary_bundle, "track_ids", []) or []
+                                )
                             }
                     propagation_direction = (
                         tracking_cfg.propagation_direction or "forward"
@@ -478,7 +493,8 @@ def run_agent_seeded_sam3_video(
                         seed_boxes = [_xyxy_to_xywh(v) for v in boxes_abs]
                         seed_labels = list(range(1, len(seed_boxes) + 1))
                         seed_hints = [
-                            f"{agent_cfg.prompt}_{i + 1}" for i in range(len(seed_boxes))
+                            f"{agent_cfg.prompt}_{i + 1}"
+                            for i in range(len(seed_boxes))
                         ]
                         if (
                             tracking_cfg.use_vlm_boundary_id_correction
@@ -489,8 +505,12 @@ def run_agent_seeded_sam3_video(
                             frame_h, frame_w = first_frame.shape[:2]
                             seed_labels, seed_hints = _resolve_vlm_boundary_box_labels(
                                 candidate_boxes_xyxy=boxes_abs,
-                                boundary_boxes_norm_xywh=getattr(boundary_bundle, "boxes", []),
-                                boundary_track_ids=getattr(boundary_bundle, "track_ids", []),
+                                boundary_boxes_norm_xywh=getattr(
+                                    boundary_bundle, "boxes", []
+                                ),
+                                boundary_track_ids=getattr(
+                                    boundary_bundle, "track_ids", []
+                                ),
                                 frame_width=float(frame_w),
                                 frame_height=float(frame_h),
                                 iou_threshold=float(
@@ -523,7 +543,8 @@ def run_agent_seeded_sam3_video(
                     def refresh_mid_frame(refresh_local_idx: int) -> Tuple[int, int]:
                         refresh_frame = frames[int(refresh_local_idx)]
                         refresh_path = (
-                            tmpdir_path / f"frame_{start_idx + refresh_local_idx:09}.png"
+                            tmpdir_path
+                            / f"frame_{start_idx + refresh_local_idx:09}.png"
                         )
                         _save_frame_to_tmp(refresh_frame, refresh_path)
                         try:
@@ -539,7 +560,9 @@ def run_agent_seeded_sam3_video(
                             boxes_abs,
                         )
                         if refresh_boxes_abs:
-                            refresh_boxes_xywh = [_xyxy_to_xywh(v) for v in refresh_boxes_abs]
+                            refresh_boxes_xywh = [
+                                _xyxy_to_xywh(v) for v in refresh_boxes_abs
+                            ]
                             refresh_label_offset = len(boxes_abs) + 1
                             refresh_labels = list(
                                 range(
@@ -565,11 +588,15 @@ def run_agent_seeded_sam3_video(
                                 if isinstance(refresh_result, dict)
                                 else {}
                             ) or {}
-                            refresh_outputs = session._map_outputs_to_global_ids_at_frame(
-                                refresh_outputs,
-                                frame_idx=start_idx + int(refresh_local_idx),
+                            refresh_outputs = (
+                                session._map_outputs_to_global_ids_at_frame(
+                                    refresh_outputs,
+                                    frame_idx=start_idx + int(refresh_local_idx),
+                                )
                             )
-                            refresh_obj_ids = refresh_outputs.get("out_obj_ids", []) or []
+                            refresh_obj_ids = (
+                                refresh_outputs.get("out_obj_ids", []) or []
+                            )
                             refresh_masks = len(refresh_obj_ids)
                         else:
                             refresh_masks = 0

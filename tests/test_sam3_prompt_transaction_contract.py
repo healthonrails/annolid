@@ -319,6 +319,7 @@ def test_build_video_processor_merges_live_canvas_seed_frame(
             "sam3": {
                 "use_explicit_window_reseed": False,
                 "allow_private_state_mutation": True,
+                "reject_implausible_masks": True,
                 "boundary_mask_match_iou_threshold": 0.33,
             }
         },
@@ -384,6 +385,7 @@ def test_build_video_processor_merges_live_canvas_seed_frame(
     assert kwargs["use_explicit_window_reseed"] is False
     assert kwargs["boundary_mask_match_iou_threshold"] == 0.33
     assert kwargs["allow_private_state_mutation"] is True
+    assert kwargs["reject_implausible_masks"] is True
 
 
 def test_merge_canvas_annotations_overrides_matching_frame_object_pair() -> None:
@@ -445,6 +447,7 @@ def test_runtime_options_coerce_config_and_manager_overrides() -> None:
                 "use_explicit_window_reseed": "false",
                 "boundary_mask_match_iou_threshold": "0.31",
                 "allow_private_state_mutation": "true",
+                "reject_implausible_masks": "true",
                 "max_num_objects": "0",
                 "multiplex_count": "3",
                 "agent": {
@@ -468,6 +471,7 @@ def test_runtime_options_coerce_config_and_manager_overrides() -> None:
     assert options.use_explicit_window_reseed is False
     assert options.boundary_mask_match_iou_threshold == 0.31
     assert options.allow_private_state_mutation is True
+    assert options.reject_implausible_masks is True
     assert options.max_num_objects == 1
     assert options.multiplex_count == 3
     assert options.agent_det_thresh == 0.45
@@ -501,6 +505,7 @@ def test_dialog_defaults_keep_agent_output_dir_disabled_by_default() -> None:
 
     assert defaults["agent_output_dir"] is None
     assert defaults["boundary_mask_match_iou_threshold"] == 0.2
+    assert defaults["reject_implausible_masks"] is None
 
 
 def test_manual_seed_loader_uses_png_json_pair_and_ignores_store(
@@ -861,6 +866,7 @@ def test_handle_frame_outputs_falls_back_to_recent_mask_when_implausible() -> No
     session._last_mask_area_ratio = {}
     session.text_prompt = None
     session.score_threshold_detection = None
+    session.reject_implausible_masks = True
     session.get_frame_shape = lambda: (20, 20, 3)
     captured: dict[str, object] = {}
 
@@ -897,6 +903,63 @@ def test_handle_frame_outputs_falls_back_to_recent_mask_when_implausible() -> No
     assert int(np.asarray(mask_dict["7"]).sum()) == int(
         np.asarray(session._frame_masks[5]["7"]).sum()
     )
+
+
+def test_handle_frame_outputs_accepts_implausible_masks_by_default() -> None:
+    session = Sam3SessionManager.__new__(Sam3SessionManager)
+    session.frame_shape = (20, 20, 3)
+    session.video_dir = "/tmp/sam3"
+    session.obj_id_to_label = {}
+    session.id_to_labels = {}
+    session._frames_processed = set()
+    session._frames_with_masks = set()
+    session._frame_masks = {
+        5: {
+            "7": np.pad(
+                np.ones((4, 4), dtype=np.uint8),
+                ((2, 14), (3, 13)),
+                mode="constant",
+            )
+        }
+    }
+    session._frame_track_ids = {}
+    session._track_last_seen_frame = {7: 5}
+    session._drift_rejections_total = 0
+    session.text_prompt = None
+    session.score_threshold_detection = None
+    session.get_frame_shape = lambda: (20, 20, 3)
+    captured: dict[str, object] = {}
+
+    output_mask = np.pad(
+        np.ones((2, 2), dtype=np.uint8),
+        ((18, 0), (18, 0)),
+        mode="constant",
+    )
+
+    def _save_annotations(filename, mask_dict, frame_shape, **kwargs):
+        captured["mask_dict"] = mask_dict
+        return None
+
+    session._save_annotations = _save_annotations
+
+    session._handle_frame_outputs(
+        frame_idx=6,
+        outputs={
+            "out_obj_ids": np.asarray([7], dtype=np.int64),
+            "out_probs": np.asarray([0.95], dtype=np.float32),
+            "out_boxes_xywh": np.asarray([[15.0, 15.0, 3.0, 3.0]], dtype=np.float32),
+            "out_binary_masks": np.asarray([output_mask], dtype=object),
+        },
+        total_frames=20,
+        yielded_frames=1,
+        apply_score_threshold=False,
+    )
+
+    mask_dict = captured["mask_dict"]
+    assert "7" in mask_dict
+    assert np.asarray(mask_dict["7"]).tolist() == output_mask.tolist()
+    assert session._drift_rejections_total == 0
+    assert session._track_last_seen_frame[7] == 6
 
 
 def test_ensure_prediction_json_coverage_skips_processed_frame_validation_fast_path(

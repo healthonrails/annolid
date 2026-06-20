@@ -278,6 +278,29 @@ Common knobs:
 - `sliding_window_stride`
 - `use_sliding_window_for_text_prompt`
 
+For long text-prompt videos, Annolid keeps SAM3.1 windowed propagation bounded on
+CPU fallback by disabling the optional midpoint refresh by default. CUDA runs keep
+midpoint refresh enabled unless overridden. Set
+`ANNOLID_SAM3_USE_MID_WINDOW_REFRESH=1` to opt into the extra midpoint prompt on
+CPU, or `ANNOLID_SAM3_USE_MID_WINDOW_REFRESH=0` to force it off.
+
+Annolid accepts SAM3.1 masks by default. The older implausible-mask rejection
+guard can be useful for some drift-heavy videos, but it may reject valid SAM3.1
+motion on CPU fallback runs. Set `ANNOLID_SAM3_REJECT_IMPLAUSIBLE_MASKS=1` to
+restore strict mask rejection for a run.
+
+SAM3.1 video tracking uses Object Multiplex. Annolid builds the SAM3.1
+predictor with `version="sam3.1"` and forwards `max_num_objects`,
+`multiplex_count`, `score_threshold_detection`, and `new_det_thresh` into the
+upstream runtime. Keep `multiplex_count` at the default `16` to use the released
+model's full per-bucket capacity; raise `max_num_objects` when a crowded video
+needs more total tracked instances across multiple buckets.
+
+The SAM3.1 runtime follows Meta's current prerequisites: Python 3.12 or newer
+and PyTorch 2.7 or newer. Annolid's default GUI/core workflow still supports
+older Python environments, but SAM3.1 tracking will report a runtime prerequisite
+error if the active environment is too old.
+
 ## Interactive session controls (GUI)
 
 Annolid exposes notebook-like SAM3 session controls in the GUI:
