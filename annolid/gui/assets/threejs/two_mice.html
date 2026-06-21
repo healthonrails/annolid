@@ -4,10 +4,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Annolid: High-Fidelity Mouse Genetics Lab</title>
+  <title>Annolid: Photoreal Two-Mouse Open Field</title>
   <style>
-    @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
-
     :root {
       color-scheme: dark;
     }
@@ -18,8 +16,8 @@
       width: 100%;
       height: 100%;
       overflow: hidden;
-      background: #030405;
-      font-family: 'Share Tech Mono', monospace;
+      background: #ece8df;
+      font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       user-select: none;
     }
 
@@ -33,31 +31,30 @@
       position: absolute;
       inset: 0;
       pointer-events: none;
-      background: radial-gradient(circle at 50% 50%, transparent 40%, rgba(0, 0, 0, 0.85) 120%);
-      box-shadow: inset 0 0 100px rgba(0, 0, 0, 0.8);
+      background: radial-gradient(circle at 50% 48%, transparent 56%, rgba(40, 34, 26, 0.28) 118%);
+      box-shadow: inset 0 0 80px rgba(58, 47, 36, 0.22);
     }
 
     .hud {
       position: absolute;
-      bottom: 40px;
-      left: 40px;
-      color: rgba(200, 230, 255, 0.9);
-      font-size: 13px;
-      border-left: 3px solid #00f0ff;
-      padding: 15px 20px;
-      background: linear-gradient(90deg, rgba(0, 15, 30, 0.85) 0%, rgba(0, 0, 0, 0) 100%);
-      backdrop-filter: blur(5px);
-      text-transform: uppercase;
-      letter-spacing: 1px;
+      bottom: 28px;
+      left: 28px;
+      color: rgba(38, 35, 31, 0.88);
+      font-size: 12px;
+      border-left: 3px solid rgba(116, 102, 83, 0.74);
+      padding: 12px 16px;
+      background: linear-gradient(90deg, rgba(247, 243, 234, 0.82) 0%, rgba(247, 243, 234, 0.16) 100%);
+      backdrop-filter: blur(6px);
+      letter-spacing: 0.04em;
       pointer-events: none;
     }
 
     .hud h1 {
       margin: 0 0 10px 0;
-      font-size: 16px;
-      letter-spacing: 3px;
-      color: #fff;
-      text-shadow: 0 0 10px rgba(0, 240, 255, 0.5);
+      font-size: 13px;
+      letter-spacing: 0.13em;
+      color: #1f1d1a;
+      text-transform: uppercase;
     }
 
     .data-row {
@@ -65,35 +62,34 @@
       justify-content: space-between;
       width: 280px;
       margin-bottom: 4px;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      border-bottom: 1px solid rgba(86, 76, 63, 0.18);
       padding-bottom: 2px;
     }
 
     .label {
-      color: #6a95b8;
+      color: rgba(80, 72, 60, 0.74);
     }
 
     .val {
-      color: #00f0ff;
+      color: #2f3c30;
       font-weight: bold;
     }
 
     .val.alert {
-      color: #ff3366;
-      text-shadow: 0 0 8px rgba(255, 51, 102, 0.6);
+      color: #7a3e34;
     }
 
 
     .lil-gui {
-      --background-color: rgba(0, 15, 30, 0.9);
-      --text-color: #00f0ff;
-      --title-background-color: #004466;
-      --widget-color: #005577;
-      --hover-color: #007799;
-      --focus-color: #0099bb;
-      --font-family: 'Share Tech Mono', monospace;
-      border: 1px solid #00f0ff;
-      box-shadow: 0 0 20px rgba(0, 240, 255, 0.2);
+      --background-color: rgba(34, 33, 31, 0.86);
+      --text-color: #f3eee5;
+      --title-background-color: rgba(74, 68, 58, 0.94);
+      --widget-color: rgba(84, 78, 68, 0.95);
+      --hover-color: rgba(116, 105, 88, 0.95);
+      --focus-color: rgba(150, 131, 103, 0.95);
+      --font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      box-shadow: 0 10px 30px rgba(28, 24, 20, 0.22);
       right: 20px !important;
       top: 20px !important;
     }
@@ -104,7 +100,7 @@
   <canvas id="c"></canvas>
   <div class="overlay"></div>
   <div class="hud">
-    <h1>PRIMARY SUBJECT TELEMETRY</h1>
+    <h1>Open Field Assay</h1>
     <div class="data-row"><span class="label">SUBJECT COUNT</span><span class="val" id="hud-count">0</span></div>
     <div class="data-row"><span class="label">STATE</span><span class="val" id="hud-state">--</span></div>
     <div class="data-row"><span class="label">HEART RATE</span><span class="val alert" id="hud-hr">-- BPM</span></div>
@@ -130,16 +126,16 @@
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.05;
+    renderer.toneMappingExposure = 1.18;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x0a0b0a);
-    scene.fog = new THREE.FogExp2(0x0d0f0d, 0.010);
+    scene.background = new THREE.Color(0xe7e0d5);
+    scene.fog = new THREE.FogExp2(0xe7e0d5, 0.0045);
 
     const camera = new THREE.PerspectiveCamera(35, innerWidth / innerHeight, 0.03, 500);
-    camera.position.set(5.5, 7.5, 22);
+    camera.position.set(7.2, 6.3, 20.5);
 
     const controls = new OrbitControls(camera, canvas);
     controls.enableDamping = true;
@@ -192,6 +188,140 @@
       tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
       return tex;
     }
+    function createLabFloorAlbedoMap(size = 1024) {
+      const c = document.createElement('canvas'); c.width = c.height = size;
+      const ctx = c.getContext('2d');
+      const base = ctx.createLinearGradient(0, 0, size, size);
+      base.addColorStop(0.0, '#ded8c8');
+      base.addColorStop(0.52, '#e9e2d0');
+      base.addColorStop(1.0, '#d4cbbb');
+      ctx.fillStyle = base;
+      ctx.fillRect(0, 0, size, size);
+
+      // Fine plastic/fiber variation.
+      for (let i = 0; i < 14000; i++) {
+        const x = Math.random() * size;
+        const y = Math.random() * size;
+        const v = 180 + Math.floor(Math.random() * 58);
+        const a = 0.014 + Math.random() * 0.032;
+        ctx.fillStyle = Math.random() > 0.55
+          ? `rgba(255,255,245,${a})`
+          : `rgba(${v},${Math.max(0, v - 10)},${Math.max(0, v - 22)},${a})`;
+        ctx.fillRect(x, y, 1 + Math.random() * 2.2, 1);
+      }
+
+      // Scuffs, wipe marks, and faint urine-like stains kept subtle.
+      for (let i = 0; i < 44; i++) {
+        const x = Math.random() * size;
+        const y = Math.random() * size;
+        const r = size * (0.018 + Math.random() * 0.065);
+        const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+        const warm = Math.random() > 0.45;
+        g.addColorStop(0.0, warm ? 'rgba(153,120,65,0.060)' : 'rgba(70,62,52,0.050)');
+        g.addColorStop(0.68, warm ? 'rgba(153,120,65,0.020)' : 'rgba(70,62,52,0.016)');
+        g.addColorStop(1.0, 'rgba(0,0,0,0.0)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.ellipse(x, y, r * (0.7 + Math.random() * 1.4), r * (0.24 + Math.random() * 0.55), Math.random() * Math.PI, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      ctx.lineCap = 'round';
+      for (let i = 0; i < 170; i++) {
+        const x = Math.random() * size;
+        const y = Math.random() * size;
+        const len = 18 + Math.random() * 92;
+        const a = Math.random() * Math.PI * 2;
+        ctx.strokeStyle = Math.random() > 0.5 ? 'rgba(255,255,245,0.055)' : 'rgba(90,76,58,0.050)';
+        ctx.lineWidth = 0.45 + Math.random() * 1.1;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + Math.cos(a) * len, y + Math.sin(a) * len);
+        ctx.stroke();
+      }
+
+      const tex = new THREE.CanvasTexture(c);
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+      tex.repeat.set(3.0, 2.1);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.anisotropy = 8;
+      return tex;
+    }
+
+    function createLabFloorRoughnessMap(size = 512) {
+      const c = document.createElement('canvas'); c.width = c.height = size;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#d2d2d2';
+      ctx.fillRect(0, 0, size, size);
+      for (let i = 0; i < 9000; i++) {
+        const x = Math.random() * size;
+        const y = Math.random() * size;
+        const v = 165 + Math.floor(Math.random() * 78);
+        ctx.fillStyle = `rgba(${v},${v},${v},${0.20 + Math.random() * 0.25})`;
+        ctx.fillRect(x, y, 1 + Math.random() * 2.0, 1);
+      }
+      for (let i = 0; i < 28; i++) {
+        const x = Math.random() * size;
+        const y = Math.random() * size;
+        const r = size * (0.02 + Math.random() * 0.06);
+        const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+        g.addColorStop(0, 'rgba(115,115,115,0.24)');
+        g.addColorStop(1, 'rgba(230,230,230,0.0)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.ellipse(x, y, r * 1.45, r * 0.45, Math.random() * Math.PI, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      const tex = new THREE.CanvasTexture(c);
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+      tex.repeat.set(3.0, 2.1);
+      return tex;
+    }
+
+    function createLabFloorNormalMap(size = 512) {
+      const c = document.createElement('canvas'); c.width = c.height = size;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#8080ff';
+      ctx.fillRect(0, 0, size, size);
+      for (let i = 0; i < 10000; i++) {
+        const x = Math.random() * size;
+        const y = Math.random() * size;
+        const v = 118 + Math.floor(Math.random() * 25);
+        ctx.fillStyle = `rgba(${v},${v + 2},255,${0.12 + Math.random() * 0.20})`;
+        ctx.fillRect(x, y, 1 + Math.random() * 1.5, 1);
+      }
+      ctx.strokeStyle = 'rgba(116,118,255,0.06)';
+      for (let i = 0; i < 120; i++) {
+        const x = Math.random() * size;
+        const y = Math.random() * size;
+        const len = 12 + Math.random() * 48;
+        const a = Math.random() * Math.PI * 2;
+        ctx.lineWidth = 0.7 + Math.random() * 0.8;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + Math.cos(a) * len, y + Math.sin(a) * len);
+        ctx.stroke();
+      }
+      const tex = new THREE.CanvasTexture(c);
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+      tex.repeat.set(3.0, 2.1);
+      return tex;
+    }
+
+    function createSoftOvalTexture(size = 256, color = '0,0,0', alpha = 0.18) {
+      const c = document.createElement('canvas'); c.width = c.height = size;
+      const ctx = c.getContext('2d');
+      const g = ctx.createRadialGradient(size * 0.5, size * 0.5, size * 0.02, size * 0.5, size * 0.5, size * 0.50);
+      g.addColorStop(0.0, `rgba(${color},${alpha})`);
+      g.addColorStop(0.45, `rgba(${color},${alpha * 0.45})`);
+      g.addColorStop(1.0, `rgba(${color},0.0)`);
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, size, size);
+      const tex = new THREE.CanvasTexture(c);
+      tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+      return tex;
+    }
+
     function createTailRingRoughnessMap(size = 256) {
       const c = document.createElement('canvas'); c.width = size; c.height = size;
       const ctx = c.getContext('2d');
@@ -538,6 +668,11 @@
     const noseAlbedoMap = createNoseAlbedoMap();
     const noseNormalMap = createNoseNormalMap();
     const noseRoughnessMap = createNoseRoughnessMap();
+    const labFloorAlbedoMap = createLabFloorAlbedoMap();
+    const labFloorRoughnessMap = createLabFloorRoughnessMap();
+    const labFloorNormalMap = createLabFloorNormalMap();
+    const urineSpotTexture = createSoftOvalTexture(256, '147,116,62', 0.105);
+    const shadowSmudgeTexture = createSoftOvalTexture(256, '46,39,31', 0.16);
 
     // ═══════════════════════════════════════════════════════════════
     // 4. PBR MATERIALS
@@ -762,79 +897,93 @@
       if (v.z > 0) v.z += gluteal * 0.04;
     };
 
-    const deformEar = (v) => {
-      const y01 = (v.y + 1.0) * 0.5;
-      const r = Math.sqrt(v.x * v.x + v.y * v.y);
+    function shapeEarPoint(x, y, depthMul = 1.0) {
+      const r = Math.sqrt(x * x + y * y);
+      const rootNarrow = THREE.MathUtils.smoothstep(-0.96, -0.36, y);
+      const topRound = THREE.MathUtils.smoothstep(0.56, 1.0, y);
+      const shoulder = Math.exp(-Math.pow((y - 0.08) / 0.64, 2.0));
+      const basalPad = Math.exp(-(x * x * 4.0 + Math.pow(y + 0.72, 2.0) * 12.0));
+      const rim = THREE.MathUtils.smoothstep(0.70, 1.0, r);
+      const concha = Math.exp(-(x * x * 2.2 + Math.pow(y + 0.02, 2.0) * 2.5));
+      const upperFold = Math.exp(-(Math.pow(x + 0.08, 2.0) * 3.2 + Math.pow(y - 0.26, 2.0) * 6.5));
 
-      // 1. Tall rounded petal shape — narrow base, wide upper body
-      v.x *= 1.35;
-      v.y *= 1.08;
+      let px = x * (0.76 + shoulder * 0.15);
+      px *= 0.54 + rootNarrow * 0.46;
+      let py = y * 0.82 - topRound * topRound * 0.055 + basalPad * 0.045;
+      let pz = -concha * 0.105 * depthMul + upperFold * 0.045 * depthMul + rim * 0.040;
+      pz += basalPad * 0.035;
+      return new THREE.Vector3(px, py, pz);
+    }
 
-      // 2. Thin but visible membrane (not paper-flat)
-      v.z *= 0.08;
-
-      // 3. Very narrow base where ear attaches to skull
-      const baseTaper = THREE.MathUtils.smoothstep(0.0, 0.30, y01);
-      v.x *= 0.22 + baseTaper * 0.78;
-
-      // 4. Deep concave bowl curvature — visible cup/scoop shape
-      v.z += r * r * 0.28;
-      v.z -= (1.0 - r * r) * 0.08;
-
-      // 5. Rounded dome top — softer apex
-      if (y01 > 0.78) {
-        const blend = (y01 - 0.78) / 0.22;
-        const sq = blend * blend;
-        v.y *= 1.0 - sq * 0.20;
-        v.x *= 1.0 - sq * 0.08;
-      }
-
-      // 6. Slight rim thickening for rolled edge
-      if (r > 0.78) {
-        const rimT = (r - 0.78) / 0.22;
-        v.z *= 1.0 + rimT * 1.2;
-      }
-    };
-    function createEarInnerGeometry(depthMul = 1.0) {
-      const geo = new THREE.CircleGeometry(1, 56);
-      const pos = geo.attributes.position;
-      const v = new THREE.Vector3();
-      for (let i = 0; i < pos.count; i++) {
-        v.fromBufferAttribute(pos, i);
-        const r = Math.sqrt(v.x * v.x + v.y * v.y);
-        const y01 = (v.y + 1.0) * 0.5;
-        const ang = Math.atan2(v.y, v.x);
-        const rootTaper = THREE.MathUtils.smoothstep(0.0, 0.30, y01);
-        v.x *= 0.30 + rootTaper * 0.70;
-        const shoulder = Math.exp(-Math.pow((y01 - 0.72) / 0.18, 2.0));
-        v.x *= 1.0 + shoulder * 0.13;
-        // Soft concha depression with gentle mouse-like folds.
-        v.z = -Math.pow(r, 1.5) * 0.22 * depthMul;
-        const ridge = Math.exp(-(v.x * v.x * 2.1 + Math.pow(v.y - 0.24, 2.0) * 3.0));
-        v.z += ridge * 0.062 * depthMul;
-        const fold = Math.exp(-(Math.pow(v.x - 0.02, 2.0) * 2.8 + Math.pow(v.y + 0.08, 2.0) * 3.4));
-        v.z += fold * 0.026 * depthMul;
-        v.z += Math.sin(ang * 1.8) * (0.003 + (1.0 - r) * 0.004) * depthMul;
-        // Rim thickening so the cavity reads in close-up.
-        const rim = THREE.MathUtils.smoothstep(0.70, 0.94, r);
-        v.z += rim * 0.020 * Math.min(1.2, depthMul);
-        // Small lower-front nub only (avoid human tragus shape).
-        const nub = Math.exp(-(Math.pow(v.x + 0.14, 2.0) * 8.0 + Math.pow(v.y + 0.66, 2.0) * 15.0));
-        v.z += nub * 0.016 * depthMul;
-        if (y01 > 0.80) {
-          const tipTaper = 1.0 - (y01 - 0.82) / 0.18;
-          v.x *= Math.max(0.94, tipTaper);
-          const cap = THREE.MathUtils.smoothstep(0.88, 1.0, y01);
-          v.x *= 1.0 + cap * 0.30;
-          v.y *= 1.0 - cap * 0.10;
+    function createEarSurfaceGeometry(depthMul = 1.0, radiusScale = 1.0) {
+      const rings = 17;
+      const segments = 72;
+      const positions = [];
+      const uvs = [];
+      const indices = [];
+      for (let ring = 0; ring <= rings; ring++) {
+        const rr = (ring / rings) * radiusScale;
+        for (let seg = 0; seg <= segments; seg++) {
+          const a = (seg / segments) * Math.PI * 2;
+          const p = shapeEarPoint(Math.cos(a) * rr, Math.sin(a) * rr, depthMul);
+          positions.push(p.x, p.y, p.z);
+          uvs.push(0.5 + Math.cos(a) * rr * 0.5, 0.5 + Math.sin(a) * rr * 0.5);
         }
-        if (y01 > 0.90) {
-          const flatten = (y01 - 0.90) / 0.10;
-          v.y -= flatten * 0.04;
-        }
-        pos.setXYZ(i, v.x, v.y * 0.95, v.z);
       }
+      const row = segments + 1;
+      for (let ring = 0; ring < rings; ring++) {
+        for (let seg = 0; seg < segments; seg++) {
+          const a = ring * row + seg;
+          const b = a + row;
+          indices.push(a, b, a + 1, b, b + 1, a + 1);
+        }
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+      geo.setIndex(indices);
       geo.computeVertexNormals();
+      return geo;
+    }
+
+    function createEarRimGeometry() {
+      const segments = 88;
+      const positions = [];
+      const uvs = [];
+      const indices = [];
+      for (let band = 0; band < 2; band++) {
+        const rr = band === 0 ? 0.84 : 1.0;
+        for (let seg = 0; seg <= segments; seg++) {
+          const a = (seg / segments) * Math.PI * 2;
+          const p = shapeEarPoint(Math.cos(a) * rr, Math.sin(a) * rr, 0.8);
+          const lip = band === 0 ? 0.012 : 0.046;
+          positions.push(p.x, p.y, p.z + lip);
+          uvs.push(seg / segments, band);
+        }
+      }
+      const row = segments + 1;
+      for (let seg = 0; seg < segments; seg++) {
+        const a = seg;
+        const b = row + seg;
+        indices.push(a, b, a + 1, b, b + 1, a + 1);
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+      geo.setIndex(indices);
+      geo.computeVertexNormals();
+      return geo;
+    }
+
+    function createEarConchaGeometry() {
+      const geo = new THREE.SphereGeometry(0.24, 24, 16);
+      deform(geo, (v) => {
+        v.x *= 0.82;
+        v.y *= 0.46;
+        v.z *= 0.12;
+        v.z -= 0.035;
+        if (v.y > 0.0) v.y *= 0.86;
+      });
       return geo;
     }
 
@@ -850,9 +999,10 @@
     const bodyGeo = deform(new THREE.SphereGeometry(1, 64, 64), deformBody);
     const headGeo = deform(new THREE.SphereGeometry(1, 48, 48), deformHead);
     const thighGeo = deform(new THREE.SphereGeometry(1, 32, 32), deformThigh);
-    const earGeo = deform(new THREE.SphereGeometry(1, 32, 32), deformEar);
-    const earInnerGeo = createEarInnerGeometry(1.0);
-    const earConchaGeo = createEarInnerGeometry(2.25);
+    const earGeo = createEarSurfaceGeometry(0.72, 1.0);
+    const earInnerGeo = createEarSurfaceGeometry(1.45, 0.68);
+    const earRimGeo = createEarRimGeometry();
+    const earConchaGeo = createEarConchaGeometry();
 
 
     // ═══════════════════════════════════════════════════════════════
@@ -1346,6 +1496,108 @@
       return group;
     }
 
+    function createEarBaseFur(furColor, density, sideSign) {
+      const count = Math.floor(520 * density);
+      if (count <= 0) return new THREE.Group();
+      const geo = new THREE.ConeGeometry(0.006, 0.105, 3);
+      geo.translate(0, 0.052, 0);
+      const mat = new THREE.MeshPhysicalMaterial({
+        color: new THREE.Color(furColor),
+        roughness: 0.88,
+        transparent: true,
+        opacity: 0.82,
+        sheen: 0.65,
+        sheenColor: new THREE.Color(furColor).offsetHSL(0.0, -0.04, 0.12),
+      });
+      const inst = new THREE.InstancedMesh(geo, mat, count);
+      const dummy = new THREE.Object3D();
+      const nrm = new THREE.Vector3();
+      for (let i = 0; i < count; i++) {
+        const u = Math.random();
+        const theta = -Math.PI * 0.78 + u * Math.PI * 1.56;
+        const baseR = 0.42 + Math.random() * 0.14;
+        const x = Math.cos(theta) * baseR * 0.72;
+        const y = -0.54 + Math.sin(theta) * 0.18 + Math.random() * 0.12;
+        const z = -0.018 + Math.random() * 0.035;
+        dummy.position.set(x, y, z);
+        nrm.set(sideSign * 0.35 + x * 0.18, 0.22 + Math.random() * 0.20, 0.82).normalize();
+        dummy.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), nrm);
+        const s = 0.55 + Math.random() * 0.58;
+        dummy.scale.set(s, s, s);
+        dummy.updateMatrix();
+        inst.setMatrixAt(i, dummy.matrix);
+      }
+      return inst;
+    }
+
+    function buildMouseEar({
+      sideSign,
+      eSize,
+      strain,
+      skinColor,
+      furColor,
+      density,
+      outerMat,
+      innerMat,
+      cavityMat,
+      asymmetryTilt,
+      asymmetryYaw,
+      heightOffset,
+    }) {
+      const ear = new THREE.Group();
+      const outer = new THREE.Mesh(earGeo, outerMat);
+      outer.castShadow = true;
+      outer.receiveShadow = true;
+      ear.add(outer);
+
+      const rimMat = outerMat.clone();
+      rimMat.color = rimMat.color.clone().offsetHSL(0.0, -0.02, -0.065);
+      rimMat.transmission = Math.min(0.32, outerMat.transmission ?? 0.3);
+      rimMat.thickness = 0.055;
+      rimMat.roughness = Math.min(0.62, (outerMat.roughness ?? 0.42) + 0.10);
+      const rim = new THREE.Mesh(earRimGeo, rimMat);
+      rim.castShadow = true;
+      ear.add(rim);
+
+      const inner = new THREE.Mesh(earInnerGeo, innerMat);
+      inner.position.set(sideSign * -0.018, -0.025, 0.038);
+      inner.rotation.z = sideSign * 0.025;
+      inner.castShadow = true;
+      ear.add(inner);
+
+      const concha = new THREE.Mesh(earConchaGeo, cavityMat);
+      concha.position.set(sideSign * -0.072, -0.37, 0.055);
+      concha.rotation.set(0.05, sideSign * -0.10, sideSign * 0.08);
+      concha.castShadow = true;
+      ear.add(concha);
+
+      const basalFold = new THREE.Mesh(new THREE.CapsuleGeometry(0.035, 0.33, 10, 12), cavityMat);
+      basalFold.position.set(sideSign * -0.16, -0.47, 0.060);
+      basalFold.rotation.set(Math.PI / 2 - 0.14, sideSign * 0.08, sideSign * 0.28);
+      basalFold.scale.set(1.0, 0.7, 0.55);
+      basalFold.castShadow = true;
+      ear.add(basalFold);
+
+      const baseFur = createEarBaseFur(furColor, density, sideSign);
+      baseFur.position.set(0, -0.02, 0.03);
+      ear.add(baseFur);
+
+      const strainScale = strain.earScaleMul ?? 1.0;
+      const s = eSize * 1.08 * strainScale;
+      ear.position.set(
+        sideSign * 0.58,
+        0.58 + heightOffset,
+        PROP.earSetBack + 0.42
+      );
+      ear.rotation.set(
+        -0.12 + asymmetryTilt,
+        sideSign * ((strain.earYaw ?? PROP.earYaw) * 0.26 + asymmetryYaw),
+        sideSign * -0.18
+      );
+      ear.scale.set(s * 0.82, s * 0.74, s * 0.50);
+      return ear;
+    }
+
 
     // ═══════════════════════════════════════════════════════════════
     // 9. ENCLOSURE + CONTACT SHADOW + POSE CONSTANTS
@@ -1364,7 +1616,7 @@
       grad.addColorStop(1, 'rgba(0,0,0,0)');
       ctx.fillStyle = grad; ctx.fillRect(0, 0, 64, 64);
       const tex = new THREE.CanvasTexture(c);
-      const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, depthTest: false });
+      const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, depthTest: true });
       const geo = new THREE.PlaneGeometry(5, 4);
       const mesh = new THREE.Mesh(geo, mat);
       mesh.rotation.x = -Math.PI / 2;
@@ -1424,6 +1676,11 @@
         this.yawVel = 0;
         this.bodyDyn = { y: 1.3, vy: 0, pitch: 0, pitchV: 0, roll: 0, rollV: 0 };
         this.tailDyn = { sway: 0, swayV: 0, lift: 0, liftV: 0 };
+        this.behaviorTimer = 0.8 + Math.random() * 2.4;
+        this.pauseTimer = Math.random() * 0.9;
+        this.socialContact = false;
+        this.socialDistance = Infinity;
+        this.socialTarget = new THREE.Vector2(0, 1);
 
         const furColor = params.furColor;
         const skinColor = params.skinColor;
@@ -1466,6 +1723,11 @@
           nextIntervalL: 1.0 + Math.random() * 3.0,
           nextIntervalR: 1.5 + Math.random() * 3.5,
           baseRotL: null, baseRotR: null,
+        };
+        this.blink = {
+          timer: Math.random() * 3.0,
+          interval: 2.2 + Math.random() * 6.0,
+          phase: 1.0,
         };
 
         // Flesh material
@@ -1705,95 +1967,85 @@
         this.padL.add(createVolumetricWhiskers(wColor, true));
         this.padR.add(createVolumetricWhiskers(wColor, false));
 
-        // EARS (with asymmetry) — paper-thin translucent pinna
+        // EARS (with asymmetry) — rounded mouse pinnae integrated into the skull fur.
         const earOuterMat = this.fleshMat.clone();
         earOuterMat.color.set(strain.earOuterColor ?? skinColor);
-        // Keep ear color close to skin tone
-        earOuterMat.color.lerp(new THREE.Color(skinColor), 0.82);
-        earOuterMat.transmission = strain.earOuterTransmission ?? 0.52;
+        earOuterMat.color.lerp(new THREE.Color(skinColor), strain.earSkinBlend ?? 0.48);
+        earOuterMat.transmission = strain.earOuterTransmission ?? 0.38;
         earOuterMat.ior = 1.38;
-        earOuterMat.thickness = 0.035; // very thin for translucency
-        earOuterMat.roughness = strain.earOuterRoughness ?? 0.48;
+        earOuterMat.thickness = 0.028;
+        earOuterMat.roughness = strain.earOuterRoughness ?? 0.56;
         earOuterMat.map = earAlbedoMap;
         earOuterMat.roughnessMap = earRoughnessMap;
         earOuterMat.normalMap = earNormalMap;
-        earOuterMat.normalScale = new THREE.Vector2(0.34, 0.28);
-        earOuterMat.clearcoat = 0.06; // subtle oil sheen
-        earOuterMat.clearcoatRoughness = 0.25;
-        earOuterMat.sheen = 0.42;
-        earOuterMat.sheenColor = new THREE.Color(0xffd8c0);
+        earOuterMat.normalScale = new THREE.Vector2(0.18, 0.16);
+        earOuterMat.clearcoat = 0.025;
+        earOuterMat.clearcoatRoughness = 0.42;
+        earOuterMat.sheen = 0.24;
+        earOuterMat.sheenColor = new THREE.Color(strain.earSheenColor ?? 0xd0b5a8);
         earOuterMat.side = THREE.DoubleSide;
-        earOuterMat.attenuationColor = new THREE.Color(0xf0a890);
-        earOuterMat.attenuationDistance = 0.3;
+        earOuterMat.attenuationColor = new THREE.Color(strain.earAttenuationColor ?? 0xd89a8a);
+        earOuterMat.attenuationDistance = strain.earAttenuationDistance ?? 0.18;
         const earInnerMat = this.fleshMat.clone();
         earInnerMat.color.set(strain.earInnerColor ?? strain.earOuterColor ?? skinColor);
-        earInnerMat.color.lerp(new THREE.Color(skinColor), 0.78);
-        earInnerMat.color.offsetHSL(0.0, strain.earInnerSatOffset ?? 0.06, strain.earInnerLightOffset ?? 0.04);
-        earInnerMat.transmission = strain.earInnerTransmission ?? 0.72;
+        earInnerMat.color.lerp(new THREE.Color(skinColor), strain.earInnerSkinBlend ?? 0.30);
+        earInnerMat.color.offsetHSL(0.0, strain.earInnerSatOffset ?? 0.035, strain.earInnerLightOffset ?? 0.015);
+        earInnerMat.transmission = strain.earInnerTransmission ?? 0.42;
         earInnerMat.ior = 1.38;
-        earInnerMat.thickness = 0.025; // even thinner inside
-        earInnerMat.roughness = 0.45;
+        earInnerMat.thickness = 0.020;
+        earInnerMat.roughness = 0.52;
         earInnerMat.map = earAlbedoMap;
         earInnerMat.roughnessMap = earRoughnessMap;
         earInnerMat.normalMap = earNormalMap;
-        earInnerMat.normalScale = new THREE.Vector2(0.40, 0.32);
-        earInnerMat.clearcoat = 0.04;
-        earInnerMat.clearcoatRoughness = 0.22;
-        earInnerMat.sheen = 0.55;
-        earInnerMat.sheenColor = new THREE.Color(0xffdfc8);
+        earInnerMat.normalScale = new THREE.Vector2(0.23, 0.20);
+        earInnerMat.clearcoat = 0.025;
+        earInnerMat.clearcoatRoughness = 0.40;
+        earInnerMat.sheen = 0.34;
+        earInnerMat.sheenColor = new THREE.Color(strain.earSheenColor ?? 0xffdfc8);
         earInnerMat.side = THREE.DoubleSide;
-        earInnerMat.attenuationColor = new THREE.Color(0xf0a890);
-        earInnerMat.attenuationDistance = 0.2;
+        earInnerMat.attenuationColor = new THREE.Color(strain.earAttenuationColor ?? 0xd89a8a);
+        earInnerMat.attenuationDistance = strain.earAttenuationDistance ?? 0.16;
 
         // Deeper cavity material for internal cup shading.
         const earCavityMat = earInnerMat.clone();
         earCavityMat.color = earCavityMat.color.clone();
-        earCavityMat.color.offsetHSL(0.0, -0.01, -0.10);
-        earCavityMat.transmission = Math.min(0.22, earInnerMat.transmission);
-        earCavityMat.thickness = 0.055;
-        earCavityMat.roughness = 0.60;
+        earCavityMat.color.offsetHSL(0.0, -0.02, -0.13);
+        earCavityMat.transmission = Math.min(0.16, earInnerMat.transmission);
+        earCavityMat.thickness = 0.040;
+        earCavityMat.roughness = 0.68;
         earCavityMat.clearcoat = 0.0;
 
-        // Ear size and placement
-        const earScale = 1.25;
-        const earL = new THREE.Mesh(earGeo, earOuterMat);
-        earL.position.set(0.54, 0.50 + (strain.earHeightOffset ?? 0.0) + this.asymmetry.earHeightDiff, PROP.earSetBack - 0.02);
-        // Ears stand upright with slight outward tilt
-        earL.rotation.set(-0.10 + this.asymmetry.earTiltL, -((strain.earYaw ?? PROP.earYaw) * 0.20 + this.asymmetry.earYawDelta), 0.22);
-        earL.scale.set(eSize * earScale, eSize * 0.92 * earScale, eSize * 0.85 * earScale);
-        earL.castShadow = true; this.head.add(earL);
-        const earLCav = new THREE.Group();
-        earLCav.position.set(0, 0.0, 0.02);
-        earL.add(earLCav);
-        const earLI = new THREE.Mesh(earInnerGeo, earInnerMat);
-        earLI.scale.set(0.72, 0.88, 1.0);
-        earLI.castShadow = true;
-        earLCav.add(earLI);
-        const conchaL = new THREE.Mesh(earConchaGeo, earCavityMat);
-        conchaL.scale.set(0.55, 0.65, 1.0);
-        conchaL.position.set(-0.02, -0.06, -0.06);
-        conchaL.rotation.set(0.02, 0.02, -0.01);
-        conchaL.castShadow = true;
-        earLCav.add(conchaL);
+        const earL = buildMouseEar({
+          sideSign: 1,
+          eSize,
+          strain,
+          skinColor,
+          furColor,
+          density,
+          outerMat: earOuterMat,
+          innerMat: earInnerMat,
+          cavityMat: earCavityMat,
+          asymmetryTilt: this.asymmetry.earTiltL,
+          asymmetryYaw: this.asymmetry.earYawDelta,
+          heightOffset: (strain.earHeightOffset ?? 0.0) + this.asymmetry.earHeightDiff,
+        });
+        this.head.add(earL);
 
-        const earR = new THREE.Mesh(earGeo, earOuterMat);
-        earR.position.set(-0.54, 0.50 + (strain.earHeightOffset ?? 0.0) - this.asymmetry.earHeightDiff, PROP.earSetBack - 0.02);
-        earR.rotation.set(-0.10 + this.asymmetry.earTiltR, (strain.earYaw ?? PROP.earYaw) * 0.20 + this.asymmetry.earYawDelta, -0.22);
-        earR.scale.set(eSize * earScale, eSize * 0.92 * earScale, eSize * 0.85 * earScale);
-        earR.castShadow = true; this.head.add(earR);
-        const earRCav = new THREE.Group();
-        earRCav.position.set(0, 0.0, 0.02);
-        earR.add(earRCav);
-        const earRI = new THREE.Mesh(earInnerGeo, earInnerMat);
-        earRI.scale.set(0.72, 0.88, 1.0);
-        earRI.castShadow = true;
-        earRCav.add(earRI);
-        const conchaR = new THREE.Mesh(earConchaGeo, earCavityMat);
-        conchaR.scale.set(0.55, 0.65, 1.0);
-        conchaR.position.set(0.02, -0.06, -0.06);
-        conchaR.rotation.set(0.02, -0.02, 0.01);
-        conchaR.castShadow = true;
-        earRCav.add(conchaR);
+        const earR = buildMouseEar({
+          sideSign: -1,
+          eSize,
+          strain,
+          skinColor,
+          furColor,
+          density,
+          outerMat: earOuterMat,
+          innerMat: earInnerMat,
+          cavityMat: earCavityMat,
+          asymmetryTilt: this.asymmetry.earTiltR,
+          asymmetryYaw: this.asymmetry.earYawDelta,
+          heightOffset: (strain.earHeightOffset ?? 0.0) - this.asymmetry.earHeightDiff,
+        });
+        this.head.add(earR);
 
         // Store ear refs for micro-motion
         this.earL = earL; this.earR = earR;
@@ -1825,6 +2077,10 @@
           new THREE.MeshBasicMaterial({ color: 0x333333, transparent: true, opacity: 0.3 }));
         tearR.position.copy(eyeR.position); tearR.position.y -= 0.02;
         tearR.rotation.y = -Math.PI / 2; this.head.add(tearR);
+        this.eyeL = eyeL;
+        this.eyeR = eyeR;
+        this.corneaL = cL;
+        this.corneaR = cR;
 
         // ═══ LIMBS (anatomically correct chains) ═══
         // Hindlimbs
@@ -1926,12 +2182,24 @@
       update(time, otherMice = [], hudRef = null, dt = 0.016) {
         dt = Math.min(dt, 0.05);
         let t = time * 2.0 * this.speedMult + this.timeOffset;
+        if (!guiParams.isPaused) {
+          this.behaviorTimer -= dt;
+          this.pauseTimer = Math.max(0, this.pauseTimer - dt);
+          if (this.behaviorTimer <= 0) {
+            if (Math.random() < 0.52) {
+              this.pauseTimer = 0.35 + Math.random() * 1.35;
+            }
+            this.behaviorTimer = 1.4 + Math.random() * 4.2;
+            if (Math.random() < 0.22) this.wallFollowDir *= -1;
+          }
+        }
+        const isPausing = this.pauseTimer > 0;
 
         // --- FORCE ACCUMULATION ---
         this.force.set(0, 0);
         let burst = Math.sin(t * 1.5 + this.burstPhase);
         burst = 0.7 + 0.3 * Math.max(0, burst);
-        const driveStrength = burst * this.guiParams.wanderForce;
+        const driveStrength = burst * this.guiParams.wanderForce * (isPausing ? 0.18 : 1.0);
 
         // Thigmotaxis
         const px = this.mesh.position.x, pz = this.mesh.position.z;
@@ -1990,14 +2258,44 @@
           }
         }
 
-        // Mouse-to-mouse collision
-        const MOUSE_RADIUS = 4.0;
+        // Mouse-to-mouse interaction: attraction at investigation distance,
+        // firm repulsion only at body overlap distance.
+        const MOUSE_RADIUS = 3.45;
+        const SOCIAL_RADIUS = 8.2;
         let isColliding = false;
+        let nearestSocialDist = Infinity;
+        this.socialContact = false;
         for (const other of otherMice) {
           if (other === this) continue;
           const dx = this.mesh.position.x - other.mesh.position.x;
           const dz = this.mesh.position.z - other.mesh.position.z;
           const distSq = dx * dx + dz * dz;
+          if (distSq > 0.001) {
+            const dist = Math.sqrt(distSq);
+            const toOtherX = -dx / dist;
+            const toOtherZ = -dz / dist;
+            if (dist < nearestSocialDist) {
+              nearestSocialDist = dist;
+              this.socialTarget.set(toOtherX, toOtherZ);
+            }
+            if (dist < SOCIAL_RADIUS) {
+              const socialBand = THREE.MathUtils.clamp((SOCIAL_RADIUS - dist) / (SOCIAL_RADIUS - MOUSE_RADIUS), 0, 1);
+              const facing = this.heading.x * toOtherX + this.heading.y * toOtherZ;
+              if (dist > MOUSE_RADIUS * 1.18) {
+                const curiosity = (0.22 + 0.32 * Math.max(0, Math.sin(time * 0.78 + this.timeOffset * 0.13))) * socialBand;
+                const faceGate = facing > -0.55 ? 1.0 : 0.35;
+                this.force.x += toOtherX * driveStrength * curiosity * faceGate;
+                this.force.y += toOtherZ * driveStrength * curiosity * faceGate;
+              }
+              if (dist < 5.2) {
+                const side = this.dir;
+                this.force.x += -toOtherZ * side * socialBand * driveStrength * 0.20;
+                this.force.y += toOtherX * side * socialBand * driveStrength * 0.20;
+                this.velocity.multiplyScalar(0.992);
+                this.socialContact = true;
+              }
+            }
+          }
           if (distSq < MOUSE_RADIUS * MOUSE_RADIUS && distSq > 0.001) {
             isColliding = true;
             const dist = Math.sqrt(distSq);
@@ -2013,12 +2311,14 @@
             }
           }
         }
+        this.socialDistance = nearestSocialDist;
 
         const preSpeed = this.velocity.length();
 
         // Cruise assist: keep mice from decaying to full stop after startup.
-        if (!guiParams.isPaused) {
-          const cruiseTarget = Math.max(this.guiParams.maxSpeed * 0.30, 1.8);
+        if (!guiParams.isPaused && !isPausing) {
+          const cruiseBase = this.socialContact ? 0.16 : 0.30;
+          const cruiseTarget = Math.max(this.guiParams.maxSpeed * cruiseBase, this.socialContact ? 0.75 : 1.8);
           if (preSpeed < cruiseTarget) {
             const deficit = (cruiseTarget - preSpeed) / Math.max(cruiseTarget, 1e-3);
             const cruiseDir = this.heading.lengthSq() > 1e-6
@@ -2031,12 +2331,12 @@
         }
 
         // Drag (lighter at very low speed so movement does not stall).
-        const dragC = this.guiParams.dragCoeff * (preSpeed < 1.0 ? 0.45 : 1.0);
+        const dragC = this.guiParams.dragCoeff * (isPausing ? 3.0 : (preSpeed < 1.0 ? 0.45 : 1.0));
         this.force.x -= this.velocity.x * dragC;
         this.force.y -= this.velocity.y * dragC;
 
         // Low-speed rescue: inject motion if the mouse lingers too long.
-        if (!guiParams.isPaused) {
+        if (!guiParams.isPaused && !isPausing && !this.socialContact) {
           if (preSpeed < 0.8) this.lowSpeedTimer += dt;
           else this.lowSpeedTimer = Math.max(0, this.lowSpeedTimer - dt * 0.5);
           if (this.lowSpeedTimer > 1.0) {
@@ -2146,10 +2446,25 @@
         this.mesh.rotation.y = this.yawAngle;
 
         if (hudRef) {
-          hudRef.state.innerText = isMoving ? "SCURRYING // AVOIDANCE" : "ALERT // SNIFFING";
-          hudRef.state.style.color = isMoving ? "#00f0ff" : "#ffcc00";
-          hudRef.hr.innerText = isMoving ? "540 BPM" : "410 BPM";
-          hudRef.resp.innerText = isMoving ? "210 BPM" : (160 + Math.floor(Math.random() * 10)) + " BPM";
+          let stateText = "EXPLORING";
+          let stateColor = "#2f3c30";
+          if (this.rearAmount > 0.10) {
+            stateText = "REARING // WALL CHECK";
+            stateColor = "#6e4d2f";
+          } else if (this.socialContact) {
+            stateText = "SOCIAL SNIFFING";
+            stateColor = "#7a3e34";
+          } else if (isPausing || !isMoving) {
+            stateText = "PAUSE // SNIFFING";
+            stateColor = "#6e4d2f";
+          } else if (wallDist < 3.2) {
+            stateText = "WALL EXPLORATION";
+            stateColor = "#526247";
+          }
+          hudRef.state.innerText = stateText;
+          hudRef.state.style.color = stateColor;
+          hudRef.hr.innerText = isMoving && !isPausing ? "540 BPM" : "410 BPM";
+          hudRef.resp.innerText = isMoving && !isPausing ? "210 BPM" : (155 + Math.floor(Math.random() * 16)) + " BPM";
           hudRef.coord.innerText = `${this.mesh.position.x.toFixed(2)}, ${this.mesh.position.z.toFixed(2)}`;
         }
 
@@ -2277,7 +2592,21 @@
         const sniffMod = Math.sin(time * 27.3 + this.timeOffset * 1.7) * 0.4;
         const sniffBurst = Math.max(0, Math.sin(time * 3.2 + this.timeOffset)) * 0.6;
         const sniffPulse = (sniffBase + sniffMod) * (0.4 + sniffBurst) * this.motion.sniffAmpMul;
-        if (!isMoving) {
+        if (this.socialContact) {
+          const targetYaw = Math.atan2(this.socialTarget.x, this.socialTarget.y);
+          let relYaw = targetYaw - this.yawAngle;
+          if (relYaw > Math.PI) relYaw -= Math.PI * 2;
+          if (relYaw < -Math.PI) relYaw += Math.PI * 2;
+          this.headGroup.rotation.y = THREE.MathUtils.clamp(relYaw, -0.46, 0.46) + sniffPulse * 0.028;
+          this.headGroup.rotation.x = -0.075 + sniffPulse * 0.030;
+          this.snoutTip.position.y = -0.15 + sniffPulse * 0.024;
+          const noseScalePulse = 1.0 + sniffPulse * 0.018;
+          this.snoutTip.scale.z = 0.72 * this.guiParams.snoutLength * noseScalePulse;
+          this.padL.rotation.y = 0.16 + sniffPulse * 0.13;
+          this.padR.rotation.y = -0.16 - sniffPulse * 0.13;
+          this.padL.rotation.z = sniffPulse * 0.018;
+          this.padR.rotation.z = -sniffPulse * 0.018;
+        } else if (!isMoving) {
           if (calmIdle) {
             this.headGroup.rotation.y *= 0.85;
             this.headGroup.rotation.x *= 0.85;
@@ -2327,6 +2656,31 @@
           this.earR.rotation.z = this.earMicro.baseRotR.z + this.earMicro.twitchAngleR - earBounce;
           this.earL.rotation.x = this.earMicro.baseRotL.x + this.earMicro.twitchAngleL * 0.5;
           this.earR.rotation.x = this.earMicro.baseRotR.x + this.earMicro.twitchAngleR * 0.5;
+        }
+
+        // Subtle rodent blink/wince cycle. It briefly compresses the glossy eye
+        // layer rather than adding human-like eyelids.
+        if (this.eyeL && this.eyeR && this.blink) {
+          if (!guiParams.isPaused) {
+            this.blink.timer += dt;
+            if (this.blink.timer > this.blink.interval) {
+              this.blink.timer = 0;
+              this.blink.interval = 2.6 + Math.random() * 7.2;
+              this.blink.phase = 0.0;
+            }
+            if (this.blink.phase < 1.0) {
+              this.blink.phase = Math.min(1.0, this.blink.phase + dt * 6.5);
+            }
+          }
+          const blinkAmount = this.blink.phase < 1.0
+            ? Math.sin(this.blink.phase * Math.PI)
+            : 0.0;
+          const eyeY = 0.95 * (1.0 - blinkAmount * 0.62);
+          const corneaY = 0.95 * (1.0 - blinkAmount * 0.64);
+          this.eyeL.scale.y = eyeY;
+          this.eyeR.scale.y = eyeY;
+          this.corneaL.scale.y = corneaY;
+          this.corneaR.scale.y = corneaY;
         }
 
         // ═══ TAIL ═══
@@ -2441,22 +2795,176 @@
     }
 
 
+    function createBeddingLayer(count = 1100) {
+      const group = new THREE.Group();
+      const chipGeo = new THREE.BoxGeometry(1, 1, 1);
+      const chipMat = new THREE.MeshStandardMaterial({
+        color: 0xd0bd93,
+        roughness: 0.94,
+        metalness: 0.0,
+      });
+      const chips = new THREE.InstancedMesh(chipGeo, chipMat, count);
+      chips.castShadow = false;
+      chips.receiveShadow = true;
+      const dummy = new THREE.Object3D();
+      const color = new THREE.Color();
+      for (let i = 0; i < count; i++) {
+        const nearWall = Math.random() < 0.38;
+        let x = (Math.random() - 0.5) * (ENCLOSURE_W - 2.6);
+        let z = (Math.random() - 0.5) * (ENCLOSURE_D - 2.6);
+        if (nearWall) {
+          if (Math.random() < 0.5) {
+            x = (Math.random() < 0.5 ? -1 : 1) * (ENCLOSURE_HALF_X - 1.0 - Math.random() * 2.4);
+          } else {
+            z = (Math.random() < 0.5 ? -1 : 1) * (ENCLOSURE_HALF_Z - 1.0 - Math.random() * 2.4);
+          }
+        }
+        dummy.position.set(x, 0.035 + Math.random() * 0.035, z);
+        dummy.rotation.set(
+          (Math.random() - 0.5) * 0.18,
+          Math.random() * Math.PI,
+          (Math.random() - 0.5) * 0.18
+        );
+        const len = 0.09 + Math.random() * 0.34;
+        const thin = 0.008 + Math.random() * 0.022;
+        dummy.scale.set(0.018 + Math.random() * 0.045, thin, len);
+        dummy.updateMatrix();
+        chips.setMatrixAt(i, dummy.matrix);
+        color.setHSL(
+          0.10 + (Math.random() - 0.5) * 0.030,
+          0.23 + Math.random() * 0.18,
+          0.56 + Math.random() * 0.20
+        );
+        chips.setColorAt(i, color);
+      }
+      group.add(chips);
+      return group;
+    }
+
+    function createFloorMarks() {
+      const group = new THREE.Group();
+      const markGeo = new THREE.PlaneGeometry(1, 1);
+      const addMark = (texture, x, z, sx, sz, opacity, rotation = 0) => {
+        const mat = new THREE.MeshBasicMaterial({
+          map: texture,
+          transparent: true,
+          opacity,
+          depthWrite: false,
+          color: 0xffffff,
+        });
+        const mesh = new THREE.Mesh(markGeo, mat);
+        mesh.rotation.x = -Math.PI / 2;
+        mesh.rotation.z = rotation;
+        mesh.position.set(x, 0.034, z);
+        mesh.scale.set(sx, sz, 1);
+        mesh.renderOrder = 3;
+        group.add(mesh);
+      };
+      for (let i = 0; i < 22; i++) {
+        addMark(
+          urineSpotTexture,
+          (Math.random() - 0.5) * (ENCLOSURE_W - 5.2),
+          (Math.random() - 0.5) * (ENCLOSURE_D - 4.8),
+          0.7 + Math.random() * 1.8,
+          0.25 + Math.random() * 1.1,
+          0.30 + Math.random() * 0.32,
+          Math.random() * Math.PI
+        );
+      }
+      for (let i = 0; i < 34; i++) {
+        addMark(
+          shadowSmudgeTexture,
+          (Math.random() - 0.5) * (ENCLOSURE_W - 4.6),
+          (Math.random() - 0.5) * (ENCLOSURE_D - 4.4),
+          0.35 + Math.random() * 1.3,
+          0.10 + Math.random() * 0.55,
+          0.15 + Math.random() * 0.26,
+          Math.random() * Math.PI
+        );
+      }
+      return group;
+    }
+
+    function createArenaHardware() {
+      const group = new THREE.Group();
+      const postMat = new THREE.MeshPhysicalMaterial({
+        color: 0xc7c0b2,
+        roughness: 0.34,
+        metalness: 0.18,
+        clearcoat: 0.18,
+        clearcoatRoughness: 0.32,
+      });
+      const rimMat = new THREE.MeshPhysicalMaterial({
+        color: 0xd8d2c4,
+        roughness: 0.48,
+        metalness: 0.06,
+      });
+      const postGeo = new THREE.CylinderGeometry(0.075, 0.075, ENCLOSURE_H, 16);
+      for (const x of [-ENCLOSURE_W * 0.5, ENCLOSURE_W * 0.5]) {
+        for (const z of [-ENCLOSURE_D * 0.5, ENCLOSURE_D * 0.5]) {
+          const post = new THREE.Mesh(postGeo, postMat);
+          post.position.set(x, ENCLOSURE_H * 0.5, z);
+          post.castShadow = true;
+          group.add(post);
+        }
+      }
+      const railH = 0.16;
+      const railY = ENCLOSURE_H + 0.02;
+      const railZGeo = new THREE.BoxGeometry(0.18, railH, ENCLOSURE_D + 0.24);
+      const railXGeo = new THREE.BoxGeometry(ENCLOSURE_W + 0.24, railH, 0.18);
+      for (const x of [-ENCLOSURE_W * 0.5, ENCLOSURE_W * 0.5]) {
+        const rail = new THREE.Mesh(railZGeo, rimMat);
+        rail.position.set(x, railY, 0);
+        rail.castShadow = true;
+        group.add(rail);
+      }
+      for (const z of [-ENCLOSURE_D * 0.5, ENCLOSURE_D * 0.5]) {
+        const rail = new THREE.Mesh(railXGeo, rimMat);
+        rail.position.set(0, railY, z);
+        rail.castShadow = true;
+        group.add(rail);
+      }
+      return group;
+    }
+
+
     // ═══════════════════════════════════════════════════════════════
     // 11. SCENE ASSEMBLY
     // ═══════════════════════════════════════════════════════════════
-    const floorGeo = new THREE.PlaneGeometry(200, 200);
+    const floorGeo = new THREE.PlaneGeometry(46, 34);
     const floorMat = new THREE.MeshPhysicalMaterial({
-      color: 0x1a1b18, roughness: 0.58, metalness: 0.08,
-      clearcoat: 0.18, clearcoatRoughness: 0.42,
+      color: 0xf0eadc,
+      map: labFloorAlbedoMap,
+      roughnessMap: labFloorRoughnessMap,
+      normalMap: labFloorNormalMap,
+      normalScale: new THREE.Vector2(0.075, 0.075),
+      roughness: 0.82,
+      metalness: 0.0,
+      emissive: 0xeadfce,
+      emissiveIntensity: 0.06,
+      clearcoat: 0.05,
+      clearcoatRoughness: 0.78,
       polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1
     });
     const floor = new THREE.Mesh(floorGeo, floorMat);
     floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true;
     scene.add(floor);
+    scene.add(createFloorMarks());
+    scene.add(createBeddingLayer());
 
     const enclosureMat = new THREE.MeshPhysicalMaterial({
-      color: 0xb9d7ea, transparent: true, opacity: 0.13, roughness: 0.2, metalness: 0.0, transmission: 0.0, thickness: 0.0,
-      side: THREE.BackSide, depthWrite: false
+      color: 0xd7eef8,
+      transparent: true,
+      opacity: 0.18,
+      roughness: 0.06,
+      metalness: 0.0,
+      transmission: 0.18,
+      thickness: 0.08,
+      ior: 1.45,
+      clearcoat: 0.30,
+      clearcoatRoughness: 0.18,
+      side: THREE.BackSide,
+      depthWrite: false
     });
     const enclosureBox = new THREE.Mesh(new THREE.BoxGeometry(ENCLOSURE_W, ENCLOSURE_H, ENCLOSURE_D), enclosureMat);
     enclosureBox.position.set(0, ENCLOSURE_H * 0.5, 0); enclosureBox.receiveShadow = true;
@@ -2465,20 +2973,21 @@
 
     const enclosureEdges = new THREE.LineSegments(
       new THREE.EdgesGeometry(new THREE.BoxGeometry(ENCLOSURE_W, ENCLOSURE_H, ENCLOSURE_D)),
-      new THREE.LineBasicMaterial({ color: 0x58c8ff, transparent: true, opacity: 0.45 })
+      new THREE.LineBasicMaterial({ color: 0x8b8f8a, transparent: true, opacity: 0.28 })
     );
-    enclosureEdges.material.depthTest = false;
+    enclosureEdges.material.depthTest = true;
     enclosureEdges.renderOrder = 25;
     enclosureEdges.position.copy(enclosureBox.position); scene.add(enclosureEdges);
+    scene.add(createArenaHardware());
 
-    const grid = new THREE.GridHelper(100, 50, 0xc8d7df, 0x4a5358);
+    const grid = new THREE.GridHelper(38, 19, 0xb8b1a4, 0xd1c7b5);
     grid.position.y = 0.05;
     const gridMats = Array.isArray(grid.material) ? grid.material : [grid.material];
     for (const gm of gridMats) {
       gm.transparent = true;
-      gm.opacity = 0.035;
+      gm.opacity = 0.010;
       gm.depthWrite = false;
-      gm.depthTest = false;
+      gm.depthTest = true;
     }
     grid.renderOrder = 20;
     scene.add(grid);
@@ -2486,15 +2995,15 @@
     // ═══════════════════════════════════════════════════════════════
     // 12. LIGHTING (3-point photographic lab setup)
     // ═══════════════════════════════════════════════════════════════
-    const ambientLight = new THREE.AmbientLight(0xf5f0eb, 0.42);
+    const ambientLight = new THREE.AmbientLight(0xf7f1e7, 0.56);
     scene.add(ambientLight);
 
-    const hemiLight = new THREE.HemisphereLight(0xe8eef5, 0xe0d5c9, 0.55);
+    const hemiLight = new THREE.HemisphereLight(0xf5f7fb, 0xd8cab6, 0.62);
     hemiLight.position.set(0, 20, 0); scene.add(hemiLight);
 
     // Key light (overhead panel)
-    const keyLight = new THREE.DirectionalLight(0xfff4e8, 0.95);
-    keyLight.position.set(-5, 16, 7); keyLight.castShadow = true;
+    const keyLight = new THREE.DirectionalLight(0xfff4e8, 1.18);
+    keyLight.position.set(-5, 17, 6); keyLight.castShadow = true;
     keyLight.shadow.mapSize.width = 4096; keyLight.shadow.mapSize.height = 4096;
     keyLight.shadow.camera.near = 0.5; keyLight.shadow.camera.far = 30;
     keyLight.shadow.camera.left = -20; keyLight.shadow.camera.right = 20;
@@ -2503,17 +3012,17 @@
     scene.add(keyLight);
 
     // Fill light
-    const fillLight = new THREE.DirectionalLight(0xdcecff, 0.52);
+    const fillLight = new THREE.DirectionalLight(0xf3f6ff, 0.34);
     fillLight.position.set(8, 7, 8); fillLight.castShadow = false;
     scene.add(fillLight);
 
     // Rim light
-    const rimLight = new THREE.DirectionalLight(0xf8fbff, 0.42);
+    const rimLight = new THREE.DirectionalLight(0xf8fbff, 0.18);
     rimLight.position.set(6, 7, -8); rimLight.castShadow = false;
     scene.add(rimLight);
 
-    const softbox = new THREE.RectAreaLight(0xfff1e2, 1.7, 12, 8);
-    softbox.position.set(-2, 8, 6);
+    const softbox = new THREE.RectAreaLight(0xfff1e2, 2.15, 16, 10);
+    softbox.position.set(-2, 9, 5);
     softbox.lookAt(0, 1.0, 0);
     scene.add(softbox);
 
@@ -2547,13 +3056,13 @@
       headSize: 1.0, snoutLength: 1.0,
       bodyLength: 1.0, legLength: 1.18, legThickness: 1.0,
       // Physics
-      maxSpeed: 9.0, dragCoeff: 1.5, wanderForce: 10.0, wallAttraction: 3.2,
+      maxSpeed: 7.2, dragCoeff: 2.15, wanderForce: 7.4, wallAttraction: 2.4,
       // Quality
-      qualityMode: 'Photo', furDetailLevel: 'High',
+      qualityMode: 'Photo', furDetailLevel: 'Med',
       enableVignette: false, enableGrain: false, enableAO: true,
       // Lighting
-      keyIntensity: 0.95, fillIntensity: 0.52, rimIntensity: 0.42, softboxIntensity: 1.7,
-      keyColorTemp: 5600, ambientIntensity: 0.42,
+      keyIntensity: 1.18, fillIntensity: 0.34, rimIntensity: 0.18, softboxIntensity: 2.15,
+      keyColorTemp: 5600, ambientIntensity: 0.56,
       // Proportions (exposed)
       propBodyLength: PROP.bodyLength, propBodyGirthX: PROP.bodyGirthX,
       propWaistTaper: PROP.waistTaper, propHaunchWidth: PROP.haunchWidth,
@@ -2572,17 +3081,19 @@
       enableSSS: true, sssThickness: 0.45, sssWrap: 0.5, sssBacklight: 0.6,
       enableContactAO: true, aoRadius: 1.5, aoIntensity: 0.35,
       enableMicroDetail: true, microScale: 40.0, microStrength: 0.06,
-      enablePostFX: false, postVignette: 0.18, postGrain: 0.008, postSaturation: 1.02,
+      enablePostFX: false, postVignette: 0.16, postGrain: 0.004, postSaturation: 0.98,
     };
     postFX.enabled = guiParams.enablePostFX;
 
     function getStrainProfile(presetName) {
       if (presetName === 'C57BL/6 (Black)') {
         return {
-          earOuterTransmission: 0.65, earInnerTransmission: 0.75,
-          earInnerSatOffset: 0.10, earInnerLightOffset: 0.15, earOuterRoughness: 0.32,
-          earOuterColor: '#c3a88f', earInnerColor: '#e1ccb6',
-          earYaw: 0.96, earHeightOffset: 0.0, padDarken: 0.88, clawColor: 0xcccccc,
+          earOuterTransmission: 0.22, earInnerTransmission: 0.32,
+          earInnerSatOffset: 0.05, earInnerLightOffset: 0.00, earOuterRoughness: 0.62,
+          earOuterColor: '#403536', earInnerColor: '#8d6a63',
+          earSkinBlend: 0.34, earInnerSkinBlend: 0.20, earScaleMul: 0.92,
+          earSheenColor: 0x9b8278, earAttenuationColor: 0x8a5148, earAttenuationDistance: 0.10,
+          earYaw: 0.82, earHeightOffset: -0.02, padDarken: 0.88, clawColor: 0xcccccc,
           pawColor: '#c28b86', pawPadColor: '#c98f89',
           noseColor: '#b97972', pawSpreadMul: 1.0, toeLenMul: 0.98,
           gaitAmpMul: 0.92, headIdleYawMul: 0.82, headIdlePitchMul: 0.88,
@@ -2590,12 +3101,29 @@
           breathIdleFreq: 10.0, breathMoveFreq: 18.0, tailWaveAmpMul: 0.85, tailWaveFreqMul: 0.90
         };
       }
+      if (presetName === 'CBA (Brown)') {
+        return {
+          earOuterTransmission: 0.32, earInnerTransmission: 0.40,
+          earInnerSatOffset: 0.035, earInnerLightOffset: 0.015, earOuterRoughness: 0.58,
+          earOuterColor: '#8c6552', earInnerColor: '#c49383',
+          earSkinBlend: 0.38, earInnerSkinBlend: 0.22, earScaleMul: 0.95,
+          earSheenColor: 0xc6a08e, earAttenuationColor: 0xb77668, earAttenuationDistance: 0.14,
+          earYaw: 0.58, earHeightOffset: -0.01, padDarken: 0.86, clawColor: 0xd7c8bc,
+          pawColor: '#d0a090', pawPadColor: '#d6a79a',
+          noseColor: '#b8786f', pawSpreadMul: 1.0, toeLenMul: 1.0,
+          gaitAmpMul: 1.0, headIdleYawMul: 1.0, headIdlePitchMul: 1.0,
+          sniffAmpMul: 1.0, breathIdleAmp: 0.013, breathMoveAmp: 0.016,
+          breathIdleFreq: 12.0, breathMoveFreq: 20.0, tailWaveAmpMul: 1.0, tailWaveFreqMul: 1.0
+        };
+      }
       if (presetName === 'Nude/Hairless') {
         return {
-          earOuterTransmission: 0.66, earInnerTransmission: 0.82,
-          earInnerSatOffset: 0.14, earInnerLightOffset: 0.14, earOuterRoughness: 0.28,
+          earOuterTransmission: 0.50, earInnerTransmission: 0.62,
+          earInnerSatOffset: 0.10, earInnerLightOffset: 0.08, earOuterRoughness: 0.44,
           earOuterColor: '#efc2ba', earInnerColor: '#ffd9ce',
-          earYaw: 0.42, earHeightOffset: 0.015, padDarken: 0.88, clawColor: 0xe1d7cb,
+          earSkinBlend: 0.36, earInnerSkinBlend: 0.20, earScaleMul: 1.04,
+          earSheenColor: 0xffd6c8, earAttenuationColor: 0xea9d8f, earAttenuationDistance: 0.18,
+          earYaw: 0.48, earHeightOffset: 0.00, padDarken: 0.88, clawColor: 0xe1d7cb,
           pawColor: '#f0bbb2', pawPadColor: '#f3c4bb',
           noseColor: '#d29089', pawSpreadMul: 1.04, toeLenMul: 1.05,
           gaitAmpMul: 1.08, headIdleYawMul: 1.15, headIdlePitchMul: 1.12,
@@ -2604,10 +3132,12 @@
         };
       }
       return { // BALB/c default
-        earOuterTransmission: 0.58, earInnerTransmission: 0.76,
-        earInnerSatOffset: 0.11, earInnerLightOffset: 0.11, earOuterRoughness: 0.33,
-        earOuterColor: '#d6c0a8', earInnerColor: '#ebd8c5',
-        earYaw: 0.40, earHeightOffset: 0.0, padDarken: 0.84, clawColor: 0xd7cdc2,
+        earOuterTransmission: 0.42, earInnerTransmission: 0.54,
+        earInnerSatOffset: 0.08, earInnerLightOffset: 0.055, earOuterRoughness: 0.50,
+        earOuterColor: '#d6b3a2', earInnerColor: '#efc7ba',
+        earSkinBlend: 0.34, earInnerSkinBlend: 0.20, earScaleMul: 0.94,
+        earSheenColor: 0xffd8c0, earAttenuationColor: 0xde9386, earAttenuationDistance: 0.16,
+        earYaw: 0.50, earHeightOffset: -0.01, padDarken: 0.84, clawColor: 0xd7cdc2,
         pawColor: '#dfaea5', pawPadColor: '#e7bab0',
         noseColor: '#c9867f', pawSpreadMul: 1.0, toeLenMul: 1.0,
         gaitAmpMul: 1.0, headIdleYawMul: 1.0, headIdlePitchMul: 1.0,
@@ -2618,13 +3148,13 @@
 
     function applyStrainPreset(name) {
       guiParams.presets = name;
-      if (name === 'BALB/c (White)') { guiParams.furColor = '#e8e3d8'; guiParams.skinColor = '#e8bbae'; guiParams.furDensity = 0.80; guiParams.earSize = 0.74; }
-      if (name === 'C57BL/6 (Black)') { guiParams.furColor = '#242026'; guiParams.skinColor = '#4a3f44'; guiParams.furDensity = 0.90; guiParams.earSize = 0.84; }
-      if (name === 'CBA (Brown)') { guiParams.furColor = '#6a4b3a'; guiParams.skinColor = '#d0a090'; guiParams.furDensity = 0.76; guiParams.earSize = 0.76; }
-      if (name === 'Nude/Hairless') { guiParams.furColor = '#ffd0c8'; guiParams.skinColor = '#ffc0b8'; guiParams.furDensity = 0.0; guiParams.earSize = 0.9; }
+      if (name === 'BALB/c (White)') { guiParams.furColor = '#e8e3d8'; guiParams.skinColor = '#e8bbae'; guiParams.furDensity = 0.80; guiParams.earSize = 0.62; }
+      if (name === 'C57BL/6 (Black)') { guiParams.furColor = '#242026'; guiParams.skinColor = '#4a3f44'; guiParams.furDensity = 0.90; guiParams.earSize = 0.66; }
+      if (name === 'CBA (Brown)') { guiParams.furColor = '#6a4b3a'; guiParams.skinColor = '#d0a090'; guiParams.furDensity = 0.76; guiParams.earSize = 0.64; }
+      if (name === 'Nude/Hairless') { guiParams.furColor = '#ffd0c8'; guiParams.skinColor = '#ffc0b8'; guiParams.furDensity = 0.0; guiParams.earSize = 0.72; }
     }
 
-    const gui = new GUI({ title: 'GENETICS LAB (GUI)' });
+    const gui = new GUI({ title: 'OPEN FIELD CONTROLS' });
     const respawnNoticeState = new Map();
 
     function notifyRespawnRequired(key, value, message) {
