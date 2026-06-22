@@ -22,6 +22,14 @@
   </div>
 </section>
 
+## Visual Tour
+
+![Annolid desktop GUI with the annotation canvas and side panels](imgs/annolid_ui.png)
+
+The desktop workspace centers the image or video canvas, with label lists,
+behavior flags, file navigation, model actions, and save/export controls kept in
+the surrounding panels and toolbar.
+
 ## Choose Your Path
 
 <div class="ann-paths">

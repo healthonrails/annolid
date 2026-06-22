@@ -37,6 +37,8 @@ For a user install that does not need source editing, prefer the one-line instal
 
 ## First GUI Session Checklist
 
+![Annolid annotation view with polygons and the Keep Previous Annotation menu option](imgs/Annotation_keep_previous.png)
+
 - Open a short video.
 - Pick a representative seed frame.
 - Add labels, polygons, boxes, keypoints, zones, or behavior flags as needed.

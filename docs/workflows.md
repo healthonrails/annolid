@@ -37,9 +37,13 @@ Practical notes:
 - Review overlap, occlusion, and high-motion segments before scaling to long runs.
 - Validate a small representative segment before committing compute time to an entire recording.
 
+![Annolid GUI running Segment Anything assisted polygon creation](imgs/annolid_with_segment_anything.gif)
+
 ## 2. Annolid Bot Workflow
 
 Annolid Bot runs inside the GUI as a dedicated right-side dock.
+
+![Annolid GUI with the Annolid Bot dock open](imgs/annolid_bot_gui_dock.png)
 
 Current bot workflow highlights:
 

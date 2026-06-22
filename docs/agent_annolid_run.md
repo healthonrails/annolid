@@ -146,6 +146,8 @@ The output includes:
 
 The GUI also exposes the same data in the `Agent Capabilities` panel, reachable from the main app menu and the workspace onboarding dialog. It includes tabs for overview, tools, skills, and task-based suggestions.
 
+![Annolid Agent Capabilities panel with behavior-analysis suggestions](imgs/annolid_bot_capabilities.png)
+
 The chat composer also supports slash-driven selection:
 
 - type `/` or `@` to open a picker for skills, tools, and direct commands,
@@ -159,6 +161,8 @@ The chat composer also supports slash-driven selection:
 - selected chips can be reordered by dragging one chip onto another,
 - the composer header shows a compact active-capabilities summary pill,
 - keep selection lines on their own line above the natural-language request.
+
+![Annolid Bot prompt toolbar with suggested skills and sharing controls](imgs/annolid_bot_prompt_tools.png)
 
 Examples:
 

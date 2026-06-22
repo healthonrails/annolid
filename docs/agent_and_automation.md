@@ -64,6 +64,8 @@ hidden Bot background services during GUI launch by default, because optional
 channel startup can make Qt appear busy before the first user interaction. To
 restore hidden startup for a configured Windows automation machine, set:
 
+![Annolid Bot chat dock open in the GUI](imgs/annolid_bot_dock_closeup.png)
+
 ```bash
 set ANNOLID_ENABLE_BOT_AUTOSTART=1
 ```

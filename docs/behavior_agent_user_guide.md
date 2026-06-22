@@ -77,6 +77,8 @@ The command prints JSON with fields including:
 In the GUI chat dock, ask Annolid Bot to score aggression bouts for the current
 video or a specific path.
 
+![Annolid Bot composer with behavior-analysis skills selected](imgs/annolid_bot_behavior_prompt.png)
+
 Example prompt:
 
 ```text

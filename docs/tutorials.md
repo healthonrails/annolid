@@ -16,6 +16,8 @@ This page points to practical tutorial material that exists in the repository to
 
 ## Video Walkthroughs
 
+![Annolid Track Animals dialog with model, video, checkpoint, and output controls](imgs/track_animals.png)
+
 - [Tracking four interacting mice with one labeled frame](https://youtu.be/PNbPA649r78)
 - [Annolid YouTube channel](https://www.youtube.com/@annolid)
 - [Annolid playlist](https://www.youtube.com/embed/videoseries?list=PLYp4D9Y-8_dRXPOtfGu48W5ENtfKn-Owc)
