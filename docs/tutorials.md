@@ -33,8 +33,10 @@ This page points to practical tutorial material that exists in the repository to
 - [LabelMe to YOLO class mapping](tutorials/Labelme_to_YOLO_class_map.md)
 - [Sandboxed shell for Annolid Bot](tutorials/sandboxed_shell.md)
 - [MCP setup and usage](mcp.md)
+- [Video Depth Anything](video_depth_anything.md)
 - [SAM 3D integration](sam3d.md)
 - [TAPNext ONNX point tracking](tapnext.md)
+- [CoWTracker point tracking](cowtracker.md)
 - [Large TIFF and atlas overlays](atlas_overlay_workflow.md)
 
 ## Notebook Tutorials in `docs/tutorials/`

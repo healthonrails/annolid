@@ -190,14 +190,18 @@ Dry-run the policy first. Review the generated correction report before applying
 
 ## 5. Depth Workflow
 
-The current GUI includes Video Depth Anything integration.
+The current GUI includes Video Depth Anything integration. For setup,
+checkpoint handling, output formats, and troubleshooting, see
+[Video Depth Anything](video_depth_anything.md).
 
 Use:
 
 - `View -> Video Depth Anything...`
 - `View -> Depth Settings...`
 
-The current implementation can auto-download checkpoints when needed and writes a `depth.ndjson` sidecar plus optional rendered outputs depending on the selected save options.
+The current implementation can auto-download checkpoints when needed and writes
+a `depth.ndjson` sidecar plus optional rendered outputs depending on the
+selected save options.
 
 ## 6. Optional 3D Workflows
 

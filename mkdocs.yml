@@ -91,6 +91,7 @@ nav:
       - Workflow Overview: workflows.md
       - Large TIFF and Atlas Overlays: atlas_overlay_workflow.md
       - Large Image Guide: large_image_guide.md
+      - Video Depth Anything: video_depth_anything.md
       - Brain 3D Reconstruction: brain_3d_reconstruction.md
       - Simulation and FlyBody: simulation_flybody.md
       - COCO Data Flow: coco_data_flow.md
@@ -105,6 +106,7 @@ nav:
       - Segment-based Batch Tracking: tutorials/segment-based-batch-tracking.md
       - Tracking Correction with SAM3 Bot: tutorials/tracking_correction_with_sam3_bot.md
       - TAPNext ONNX Point Tracking: tapnext.md
+      - CoWTracker Point Tracking: cowtracker.md
       - Behavior Agent User Guide: behavior_agent_user_guide.md
       - Draw Zones Quickstart (GUI): tutorials/draw_zones_quickstart.md
       - Zone Analysis Workflow: tutorials/zone_analysis_workflow.md

@@ -69,6 +69,10 @@ Large, flat TIFF files still work, but pyramidal or tiled TIFF files remain the 
 
 If `pyvips` is available, you can now choose `File -> Optimize Large TIFF for Fast Viewing...` to build a pyramidal cached TIFF. Annolid can reuse that optimized cache on later opens while keeping your original image path as the project source.
 
+When Annolid opens a large TIFF, it reports which backend it used. If it reports
+`tifffile` for a very large file, installing the native `libvips` or OpenSlide
+runtime can improve pan and zoom responsiveness.
+
 Annolid also includes basic cache management for this workflow:
 
 - `File -> Large TIFF Cache Info...` shows the cache folder, current cache path, and total disk usage.
@@ -78,6 +82,17 @@ Annolid also includes basic cache management for this workflow:
 - `File -> Clear All TIFF Caches...` removes every optimized TIFF cache created by Annolid.
 
 Annolid also prunes old optimized TIFF caches automatically after creating a new one. The newest cache is kept, and older caches are removed only when the cache grows beyond the configured size/count limit.
+
+## Viewer status and layers
+
+During large-image work, Annolid keeps the status bar minimal so it mainly
+carries page controls. Backend, page, zoom, tile, cache, and mode information
+are shown in the tiled viewer's debug/status overlay instead.
+
+Large TIFF sessions also expose a unified `Layers` dock built from the shared
+large-image layer model. Use it to inspect and toggle label-image overlays,
+vector overlays, and manual annotations from one place instead of only through
+specialized overlay actions.
 
 ## Quick workflow
 

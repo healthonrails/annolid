@@ -68,7 +68,9 @@ If you want Annolid Bot to drive those commands for you, use the typed
 ## Optional Next Layers
 
 - Zone analysis and assay summaries: [Zone Analysis](zone_analysis.md)
+- Video depth estimation: [Video Depth Anything](video_depth_anything.md)
 - TAPNext ONNX point tracking: [TAPNext ONNX Point Tracking](tapnext.md)
+- CoWTracker point tracking: [CoWTracker Point Tracking](cowtracker.md)
 - SAM3 tracking and correction: [SAM3](sam3.md)
 - Memory subsystem for reusable context: [Memory Subsystem](memory.md)
 - Agent integrations and MCP tools: [MCP](mcp.md)
