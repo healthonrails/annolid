@@ -238,7 +238,9 @@ For `behavior_classifier`, the eval launcher can now also write confusion-matrix
 The GUI now includes **AI & Models → Draft Research Paper with Swarm…**, which opens Annolid Bot with a prefilled prompt that invokes `draft_paper_swarm`.
 
 - If a PDF is open, the launcher passes the current PDF title and path into the prompt so the swarm can ground the draft in the active paper.
-- The prompt asks the bot to search literature first when needed, then draft a structured paper with outline, sections, and citations.
+- The bot can build a `build_research_packet` preflight first. The packet combines collected literature, novelty risk, a manuscript review rubric, writing checklist, and guardrails against fabricated citations or numbers.
+- `draft_paper_swarm` searches literature by default, passes the collected references into the swarm, and adds the research packet guardrails to the drafting task. Set `max_literature_results=0` only when you intentionally want to skip search.
+- Use `assess_paper_draft` on generated markdown to flag placeholder text, missing manuscript sections, weak citation coverage, and numeric-claim risk before treating the draft as paper-ready.
 - This is a thin GUI entry point over the same swarm-backed paper drafting workflow used by the agent tools.
 
 ## Citation Integrity Workflow

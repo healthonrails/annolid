@@ -23,7 +23,12 @@ from .filesystem import (
     WriteFileTool,
 )
 from .function_registry import FunctionToolRegistry
-from .research import DraftPaperSwarmTool, LiteratureSearchTool
+from .research import (
+    DraftPaperSwarmTool,
+    LiteratureSearchTool,
+    PaperDraftQualityTool,
+    ResearchPacketTool,
+)
 from .function_ffmpeg import VideoFFmpegProcessTool
 from .function_video import (
     VideoInfoTool,
@@ -346,6 +351,8 @@ async def register_nanobot_style_tools(
     register_tool(AdminUpdateRunTool())
 
     register_tool(LiteratureSearchTool())
+    register_tool(ResearchPacketTool())
+    register_tool(PaperDraftQualityTool())
     register_tool(DraftPaperSwarmTool())
 
     register_tool(MessageTool(send_callback=send_callback))

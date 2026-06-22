@@ -8,7 +8,7 @@ import logging
 from pathlib import Path
 import threading
 import time
-from typing import Iterable, Sequence
+from typing import Iterable, Mapping, Sequence
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -55,6 +55,30 @@ class LiteratureResult:
     arxiv_id: str = ""
     doi: str = ""
     year: int | None = None
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, object]) -> "LiteratureResult":
+        def _text(key: str) -> str:
+            return str(payload.get(key) or "").strip()
+
+        raw_year = payload.get("year")
+        year: int | None
+        try:
+            year = int(raw_year) if raw_year not in (None, "") else None
+        except Exception:
+            year = None
+
+        return cls(
+            source=_text("source"),
+            title=_text("title"),
+            summary=_text("summary"),
+            id_url=_text("id_url"),
+            abs_url=_text("abs_url"),
+            pdf_url=_text("pdf_url"),
+            arxiv_id=_text("arxiv_id"),
+            doi=_text("doi"),
+            year=year,
+        )
 
     def to_dict(self) -> dict[str, object]:
         return {

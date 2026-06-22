@@ -4,6 +4,20 @@ import annolid.services.literature_search as literature
 import urllib.error
 
 
+def test_literature_result_from_dict_round_trips_basic_fields() -> None:
+    original = literature.LiteratureResult(
+        source="openalex",
+        title="Tracking Animals",
+        summary="A summary.",
+        id_url="https://example.org/work",
+        doi="10.1234/example",
+        year=2024,
+    )
+
+    restored = literature.LiteratureResult.from_dict(original.to_dict())
+    assert restored == original
+
+
 def test_search_literature_fallback_and_source_stats(monkeypatch) -> None:
     with literature._CACHE_LOCK:
         literature._CACHE.clear()
