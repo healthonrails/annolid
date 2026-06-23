@@ -487,6 +487,72 @@ def test_commit_masks_into_permanent_memory_commits_prior_references(
     assert processor.processor.calls == [[1], [1], [1], [1]]
 
 
+def test_commit_masks_into_permanent_memory_filters_prior_reference_labels(
+    monkeypatch,
+) -> None:
+    class _DummyProcessor:
+        def __init__(self):
+            self.calls = []
+
+        def step(self, _frame, mask_tensor, *, objects, **_kwargs):
+            self.calls.append(
+                {
+                    "objects": list(objects),
+                    "mask_values": sorted(
+                        int(value) for value in torch.unique(mask_tensor)
+                    ),
+                }
+            )
+            return None
+
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    processor.cfg = types.SimpleNamespace(amp=False)
+    processor.device = "cpu"
+    processor.video_name = "clip.mp4"
+    processor.video_folder = Path("clip")
+    processor._seed_frames = [_seed(100)]
+    processor._seed_segment_lookup = {
+        100: SeedSegment(
+            seed=_seed(100),
+            start_frame=100,
+            end_frame=None,
+            mask=np.array([[1, 2], [3, 0]], dtype=np.int32),
+            labels_map={
+                "_background_": 0,
+                "mouse": 1,
+                "teaball": 2,
+                "old_extra": 3,
+            },
+            active_labels=["mouse", "teaball", "old_extra"],
+        )
+    }
+    processor._committed_seed_frames = set()
+    processor.processor = _DummyProcessor()
+    processor._apply_inference_brightness_contrast = lambda frame: frame
+    processor._register_active_objects = lambda _ids: None
+
+    monkeypatch.setattr(
+        cutie_predict.cv2,
+        "imread",
+        lambda _path: np.zeros((2, 2, 3), dtype=np.uint8),
+    )
+    monkeypatch.setattr(
+        cutie_predict, "image_to_torch", lambda frame, device=None: frame
+    )
+
+    labels = processor.commit_masks_into_permanent_memory(
+        350,
+        {"_background_": 0},
+        seed_frames=processor._seed_frames,
+        seed_segment_lookup=processor._seed_segment_lookup,
+        segment_end=450,
+        active_labels=["mouse", "teaball"],
+    )
+
+    assert labels == {"_background_": 0, "mouse": 1, "teaball": 2}
+    assert processor.processor.calls == [{"objects": [1, 2], "mask_values": [0, 1, 2]}]
+
+
 def test_process_segment_allows_later_seed_to_add_instance_after_prior_seed(
     monkeypatch,
 ) -> None:
@@ -642,6 +708,135 @@ def test_process_segment_allows_later_seed_to_add_instance_after_prior_seed(
         "idx_mask": True,
         "mask_shape": (2, 2),
     }
+
+
+def test_process_segment_resets_after_reference_commit_failure(monkeypatch) -> None:
+    class _DummyInferenceCore:
+        instances = []
+
+        def __init__(self, *_args, **_kwargs):
+            self.calls = []
+            type(self).instances.append(self)
+
+        def step(
+            self,
+            _frame_torch,
+            mask_tensor=None,
+            *,
+            objects=None,
+            idx_mask=None,
+            **_kwargs,
+        ):
+            self.calls.append(
+                {
+                    "objects": list(objects or []),
+                    "idx_mask": idx_mask,
+                    "has_mask": mask_tensor is not None,
+                }
+            )
+            return np.array([[1, 0], [0, 0]], dtype=np.int32)
+
+    class _DummyCap:
+        def __init__(self):
+            self._done = False
+            self._pos = 0
+
+        def get(self, _prop):
+            return self._pos
+
+        def set(self, _prop, value):
+            self._pos = int(value)
+
+        def isOpened(self):
+            return not self._done
+
+        def read(self):
+            if self._done:
+                return False, None
+            self._done = True
+            return True, np.zeros((2, 2, 3), dtype=np.uint8)
+
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    processor.cutie = object()
+    processor.cfg = types.SimpleNamespace(amp=False)
+    processor.device = "cpu"
+    processor.video_name = "clip.mp4"
+    processor.video_folder = Path("clip")
+    processor.label_registry = {"_background_": 0, "mouse": 1}
+    processor._global_label_names = {}
+    processor.compute_optical_flow = False
+    processor.auto_missing_instance_recovery = False
+    processor.auto_fill_missing_instances = False
+    processor.continue_on_missing_instances = True
+    processor.debug = False
+    processor._optical_flow_kwargs = {}
+    processor.optical_flow_backend = "farneback"
+    processor._recent_instance_masks = {}
+    processor._recent_instance_mask_frames = {}
+    processor._recovery_seed_frame_index = None
+    processor._recovery_seed_frame = None
+    processor._recovery_seed_masks = {}
+    processor._last_saved_instance_masks = {}
+    processor._flow_hsv = None
+    processor._committed_seed_frames = {99}
+    processor._should_stop = lambda _worker=None: False
+    processor._build_object_mask_tensor = lambda _mask: (
+        torch.tensor([[1, 0], [0, 0]], dtype=torch.int64),
+        [1],
+    )
+    processor._register_active_objects = lambda _ids: None
+    processor._update_tracking_frame_stat = lambda *_args, **_kwargs: None
+    processor._update_recent_instance_masks = lambda *_args, **_kwargs: None
+    processor._cache_recovery_seed_frame = lambda *_args, **_kwargs: None
+
+    saved = {}
+
+    def _capture_save(_filename, mask_dict, _shape, shape_notes=None):
+        processor._last_saved_instance_masks = dict(mask_dict)
+        saved["labels"] = set(mask_dict)
+        saved["notes"] = dict(shape_notes or {})
+
+    processor._save_annotation_with_notes = _capture_save
+
+    def _fail_reference_commit(*_args, **kwargs):
+        assert kwargs["active_labels"] == ["mouse"]
+        processor._committed_seed_frames.add(100)
+        raise RuntimeError("bad reference memory")
+
+    processor.commit_masks_into_permanent_memory = _fail_reference_commit
+
+    monkeypatch.setattr(cutie_predict, "InferenceCore", _DummyInferenceCore)
+    monkeypatch.setattr(
+        cutie_predict, "image_to_torch", lambda frame, device=None: frame
+    )
+    monkeypatch.setattr(cutie_predict, "torch_prob_to_numpy_mask", lambda pred: pred)
+
+    segment = SeedSegment(
+        seed=_seed(0),
+        start_frame=0,
+        end_frame=0,
+        mask=np.array([[1, 0], [0, 0]], dtype=np.int32),
+        labels_map={"_background_": 0, "mouse": 1},
+        active_labels=["mouse"],
+    )
+
+    message, should_halt = processor._process_segment(
+        cap=_DummyCap(),
+        segment=segment,
+        end_frame=0,
+        fps=30.0,
+    )
+
+    assert should_halt is False
+    assert message == "Stop at frame:\n#0"
+    assert saved["labels"] == {"mouse"}
+    assert saved["notes"] == {}
+    assert processor._committed_seed_frames == set()
+    assert len(_DummyInferenceCore.instances) == 2
+    assert _DummyInferenceCore.instances[0].calls == []
+    assert _DummyInferenceCore.instances[1].calls == [
+        {"objects": [1], "idx_mask": True, "has_mask": True}
+    ]
 
 
 def test_resolve_start_frame_for_seed_backfill_restarts_from_zero_when_gap_exists() -> (

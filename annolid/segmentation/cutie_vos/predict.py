@@ -1414,6 +1414,12 @@ class CutieCoreVideoProcessor:
                 len(self._video_active_object_ids),
             )
 
+    def _reset_committed_seed_frames(self) -> None:
+        if not hasattr(self, "_committed_seed_frames"):
+            self._committed_seed_frames = set()
+            return
+        self._committed_seed_frames.clear()
+
     @staticmethod
     def _build_frame_intervals(frame_indices: Set[int]) -> List[Tuple[int, int]]:
         """Convert sparse frame indices into sorted closed intervals."""
@@ -2504,6 +2510,47 @@ class CutieCoreVideoProcessor:
         return seed_masks
 
     @staticmethod
+    def _filter_seed_mask_to_labels(
+        segment: SeedSegment,
+        allowed_labels: Optional[Set[str]],
+    ) -> Tuple[Optional[np.ndarray], List[str]]:
+        """Return a seed mask containing only labels allowed in this segment."""
+        if allowed_labels is None:
+            labels = list(segment.active_labels)
+        else:
+            labels = [
+                label for label in segment.active_labels if str(label) in allowed_labels
+            ]
+        if not labels:
+            return None, []
+
+        allowed_values: List[int] = []
+        filtered_labels: List[str] = []
+        for label in labels:
+            value = segment.labels_map.get(label)
+            if value is None:
+                continue
+            normalized_value = int(value)
+            if normalized_value == 0:
+                continue
+            if not np.any(segment.mask == normalized_value):
+                continue
+            allowed_values.append(normalized_value)
+            filtered_labels.append(str(label))
+
+        if not allowed_values:
+            return None, []
+        if allowed_labels is None:
+            return segment.mask.astype(np.int32, copy=False), filtered_labels
+
+        filtered_mask = np.where(
+            np.isin(segment.mask, allowed_values),
+            segment.mask,
+            0,
+        ).astype(np.int32, copy=False)
+        return filtered_mask, filtered_labels
+
+    @staticmethod
     def _tmp_to_global_ids_from_processor(
         processor,
         fallback_global_ids: Iterable[int],
@@ -2720,6 +2767,7 @@ class CutieCoreVideoProcessor:
         seed_frames: Optional[List[SeedFrame]] = None,
         seed_segment_lookup: Optional[Dict[int, SeedSegment]] = None,
         segment_end: Optional[int] = None,
+        active_labels: Optional[Iterable[str]] = None,
     ):
         """
         Commit masks into permanent memory for inference.
@@ -2727,6 +2775,8 @@ class CutieCoreVideoProcessor:
         Args:
             frame_number (int): Frame number.
             labels_dict (dict): Dictionary mapping label names to their values.
+            active_labels: Optional label set for filtering reference seeds so
+                committed memory matches the current segment's tracked objects.
 
         Returns:
             dict: Updated labels dictionary.
@@ -2745,6 +2795,11 @@ class CutieCoreVideoProcessor:
                     int(frame_number),
                     candidate_seeds,
                     segment_end=segment_end,
+                )
+                allowed_labels = (
+                    {str(label) for label in active_labels}
+                    if active_labels is not None
+                    else None
                 )
                 for seed in reference_seeds:
                     if seed.frame_index in self._committed_seed_frames:
@@ -2767,6 +2822,13 @@ class CutieCoreVideoProcessor:
                     if not segment.active_labels:
                         continue
 
+                    commit_mask, commit_labels = self._filter_seed_mask_to_labels(
+                        segment,
+                        allowed_labels,
+                    )
+                    if commit_mask is None or not commit_labels:
+                        continue
+
                     frame = (
                         cv2.imread(str(segment.seed.png_path)) if segment.seed else None
                     )
@@ -2777,12 +2839,25 @@ class CutieCoreVideoProcessor:
                         continue
                     frame = self._apply_inference_brightness_contrast(frame)
 
-                    for label in segment.active_labels:
+                    skipped_labels = sorted(
+                        set(str(label) for label in segment.active_labels)
+                        - set(commit_labels)
+                    )
+                    if skipped_labels:
+                        logger.info(
+                            "Skipping %d reference instance(s) from seed #%s that are not active in segment starting at frame %s: %s",
+                            len(skipped_labels),
+                            segment.seed.frame_index,
+                            frame_number,
+                            ", ".join(skipped_labels),
+                        )
+
+                    for label in commit_labels:
                         labels_dict.setdefault(label, segment.labels_map[label])
 
                     frame_torch = image_to_torch(frame, device=self.device)
                     mask_tensor, active_ids = self._build_object_mask_tensor(
-                        segment.mask
+                        commit_mask
                     )
                     if mask_tensor is None or not active_ids:
                         continue
@@ -3031,6 +3106,7 @@ class CutieCoreVideoProcessor:
 
         labels_dict = dict(segment.labels_map)
         self.processor = InferenceCore(self.cutie, cfg=self.cfg)
+        self._reset_committed_seed_frames()
         try:
             _labels_dict = self.commit_masks_into_permanent_memory(
                 segment.start_frame,
@@ -3038,10 +3114,18 @@ class CutieCoreVideoProcessor:
                 seed_frames=seed_frames,
                 seed_segment_lookup=seed_segment_lookup,
                 segment_end=end_frame,
+                active_labels=segment.active_labels,
             )
             labels_dict.update(_labels_dict)
         except Exception as exc:  # pragma: no cover - defensive logging
-            logger.info(exc)
+            logger.warning(
+                "Failed to commit CUTIE reference seed memory for segment [%s, %s]; restarting the segment without reference memory.",
+                segment.start_frame,
+                end_frame,
+                exc_info=True,
+            )
+            self.processor = InferenceCore(self.cutie, cfg=self.cfg)
+            self._reset_committed_seed_frames()
 
         mask = segment.mask.astype(np.int32)
         if mask is None:
@@ -3210,13 +3294,27 @@ class CutieCoreVideoProcessor:
 
                     if fast_skip_postprocess:
                         if current_frame_index == segment.start_frame:
-                            self.processor.step(
-                                frame_torch,
-                                mask_tensor,
-                                objects=active_ids,
-                                idx_mask=True,
-                                force_permanent=True,
-                            )
+                            try:
+                                self.processor.step(
+                                    frame_torch,
+                                    mask_tensor,
+                                    objects=active_ids,
+                                    idx_mask=True,
+                                    force_permanent=True,
+                                )
+                            except Exception as exc:  # pragma: no cover - logging only
+                                logger.warning(
+                                    "CUTIE failed to initialize tracking from seed frame %s; stopping this segment.",
+                                    current_frame_index,
+                                    exc_info=True,
+                                )
+                                return (
+                                    (
+                                        "CUTIE failed to initialize tracking from seed "
+                                        f"frame {current_frame_index}: {exc}"
+                                    ),
+                                    True,
+                                )
                             self._cache_recovery_seed_frame(
                                 current_frame_index,
                                 frame,
@@ -3249,8 +3347,18 @@ class CutieCoreVideoProcessor:
                             )
                             prediction = torch_prob_to_numpy_mask(prediction)
                         except Exception as exc:  # pragma: no cover - logging only
-                            logger.info(exc)
-                            prediction = None
+                            logger.warning(
+                                "CUTIE failed to initialize tracking from seed frame %s; stopping this segment.",
+                                current_frame_index,
+                                exc_info=True,
+                            )
+                            return (
+                                (
+                                    "CUTIE failed to initialize tracking from seed "
+                                    f"frame {current_frame_index}: {exc}"
+                                ),
+                                True,
+                            )
                     else:
                         prediction = self.processor.step(frame_torch)
                         prediction = torch_prob_to_numpy_mask(prediction)

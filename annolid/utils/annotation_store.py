@@ -340,7 +340,8 @@ class AnnotationStore:
                     updated_cache["latest_offset_signature"] = signature
                     latest_cache = cached.get("latest_frame_cache")
                     if isinstance(latest_cache, dict):
-                        latest_cache[offset_frame_key] = record
+                        if offset_frame_key in latest_cache:
+                            latest_cache[offset_frame_key] = record
                         updated_cache["latest_frame_cache"] = latest_cache
                 AnnotationStore._CACHE[self.store_path] = updated_cache
 

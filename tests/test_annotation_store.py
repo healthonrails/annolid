@@ -328,6 +328,28 @@ def test_append_frame_handles_fast_scan_only_cache_state(tmp_path):
     assert store.get_frame_fast(1) is not None
 
 
+def test_append_frame_avoids_full_record_cache_growth_for_uncached_frames(tmp_path):
+    frame_path = tmp_path / "video" / "video_000000000.json"
+    frame_path.parent.mkdir(parents=True, exist_ok=True)
+    store = AnnotationStore.for_frame_path(frame_path)
+    _append_dummy_record(store, 0)
+
+    # Prime the lightweight offset cache and cache only frame 0's full payload.
+    assert store.get_frame_fast(0) is not None
+
+    for frame in range(1, 50):
+        _append_dummy_record(store, frame)
+
+    cached = AnnotationStore._CACHE.get(store.store_path) or {}
+    offsets = cached.get("latest_frame_offsets") or {}
+    latest_cache = cached.get("latest_frame_cache") or {}
+    assert set(range(50)).issubset(offsets)
+    assert set(latest_cache) == {0}
+
+    # The uncached appended frame remains retrievable through the offset index.
+    assert store.get_frame_fast(49) is not None
+
+
 def test_append_frame_invalidates_stale_fast_offset_cache(tmp_path):
     frame_path = tmp_path / "video" / "video_000000000.json"
     frame_path.parent.mkdir(parents=True, exist_ok=True)
