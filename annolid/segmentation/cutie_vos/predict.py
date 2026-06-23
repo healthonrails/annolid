@@ -129,6 +129,9 @@ class CutieCoreVideoProcessor:
         self.debug = kwargs.get("debug", False)
         # T_max parameter default 5
         self.max_mem_frames = kwargs.get("t_max_value", 5)
+        self.max_internal_size = self._resolve_max_internal_size(
+            kwargs.get("max_internal_size", 480)
+        )
         self.use_cpu_only = kwargs.get("use_cpu_only", False)
         self.epsilon_for_polygon = kwargs.get("epsilon_for_polygon", 2.0)
         self.processor = None
@@ -1421,6 +1424,13 @@ class CutieCoreVideoProcessor:
         self._committed_seed_frames.clear()
 
     @staticmethod
+    def _resolve_max_internal_size(value: Any) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 480
+
+    @staticmethod
     def _build_frame_intervals(frame_indices: Set[int]) -> List[Tuple[int, int]]:
         """Convert sparse frame indices into sorted closed intervals."""
         if not frame_indices:
@@ -1593,12 +1603,20 @@ class CutieCoreVideoProcessor:
                     cache_dir=model_path.parent,
                 )
             model_path = str(model_path)
+            max_internal_size = self._resolve_max_internal_size(
+                getattr(self, "max_internal_size", 480)
+            )
             with open_dict(cfg):
                 cfg["weights"] = model_path
                 cfg["max_mem_frames"] = self.max_mem_frames
+                cfg["max_internal_size"] = max_internal_size
             cfg["mem_every"] = self.mem_every
             logger.info(f"Saving into working memory for every: {self.mem_every}.")
             logger.info(f"Tmax: max_mem_frames: {self.max_mem_frames}")
+            logger.info(
+                "CUTIE max internal inference size: %s.",
+                max_internal_size,
+            )
             cutie_model = CUTIE(cfg).to(self.device).eval()
             model_weights = torch.load(
                 cfg.weights, map_location=self.device, weights_only=True

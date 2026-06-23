@@ -69,6 +69,14 @@ class InferenceCore:
         self.mem_every = cfg['mem_every']
         self.memory.update_config(cfg)
 
+    @staticmethod
+    def _resize_index_mask(mask: torch.Tensor, size: tuple[int, int]) -> torch.Tensor:
+        return F.interpolate(
+            mask.unsqueeze(0).unsqueeze(0).float(),
+            size=size,
+            mode='nearest-exact',
+        )[0, 0].round().long()
+
     def _add_memory(self,
                     image: torch.Tensor,
                     pix_feat: torch.Tensor,
@@ -223,10 +231,7 @@ class InferenceCore:
                                       align_corners=False)[0]
                 if mask is not None:
                     if idx_mask:
-                        mask = F.interpolate(mask.unsqueeze(0).unsqueeze(0).float(),
-                                             size=(new_h, new_w),
-                                             mode='nearest-exact',
-                                             align_corners=False)[0, 0].round().long()
+                        mask = self._resize_index_mask(mask, (new_h, new_w))
                     else:
                         mask = F.interpolate(mask.unsqueeze(0),
                                              size=(new_h, new_w),

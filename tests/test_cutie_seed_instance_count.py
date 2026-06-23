@@ -116,6 +116,7 @@ def test_cutie_initialize_model_uses_shared_md5_downloader(
     processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
     processor.current_folder = str(tmp_path)
     processor.max_mem_frames = 7
+    processor.max_internal_size = 512
     processor.mem_every = 3
     processor.device = "cpu"
 
@@ -148,6 +149,7 @@ def test_cutie_initialize_model_uses_shared_md5_downloader(
     expected_path = tmp_path / "weights" / "cutie-base-mega.pth"
     assert cfg.weights == str(expected_path)
     assert cfg["max_mem_frames"] == 7
+    assert cfg["max_internal_size"] == 512
     assert cfg["mem_every"] == 3
     assert cutie_model.loaded_weights == {"ok": True}
     assert calls == [
