@@ -70,12 +70,45 @@ class InferenceCore:
         self.memory.update_config(cfg)
 
     @staticmethod
-    def _resize_index_mask(mask: torch.Tensor, size: tuple[int, int]) -> torch.Tensor:
-        return F.interpolate(
+    def _resize_index_mask(
+        mask: torch.Tensor,
+        size: tuple[int, int],
+        *,
+        dtype: torch.dtype = torch.int64,
+    ) -> torch.Tensor:
+        resized = F.interpolate(
             mask.unsqueeze(0).unsqueeze(0).float(),
             size=size,
             mode='nearest-exact',
-        )[0, 0].round().long()
+        )[0, 0]
+        return resized.round().to(dtype=dtype)
+
+    @classmethod
+    def _finalize_output(
+        cls,
+        output_prob: torch.Tensor,
+        *,
+        output_size: Optional[tuple[int, int]] = None,
+        return_index_mask: bool = False,
+    ) -> torch.Tensor:
+        if return_index_mask:
+            output_mask = torch.argmax(output_prob, dim=0)
+            if output_size is not None:
+                return cls._resize_index_mask(
+                    output_mask,
+                    output_size,
+                    dtype=torch.uint8,
+                )
+            return output_mask.to(dtype=torch.uint8)
+
+        if output_size is not None:
+            output_prob = F.interpolate(
+                output_prob.unsqueeze(0),
+                size=output_size,
+                mode='bilinear',
+                align_corners=False,
+            )[0]
+        return output_prob
 
     def _add_memory(self,
                     image: torch.Tensor,
@@ -190,7 +223,9 @@ class InferenceCore:
              idx_mask: bool = True,
              end: bool = False,
              delete_buffer: bool = True,
-             force_permanent: bool = False) -> torch.Tensor:
+             force_permanent: bool = False,
+             return_index_mask: bool = False,
+             resize_output: bool = True) -> torch.Tensor:
         """
         Take a step with a new incoming image.
         If there is an incoming mask with new objects, we will memorize them.
@@ -211,6 +246,11 @@ class InferenceCore:
             if unsure just set it to False
         delete_buffer: whether to delete the image feature buffer after this step
         force_permanent: the memory recorded this frame will be added to the permanent memory
+        return_index_mask: return one integer object-id mask instead of per-object
+            probabilities. This avoids restoring every probability channel to the
+            original image size when callers only need the winning object id.
+        resize_output: restore the returned output to the input image size after
+            internal inference resizing. Disable when the caller discards the output.
         """
         if objects is None and mask is not None:
             assert not idx_mask
@@ -335,14 +375,12 @@ class InferenceCore:
             self.image_feature_store.delete(self.curr_ti)
 
         output_prob = unpad(pred_prob_with_bg, self.pad)
-        if resize_needed:
-            # restore output to the original size
-            output_prob = F.interpolate(output_prob.unsqueeze(0),
-                                        size=(h, w),
-                                        mode='bilinear',
-                                        align_corners=False)[0]
-
-        return output_prob
+        output_size = (h, w) if resize_needed and resize_output else None
+        return self._finalize_output(
+            output_prob,
+            output_size=output_size,
+            return_index_mask=return_index_mask,
+        )
 
     def delete_objects(self, objects: List[int]) -> None:
         """

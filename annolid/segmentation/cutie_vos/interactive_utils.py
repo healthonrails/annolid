@@ -16,7 +16,10 @@ def image_to_torch(frame: np.ndarray, device: str = 'cuda'):
 
 
 def torch_prob_to_numpy_mask(prob: torch.Tensor):
-    mask = torch.max(prob, dim=0).indices
+    if prob.ndim == 2:
+        mask = prob
+    else:
+        mask = torch.max(prob, dim=0).indices
     mask = mask.cpu().numpy().astype(np.uint8)
     return mask
 

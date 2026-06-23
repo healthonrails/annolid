@@ -1861,6 +1861,151 @@ def test_process_segment_recovers_multi_instance_collapse_with_frame_sized_artif
         assert "cutie_collapse" in saved["notes"][label]
 
 
+def test_reset_cutie_memory_after_collapse_filters_reference_labels(
+    monkeypatch,
+) -> None:
+    class _DummyInferenceCore:
+        def __init__(self, *_args, **_kwargs):
+            self.calls = []
+
+        def step(self, frame, mask, **kwargs):
+            self.calls.append((frame, mask, kwargs))
+
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    previous_processor = object()
+    processor.processor = previous_processor
+    processor.cutie = object()
+    processor.cfg = types.SimpleNamespace(amp=False)
+    processor.device = "cpu"
+    processor._committed_seed_frames = {12}
+    captured = {}
+
+    def _commit(_frame_number, labels, **kwargs):
+        captured["active_labels"] = set(kwargs["active_labels"])
+        captured["processor"] = processor.processor
+        return labels
+
+    processor.commit_masks_into_permanent_memory = _commit
+    processor._build_object_mask_tensor = lambda _mask: (
+        torch.zeros((2, 4, 4), dtype=torch.float32),
+        [1, 2],
+    )
+    processor._register_active_objects = lambda _ids: None
+
+    monkeypatch.setattr(cutie_predict, "InferenceCore", _DummyInferenceCore)
+    monkeypatch.setattr(
+        cutie_predict, "image_to_torch", lambda frame, device=None: frame
+    )
+
+    labels_dict = {
+        "_background_": 0,
+        "abdomen": 1,
+        "head": 2,
+        "inactive_leg": 3,
+    }
+    active_ids = [1]
+    mask_dict = {
+        "abdomen": np.eye(4, dtype=bool),
+        "head": np.fliplr(np.eye(4, dtype=bool)),
+    }
+
+    reset = processor._reset_cutie_memory_after_collapse(
+        frame=np.zeros((4, 4, 3), dtype=np.uint8),
+        mask_dict=mask_dict,
+        labels_dict=labels_dict,
+        active_ids=active_ids,
+        seed_frames=[],
+        seed_segment_lookup={},
+        current_frame_index=42,
+        end_frame=100,
+    )
+
+    assert reset is True
+    assert captured["active_labels"] == {"abdomen", "head"}
+    assert captured["processor"] is processor.processor
+    assert processor.processor is not previous_processor
+    assert active_ids == [1, 2]
+
+
+def test_reset_cutie_memory_after_collapse_restores_previous_core_on_failure(
+    monkeypatch,
+) -> None:
+    class _DummyInferenceCore:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    previous_processor = object()
+    processor.processor = previous_processor
+    processor.cutie = object()
+    processor.cfg = types.SimpleNamespace(amp=False)
+    processor.device = "cpu"
+    processor._committed_seed_frames = {12, 30}
+
+    def _fail_commit(*_args, **_kwargs):
+        raise RuntimeError("reference object count mismatch")
+
+    processor.commit_masks_into_permanent_memory = _fail_commit
+    monkeypatch.setattr(cutie_predict, "InferenceCore", _DummyInferenceCore)
+
+    labels_dict = {"_background_": 0, "abdomen": 1}
+    active_ids = [1]
+
+    reset = processor._reset_cutie_memory_after_collapse(
+        frame=np.zeros((4, 4, 3), dtype=np.uint8),
+        mask_dict={"abdomen": np.eye(4, dtype=bool)},
+        labels_dict=labels_dict,
+        active_ids=active_ids,
+        seed_frames=[],
+        seed_segment_lookup={},
+        current_frame_index=42,
+        end_frame=100,
+    )
+
+    assert reset is False
+    assert processor.processor is previous_processor
+    assert processor._committed_seed_frames == {12, 30}
+    assert labels_dict == {"_background_": 0, "abdomen": 1}
+    assert active_ids == [1]
+
+
+def test_reset_cutie_memory_after_collapse_rolls_back_empty_recovered_mask(
+    monkeypatch,
+) -> None:
+    class _DummyInferenceCore:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    previous_processor = object()
+    processor.processor = previous_processor
+    processor.cutie = object()
+    processor.cfg = types.SimpleNamespace(amp=False)
+    processor.device = "cpu"
+    processor._committed_seed_frames = {12}
+    processor.commit_masks_into_permanent_memory = (
+        lambda _frame_number, labels, **_kwargs: labels
+    )
+    processor._build_object_mask_tensor = lambda _mask: (None, [])
+
+    monkeypatch.setattr(cutie_predict, "InferenceCore", _DummyInferenceCore)
+
+    reset = processor._reset_cutie_memory_after_collapse(
+        frame=np.zeros((4, 4, 3), dtype=np.uint8),
+        mask_dict={"abdomen": np.eye(4, dtype=bool)},
+        labels_dict={"_background_": 0, "abdomen": 1},
+        active_ids=[1],
+        seed_frames=[],
+        seed_segment_lookup={},
+        current_frame_index=42,
+        end_frame=100,
+    )
+
+    assert reset is False
+    assert processor.processor is previous_processor
+    assert processor._committed_seed_frames == {12}
+
+
 def test_process_segment_continues_unrecovered_collapse_when_continue_enabled(
     monkeypatch,
 ) -> None:

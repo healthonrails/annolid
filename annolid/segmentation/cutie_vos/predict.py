@@ -2129,19 +2129,28 @@ class CutieCoreVideoProcessor:
         end_frame: int,
     ) -> bool:
         """Reset CUTIE memory from seed references and recovered current masks."""
+        previous_processor = self.processor
+        previous_committed_seed_frames = set(self._committed_seed_frames)
+        working_labels = dict(labels_dict)
+        active_recovered_labels = {
+            str(label)
+            for label, recovered_mask in mask_dict.items()
+            if np.asarray(recovered_mask).astype(bool).any()
+        }
         try:
             self.processor = InferenceCore(self.cutie, cfg=self.cfg)
             self._committed_seed_frames.clear()
             _labels_dict = self.commit_masks_into_permanent_memory(
                 int(current_frame_index),
-                labels_dict,
+                working_labels,
                 seed_frames=seed_frames,
                 seed_segment_lookup=seed_segment_lookup,
                 segment_end=end_frame,
+                active_labels=active_recovered_labels,
             )
-            labels_dict.update(_labels_dict)
+            working_labels.update(_labels_dict)
             recovered_global = np.zeros(frame.shape[:2], dtype=np.int32)
-            for label, global_id in labels_dict.items():
+            for label, global_id in working_labels.items():
                 if label == "_background_":
                     continue
                 mask = mask_dict.get(str(label))
@@ -2155,7 +2164,9 @@ class CutieCoreVideoProcessor:
                 recovered_global
             )
             if mask_tensor is None or not reset_active_ids:
-                return False
+                raise RuntimeError(
+                    "Recovered collapse masks did not contain any active CUTIE objects."
+                )
             self._register_active_objects(reset_active_ids)
             mask_tensor = mask_tensor.to(self.device)
             frame_torch = image_to_torch(frame, device=self.device)
@@ -2165,7 +2176,9 @@ class CutieCoreVideoProcessor:
                 objects=reset_active_ids,
                 idx_mask=True,
                 force_permanent=True,
+                resize_output=False,
             )
+            labels_dict.update(working_labels)
             active_ids[:] = list(reset_active_ids)
             logger.info(
                 "Reset CUTIE memory at frame %s using %s recovered instance mask(s).",
@@ -2174,6 +2187,9 @@ class CutieCoreVideoProcessor:
             )
             return True
         except Exception:
+            self.processor = previous_processor
+            self._committed_seed_frames.clear()
+            self._committed_seed_frames.update(previous_committed_seed_frames)
             logger.warning(
                 "Failed to reset CUTIE memory after collapse at frame %s.",
                 current_frame_index,
@@ -2354,9 +2370,13 @@ class CutieCoreVideoProcessor:
                 objects=recovered_active_ids,
                 idx_mask=True,
                 force_permanent=True,
+                resize_output=False,
             )
             current_frame_torch = image_to_torch(frame, device=self.device)
-            prediction = self.processor.step(current_frame_torch)
+            prediction = self.processor.step(
+                current_frame_torch,
+                return_index_mask=True,
+            )
             prediction = torch_prob_to_numpy_mask(prediction)
         except Exception:
             logger.warning(
@@ -2887,6 +2907,7 @@ class CutieCoreVideoProcessor:
                         objects=active_ids,
                         idx_mask=True,
                         force_permanent=True,
+                        resize_output=False,
                     )
                     self._committed_seed_frames.add(segment.seed.frame_index)
                     logger.info(
@@ -3319,6 +3340,7 @@ class CutieCoreVideoProcessor:
                                     objects=active_ids,
                                     idx_mask=True,
                                     force_permanent=True,
+                                    resize_output=False,
                                 )
                             except Exception as exc:  # pragma: no cover - logging only
                                 logger.warning(
@@ -3340,7 +3362,10 @@ class CutieCoreVideoProcessor:
                                 instance_names,
                             )
                         else:
-                            self.processor.step(frame_torch)
+                            self.processor.step(
+                                frame_torch,
+                                resize_output=False,
+                            )
                         skipped_persist_count += 1
                         if skipped_persist_count == 1 or skipped_persist_count % max(
                             25, progress_log_every
@@ -3362,6 +3387,7 @@ class CutieCoreVideoProcessor:
                                 objects=active_ids,
                                 idx_mask=True,
                                 force_permanent=True,
+                                return_index_mask=True,
                             )
                             prediction = torch_prob_to_numpy_mask(prediction)
                         except Exception as exc:  # pragma: no cover - logging only
@@ -3378,7 +3404,10 @@ class CutieCoreVideoProcessor:
                                 True,
                             )
                     else:
-                        prediction = self.processor.step(frame_torch)
+                        prediction = self.processor.step(
+                            frame_torch,
+                            return_index_mask=True,
+                        )
                         prediction = torch_prob_to_numpy_mask(prediction)
 
                     if self._should_stop(pred_worker):
