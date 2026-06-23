@@ -693,6 +693,7 @@ def test_load_predict_shapes_uses_latest_previous_manual_frame_when_exact_missin
     monkeypatch.setattr(annotation_loading_module, "LabelFile", _FakeLabelFile)
 
     host = _PredictHost()
+    host._config["keep_prev"] = True
     current_png = tmp_path / "session_000000500.png"
     current_png.write_bytes(b"")
     prev_png = tmp_path / "session_000000474.png"
@@ -705,6 +706,36 @@ def test_load_predict_shapes_uses_latest_previous_manual_frame_when_exact_missin
     assert _FakeLabelFile.calls == [str(prev_json)]
     assert len(host.loaded_shapes) == 1
     assert host.loaded_shapes[0].label == "from_prev_manual"
+
+
+def test_load_predict_shapes_skips_previous_manual_frame_by_default(
+    monkeypatch, tmp_path: Path
+) -> None:
+    class _FakeLabelFile:
+        calls: list[str] = []
+
+        def __init__(self, path, is_video_frame=True):  # noqa: ARG002
+            type(self).calls.append(str(path))
+            self.shapes = [_fake_shape_payload(label="from_prev_manual")]
+            self.flags = {}
+            self.caption = ""
+
+        def get_caption(self):
+            return ""
+
+    monkeypatch.setattr(annotation_loading_module, "LabelFile", _FakeLabelFile)
+
+    host = _PredictHost()
+    current_png = tmp_path / "session_000000500.png"
+    current_png.write_bytes(b"")
+    prev_png = tmp_path / "session_000000474.png"
+    prev_png.write_bytes(b"")
+    prev_png.with_suffix(".json").write_text("{}", encoding="utf-8")
+
+    host.loadPredictShapes(500, str(current_png))
+
+    assert _FakeLabelFile.calls == []
+    assert host.loaded_shapes == []
 
 
 def test_load_predict_shapes_filters_zones_from_previous_manual_frame_when_exact_missing(
@@ -729,6 +760,7 @@ def test_load_predict_shapes_filters_zones_from_previous_manual_frame_when_exact
     monkeypatch.setattr(annotation_loading_module, "LabelFile", _FakeLabelFile)
 
     host = _PredictHost()
+    host._config["keep_prev"] = True
     current_png = tmp_path / "session_000000500.png"
     current_png.write_bytes(b"")
     prev_png = tmp_path / "session_000000000.png"
@@ -744,6 +776,7 @@ def test_load_predict_shapes_uses_latest_previous_store_frame_when_exact_missing
     tmp_path: Path,
 ) -> None:
     host = _PredictHost()
+    host._config["keep_prev"] = True
     current_png = tmp_path / "session_000000500.png"
     current_png.write_bytes(b"")
 
@@ -766,6 +799,31 @@ def test_load_predict_shapes_uses_latest_previous_store_frame_when_exact_missing
     assert host.loaded_shapes[0].label == "from_prev_store"
 
 
+def test_load_predict_shapes_skips_previous_store_frame_by_default(
+    tmp_path: Path,
+) -> None:
+    host = _PredictHost()
+    current_png = tmp_path / "session_000000500.png"
+    current_png.write_bytes(b"")
+
+    store = AnnotationStore.for_frame_path(current_png.with_suffix(".json"))
+    store.append_frame(
+        {
+            "frame": 474,
+            "version": "annolid",
+            "flags": {},
+            "shapes": [_fake_shape_payload(label="from_prev_store")],
+            "imagePath": "",
+            "imageHeight": 1,
+            "imageWidth": 1,
+        }
+    )
+
+    host.loadPredictShapes(500, str(current_png))
+
+    assert host.loaded_shapes == []
+
+
 def test_load_predict_shapes_skips_sparse_fallback_after_forced_restart_hint(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -784,6 +842,7 @@ def test_load_predict_shapes_skips_sparse_fallback_after_forced_restart_hint(
     monkeypatch.setattr(annotation_loading_module, "LabelFile", _FakeLabelFile)
 
     host = _PredictHost()
+    host._config["keep_prev"] = True
     host._prediction_forced_start_frame = 1
     current_png = tmp_path / "session_000000500.png"
     current_png.write_bytes(b"")

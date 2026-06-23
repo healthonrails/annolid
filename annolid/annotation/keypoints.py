@@ -232,7 +232,7 @@ def save_labels(
         return
 
     store = AnnotationStore.for_frame_path(frame_path)
-    existing_record = store.get_frame(frame_number) if merge_existing else None
+    existing_record = store.get_frame_fast(frame_number) if merge_existing else None
     existing_json = None
     if merge_existing and existing_record is None:
         existing_json = load_existing_json(str(frame_path)) or None

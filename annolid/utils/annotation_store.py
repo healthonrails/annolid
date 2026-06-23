@@ -2,7 +2,7 @@ import json
 import re
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Iterable, Mapping, Optional, Set, Union
+from typing import Any, Dict, Iterable, Mapping, Optional, Set, Tuple, Union
 
 from annolid.utils.logger import logger
 
@@ -254,17 +254,58 @@ class AnnotationStore:
             raise AnnotationStoreError("Record must include a 'frame' key.")
 
         self.store_path.parent.mkdir(parents=True, exist_ok=True)
+        pre_append_signature: Optional[Tuple[float, int]] = None
+        try:
+            stat = self.store_path.stat()
+            pre_append_signature = (float(stat.st_mtime), int(stat.st_size))
+        except OSError:
+            pre_append_signature = None
+        line = json.dumps(record, separators=(",", ":")) + "\n"
+        line_offset: Optional[int] = None
         with self.store_path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(record, separators=(",", ":")))
-            fh.write("\n")
+            try:
+                line_offset = int(fh.tell())
+            except (OSError, ValueError):
+                line_offset = None
+            fh.write(line)
 
         # Keep the cache in sync without re-reading the entire file (O(1) append).
         cached = AnnotationStore._CACHE.get(self.store_path)
         if cached:
+            cache_signature_matches = False
+            if pre_append_signature is not None:
+                try:
+                    cache_signature_matches = (
+                        float(cached.get("mtime")),
+                        int(cached.get("size")),
+                    ) == pre_append_signature
+                except (TypeError, ValueError):
+                    cache_signature_matches = False
+                if not cache_signature_matches:
+                    latest_signature = cached.get("latest_offset_signature")
+                    if (
+                        isinstance(latest_signature, (list, tuple))
+                        and len(latest_signature) >= 2
+                    ):
+                        try:
+                            cache_signature_matches = (
+                                float(latest_signature[0]),
+                                int(latest_signature[1]),
+                            ) == pre_append_signature
+                        except (TypeError, ValueError):
+                            cache_signature_matches = False
+            if not cache_signature_matches:
+                AnnotationStore._CACHE.pop(self.store_path, None)
+                return
+
             try:
                 frame_key = int(frame)
             except (TypeError, ValueError):
                 frame_key = frame
+            try:
+                offset_frame_key = int(frame_key)
+            except (TypeError, ValueError):
+                offset_frame_key = None
             records_complete = bool(cached.get("records_complete", False))
             cached_records = cached.get("records")
             records = (
@@ -287,6 +328,20 @@ class AnnotationStore:
                     updated_cache["records"] = records
                 else:
                     updated_cache.pop("records", None)
+                signature = (float(stat.st_mtime), int(stat.st_size))
+                latest_offsets = cached.get("latest_frame_offsets")
+                if (
+                    isinstance(latest_offsets, dict)
+                    and line_offset is not None
+                    and offset_frame_key is not None
+                ):
+                    latest_offsets[offset_frame_key] = int(line_offset)
+                    updated_cache["latest_frame_offsets"] = latest_offsets
+                    updated_cache["latest_offset_signature"] = signature
+                    latest_cache = cached.get("latest_frame_cache")
+                    if isinstance(latest_cache, dict):
+                        latest_cache[offset_frame_key] = record
+                        updated_cache["latest_frame_cache"] = latest_cache
                 AnnotationStore._CACHE[self.store_path] = updated_cache
 
     def update_frame(
@@ -392,8 +447,9 @@ class AnnotationStore:
         """Best-effort fast retrieval for a single frame without full-store parse.
 
         This path is optimized for UI-time lookups when the annotation store can be
-        very large. It first checks cache, then line-scans for the matching frame
-        row and only parses that one JSON line.
+        very large. It first checks cache, then builds/reuses a lightweight
+        frame-to-line-offset index and only parses the latest JSON line for the
+        requested frame.
         """
         cached_records = self._cached_records_or_empty()
         try:
@@ -413,88 +469,68 @@ class AnnotationStore:
         cache_entry = AnnotationStore._CACHE.get(self.store_path)
         if not isinstance(cache_entry, dict):
             cache_entry = {}
-        if cache_entry.get("fast_scan_signature") != signature:
-            cache_entry["fast_scan_signature"] = signature
-            cache_entry["fast_scan_pos"] = 0
-            cache_entry["fast_scan_last_frame"] = -1
-            cache_entry["fast_scan_complete"] = False
-            cache_entry["fast_scan_frame_cache"] = {}
 
-        fast_frame_cache = cache_entry.get("fast_scan_frame_cache")
-        if not isinstance(fast_frame_cache, dict):
-            fast_frame_cache = {}
-            cache_entry["fast_scan_frame_cache"] = fast_frame_cache
-        cached_fast = fast_frame_cache.get(frame_key)
-        if isinstance(cached_fast, dict):
-            AnnotationStore._CACHE[self.store_path] = cache_entry
-            return cached_fast
+        latest_cache = cache_entry.get("latest_frame_cache")
+        if not isinstance(latest_cache, dict):
+            latest_cache = {}
+            cache_entry["latest_frame_cache"] = latest_cache
+        if cache_entry.get("latest_offset_signature") == signature:
+            cached_fast = latest_cache.get(frame_key)
+            if isinstance(cached_fast, dict):
+                AnnotationStore._CACHE[self.store_path] = cache_entry
+                return cached_fast
 
-        start_pos = 0
-        fast_complete = bool(cache_entry.get("fast_scan_complete", False))
-        last_frame = cache_entry.get("fast_scan_last_frame")
-        if (
-            not fast_complete
-            and isinstance(last_frame, int)
-            and int(last_frame) >= 0
-            and int(frame_key) >= int(last_frame)
+        latest_offsets = cache_entry.get("latest_frame_offsets")
+        if cache_entry.get("latest_offset_signature") != signature or not isinstance(
+            latest_offsets, dict
         ):
+            latest_offsets = {}
+            latest_cache = {}
+            cache_entry["latest_frame_cache"] = latest_cache
             try:
-                start_pos = max(0, int(cache_entry.get("fast_scan_pos", 0)))
-            except Exception:
-                start_pos = 0
-        max_seen_frame = int(last_frame) if isinstance(last_frame, int) else -1
+                with self.store_path.open("r", encoding="utf-8") as fh:
+                    while True:
+                        try:
+                            line_offset = int(fh.tell())
+                        except (OSError, ValueError):
+                            line_offset = None
+                        raw_line = fh.readline()
+                        if raw_line == "":
+                            break
+                        if line_offset is None or '"frame"' not in raw_line:
+                            continue
+                        match = self._FRAME_PATTERN.search(raw_line)
+                        if not match:
+                            continue
+                        try:
+                            line_frame = int(match.group(1))
+                        except (TypeError, ValueError):
+                            continue
+                        latest_offsets[line_frame] = line_offset
+            except OSError:
+                return None
+            cache_entry["latest_frame_offsets"] = latest_offsets
+            cache_entry["latest_offset_signature"] = signature
 
-        frame_text = str(frame_key)
+        offset = latest_offsets.get(frame_key)
+        if offset is None:
+            AnnotationStore._CACHE[self.store_path] = cache_entry
+            return None
+
         try:
             with self.store_path.open("r", encoding="utf-8") as fh:
-                if start_pos > 0:
-                    fh.seek(start_pos)
-                while True:
-                    raw_line = fh.readline()
-                    if raw_line == "":
-                        break
-                    if '"frame"' not in raw_line:
-                        continue
-                    if frame_text not in raw_line:
-                        frame_match = self._FRAME_PATTERN.search(raw_line)
-                        if frame_match:
-                            try:
-                                max_seen_frame = max(
-                                    int(max_seen_frame), int(frame_match.group(1))
-                                )
-                            except (TypeError, ValueError):
-                                pass
-                        continue
-                    match = self._FRAME_PATTERN.search(raw_line)
-                    if not match:
-                        continue
-                    try:
-                        line_frame = int(match.group(1))
-                    except (TypeError, ValueError):
-                        continue
-                    max_seen_frame = max(int(max_seen_frame), int(line_frame))
-                    if line_frame != frame_key:
-                        continue
-                    try:
-                        data = json.loads(raw_line)
-                    except json.JSONDecodeError:
-                        continue
-                    explicit = self._explicit_frame_for_record(data)
-                    if explicit != frame_key:
-                        continue
-                    cache_entry["fast_scan_pos"] = int(fh.tell())
-                    cache_entry["fast_scan_last_frame"] = int(max_seen_frame)
-                    cache_entry["fast_scan_complete"] = False
-                    fast_frame_cache[frame_key] = data
-                    AnnotationStore._CACHE[self.store_path] = cache_entry
-                    return data
-                cache_entry["fast_scan_pos"] = int(fh.tell())
-                cache_entry["fast_scan_last_frame"] = int(max_seen_frame)
-                cache_entry["fast_scan_complete"] = True
-                AnnotationStore._CACHE[self.store_path] = cache_entry
-        except OSError:
+                fh.seek(int(offset))
+                raw_line = fh.readline()
+            data = json.loads(raw_line)
+            explicit = self._explicit_frame_for_record(data)
+            if explicit != frame_key:
+                return None
+            latest_cache[frame_key] = data
+            cache_entry["latest_frame_cache"] = latest_cache
+            AnnotationStore._CACHE[self.store_path] = cache_entry
+            return data
+        except (OSError, json.JSONDecodeError):
             return None
-        return None
 
     def get_frames_fast(self, frames: Iterable[int]) -> Dict[int, Dict[str, Any]]:
         """Return records for multiple frames with one best-effort store scan."""

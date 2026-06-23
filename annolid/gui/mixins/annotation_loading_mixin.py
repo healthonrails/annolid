@@ -2437,14 +2437,16 @@ class AnnotationLoadingMixin:
         label_candidates = self._iter_frame_label_candidates(frame_number, frame_path)
         sparse_candidate = None
         forced_start_frame = getattr(self, "_prediction_forced_start_frame", None)
-        allow_sparse_fallback = True
+        config = getattr(self, "_config", {}) or {}
+        keep_prev_enabled = bool(config.get("keep_prev", False))
+        allow_sparse_fallback = keep_prev_enabled
         try:
             if forced_start_frame is not None and int(frame_number) >= int(
                 forced_start_frame
             ):
                 allow_sparse_fallback = False
         except Exception:
-            allow_sparse_fallback = True
+            allow_sparse_fallback = keep_prev_enabled
 
         if allow_sparse_fallback:
             sparse_candidate = self._resolve_sparse_frame_label_candidate(

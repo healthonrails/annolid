@@ -238,6 +238,45 @@ def test_load_labelme_json_prefers_fast_single_frame_lookup(tmp_path, monkeypatc
     assert payload.get("imageWidth") == 1
 
 
+def test_get_frame_fast_returns_latest_appended_record_without_full_parse(
+    tmp_path, monkeypatch
+):
+    frame_path = tmp_path / "video" / "video_000000005.json"
+    frame_path.parent.mkdir(parents=True, exist_ok=True)
+    store = AnnotationStore.for_frame_path(frame_path)
+    store.append_frame(
+        {
+            "frame": 5,
+            "shapes": [{"label": "old"}],
+            "flags": {},
+            "imagePath": "",
+            "imageHeight": 1,
+            "imageWidth": 1,
+        }
+    )
+    store.append_frame(
+        {
+            "frame": 5,
+            "shapes": [{"label": "new"}],
+            "flags": {},
+            "imagePath": "",
+            "imageHeight": 1,
+            "imageWidth": 1,
+        }
+    )
+    AnnotationStore._CACHE.pop(store.store_path, None)
+
+    def _fail_full_parse(_force_reload=False):
+        raise AssertionError("Single-frame lookup should not parse all records.")
+
+    monkeypatch.setattr(store, "_load_records", _fail_full_parse)
+
+    record = store.get_frame_fast(5)
+
+    assert record is not None
+    assert record["shapes"][0]["label"] == "new"
+
+
 def test_get_frames_fast_reads_many_records_in_one_scan(tmp_path, monkeypatch):
     frame_path = tmp_path / "video" / "video_000000000.json"
     frame_path.parent.mkdir(parents=True, exist_ok=True)
@@ -283,6 +322,42 @@ def test_append_frame_handles_fast_scan_only_cache_state(tmp_path):
 
     # Appending should not fail even when cache entry lacks a `records` dict.
     _append_dummy_record(store, 1)
+    cached = AnnotationStore._CACHE.get(store.store_path) or {}
+    offsets = cached.get("latest_frame_offsets") or {}
+    assert 1 in offsets
+    assert store.get_frame_fast(1) is not None
+
+
+def test_append_frame_invalidates_stale_fast_offset_cache(tmp_path):
+    frame_path = tmp_path / "video" / "video_000000000.json"
+    frame_path.parent.mkdir(parents=True, exist_ok=True)
+    store = AnnotationStore.for_frame_path(frame_path)
+    _append_dummy_record(store, 0)
+
+    # Prime fast-scan cache, then simulate another process rewriting the store.
+    assert store.get_frame_fast(0) is not None
+    store.store_path.write_text(
+        json.dumps(
+            {
+                "frame": 0,
+                "shapes": [{"label": "external"}],
+                "flags": {},
+                "imagePath": "",
+                "imageHeight": 1,
+                "imageWidth": 1,
+            },
+            separators=(",", ":"),
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    _append_dummy_record(store, 1)
+
+    assert store.store_path not in AnnotationStore._CACHE
+    frame_zero = store.get_frame_fast(0)
+    assert frame_zero is not None
+    assert frame_zero["shapes"][0]["label"] == "external"
     assert store.get_frame_fast(1) is not None
 
 

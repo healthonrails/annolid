@@ -104,3 +104,61 @@ def test_save_labels_can_append_prediction_without_existing_lookup(
     ]
     assert rows[-1]["frame"] == 1
     assert rows[-1]["shapes"][0]["label"] == "nose"
+
+
+def test_save_labels_preserves_keypoints_when_adding_polygon_prediction(
+    tmp_path: Path, monkeypatch
+) -> None:
+    frame_stem = f"{tmp_path.name}_000000002"
+    json_path = tmp_path / f"{frame_stem}.json"
+
+    nose = Shape(label="nose", shape_type="point", flags={"score": 0.8})
+    nose.group_id = 7
+    nose.points = [[12.0, 13.0]]
+    save_labels(
+        filename=str(json_path),
+        imagePath="",
+        label_list=[nose],
+        height=64,
+        width=96,
+        save_image_to_json=False,
+        persist_json=False,
+        merge_existing=False,
+    )
+
+    def _fail_get_frame(self, frame):
+        raise AssertionError("Prediction merge should use fast single-frame lookup.")
+
+    monkeypatch.setattr(AnnotationStore, "get_frame", _fail_get_frame)
+
+    polygon = Shape(label="mouse", shape_type="polygon", flags={})
+    polygon.group_id = 7
+    polygon.other_data = {"annotation_source": "cutie_vos"}
+    polygon.points = [[5.0, 5.0], [40.0, 5.0], [40.0, 30.0], [5.0, 30.0]]
+    save_labels(
+        filename=str(json_path),
+        imagePath="",
+        label_list=[polygon],
+        height=64,
+        width=96,
+        save_image_to_json=False,
+        persist_json=False,
+    )
+
+    store = AnnotationStore.for_frame_path(json_path)
+    record = store.get_frame_fast(2)
+    assert isinstance(record, dict)
+    shapes = record.get("shapes") or []
+
+    assert any(
+        shape.get("shape_type") == "point"
+        and shape.get("label") == "nose"
+        and shape.get("group_id") == 7
+        for shape in shapes
+    )
+    assert any(
+        shape.get("shape_type") == "polygon"
+        and shape.get("label") == "mouse"
+        and shape.get("group_id") == 7
+        for shape in shapes
+    )

@@ -99,7 +99,7 @@ class CutieCoreVideoProcessor:
     )
     _MD5 = "a6071de6136982e396851903ab4c083a"
     _DISCOVERED_SEEDS_CACHE: Dict[str, List[SeedFrame]] = {}
-    _TRACKING_STATS_VERSION = 4
+    _TRACKING_STATS_VERSION = 5
     _TRACKING_STATS_FLUSH_INTERVAL = 100
     _PRIOR_REFERENCE_SEED_LIMIT = 3
 
@@ -181,6 +181,8 @@ class CutieCoreVideoProcessor:
         self.continue_on_missing_instances = bool(
             kwargs.get("continue_on_missing_instances", True)
         )
+        self._recovery_success_log_counts: Dict[Tuple[str, ...], int] = {}
+        self._suppressed_recovery_success_log_counts: Dict[Tuple[str, ...], int] = {}
         logger.info(
             f"Auto missing instance recovery is set to {self.auto_missing_instance_recovery}."
         )
@@ -753,6 +755,20 @@ class CutieCoreVideoProcessor:
                 has_valid_shapes = True
         return shape_count, polygon_count, has_valid_shapes
 
+    @staticmethod
+    def _shapes_complete_polygon_prediction(
+        shapes: Iterable[Dict[str, Any]],
+    ) -> Tuple[int, int, bool, bool]:
+        """Return metrics plus whether CUTIE should treat the frame as complete."""
+        shape_count, polygon_count, has_valid_shapes = (
+            CutieCoreVideoProcessor._shape_metrics(shapes)
+        )
+        # Empty records are explicit prediction outcomes (for example,
+        # out-of-view/occlusion). Point-only records are keypoint predictions and
+        # must not block a later polygon prediction pass.
+        is_complete = bool(has_valid_shapes or shape_count == 0)
+        return shape_count, polygon_count, has_valid_shapes, is_complete
+
     def _recompute_tracking_stats_summary(self, stats: Dict[str, Any]) -> None:
         frame_stats = stats.get("frame_stats", {})
         manual_frames: Set[int] = set()
@@ -1199,16 +1215,15 @@ class CutieCoreVideoProcessor:
                             normalized_idx = int(frame_idx)
                         except (TypeError, ValueError):
                             continue
-                        shape_count, polygon_count, has_valid_shapes = self._shape_metrics(
+                        (
+                            shape_count,
+                            polygon_count,
+                            has_valid_shapes,
+                            has_completed_prediction,
+                        ) = self._shapes_complete_polygon_prediction(
                             record.get("shapes") or []
                         )
-                        # Treat any persisted record as "completed" for segment skip.
-                        # This preserves explicit empty-shape frames (e.g., occlusion/out-of-view)
-                        # as already-processed results.
-                        has_persisted_record = isinstance(record, dict) and (
-                            "shapes" in record
-                        )
-                        if has_valid_shapes or has_persisted_record:
+                        if has_completed_prediction:
                             labeled_frames.add(normalized_idx)
                             store_labeled.append(normalized_idx)
                         self._update_tracking_frame_stat(
@@ -1272,6 +1287,7 @@ class CutieCoreVideoProcessor:
                 has_valid_shapes = bool(frame_stat.get("has_valid_shapes", False))
                 shape_count = int(frame_stat.get("shape_count", 0))
                 polygon_count = int(frame_stat.get("polygon_count", 0))
+                has_completed_prediction = bool(has_valid_shapes or shape_count == 0)
             else:
                 try:
                     with open(json_path, "r", encoding="utf-8") as fp:
@@ -1281,7 +1297,12 @@ class CutieCoreVideoProcessor:
                         f"Failed to parse JSON annotation {json_path.name}: {exc}"
                     )
                     continue
-                shape_count, polygon_count, has_valid_shapes = self._shape_metrics(
+                (
+                    shape_count,
+                    polygon_count,
+                    has_valid_shapes,
+                    has_completed_prediction,
+                ) = self._shapes_complete_polygon_prediction(
                     data.get("shapes") or []
                 )
             png_exists = json_path.with_suffix(".png").exists()
@@ -1296,9 +1317,7 @@ class CutieCoreVideoProcessor:
                 json_mtime_ns=json_mtime_ns if json_mtime_ns >= 0 else None,
                 png_exists=png_exists,
             )
-            # JSON presence means results exist; allow skip even when shapes are empty.
-            has_persisted_record = True
-            if has_valid_shapes or has_persisted_record:
+            if has_completed_prediction:
                 labeled_frames.add(frame_idx)
             if not cached_has_valid:
                 stats_updated = True
@@ -1858,7 +1877,7 @@ class CutieCoreVideoProcessor:
             width=width,
             save_image_to_json=False,
             persist_json=False,
-            merge_existing=False,
+            merge_existing=True,
         )
         frame_idx = AnnotationStore.frame_number_from_path(Path(filename))
         if frame_idx is None:
@@ -2334,12 +2353,44 @@ class CutieCoreVideoProcessor:
         )
         remaining = {str(item) for item in instance_names} - set(mask_dict)
         if not remaining:
-            logger.info(
-                "Recovered CUTIE tracking at frame %s by reseeding from nearest "
-                "complete non-manual frame %s.",
-                current_frame_index,
-                recovery_frame_index,
+            recovered_labels = tuple(sorted(str(item) for item in missing_instances))
+            success_counts = getattr(self, "_recovery_success_log_counts", None)
+            if not isinstance(success_counts, dict):
+                success_counts = {}
+                self._recovery_success_log_counts = success_counts
+            suppressed_counts = getattr(
+                self, "_suppressed_recovery_success_log_counts", None
             )
+            if not isinstance(suppressed_counts, dict):
+                suppressed_counts = {}
+                self._suppressed_recovery_success_log_counts = suppressed_counts
+            count = int(success_counts.get(recovered_labels, 0)) + 1
+            success_counts[recovered_labels] = count
+            try:
+                log_every = max(
+                    1, int(getattr(self, "_recovery_success_log_every", 25))
+                )
+            except (TypeError, ValueError):
+                log_every = 25
+            if count == 1 or count % log_every == 0:
+                suppressed = int(suppressed_counts.pop(recovered_labels, 0))
+                if suppressed > 0:
+                    logger.info(
+                        "Suppressed %s repetitive CUTIE recovery log(s) for label(s): %s.",
+                        suppressed,
+                        ", ".join(recovered_labels),
+                    )
+                logger.info(
+                    "Recovered CUTIE tracking at frame %s by reseeding from nearest "
+                    "complete non-manual frame %s (label(s): %s).",
+                    current_frame_index,
+                    recovery_frame_index,
+                    ", ".join(recovered_labels),
+                )
+            else:
+                suppressed_counts[recovered_labels] = int(
+                    suppressed_counts.get(recovered_labels, 0)
+                ) + 1
         return mask_dict, global_prediction, remaining, recovered_active_ids
 
     def _should_pause_for_missing_instances(
@@ -3022,14 +3073,32 @@ class CutieCoreVideoProcessor:
         segment_length = max(1, int(end_frame - segment.start_frame + 1))
         progress_log_every = max(100, min(1000, segment_length // 200 or 1))
         missing_log_every = 25
-        last_missing_key: Optional[Tuple[str, ...]] = None
-        missing_streak = 0
-        suppressed_missing_logs = 0
+        missing_log_counts: Dict[Tuple[str, ...], int] = {}
+        suppressed_missing_log_counts: Dict[Tuple[str, ...], int] = {}
+        post_recovery_missing_log_counts: Dict[Tuple[str, ...], int] = {}
+        suppressed_post_recovery_missing_log_counts: Dict[Tuple[str, ...], int] = {}
+        failed_single_recovery_key: Optional[Tuple[Optional[int], Tuple[str, ...]]] = (
+            None
+        )
+        failed_single_recovery_streak = 0
         skipped_persist_count = 0
         completed_intervals: List[Tuple[int, int]] = []
         if existing_labeled_frames:
             completed_intervals = self._build_frame_intervals(existing_labeled_frames)
         interval_idx = 0
+
+        def _missing_log_decision(
+            key: Tuple[str, ...],
+            counts: Dict[Tuple[str, ...], int],
+            suppressed_counts: Dict[Tuple[str, ...], int],
+        ) -> Tuple[bool, int]:
+            count = int(counts.get(key, 0)) + 1
+            counts[key] = count
+            should_log = count == 1 or count % missing_log_every == 0
+            if should_log:
+                return True, int(suppressed_counts.pop(key, 0))
+            suppressed_counts[key] = int(suppressed_counts.get(key, 0)) + 1
+            return False, 0
 
         logger.info(
             "Processing Cutie segment [%s, %s] (%s frames, %s tracked instance(s)).",
@@ -3263,16 +3332,13 @@ class CutieCoreVideoProcessor:
                                 sorted(str(instance) for instance in missing_instances)
                             )
                             message: Optional[str] = None
-                            if missing_key == last_missing_key:
-                                missing_streak += 1
-                            else:
-                                last_missing_key = missing_key
-                                missing_streak = 1
-                                suppressed_missing_logs = 0
-
-                            should_log_missing = (
-                                missing_streak == 1
-                                or missing_streak % missing_log_every == 0
+                            (
+                                should_log_missing,
+                                suppressed_missing_logs,
+                            ) = _missing_log_decision(
+                                missing_key,
+                                missing_log_counts,
+                                suppressed_missing_log_counts,
                             )
                             if should_log_missing:
                                 if suppressed_missing_logs > 0:
@@ -3286,12 +3352,35 @@ class CutieCoreVideoProcessor:
                                     missing_count, current_frame_index, missing_key
                                 )
                                 logger.info(message)
-                            else:
-                                suppressed_missing_logs += 1
 
-                            if bool(
+                            recovery_enabled = bool(
                                 getattr(self, "auto_missing_instance_recovery", False)
-                            ):
+                            )
+                            fill_enabled = bool(
+                                getattr(self, "auto_fill_missing_instances", False)
+                            )
+                            recovery_seed_index = getattr(
+                                self, "_recovery_seed_frame_index", None
+                            )
+                            try:
+                                recovery_seed_key = int(recovery_seed_index)
+                            except (TypeError, ValueError):
+                                recovery_seed_key = None
+                            recovery_key = (recovery_seed_key, missing_key)
+                            skip_single_recovery = bool(
+                                recovery_enabled
+                                and len(missing_instances) == 1
+                                and failed_single_recovery_key == recovery_key
+                                and failed_single_recovery_streak > 0
+                                and failed_single_recovery_streak % missing_log_every
+                                != 0
+                            )
+                            attempted_recovery = False
+                            if skip_single_recovery:
+                                failed_single_recovery_streak += 1
+
+                            if recovery_enabled and not skip_single_recovery:
+                                attempted_recovery = True
                                 (
                                     recovered_mask_dict,
                                     recovered_global_prediction,
@@ -3328,7 +3417,7 @@ class CutieCoreVideoProcessor:
                                             if label in mask_dict
                                         }
                                     )
-                            else:
+                            elif not recovery_enabled:
                                 missing_instances = instance_names - set(mask_dict.keys())
                             collapse_artifact_labels = (
                                 self._tracking_collapse_artifact_labels(
@@ -3339,6 +3428,7 @@ class CutieCoreVideoProcessor:
                             )
                             collapse_missing_instances = set(missing_instances)
                             collapse_reset = False
+                            collapse_should_stop = False
                             if collapse_artifact_labels:
                                 collapse_labels = set(collapse_artifact_labels) | set(
                                     initial_missing_instances
@@ -3368,6 +3458,13 @@ class CutieCoreVideoProcessor:
                                                 end_frame,
                                             )
                                         )
+                                collapse_should_stop = bool(
+                                    (not collapse_reset)
+                                    and self._should_pause_for_missing_instances(
+                                        missing_instances,
+                                        has_occlusion=has_occlusion,
+                                    )
+                                )
                                 logger.warning(
                                     "CUTIE tracking collapse detected at frame %s: "
                                     "missing=%s frame_sized=%s; %s.",
@@ -3381,7 +3478,14 @@ class CutieCoreVideoProcessor:
                                     ", ".join(collapse_artifact_labels),
                                     "recovered from seed/recent masks and continuing"
                                     if collapse_reset
-                                    else "unable to fully recover; stopping for reseed",
+                                    else (
+                                        "unable to fully recover; stopping for reseed"
+                                        if collapse_should_stop
+                                        else (
+                                            "unable to fully recover; continuing with "
+                                            "missing-instance policy"
+                                        )
+                                    ),
                                 )
                             self._update_tracking_frame_stat(
                                 current_frame_index,
@@ -3400,16 +3504,45 @@ class CutieCoreVideoProcessor:
                             )
 
                             if missing_instances:
-                                recovery_enabled = bool(
-                                    getattr(
-                                        self,
-                                        "auto_missing_instance_recovery",
-                                        False,
+                                final_missing_key = tuple(
+                                    sorted(
+                                        str(instance) for instance in missing_instances
                                     )
                                 )
-                                fill_enabled = bool(
-                                    getattr(self, "auto_fill_missing_instances", False)
-                                )
+                                if recovery_enabled and len(final_missing_key) == 1:
+                                    final_recovery_key = (
+                                        recovery_seed_key,
+                                        final_missing_key,
+                                    )
+                                    if final_recovery_key == failed_single_recovery_key:
+                                        if attempted_recovery:
+                                            failed_single_recovery_streak += 1
+                                    else:
+                                        failed_single_recovery_key = final_recovery_key
+                                        failed_single_recovery_streak = 1
+                                if (
+                                    recovery_enabled or fill_enabled
+                                ) and final_missing_key != missing_key:
+                                    (
+                                        should_log_post_recovery_missing,
+                                        suppressed_post_recovery_missing_logs,
+                                    ) = _missing_log_decision(
+                                        final_missing_key,
+                                        post_recovery_missing_log_counts,
+                                        suppressed_post_recovery_missing_log_counts,
+                                    )
+                                else:
+                                    should_log_post_recovery_missing = False
+                                    suppressed_post_recovery_missing_logs = 0
+                                if (
+                                    should_log_post_recovery_missing
+                                    and suppressed_post_recovery_missing_logs > 0
+                                ):
+                                    logger.info(
+                                        "Suppressed %s repetitive post-recovery missing-instance log(s) for: %s",
+                                        suppressed_post_recovery_missing_logs,
+                                        ", ".join(final_missing_key),
+                                    )
                                 suffix = (
                                     " after recovery/fill"
                                     if recovery_enabled or fill_enabled
@@ -3419,7 +3552,7 @@ class CutieCoreVideoProcessor:
                                     str(instance)
                                     for instance in sorted(missing_instances)
                                 )
-                                if should_log_missing:
+                                if should_log_post_recovery_missing:
                                     logger.info(
                                         "Missing instances%s at frame %s: %s",
                                         suffix,
@@ -3451,13 +3584,12 @@ class CutieCoreVideoProcessor:
                                             )
                                     except Exception:
                                         pass
+                            else:
+                                failed_single_recovery_key = None
+                                failed_single_recovery_streak = 0
 
                             should_pause_for_missing_instances = bool(
-                                (
-                                    collapse_artifact_labels
-                                    and not collapse_reset
-                                )
-                                or self._should_pause_for_missing_instances(
+                                self._should_pause_for_missing_instances(
                                     missing_instances,
                                     has_occlusion=has_occlusion,
                                 )
