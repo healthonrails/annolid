@@ -84,6 +84,25 @@ class InferenceCore:
         return resized.round().to(dtype=dtype)
 
     @classmethod
+    def _resize_input_mask(
+        cls,
+        mask: torch.Tensor,
+        size: tuple[int, int],
+        *,
+        idx_mask: bool,
+    ) -> torch.Tensor:
+        if tuple(mask.shape[-2:]) == tuple(size):
+            return mask
+        if idx_mask:
+            return cls._resize_index_mask(mask, size, dtype=mask.dtype)
+        return F.interpolate(
+            mask.unsqueeze(0),
+            size=size,
+            mode='bilinear',
+            align_corners=False,
+        )[0]
+
+    @classmethod
     def _finalize_output(
         cls,
         output_prob: torch.Tensor,
@@ -93,7 +112,10 @@ class InferenceCore:
     ) -> torch.Tensor:
         if return_index_mask:
             output_mask = torch.argmax(output_prob, dim=0)
-            if output_size is not None:
+            if (
+                output_size is not None
+                and tuple(output_mask.shape[-2:]) != tuple(output_size)
+            ):
                 return cls._resize_index_mask(
                     output_mask,
                     output_size,
@@ -101,7 +123,10 @@ class InferenceCore:
                 )
             return output_mask.to(dtype=torch.uint8)
 
-        if output_size is not None:
+        if (
+            output_size is not None
+            and tuple(output_prob.shape[-2:]) != tuple(output_size)
+        ):
             output_prob = F.interpolate(
                 output_prob.unsqueeze(0),
                 size=output_size,
@@ -225,7 +250,8 @@ class InferenceCore:
              delete_buffer: bool = True,
              force_permanent: bool = False,
              return_index_mask: bool = False,
-             resize_output: bool = True) -> torch.Tensor:
+             resize_output: bool = True,
+             output_size: Optional[tuple[int, int]] = None) -> torch.Tensor:
         """
         Take a step with a new incoming image.
         If there is an incoming mask with new objects, we will memorize them.
@@ -251,6 +277,8 @@ class InferenceCore:
             original image size when callers only need the winning object id.
         resize_output: restore the returned output to the input image size after
             internal inference resizing. Disable when the caller discards the output.
+        output_size: optional explicit output height and width when the caller
+            resized the input before tensor conversion.
         """
         if objects is None and mask is not None:
             assert not idx_mask
@@ -270,13 +298,19 @@ class InferenceCore:
                                       mode='bilinear',
                                       align_corners=False)[0]
                 if mask is not None:
-                    if idx_mask:
-                        mask = self._resize_index_mask(mask, (new_h, new_w))
-                    else:
-                        mask = F.interpolate(mask.unsqueeze(0),
-                                             size=(new_h, new_w),
-                                             mode='bilinear',
-                                             align_corners=False)[0]
+                    mask = self._resize_input_mask(
+                        mask,
+                        (new_h, new_w),
+                        idx_mask=idx_mask,
+                    )
+        if mask is not None:
+            mask = self._resize_input_mask(
+                mask,
+                tuple(image.shape[-2:]),
+                idx_mask=idx_mask,
+            )
+            if mask.device != image.device:
+                mask = mask.to(image.device, non_blocking=True)
 
         self.curr_ti += 1
 
@@ -375,10 +409,14 @@ class InferenceCore:
             self.image_feature_store.delete(self.curr_ti)
 
         output_prob = unpad(pred_prob_with_bg, self.pad)
-        output_size = (h, w) if resize_needed and resize_output else None
+        resolved_output_size = output_size
+        if resolved_output_size is None and resize_needed:
+            resolved_output_size = (h, w)
+        if not resize_output:
+            resolved_output_size = None
         return self._finalize_output(
             output_prob,
-            output_size=output_size,
+            output_size=resolved_output_size,
             return_index_mask=return_index_mask,
         )
 

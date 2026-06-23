@@ -186,9 +186,83 @@ def test_build_object_mask_tensor_accepts_sparse_object_ids() -> None:
 
     assert active_ids == [1, 3]
     assert tuple(mask_tensor.shape) == (2, 2)
+    assert mask_tensor.dtype == torch.int32
     assert int((mask_tensor == 1).sum().item()) == 1
     assert int((mask_tensor == 3).sum().item()) == 1
     assert int((mask_tensor == 2).sum().item()) == 0
+
+
+def test_prepare_frame_tensor_resizes_before_tensor_conversion(monkeypatch) -> None:
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    processor.max_internal_size = 480
+    processor.device = "cpu"
+    captured = {}
+
+    def _capture_image_to_torch(frame, device=None):
+        captured["shape"] = frame.shape
+        captured["device"] = device
+        return torch.zeros((3, frame.shape[0], frame.shape[1]))
+
+    monkeypatch.setattr(cutie_predict, "image_to_torch", _capture_image_to_torch)
+
+    tensor = processor._prepare_frame_tensor(np.zeros((1080, 1920, 3), dtype=np.uint8))
+
+    assert captured == {"shape": (480, 853, 3), "device": "cpu"}
+    assert tensor.shape == (3, 480, 853)
+
+
+def test_cache_recovery_seed_frame_uses_one_validated_mask_copy() -> None:
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    processor._recent_instance_masks = {}
+    processor._recent_instance_mask_frames = {}
+    processor._recovery_seed_frame_index = None
+    processor._recovery_seed_frame = None
+    processor._recovery_seed_masks = {}
+    frame = np.zeros((4, 5, 3), dtype=np.uint8)
+    source_mask = np.eye(4, 5, dtype=bool)
+
+    processor._cache_recovery_seed_frame(
+        12,
+        frame,
+        {"mouse": source_mask},
+        {"mouse"},
+    )
+
+    cached_mask = processor._recovery_seed_masks["mouse"]
+    assert processor._recovery_seed_frame is frame
+    assert cached_mask is processor._recent_instance_masks["mouse"]
+    assert cached_mask is not source_mask
+    assert np.array_equal(cached_mask, source_mask)
+    assert processor._recent_instance_mask_frames["mouse"] == 12
+
+
+def test_prediction_to_instance_masks_skips_inactive_and_absent_ids() -> None:
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    processor.processor = object()
+    processor._tmp_to_global_ids_from_processor = lambda _processor, _fallback: {
+        1: 10,
+        2: 20,
+        3: 30,
+    }
+    prediction = np.array(
+        [
+            [0, 1, 1],
+            [0, 0, 3],
+        ],
+        dtype=np.uint8,
+    )
+
+    mask_dict, global_prediction = processor._prediction_to_instance_masks(
+        prediction,
+        fallback_global_mask=np.zeros_like(prediction),
+        active_ids=[10, 20, 30],
+        value_to_label_names={10: "mouse", 20: "absent", 30: "inactive"},
+        instance_names={"mouse", "absent"},
+    )
+
+    assert set(mask_dict) == {"mouse"}
+    assert int(mask_dict["mouse"].sum()) == 2
+    assert global_prediction is None
 
 
 def test_shapes_to_mask_skips_zone_flagged_shapes(tmp_path: Path) -> None:

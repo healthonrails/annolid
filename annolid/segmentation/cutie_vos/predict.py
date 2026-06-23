@@ -20,10 +20,11 @@ from annolid.gui.shape import MaskShape, Shape
 from annolid.annotation.keypoints import save_labels
 from annolid.segmentation.cutie_vos.interactive_utils import (
     image_to_torch,
-    torch_prob_to_numpy_mask,
     index_numpy_to_one_hot_torch,
     overlay_davis,
     color_id_mask,
+    resize_frame_for_inference,
+    torch_prob_to_numpy_mask,
 )
 from omegaconf import open_dict
 from hydra import compose, initialize
@@ -215,6 +216,7 @@ class CutieCoreVideoProcessor:
         self._tracking_stats_cache: Optional[Dict[str, Any]] = None
         self._tracking_stats_dirty: bool = False
         self._tracking_stats_pending_updates: int = 0
+        self._logged_inference_resize = False
         self._frame_preprocess_alpha = 1.0
         self._frame_preprocess_beta = 0.0
         self._frame_preprocess_enabled = False
@@ -1430,6 +1432,27 @@ class CutieCoreVideoProcessor:
         except (TypeError, ValueError):
             return 480
 
+    def _prepare_frame_tensor(self, frame: np.ndarray) -> torch.Tensor:
+        resized_frame = resize_frame_for_inference(
+            frame,
+            self._resolve_max_internal_size(
+                getattr(self, "max_internal_size", 480)
+            ),
+        )
+        if (
+            resized_frame is not frame
+            and not bool(getattr(self, "_logged_inference_resize", False))
+        ):
+            logger.info(
+                "CUTIE pre-transfer resize: %sx%s -> %sx%s.",
+                frame.shape[1],
+                frame.shape[0],
+                resized_frame.shape[1],
+                resized_frame.shape[0],
+            )
+            self._logged_inference_resize = True
+        return image_to_torch(resized_frame, device=self.device)
+
     @staticmethod
     def _build_frame_intervals(frame_indices: Set[int]) -> List[Tuple[int, int]]:
         """Convert sparse frame indices into sorted closed intervals."""
@@ -1820,7 +1843,7 @@ class CutieCoreVideoProcessor:
             self._save_bbox(points, frame_area, label)
             current_shape.points = points
             label_list.append(current_shape)
-            persisted_masks[label] = np.asarray(mask).astype(bool)
+            persisted_masks[label] = np.asarray(mask, dtype=bool)
             self._last_mask_area_ratio[label] = float(np.count_nonzero(mask)) / max(
                 float(frame_area), 1.0
             )
@@ -1881,7 +1904,7 @@ class CutieCoreVideoProcessor:
             self._save_bbox(recovered_points, frame_area, label)
             recovered_shape.points = recovered_points
             label_list.append(recovered_shape)
-            persisted_masks[label] = np.asarray(repaired_mask).astype(bool)
+            persisted_masks[label] = np.asarray(repaired_mask, dtype=bool)
             self._last_mask_area_ratio[label] = float(np.count_nonzero(repaired_mask)) / max(
                 float(frame_area), 1.0
             )
@@ -2168,8 +2191,7 @@ class CutieCoreVideoProcessor:
                     "Recovered collapse masks did not contain any active CUTIE objects."
                 )
             self._register_active_objects(reset_active_ids)
-            mask_tensor = mask_tensor.to(self.device)
-            frame_torch = image_to_torch(frame, device=self.device)
+            frame_torch = self._prepare_frame_tensor(frame)
             self.processor.step(
                 frame_torch,
                 mask_tensor,
@@ -2262,7 +2284,7 @@ class CutieCoreVideoProcessor:
         """Store latest available binary mask per instance for fallback fill."""
         for label, mask in (mask_dict or {}).items():
             try:
-                mask_bool = np.asarray(mask).astype(bool)
+                mask_bool = np.asarray(mask, dtype=bool)
             except Exception:
                 continue
             if mask_bool.ndim != 2 or not mask_bool.any():
@@ -2277,7 +2299,7 @@ class CutieCoreVideoProcessor:
         expected_shape: Tuple[int, int],
     ) -> Optional[np.ndarray]:
         try:
-            mask_bool = np.asarray(mask).astype(bool)
+            mask_bool = np.asarray(mask, dtype=bool)
         except Exception:
             return None
         if mask_bool.shape != expected_shape or not mask_bool.any():
@@ -2302,9 +2324,11 @@ class CutieCoreVideoProcessor:
                 return
             complete_masks[label] = mask.copy()
         self._recovery_seed_frame_index = int(frame_idx)
-        self._recovery_seed_frame = np.asarray(frame).copy()
+        self._recovery_seed_frame = np.asarray(frame)
         self._recovery_seed_masks = complete_masks
-        self._update_recent_instance_masks(frame_idx, complete_masks)
+        for label, mask in complete_masks.items():
+            self._recent_instance_masks[label] = mask
+            self._recent_instance_mask_frames[label] = int(frame_idx)
 
     def _build_global_mask_from_instance_masks(
         self,
@@ -2363,19 +2387,20 @@ class CutieCoreVideoProcessor:
         try:
             self.processor = InferenceCore(self.cutie, cfg=self.cfg)
             self._register_active_objects(recovered_active_ids)
-            seed_frame_torch = image_to_torch(recovery_frame, device=self.device)
+            seed_frame_torch = self._prepare_frame_tensor(recovery_frame)
             self.processor.step(
                 seed_frame_torch,
-                mask_tensor.to(self.device),
+                mask_tensor,
                 objects=recovered_active_ids,
                 idx_mask=True,
                 force_permanent=True,
                 resize_output=False,
             )
-            current_frame_torch = image_to_torch(frame, device=self.device)
+            current_frame_torch = self._prepare_frame_tensor(frame)
             prediction = self.processor.step(
                 current_frame_torch,
                 return_index_mask=True,
+                output_size=tuple(frame.shape[:2]),
             )
             prediction = torch_prob_to_numpy_mask(prediction)
         except Exception:
@@ -2525,10 +2550,11 @@ class CutieCoreVideoProcessor:
         return active
 
     def _build_object_mask_tensor(self, mask: np.ndarray):
-        unique_ids = sorted(int(v) for v in np.unique(mask) if v != 0)
+        mask_array = np.asarray(mask, dtype=np.int32)
+        unique_ids = sorted(int(v) for v in np.unique(mask_array) if v != 0)
         if not unique_ids:
             return None, []
-        return torch.from_numpy(mask.astype(np.int64)), unique_ids
+        return torch.from_numpy(mask_array), unique_ids
 
     def _build_seed_mask_dict(
         self,
@@ -2642,11 +2668,11 @@ class CutieCoreVideoProcessor:
         if prediction is None:
             mask_dict: Dict[str, np.ndarray] = {}
             for global_id in sorted(int(obj_id) for obj_id in active_ids):
-                global_mask = fallback_global_mask == int(global_id)
-                if not global_mask.any():
-                    continue
                 label_name = value_to_label_names.get(int(global_id), str(global_id))
                 if label_name not in instance_names:
+                    continue
+                global_mask = fallback_global_mask == int(global_id)
+                if not global_mask.any():
                     continue
                 mask_dict[label_name] = global_mask
             return mask_dict, fallback_global_mask.copy()
@@ -2655,13 +2681,14 @@ class CutieCoreVideoProcessor:
             self.processor,
             active_ids,
         )
+        prediction = np.asarray(prediction)
         mask_dict = {}
         for tmp_id, global_id in sorted(tmp_to_global_ids.items()):
-            local_mask = prediction == int(tmp_id)
-            if not local_mask.any():
-                continue
             label_name = value_to_label_names.get(int(global_id), str(global_id))
             if label_name not in instance_names:
+                continue
+            local_mask = prediction == int(tmp_id)
+            if not local_mask.any():
                 continue
             mask_dict[label_name] = local_mask
         return mask_dict, None
@@ -2893,14 +2920,13 @@ class CutieCoreVideoProcessor:
                     for label in commit_labels:
                         labels_dict.setdefault(label, segment.labels_map[label])
 
-                    frame_torch = image_to_torch(frame, device=self.device)
+                    frame_torch = self._prepare_frame_tensor(frame)
                     mask_tensor, active_ids = self._build_object_mask_tensor(
                         commit_mask
                     )
                     if mask_tensor is None or not active_ids:
                         continue
                     self._register_active_objects(active_ids)
-                    mask_tensor = mask_tensor.to(self.device)
                     self.processor.step(
                         frame_torch,
                         mask_tensor,
@@ -3177,7 +3203,6 @@ class CutieCoreVideoProcessor:
                 True,
             )
 
-        mask_tensor = mask_tensor.to(self.device)
         self._register_active_objects(active_ids)
         value_to_label_names = {
             value: label for label, value in self.label_registry.items()
@@ -3314,7 +3339,7 @@ class CutieCoreVideoProcessor:
                                     pred_worker.progress_signal.emit(pct)
                         except Exception:
                             pass
-                    frame_torch = image_to_torch(frame, device=self.device)
+                    frame_torch = self._prepare_frame_tensor(frame)
                     filename = self.video_folder / (
                         self.video_folder.name + f"_{current_frame_index:0>{9}}.json"
                     )
@@ -3388,6 +3413,7 @@ class CutieCoreVideoProcessor:
                                 idx_mask=True,
                                 force_permanent=True,
                                 return_index_mask=True,
+                                output_size=tuple(frame.shape[:2]),
                             )
                             prediction = torch_prob_to_numpy_mask(prediction)
                         except Exception as exc:  # pragma: no cover - logging only
@@ -3407,6 +3433,7 @@ class CutieCoreVideoProcessor:
                         prediction = self.processor.step(
                             frame_torch,
                             return_index_mask=True,
+                            output_size=tuple(frame.shape[:2]),
                         )
                         prediction = torch_prob_to_numpy_mask(prediction)
 
@@ -3803,9 +3830,6 @@ class CutieCoreVideoProcessor:
                         saved_mask_dict = getattr(self, "_last_saved_instance_masks", {})
                         if not isinstance(saved_mask_dict, dict):
                             saved_mask_dict = {}
-                        self._update_recent_instance_masks(
-                            current_frame_index, saved_mask_dict
-                        )
                         self._cache_recovery_seed_frame(
                             current_frame_index,
                             frame,

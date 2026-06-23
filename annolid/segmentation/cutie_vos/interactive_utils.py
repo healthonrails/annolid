@@ -1,6 +1,7 @@
 # Modified from https://github.com/seoungwugoh/ivs-demo
 
 from typing import Literal, List
+import cv2
 import numpy as np
 
 import torch
@@ -8,11 +9,29 @@ import torch.nn.functional as F
 from annolid.segmentation.cutie_vos.utils.palette import davis_palette
 
 
+def resize_frame_for_inference(
+    frame: np.ndarray,
+    max_internal_size: int,
+) -> np.ndarray:
+    """Resize before tensor conversion to avoid full-resolution float transfer."""
+    height, width = frame.shape[:2]
+    min_side = min(height, width)
+    if max_internal_size <= 0 or min_side <= max_internal_size:
+        return frame
+    new_height = int(height / min_side * max_internal_size)
+    new_width = int(width / min_side * max_internal_size)
+    return cv2.resize(
+        frame,
+        (new_width, new_height),
+        interpolation=cv2.INTER_LINEAR,
+    )
+
+
 def image_to_torch(frame: np.ndarray, device: str = 'cuda'):
     # frame: H*W*3 numpy array
-    frame = frame.transpose(2, 0, 1)
-    frame = torch.from_numpy(frame).float().to(device, non_blocking=True) / 255
-    return frame
+    frame_chw = np.ascontiguousarray(frame.transpose(2, 0, 1))
+    frame_tensor = torch.from_numpy(frame_chw).float()
+    return frame_tensor.to(device, non_blocking=True).div_(255)
 
 
 def torch_prob_to_numpy_mask(prob: torch.Tensor):
