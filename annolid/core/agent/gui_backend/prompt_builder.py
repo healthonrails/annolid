@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Any, Callable, List, Optional
 
 from annolid.core.agent.gui_backend.command_registry import (
     build_direct_command_alias_line,
@@ -21,6 +21,7 @@ class PromptBuildInputs:
     allowed_read_roots: Optional[List[str]] = None
     allow_web_tools: Optional[bool] = None
     available_tool_names: Optional[List[str]] = None
+    relevant_skills: Optional[List[dict[str, Any]]] = None
     tool_policy_profile: str = ""
     tool_policy_source: str = ""
     include_workspace_docs: bool = True
@@ -102,6 +103,48 @@ def _build_tracking_stats_guidance(tool_names: List[str]) -> str:
     )
 
 
+def _clean_prompt_cell(value: object, *, max_chars: int = 220) -> str:
+    text = str(value or "").replace("\n", " ").replace("`", "'").strip()
+    if len(text) > max_chars:
+        text = text[:max_chars].rstrip() + "..."
+    return text
+
+
+def _build_relevant_skills_section(skills: Optional[List[dict[str, Any]]]) -> str:
+    rows = [row for row in list(skills or []) if isinstance(row, dict)]
+    if not rows:
+        return ""
+    lines = [
+        "## Relevant Skills",
+        "Task-matched skill candidates. Inspect the skill file before using it; "
+        "do not treat this metadata as the full instruction set.",
+    ]
+    for row in rows[:5]:
+        name = _clean_prompt_cell(row.get("name"), max_chars=80)
+        if not name:
+            continue
+        source = _clean_prompt_cell(row.get("source"), max_chars=40)
+        strategy = _clean_prompt_cell(row.get("strategy"), max_chars=40)
+        path = _clean_prompt_cell(row.get("path"), max_chars=260)
+        desc = _clean_prompt_cell(row.get("description"), max_chars=180)
+        try:
+            score = float(row.get("score") or 0.0)
+        except (TypeError, ValueError):
+            score = 0.0
+        details = [f"score={score:.2f}"]
+        if strategy:
+            details.append(f"strategy={strategy}")
+        if source:
+            details.append(f"source={source}")
+        line = f"- `{name}` ({', '.join(details)})"
+        if path:
+            line += f" path=`{path}`"
+        if desc:
+            line += f" - {desc}"
+        lines.append(line)
+    return "\n".join(lines) if len(lines) > 2 else ""
+
+
 def build_compact_system_prompt(
     *,
     inputs: PromptBuildInputs,
@@ -139,6 +182,9 @@ def build_compact_system_prompt(
     )
     if tooling_section:
         parts.append(tooling_section)
+    relevant_skills_section = _build_relevant_skills_section(inputs.relevant_skills)
+    if relevant_skills_section:
+        parts.append(relevant_skills_section)
     parts.append(
         "Use this local datetime as the source of truth for relative time "
         f"phrases (today/tomorrow/next week): {now_iso} ({tz_name}, UTC{pretty_offset}). "

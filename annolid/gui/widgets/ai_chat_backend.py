@@ -123,6 +123,7 @@ from annolid.services.chat_backend_support import (
     should_attach_live_pdf_context,
     should_attach_live_web_context,
     should_attach_tracking_stats_context,
+    suggest_relevant_skills_for_prompt,
     topic_tokens,
     tool_first_live_web_error_message,
     try_browser_search_fallback,
@@ -5402,6 +5403,9 @@ class StreamingChatTask(QRunnable):
                 allowed_read_roots=allowed_read_roots,
                 allow_web_tools=allow_web_tools,
                 available_tool_names=available_tool_names,
+                relevant_skills=suggest_relevant_skills_for_prompt(
+                    workspace, self.prompt
+                ),
                 tool_policy_profile=tool_policy_profile,
                 tool_policy_source=tool_policy_source,
                 include_workspace_docs=include_workspace_docs,

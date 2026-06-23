@@ -363,6 +363,37 @@ def test_compact_system_prompt_compacts_runtime_tooling_list(tmp_path: Path) -> 
     assert "... and 16 additional tools" in prompt
 
 
+def test_compact_system_prompt_includes_relevant_skill_candidates(
+    tmp_path: Path,
+) -> None:
+    skill_dir = tmp_path / "skills" / "zebra-lab-protocol"
+    skill_dir.mkdir(parents=True)
+    skill_file = skill_dir / "SKILL.md"
+    skill_file.write_text(
+        "---\n"
+        "description: zebra lab protocol tracking workflow\n"
+        "---\n"
+        "Use this workflow for zebra lab protocol tracking.\n",
+        encoding="utf-8",
+    )
+
+    task = StreamingChatTask(
+        "run the zebra lab protocol tracking workflow", widget=None
+    )
+    prompt = task._build_compact_system_prompt(
+        tmp_path,
+        allowed_read_roots=[],
+        allow_web_tools=False,
+        available_tool_names=[],
+        include_workspace_docs=False,
+    )
+
+    assert "## Relevant Skills" in prompt
+    assert "`zebra-lab-protocol`" in prompt
+    assert f"path=`{skill_file}`" in prompt
+    assert "Inspect the skill file before using it" in prompt
+
+
 def test_workspace_skill_name_cache_invalidation_detects_new_skill_file(
     tmp_path: Path,
 ) -> None:

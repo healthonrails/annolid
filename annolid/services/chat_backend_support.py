@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import logging
+from pathlib import Path
+from typing import Any
+
 from annolid.core.agent.gui_backend.commands import (
     looks_like_local_access_refusal,
     parse_direct_gui_command,
@@ -122,6 +126,28 @@ from annolid.core.agent.web_intents import (
     tokenize_intent_text,
 )
 
+logger = logging.getLogger(__name__)
+
+
+def suggest_relevant_skills_for_prompt(
+    workspace: Path,
+    prompt: str,
+    *,
+    top_k: int = 5,
+) -> list[dict[str, Any]]:
+    task_text = str(prompt or "").strip()
+    if not task_text:
+        return []
+    try:
+        from annolid.core.agent.skills import AgentSkillsLoader
+
+        loader = AgentSkillsLoader(workspace=Path(workspace))
+        return loader.suggest_skills_for_task_scored(task_text, top_k=max(1, top_k))
+    except Exception:
+        logger.debug("Failed to suggest relevant agent skills", exc_info=True)
+        return []
+
+
 __all__ = [
     "ERROR_TYPE_CANCELLED",
     "ERROR_TYPE_POLICY",
@@ -200,6 +226,7 @@ __all__ = [
     "should_attach_live_pdf_context",
     "should_attach_live_web_context",
     "should_attach_tracking_stats_context",
+    "suggest_relevant_skills_for_prompt",
     "topic_tokens",
     "tool_first_live_web_error_message",
     "try_browser_search_fallback",
