@@ -79,6 +79,44 @@ def test_cutie_processor_allows_disabling_legacy_missing_fill(
     assert processor.auto_fill_missing_instances is False
 
 
+def test_cuda_amp_is_enabled_only_for_cuda_when_requested() -> None:
+    assert CutieCoreVideoProcessor._cuda_amp_enabled("cuda", True) is True
+    assert CutieCoreVideoProcessor._cuda_amp_enabled("cuda:0", True) is True
+    assert CutieCoreVideoProcessor._cuda_amp_enabled("cuda", False) is False
+    assert CutieCoreVideoProcessor._cuda_amp_enabled("mps", True) is False
+    assert CutieCoreVideoProcessor._cuda_amp_enabled("cpu", True) is False
+
+
+def test_cutie_optical_flow_uses_bounded_default_and_preserves_overrides(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setattr(
+        CutieCoreVideoProcessor,
+        "_initialize_model",
+        lambda self: (object(), types.SimpleNamespace(amp=False)),
+    )
+    monkeypatch.setattr(cutie_predict, "get_device", lambda: "cpu")
+
+    default_processor = CutieCoreVideoProcessor(
+        str(tmp_path / "default.mp4"),
+        compute_optical_flow=True,
+    )
+    explicit_processor = CutieCoreVideoProcessor(
+        str(tmp_path / "explicit.mp4"),
+        compute_optical_flow=True,
+        optical_flow_max_dim=720,
+    )
+    full_resolution_processor = CutieCoreVideoProcessor(
+        str(tmp_path / "full.mp4"),
+        compute_optical_flow=True,
+        cutie_optical_flow_max_dim=0,
+    )
+
+    assert default_processor._optical_flow_kwargs["max_dim"] == 960
+    assert explicit_processor._optical_flow_kwargs["max_dim"] == 720
+    assert full_resolution_processor._optical_flow_kwargs["max_dim"] is None
+
+
 def test_cutie_initialize_model_uses_shared_md5_downloader(
     monkeypatch, tmp_path
 ) -> None:
@@ -117,6 +155,7 @@ def test_cutie_initialize_model_uses_shared_md5_downloader(
     processor.current_folder = str(tmp_path)
     processor.max_mem_frames = 7
     processor.max_internal_size = 512
+    processor.use_amp = True
     processor.mem_every = 3
     processor.device = "cpu"
 
@@ -150,6 +189,7 @@ def test_cutie_initialize_model_uses_shared_md5_downloader(
     assert cfg.weights == str(expected_path)
     assert cfg["max_mem_frames"] == 7
     assert cfg["max_internal_size"] == 512
+    assert cfg["amp"] is False
     assert cfg["mem_every"] == 3
     assert cutie_model.loaded_weights == {"ok": True}
     assert calls == [
@@ -2520,6 +2560,129 @@ def test_process_segment_throttles_repeated_single_missing_recovery(
     assert should_halt is False
     assert message == "Stop at frame:\n#3"
     assert recovery_calls == [("teaball",)]
+
+
+def test_process_segment_backs_off_repeated_successful_single_recovery(
+    monkeypatch,
+) -> None:
+    class _DummyInferenceCore:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def step(self, _frame_torch, mask_tensor=None, **_kwargs):
+            if mask_tensor is not None:
+                return np.array([[1, 2], [0, 0]], dtype=np.int32)
+            return np.array([[1, 0], [0, 0]], dtype=np.int32)
+
+    class _DummyCap:
+        def __init__(self, frames=8):
+            self._frames = frames
+            self._pos = 0
+
+        def get(self, _prop):
+            return self._pos
+
+        def set(self, _prop, value):
+            self._pos = int(value)
+
+        def isOpened(self):
+            return self._pos < self._frames
+
+        def read(self):
+            if self._pos >= self._frames:
+                return False, None
+            self._pos += 1
+            return True, np.zeros((2, 2, 3), dtype=np.uint8)
+
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    processor.cutie = object()
+    processor.cfg = types.SimpleNamespace(amp=False)
+    processor.device = "cpu"
+    processor.video_folder = Path("clip")
+    processor.label_registry = {"_background_": 0, "mouse": 1, "teaball": 2}
+    processor._global_label_names = {}
+    processor.compute_optical_flow = False
+    processor.auto_missing_instance_recovery = True
+    processor.auto_fill_missing_instances = True
+    processor.automatic_pause_enabled = False
+    processor.continue_on_missing_instances = True
+    processor.missing_recovery_retry_interval = 3
+    processor.debug = False
+    processor._optical_flow_kwargs = {}
+    processor.optical_flow_backend = "farneback"
+    processor._recent_instance_masks = {}
+    processor._recent_instance_mask_frames = {}
+    processor._recovery_seed_frame_index = None
+    processor._recovery_seed_frame = None
+    processor._recovery_seed_masks = {}
+    processor._last_saved_instance_masks = {}
+    processor._flow_hsv = None
+    processor._should_stop = lambda _worker=None: False
+    processor.commit_masks_into_permanent_memory = lambda *_args, **_kwargs: {
+        "_background_": 0,
+        "mouse": 1,
+        "teaball": 2,
+    }
+    processor._build_object_mask_tensor = lambda _mask: (
+        torch.zeros((2, 2), dtype=torch.int32),
+        [1, 2],
+    )
+    processor._register_active_objects = lambda _ids: None
+    processor._update_tracking_frame_stat = lambda *_args, **_kwargs: None
+
+    saved_notes = {}
+
+    def _capture_save(_filename, mask_dict, _shape, shape_notes=None):
+        processor._last_saved_instance_masks = {
+            label: mask.copy() for label, mask in mask_dict.items()
+        }
+        saved_notes[int(processor._frame_number)] = dict(shape_notes or {})
+
+    processor._save_annotation_with_notes = _capture_save
+    recovery_calls = []
+    mouse_mask = np.array([[True, False], [False, False]])
+    teaball_mask = np.array([[False, True], [False, False]])
+
+    def _recover(_missing_instances, *_args):
+        recovery_calls.append(int(_args[-1]))
+        return (
+            {"mouse": mouse_mask.copy(), "teaball": teaball_mask.copy()},
+            None,
+            set(),
+            [1, 2],
+        )
+
+    processor._recover_missing_instances_from_recovery_seed = _recover
+
+    monkeypatch.setattr(cutie_predict, "InferenceCore", _DummyInferenceCore)
+    monkeypatch.setattr(
+        cutie_predict, "image_to_torch", lambda frame, device=None: frame
+    )
+    monkeypatch.setattr(cutie_predict, "torch_prob_to_numpy_mask", lambda pred: pred)
+
+    segment = SeedSegment(
+        seed=_seed(0),
+        start_frame=0,
+        end_frame=7,
+        mask=np.array([[1, 2], [0, 0]], dtype=np.int32),
+        labels_map={"_background_": 0, "mouse": 1, "teaball": 2},
+        active_labels=["mouse", "teaball"],
+    )
+
+    message, should_halt = processor._process_segment(
+        cap=_DummyCap(),
+        segment=segment,
+        end_frame=7,
+        fps=30.0,
+    )
+
+    assert should_halt is False
+    assert message == "Stop at frame:\n#7"
+    assert recovery_calls == [1, 4, 7]
+    assert "recovery_backoff" in saved_notes[2]["teaball"]
+    assert "recovery_backoff" in saved_notes[3]["teaball"]
+    assert "recovery_backoff" in saved_notes[5]["teaball"]
+    assert "recovery_backoff" in saved_notes[6]["teaball"]
 
 
 def test_recover_missing_instances_rate_limits_success_logs(monkeypatch) -> None:

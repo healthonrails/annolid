@@ -103,6 +103,7 @@ class CutieCoreVideoProcessor:
     _TRACKING_STATS_VERSION = 5
     _TRACKING_STATS_FLUSH_INTERVAL = 100
     _PRIOR_REFERENCE_SEED_LIMIT = 3
+    _DEFAULT_OPTICAL_FLOW_MAX_DIM = 960
 
     def _configure_frame_preprocessing(self, *, brightness: Any, contrast: Any) -> None:
         (
@@ -133,6 +134,7 @@ class CutieCoreVideoProcessor:
         self.max_internal_size = self._resolve_max_internal_size(
             kwargs.get("max_internal_size", 480)
         )
+        self.use_amp = bool(kwargs.get("use_amp", True))
         self.use_cpu_only = kwargs.get("use_cpu_only", False)
         self.epsilon_for_polygon = kwargs.get("epsilon_for_polygon", 2.0)
         self.processor = None
@@ -167,6 +169,25 @@ class CutieCoreVideoProcessor:
         self._optical_flow_kwargs = optical_flow_compute_kwargs(
             self._optical_flow_settings
         )
+        if (
+            self.compute_optical_flow
+            and self._optical_flow_kwargs.get("max_dim") is None
+        ):
+            self._optical_flow_kwargs["max_dim"] = (
+                self._resolve_cutie_optical_flow_max_dim(
+                    kwargs.get(
+                        "cutie_optical_flow_max_dim",
+                        self._DEFAULT_OPTICAL_FLOW_MAX_DIM,
+                    )
+                )
+            )
+        if self.compute_optical_flow:
+            logger.info(
+                "CUTIE optical flow enabled: backend=%s, scale=%s, max_dim=%s.",
+                self.optical_flow_backend,
+                self._optical_flow_kwargs.get("scale"),
+                self._optical_flow_kwargs.get("max_dim"),
+            )
         self.auto_missing_instance_recovery = bool(
             kwargs.get(
                 "auto_missing_instance_recovery",
@@ -187,6 +208,10 @@ class CutieCoreVideoProcessor:
         )
         self._recovery_success_log_counts: Dict[Tuple[str, ...], int] = {}
         self._suppressed_recovery_success_log_counts: Dict[Tuple[str, ...], int] = {}
+        self.missing_recovery_retry_interval = self._resolve_positive_int(
+            kwargs.get("missing_recovery_retry_interval", 25),
+            default=25,
+        )
         logger.info(
             f"Auto missing instance recovery is set to {self.auto_missing_instance_recovery}."
         )
@@ -1432,6 +1457,26 @@ class CutieCoreVideoProcessor:
         except (TypeError, ValueError):
             return 480
 
+    @staticmethod
+    def _resolve_positive_int(value: Any, *, default: int) -> int:
+        try:
+            resolved = int(value)
+        except (TypeError, ValueError):
+            return int(default)
+        return resolved if resolved > 0 else int(default)
+
+    @classmethod
+    def _resolve_cutie_optical_flow_max_dim(cls, value: Any) -> Optional[int]:
+        try:
+            resolved = int(value)
+        except (TypeError, ValueError):
+            return cls._DEFAULT_OPTICAL_FLOW_MAX_DIM
+        return resolved if resolved > 0 else None
+
+    @staticmethod
+    def _cuda_amp_enabled(device: Any, requested: Any) -> bool:
+        return bool(requested) and str(device).lower().startswith("cuda")
+
     def _prepare_frame_tensor(self, frame: np.ndarray) -> torch.Tensor:
         resized_frame = resize_frame_for_inference(
             frame,
@@ -1629,10 +1674,15 @@ class CutieCoreVideoProcessor:
             max_internal_size = self._resolve_max_internal_size(
                 getattr(self, "max_internal_size", 480)
             )
+            amp_enabled = self._cuda_amp_enabled(
+                self.device,
+                getattr(self, "use_amp", True),
+            )
             with open_dict(cfg):
                 cfg["weights"] = model_path
                 cfg["max_mem_frames"] = self.max_mem_frames
                 cfg["max_internal_size"] = max_internal_size
+                cfg["amp"] = amp_enabled
             cfg["mem_every"] = self.mem_every
             logger.info(f"Saving into working memory for every: {self.mem_every}.")
             logger.info(f"Tmax: max_mem_frames: {self.max_mem_frames}")
@@ -1640,6 +1690,7 @@ class CutieCoreVideoProcessor:
                 "CUTIE max internal inference size: %s.",
                 max_internal_size,
             )
+            logger.info("CUTIE CUDA automatic mixed precision: %s.", amp_enabled)
             cutie_model = CUTIE(cfg).to(self.device).eval()
             model_weights = torch.load(
                 cfg.weights, map_location=self.device, weights_only=True
@@ -2292,6 +2343,29 @@ class CutieCoreVideoProcessor:
             key = str(label)
             self._recent_instance_masks[key] = mask_bool.copy()
             self._recent_instance_mask_frames[key] = int(frame_idx)
+
+    def _fill_missing_instances_from_recent_masks(
+        self,
+        mask_dict: Dict[str, np.ndarray],
+        missing_instances: Iterable[str],
+        frame_shape: Tuple[int, int],
+        *,
+        note: str,
+    ) -> Tuple[Set[str], Dict[str, str]]:
+        """Fill missing labels from validated recent masks without rebuilding CUTIE."""
+        filled: Set[str] = set()
+        notes: Dict[str, str] = {}
+        for label in sorted(str(item) for item in missing_instances):
+            recent = self._valid_binary_mask(
+                self._recent_instance_masks.get(label),
+                frame_shape,
+            )
+            if recent is None:
+                continue
+            mask_dict[label] = recent.copy()
+            filled.add(label)
+            notes[label] = str(note)
+        return filled, notes
 
     @staticmethod
     def _valid_binary_mask(
@@ -3229,6 +3303,9 @@ class CutieCoreVideoProcessor:
             None
         )
         failed_single_recovery_streak = 0
+        successful_single_recovery_key: Optional[Tuple[str, ...]] = None
+        successful_single_recovery_streak = 0
+        recovery_backoff_logged_keys: Set[Tuple[str, ...]] = set()
         skipped_persist_count = 0
         completed_intervals: List[Tuple[int, int]] = []
         if existing_labeled_frames:
@@ -3505,6 +3582,10 @@ class CutieCoreVideoProcessor:
                             unresolved_missing_instance_labels=[],
                         )
 
+                    if len(mask_dict) >= expected_instance_count:
+                        successful_single_recovery_key = None
+                        successful_single_recovery_streak = 0
+
                     if (not frame_already_labeled) and len(mask_dict) < expected_instance_count:
                         missing_instances = instance_names - set(mask_dict.keys())
                         if missing_instances:
@@ -3549,8 +3630,72 @@ class CutieCoreVideoProcessor:
                             except (TypeError, ValueError):
                                 recovery_seed_key = None
                             recovery_key = (recovery_seed_key, missing_key)
+                            retry_interval = self._resolve_positive_int(
+                                getattr(
+                                    self,
+                                    "missing_recovery_retry_interval",
+                                    missing_log_every,
+                                ),
+                                default=missing_log_every,
+                            )
+                            recovery_backoff_allowed = bool(
+                                recovery_enabled
+                                and fill_enabled
+                                and not bool(
+                                    getattr(self, "automatic_pause_enabled", False)
+                                )
+                                and len(missing_instances) == 1
+                            )
+                            backoff_active = bool(
+                                recovery_backoff_allowed
+                                and successful_single_recovery_key == missing_key
+                                and successful_single_recovery_streak > 0
+                            )
+                            retry_due = bool(
+                                backoff_active
+                                and successful_single_recovery_streak
+                                % retry_interval
+                                == 0
+                            )
+                            filled_during_backoff = False
+                            if backoff_active and not retry_due:
+                                filled_labels, fill_notes = (
+                                    self._fill_missing_instances_from_recent_masks(
+                                        mask_dict,
+                                        missing_instances,
+                                        tuple(frame.shape[:2]),
+                                        note=(
+                                            "filled_from_previous_available_instance_"
+                                            "mask(recovery_backoff)"
+                                        ),
+                                    )
+                                )
+                                if filled_labels:
+                                    shape_notes_for_frame.update(fill_notes)
+                                    missing_instances = (
+                                        instance_names - set(mask_dict.keys())
+                                    )
+                                    successful_single_recovery_streak += 1
+                                    filled_during_backoff = not missing_instances
+                                    if filled_during_backoff:
+                                        if missing_key not in recovery_backoff_logged_keys:
+                                            recovery_backoff_logged_keys.add(missing_key)
+                                            logger.info(
+                                                "CUTIE recovery backoff active for %s; "
+                                                "reseed retry every %s frames.",
+                                                ", ".join(missing_key),
+                                                retry_interval,
+                                            )
+                                        global_prediction = (
+                                            self._build_global_mask_from_instance_masks(
+                                                mask_dict,
+                                                labels_dict,
+                                                tuple(frame.shape[:2]),
+                                            )
+                                        )
                             skip_single_recovery = bool(
                                 recovery_enabled
+                                and not filled_during_backoff
                                 and len(missing_instances) == 1
                                 and failed_single_recovery_key == recovery_key
                                 and failed_single_recovery_streak > 0
@@ -3561,7 +3706,11 @@ class CutieCoreVideoProcessor:
                             if skip_single_recovery:
                                 failed_single_recovery_streak += 1
 
-                            if recovery_enabled and not skip_single_recovery:
+                            if (
+                                recovery_enabled
+                                and not filled_during_backoff
+                                and not skip_single_recovery
+                            ):
                                 attempted_recovery = True
                                 (
                                     recovered_mask_dict,
@@ -3599,6 +3748,47 @@ class CutieCoreVideoProcessor:
                                             if label in mask_dict
                                         }
                                     )
+                                if not missing_instances:
+                                    if successful_single_recovery_key == missing_key:
+                                        successful_single_recovery_streak += 1
+                                    else:
+                                        successful_single_recovery_key = missing_key
+                                        successful_single_recovery_streak = 1
+                                elif recovery_backoff_allowed:
+                                    filled_labels, fill_notes = (
+                                        self._fill_missing_instances_from_recent_masks(
+                                            mask_dict,
+                                            missing_instances,
+                                            tuple(frame.shape[:2]),
+                                            note=(
+                                                "filled_from_previous_available_instance_"
+                                                "mask(recovery_retry_failed)"
+                                            ),
+                                        )
+                                    )
+                                    if filled_labels:
+                                        shape_notes_for_frame.update(fill_notes)
+                                        missing_instances = (
+                                            instance_names - set(mask_dict.keys())
+                                        )
+                                        if not missing_instances:
+                                            if (
+                                                successful_single_recovery_key
+                                                == missing_key
+                                            ):
+                                                successful_single_recovery_streak += 1
+                                            else:
+                                                successful_single_recovery_key = (
+                                                    missing_key
+                                                )
+                                                successful_single_recovery_streak = 1
+                                            global_prediction = (
+                                                self._build_global_mask_from_instance_masks(
+                                                    mask_dict,
+                                                    labels_dict,
+                                                    tuple(frame.shape[:2]),
+                                                )
+                                            )
                             elif not recovery_enabled:
                                 missing_instances = instance_names - set(mask_dict.keys())
                             collapse_artifact_labels = (
