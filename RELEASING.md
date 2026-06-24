@@ -16,7 +16,8 @@ This repository publishes:
 Under the hood this runs `scripts/release.sh`, which will:
 - verify a clean git worktree
 - bump both `pyproject.toml` and `annolid/version.py`
-- run `pytest`, `python -m build`, and `python -m twine check dist/*`
+- run `pytest`, `python -m build`, and
+  `python -m twine check dist/*.whl dist/*.tar.gz`
 - create commit `chore(release): vX.Y.Z`
 - create annotated tag `vX.Y.Z`
 - optionally push branch + tag

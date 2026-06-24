@@ -100,7 +100,7 @@ if [[ "$SKIP_CHECKS" -eq 0 ]]; then
   python -m pytest
   python -m build
   python scripts/check_distribution_artifacts.py dist/*
-  python -m twine check dist/*
+  python -m twine check dist/*.whl dist/*.tar.gz
 fi
 
 git add pyproject.toml annolid/version.py
