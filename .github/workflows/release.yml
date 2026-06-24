@@ -187,7 +187,7 @@ jobs:
           if [ "${RUNNER_OS}" = "Linux" ]; then
             tar -czf "${{ matrix.archive-name }}" annolid
           elif [ "${RUNNER_OS}" = "macOS" ] && [ -d "Annolid.app" ]; then
-            python -m zipfile -c "${{ matrix.archive-name }}" annolid Annolid.app
+            python -m zipfile -c "${{ matrix.archive-name }}" Annolid.app
           else
             python -m zipfile -c "${{ matrix.archive-name }}" annolid
           fi

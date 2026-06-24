@@ -224,3 +224,13 @@ def test_release_workflow_uploads_checksums_and_manifest() -> None:
     assert ".sha256" in workflow
     assert "-manifest.json" in workflow
     assert "unsigned-ci-build" in workflow
+
+
+def test_release_workflow_does_not_duplicate_macos_bundle_in_archive() -> None:
+    workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+
+    assert 'python -m zipfile -c "${{ matrix.archive-name }}" Annolid.app' in workflow
+    assert (
+        'python -m zipfile -c "${{ matrix.archive-name }}" annolid Annolid.app'
+        not in workflow
+    )
