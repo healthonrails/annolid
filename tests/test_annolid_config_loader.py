@@ -20,3 +20,19 @@ sam3:
     assert config["sam3"]["use_explicit_window_reseed"] is False
     assert config["sam3"]["allow_private_state_mutation"] is True
     assert warnings == []
+
+
+def test_legacy_top_level_sam3_rejection_flag_is_migrated(monkeypatch) -> None:
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        configs.logger, "warn", lambda message: warnings.append(message)
+    )
+
+    config = configs.get_config(
+        """
+reject_implausible_masks: true
+"""
+    )
+
+    assert config["sam3"]["reject_implausible_masks"] is True
+    assert warnings == []

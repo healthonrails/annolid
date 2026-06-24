@@ -711,7 +711,7 @@ class PredictionProgressMixin:
                         path / f"{path.name}_000000000.json"
                     )
                     if store.store_path.exists():
-                        for frame in store.iter_frames():
+                        for frame in store.iter_frame_numbers_fast():
                             try:
                                 store_frame_nums_set.add(int(frame))
                             except (TypeError, ValueError):

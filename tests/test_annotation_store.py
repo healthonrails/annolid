@@ -434,3 +434,62 @@ def test_append_after_fast_scan_keeps_full_get_frame_consistent(tmp_path):
     frame1 = store.get_frame(1)
     assert frame0 is not None and int(frame0.get("frame")) == 0
     assert frame1 is not None and int(frame1.get("frame")) == 1
+
+
+def test_prune_explicit_store_uses_frame_metadata_without_full_json_decode(
+    tmp_path,
+    monkeypatch,
+):
+    store_path = tmp_path / "video_annotations.ndjson"
+    store_path.write_text(
+        "\n".join(
+            [
+                '{"frame":1,"shapes":[{"label":"a"}]}',
+                '{"frame":2,"shapes":[{"label":"b"}]}',
+                '{"frame":3,"shapes":[{"label":"c"}]}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    store = AnnotationStore(store_path)
+
+    monkeypatch.setattr(
+        "annolid.utils.annotation_store.json.loads",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("unambiguous frame rows must not be fully decoded")
+        ),
+    )
+
+    assert store.remove_frames_after(1) == 2
+    assert store_path.read_text(encoding="utf-8") == (
+        '{"frame":1,"shapes":[{"label":"a"}]}\n'
+    )
+
+
+def test_prune_ambiguous_nested_frame_uses_top_level_frame(tmp_path):
+    store_path = tmp_path / "video_annotations.ndjson"
+    store_path.write_text(
+        '{"shapes":[{"frame":999}],"frame":1}\n{"shapes":[{"frame":1}],"frame":999}\n',
+        encoding="utf-8",
+    )
+    store = AnnotationStore(store_path)
+
+    assert store.remove_frames_after(10) == 1
+    assert store_path.read_text(encoding="utf-8") == (
+        '{"shapes":[{"frame":999}],"frame":1}\n'
+    )
+
+
+def test_prune_unusual_top_level_frame_layout_falls_back_safely(tmp_path):
+    store_path = tmp_path / "video_annotations.ndjson"
+    store_path.write_text(
+        '{"shapes":[],"frame":1,"flags":{}}\n{"shapes":[],"frame":99,"flags":{}}\n',
+        encoding="utf-8",
+    )
+    store = AnnotationStore(store_path)
+
+    assert store.remove_frames_after(10) == 1
+    assert store_path.read_text(encoding="utf-8") == (
+        '{"shapes":[],"frame":1,"flags":{}}\n'
+    )

@@ -32,6 +32,8 @@ def _normalize_legacy_top_level_keys(config_dict):
     - ``custom_models`` was historically used for custom AI model weights,
       which are now stored via QSettings.  We simply drop this key to avoid
       spurious warnings while keeping newer storage as the source of truth.
+    - ``reject_implausible_masks`` was briefly accepted as a top-level SAM3
+      option. Move it into the ``sam3`` section.
     """
     if not isinstance(config_dict, dict):
         return config_dict
@@ -47,6 +49,16 @@ def _normalize_legacy_top_level_keys(config_dict):
 
     # Legacy custom model list (now handled via QSettings in the GUI).
     cfg.pop("custom_models", None)
+
+    if "reject_implausible_masks" in cfg:
+        reject_implausible_masks = cfg.pop("reject_implausible_masks")
+        sam3_cfg = cfg.get("sam3")
+        if not isinstance(sam3_cfg, dict):
+            sam3_cfg = {}
+        else:
+            sam3_cfg = dict(sam3_cfg)
+        sam3_cfg.setdefault("reject_implausible_masks", reject_implausible_masks)
+        cfg["sam3"] = sam3_cfg
 
     return cfg
 

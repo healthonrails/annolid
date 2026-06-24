@@ -153,6 +153,39 @@ def test_tracking_csv_loads_lazily_on_first_lookup(tmp_path: Path):
     assert window._df is not None
 
 
+def test_results_directory_behavior_discovery_avoids_unbounded_glob(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    video_path = tmp_path / "sample.mp4"
+    video_path.write_bytes(b"")
+    results_dir = tmp_path / "sample"
+    results_dir.mkdir()
+    behavior_path = results_dir / "sample_events.csv"
+    behavior_path.write_text(
+        "Recording time,Event,Behavior\n0.0,STATE start,explore\n",
+        encoding="utf-8",
+    )
+
+    window = _DummyWindow()
+    window.video_results_folder = results_dir
+    controller = TrackingDataController(window)
+    original_glob = Path.glob
+
+    def _guarded_glob(path: Path, pattern: str):
+        if path == results_dir:
+            raise AssertionError("large results directories must not be globbed")
+        return original_glob(path, pattern)
+
+    monkeypatch.setattr(Path, "glob", _guarded_glob)
+
+    _video_name, behavior_candidates, _labels_path = controller._build_tracking_context(
+        tmp_path, str(video_path)
+    )
+
+    assert behavior_candidates == [behavior_path]
+
+
 def test_frame_playback_dispatches_tracking_load_async_by_default(
     tmp_path: Path,
 ) -> None:

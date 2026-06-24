@@ -2,7 +2,7 @@ import json
 import re
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Iterable, Mapping, Optional, Set, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Set, Tuple, Union
 
 from annolid.utils.logger import logger
 
@@ -21,6 +21,8 @@ class AnnotationStore:
     STUB_VERSION = 1
     _CACHE: Dict[Path, Dict[str, Any]] = {}
     _FRAME_PATTERN = re.compile(r'"frame"\s*:\s*(-?\d+)')
+    _FRAME_FIRST_PATTERN = re.compile(r'^\s*\{\s*"frame"\s*:\s*(-?\d+)')
+    _FRAME_LAST_PATTERN = re.compile(r',\s*"frame"\s*:\s*(-?\d+)\s*\}\s*$')
 
     def __init__(self, store_path: Path):
         self.store_path = store_path
@@ -94,6 +96,48 @@ class AnnotationStore:
 
     def _ensure_explicit_frame_metadata(self) -> None:
         if not self.store_path.exists():
+            return
+
+        try:
+            initial_stat = self.store_path.stat()
+        except OSError as exc:
+            raise AnnotationStoreError(
+                f"Failed to stat annotation store {self.store_path}: {exc}"
+            ) from exc
+        initial_signature = (float(initial_stat.st_mtime), int(initial_stat.st_size))
+        cached = AnnotationStore._CACHE.get(self.store_path)
+        if isinstance(cached, dict) and (
+            cached.get("explicit_frame_signature") == initial_signature
+        ):
+            return
+
+        needs_migration = False
+        try:
+            with self.store_path.open("r", encoding="utf-8") as fh:
+                for raw_line in fh:
+                    stripped = raw_line.strip()
+                    if not stripped:
+                        continue
+                    if self._frame_number_from_raw_line(raw_line) is not None:
+                        continue
+                    try:
+                        record = json.loads(stripped)
+                    except json.JSONDecodeError:
+                        continue
+                    if self._explicit_frame_for_record(record) is None:
+                        needs_migration = True
+                        break
+        except OSError as exc:
+            raise AnnotationStoreError(
+                f"Failed to read annotation store {self.store_path}: {exc}"
+            ) from exc
+
+        if not needs_migration:
+            cache_entry = dict(cached) if isinstance(cached, dict) else {}
+            cache_entry["mtime"] = initial_stat.st_mtime
+            cache_entry["size"] = initial_stat.st_size
+            cache_entry["explicit_frame_signature"] = initial_signature
+            AnnotationStore._CACHE[self.store_path] = cache_entry
             return
 
         try:
@@ -196,6 +240,116 @@ class AnnotationStore:
             return
 
         AnnotationStore._CACHE.pop(self.store_path, None)
+        try:
+            stat = self.store_path.stat()
+        except OSError:
+            return
+        AnnotationStore._CACHE[self.store_path] = {
+            "mtime": stat.st_mtime,
+            "size": stat.st_size,
+            "explicit_frame_signature": (float(stat.st_mtime), int(stat.st_size)),
+        }
+
+    @classmethod
+    def _frame_number_from_raw_line(cls, raw_line: str) -> Optional[int]:
+        for pattern in (cls._FRAME_FIRST_PATTERN, cls._FRAME_LAST_PATTERN):
+            match = pattern.search(raw_line)
+            if match is None:
+                continue
+            try:
+                return int(match.group(1))
+            except (TypeError, ValueError):
+                return None
+
+        try:
+            payload = json.loads(raw_line)
+        except json.JSONDecodeError:
+            return None
+        return cls._explicit_frame_for_record(payload)
+
+    def _remove_frames_matching(self, should_remove: Callable[[int], bool]) -> int:
+        if not self.store_path.exists():
+            return 0
+
+        try:
+            self._ensure_explicit_frame_metadata()
+        except AnnotationStoreError as exc:
+            logger.error("%s", exc)
+            return 0
+
+        candidates = 0
+        try:
+            with self.store_path.open("r", encoding="utf-8") as source:
+                for raw_line in source:
+                    frame_number = self._frame_number_from_raw_line(raw_line)
+                    if frame_number is not None and should_remove(frame_number):
+                        candidates += 1
+        except OSError as exc:
+            logger.error(
+                "Unable to scan annotation store %s for pruning: %s",
+                self.store_path,
+                exc,
+            )
+            return 0
+
+        if candidates == 0:
+            return 0
+
+        removed = 0
+        temp_path: Optional[Path] = None
+        try:
+            with self.store_path.open("r", encoding="utf-8") as source:
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    encoding="utf-8",
+                    dir=str(self.store_path.parent),
+                    prefix=f"{self.store_path.name}.",
+                    suffix=".tmp",
+                    delete=False,
+                ) as destination:
+                    temp_path = Path(destination.name)
+                    for raw_line in source:
+                        frame_number = self._frame_number_from_raw_line(raw_line)
+                        if frame_number is not None and should_remove(frame_number):
+                            removed += 1
+                            continue
+                        destination.write(raw_line)
+        except OSError as exc:
+            logger.error(
+                "Unable to prune annotation store %s: %s",
+                self.store_path,
+                exc,
+            )
+            return 0
+
+        try:
+            if removed > 0 and temp_path is not None:
+                temp_path.replace(self.store_path)
+                try:
+                    stat = self.store_path.stat()
+                except OSError:
+                    AnnotationStore._CACHE.pop(self.store_path, None)
+                else:
+                    AnnotationStore._CACHE[self.store_path] = {
+                        "mtime": stat.st_mtime,
+                        "size": stat.st_size,
+                        "explicit_frame_signature": (
+                            float(stat.st_mtime),
+                            int(stat.st_size),
+                        ),
+                    }
+            return removed
+        except OSError as exc:
+            logger.error(
+                "Failed to rewrite annotation store %s: %s", self.store_path, exc
+            )
+            return 0
+        finally:
+            if temp_path is not None and temp_path.exists():
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     def _write_lines_atomically(self, lines: Iterable[str]) -> None:
         temp_path: Optional[Path] = None
@@ -329,6 +483,8 @@ class AnnotationStore:
                 else:
                     updated_cache.pop("records", None)
                 signature = (float(stat.st_mtime), int(stat.st_size))
+                if cached.get("explicit_frame_signature") == pre_append_signature:
+                    updated_cache["explicit_frame_signature"] = signature
                 latest_offsets = cached.get("latest_frame_offsets")
                 if (
                     isinstance(latest_offsets, dict)
@@ -724,6 +880,10 @@ class AnnotationStore:
                 "size": stat.st_size,
                 "records": records,
                 "records_complete": True,
+                "explicit_frame_signature": (
+                    float(stat.st_mtime),
+                    int(stat.st_size),
+                ),
             }
             return records
 
@@ -745,9 +905,6 @@ class AnnotationStore:
         Returns:
             The number of store records that were removed.
         """
-        if not self.store_path.exists():
-            return 0
-
         try:
             protected: Set[int] = {
                 int(frame) for frame in (protected_frames or []) if frame is not None
@@ -755,64 +912,11 @@ class AnnotationStore:
         except Exception:
             protected = set()
 
-        lines_to_keep = []
-        removed = 0
-
-        try:
-            self._ensure_explicit_frame_metadata()
-            with self.store_path.open("r", encoding="utf-8") as fh:
-                for raw_line in fh:
-                    line = raw_line.rstrip("\n")
-                    stripped = line.strip()
-                    if not stripped:
-                        # Preserve blank lines to avoid altering formatting unexpectedly.
-                        lines_to_keep.append(raw_line)
-                        continue
-
-                    try:
-                        payload = json.loads(stripped)
-                    except json.JSONDecodeError:
-                        # If the line is malformed, keep it to avoid data loss.
-                        lines_to_keep.append(raw_line)
-                        continue
-
-                    frame_value = payload.get("frame")
-                    try:
-                        frame_number = int(frame_value)
-                    except (TypeError, ValueError):
-                        lines_to_keep.append(raw_line)
-                        continue
-
-                    if frame_number > frame_threshold and frame_number not in protected:
-                        removed += 1
-                        continue
-
-                    # Ensure the newline is preserved when rewriting.
-                    lines_to_keep.append(
-                        raw_line if raw_line.endswith("\n") else f"{raw_line}\n"
-                    )
-        except OSError as exc:
-            logger.error(
-                "Unable to read annotation store %s for pruning: %s",
-                self.store_path,
-                exc,
+        return self._remove_frames_matching(
+            lambda frame_number: (
+                frame_number > frame_threshold and frame_number not in protected
             )
-            return 0
-
-        if removed == 0:
-            return 0
-
-        try:
-            self._write_lines_atomically(lines_to_keep)
-        except OSError as exc:
-            logger.error(
-                "Failed to rewrite annotation store %s: %s", self.store_path, exc
-            )
-            return 0
-
-        AnnotationStore._CACHE.pop(self.store_path, None)
-
-        return removed
+        )
 
     def remove_frames_in_range(
         self,
@@ -832,9 +936,6 @@ class AnnotationStore:
         Returns:
             The number of store records that were removed.
         """
-        if not self.store_path.exists():
-            return 0
-
         try:
             protected: Set[int] = {
                 int(frame) for frame in (protected_frames or []) if frame is not None
@@ -842,71 +943,14 @@ class AnnotationStore:
         except Exception:
             protected = set()
 
-        lines_to_keep = []
-        removed = 0
+        def _should_remove(frame_number: int) -> bool:
+            if frame_number in protected:
+                return False
+            if end_frame is None:
+                return frame_number >= start_frame
+            return start_frame <= frame_number <= end_frame
 
-        try:
-            self._ensure_explicit_frame_metadata()
-            with self.store_path.open("r", encoding="utf-8") as fh:
-                for raw_line in fh:
-                    line = raw_line.rstrip("\n")
-                    stripped = line.strip()
-                    if not stripped:
-                        lines_to_keep.append(raw_line)
-                        continue
-
-                    try:
-                        payload = json.loads(stripped)
-                    except json.JSONDecodeError:
-                        lines_to_keep.append(raw_line)
-                        continue
-
-                    frame_value = payload.get("frame")
-                    try:
-                        frame_number = int(frame_value)
-                    except (TypeError, ValueError):
-                        lines_to_keep.append(raw_line)
-                        continue
-
-                    if frame_number in protected:
-                        lines_to_keep.append(
-                            raw_line if raw_line.endswith("\n") else f"{raw_line}\n"
-                        )
-                        continue
-
-                    in_range = frame_number >= start_frame
-                    if end_frame is not None:
-                        in_range = start_frame <= frame_number <= end_frame
-
-                    if in_range:
-                        removed += 1
-                        continue
-
-                    lines_to_keep.append(
-                        raw_line if raw_line.endswith("\n") else f"{raw_line}\n"
-                    )
-        except OSError as exc:
-            logger.error(
-                "Unable to read annotation store %s for pruning: %s",
-                self.store_path,
-                exc,
-            )
-            return 0
-
-        if removed == 0:
-            return 0
-
-        try:
-            self._write_lines_atomically(lines_to_keep)
-        except OSError as exc:
-            logger.error(
-                "Failed to rewrite annotation store %s: %s", self.store_path, exc
-            )
-            return 0
-
-        AnnotationStore._CACHE.pop(self.store_path, None)
-
-        return removed
+        return self._remove_frames_matching(_should_remove)
 
     def write_stub(
         self,

@@ -4,7 +4,6 @@ import io
 import json
 import os
 import os.path as osp
-import re
 import time
 from pathlib import Path
 from typing import Any, Set
@@ -656,6 +655,7 @@ class PersistenceLifecycleMixin:
         prediction_folder = Path(self.video_results_folder)
         if not prediction_folder.exists():
             return
+        cleanup_started = time.perf_counter()
 
         try:
             # Deleting future predictions is an explicit "resume from here" action.
@@ -668,7 +668,12 @@ class PersistenceLifecycleMixin:
             self._prediction_forced_end_frame = None
 
         deleted_files = 0
-        seed_frames = sorted(self._collect_seed_frames(prediction_folder))
+        scan_started = time.perf_counter()
+        prediction_artifacts, discovered_seed_frames = (
+            self._scan_prediction_json_artifacts(prediction_folder)
+        )
+        scan_elapsed = time.perf_counter() - scan_started
+        seed_frames = sorted(discovered_seed_frames)
         protected_frames: Set[int] = set(seed_frames)
         next_seed = next(
             (int(seed) for seed in seed_frames if int(seed) > int(self.frame_number)),
@@ -696,29 +701,8 @@ class PersistenceLifecycleMixin:
                 self.frame_number,
             )
 
-        for prediction_path in prediction_folder.iterdir():
-            if not prediction_path.is_file():
-                continue
-            if prediction_path.suffix.lower() != ".json":
-                continue
-
-            match = re.search(r"(\d+)(?=\.json$)", prediction_path.name)
-            if not match:
-                logger.debug(
-                    "Skipping file with unexpected name format: %s",
-                    prediction_path.name,
-                )
-                continue
-
-            try:
-                frame_number = int(float(match.group(1)))
-            except (ValueError, IndexError):
-                logger.warning(
-                    "Could not parse frame number from file: %s",
-                    prediction_path.name,
-                )
-                continue
-
+        json_delete_started = time.perf_counter()
+        for prediction_path, frame_number in prediction_artifacts:
             if frame_number <= int(self.frame_number):
                 continue
             if next_seed is not None and frame_number >= int(next_seed):
@@ -735,8 +719,10 @@ class PersistenceLifecycleMixin:
                 deleted_files += 1
             except OSError as e:
                 logger.error("Failed to delete file %s: %s", prediction_path, e)
+        json_delete_elapsed = time.perf_counter() - json_delete_started
 
         store_removed = 0
+        store_prune_started = time.perf_counter()
         try:
             store = AnnotationStore.for_frame_path(
                 prediction_folder / f"{prediction_folder.name}_000000000.json"
@@ -757,7 +743,9 @@ class PersistenceLifecycleMixin:
                 prediction_folder,
                 exc,
             )
+        store_prune_elapsed = time.perf_counter() - store_prune_started
 
+        post_cleanup_started = time.perf_counter()
         if deleted_files or store_removed:
             clear_annotation_caches = getattr(
                 self, "_clear_frame_annotation_caches", None
@@ -818,21 +806,69 @@ class PersistenceLifecycleMixin:
                 )
         else:
             logger.info("No future prediction files or store records required removal.")
+        post_cleanup_elapsed = time.perf_counter() - post_cleanup_started
+
+        cleanup_elapsed = time.perf_counter() - cleanup_started
+        if cleanup_elapsed >= 0.25:
+            logger.info(
+                "Future prediction cleanup completed in %.3fs "
+                "(artifact_scan=%.3fs, json_delete=%.3fs, "
+                "store_prune=%.3fs, refresh=%.3fs).",
+                cleanup_elapsed,
+                scan_elapsed,
+                json_delete_elapsed,
+                store_prune_elapsed,
+                post_cleanup_elapsed,
+            )
+
+    @staticmethod
+    def _scan_prediction_json_artifacts(
+        prediction_folder: Path,
+    ) -> tuple[list[tuple[Path, int]], Set[int]]:
+        json_artifacts: list[tuple[Path, int, str]] = []
+        image_stems: Set[str] = set()
+        try:
+            with os.scandir(prediction_folder) as entries:
+                for entry in entries:
+                    try:
+                        if not entry.is_file():
+                            continue
+                    except OSError:
+                        continue
+                    name = entry.name
+                    stem, suffix = os.path.splitext(name)
+                    suffix = suffix.lower()
+                    if suffix in {".png", ".jpg", ".jpeg"}:
+                        image_stems.add(stem)
+                        continue
+                    if suffix != ".json":
+                        continue
+                    try:
+                        frame_number = int(get_frame_number_from_json(name))
+                    except (IndexError, TypeError, ValueError):
+                        continue
+                    json_artifacts.append((Path(entry.path), int(frame_number), stem))
+        except OSError as exc:
+            logger.debug(
+                "Failed to scan prediction artifacts in %s: %s",
+                prediction_folder,
+                exc,
+            )
+            return [], set()
+
+        seed_frames = {
+            int(frame_number)
+            for _path, frame_number, stem in json_artifacts
+            if stem in image_stems
+        }
+        return [
+            (path, int(frame_number)) for path, frame_number, _stem in json_artifacts
+        ], seed_frames
 
     def _collect_seed_frames(self, prediction_folder: Path) -> Set[int]:
-        seed_frames: Set[int] = set()
-        for path in prediction_folder.glob("*.json"):
-            if not path.is_file():
-                continue
-            has_sidecar = any(
-                path.with_suffix(ext).exists() for ext in (".png", ".jpg", ".jpeg")
-            )
-            if not has_sidecar:
-                continue
-            try:
-                seed_frames.add(int(get_frame_number_from_json(path.name)))
-            except Exception:
-                continue
+        _json_artifacts, seed_frames = self._scan_prediction_json_artifacts(
+            prediction_folder
+        )
         return seed_frames
 
     def deletePredictionsFromSeedToNext(self):
@@ -843,7 +879,10 @@ class PersistenceLifecycleMixin:
         if not prediction_folder.exists():
             return False, None, None
 
-        seed_frames = sorted(self._collect_seed_frames(prediction_folder))
+        prediction_artifacts, discovered_seed_frames = (
+            self._scan_prediction_json_artifacts(prediction_folder)
+        )
+        seed_frames = sorted(discovered_seed_frames)
         protected_frames: Set[int] = set(seed_frames)
 
         current_seed = None
@@ -872,21 +911,7 @@ class PersistenceLifecycleMixin:
             next_seed if next_seed is not None else "end",
         )
 
-        for prediction_path in prediction_folder.iterdir():
-            if not prediction_path.is_file():
-                continue
-            if prediction_path.suffix.lower() != ".json":
-                continue
-
-            match = re.search(r"(\d+)(?=\.json$)", prediction_path.name)
-            if not match:
-                continue
-
-            try:
-                frame_number = int(float(match.group(1)))
-            except (ValueError, IndexError):
-                continue
-
+        for prediction_path, frame_number in prediction_artifacts:
             if frame_number < current_seed:
                 continue
             if next_seed is not None and frame_number >= next_seed:

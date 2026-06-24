@@ -83,6 +83,14 @@ class _TrackingSidecarCallbacks(QtCore.QObject):
 class TrackingDataController:
     """Handle loading of tracking/behavior CSV data for the active video."""
 
+    _CANONICAL_BEHAVIOR_SUFFIXES = (
+        "_timestamps.csv",
+        "_behavior.csv",
+        "_behaviors.csv",
+        "_events.csv",
+        "_bouts.csv",
+    )
+
     def __init__(self, window: "AnnolidWindow") -> None:
         self._window = window
         self._tracking_df: "pd.DataFrame | None" = None
@@ -241,11 +249,30 @@ class TrackingDataController:
         self._clear_tracking_cache()
 
     def _discover_behavior_files(
-        self, *, search_root: Path, video_name: str
+        self,
+        *,
+        search_root: Path,
+        video_name: str,
+        allow_directory_scan: bool = True,
     ) -> list[Path]:
         candidates: list[Path] = []
+        seen_paths: set[Path] = set()
+        for suffix in self._CANONICAL_BEHAVIOR_SUFFIXES:
+            candidate = search_root / f"{video_name}{suffix}"
+            if not candidate.is_file():
+                continue
+            if not self._is_likely_behavior_csv(candidate, video_name):
+                continue
+            candidates.append(candidate)
+            seen_paths.add(candidate)
+
+        if not allow_directory_scan:
+            return sorted(candidates)
+
         video_name_lower = video_name.lower()
         for candidate in search_root.glob(f"{video_name}*.csv"):
+            if candidate in seen_paths:
+                continue
             name_lower = candidate.name.lower()
             if name_lower == f"{video_name_lower}_tracking.csv":
                 continue
@@ -259,7 +286,9 @@ class TrackingDataController:
     def _build_tracking_context(
         self, cur_video_folder: Path, video_filename: str
     ) -> tuple[str, list[Path], Path | None]:
+        setup_started = time.perf_counter()
         self._reset_tracking_load_state()
+        reset_elapsed = time.perf_counter() - setup_started
         video_name = Path(video_filename).stem
         main_tracking_file = cur_video_folder / f"{video_name}_tracking.csv"
         timestamps_file = cur_video_folder / f"{video_name}_timestamps.csv"
@@ -273,6 +302,7 @@ class TrackingDataController:
             )
 
         behavior_candidates: list[Path] = []
+        parent_discovery_started = time.perf_counter()
         if timestamps_file.is_file():
             behavior_candidates.append(timestamps_file)
         else:
@@ -281,6 +311,9 @@ class TrackingDataController:
                     search_root=cur_video_folder, video_name=video_name
                 )
             )
+        parent_discovery_elapsed = time.perf_counter() - parent_discovery_started
+        results_discovery_started = time.perf_counter()
+        if not timestamps_file.is_file():
             results_dir = getattr(self._window, "video_results_folder", None)
             if (
                 isinstance(results_dir, Path)
@@ -291,8 +324,10 @@ class TrackingDataController:
                     self._discover_behavior_files(
                         search_root=results_dir,
                         video_name=video_name,
+                        allow_directory_scan=False,
                     )
                 )
+        results_discovery_elapsed = time.perf_counter() - results_discovery_started
 
         seen_paths: set[Path] = set()
         deduped_behavior_candidates: list[Path] = []
@@ -301,6 +336,17 @@ class TrackingDataController:
                 continue
             seen_paths.add(candidate)
             deduped_behavior_candidates.append(candidate)
+
+        total_elapsed = time.perf_counter() - setup_started
+        if total_elapsed >= 0.25:
+            logger.info(
+                "Tracking sidecar setup completed in %.3fs "
+                "(reset=%.3fs, parent_discovery=%.3fs, results_checks=%.3fs).",
+                total_elapsed,
+                reset_elapsed,
+                parent_discovery_elapsed,
+                results_discovery_elapsed,
+            )
 
         return (
             video_name,
