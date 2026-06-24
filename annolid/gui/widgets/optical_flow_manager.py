@@ -7,6 +7,10 @@ import numpy as np
 from qtpy import QtCore
 
 from annolid.gui.widgets.optical_flow_tool import OpticalFlowTool
+from annolid.motion.optical_flow import (
+    DEFAULT_FARNEBACK_POLY_N,
+    DEFAULT_FARNEBACK_WINSIZE,
+)
 
 
 @dataclass
@@ -20,9 +24,9 @@ class _FlowDefaults:
     stable_hsv: bool = True
     farneback_pyr_scale: float = 0.5
     farneback_levels: int = 1
-    farneback_winsize: int = 1
+    farneback_winsize: int = DEFAULT_FARNEBACK_WINSIZE
     farneback_iterations: int = 3
-    farneback_poly_n: int = 3
+    farneback_poly_n: int = DEFAULT_FARNEBACK_POLY_N
     farneback_poly_sigma: float = 1.1
 
 

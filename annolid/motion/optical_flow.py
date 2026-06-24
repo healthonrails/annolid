@@ -2,9 +2,15 @@ from typing import Any, Mapping, Optional, Tuple, Dict
 
 import cv2
 import numpy as np
-from annolid.utils.devices import get_device
+from annolid.utils.devices import clear_device_cache, get_device
+from annolid.utils.logger import logger
 
-AVAILABLE_DEVICE = get_device()
+_LOGGED_TORCH_BACKEND_FAILURES: set[tuple[str, str]] = set()
+_LOGGED_TORCH_PARAMETER_FALLBACKS: set[tuple[int, int]] = set()
+DEFAULT_FARNEBACK_WINSIZE = 15
+DEFAULT_FARNEBACK_POLY_N = 5
+LEGACY_FARNEBACK_WINSIZE = 1
+LEGACY_FARNEBACK_POLY_N = 3
 
 
 def _coerce_float(value: Any, default: float) -> float:
@@ -109,9 +115,13 @@ def optical_flow_settings_from(source: Any) -> Dict[str, Any]:
             _read_setting(
                 source,
                 "flow_farneback_winsize",
-                _read_setting(source, "farneback_winsize", 1),
+                _read_setting(
+                    source,
+                    "farneback_winsize",
+                    DEFAULT_FARNEBACK_WINSIZE,
+                ),
             ),
-            1,
+            DEFAULT_FARNEBACK_WINSIZE,
         ),
     )
     farneback_iterations = max(
@@ -131,9 +141,13 @@ def optical_flow_settings_from(source: Any) -> Dict[str, Any]:
             _read_setting(
                 source,
                 "flow_farneback_poly_n",
-                _read_setting(source, "farneback_poly_n", 3),
+                _read_setting(
+                    source,
+                    "farneback_poly_n",
+                    DEFAULT_FARNEBACK_POLY_N,
+                ),
             ),
-            3,
+            DEFAULT_FARNEBACK_POLY_N,
         ),
     )
     farneback_poly_sigma = _coerce_float(
@@ -150,6 +164,12 @@ def optical_flow_settings_from(source: Any) -> Dict[str, Any]:
         scale = 1.0
     scale = min(1.0, scale)
     max_dim = _coerce_pos_int_or_none(_read_setting(source, "optical_flow_max_dim"))
+    torch_device_value = _read_setting(source, "optical_flow_torch_device")
+    torch_device = (
+        str(torch_device_value).strip() if torch_device_value is not None else None
+    )
+    if not torch_device or torch_device.lower() == "auto":
+        torch_device = None
 
     return {
         "compute_optical_flow": compute_enabled,
@@ -163,6 +183,7 @@ def optical_flow_settings_from(source: Any) -> Dict[str, Any]:
         "flow_farneback_poly_sigma": farneback_poly_sigma,
         "optical_flow_scale": scale,
         "optical_flow_max_dim": max_dim,
+        "optical_flow_torch_device": torch_device,
     }
 
 
@@ -178,6 +199,7 @@ def optical_flow_compute_kwargs(settings: Mapping[str, Any]) -> Dict[str, Any]:
     Also supports backend-agnostic speed knobs:
       - `optical_flow_scale`
       - `optical_flow_max_dim`
+      - `optical_flow_torch_device`
     """
     normalized = optical_flow_settings_from(settings)
 
@@ -191,6 +213,7 @@ def optical_flow_compute_kwargs(settings: Mapping[str, Any]) -> Dict[str, Any]:
         "farneback_poly_sigma": normalized["flow_farneback_poly_sigma"],
         "scale": normalized["optical_flow_scale"],
         "max_dim": normalized["optical_flow_max_dim"],
+        "torch_device": normalized["optical_flow_torch_device"],
     }
 
 
@@ -213,6 +236,14 @@ def _cuda_flow_available() -> bool:
     )
 
 
+def torch_farneback_supports_parameters(*, winsize: int, poly_n: int) -> bool:
+    """Return whether Torch Farneback is reliable for the requested parameters."""
+    return not (
+        int(winsize) == LEGACY_FARNEBACK_WINSIZE
+        and int(poly_n) == LEGACY_FARNEBACK_POLY_N
+    )
+
+
 def compute_optical_flow(
     prev_frame: np.ndarray,
     current_frame: np.ndarray,
@@ -223,11 +254,12 @@ def compute_optical_flow(
     use_raft: bool = False,
     raft_model: str = "small",
     use_torch_farneback: bool = False,
+    torch_device: Optional[str] = None,
     farneback_pyr_scale: float = 0.5,
     farneback_levels: int = 1,
-    farneback_winsize: int = 1,
+    farneback_winsize: int = DEFAULT_FARNEBACK_WINSIZE,
     farneback_iterations: int = 3,
-    farneback_poly_n: int = 3,
+    farneback_poly_n: int = DEFAULT_FARNEBACK_POLY_N,
     farneback_poly_sigma: float = 1.1,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
@@ -238,6 +270,10 @@ def compute_optical_flow(
     Frames can be optionally downscaled for speed via `scale` and/or `max_dim`.
     The returned flow is always resized back to the original resolution and
     scaled so downstream consumers do not need to adjust.
+
+    The historical `winsize=1, poly_n=3` combination remains supported through
+    OpenCV. Torch Farneback is bypassed for that ill-conditioned combination so
+    existing projects keep their saved numerical behavior.
     """
     if prev_frame is None or current_frame is None:
         raise ValueError("prev_frame and current_frame must be non-None arrays.")
@@ -269,15 +305,49 @@ def compute_optical_flow(
     else:
         use_umat = False
 
+    torch_parameters_supported = torch_farneback_supports_parameters(
+        winsize=farneback_winsize,
+        poly_n=farneback_poly_n,
+    )
+    if use_torch_farneback and not torch_parameters_supported:
+        legacy_key = (int(farneback_winsize), int(farneback_poly_n))
+        if legacy_key not in _LOGGED_TORCH_PARAMETER_FALLBACKS:
+            _LOGGED_TORCH_PARAMETER_FALLBACKS.add(legacy_key)
+            logger.warning(
+                "Torch Farneback is not reliable for legacy parameters "
+                "winsize=%s, poly_n=%s; using OpenCV Farneback with the saved "
+                "parameters. Set winsize=%s and poly_n=%s to enable Torch/GPU flow.",
+                farneback_winsize,
+                farneback_poly_n,
+                DEFAULT_FARNEBACK_WINSIZE,
+                DEFAULT_FARNEBACK_POLY_N,
+            )
+        use_torch_farneback = False
+
     flow: Optional[np.ndarray] = None
+    resolved_torch_device = (
+        (torch_device or get_device()) if use_raft or use_torch_farneback else None
+    )
 
     # Try RAFT (torchvision) first if requested and available
     if use_raft:
         try:
             flow = compute_optical_flow_raft(
-                prev_frame, current_frame, model=raft_model, device=AVAILABLE_DEVICE
+                prev_frame,
+                current_frame,
+                model=raft_model,
+                device=resolved_torch_device,
             )
-        except Exception:
+        except Exception as exc:
+            failure_key = ("raft", str(resolved_torch_device))
+            if failure_key not in _LOGGED_TORCH_BACKEND_FAILURES:
+                _LOGGED_TORCH_BACKEND_FAILURES.add(failure_key)
+                logger.warning(
+                    "RAFT optical flow failed on %s; falling back to Farneback: %s",
+                    resolved_torch_device,
+                    exc,
+                )
+            clear_device_cache(device=resolved_torch_device)
             flow = None  # fall back to Farneback paths
 
     # Torch Farneback (optional)
@@ -297,9 +367,18 @@ def compute_optical_flow(
                 poly_n=int(farneback_poly_n),
                 poly_sigma=float(farneback_poly_sigma),
                 flags=0,
-                device=AVAILABLE_DEVICE,
+                device=resolved_torch_device,
             )
-        except Exception:
+        except Exception as exc:
+            failure_key = ("farneback_torch", str(resolved_torch_device))
+            if failure_key not in _LOGGED_TORCH_BACKEND_FAILURES:
+                _LOGGED_TORCH_BACKEND_FAILURES.add(failure_key)
+                logger.warning(
+                    "Torch Farneback failed on %s; falling back to OpenCV: %s",
+                    resolved_torch_device,
+                    exc,
+                )
+            clear_device_cache(device=resolved_torch_device)
             flow = None
 
     # Fastest path: CUDA Farneback

@@ -4,6 +4,11 @@ from typing import Optional, Tuple, Union
 
 from qtpy import QtCore, QtWidgets
 
+from annolid.motion.optical_flow import (
+    DEFAULT_FARNEBACK_POLY_N,
+    DEFAULT_FARNEBACK_WINSIZE,
+)
+
 
 class FlowOptionsDialog(QtWidgets.QDialog):
     """Simple dialog to pick optical-flow backend, visualization, and overlay options."""
@@ -21,9 +26,9 @@ class FlowOptionsDialog(QtWidgets.QDialog):
         default_stable_hsv: bool = True,
         default_pyr_scale: Union[int, float] = 0.5,
         default_levels: int = 1,
-        default_winsize: int = 1,
+        default_winsize: int = DEFAULT_FARNEBACK_WINSIZE,
         default_iterations: int = 3,
-        default_poly_n: int = 3,
+        default_poly_n: int = DEFAULT_FARNEBACK_POLY_N,
         default_poly_sigma: Union[int, float] = 1.1,
     ) -> None:
         super().__init__(parent)
@@ -96,7 +101,9 @@ class FlowOptionsDialog(QtWidgets.QDialog):
         self.winsize_spin = QtWidgets.QSpinBox()
         self.winsize_spin.setRange(1, 128)
         self.winsize_spin.setSingleStep(2)  # prefer odd sizes
-        self.winsize_spin.setValue(max(1, int(default_winsize or 1)))
+        self.winsize_spin.setValue(
+            max(1, int(default_winsize or DEFAULT_FARNEBACK_WINSIZE))
+        )
 
         self.iterations_spin = QtWidgets.QSpinBox()
         self.iterations_spin.setRange(1, 50)
@@ -105,7 +112,9 @@ class FlowOptionsDialog(QtWidgets.QDialog):
         self.poly_n_spin = QtWidgets.QSpinBox()
         self.poly_n_spin.setRange(3, 15)
         self.poly_n_spin.setSingleStep(2)  # prefer odd sizes
-        self.poly_n_spin.setValue(max(3, int(default_poly_n or 3)))
+        self.poly_n_spin.setValue(
+            max(3, int(default_poly_n or DEFAULT_FARNEBACK_POLY_N))
+        )
 
         self.poly_sigma_spin = QtWidgets.QDoubleSpinBox()
         self.poly_sigma_spin.setRange(0.5, 5.0)

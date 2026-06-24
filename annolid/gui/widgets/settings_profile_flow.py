@@ -9,6 +9,10 @@ from qtpy import QtCore, QtWidgets
 from annolid.features.dino_models import resolve_dino_model_id
 from annolid.interfaces.memory.adapters.settings_model import SettingsProfile
 from annolid.interfaces.memory.adapters.workspace import WorkspaceMemoryAdapter
+from annolid.motion.optical_flow import (
+    DEFAULT_FARNEBACK_POLY_N,
+    DEFAULT_FARNEBACK_WINSIZE,
+)
 
 
 def _show_status(window, text: str, timeout_ms: int = 3500) -> None:
@@ -176,7 +180,11 @@ def _apply_optical_flow(window, profile: SettingsProfile) -> None:
     )
     winsize = int(
         payload.get(
-            "farneback_winsize", payload.get("optical_flow/farneback_winsize", 1)
+            "farneback_winsize",
+            payload.get(
+                "optical_flow/farneback_winsize",
+                DEFAULT_FARNEBACK_WINSIZE,
+            ),
         )
     )
     iterations = int(
@@ -186,7 +194,13 @@ def _apply_optical_flow(window, profile: SettingsProfile) -> None:
         )
     )
     poly_n = int(
-        payload.get("farneback_poly_n", payload.get("optical_flow/farneback_poly_n", 3))
+        payload.get(
+            "farneback_poly_n",
+            payload.get(
+                "optical_flow/farneback_poly_n",
+                DEFAULT_FARNEBACK_POLY_N,
+            ),
+        )
     )
     poly_sigma = float(
         payload.get(
@@ -364,9 +378,21 @@ def _collect_optical_flow(window) -> dict:
         "stable_hsv": bool(getattr(window, "flow_stable_hsv", True)),
         "farneback_pyr_scale": float(getattr(window, "flow_farneback_pyr_scale", 0.5)),
         "farneback_levels": int(getattr(window, "flow_farneback_levels", 1)),
-        "farneback_winsize": int(getattr(window, "flow_farneback_winsize", 1)),
+        "farneback_winsize": int(
+            getattr(
+                window,
+                "flow_farneback_winsize",
+                DEFAULT_FARNEBACK_WINSIZE,
+            )
+        ),
         "farneback_iterations": int(getattr(window, "flow_farneback_iterations", 3)),
-        "farneback_poly_n": int(getattr(window, "flow_farneback_poly_n", 3)),
+        "farneback_poly_n": int(
+            getattr(
+                window,
+                "flow_farneback_poly_n",
+                DEFAULT_FARNEBACK_POLY_N,
+            )
+        ),
         "farneback_poly_sigma": float(
             getattr(window, "flow_farneback_poly_sigma", 1.1)
         ),

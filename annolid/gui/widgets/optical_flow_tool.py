@@ -14,6 +14,10 @@ from qtpy import QtCore, QtWidgets
 from annolid.gui.widgets.optical_flow_dialog import FlowOptionsDialog
 from annolid.gui.workers import FlexibleWorker
 from annolid.motion.flow_runner import process_video_flow, flow_to_color
+from annolid.motion.optical_flow import (
+    DEFAULT_FARNEBACK_POLY_N,
+    DEFAULT_FARNEBACK_WINSIZE,
+)
 from annolid.utils import draw
 
 
@@ -28,9 +32,9 @@ class FlowPreferences:
     stable_hsv: bool = True
     farneback_pyr_scale: float = 0.5
     farneback_levels: int = 1
-    farneback_winsize: int = 1
+    farneback_winsize: int = DEFAULT_FARNEBACK_WINSIZE
     farneback_iterations: int = 3
-    farneback_poly_n: int = 3
+    farneback_poly_n: int = DEFAULT_FARNEBACK_POLY_N
     farneback_poly_sigma: float = 1.1
 
 
@@ -320,9 +324,21 @@ class OpticalFlowTool(QtCore.QObject):
             stable_hsv=bool(getattr(w, "flow_stable_hsv", True)),
             farneback_pyr_scale=float(getattr(w, "flow_farneback_pyr_scale", 0.5)),
             farneback_levels=int(getattr(w, "flow_farneback_levels", 1)),
-            farneback_winsize=int(getattr(w, "flow_farneback_winsize", 1)),
+            farneback_winsize=int(
+                getattr(
+                    w,
+                    "flow_farneback_winsize",
+                    DEFAULT_FARNEBACK_WINSIZE,
+                )
+            ),
             farneback_iterations=int(getattr(w, "flow_farneback_iterations", 3)),
-            farneback_poly_n=int(getattr(w, "flow_farneback_poly_n", 3)),
+            farneback_poly_n=int(
+                getattr(
+                    w,
+                    "flow_farneback_poly_n",
+                    DEFAULT_FARNEBACK_POLY_N,
+                )
+            ),
             farneback_poly_sigma=float(getattr(w, "flow_farneback_poly_sigma", 1.1)),
         )
 

@@ -27,7 +27,11 @@ import gzip
 import cv2
 import numpy as np
 
-from annolid.motion.optical_flow import compute_optical_flow
+from annolid.motion.optical_flow import (
+    DEFAULT_FARNEBACK_POLY_N,
+    DEFAULT_FARNEBACK_WINSIZE,
+    compute_optical_flow,
+)
 from annolid.utils import draw
 
 
@@ -151,9 +155,9 @@ def process_video_flow(
     use_torch_farneback: bool = False,
     farneback_pyr_scale: float = 0.5,
     farneback_levels: int = 1,
-    farneback_winsize: int = 1,
+    farneback_winsize: int = DEFAULT_FARNEBACK_WINSIZE,
     farneback_iterations: int = 3,
-    farneback_poly_n: int = 3,
+    farneback_poly_n: int = DEFAULT_FARNEBACK_POLY_N,
     farneback_poly_sigma: float = 1.1,
     progress_callback: Optional[Callable[[int], None]] = None,
     preview_callback: Optional[Callable[[dict], None]] = None,
