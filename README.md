@@ -199,6 +199,7 @@ For advanced users, Docker, Conda, or manual Pip installation, please see the [D
 - **Accelerate timestamp annotation.** While scoring behaviors, press `s` to mark the start, `e` to mark the end, `f`/`b` to step ±10 frames, and `r` to remove events directly from the video slider.
 - **Enable frame-level flags.** Launch Annolid with `--flags "digging,rearing,grooming"` to open a multi-select list of behaviors. Save selections with `Ctrl+S` or the **Save** button; remove events by pressing `R`.
 - **Customize configuration.** The first run creates `~/.labelmerc` (or `C:\Users\<username>\.labelmerc` on Windows). Edit this file to change defaults such as `auto_save: true`, or supply an alternative path via `annolid --config /path/to/file`.
+- **Control video-frame storage.** Video annotations keep the frame in the sidecar PNG and do not duplicate the full frame inside every JSON by default. Set `store_video_frame_data: true` only when self-contained video-frame JSON files are required.
 - **Learn more.** Additional annotation tips live in `annolid/annotation/labelme.md`.
 
 ## Labeling Best Practices

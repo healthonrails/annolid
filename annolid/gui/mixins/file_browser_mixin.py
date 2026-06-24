@@ -123,7 +123,15 @@ class FileBrowserMixin:
         known_paths.add(filename)
         if apply_updates:
             try:
-                self._apply_file_search_filter()
+                apply_item_filter = getattr(
+                    self,
+                    "_apply_search_visibility_to_item",
+                    None,
+                )
+                if callable(apply_item_filter):
+                    apply_item_filter(item)
+                else:
+                    self._apply_file_search_filter()
             except Exception:
                 pass
             try:

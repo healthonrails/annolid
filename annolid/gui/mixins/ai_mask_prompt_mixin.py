@@ -19,8 +19,28 @@ class AiMaskPromptMixin:
         image_filename = filename.replace(".json", ".png")
         if self.imageData is None:
             return image_filename
+        image_path = Path(image_filename)
+        if bool(getattr(self, "video_file", None)) and image_path.is_file():
+            try:
+                if image_path.stat().st_size > 0:
+                    return image_filename
+            except OSError:
+                pass
         try:
-            if not self.imageData.save(image_filename):
+            saved = False
+            if isinstance(self.imageData, QtGui.QImage):
+                writer = QtGui.QImageWriter(image_filename, b"png")
+                writer.setCompression(1)
+                saved = bool(writer.write(self.imageData))
+                if not saved:
+                    logger.debug(
+                        "Fast PNG writer failed for %s: %s",
+                        image_filename,
+                        writer.errorString(),
+                    )
+            if not saved:
+                saved = bool(self.imageData.save(image_filename))
+            if not saved:
                 logger.warning(f"Failed to save seed image: {image_filename}")
         except Exception as exc:
             logger.warning(f"Exception while saving seed image {image_filename}: {exc}")
@@ -124,7 +144,7 @@ class AiMaskPromptMixin:
                 out_name = f"{stem}_mask.png"
             out_path = base_dir / out_name
             try:
-                Image.fromarray(masked_image).save(str(out_path))
+                Image.fromarray(masked_image).save(str(out_path), compress_level=1)
             except Exception as exc:
                 logger.warning(f"Failed to save AI mask render {out_path}: {exc}")
 

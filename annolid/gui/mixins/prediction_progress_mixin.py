@@ -280,6 +280,25 @@ class PredictionProgressMixin:
         self.seekbar.blockSignals(False)
         self.seekbar.update()
 
+    def _add_manual_seed_slider_mark(self, frame_number: int) -> None:
+        """Add one newly saved manual seed without rescanning the results folder."""
+        if not self.seekbar or self.num_frames is None:
+            return
+        try:
+            frame = int(frame_number)
+            total_frames = int(self.num_frames)
+        except (TypeError, ValueError):
+            return
+        if frame < 0 or frame >= total_frames:
+            return
+        existing = {
+            int(mark.val) for mark in self.seekbar.getMarks(mark_type="manual_seed")
+        }
+        if frame in existing:
+            return
+        self.seekbar.addMark(VideoSliderMark(mark_type="manual_seed", val=frame))
+        self.seekbar.update()
+
     def stop_prediction(self):
         worker = getattr(self, "pred_worker", None)
         thread = getattr(self, "seg_pred_thread", None)

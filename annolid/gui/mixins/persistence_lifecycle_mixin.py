@@ -5,8 +5,9 @@ import json
 import os
 import os.path as osp
 import re
+import time
 from pathlib import Path
-from typing import Set
+from typing import Any, Set
 
 import numpy as np
 from PIL import Image
@@ -21,6 +22,31 @@ from annolid.infrastructure.filesystem import (
     get_frame_number_from_json,
 )
 from annolid.utils.logger import logger
+
+
+class _LabelStatsTaskSignals(QtCore.QObject):
+    finished = QtCore.Signal(str, object)
+
+
+class _LabelStatsTask(QtCore.QRunnable):
+    def __init__(self, index_file: str, project_root: str | None) -> None:
+        super().__init__()
+        self.index_file = str(index_file)
+        self.project_root = str(project_root) if project_root else None
+        self.signals = _LabelStatsTaskSignals()
+
+    @QtCore.Slot()
+    def run(self) -> None:
+        try:
+            from annolid.datasets.label_index_stats import update_label_stats_snapshot
+
+            result: Any = update_label_stats_snapshot(
+                index_file=Path(self.index_file),
+                project_root=Path(self.project_root) if self.project_root else None,
+            )
+        except Exception as exc:
+            result = exc
+        self.signals.finished.emit(self.index_file, result)
 
 
 class PersistenceLifecycleMixin:
@@ -126,6 +152,18 @@ class PersistenceLifecycleMixin:
 
         return pil_image
 
+    def _should_embed_image_data(self, *, save_image_data: bool) -> bool:
+        enabled = bool(save_image_data and (self._config or {}).get("store_data", True))
+        if bool(getattr(self, "video_file", None)) and not bool(
+            (self._config or {}).get("store_video_frame_data", False)
+        ):
+            enabled = False
+        if hasattr(self, "_has_large_image_page_navigation") and bool(
+            self._has_large_image_page_navigation()
+        ):
+            enabled = False
+        return enabled
+
     def saveLabels(self, filename, save_image_data=True):
         dirty_hook = getattr(self, "_onAnnotationDirty", None)
         if callable(dirty_hook):
@@ -196,13 +234,9 @@ class PersistenceLifecycleMixin:
         try:
             imagePath = osp.relpath(self.imagePath, osp.dirname(filename))
             imageData = None
-            save_embedded_image_data = bool(
-                save_image_data and self._config["store_data"]
+            save_embedded_image_data = self._should_embed_image_data(
+                save_image_data=bool(save_image_data)
             )
-            if hasattr(self, "_has_large_image_page_navigation") and bool(
-                self._has_large_image_page_navigation()
-            ):
-                save_embedded_image_data = False
             if save_embedded_image_data:
                 pil_image_to_save = self._get_pil_image_from_state()
                 if pil_image_to_save:
@@ -269,8 +303,13 @@ class PersistenceLifecycleMixin:
             return False
 
     def _saveFile(self, filename):
+        save_started = time.perf_counter()
+        stage_started = save_started
+        stage_times: dict[str, float] = {}
         json_saved = self.saveLabels(filename)
+        stage_times["json"] = time.perf_counter() - stage_started
         if filename and json_saved:
+            stage_started = time.perf_counter()
             self.changed_json_stats[filename] = (
                 self.changed_json_stats.get(filename, 0) + 1
             )
@@ -288,28 +327,67 @@ class PersistenceLifecycleMixin:
                 changed_filename = changed_folder / Path(filename).name
                 _ = self.saveLabels(str(changed_filename))
                 _ = self._saveImageFile(str(changed_filename).replace(".json", ".png"))
+            stage_times["edited_copy"] = time.perf_counter() - stage_started
+
+            stage_started = time.perf_counter()
             image_filename = self._saveImageFile(filename)
+            stage_times["image"] = time.perf_counter() - stage_started
+
+            stage_started = time.perf_counter()
             index_file = self._auto_collect_labelme_pair(filename, image_filename)
-            self._update_label_stats_from_index(index_file=index_file)
+            self._schedule_label_stats_update(index_file=index_file)
+            stage_times["index"] = time.perf_counter() - stage_started
+
+            stage_started = time.perf_counter()
             self._save_ai_mask_renders(image_filename)
-            self.imageList.append(image_filename)
+            stage_times["mask_renders"] = time.perf_counter() - stage_started
+
+            stage_started = time.perf_counter()
             self.addRecentFile(filename)
             label_file = self._getLabelFile(filename)
-            self._addItem(image_filename, label_file)
+            self._register_saved_file(image_filename, label_file)
 
             if self.caption_widget is not None:
                 self.caption_widget.set_image_path(image_filename)
 
             if self.video_results_folder:
                 try:
-                    self._refresh_manual_seed_slider_marks(self.video_results_folder)
+                    frame_number = AnnotationStore.frame_number_from_path(filename)
+                    add_seed_mark = getattr(
+                        self,
+                        "_add_manual_seed_slider_mark",
+                        None,
+                    )
+                    if frame_number is not None and callable(add_seed_mark):
+                        add_seed_mark(frame_number)
                 except Exception:
                     logger.debug(
-                        "Failed to refresh manual seed marks after save.",
+                        "Failed to add manual seed mark after save.",
                         exc_info=True,
                     )
 
             self.setClean()
+            stage_times["ui"] = time.perf_counter() - stage_started
+
+        total_elapsed = time.perf_counter() - save_started
+        if total_elapsed >= 0.25:
+            logger.info(
+                "Annotation save completed in %.3fs (%s).",
+                total_elapsed,
+                ", ".join(
+                    f"{name}={elapsed:.3f}s" for name, elapsed in stage_times.items()
+                ),
+            )
+
+    def _register_saved_file(self, image_filename: str, label_file: str) -> None:
+        known_paths = getattr(self, "_known_file_paths", None)
+        if isinstance(known_paths, set):
+            is_known = image_filename in known_paths
+        else:
+            is_known = image_filename in self.imageList
+        if not is_known:
+            self.imageList.append(image_filename)
+        self._addItem(image_filename, label_file)
 
     def _resolve_label_index_file(self) -> str:
         index_file = os.environ.get("ANNOLID_LABEL_INDEX_FILE", "").strip()
@@ -420,14 +498,7 @@ class PersistenceLifecycleMixin:
         if not index_file:
             return
 
-        project_root = None
-        try:
-            current_project = self.project_controller.get_current_project_path()
-            if current_project:
-                project_root = Path(current_project).expanduser().resolve()
-        except Exception:
-            project_root = None
-
+        project_root = self._resolve_label_stats_project_root()
         try:
             from annolid.datasets.label_index_stats import update_label_stats_snapshot
 
@@ -435,11 +506,79 @@ class PersistenceLifecycleMixin:
                 index_file=Path(index_file),
                 project_root=project_root,
             )
-            self.label_stats[str(Path(index_file).expanduser().resolve())] = stats
         except Exception as exc:
             logger.debug("Failed to update label stats snapshot from index: %s", exc)
             stats = None
+        self._apply_label_stats_result(index_file=index_file, stats=stats)
 
+    def _resolve_label_stats_project_root(self) -> Path | None:
+        project_root = None
+        try:
+            current_project = self.project_controller.get_current_project_path()
+            if current_project:
+                project_root = Path(current_project).expanduser().resolve()
+        except Exception:
+            project_root = None
+        return project_root
+
+    def _schedule_label_stats_update(self, *, index_file: str | None) -> None:
+        if not index_file:
+            return
+        index_key = str(Path(index_file).expanduser().resolve())
+        tasks = getattr(self, "_label_stats_tasks", None)
+        if not isinstance(tasks, dict):
+            tasks = {}
+            self._label_stats_tasks = tasks
+        pending = getattr(self, "_label_stats_pending", None)
+        if not isinstance(pending, set):
+            pending = set()
+            self._label_stats_pending = pending
+
+        if index_key in tasks:
+            pending.add(index_key)
+            return
+
+        project_root = self._resolve_label_stats_project_root()
+        task = _LabelStatsTask(
+            index_key,
+            str(project_root) if project_root is not None else None,
+        )
+        task.signals.finished.connect(
+            self._on_label_stats_task_finished,
+            Qt.QueuedConnection,
+        )
+        tasks[index_key] = task
+        QtCore.QThreadPool.globalInstance().start(task)
+
+    @QtCore.Slot(str, object)
+    def _on_label_stats_task_finished(self, index_file: str, result: object) -> None:
+        tasks = getattr(self, "_label_stats_tasks", {})
+        if isinstance(tasks, dict):
+            tasks.pop(index_file, None)
+
+        stats = None
+        if isinstance(result, Exception):
+            logger.debug(
+                "Failed to update label stats snapshot from index: %s",
+                result,
+            )
+        elif isinstance(result, dict):
+            stats = result
+        self._apply_label_stats_result(index_file=index_file, stats=stats)
+
+        pending = getattr(self, "_label_stats_pending", set())
+        if isinstance(pending, set) and index_file in pending:
+            pending.discard(index_file)
+            self._schedule_label_stats_update(index_file=index_file)
+
+    def _apply_label_stats_result(
+        self,
+        *,
+        index_file: str,
+        stats: dict[str, object] | None,
+    ) -> None:
+        if isinstance(stats, dict):
+            self.label_stats[str(Path(index_file).expanduser().resolve())] = stats
         try:
             dialog = getattr(self, "_labeling_progress_dashboard_dialog", None)
             dashboard = getattr(dialog, "dashboard", None)
