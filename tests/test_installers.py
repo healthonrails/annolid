@@ -194,6 +194,18 @@ def test_release_workflow_uses_shared_bundle_artifact_guard() -> None:
     assert "forbidden_names" not in workflow
 
 
+def test_release_workflow_supports_guarded_binary_recovery() -> None:
+    workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+
+    assert "release_tag:" in workflow
+    assert "Validate recovery source matches release tag" in workflow
+    assert (
+        'git diff --exit-code "${RELEASE_TAG}" -- annolid annolid.spec pyproject.toml'
+        in workflow
+    )
+    assert "inputs.release_tag || github.ref_name" in workflow
+
+
 def test_release_workflow_builds_unix_desktop_archives_only() -> None:
     workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
 

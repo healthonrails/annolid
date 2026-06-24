@@ -58,7 +58,7 @@ FORBIDDEN_FRAGMENTS = {
     "openvino_model",
 }
 
-BUNDLE_FORBIDDEN_NAMES = FORBIDDEN_NAMES | {
+BUNDLE_FORBIDDEN_RUNTIME_NAMES = {
     "diffusers",
     "h5py",
     "matplotlib",
@@ -76,15 +76,15 @@ BUNDLE_FORBIDDEN_NAMES = FORBIDDEN_NAMES | {
     "ultralytics",
 }
 
+BUNDLE_RUNTIME_ROOT_NAMES = {
+    "_internal",
+    "Frameworks",
+    "Resources",
+}
+
 BUNDLE_FORBIDDEN_FRAGMENTS = FORBIDDEN_FRAGMENTS | {
-    "matplotlib",
-    "onnxruntime",
-    "pandas",
     "scikit_image",
     "scikit_learn",
-    "scipy",
-    "tensorboard",
-    "torchvision",
 }
 
 
@@ -100,22 +100,34 @@ def _strip_archive_root(name: str) -> str:
     return normalized
 
 
+def _contains_bundle_runtime(parts: tuple[str, ...]) -> bool:
+    """Match frozen runtime packages without flagging incidental data names."""
+    for index, part in enumerate(parts):
+        if part not in BUNDLE_FORBIDDEN_RUNTIME_NAMES or index == 0:
+            continue
+        if parts[index - 1] in BUNDLE_RUNTIME_ROOT_NAMES:
+            return True
+    return False
+
+
 def is_forbidden_member(
     name: str, artifact_kind: ArtifactKind = "distribution"
 ) -> bool:
     normalized = _normalize_archive_member(name)
     without_root = _strip_archive_root(normalized)
-    parts = {part for part in without_root.split("/") if part}
+    ordered_parts = tuple(part for part in without_root.split("/") if part)
+    parts = set(ordered_parts)
     suffix = Path(without_root).suffix.lower()
-    forbidden_names = (
-        BUNDLE_FORBIDDEN_NAMES if artifact_kind == "bundle" else FORBIDDEN_NAMES
-    )
     forbidden_fragments = (
         BUNDLE_FORBIDDEN_FRAGMENTS if artifact_kind == "bundle" else FORBIDDEN_FRAGMENTS
     )
     if suffix in FORBIDDEN_SUFFIXES:
         return True
-    if parts.intersection(forbidden_names):
+    if parts.intersection(FORBIDDEN_NAMES):
+        return True
+    if artifact_kind == "bundle" and "runs" in parts:
+        return True
+    if artifact_kind == "bundle" and _contains_bundle_runtime(ordered_parts):
         return True
     return any(fragment in without_root for fragment in forbidden_fragments)
 

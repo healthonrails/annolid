@@ -4,7 +4,7 @@ Packaging tiers, artifact policy, signing status, and desktop binary expectation
 
 This repository publishes:
 - **PyPI distributions** from GitHub Releases (`.github/workflows/annolid-publish.yml`).
-- **Platform executables** via manual workflow dispatch on a `v*` tag (`.github/workflows/release.yml`).
+- **Platform executables** from `v*` tag pushes (`.github/workflows/release.yml`).
 - **Docs to `gh-pages`** on pushes to `main` (`.github/workflows/CI.yml`).
 
 ## Recommended release flow
@@ -25,3 +25,18 @@ Under the hood this runs `scripts/release.sh`, which will:
 ## CI safeguards
 - Release workflows now verify that the pushed tag matches package version (`v<pyproject version>`) before publishing.
 - PyPI publish runs on `v*` tag pushes (and on manually-published GitHub Releases) and requires `PYPI_TOKEN` in repo secrets.
+
+## Recovering desktop assets
+
+If a bundle-only release check fails after the tag and source package are
+published, fix the release tooling on `main` and run:
+
+```bash
+gh workflow run release.yml --ref main \
+  -f build_binaries=true \
+  -f release_tag=vX.Y.Z
+```
+
+The recovery workflow refuses to build unless `annolid/`, `annolid.spec`, and
+`pyproject.toml` still match the release tag and the tag matches the package
+version. This allows release-tooling repairs without moving a published tag.

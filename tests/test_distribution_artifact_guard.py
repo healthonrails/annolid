@@ -49,6 +49,21 @@ def test_bundle_guard_rejects_heavy_runtime_modules() -> None:
         "annolid/_internal/pandas/_libs/algos.so",
         artifact_kind="bundle",
     )
+    assert is_forbidden_member(
+        "Annolid.app/Contents/Resources/matplotlib/__init__.py",
+        artifact_kind="bundle",
+    )
+
+
+def test_bundle_guard_allows_runtime_name_fragments_in_required_dependencies() -> None:
+    assert not is_forbidden_member(
+        "annolid/_internal/cmap/data/matplotlib/_coolwarm.py",
+        artifact_kind="bundle",
+    )
+    assert not is_forbidden_member(
+        "annolid/_internal/numpy.libs/libscipy_openblas64_-32a4b2a6.so",
+        artifact_kind="bundle",
+    )
 
 
 def test_distribution_guard_does_not_use_bundle_only_runtime_names() -> None:
