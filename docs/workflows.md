@@ -183,14 +183,21 @@ centroid, perimeter, and `<shape_label>_motion_index` columns when available.
 For difficult multi-animal sessions where identity can flip after overlap/occlusion:
 
 1. run tracking as usual,
-2. define a policy for your assay (distance/zone/area thresholds),
-3. run Identity Governor in dry-run mode,
-4. inspect the generated correction report,
-5. apply corrections and regenerate downstream summaries.
+2. find the first frame where an ID switch or missing-instance error appears,
+3. manually correct the labels/polygons on that frame and save it,
+4. rerun CUTIE from that corrected frame, using a short window or running to the
+   next corrected seed/end of video,
+5. repeat for later switches and regenerate downstream summaries only after the
+   tracking JSON has been reviewed.
 
-See [Identity Governor](identity_governor.md).
+Manual seed frames supersede automatic prediction and become new CUTIE reset
+points. If you know difficult crossing or occlusion frames ahead of time, save
+corrected manual labels at those frames before running the full tracking pass.
 
-Dry-run the policy first. Review the generated correction report before applying changes to downstream analysis files.
+Use [Identity Governor](identity_governor.md) only for advanced post-processing
+cases where the IDs can be inferred from explicit assay logic or where you need a
+batch audit/report. Dry-run the policy or temporal repair first, then review the
+generated report before applying changes to downstream analysis files.
 
 ## 5. Depth Workflow
 

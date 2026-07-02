@@ -10,7 +10,7 @@ This page points to practical tutorial material that exists in the repository to
 | Downsample or preprocess videos | [GUI video downsample workflow](tutorials/video_downsample_workflow.md) and [Video Processing with FFmpeg](tutorials/video_ffmpeg_processing.md) |
 | Score behavior events | [Behavior labeling with Timeline, Flags, and Annolid Bot](tutorials/behavior_timeline_flags_bot.md) |
 | Define zones and export zone metrics | [Draw zones quickstart](tutorials/draw_zones_quickstart.md) and [Zone analysis workflow](tutorials/zone_analysis_workflow.md) |
-| Correct tracking drift or missing frames | [Segment-based batch tracking](tutorials/segment-based-batch-tracking.md) and [Tracking correction with SAM3 Agent and Annolid Bot](tutorials/tracking_correction_with_sam3_bot.md) |
+| Correct CUTIE ID switches, drift, or missing frames | [Segment-based batch tracking](tutorials/segment-based-batch-tracking.md#10-repair-id-switches-with-manual-seed-frames) and [Tracking correction with SAM3 Agent and Annolid Bot](tutorials/tracking_correction_with_sam3_bot.md) |
 | Train or evaluate models | Notebook tutorials in `docs/tutorials/` and model-specific `annolid-run help` output |
 | Run realtime camera workflows | [Realtime Wireless Camera Detection](tutorials/realtime_wireless_camera_detection.md) and [Multi-Camera Realtime Detection](tutorials/multi_camera_realtime.md) |
 

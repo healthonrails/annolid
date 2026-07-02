@@ -9,12 +9,15 @@ import torch
 sys.modules.setdefault(
     "gdown", types.SimpleNamespace(cached_download=lambda *args, **kwargs: None)
 )
-_geometry_stub = types.SimpleNamespace(
-    Polygon=lambda *args, **kwargs: None,
-    Point=lambda *args, **kwargs: None,
-)
-sys.modules.setdefault("shapely", types.SimpleNamespace(geometry=_geometry_stub))
-sys.modules.setdefault("shapely.geometry", _geometry_stub)
+try:
+    import shapely.geometry  # noqa: F401
+except Exception:
+    _geometry_stub = types.SimpleNamespace(
+        Polygon=lambda *args, **kwargs: None,
+        Point=lambda *args, **kwargs: None,
+    )
+    sys.modules.setdefault("shapely", types.SimpleNamespace(geometry=_geometry_stub))
+    sys.modules.setdefault("shapely.geometry", _geometry_stub)
 
 
 class _EasyDict(dict):
@@ -541,6 +544,37 @@ def test_reference_seed_frames_for_segment_can_disable_prior_references() -> Non
     )
 
     assert [seed.frame_index for seed in selected] == [300]
+
+
+def test_build_seed_segments_bounds_windows_by_next_manual_seed() -> None:
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    processor._seed_segment_lookup = {}
+    processor._seed_object_counts = {}
+    processor._global_label_names = {}
+    processor._global_object_ids = []
+    mask = np.array([[0, 1], [1, 0]], dtype=np.int32)
+
+    for frame in (10, 30, 60):
+        seed = _seed(frame)
+        processor._seed_segment_lookup[frame] = SeedSegment(
+            seed=seed,
+            start_frame=frame,
+            end_frame=None,
+            mask=mask,
+            labels_map={"_background_": 0, "mouse": 1},
+            active_labels=["mouse"],
+        )
+
+    segments = processor._build_seed_segments(
+        [_seed(10), _seed(30), _seed(60)],
+        requested_end=80,
+    )
+
+    assert [(segment.start_frame, segment.end_frame) for segment in segments] == [
+        (10, 29),
+        (30, 59),
+        (60, 80),
+    ]
 
 
 def test_commit_masks_into_permanent_memory_commits_prior_references(

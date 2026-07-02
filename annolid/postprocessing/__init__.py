@@ -29,6 +29,10 @@ _EXPORTS = {
         "annolid.postprocessing.identity_governor",
         "run_identity_governor",
     ),
+    "run_temporal_identity_repair": (
+        "annolid.postprocessing.temporal_identity_repair",
+        "run_temporal_identity_repair",
+    ),
     "ZoneOccupancyPolicyResult": (
         "annolid.postprocessing.zone_occupancy_policy",
         "ZoneOccupancyPolicyResult",

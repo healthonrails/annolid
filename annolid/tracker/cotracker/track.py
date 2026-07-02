@@ -1,5 +1,6 @@
 from __future__ import annotations
 import argparse
+from collections.abc import Mapping
 import numpy as np
 import torch
 
@@ -52,6 +53,9 @@ class CoTrackerProcessor(BasePointTrackingProcessor):
 
     def load_model(self):
         model_name = "cotracker3_online" if self.is_online else "cotracker3_offline"
+        return self._load_hub_model(model_name)
+
+    def _load_hub_model(self, model_name: str):
         cache_key = (model_name, str(self.device))
         if cache_key in _MODEL_CACHE:
             logger.debug(
@@ -72,6 +76,123 @@ class CoTrackerProcessor(BasePointTrackingProcessor):
         _MODEL_CACHE[cache_key] = cotracker
         logger.info("Loaded CoTracker model '%s' on %s", model_name, self.device)
         return cotracker
+
+    @staticmethod
+    def _mapping_value(output: Mapping[str, Any], keys: tuple[str, ...]) -> Any:
+        for key in keys:
+            if key in output:
+                return output[key]
+        return None
+
+    @classmethod
+    def _normalize_model_output(
+        cls,
+        output: Any,
+        *,
+        online: bool,
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+        """Return Annolid's stable CoTracker output contract.
+
+        CoTracker hub releases have returned either predictor-level
+        ``(tracks, visibility)`` tuples or lower-level tuples with confidence
+        and training metadata appended. Annolid only persists tracks and a
+        boolean visibility mask, so auxiliary outputs are normalized here.
+        """
+        confidence = None
+        if isinstance(output, Mapping):
+            tracks = cls._mapping_value(output, ("tracks", "pred_tracks"))
+            visibility = cls._mapping_value(
+                output,
+                ("visibility", "visibilities", "pred_visibility", "pred_visibilities"),
+            )
+            confidence = cls._mapping_value(
+                output,
+                ("confidence", "confidences", "pred_confidence", "pred_confidences"),
+            )
+        elif isinstance(output, (tuple, list)):
+            if len(output) < 2:
+                raise RuntimeError(
+                    f"CoTracker returned {len(output)} values; expected at least tracks and visibility."
+                )
+            tracks, visibility = output[0], output[1]
+            if len(output) > 2:
+                logger.debug(
+                    "CoTracker returned %d values; ignoring auxiliary outputs after tracks and visibility.",
+                    len(output),
+                )
+                if torch.is_tensor(output[2]):
+                    confidence = output[2]
+        else:
+            raise RuntimeError(
+                f"Unsupported CoTracker output type: {type(output).__name__}"
+            )
+
+        if tracks is None and visibility is None:
+            return None, None
+        if tracks is None or visibility is None:
+            raise RuntimeError(
+                "CoTracker returned an incomplete output; both tracks and visibility are required."
+            )
+        if not torch.is_tensor(tracks) or not torch.is_tensor(visibility):
+            raise RuntimeError(
+                "CoTracker tracks and visibility outputs must be torch tensors."
+            )
+
+        return tracks, cls._normalize_visibility(
+            visibility,
+            confidence=confidence,
+            online=online,
+        )
+
+    @staticmethod
+    def _normalize_visibility(
+        visibility: torch.Tensor,
+        *,
+        confidence: torch.Tensor | None = None,
+        online: bool,
+    ) -> torch.Tensor:
+        if visibility.dtype == torch.bool:
+            return visibility
+
+        visibility_score = visibility
+        threshold = 0.9
+        if online and confidence is not None and confidence.shape == visibility.shape:
+            visibility_score = visibility_score * confidence
+            threshold = 0.6
+        return visibility_score > threshold
+
+    @staticmethod
+    def _needs_backward_tracking(
+        queries: torch.Tensor | None,
+        *,
+        grid_query_frame: int,
+    ) -> bool:
+        if queries is not None:
+            return bool(torch.any(queries[..., 0] > 0).item())
+        return grid_query_frame > 0
+
+    def _call_cotracker_model(
+        self,
+        model: torch.nn.Module,
+        video: torch.Tensor,
+        *,
+        online: bool,
+        **kwargs: Any,
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+        try:
+            output = model(video, **kwargs)
+        except ValueError as exc:
+            if kwargs.get("backward_tracking") and "too many values" in str(exc):
+                retry_kwargs = dict(kwargs)
+                retry_kwargs["backward_tracking"] = False
+                logger.warning(
+                    "CoTracker backward tracking failed because the upstream "
+                    "model returned extra outputs; retrying forward-only tracking."
+                )
+                output = model(video, **retry_kwargs)
+            else:
+                raise
+        return self._normalize_model_output(output, online=online)
 
     def _build_chunk_queries(
         self, chunk_start_frame: int, chunk_num_frames: int
@@ -117,7 +238,12 @@ class CoTrackerProcessor(BasePointTrackingProcessor):
         if queries is not None:
             kwargs["queries"] = queries
 
-        return model(video_chunk, **kwargs)
+        return self._call_cotracker_model(
+            model,
+            video_chunk,
+            online=True,
+            **kwargs,
+        )
 
     def _process_video_online(self, grid_size, grid_query_frame, need_visualize):
         """Process video using CoTracker online mode with incremental saving.
@@ -277,19 +403,17 @@ class CoTrackerProcessor(BasePointTrackingProcessor):
 
         # Use the offline model for bidirectional processing
         try:
-            offline_model = (
-                torch.hub.load("facebookresearch/co-tracker", "cotracker3_offline")
-                .to(self.device)
-                .eval()
-            )
+            offline_model = self._load_hub_model("cotracker3_offline")
         except Exception:
             # Fall back to using online model with is_first_step=True
             logger.warning(
                 "Could not load offline model, using online model for initial window"
             )
             model = self._ensure_model()
-            return model(
+            return self._call_cotracker_model(
+                model,
                 video_tensor,
+                online=True,
                 is_first_step=True,
                 grid_size=grid_size,
                 grid_query_frame=grid_query_frame,
@@ -308,7 +432,12 @@ class CoTrackerProcessor(BasePointTrackingProcessor):
             kwargs["queries"] = queries
 
         with torch.no_grad():
-            pred_tracks, pred_visibility = offline_model(video_tensor, **kwargs)
+            pred_tracks, pred_visibility = self._call_cotracker_model(
+                offline_model,
+                video_tensor,
+                online=False,
+                **kwargs,
+            )
 
         return pred_tracks, pred_visibility
 
@@ -335,11 +464,16 @@ class CoTrackerProcessor(BasePointTrackingProcessor):
             chunk_start_frame=start_frame,
             chunk_num_frames=video.shape[1],
         )
-        pred_tracks, pred_visibility = model(
+        pred_tracks, pred_visibility = self._call_cotracker_model(
+            model,
             video,
+            online=False,
             grid_size=grid_size,
             queries=queries,
-            backward_tracking=True,
+            backward_tracking=self._needs_backward_tracking(
+                queries,
+                grid_query_frame=grid_query_frame,
+            ),
             segm_mask=self.mask,
         )
         return pred_tracks, pred_visibility, video

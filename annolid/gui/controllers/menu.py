@@ -1371,6 +1371,7 @@ class MenuController:
             ),
             (
                 actions["run_optical_flow"],
+                actions["identity_governor"],
                 actions["video_depth_anything"],
                 actions["add_stamps_action"],
             ),

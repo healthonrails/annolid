@@ -83,7 +83,34 @@ After deleting generated outputs:
 
 If you only need to retrack one video, load that video directly from the toolbar/Video Manager and run tracking for that video only. This avoids reprocessing videos that are already correct.
 
-## 10. Stop When an Animal Is Lost
+## 10. Repair ID Switches With Manual Seed Frames
+
+For CUTIE ID switches, the recommended workflow is to insert a corrected manual
+seed frame and run CUTIE forward from that point, either for a short window or to
+the next corrected seed/end of video.
+
+Use this when one animal takes another animal's label after overlap, crossing, or
+occlusion:
+
+1. Find the first frame where the IDs are wrong.
+2. Correct the polygons/labels on that frame and save the frame. Annolid writes a
+   PNG+JSON pair, which CUTIE treats as a manual seed.
+3. Rerun CUTIE from that corrected frame, or define a segment/window ending before
+   the next already-correct section.
+4. Review the next crossing. If another switch occurs, add another corrected seed
+   frame and rerun from there.
+
+Manual seed frames supersede automatic prediction. During a rerun, Annolid does
+not overwrite frames that already have saved annotations, and CUTIE builds
+tracking windows from one seed to the frame before the next seed. This means you
+can also pre-label several difficult frames before running tracking; each saved
+manual frame becomes a reset point for the following window.
+
+This is the practical "identity repair workflow" for most home-cage CUTIE ID
+switches. It is not a separate model or a separate correction algorithm; it is a
+productive way to use the existing save/retrack tools.
+
+## 11. Stop When an Animal Is Lost
 
 To make CUTIE tracking stop when an expected animal disappears:
 
@@ -96,6 +123,12 @@ seeded instances. If a seeded animal is missing from the prediction output,
 tracking pauses at that frame so you can review the image, correct or add the
 missing instance, save the annotation, and continue from that point.
 
+If CUTIE missing-instance recovery is enabled, Annolid may first try to recover
+the missing mask from a recent complete frame or a recent instance mask. Recovered
+frames are still worth reviewing; the later Temporal continuity repair can audit
+those recovery notes and fix label/ID continuity if the mask comes back with the
+wrong identity.
+
 This is a tracking safety check, not a biological event detector. It detects
 missing tracked instances in the annotation output. It does not prove the animal
 left the arena or became invisible for a specific scientific reason.
@@ -103,7 +136,7 @@ left the arena or became invisible for a specific scientific reason.
 Do not use `T_max` for this purpose. `T_max` controls tracker memory/window
 behavior; it is not the "stop when lost" setting.
 
-## 11. Repair Missing Sections Without Starting Over
+## 12. Repair Missing Sections Without Starting Over
 
 You usually do not need to delete all predictions and start over if only a few
 sections are missing.
@@ -112,11 +145,22 @@ Use one of these workflows:
 
 - If tracking paused at the first bad frame, correct the missing animal on that
   frame, save the annotation, then continue tracking from there.
+- If IDs switch after crossing or occlusion, use the manual seed-frame workflow
+  above first. It gives CUTIE a new ground-truth starting point and is usually the
+  most reliable correction.
 - If the saved NDJSON has empty frames, use Annolid Bot tracking correction with
   `replace_only_empty_shapes=true` to fill only frames that currently have no
   shapes.
-- If the problem is a short occlusion gap or likely ID switch, use temporal
-  repair with `temporal_repair=true`, `expected_instance_count`,
+- If the problem is a short occlusion gap or likely ID switch in CUTIE frame
+  JSON output, open **Video Tools -> Identity Governor...**, choose
+  **Temporal continuity**, and tune `expected_instance_count`, `max_gap_frames`,
+  and `max_match_distance`. This repair pass uses multi-cue temporal assignment:
+  centroid motion, constant-velocity prediction, motion-compensated shape
+  overlap, area, and orientation when polygon geometry is available. Its report
+  also flags duplicate IDs, missing expected IDs, unexpected IDs, implausible
+  jumps, and CUTIE recovery/fallback notes.
+- If the problem is in an NDJSON correction workflow, use Annolid Bot tracking
+  correction with `temporal_repair=true`, `expected_instance_count`,
   `max_gap_frames`, and `max_match_distance`.
 - If drift or identity corruption is widespread, do a full retrack using the
   cleanup steps in the previous section.
@@ -126,7 +170,7 @@ For the SAM3-assisted correction workflow, see
 repairs to a new NDJSON first, review the result, then replace the original only
 after the corrected file is verified.
 
-## 12. Overnight Runs and Computer Sleep
+## 13. Overnight Runs and Computer Sleep
 
 Annolid does not currently wrap long tracking jobs in an operating-system sleep
 prevention command. On macOS or Windows, a sleeping computer pauses CPU/GPU work

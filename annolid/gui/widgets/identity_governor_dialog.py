@@ -11,6 +11,7 @@ from annolid.postprocessing import (
     GovernorPolicy,
     IdentityGovernorResult,
     run_identity_governor,
+    run_temporal_identity_repair,
 )
 from annolid.utils.logger import logger
 
@@ -232,10 +233,17 @@ class IdentityGovernorDialog(QtWidgets.QDialog):
         annotation_row.addWidget(browse_annotation_btn)
         form.addRow("Annotation Folder:", annotation_row)
 
+        self.mode_combo = QtWidgets.QComboBox(top)
+        self.mode_combo.addItem("Policy rules", "policy")
+        self.mode_combo.addItem("Temporal continuity", "temporal")
+        self.mode_combo.currentIndexChanged.connect(self._refresh_mode_ui)
+        form.addRow("Repair Mode:", self.mode_combo)
+
         zone_row = QtWidgets.QHBoxLayout()
         self.zone_file_edit = QtWidgets.QLineEdit(top)
         self.zone_file_edit.setPlaceholderText("(Optional) path to *_zones.json")
         browse_zone_btn = QtWidgets.QPushButton("Browse...", top)
+        self.browse_zone_btn = browse_zone_btn
         browse_zone_btn.clicked.connect(self._browse_zone_file)
         zone_row.addWidget(self.zone_file_edit, 1)
         zone_row.addWidget(browse_zone_btn)
@@ -251,6 +259,39 @@ class IdentityGovernorDialog(QtWidgets.QDialog):
         report_row.addWidget(self.report_path_edit, 1)
         report_row.addWidget(browse_report_btn)
         form.addRow("Report Path:", report_row)
+
+        temporal_row = QtWidgets.QHBoxLayout()
+        self.temporal_start_frame_spin = QtWidgets.QSpinBox(top)
+        self.temporal_start_frame_spin.setRange(0, 1_000_000_000)
+        self.temporal_start_frame_spin.setValue(0)
+        self.temporal_expected_count_spin = QtWidgets.QSpinBox(top)
+        self.temporal_expected_count_spin.setRange(0, 200)
+        self.temporal_expected_count_spin.setSpecialValueText("Auto")
+        self.temporal_expected_count_spin.setValue(0)
+        self.temporal_gap_spin = QtWidgets.QSpinBox(top)
+        self.temporal_gap_spin.setRange(0, 10_000)
+        self.temporal_gap_spin.setValue(5)
+        self.temporal_distance_spin = QtWidgets.QDoubleSpinBox(top)
+        self.temporal_distance_spin.setRange(0.0, 1_000_000.0)
+        self.temporal_distance_spin.setDecimals(1)
+        self.temporal_distance_spin.setValue(80.0)
+        self.temporal_distance_spin.setSuffix(" px")
+        temporal_row.addWidget(QtWidgets.QLabel("Start", top))
+        temporal_row.addWidget(self.temporal_start_frame_spin)
+        temporal_row.addWidget(QtWidgets.QLabel("Count", top))
+        temporal_row.addWidget(self.temporal_expected_count_spin)
+        temporal_row.addWidget(QtWidgets.QLabel("Gap", top))
+        temporal_row.addWidget(self.temporal_gap_spin)
+        temporal_row.addWidget(QtWidgets.QLabel("Distance", top))
+        temporal_row.addWidget(self.temporal_distance_spin)
+        temporal_row.addStretch(1)
+        self.temporal_controls = [
+            self.temporal_start_frame_spin,
+            self.temporal_expected_count_spin,
+            self.temporal_gap_spin,
+            self.temporal_distance_spin,
+        ]
+        form.addRow("Temporal Repair:", temporal_row)
 
         policy_actions = QtWidgets.QHBoxLayout()
         self.template_combo = QtWidgets.QComboBox(top)
@@ -284,6 +325,7 @@ class IdentityGovernorDialog(QtWidgets.QDialog):
             json.dumps(_default_policy_template(), ensure_ascii=False, indent=2)
         )
         self._refresh_template_hint()
+        self._refresh_mode_ui()
         top_layout.addWidget(self.policy_edit, 1)
 
         run_bar = QtWidgets.QHBoxLayout()
@@ -355,6 +397,33 @@ class IdentityGovernorDialog(QtWidgets.QDialog):
             0, min(self.template_combo.currentIndex(), len(self._snippets) - 1)
         )
         self.template_hint_label.setText(self._snippets[safe_index][1])
+
+    def _repair_mode(self) -> str:
+        data = self.mode_combo.currentData() if hasattr(self, "mode_combo") else None
+        return str(data or "policy")
+
+    def _refresh_mode_ui(self) -> None:
+        temporal = self._repair_mode() == "temporal"
+        for widget in getattr(self, "temporal_controls", []):
+            widget.setEnabled(temporal)
+        self.zone_file_edit.setEnabled(not temporal)
+        self.browse_zone_btn.setEnabled(not temporal)
+        for widget in (
+            self.template_combo,
+            self.insert_template_btn,
+            self.load_policy_btn,
+            self.save_policy_btn,
+            self.format_policy_btn,
+            self.policy_edit,
+        ):
+            widget.setEnabled(not temporal)
+        self.template_hint_label.setText(
+            "Uses frame-to-frame centroid continuity; best for CUTIE outputs with one stable label per animal."
+            if temporal
+            else self._snippets[
+                max(0, min(self.template_combo.currentIndex(), len(self._snippets) - 1))
+            ][1]
+        )
 
     def _insert_selected_template(self) -> None:
         payload = self._template_payload(self.template_combo.currentIndex())
@@ -462,7 +531,17 @@ class IdentityGovernorDialog(QtWidgets.QDialog):
 
     def _validated_inputs(
         self,
-    ) -> tuple[Path, dict[str, Any], str | None, str | None] | None:
+    ) -> (
+        tuple[
+            Path,
+            str,
+            dict[str, Any],
+            str | None,
+            str | None,
+            dict[str, Any],
+        ]
+        | None
+    ):
         annotation_dir = Path(
             self.annotation_dir_edit.text().strip() or "."
         ).expanduser()
@@ -481,16 +560,28 @@ class IdentityGovernorDialog(QtWidgets.QDialog):
             )
             return None
 
-        try:
-            policy = self._parse_policy()
-        except Exception as exc:
-            QtWidgets.QMessageBox.warning(
-                self, "Invalid Policy", f"Could not parse policy JSON:\n{exc}"
-            )
-            return None
+        mode = self._repair_mode()
+        policy: dict[str, Any] = {}
+        temporal_options: dict[str, Any] = {}
+        if mode == "temporal":
+            expected_count = int(self.temporal_expected_count_spin.value())
+            temporal_options = {
+                "start_frame": int(self.temporal_start_frame_spin.value()),
+                "expected_instance_count": expected_count or None,
+                "max_gap_frames": int(self.temporal_gap_spin.value()),
+                "max_match_distance": float(self.temporal_distance_spin.value()),
+            }
+        else:
+            try:
+                policy = self._parse_policy()
+            except Exception as exc:
+                QtWidgets.QMessageBox.warning(
+                    self, "Invalid Policy", f"Could not parse policy JSON:\n{exc}"
+                )
+                return None
 
         zone_path = self.zone_file_edit.text().strip()
-        if zone_path:
+        if zone_path and mode != "temporal":
             zone_file = Path(zone_path).expanduser()
             if not zone_file.exists() or not zone_file.is_file():
                 QtWidgets.QMessageBox.warning(
@@ -503,13 +594,15 @@ class IdentityGovernorDialog(QtWidgets.QDialog):
 
         report_text = self.report_path_edit.text().strip()
         report_value = str(Path(report_text).expanduser()) if report_text else None
-        return annotation_dir, policy, zone_value, report_value
+        return annotation_dir, mode, policy, zone_value, report_value, temporal_options
 
     def _run(self, *, apply_changes: bool) -> None:
         validated = self._validated_inputs()
         if validated is None:
             return
-        annotation_dir, policy, zone_file, report_path = validated
+        annotation_dir, mode, policy, zone_file, report_path, temporal_options = (
+            validated
+        )
 
         if apply_changes:
             answer = QtWidgets.QMessageBox.question(
@@ -527,13 +620,21 @@ class IdentityGovernorDialog(QtWidgets.QDialog):
 
         set_widget_busy_cursor(self, True)
         try:
-            result = run_identity_governor(
-                annotation_dir=annotation_dir,
-                policy=policy,
-                zone_file=zone_file,
-                apply_changes=apply_changes,
-                report_path=report_path,
-            )
+            if mode == "temporal":
+                result = run_temporal_identity_repair(
+                    annotation_dir=annotation_dir,
+                    apply_changes=apply_changes,
+                    report_path=report_path,
+                    **temporal_options,
+                )
+            else:
+                result = run_identity_governor(
+                    annotation_dir=annotation_dir,
+                    policy=policy,
+                    zone_file=zone_file,
+                    apply_changes=apply_changes,
+                    report_path=report_path,
+                )
             self._render_result(result)
         except Exception as exc:
             logger.error("Identity governor failed: %s", exc, exc_info=True)

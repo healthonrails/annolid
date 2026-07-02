@@ -95,6 +95,62 @@ def test_identity_governor_dialog_preview_populates_results(
     assert dialog.open_report_btn.isEnabled() is True
 
 
+def test_identity_governor_dialog_temporal_mode_calls_repair(
+    tmp_path, monkeypatch
+) -> None:
+    _ensure_qapp()
+    annotation_dir = tmp_path / "session"
+    annotation_dir.mkdir()
+    (annotation_dir / "session_000000000.json").write_text(
+        '{"shapes":[{"label":"mouse_1","shape_type":"polygon","points":[[0,0],[1,0],[1,1]]}]}',
+        encoding="utf-8",
+    )
+    report_path = annotation_dir / "temporal_identity_repair_report.json"
+
+    dialog = IdentityGovernorDialog(initial_annotation_dir=annotation_dir)
+    dialog.mode_combo.setCurrentIndex(1)
+    dialog.annotation_dir_edit.setText(str(annotation_dir))
+    dialog.report_path_edit.setText(str(report_path))
+    dialog.temporal_start_frame_spin.setValue(12)
+    dialog.temporal_expected_count_spin.setValue(5)
+    dialog.temporal_gap_spin.setValue(3)
+    dialog.temporal_distance_spin.setValue(42.5)
+
+    seen: dict[str, object] = {}
+
+    def _fake_run_temporal_identity_repair(**kwargs):
+        seen.update(kwargs)
+        return IdentityGovernorResult(
+            annotation_dir=annotation_dir,
+            dry_run=True,
+            scanned_files=1,
+            scanned_observations=1,
+            proposed_corrections=(),
+            updated_files=0,
+            updated_shapes=0,
+            report_path=report_path,
+        )
+
+    monkeypatch.setattr(
+        "annolid.gui.widgets.identity_governor_dialog.run_temporal_identity_repair",
+        _fake_run_temporal_identity_repair,
+    )
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "information",
+        lambda *_args, **_kwargs: QtWidgets.QMessageBox.Ok,
+    )
+
+    dialog._run(apply_changes=False)
+
+    assert seen["annotation_dir"] == annotation_dir
+    assert seen["apply_changes"] is False
+    assert seen["start_frame"] == 12
+    assert seen["expected_instance_count"] == 5
+    assert seen["max_gap_frames"] == 3
+    assert seen["max_match_distance"] == 42.5
+
+
 def test_identity_governor_dialog_snippets_insert_expected_payload() -> None:
     _ensure_qapp()
     dialog = IdentityGovernorDialog(initial_annotation_dir=Path.cwd())
