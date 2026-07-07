@@ -8,6 +8,8 @@ This page points to practical tutorial material that exists in the repository to
 | --- | --- |
 | Learn the basic GUI tracking loop | [Tracking four interacting mice with one labeled frame](https://youtu.be/PNbPA649r78) and [Workflows](workflows.md) |
 | Downsample or preprocess videos | [GUI video downsample workflow](tutorials/video_downsample_workflow.md) and [Video Processing with FFmpeg](tutorials/video_ffmpeg_processing.md) |
+| Speed up CUTIE tracking | [Segment-based batch tracking](tutorials/segment-based-batch-tracking.md#11-reduce-cutie-analysis-time) and [GUI video downsample workflow](tutorials/video_downsample_workflow.md#practical-presets) |
+| Track sparse body-part keypoints without training a pose model | [DINOv3 Keypoint Tracking](dinov3_keypoint_tracking.md), [TAPNext ONNX point tracking](tapnext.md), or [CoWTracker point tracking](cowtracker.md) |
 | Score behavior events | [Behavior labeling with Timeline, Flags, and Annolid Bot](tutorials/behavior_timeline_flags_bot.md) |
 | Define zones and export zone metrics | [Draw zones quickstart](tutorials/draw_zones_quickstart.md) and [Zone analysis workflow](tutorials/zone_analysis_workflow.md) |
 | Correct CUTIE ID switches, drift, or missing frames | [Segment-based batch tracking](tutorials/segment-based-batch-tracking.md#10-repair-id-switches-with-manual-seed-frames) and [Tracking correction with SAM3 Agent and Annolid Bot](tutorials/tracking_correction_with_sam3_bot.md) |
@@ -37,6 +39,7 @@ This page points to practical tutorial material that exists in the repository to
 - [MCP setup and usage](mcp.md)
 - [Video Depth Anything](video_depth_anything.md)
 - [SAM 3D integration](sam3d.md)
+- [DINOv3 Keypoint Tracking](dinov3_keypoint_tracking.md)
 - [TAPNext ONNX point tracking](tapnext.md)
 - [CoWTracker point tracking](cowtracker.md)
 - [Large TIFF and atlas overlays](atlas_overlay_workflow.md)

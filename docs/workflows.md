@@ -7,6 +7,7 @@ This page summarizes the main workflows supported by Annolid today. Start with t
 | Goal | Start Here |
 | --- | --- |
 | Label and track animals in a video | [Standard GUI Video Workflow](#1-standard-gui-video-workflow) |
+| Track sparse body-part points without training a pose model | [Sparse Keypoint Tracking Workflow](#sparse-keypoint-tracking-workflow) |
 | Run model training, prediction, or evaluation from scripts | [CLI Model Workflow](#3-cli-model-workflow) |
 | Score behavior events or time budgets | [Behavior Analysis Workflow](#4-behavior-analysis-workflow) |
 | Repair identity switches after tracking | [Identity Repair Workflow](#identity-repair-workflow) |
@@ -38,6 +39,27 @@ Practical notes:
 - Validate a small representative segment before committing compute time to an entire recording.
 
 ![Annolid GUI running Segment Anything assisted polygon creation](imgs/annolid_with_segment_anything.gif)
+
+## Sparse Keypoint Tracking Workflow
+
+Use sparse point tracking when you need reviewable body-part trajectories from
+one or a few labeled seed frames, not a reusable pose model trained across many
+videos.
+
+Start with [DINOv3 Keypoint Tracking](dinov3_keypoint_tracking.md) when you can
+use DINO-family feature descriptors and want named keypoints with optional
+instance masks. Use [TAPNext ONNX Point Tracking](tapnext.md) when you prefer a
+fixed ONNX point tracker, or [CoWTracker Point Tracking](cowtracker.md) when you
+need the optional CoWTracker backend.
+
+For all point trackers:
+
+1. label a sharp seed frame;
+2. use stable keypoint names such as `nose`, `tail_base`, or `left_wing`;
+3. preserve instance association for multi-animal videos;
+4. run a short difficult segment first;
+5. correct the first frame where drift begins, save it, and rerun from that
+   correction frame.
 
 ## 2. Annolid Bot Workflow
 
@@ -198,6 +220,27 @@ Use [Identity Governor](identity_governor.md) only for advanced post-processing
 cases where the IDs can be inferred from explicit assay logic or where you need a
 batch audit/report. Dry-run the policy or temporal repair first, then review the
 generated report before applying changes to downstream analysis files.
+
+## CUTIE Analysis Speed
+
+If CUTIE tracking is slow, reduce the number of frames before changing model
+settings. A 5-minute video at 30 FPS has about `9,000` frames; at 5 FPS it has
+about `1,500` frames.
+
+Recommended starting point for ordinary home-cage tracking:
+
+1. keep the original recording unchanged,
+2. make a downsampled analysis copy with **File -> Downsample Video(s)...**,
+3. set the copy to `5` FPS,
+4. keep `480 x 270` videos at scale factor `1.0` unless a pilot shows lower
+   resolution still separates all animals,
+5. crop unused space outside the cage when possible,
+6. confirm the log says `Running device: cuda` on NVIDIA workstations.
+
+Disable **Use CPU Only**, overlay video export, and optical-flow motion-index
+calculation when they are not needed. See
+[Reduce CUTIE Analysis Time](tutorials/segment-based-batch-tracking.md#11-reduce-cutie-analysis-time)
+for the full checklist.
 
 ## 5. Depth Workflow
 

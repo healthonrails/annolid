@@ -186,6 +186,7 @@ For advanced users, Docker, Conda, or manual Pip installation, please see the [D
 - [Workflows](docs/workflows.md): supported GUI, Bot, CLI, behavior, depth, 3D, identity-repair, and simulation paths.
 - [Tutorials](docs/tutorials.md): maintained walkthroughs and notebooks.
 - [Video Depth Anything](docs/video_depth_anything.md): GUI depth estimation, checkpoint handling, and `depth.ndjson` outputs.
+- [DINOv3 keypoint tracking](docs/dinov3_keypoint_tracking.md): sparse body-part point propagation from reviewable seed frames.
 - [TAPNext ONNX point tracking](docs/tapnext.md): point-seeded tracking workflow and model-cache behavior.
 - [CoWTracker point tracking](docs/cowtracker.md): optional dense point-tracking setup and runtime notes.
 - [SAM3 guide](docs/sam3.md): SAM3 tracking and agent-assisted long-video tracking.
@@ -212,7 +213,7 @@ For advanced users, Docker, Conda, or manual Pip installation, please see the [D
 ## Tutorials & Examples
 - Featured demo: [Tracking Four Interacting Mice with One Labeled Frame | 10-Minute Experiment](https://youtu.be/PNbPA649r78)
 - Behavior workflow tutorial: [Behavior labeling with Timeline, Flags, and Annolid Bot](docs/tutorials/behavior_timeline_flags_bot.md)
-- DINOv3 Keypoint Tracking tutorial: book/tutorials/DINOv3_keypoint_tracking.md
+- DINOv3 Keypoint Tracking tutorial: [docs/dinov3_keypoint_tracking.md](docs/dinov3_keypoint_tracking.md)
 - DINOv3 model selection/download helper: `annolid-run dinov3-models --list`
 [![Effortless Multiple Instance Tracking using Annolid: Beginner's Tutorial](https://annolid.com/assets/images/annolid_gui.png)](https://www.youtube.com/embed/ry9bnaajKCs?si=o_rdLobKeKb4-LWX)
 

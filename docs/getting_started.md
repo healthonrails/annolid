@@ -71,6 +71,7 @@ If you want Annolid Bot to drive those commands for you, use the typed
 
 - Zone analysis and assay summaries: [Zone Analysis](zone_analysis.md)
 - Video depth estimation: [Video Depth Anything](video_depth_anything.md)
+- DINOv3 sparse-seed keypoint tracking: [DINOv3 Keypoint Tracking](dinov3_keypoint_tracking.md)
 - TAPNext ONNX point tracking: [TAPNext ONNX Point Tracking](tapnext.md)
 - CoWTracker point tracking: [CoWTracker Point Tracking](cowtracker.md)
 - SAM3 tracking and correction: [SAM3](sam3.md)

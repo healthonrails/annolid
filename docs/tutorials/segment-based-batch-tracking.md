@@ -110,7 +110,56 @@ This is the practical "identity repair workflow" for most home-cage CUTIE ID
 switches. It is not a separate model or a separate correction algorithm; it is a
 productive way to use the existing save/retrack tools.
 
-## 11. Stop When an Animal Is Lost
+## 11. Reduce CUTIE Analysis Time
+
+For CUTIE tracking, the largest speed lever is the number of frames sent through
+the tracker. A 5-minute, 30 FPS video contains about `9,000` frames; the same
+5-minute video at 5 FPS contains about `1,500` frames. If the behavior you need
+to measure does not require 30 FPS timing, downsample a copy of the video before
+tracking.
+
+Recommended speed workflow:
+
+1. Keep the original video unchanged.
+2. Create an analysis copy with **File -> Downsample Video(s)...**.
+3. Set **Use specified FPS for all videos** to `5` FPS for ordinary locomotion,
+   social position, zone occupancy, and most home-cage tracking.
+4. Leave the scale factor at `1.0` for `480 x 270` videos unless a short pilot
+   confirms that every mouse remains clearly separable after resizing.
+5. Crop only if there is unused space outside the cage. Cropping the arena can
+   reduce pixels without shrinking the animals.
+6. Track the downsampled copy, then review crossings, occlusions, and any
+   behavior event that needs higher temporal precision.
+
+Use higher FPS when the measured behavior is brief or fast, such as grooming
+microstructure, rapid attacks, startle responses, jumps, or event timing that
+needs sub-200 ms precision. A useful pilot is to track a short difficult segment
+at `30`, `10`, and `5` FPS and compare ID continuity and event timing before
+processing the full batch.
+
+Hardware and runtime checks:
+
+- CUTIE is usually GPU-limited. Use an NVIDIA CUDA GPU when available; CPU-only
+  runs are much slower.
+- Confirm Annolid logs show `Running device: cuda` for CUDA inference. If the
+  log says `cpu`, install or repair the GPU PyTorch/CUDA environment before
+  benchmarking speed.
+- Disable **Use CPU Only** in **Settings -> Advanced Parameters** unless you are
+  intentionally testing CPU behavior.
+- Disable **Save Video with Color Mask** unless you need an overlay movie; saving
+  overlay frames adds IO and encoding work.
+- Disable optical-flow motion-index calculation when tracking speed is more
+  important than motion-index features.
+- Run one GPU-heavy tracking job at a time unless each job has a separate GPU or
+  enough VRAM.
+
+If a `480 x 270`, 5-minute, 30 FPS video takes about 20 minutes, that is roughly
+`7.5` processed frames per second. Whether that is expected depends mostly on
+the GPU model, VRAM, CUDA/PyTorch setup, and whether optical flow or overlay
+video export is enabled. Share the GPU model, VRAM, CPU, RAM, storage type, OS,
+and whether the log says `cuda` or `cpu` when asking for performance estimates.
+
+## 12. Stop When an Animal Is Lost
 
 To make CUTIE tracking stop when an expected animal disappears:
 
@@ -136,7 +185,7 @@ left the arena or became invisible for a specific scientific reason.
 Do not use `T_max` for this purpose. `T_max` controls tracker memory/window
 behavior; it is not the "stop when lost" setting.
 
-## 12. Repair Missing Sections Without Starting Over
+## 13. Repair Missing Sections Without Starting Over
 
 You usually do not need to delete all predictions and start over if only a few
 sections are missing.
@@ -170,7 +219,7 @@ For the SAM3-assisted correction workflow, see
 repairs to a new NDJSON first, review the result, then replace the original only
 after the corrected file is verified.
 
-## 13. Overnight Runs and Computer Sleep
+## 14. Overnight Runs and Computer Sleep
 
 Annolid does not currently wrap long tracking jobs in an operating-system sleep
 prevention command. On macOS or Windows, a sleeping computer pauses CPU/GPU work

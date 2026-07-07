@@ -105,6 +105,7 @@ nav:
       - Video Processing with FFmpeg: tutorials/video_ffmpeg_processing.md
       - Segment-based Batch Tracking: tutorials/segment-based-batch-tracking.md
       - Tracking Correction with SAM3 Bot: tutorials/tracking_correction_with_sam3_bot.md
+      - DINOv3 Keypoint Tracking: dinov3_keypoint_tracking.md
       - TAPNext ONNX Point Tracking: tapnext.md
       - CoWTracker Point Tracking: cowtracker.md
       - Behavior Agent User Guide: behavior_agent_user_guide.md

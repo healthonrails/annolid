@@ -111,7 +111,20 @@ Per-video markdown reports include:
 
 ## Practical Presets
 
-### Preset A: Fast review copies
+### Preset A: CUTIE tracking speed copy
+
+- Scale factor: `1.0` for `480 x 270` source videos
+- Override FPS: on, FPS: `5`
+- Denoise: off unless the animals are hard to separate
+- Auto contrast: off unless contrast is poor
+- Crop: optional, only to remove unused space outside the cage
+
+Use when tracking ordinary home-cage behavior where 5 FPS is enough temporal
+resolution. Keep the original video unchanged and run CUTIE on the downsampled
+copy. If the behavior is brief or fast, test a short segment at `30`, `10`, and
+`5` FPS before processing the full batch.
+
+### Preset B: Fast review copies
 
 - Scale factor: `0.5`
 - Override FPS: on, FPS: `15`
@@ -121,7 +134,7 @@ Per-video markdown reports include:
 
 Use when you want lightweight videos for annotation speed.
 
-### Preset B: Low-light behavior recordings
+### Preset C: Low-light behavior recordings
 
 - Scale factor: `0.5`
 - Override FPS: off
@@ -131,7 +144,7 @@ Use when you want lightweight videos for annotation speed.
 
 Use for noisy, dim recordings where object visibility is poor.
 
-### Preset C: Arena-only crop batch
+### Preset D: Arena-only crop batch
 
 - Scale factor: `0.5`
 - Override FPS: off
@@ -142,7 +155,7 @@ Use for noisy, dim recordings where object visibility is poor.
 
 Use when most videos share a stable camera angle.
 
-### Preset D: One outlier video with a different crop
+### Preset E: One outlier video with a different crop
 
 - Scale factor: `0.5`
 - Override FPS: off

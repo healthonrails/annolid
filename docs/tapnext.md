@@ -20,18 +20,21 @@ to the predicted frame JSON files.
 
 ## Requirements
 
-TAPNext uses ONNX Runtime. Standard Annolid installs include the required
-runtime dependency:
+TAPNext uses ONNX Runtime. For GUI tracking, install Annolid with the GUI and
+tracking extras:
 
 ```bash
-pip install annolid
+pip install "annolid[gui,tracking]"
 ```
 
 If you are working from a local checkout, install the project environment first:
 
 ```bash
-pip install -e .
+source .venv/bin/activate
+pip install -e ".[gui,tracking]"
 ```
+
+The one-line installer default `gui` profile also includes the tracking runtime.
 
 The model file is large, about 938 MB. The first run needs an internet
 connection and enough disk space for the cached ONNX model.

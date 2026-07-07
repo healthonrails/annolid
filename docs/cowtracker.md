@@ -8,17 +8,18 @@ JSON outputs.
 
 ## Requirements
 
-For a workstation that needs the model runtime plus the CoWTracker-specific
-dependency, install Annolid with both tracking extras:
+For a workstation that needs the GUI, common tracking runtime, and
+CoWTracker-specific dependency, install Annolid with these extras:
 
 ```bash
-pip install "annolid[tracking,cowtracker]"
+pip install "annolid[gui,tracking,cowtracker]"
 ```
 
 If you are working from a local checkout:
 
 ```bash
-pip install -e ".[tracking,cowtracker]"
+source .venv/bin/activate
+pip install -e ".[gui,tracking,cowtracker]"
 ```
 
 If Annolid is already installed in an environment that has the tracking runtime,
@@ -87,7 +88,7 @@ packaging checks live in `annolid/tracker/cowtracker/README.md`.
 | --- | --- |
 | CoWTracker is missing from the model choices | Confirm the active environment includes the tracking runtime and CoWTracker dependency. |
 | First run appears slow | Confirm the checkpoint is downloading from Hugging Face and that the environment has enough disk space. |
-| Dependency error mentions `safetensors` | Install `pip install "annolid[tracking,cowtracker]"` or `pip install "safetensors>=0.4.0"` in the active environment. |
+| Dependency error mentions `safetensors` | Install `pip install "annolid[gui,tracking,cowtracker]"` or `pip install "safetensors>=0.4.0"` in the active environment. |
 | Dependency error mentions VGGT | Confirm the vendored VGGT subset is present, or install an external `vggt` package compatible with the CoWTracker runtime. |
 | No point prompts found | Save at least one manual point or polygon annotation before tracking. |
 | Tracking results are poor | Use clearer seed points, start from a sharper frame, or correct and restart from the first drift frame. |
