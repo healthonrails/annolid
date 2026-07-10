@@ -93,6 +93,12 @@
       right: 20px !important;
       top: 20px !important;
     }
+
+    body.dataset-capture .overlay,
+    body.dataset-capture .hud,
+    body.dataset-capture .lil-gui {
+      display: none !important;
+    }
   </style>
 </head>
 
@@ -118,6 +124,30 @@
 
     import { AnnolidShaders } from './annolid_shaders.js';
 
+    const datasetQuery = new URLSearchParams(window.location.search);
+    const DATASET_CAPTURE = datasetQuery.get('dataset') === '1';
+    const DATASET_FRAME_INDEX = Math.max(0, Math.min(10000, Number.parseInt(datasetQuery.get('frame') || '0', 10) || 0));
+    const DATASET_CAPTURE_FPS = Math.max(1, Math.min(30, Number.parseInt(datasetQuery.get('fps') || '5', 10) || 5));
+    const DATASET_SEED = Number.parseInt(datasetQuery.get('seed') || '20260710', 10) >>> 0;
+    const DATASET_SIMULATION_HZ = 30;
+    const CONTACT_QA = datasetQuery.get('contact_qa');
+
+    function createSeededRandom(seed) {
+      let state = seed >>> 0;
+      return () => {
+        state += 0x6D2B79F5;
+        let value = state;
+        value = Math.imul(value ^ (value >>> 15), value | 1);
+        value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+        return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+
+    if (DATASET_CAPTURE) {
+      Math.random = createSeededRandom(DATASET_SEED);
+      document.body.classList.add('dataset-capture');
+    }
+
     // ═══════════════════════════════════════════════════════════════
     // 1. CORE RENDERER SETUP
     // ═══════════════════════════════════════════════════════════════
@@ -128,7 +158,7 @@
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 0.94;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setPixelRatio(DATASET_CAPTURE ? 1 : Math.min(window.devicePixelRatio, 2));
 
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0xd8dad9);
@@ -140,6 +170,7 @@
     camera.position.copy(cameraBasePosition);
 
     const controls = new OrbitControls(camera, canvas);
+    controls.enabled = !DATASET_CAPTURE;
     controls.enableDamping = true;
     controls.dampingFactor = 0.05;
     controls.target.copy(cameraTarget);
@@ -157,14 +188,14 @@
     // ═══════════════════════════════════════════════════════════════
     function defaultProportions() {
       return {
-        bodyLength: 3.05, bodyGirthX: 1.28, bodyGirthY: 1.22,
-        ribcageDepth: 1.0, waistTaper: 0.74, haunchWidth: 0.92, shoulderWidth: 0.82,
-        neckLength: 0.66, neckGirth: 0.64,
-        headSize: 0.94, snoutLength: 1.18, snoutWidth: 1.00, cheekFullness: 0.30,
-        earSize: 0.82, earSetBack: -0.35, earYaw: 0.66, earThickness: 0.05,
-        eyeSize: 0.135, eyeSpacing: 0.46, eyeProtrusion: 1.10, eyeYaw: 0.48,
-        foreLimbLength: 0.98, hindLimbLength: 0.80,
-        forePawSize: 0.96, hindPawSize: 0.90,
+        bodyLength: 2.72, bodyGirthX: 1.36, bodyGirthY: 1.32,
+        ribcageDepth: 1.04, waistTaper: 0.82, haunchWidth: 1.04, shoulderWidth: 0.90,
+        neckLength: 0.54, neckGirth: 0.68,
+        headSize: 1.04, snoutLength: 1.04, snoutWidth: 0.94, cheekFullness: 0.42,
+        earSize: 0.78, earSetBack: -0.40, earYaw: 0.72, earThickness: 0.08,
+        eyeSize: 0.128, eyeSpacing: 0.45, eyeProtrusion: 1.08, eyeYaw: 0.43,
+        foreLimbLength: 0.94, hindLimbLength: 0.80,
+        forePawSize: 1.12, hindPawSize: 1.16,
         tailLength: 1.0, tailThickness: 1.0, tailTaper: 0.88, tailSag: 0.02,
       };
     }
@@ -423,19 +454,19 @@
       const cx = size * 0.5;
       const cy = size * 0.6;
       const maxR = size * 0.48;
-      // Warm pinkish base with cooler translucent edges
+      // Neutral skin response lets each strain's material color remain visible.
       const base = ctx.createRadialGradient(cx, cy, size * 0.04, cx, cy, maxR);
-      base.addColorStop(0.0, '#f5d0b8');  // warm pink center
-      base.addColorStop(0.35, '#f0c5a8');
-      base.addColorStop(0.65, '#e8b8a0');
-      base.addColorStop(0.85, '#daa890'); // cooler outer
-      base.addColorStop(1.0, '#c99882');  // cool rim
+      base.addColorStop(0.0, '#f3ece9');
+      base.addColorStop(0.35, '#ece3df');
+      base.addColorStop(0.65, '#e4d9d4');
+      base.addColorStop(0.85, '#d8cbc5');
+      base.addColorStop(1.0, '#cbbcb5');
       ctx.fillStyle = base;
       ctx.fillRect(0, 0, size, size);
-      // Root/base warmth near ear attachment — stronger
+      // Root warmth remains subtle so it does not tint the whole pinna peach.
       const root = ctx.createRadialGradient(cx, cy + maxR * 0.25, size * 0.04, cx, cy + maxR * 0.30, maxR * 0.60);
-      root.addColorStop(0.0, 'rgba(200,130,110,0.18)');
-      root.addColorStop(0.5, 'rgba(185,120,100,0.10)');
+      root.addColorStop(0.0, 'rgba(188,112,108,0.12)');
+      root.addColorStop(0.5, 'rgba(176,112,108,0.07)');
       root.addColorStop(1.0, 'rgba(170,118,98,0.0)');
       ctx.fillStyle = root;
       ctx.fillRect(0, 0, size, size);
@@ -470,7 +501,7 @@
         const y0 = cy + Math.sin(a) * r0;
         const x1 = cx + Math.cos(a) * r1;
         const y1 = cy + Math.sin(a) * r1;
-        drawVein(x0, y0, x1, y1, 1.4 + Math.random() * 1.2, 0.14 + Math.random() * 0.08, 2);
+        drawVein(x0, y0, x1, y1, 1.4 + Math.random() * 1.2, 0.15 + Math.random() * 0.09, 2);
       }
       // Secondary capillary network — finer veins
       for (let i = 0; i < 20; i++) {
@@ -481,7 +512,7 @@
         const y0 = cy + Math.sin(a) * r0 * 0.94;
         const x1 = cx + Math.cos(a) * r1;
         const y1 = cy + Math.sin(a) * r1 * 0.96;
-        ctx.strokeStyle = `rgba(200,140,125,${0.08 + Math.random() * 0.06})`;
+        ctx.strokeStyle = `rgba(200,140,125,${0.10 + Math.random() * 0.08})`;
         ctx.lineWidth = 0.6 + Math.random() * 0.8;
         ctx.beginPath();
         ctx.moveTo(x0, y0);
@@ -494,8 +525,8 @@
       const rim = ctx.createRadialGradient(cx, cy, maxR * 0.75, cx, cy, maxR * 1.05);
       rim.addColorStop(0.0, 'rgba(255,255,255,0.0)');
       rim.addColorStop(0.40, 'rgba(255,245,235,0.0)');
-      rim.addColorStop(0.70, 'rgba(240,225,212,0.22)');
-      rim.addColorStop(1.0, 'rgba(220,195,175,0.35)');
+      rim.addColorStop(0.70, 'rgba(240,234,230,0.18)');
+      rim.addColorStop(1.0, 'rgba(214,202,196,0.28)');
       ctx.fillStyle = rim;
       ctx.fillRect(0, 0, size, size);
       // Micro mottling for skin texture
@@ -503,7 +534,7 @@
         const x = Math.random() * size;
         const y = Math.random() * size;
         const v = 200 + Math.floor(Math.random() * 40);
-        ctx.fillStyle = `rgba(${v},${v - 15},${v - 25},0.04)`;
+        ctx.fillStyle = `rgba(${v},${v - 5},${v - 8},0.04)`;
         ctx.fillRect(x, y, 1, 1);
       }
       const tex = new THREE.CanvasTexture(c);
@@ -764,34 +795,36 @@
 
     const deformBody = (v) => {
       const zNorm = (v.z + 1) / 2;
-      // Side-view profile: rear-dominant body mass with lower shoulders.
-      const rearMass = Math.exp(-Math.pow((zNorm - 0.26) / 0.22, 2.0));
+      // Compact murine silhouette: broad haunches, arched dorsum, narrower chest.
+      const rearMass = Math.exp(-Math.pow((zNorm - 0.27) / 0.24, 2.0));
       let shoulderDrop = THREE.MathUtils.clamp((zNorm - 0.68) / 0.32, 0, 1);
       shoulderDrop = shoulderDrop * shoulderDrop * (3.0 - 2.0 * shoulderDrop);
-      const waistNarrow = Math.exp(-Math.pow((zNorm - 0.56) / 0.14, 2.0));
-      // Narrower front torso than rear (asymmetric taper)
-      const frontNarrow = THREE.MathUtils.smoothstep(0.64, 0.92, zNorm) * 0.04;
-      const lateral = (1.0 + rearMass * 0.18 - shoulderDrop * 0.14 - waistNarrow * (1.0 - PROP.waistTaper) * 0.20 - frontNarrow);
+      const waistNarrow = Math.exp(-Math.pow((zNorm - 0.58) / 0.16, 2.0));
+      const frontNarrow = THREE.MathUtils.smoothstep(0.66, 0.94, zNorm) * 0.035;
+      const lateral = (
+        1.0 + rearMass * 0.26 - shoulderDrop * 0.08
+        - waistNarrow * (1.0 - PROP.waistTaper) * 0.14 - frontNarrow
+      );
       v.x *= lateral * PROP.bodyGirthX;
-      v.y *= (1.0 - zNorm * 0.20) * PROP.bodyGirthY;
+      v.y *= (1.02 + rearMass * 0.12 - zNorm * 0.16) * PROP.bodyGirthY;
       v.z *= PROP.bodyLength;
       // Rounder cross-section so top view does not show a hard flank shelf.
       const sideBlend = THREE.MathUtils.clamp((Math.abs(v.y) - 0.06) / 0.72, 0, 1);
       v.x *= 0.95 + sideBlend * 0.05;
 
       // Dorsal line: peak around rear-mid, shoulder and tail-base slightly lower.
-      const hump = Math.exp(-Math.pow((zNorm - 0.34) / 0.19, 2.0));
-      const rump = Math.exp(-Math.pow((zNorm - 0.12) / 0.10, 2.0));
-      v.y += hump * 0.30 + rump * 0.12 - shoulderDrop * 0.10;
+      const hump = Math.exp(-Math.pow((zNorm - 0.34) / 0.22, 2.0));
+      const rump = Math.exp(-Math.pow((zNorm - 0.11) / 0.11, 2.0));
+      v.y += hump * 0.37 + rump * 0.13 - shoulderDrop * 0.055;
 
       // Ventrum: continuous shaping (avoid crease/cut line in top view).
       const yRef = v.y;
       const bellyWidth = Math.exp(-Math.pow((zNorm - 0.52) / 0.30, 2.0));
       const bellyMask = THREE.MathUtils.smoothstep(0.18, -0.65, yRef);
       const bellyInfluence = bellyWidth * bellyMask;
-      v.x *= 1.0 + bellyInfluence * 0.16;
+      v.x *= 1.0 + bellyInfluence * 0.18;
       const dropMask = THREE.MathUtils.smoothstep(0.24, -0.22, yRef);
-      v.y -= bellyWidth * dropMask * 0.12;
+      v.y -= bellyWidth * dropMask * 0.15;
 
       const lowerBlend = THREE.MathUtils.clamp((0.10 - yRef) / 0.46, 0, 1);
       const groinTuck = Math.exp(-Math.pow((zNorm - 0.18) / 0.15, 2.0)) * 0.10;
@@ -807,7 +840,7 @@
       }
       if (zNorm > 0.14 && zNorm < 0.36 && Math.abs(v.x) > 0.26) {
         const hB = 1.0 - Math.abs(zNorm - 0.25) * 6.0;
-        if (hB > 0) { v.x *= 1.0 + hB * 0.14; if (v.y < 0) v.y *= 1.0 + hB * 0.08; }
+        if (hB > 0) { v.x *= 1.0 + hB * 0.18; if (v.y < 0) v.y *= 1.0 + hB * 0.10; }
       }
 
       // Tail base integration: gradual taper into pelvis
@@ -820,22 +853,22 @@
       // Narrow neck root at very front.
       if (zNorm > 0.86) {
         const neckT = (zNorm - 0.86) / 0.14;
-        v.x *= 1.0 - neckT * 0.24;
-        v.y *= 1.0 - neckT * 0.14;
+        v.x *= 1.0 - neckT * 0.17;
+        v.y *= 1.0 - neckT * 0.10;
       }
     };
 
     const deformHead = (v) => {
       const zNorm = (v.z + 1) / 2;
-      const snoutTaper = Math.pow(1.0 - zNorm * 0.46, 1.0);
+      const snoutTaper = Math.pow(1.0 - zNorm * 0.55, 1.0);
       v.x *= snoutTaper * PROP.snoutWidth;
-      v.y *= snoutTaper * 0.98;
+      v.y *= snoutTaper * 1.02;
       v.z *= PROP.snoutLength;
-      v.y -= zNorm * 0.11;
+      v.y -= zNorm * 0.14;
       // Cheeks
       if (zNorm < 0.55) {
         const cF = (0.55 - zNorm) * PROP.cheekFullness;
-        v.x *= 1.0 + cF;
+        v.x *= 1.08 + cF;
         if (v.y < 0) v.x *= 1.0 + cF * 0.25;
       }
       // Vibrissal pad bulge — fleshy muzzle mass at whisker roots
@@ -848,15 +881,15 @@
       // Snout wedge with softer, rounder tip.
       if (zNorm > 0.64) {
         const p = (zNorm - 0.64) / 0.36;
-        v.x *= 1.0 - p * 0.12;
-        v.y *= 1.0 - p * 0.08;
-        v.y -= p * 0.02;
-        if (v.y < 0) v.x *= 1.0 + p * 0.08;
+        v.x *= 1.0 - p * 0.18;
+        v.y *= 1.0 - p * 0.12;
+        v.y -= p * 0.035;
+        if (v.y < 0) v.x *= 1.0 + p * 0.05;
       }
       if (zNorm > 0.82) {
         const tip = (zNorm - 0.82) / 0.18;
-        v.x *= 1.0 + tip * 0.16;
-        v.y *= 1.0 + tip * 0.08;
+        v.x *= 1.0 + tip * 0.06;
+        v.y *= 1.0 + tip * 0.03;
       }
       // Cranium: fuller at back, shallower near frontal region.
       if (zNorm > 0.08 && zNorm < 0.50 && v.y > 0) {
@@ -887,40 +920,109 @@
       if (v.z > 0) v.z += gluteal * 0.04;
     };
 
-    function shapeEarPoint(x, y, depthMul = 1.0) {
-      const r = Math.sqrt(x * x + y * y);
-      const rootNarrow = THREE.MathUtils.smoothstep(-0.96, -0.36, y);
-      const topRound = THREE.MathUtils.smoothstep(0.56, 1.0, y);
-      const shoulder = Math.exp(-Math.pow((y - 0.08) / 0.64, 2.0));
-      const basalPad = Math.exp(-(x * x * 4.0 + Math.pow(y + 0.72, 2.0) * 12.0));
-      const rim = THREE.MathUtils.smoothstep(0.70, 1.0, r);
-      const concha = Math.exp(-(x * x * 2.2 + Math.pow(y + 0.02, 2.0) * 2.5));
-      const upperFold = Math.exp(-(Math.pow(x + 0.08, 2.0) * 3.2 + Math.pow(y - 0.26, 2.0) * 6.5));
+    function shapePinnaPoint(x, y, depthMul = 1.0, zLift = 0.0) {
+      const radius = Math.min(1.0, Math.sqrt(x * x + y * y));
+      const lowerOpen = THREE.MathUtils.smoothstep(y, -0.90, -0.10);
+      const crownTaper = 1.0 - THREE.MathUtils.smoothstep(y, 0.34, 0.96) * 0.12;
+      const rootPad = Math.exp(-(x * x * 5.0 + Math.pow(y + 0.76, 2.0) * 15.0));
+      const shoulder = Math.exp(-Math.pow((y - 0.04) / 0.72, 2.0));
+      const rim = THREE.MathUtils.smoothstep(radius, 0.82, 1.0);
+      const centerCup = Math.max(0.0, 1.0 - radius * radius);
+      const upperFold = Math.exp(-(
+        Math.pow(x + 0.12, 2.0) * 5.0 + Math.pow(y - 0.24, 2.0) * 8.0
+      ));
+      const basalFold = Math.exp(-(
+        Math.pow(x + 0.20, 2.0) * 9.0 + Math.pow(y + 0.48, 2.0) * 14.0
+      ));
 
-      let px = x * (0.76 + shoulder * 0.15);
-      px *= 0.54 + rootNarrow * 0.46;
-      let py = y * 0.82 - topRound * topRound * 0.055 + basalPad * 0.045;
-      let pz = -concha * 0.105 * depthMul + upperFold * 0.045 * depthMul + rim * 0.040;
-      pz += basalPad * 0.035;
+      const px = x * (0.84 + shoulder * 0.055)
+        * (0.46 + lowerOpen * 0.54) * crownTaper;
+      const py = y * 1.04 + rootPad * 0.020;
+      const pz = (
+        -centerCup * 0.112 + rim * 0.046 + upperFold * 0.028
+        + basalFold * 0.038 + rootPad * 0.020
+      ) * depthMul + zLift;
       return new THREE.Vector3(px, py, pz);
     }
 
-    function createEarSurfaceGeometry(depthMul = 1.0, radiusScale = 1.0) {
-      const rings = 17;
+    function createPinnaShellGeometry() {
+      const rings = 18;
       const segments = 72;
+      const row = segments + 1;
+      const surfaceVertexCount = (rings + 1) * row;
+      const positions = [];
+      const uvs = [];
+      const indices = [];
+
+      for (let side = 0; side < 2; side++) {
+        for (let ring = 0; ring <= rings; ring++) {
+          const normalizedRadius = ring / rings;
+          for (let seg = 0; seg <= segments; seg++) {
+            const angle = (seg / segments) * Math.PI * 2;
+            const x = Math.cos(angle) * normalizedRadius;
+            const y = Math.sin(angle) * normalizedRadius;
+            const point = shapePinnaPoint(x, y);
+            if (side === 1) {
+              const shellThickness = 0.034 + (1.0 - normalizedRadius) * 0.012;
+              point.z -= shellThickness;
+            }
+            positions.push(point.x, point.y, point.z);
+            uvs.push(0.5 + Math.cos(angle) * normalizedRadius * 0.5, 0.5 + Math.sin(angle) * normalizedRadius * 0.5);
+          }
+        }
+      }
+
+      for (let ring = 0; ring < rings; ring++) {
+        for (let seg = 0; seg < segments; seg++) {
+          const frontA = ring * row + seg;
+          const frontB = frontA + row;
+          indices.push(frontA, frontB, frontA + 1, frontB, frontB + 1, frontA + 1);
+          const backA = surfaceVertexCount + frontA;
+          const backB = surfaceVertexCount + frontB;
+          indices.push(backA, backA + 1, backB, backB, backA + 1, backB + 1);
+        }
+      }
+
+      const outerFront = rings * row;
+      const outerBack = surfaceVertexCount + outerFront;
+      for (let seg = 0; seg < segments; seg++) {
+        const frontA = outerFront + seg;
+        const frontB = frontA + 1;
+        const backA = outerBack + seg;
+        const backB = backA + 1;
+        indices.push(frontA, backA, frontB, frontB, backA, backB);
+      }
+
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+      geometry.setIndex(indices);
+      geometry.computeVertexNormals();
+      return geometry;
+    }
+
+    function createPinnaSurfaceGeometry(radiusScale = 0.76, depthMul = 1.0, zLift = 0.012) {
+      const rings = 16;
+      const segments = 72;
+      const row = segments + 1;
       const positions = [];
       const uvs = [];
       const indices = [];
       for (let ring = 0; ring <= rings; ring++) {
-        const rr = (ring / rings) * radiusScale;
+        const normalizedRadius = ring / rings;
+        const radius = normalizedRadius * radiusScale;
         for (let seg = 0; seg <= segments; seg++) {
-          const a = (seg / segments) * Math.PI * 2;
-          const p = shapeEarPoint(Math.cos(a) * rr, Math.sin(a) * rr, depthMul);
-          positions.push(p.x, p.y, p.z);
-          uvs.push(0.5 + Math.cos(a) * rr * 0.5, 0.5 + Math.sin(a) * rr * 0.5);
+          const angle = (seg / segments) * Math.PI * 2;
+          const point = shapePinnaPoint(
+            Math.cos(angle) * radius,
+            Math.sin(angle) * radius,
+            depthMul,
+            zLift
+          );
+          positions.push(point.x, point.y, point.z);
+          uvs.push(0.5 + Math.cos(angle) * normalizedRadius * 0.5, 0.5 + Math.sin(angle) * normalizedRadius * 0.5);
         }
       }
-      const row = segments + 1;
       for (let ring = 0; ring < rings; ring++) {
         for (let seg = 0; seg < segments; seg++) {
           const a = ring * row + seg;
@@ -928,26 +1030,30 @@
           indices.push(a, b, a + 1, b, b + 1, a + 1);
         }
       }
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-      geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-      geo.setIndex(indices);
-      geo.computeVertexNormals();
-      return geo;
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+      geometry.setIndex(indices);
+      geometry.computeVertexNormals();
+      return geometry;
     }
 
-    function createEarRimGeometry() {
+    function createPinnaRimGeometry() {
       const segments = 88;
       const positions = [];
       const uvs = [];
       const indices = [];
       for (let band = 0; band < 2; band++) {
-        const rr = band === 0 ? 0.84 : 1.0;
+        const radius = band === 0 ? 0.975 : 1.0;
         for (let seg = 0; seg <= segments; seg++) {
-          const a = (seg / segments) * Math.PI * 2;
-          const p = shapeEarPoint(Math.cos(a) * rr, Math.sin(a) * rr, 0.8);
-          const lip = band === 0 ? 0.012 : 0.046;
-          positions.push(p.x, p.y, p.z + lip);
+          const angle = (seg / segments) * Math.PI * 2;
+          const point = shapePinnaPoint(
+            Math.cos(angle) * radius,
+            Math.sin(angle) * radius,
+            1.0,
+            0.008
+          );
+          positions.push(point.x, point.y, point.z);
           uvs.push(seg / segments, band);
         }
       }
@@ -957,24 +1063,12 @@
         const b = row + seg;
         indices.push(a, b, a + 1, b, b + 1, a + 1);
       }
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-      geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
-      geo.setIndex(indices);
-      geo.computeVertexNormals();
-      return geo;
-    }
-
-    function createEarConchaGeometry() {
-      const geo = new THREE.SphereGeometry(0.24, 24, 16);
-      deform(geo, (v) => {
-        v.x *= 0.82;
-        v.y *= 0.46;
-        v.z *= 0.12;
-        v.z -= 0.035;
-        if (v.y > 0.0) v.y *= 0.86;
-      });
-      return geo;
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+      geometry.setIndex(indices);
+      geometry.computeVertexNormals();
+      return geometry;
     }
 
     // Upper arm / forearm deform
@@ -989,10 +1083,9 @@
     const bodyGeo = deform(new THREE.SphereGeometry(1, 64, 64), deformBody);
     const headGeo = deform(new THREE.SphereGeometry(1, 48, 48), deformHead);
     const thighGeo = deform(new THREE.SphereGeometry(1, 32, 32), deformThigh);
-    const earGeo = createEarSurfaceGeometry(0.72, 1.0);
-    const earInnerGeo = createEarSurfaceGeometry(1.45, 0.68);
-    const earRimGeo = createEarRimGeometry();
-    const earConchaGeo = createEarConchaGeometry();
+    const earGeo = createPinnaShellGeometry();
+    const earInnerGeo = createPinnaSurfaceGeometry(0.945, 1.08, 0.018);
+    const earRimGeo = createPinnaRimGeometry();
 
 
     // ═══════════════════════════════════════════════════════════════
@@ -1000,57 +1093,91 @@
     // ═══════════════════════════════════════════════════════════════
     function createPaw(mat, isFore = false, strain = {}) {
       const paw = new THREE.Group();
+      paw.name = isFore ? 'connected-forepaw' : 'connected-hindpaw';
       const pawFleshMat = mat.clone();
       pawFleshMat.color.set(strain.pawColor ?? '#e6b0a7');
-      pawFleshMat.transmission = 0.22;
-      pawFleshMat.thickness = 0.22;
-      pawFleshMat.roughness = 0.42;
-      pawFleshMat.clearcoat = 0.22;
-      pawFleshMat.clearcoatRoughness = 0.28;
+      pawFleshMat.transmission = 0.08;
+      pawFleshMat.thickness = 0.12;
+      pawFleshMat.roughness = 0.60;
+      pawFleshMat.clearcoat = 0.05;
+      pawFleshMat.clearcoatRoughness = 0.48;
       const padMat = mat.clone();
       padMat.color.set(strain.pawPadColor ?? strain.pawColor ?? '#e9b8ae');
       padMat.color.multiplyScalar(strain.padDarken ?? 0.9);
-      padMat.transmission = 0.28; padMat.thickness = 0.26;
-      padMat.roughness = 0.36; padMat.clearcoat = 0.32; padMat.clearcoatRoughness = 0.18;
+      padMat.transmission = 0.06; padMat.thickness = 0.12;
+      padMat.roughness = 0.58; padMat.clearcoat = 0.04; padMat.clearcoatRoughness = 0.52;
       padMat.normalMap = padNormalMap;
       padMat.normalScale = new THREE.Vector2(0.22, 0.22);
 
       const pawScale = isFore ? (PROP.forePawSize) : (PROP.hindPawSize);
+      const rootLength = isFore ? 0.17 : 0.32;
+      const rootBridge = new THREE.Mesh(
+        new THREE.CapsuleGeometry(isFore ? 0.066 : 0.078, rootLength, 10, 12),
+        pawFleshMat
+      );
+      rootBridge.name = isFore ? 'forepaw-root-bridge' : 'hindpaw-root-bridge';
+      rootBridge.rotation.x = Math.PI / 2 - (isFore ? 0.04 : 0.10);
+      rootBridge.position.set(0, 0.014, isFore ? -0.075 : -0.145);
+      rootBridge.castShadow = true;
+      paw.add(rootBridge);
 
       if (isFore) {
-        // Palm pad
-        const palm = new THREE.Mesh(new THREE.SphereGeometry(0.08, 16, 16), padMat);
-        palm.scale.set(0.95 * pawScale, 0.38, 0.85 * pawScale); // slimmer manipulative shape
-        palm.position.set(0, -0.04, 0.05);
-        palm.castShadow = true; paw.add(palm);
-        // 3 interdigital pads
+        const dorsalHand = new THREE.Mesh(new THREE.SphereGeometry(0.13, 18, 18), pawFleshMat);
+        dorsalHand.name = 'forepaw-dorsal-hand';
+        dorsalHand.scale.set(0.95 * pawScale, 0.42, 1.18 * pawScale);
+        dorsalHand.position.set(0, 0.0, 0.055);
+        dorsalHand.castShadow = true;
+        paw.add(dorsalHand);
+
+        const palm = new THREE.Mesh(new THREE.SphereGeometry(0.09, 16, 16), padMat);
+        palm.scale.set(0.90 * pawScale, 0.30, 1.04 * pawScale);
+        palm.position.set(0, -0.058, 0.065);
+        palm.castShadow = true;
+        paw.add(palm);
+
+        const carpalPad = new THREE.Mesh(new THREE.SphereGeometry(0.050, 12, 12), padMat);
+        carpalPad.scale.set(0.95, 0.42, 1.18);
+        carpalPad.position.set(0, -0.050, -0.045);
+        carpalPad.castShadow = true;
+        paw.add(carpalPad);
+
         for (let p = 0; p < 3; p++) {
-          const iPad = new THREE.Mesh(new THREE.SphereGeometry(0.045, 12, 12), padMat);
-          iPad.scale.set(1 * pawScale, 0.5, 1 * pawScale);
-          iPad.position.set((p - 1) * 0.05 * pawScale, -0.04, 0.0);
-          iPad.castShadow = true; paw.add(iPad);
+          const iPad = new THREE.Mesh(new THREE.SphereGeometry(0.034, 12, 12), padMat);
+          iPad.scale.set(0.92 * pawScale, 0.42, 1.0 * pawScale);
+          iPad.position.set((p - 1) * 0.042 * pawScale, -0.061, 0.125);
+          iPad.castShadow = true;
+          paw.add(iPad);
         }
       } else {
-        // Hind sole - elongated and slimmer (digitigrade contact strip)
-        const sole = new THREE.Mesh(new THREE.SphereGeometry(0.14, 20, 20), padMat);
-        sole.scale.set(0.95 * pawScale, 0.32, 1.85 * pawScale);
-        sole.position.set(0, -0.045, 0.06);
-        sole.castShadow = true; paw.add(sole);
-        // Heel pad (small posterior pad)
+        const dorsalFoot = new THREE.Mesh(new THREE.SphereGeometry(0.16, 20, 20), pawFleshMat);
+        dorsalFoot.name = 'hindpaw-dorsal-foot';
+        dorsalFoot.scale.set(0.88 * pawScale, 0.38, 1.65 * pawScale);
+        dorsalFoot.position.set(0, -0.002, 0.070);
+        dorsalFoot.castShadow = true;
+        paw.add(dorsalFoot);
+
+        const sole = new THREE.Mesh(new THREE.SphereGeometry(0.13, 18, 18), padMat);
+        sole.scale.set(0.86 * pawScale, 0.25, 1.58 * pawScale);
+        sole.position.set(0, -0.064, 0.075);
+        sole.castShadow = true;
+        paw.add(sole);
+
         const heelPad = new THREE.Mesh(new THREE.SphereGeometry(0.07, 12, 12), padMat);
-        heelPad.scale.set(0.95, 0.45, 1.05);
-        heelPad.position.set(0, -0.032, -0.16 * pawScale);
-        heelPad.castShadow = true; paw.add(heelPad);
-        // Mid pad transitions metatarsus to toes.
-        const midPad = new THREE.Mesh(new THREE.SphereGeometry(0.07, 12, 12), padMat);
-        midPad.scale.set(0.9, 0.4, 1.3);
-        midPad.position.set(0, -0.04, 0.14 * pawScale);
-        midPad.castShadow = true; paw.add(midPad);
+        heelPad.scale.set(0.90, 0.36, 1.02);
+        heelPad.position.set(0, -0.054, -0.145 * pawScale);
+        heelPad.castShadow = true;
+        paw.add(heelPad);
+
+        const midPad = new THREE.Mesh(new THREE.SphereGeometry(0.065, 12, 12), padMat);
+        midPad.scale.set(0.86, 0.34, 1.22);
+        midPad.position.set(0, -0.069, 0.145 * pawScale);
+        midPad.castShadow = true;
+        paw.add(midPad);
       }
 
       const pawSpreadMul = strain.pawSpreadMul ?? 1.0;
       const toeCount = isFore ? 4 : 5;
-      const baseSpread = isFore ? 0.11 : 0.102;
+      const baseSpread = isFore ? 0.062 : 0.055;
       const spread = baseSpread * pawSpreadMul * pawScale;
 
       const clawLocalMat = new THREE.MeshPhysicalMaterial({
@@ -1058,59 +1185,81 @@
       });
 
       for (let i = 0; i < toeCount; i++) {
-        const t = (i - (toeCount - 1) * 0.5) * spread;
-        const arc = (Math.abs(i - (toeCount - 1) * 0.5) / (toeCount * 0.5 + 0.01));
+        const centeredIndex = i - (toeCount - 1) * 0.5;
+        const t = centeredIndex * spread;
+        const arc = Math.abs(centeredIndex) / (toeCount * 0.5 + 0.01);
         const toe = new THREE.Group();
+        toe.name = `${isFore ? 'fore' : 'hind'}-digit-${i + 1}`;
         let lenMul = 1.0;
         if (isFore && (i === 0 || i === 3)) lenMul = 0.8;
         if (!isFore && (i === 0 || i === 4)) lenMul = 0.75;
-        const toeLen = (isFore ? 0.20 : 0.27) * (strain.toeLenMul ?? 1.0) * lenMul * pawScale;
-        const p1 = new THREE.Mesh(new THREE.CapsuleGeometry(isFore ? 0.024 : 0.026, toeLen, 10, 10), pawFleshMat);
-        p1.rotation.x = Math.PI / 2;
-        p1.castShadow = true; toe.add(p1);
-        if (isFore) {
-          const knuckle = new THREE.Mesh(new THREE.SphereGeometry(0.030, 10, 10), pawFleshMat);
-          knuckle.position.set(0, 0.012, -toeLen * 0.35);
-          knuckle.castShadow = true; toe.add(knuckle);
-          p1.rotation.x = Math.PI / 2 - 0.15;
-        } else {
-          const knuckle = new THREE.Mesh(new THREE.SphereGeometry(0.028, 10, 10), pawFleshMat);
-          knuckle.position.set(0, 0.006, -toeLen * 0.32);
-          knuckle.castShadow = true; toe.add(knuckle);
-          p1.rotation.x = Math.PI / 2 - 0.26;
-        }
-        let zPos = isFore ? (0.145 - arc * 0.035) : (0.255 - arc * 0.045);
-        zPos *= pawScale;
-        toe.position.set(t, isFore ? (-0.035 + arc * 0.012) : (-0.045 + arc * 0.006), zPos);
-        // Slight toe splay/curvature
-        toe.rotation.y = t * (isFore ? 0.3 : 0.45);
-        toe.rotation.x = isFore ? (-0.06 - arc * 0.08) : (-0.18 - arc * 0.07);
-        paw.add(toe);
-        // Distal fleshy toe tip.
+        const toeLen = (isFore ? 0.18 : 0.245)
+          * (strain.toeLenMul ?? 1.0) * lenMul * pawScale;
+        const toeRadius = isFore ? 0.026 : 0.029;
+        const phalanx = new THREE.Mesh(
+          new THREE.CapsuleGeometry(toeRadius, toeLen, 10, 10),
+          pawFleshMat
+        );
+        phalanx.position.z = toeLen * 0.48;
+        phalanx.rotation.x = Math.PI / 2 - (isFore ? 0.08 : 0.12);
+        phalanx.castShadow = true;
+        toe.add(phalanx);
+
+        const knuckle = new THREE.Mesh(
+          new THREE.SphereGeometry(isFore ? 0.032 : 0.035, 10, 10),
+          pawFleshMat
+        );
+        knuckle.scale.set(1.08, 0.82, 1.16);
+        knuckle.position.set(0, 0.005, 0.018);
+        knuckle.castShadow = true;
+        toe.add(knuckle);
+
         const toeTip = new THREE.Mesh(new THREE.SphereGeometry(isFore ? 0.020 : 0.022, 10, 10), pawFleshMat);
         toeTip.scale.set(1.25, 0.82, 1.05);
-        toeTip.position.set(t, isFore ? (-0.082 + arc * 0.006) : (-0.09 + arc * 0.005), zPos + (isFore ? 0.11 : 0.12) * lenMul);
-        toeTip.castShadow = true; paw.add(toeTip);
+        toeTip.position.set(0, isFore ? -0.012 : -0.018, toeLen + toeRadius * 0.52);
+        toeTip.castShadow = true;
+        toe.add(toeTip);
+
         const toePad = new THREE.Mesh(new THREE.SphereGeometry(isFore ? 0.035 : 0.045, 10, 10), padMat);
         toePad.scale.set(isFore ? 1.15 : 1.0, isFore ? 0.48 : 0.38, isFore ? 1.0 : 1.1);
-        toePad.position.set(t, isFore ? (-0.108 + arc * 0.008) : (-0.102 + arc * 0.004), zPos + (isFore ? 0.08 : 0.088) * lenMul);
-        toePad.castShadow = true; paw.add(toePad);
+        toePad.position.set(0, isFore ? -0.044 : -0.052, toeLen * 0.68);
+        toePad.castShadow = true;
+        toe.add(toePad);
+
         const clawLength = isFore ? 0.045 : 0.052;
-        // Tapered capsule claw instead of cone for more natural keratin shape
-        const clawGeo = new THREE.CapsuleGeometry(isFore ? 0.008 : 0.009, clawLength, 6, 6);
-        clawGeo.translate(0, -clawLength / 2, 0);
-        // Taper the tip via deformation
+        const clawRadius = isFore ? 0.008 : 0.009;
+        const clawGeo = new THREE.CapsuleGeometry(clawRadius, clawLength, 6, 6);
+        clawGeo.translate(0, clawLength / 2, 0);
         deform(clawGeo, (cv) => {
-          const yN = (cv.y + clawLength) / clawLength;
+          const yN = THREE.MathUtils.clamp(
+            (cv.y + clawRadius) / (clawLength + clawRadius * 2),
+            0,
+            1
+          );
           cv.x *= 1.0 - yN * 0.35;
           cv.z *= 1.0 - yN * 0.25;
-          cv.z -= yN * 0.005; // slight downward curve
+          cv.z -= yN * 0.005;
         });
         const claw = new THREE.Mesh(clawGeo, clawLocalMat);
-        claw.rotation.x = Math.PI / 2 + (isFore ? -0.22 : -0.16);
-        claw.position.set(t, isFore ? (-0.055 + arc * 0.004) : (-0.072 + arc * 0.004), zPos + (isFore ? 0.115 : 0.165) * lenMul * pawScale);
-        claw.castShadow = true; paw.add(claw);
+        claw.rotation.x = Math.PI / 2 + (isFore ? 0.12 : 0.10);
+        claw.position.set(0, isFore ? -0.014 : -0.019, toeLen + toeRadius * 0.62);
+        claw.castShadow = true;
+        toe.add(claw);
+
+        const zPos = (isFore ? 0.135 - arc * 0.018 : 0.205 - arc * 0.025) * pawScale;
+        toe.position.set(t, isFore ? -0.020 + arc * 0.006 : -0.028 + arc * 0.005, zPos);
+        toe.rotation.y = centeredIndex * (isFore ? 0.045 : 0.035);
+        toe.rotation.x = isFore ? -0.055 - arc * 0.035 : -0.10 - arc * 0.040;
+        paw.add(toe);
       }
+
+      // Invisible sole landmark used by the stance-phase IK solver. Keeping it
+      // inside the paw hierarchy lets the solver preserve every visible joint.
+      const groundContact = new THREE.Object3D();
+      groundContact.name = isFore ? 'forepaw-ground-contact' : 'hindpaw-ground-contact';
+      groundContact.position.set(0, isFore ? -0.090 : -0.100, isFore ? 0.29 : 0.42);
+      paw.add(groundContact);
+      paw._groundContact = groundContact;
       return paw;
     }
 
@@ -1122,14 +1271,21 @@
       const chain = new THREE.Group();
       const fl = PROP.foreLimbLength * legLengthScale;
       const thickness = THREE.MathUtils.clamp(legThicknessScale, 0.65, 1.5);
-      // Scapula/shoulder anchor — place at shoulder width, slightly below spine
-      chain.position.set(sign * 0.64 * PROP.shoulderWidth / 0.82, 0.02, PROP.bodyLength * 0.67);
+      // Tucked shoulder anchor: proximal joints remain inside the chest coat.
+      chain.position.set(sign * 0.58 * PROP.shoulderWidth / 0.90, -0.06, PROP.bodyLength * 0.70);
+
+      const shoulderMantle = new THREE.Mesh(new THREE.SphereGeometry(0.22, 16, 16), surfaceMat);
+      shoulderMantle.position.set(-sign * 0.06, 0.06, -0.05);
+      shoulderMantle.scale.set(1.08, 0.84, 1.28);
+      shoulderMantle.castShadow = true;
+      chain.add(shoulderMantle);
 
       // Upper arm (humerus) — substantial visible segment
       const upperArm = new THREE.Group();
-      const uaLen = 0.38 * fl;
+      upperArm.name = `${side}-upper-arm`;
+      const uaLen = 0.36 * fl;
       const upperArmMesh = new THREE.Mesh(
-        new THREE.CapsuleGeometry(0.105 * thickness, uaLen, 10, 10), surfaceMat
+        new THREE.CapsuleGeometry(0.115 * thickness, uaLen, 10, 10), surfaceMat
       );
       upperArmMesh.position.y = -uaLen * 0.5;
       upperArmMesh.castShadow = true;
@@ -1144,7 +1300,8 @@
 
       // Forearm (radius/ulna) — attached at elbow
       const forearm = new THREE.Group();
-      const faLen = 0.40 * fl;
+      forearm.name = `${side}-forearm`;
+      const faLen = 0.38 * fl;
       forearm.position.set(0, -uaLen - 0.01, -0.01);
       forearm.rotation.x = -0.55;
       // Soft-tissue bridge to avoid segmented look between upper arm and forearm.
@@ -1159,7 +1316,7 @@
       elbowJoint.castShadow = true;
       forearm.add(elbowJoint);
       const forearmMesh = new THREE.Mesh(
-        new THREE.CapsuleGeometry(0.068 * thickness, faLen, 8, 8), surfaceMat
+        new THREE.CapsuleGeometry(0.074 * thickness, faLen, 8, 8), surfaceMat
       );
       forearmMesh.position.y = -faLen * 0.5;
       forearmMesh.castShadow = true;
@@ -1168,12 +1325,16 @@
 
       // Wrist joint
       const wrist = new THREE.Group();
+      wrist.name = `${side}-wrist`;
       wrist.position.set(0, -faLen - 0.018, 0.03);
       const wristJoint = new THREE.Mesh(new THREE.SphereGeometry(0.058 * thickness, 8, 8), surfaceMat);
       wristJoint.scale.set(1.1, 0.95, 1.05);
       wristJoint.castShadow = true;
       wrist.add(wristJoint);
-      const wristCuff = new THREE.Mesh(new THREE.CapsuleGeometry(0.062, 0.07, 8, 8), surfaceMat);
+      const wristCuff = new THREE.Mesh(
+        new THREE.CapsuleGeometry(0.062 * thickness, 0.07, 8, 8),
+        surfaceMat
+      );
       wristCuff.position.set(0, -0.03, 0.02);
       wristCuff.rotation.x = 0.18;
       wristCuff.castShadow = true;
@@ -1182,9 +1343,9 @@
 
       // Paw — sits at bottom of wrist
       const paw = createPaw(skinMat, true, strain);
-      paw.position.set(0, -0.085, 0.055);
+      paw.position.set(sign * 0.035, -0.13, 0.07);
       paw.scale.setScalar(0.96 * Math.sqrt(thickness));
-      paw.rotation.x = -0.18;
+      paw.rotation.x = -0.12;
       wrist.add(paw);
 
       // Short fur on upper arm + forearm
@@ -1225,11 +1386,11 @@
       const hl = PROP.hindLimbLength * legLengthScale;
       const thickness = THREE.MathUtils.clamp(legThicknessScale, 0.65, 1.5);
       // Hip anchor — at widest haunch point
-      chain.position.set(sign * 0.60 * PROP.haunchWidth / 0.94, 0.04, -PROP.bodyLength * 0.35);
+      chain.position.set(sign * 0.62 * PROP.haunchWidth / 1.04, -0.04, -PROP.bodyLength * 0.36);
 
       // Hip joint (visible mass)
-      const hipJoint = new THREE.Mesh(new THREE.SphereGeometry(0.15, 12, 12), surfaceMat);
-      hipJoint.scale.set(0.95, 0.80, 1.0); // wider for smoother transition
+      const hipJoint = new THREE.Mesh(new THREE.SphereGeometry(0.18, 14, 14), surfaceMat);
+      hipJoint.scale.set(1.08, 0.88, 1.18);
       hipJoint.castShadow = true;
       chain.add(hipJoint);
       // Soft blend into lower back (wider for smoother pelvis-hip transition)
@@ -1280,16 +1441,18 @@
 
       // Thigh (femur) — enlarged deformed sphere
       const thigh = new THREE.Group();
+      thigh.name = `${side}-thigh`;
       thigh.position.set(0, -0.10, 0.02);
       chain.add(thigh);
       const thighMuscle = new THREE.Mesh(thighGeo, surfaceMat);
-      thighMuscle.scale.set(0.68 * thickness, 0.64 * hl, 0.75 * thickness);
+      thighMuscle.scale.set(0.76 * thickness, 0.68 * hl, 0.86 * thickness);
       thighMuscle.castShadow = true;
       thigh.add(thighMuscle);
       thighMuscle.add(generateFurLayer(deformThigh, Math.floor(8200 * density), furColor, 0.12, false));
 
       // Shank (tibia/fibula) — substantial capsule
       const shank = new THREE.Group();
+      shank.name = `${side}-shank`;
       shank.position.set(0.02 * sign, -0.32 * hl, 0.18);
       thigh.add(shank);
 
@@ -1299,7 +1462,7 @@
       kneeJoint.castShadow = true;
       shank.add(kneeJoint);
 
-      const shankLen = 0.48 * hl;
+      const shankLen = 0.46 * hl;
       const shankMesh = new THREE.Mesh(new THREE.CapsuleGeometry(0.064 * thickness, shankLen, 8, 8), surfaceMat);
       shankMesh.rotation.x = -0.16;
       shankMesh.position.set(0, -shankLen * 0.5, 0.09);
@@ -1308,6 +1471,7 @@
 
       // Ankle/heel (digitigrade visible heel rise)
       const ankle = new THREE.Group();
+      ankle.name = `${side}-ankle`;
       ankle.position.set(0, -shankLen - 0.04, 0.18);
       shank.add(ankle);
 
@@ -1324,7 +1488,7 @@
 
       // Metatarsals (connects heel to toes) — angled forward
       const metaLen = 0.36 * PROP.hindPawSize;
-      const metaMesh = new THREE.Mesh(new THREE.CapsuleGeometry(0.055, metaLen, 6, 6), surfaceMat);
+      const metaMesh = new THREE.Mesh(new THREE.CapsuleGeometry(0.055, metaLen, 6, 6), skinMat);
       metaMesh.rotation.x = Math.PI / 2 - 0.22;
       metaMesh.position.set(0, -0.125, 0.18);
       metaMesh.castShadow = true;
@@ -1332,9 +1496,9 @@
 
       // Hindpaw — planted on ground
       const paw = createPaw(skinMat, false, strain);
-      paw.position.set(0, -0.16, 0.27);
-      paw.rotation.x = -0.12;
-      paw.scale.setScalar(0.96 * Math.sqrt(thickness));
+      paw.position.set(sign * 0.045, -0.20, 0.31);
+      paw.rotation.x = -0.10;
+      paw.scale.setScalar(0.92 * Math.sqrt(thickness));
       ankle.add(paw);
 
       // Baseline crouched posture so underside view reads organic, not columnar.
@@ -1350,44 +1514,132 @@
     }
 
     // ═══════════════════════════════════════════════════════════════
-    // 8. WHISKERS + FUR (preserved from original with detail-level support)
+    // 8. ANATOMICAL VIBRISSAE + FUR
     // ═══════════════════════════════════════════════════════════════
-    function createVolumetricWhiskers(colorHex, isLeft) {
-      const group = new THREE.Group();
-      const sign = isLeft ? 1 : -1;
-      // Mouse mystacial vibrissae: 5 rows (A–E), shorter with directional randomness
-      const rows = [
-        { y: 0.07, z: 0.06, count: 4, lenBase: 0.95, fanZ: 0.50 },
-        { y: 0.03, z: 0.03, count: 4, lenBase: 1.05, fanZ: 0.55 },
-        { y: -0.01, z: 0.00, count: 5, lenBase: 1.25, fanZ: 0.65 },
-        { y: -0.05, z: -0.02, count: 4, lenBase: 0.95, fanZ: 0.50 },
-        { y: -0.09, z: -0.05, count: 3, lenBase: 0.72, fanZ: 0.40 },
-      ];
-      for (const row of rows) {
-        for (let i = 0; i < row.count; i++) {
-          const t = row.count > 1 ? i / (row.count - 1) : 0.5;
-          const len = row.lenBase * (0.55 + t * 0.55) * (0.85 + Math.random() * 0.30);
-          const yJ = (Math.random() - 0.5) * 0.03;
-          const droop = -0.08 * t + (Math.random() - 0.5) * 0.08;
-          const splayZ = row.fanZ * (0.3 + t * 0.7) + (Math.random() - 0.5) * 0.12;
-          const curve = new THREE.QuadraticBezierCurve3(
-            new THREE.Vector3(0, row.y + yJ, row.z),
-            new THREE.Vector3(sign * (0.55 + t * 0.25), row.y + yJ + droop * 0.4, row.z + splayZ * 0.4),
-            new THREE.Vector3(sign * len, row.y + yJ + droop, row.z + splayZ)
-          );
-          const radius = 0.007 * (1.0 - t * 0.3);
-          const mat = new THREE.MeshBasicMaterial({
-            color: colorHex, transparent: true, opacity: 0.48 + Math.random() * 0.14
-          });
-          group.add(new THREE.Mesh(new THREE.TubeGeometry(curve, 8, radius, 5, false), mat));
+    function createTaperedWhiskerGeometry(
+      curve,
+      tubularSegments = 14,
+      rootRadius = 0.004,
+      tipRadius = 0.0003,
+      radialSegments = 5
+    ) {
+      const frames = curve.computeFrenetFrames(tubularSegments, false);
+      const positions = [];
+      const colors = [];
+      const uvs = [];
+      const indices = [];
+      const point = new THREE.Vector3();
+      const offset = new THREE.Vector3();
+
+      for (let segment = 0; segment <= tubularSegments; segment++) {
+        const t = segment / tubularSegments;
+        curve.getPointAt(t, point);
+        const radius = THREE.MathUtils.lerp(rootRadius, tipRadius, Math.pow(t, 0.72));
+        const shade = THREE.MathUtils.lerp(0.68, 1.0, Math.pow(t, 0.55));
+        for (let radial = 0; radial < radialSegments; radial++) {
+          const angle = (radial / radialSegments) * Math.PI * 2;
+          offset.copy(frames.normals[segment]).multiplyScalar(Math.cos(angle));
+          offset.addScaledVector(frames.binormals[segment], Math.sin(angle));
+          offset.multiplyScalar(radius);
+          positions.push(point.x + offset.x, point.y + offset.y, point.z + offset.z);
+          colors.push(shade, shade, shade);
+          uvs.push(t, radial / radialSegments);
         }
       }
+
+      for (let segment = 0; segment < tubularSegments; segment++) {
+        for (let radial = 0; radial < radialSegments; radial++) {
+          const nextRadial = (radial + 1) % radialSegments;
+          const a = segment * radialSegments + radial;
+          const b = segment * radialSegments + nextRadial;
+          const c = (segment + 1) * radialSegments + radial;
+          const d = (segment + 1) * radialSegments + nextRadial;
+          indices.push(a, c, b, b, c, d);
+        }
+      }
+
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+      geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+      geometry.setIndex(indices);
+      geometry.computeVertexNormals();
+      return geometry;
+    }
+
+    function createAnatomicalWhiskers(colorHex, isLeft, opacity = 0.52) {
+      const group = new THREE.Group();
+      const sign = isLeft ? 1 : -1;
+      const material = new THREE.MeshBasicMaterial({
+        color: colorHex,
+        transparent: true,
+        opacity,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        alphaToCoverage: true,
+        vertexColors: true,
+      });
+      // Five mystacial rows with caudal whiskers longest and lower rows drooping.
+      const rows = [
+        { y: 0.105, z: -0.030, count: 4, minLength: 0.64, maxLength: 1.00, forward: 0.16, lift: 0.300, droop: 0.006 },
+        { y: 0.060, z: -0.014, count: 4, minLength: 0.76, maxLength: 1.14, forward: 0.24, lift: 0.170, droop: -0.006 },
+        { y: 0.010, z: 0.000, count: 5, minLength: 0.86, maxLength: 1.30, forward: 0.34, lift: 0.025, droop: -0.035 },
+        { y: -0.045, z: 0.015, count: 4, minLength: 0.74, maxLength: 1.12, forward: 0.31, lift: -0.130, droop: -0.055 },
+        { y: -0.098, z: 0.026, count: 3, minLength: 0.58, maxLength: 0.90, forward: 0.22, lift: -0.260, droop: -0.085 },
+      ];
+      rows.forEach((row, rowIndex) => {
+        for (let i = 0; i < row.count; i++) {
+          const fraction = (i + 1) / (row.count + 1);
+          const length = THREE.MathUtils.lerp(row.minLength, row.maxLength, fraction)
+            * (0.94 + Math.random() * 0.12);
+          const rootJitter = Math.random() - 0.5;
+          const rootY = row.y + (fraction - 0.5) * (0.020 + rowIndex * 0.004)
+            + rootJitter * 0.014;
+          const rootZ = row.z + (fraction - 0.5) * 0.085 + (Math.random() - 0.5) * 0.012;
+          const forward = row.forward * (0.62 + fraction * 0.38)
+            + (Math.random() - 0.5) * 0.035;
+          const droop = row.droop * (0.75 + fraction * 0.35)
+            + (Math.random() - 0.5) * 0.018;
+          const start = new THREE.Vector3(
+            sign * (0.008 + fraction * 0.020 + rowIndex * 0.002),
+            rootY,
+            rootZ
+          );
+          const curve = new THREE.CubicBezierCurve3(
+            start,
+            new THREE.Vector3(
+              sign * length * 0.28,
+              rootY + row.lift * 0.05,
+              rootZ + forward * 0.16
+            ),
+            new THREE.Vector3(
+              sign * length * 0.72,
+              rootY + row.lift * 0.55 + droop * 0.12 + rootJitter * 0.025,
+              rootZ + forward * 0.68
+            ),
+            new THREE.Vector3(
+              sign * length,
+              rootY + row.lift + droop,
+              rootZ + forward
+            )
+          );
+          const rootRadius = 0.0035 + fraction * 0.0008;
+          const whisker = new THREE.Mesh(
+            createTaperedWhiskerGeometry(curve, 14, rootRadius, 0.00042, 5),
+            material
+          );
+          whisker.name = `vibrissa-${rowIndex}-${i}`;
+          whisker.castShadow = true;
+          whisker.frustumCulled = false;
+          group.add(whisker);
+        }
+      });
       return group;
     }
 
     function generateFurLayer(deformFn, count, colorHex, length, isHead, isUndercoat = false) {
       if (count <= 0) return new THREE.Group();
-      const radius = isUndercoat ? 0.0045 : 0.0032;
+      const radius = isUndercoat ? 0.0038 : 0.0027;
       const geo = new THREE.ConeGeometry(radius, length, 3);
       geo.translate(0, length / 2, 0);
       geo.rotateX(Math.PI / 2);
@@ -1476,8 +1728,8 @@
       if (density <= 0) return group;
       const underCount = Math.floor((isHead ? 9000 : 18000) * density);
       const guardCount = Math.floor((isHead ? 6500 : 12500) * density);
-      group.add(generateFurLayer(deformFn, underCount, furColor, isHead ? 0.026 : 0.038, isHead, true));
-      group.add(generateFurLayer(deformFn, guardCount, furColor, isHead ? 0.065 : 0.105, isHead, false));
+      group.add(generateFurLayer(deformFn, underCount, furColor, isHead ? 0.023 : 0.032, isHead, true));
+      group.add(generateFurLayer(deformFn, guardCount, furColor, isHead ? 0.052 : 0.082, isHead, false));
       return group;
     }
 
@@ -1524,7 +1776,6 @@
       density,
       outerMat,
       innerMat,
-      cavityMat,
       asymmetryTilt,
       asymmetryYaw,
       heightOffset,
@@ -1536,50 +1787,38 @@
       ear.add(outer);
 
       const rimMat = outerMat.clone();
-      rimMat.color = rimMat.color.clone().offsetHSL(0.0, -0.02, -0.065);
-      rimMat.transmission = Math.min(0.32, outerMat.transmission ?? 0.3);
-      rimMat.thickness = 0.055;
+      rimMat.color = rimMat.color.clone().offsetHSL(0.0, -0.01, -0.030);
+      rimMat.transmission = Math.min(0.24, outerMat.transmission ?? 0.3);
+      rimMat.thickness = 0.040;
       rimMat.roughness = Math.min(0.62, (outerMat.roughness ?? 0.42) + 0.10);
       const rim = new THREE.Mesh(earRimGeo, rimMat);
       rim.castShadow = true;
       ear.add(rim);
 
       const inner = new THREE.Mesh(earInnerGeo, innerMat);
-      inner.position.set(sideSign * -0.018, -0.025, 0.038);
+      inner.position.set(sideSign * -0.014, -0.018, 0.0);
       inner.rotation.z = sideSign * 0.025;
       inner.castShadow = true;
       ear.add(inner);
 
-      const concha = new THREE.Mesh(earConchaGeo, cavityMat);
-      concha.position.set(sideSign * -0.072, -0.37, 0.055);
-      concha.rotation.set(0.05, sideSign * -0.10, sideSign * 0.08);
-      concha.castShadow = true;
-      ear.add(concha);
-
-      const basalFold = new THREE.Mesh(new THREE.CapsuleGeometry(0.035, 0.33, 10, 12), cavityMat);
-      basalFold.position.set(sideSign * -0.16, -0.47, 0.060);
-      basalFold.rotation.set(Math.PI / 2 - 0.14, sideSign * 0.08, sideSign * 0.28);
-      basalFold.scale.set(1.0, 0.7, 0.55);
-      basalFold.castShadow = true;
-      ear.add(basalFold);
-
       const baseFur = createEarBaseFur(furColor, density, sideSign);
-      baseFur.position.set(0, -0.02, 0.03);
+      baseFur.position.set(0, -0.05, 0.025);
       ear.add(baseFur);
 
       const strainScale = strain.earScaleMul ?? 1.0;
-      const s = eSize * 1.04 * strainScale;
+      const s = eSize * 0.98 * strainScale;
+      const openingYaw = 0.28 + (strain.earYaw ?? PROP.earYaw) * 0.25;
       ear.position.set(
-        sideSign * 0.58,
-        0.55 + heightOffset,
-        PROP.earSetBack + 0.32
+        sideSign * 0.72,
+        0.54 + heightOffset,
+        PROP.earSetBack + 0.18
       );
       ear.rotation.set(
-        -0.08 + asymmetryTilt,
-        sideSign * ((strain.earYaw ?? PROP.earYaw) * 0.34 + asymmetryYaw),
-        sideSign * -0.12
+        -0.10 + asymmetryTilt,
+        sideSign * openingYaw + asymmetryYaw,
+        sideSign * -0.14
       );
-      ear.scale.set(s * 0.92, s * 0.88, s * 0.38);
+      ear.scale.set(s * 0.90, s, s);
       return ear;
     }
 
@@ -1617,6 +1856,34 @@
       ['spine2', 'lhindpaw'], ['spine2', 'rhindpaw'],
       ['tailbase', 'tailmid'], ['tailmid', 'tailend']
     ];
+    const POSE_KEYPOINTS = Object.freeze([
+      { id: 'snout', name: 'nose' },
+      { id: 'lear', name: 'left_ear' },
+      { id: 'rear', name: 'right_ear' },
+      { id: 'neck', name: 'neck' },
+      { id: 'spine1', name: 'spine_1' },
+      { id: 'spine2', name: 'spine_2' },
+      { id: 'tailbase', name: 'tail_base' },
+      { id: 'lforepaw', name: 'left_forepaw' },
+      { id: 'rforepaw', name: 'right_forepaw' },
+      { id: 'lhindpaw', name: 'left_hindpaw' },
+      { id: 'rhindpaw', name: 'right_hindpaw' },
+      { id: 'tailmid', name: 'tail_mid' },
+      { id: 'tailend', name: 'tail_tip' },
+    ]);
+    const POSE_KEYPOINT_INDEX = new Map(
+      POSE_KEYPOINTS.map(({ id }, index) => [id, index + 1])
+    );
+    const POSE_CATEGORY = Object.freeze({
+      id: 1,
+      name: 'mouse',
+      supercategory: 'animal',
+      keypoints: POSE_KEYPOINTS.map(({ name }) => name),
+      skeleton: POSE_CONNECTIONS.map(([start, end]) => [
+        POSE_KEYPOINT_INDEX.get(start),
+        POSE_KEYPOINT_INDEX.get(end),
+      ]),
+    });
     const POSE_COLORS = {
       snout: 0xff0055, lear: 0xff5500, rear: 0xff5500, neck: 0x00ffaa,
       spine1: 0x00aaff, spine2: 0x0055ff, tailbase: 0xaa00ff,
@@ -1732,6 +1999,39 @@
       return minimum;
     }
 
+    function getMinimumTailClearance(subjects) {
+      let minimum = Infinity;
+      for (const mouse of subjects) {
+        if (Number.isFinite(mouse.minimumTailClearance)) {
+          minimum = Math.min(minimum, mouse.minimumTailClearance);
+        }
+      }
+      return minimum;
+    }
+
+    function getMaximumFootSlip(subjects) {
+      let maximum = 0;
+      for (const mouse of subjects) {
+        maximum = Math.max(maximum, mouse.maximumFootSlip || 0);
+      }
+      return maximum;
+    }
+
+    function getMaximumPawGroundError(subjects) {
+      let maximum = 0;
+      for (const mouse of subjects) {
+        maximum = Math.max(maximum, mouse.maximumPawGroundError || 0);
+      }
+      return maximum;
+    }
+
+    function resolveAllMouseContacts(subjects, dt = 0.016) {
+      resolveAllMouseBodyOverlaps(subjects);
+      for (const mouse of subjects) mouse.solveFootPlantConstraints(dt);
+      for (const mouse of subjects) mouse.updateTailGeometry(subjects);
+      for (const mouse of subjects) mouse.updateTrackingGeometry();
+    }
+
     // ═══════════════════════════════════════════════════════════════
     // 10. EXPERT MOUSE CLASS (with new anatomy)
     // ═══════════════════════════════════════════════════════════════
@@ -1767,7 +2067,7 @@
         this.prevHeadingAngle = Math.atan2(this.heading.x, this.heading.y);
         this.yawAngle = this.prevHeadingAngle;
         this.yawVel = 0;
-        this.bodyDyn = { y: 1.16, vy: 0, pitch: 0, pitchV: 0, roll: 0, rollV: 0 };
+        this.bodyDyn = { y: 1.10, vy: 0, pitch: 0, pitchV: 0, roll: 0, rollV: 0 };
         this.tailDyn = { sway: 0, swayV: 0, lift: 0, liftV: 0 };
         this.behaviorTimer = 0.8 + Math.random() * 2.4;
         this.pauseTimer = Math.random() * 0.9;
@@ -1843,8 +2143,8 @@
         if (params.enableContactAO !== false) {
           annolidShaders.applyContactAO(this.fleshMat, {
             groundY: 0.0,
-            radius: params.aoRadius ?? 1.5,
-            intensity: params.aoIntensity ?? 0.35,
+            radius: Math.min(0.52, params.aoRadius ?? 0.52),
+            intensity: Math.min(0.18, params.aoIntensity ?? 0.18),
             color: [0.02, 0.01, 0.0]
           });
         }
@@ -1858,8 +2158,8 @@
         if (params.enableContactAO !== false) {
           annolidShaders.applyContactAO(this.surfaceMat, {
             groundY: 0.0,
-            radius: params.aoRadius ?? 1.5,
-            intensity: Math.min(0.45, (params.aoIntensity ?? 0.35) * 0.9),
+            radius: Math.min(0.72, params.aoRadius ?? 0.72),
+            intensity: Math.min(0.18, (params.aoIntensity ?? 0.18) * 0.9),
             color: [0.018, 0.014, 0.010]
           });
         }
@@ -2029,37 +2329,25 @@
 
         // MOUTH + INCISORS
         const mouthMat = new THREE.MeshPhysicalMaterial({
-          color: 0x7b4b45, roughness: 0.68, metalness: 0.0, clearcoat: 0.08, transparent: true, opacity: 0.94
+          color: 0x80504d, roughness: 0.72, metalness: 0.0, clearcoat: 0.05, transparent: true, opacity: 0.72
         });
-        this.mouth = new THREE.Mesh(new THREE.CapsuleGeometry(0.042, 0.085, 10, 10), mouthMat);
+        this.mouth = new THREE.Mesh(new THREE.CapsuleGeometry(0.012, 0.075, 8, 10), mouthMat);
         this.mouth.rotation.z = Math.PI / 2;
-        this.mouth.position.set(0, -0.262, PROP.snoutLength * 0.985);
+        this.mouth.position.set(0, -0.235, PROP.snoutLength * 0.988);
         this.head.add(this.mouth);
-        const lowerLip = new THREE.Mesh(new THREE.SphereGeometry(0.035, 12, 12), this.fleshMat);
-        lowerLip.scale.set(1.35, 0.52, 0.72);
-        lowerLip.position.set(0, -0.282, PROP.snoutLength * 0.955);
+        const lowerLip = new THREE.Mesh(new THREE.SphereGeometry(0.025, 12, 12), this.fleshMat);
+        lowerLip.scale.set(1.25, 0.46, 0.66);
+        lowerLip.position.set(0, -0.248, PROP.snoutLength * 0.968);
         lowerLip.castShadow = true;
         this.head.add(lowerLip);
 
-        const toothMat = new THREE.MeshPhysicalMaterial({
-          color: 0xf5e9cf, roughness: 0.35, metalness: 0.0, clearcoat: 0.35, clearcoatRoughness: 0.2
-        });
-        const addIncisor = (xSign) => {
-          const tooth = new THREE.Mesh(new THREE.BoxGeometry(0.028, 0.07, 0.022), toothMat);
-          tooth.position.set(0.02 * xSign, -0.235, PROP.snoutLength * 1.06);
-          tooth.rotation.x = -0.22;
-          tooth.castShadow = true;
-          this.head.add(tooth);
-        };
-        addIncisor(-1);
-        addIncisor(1);
-
         // WHISKERS
-        const wColor = skinHSL.l > 0.5 ? 0xaaaaaa : 0x444444;
-        this.padL = new THREE.Group(); this.padL.position.set(0.1, -0.05, 1.1); this.head.add(this.padL);
-        this.padR = new THREE.Group(); this.padR.position.set(-0.1, -0.05, 1.1); this.head.add(this.padR);
-        this.padL.add(createVolumetricWhiskers(wColor, true));
-        this.padR.add(createVolumetricWhiskers(wColor, false));
+        const wColor = skinHSL.l > 0.5 ? 0x958f8c : 0xd0c7c1;
+        const whiskerOpacity = skinHSL.l > 0.5 ? 0.46 : 0.56;
+        this.padL = new THREE.Group(); this.padL.position.set(0.22, -0.07, 0.74); this.head.add(this.padL);
+        this.padR = new THREE.Group(); this.padR.position.set(-0.22, -0.07, 0.74); this.head.add(this.padR);
+        this.padL.add(createAnatomicalWhiskers(wColor, true, whiskerOpacity));
+        this.padR.add(createAnatomicalWhiskers(wColor, false, whiskerOpacity));
 
         // EARS (with asymmetry) — rounded mouse pinnae integrated into the skull fur.
         const earOuterMat = this.fleshMat.clone();
@@ -2067,7 +2355,7 @@
         earOuterMat.color.lerp(new THREE.Color(skinColor), strain.earSkinBlend ?? 0.48);
         earOuterMat.transmission = strain.earOuterTransmission ?? 0.38;
         earOuterMat.ior = 1.38;
-        earOuterMat.thickness = 0.028;
+        earOuterMat.thickness = 0.035;
         earOuterMat.roughness = strain.earOuterRoughness ?? 0.56;
         earOuterMat.map = earAlbedoMap;
         earOuterMat.roughnessMap = earRoughnessMap;
@@ -2075,7 +2363,7 @@
         earOuterMat.normalScale = new THREE.Vector2(0.18, 0.16);
         earOuterMat.clearcoat = 0.025;
         earOuterMat.clearcoatRoughness = 0.42;
-        earOuterMat.sheen = 0.24;
+        earOuterMat.sheen = 0.16;
         earOuterMat.sheenColor = new THREE.Color(strain.earSheenColor ?? 0xd0b5a8);
         earOuterMat.side = THREE.DoubleSide;
         earOuterMat.attenuationColor = new THREE.Color(strain.earAttenuationColor ?? 0xd89a8a);
@@ -2086,28 +2374,19 @@
         earInnerMat.color.offsetHSL(0.0, strain.earInnerSatOffset ?? 0.035, strain.earInnerLightOffset ?? 0.015);
         earInnerMat.transmission = strain.earInnerTransmission ?? 0.42;
         earInnerMat.ior = 1.38;
-        earInnerMat.thickness = 0.020;
-        earInnerMat.roughness = 0.52;
+        earInnerMat.thickness = 0.015;
+        earInnerMat.roughness = 0.58;
         earInnerMat.map = earAlbedoMap;
         earInnerMat.roughnessMap = earRoughnessMap;
         earInnerMat.normalMap = earNormalMap;
         earInnerMat.normalScale = new THREE.Vector2(0.23, 0.20);
         earInnerMat.clearcoat = 0.025;
         earInnerMat.clearcoatRoughness = 0.40;
-        earInnerMat.sheen = 0.34;
+        earInnerMat.sheen = 0.22;
         earInnerMat.sheenColor = new THREE.Color(strain.earSheenColor ?? 0xffdfc8);
         earInnerMat.side = THREE.DoubleSide;
         earInnerMat.attenuationColor = new THREE.Color(strain.earAttenuationColor ?? 0xd89a8a);
         earInnerMat.attenuationDistance = strain.earAttenuationDistance ?? 0.16;
-
-        // Deeper cavity material for internal cup shading.
-        const earCavityMat = earInnerMat.clone();
-        earCavityMat.color = earCavityMat.color.clone();
-        earCavityMat.color.offsetHSL(0.0, -0.02, -0.13);
-        earCavityMat.transmission = Math.min(0.16, earInnerMat.transmission);
-        earCavityMat.thickness = 0.040;
-        earCavityMat.roughness = 0.68;
-        earCavityMat.clearcoat = 0.0;
 
         const earL = buildMouseEar({
           sideSign: 1,
@@ -2118,7 +2397,6 @@
           density,
           outerMat: earOuterMat,
           innerMat: earInnerMat,
-          cavityMat: earCavityMat,
           asymmetryTilt: this.asymmetry.earTiltL,
           asymmetryYaw: this.asymmetry.earYawDelta,
           heightOffset: (strain.earHeightOffset ?? 0.0) + this.asymmetry.earHeightDiff,
@@ -2134,7 +2412,6 @@
           density,
           outerMat: earOuterMat,
           innerMat: earInnerMat,
-          cavityMat: earCavityMat,
           asymmetryTilt: this.asymmetry.earTiltR,
           asymmetryYaw: this.asymmetry.earYawDelta,
           heightOffset: (strain.earHeightOffset ?? 0.0) - this.asymmetry.earHeightDiff,
@@ -2147,28 +2424,42 @@
         this.earMicro.baseRotR = earR.rotation.clone();
 
         // EYES (lateral placement with asymmetry, two-layer)
-        const eyeL = new THREE.Mesh(new THREE.SphereGeometry(PROP.eyeSize, 20, 20), eyeMat);
+        const subjectEyeMat = eyeMat.clone();
+        subjectEyeMat.color.set(strain.eyeColor ?? '#070606');
+        subjectEyeMat.attenuationColor = subjectEyeMat.color.clone();
+        const subjectCorneaMat = corneaMat.clone();
+        subjectCorneaMat.attenuationColor = subjectEyeMat.color.clone().offsetHSL(0, 0, 0.08);
+        const eyeRimMat = new THREE.MeshBasicMaterial({
+          color: strain.eyeRimColor ?? 0x2a1b1b,
+          transparent: true,
+          opacity: 0.34,
+        });
+        const eyeL = new THREE.Mesh(new THREE.SphereGeometry(PROP.eyeSize, 20, 20), subjectEyeMat);
         eyeL.scale.set(1.0, 0.95, PROP.eyeProtrusion);
         eyeL.position.set(PROP.eyeSpacing + this.asymmetry.eyeOffsetL, 0.15, PROP.eyeYaw);
         eyeL.castShadow = true; this.head.add(eyeL);
-        const cL = new THREE.Mesh(new THREE.SphereGeometry(PROP.eyeSize + 0.005, 20, 20), corneaMat);
+        const cL = new THREE.Mesh(new THREE.SphereGeometry(PROP.eyeSize + 0.005, 20, 20), subjectCorneaMat);
         cL.scale.set(1.0, 0.95, PROP.eyeProtrusion + 0.05);
         cL.position.copy(eyeL.position); this.head.add(cL);
         // Tear line highlight
-        const tearL = new THREE.Mesh(new THREE.TorusGeometry(PROP.eyeSize * 0.85, 0.008, 6, 16, Math.PI * 0.6),
-          new THREE.MeshBasicMaterial({ color: 0x333333, transparent: true, opacity: 0.3 }));
+        const tearL = new THREE.Mesh(
+          new THREE.TorusGeometry(PROP.eyeSize * 0.85, 0.008, 6, 16, Math.PI * 0.6),
+          eyeRimMat
+        );
         tearL.position.copy(eyeL.position); tearL.position.y -= 0.02;
         tearL.rotation.y = Math.PI / 2; this.head.add(tearL);
 
-        const eyeR = new THREE.Mesh(new THREE.SphereGeometry(PROP.eyeSize, 20, 20), eyeMat);
+        const eyeR = new THREE.Mesh(new THREE.SphereGeometry(PROP.eyeSize, 20, 20), subjectEyeMat);
         eyeR.scale.set(1.0, 0.95, PROP.eyeProtrusion);
         eyeR.position.set(-PROP.eyeSpacing + this.asymmetry.eyeOffsetR, 0.15, PROP.eyeYaw);
         eyeR.castShadow = true; this.head.add(eyeR);
-        const cR = new THREE.Mesh(new THREE.SphereGeometry(PROP.eyeSize + 0.005, 20, 20), corneaMat);
+        const cR = new THREE.Mesh(new THREE.SphereGeometry(PROP.eyeSize + 0.005, 20, 20), subjectCorneaMat);
         cR.scale.set(1.0, 0.95, PROP.eyeProtrusion + 0.05);
         cR.position.copy(eyeR.position); this.head.add(cR);
-        const tearR = new THREE.Mesh(new THREE.TorusGeometry(PROP.eyeSize * 0.85, 0.008, 6, 16, Math.PI * 0.6),
-          new THREE.MeshBasicMaterial({ color: 0x333333, transparent: true, opacity: 0.3 }));
+        const tearR = new THREE.Mesh(
+          new THREE.TorusGeometry(PROP.eyeSize * 0.85, 0.008, 6, 16, Math.PI * 0.6),
+          eyeRimMat
+        );
         tearR.position.copy(eyeR.position); tearR.position.y -= 0.02;
         tearR.rotation.y = -Math.PI / 2; this.head.add(tearR);
         this.eyeL = eyeL;
@@ -2196,6 +2487,37 @@
         this.thighR = this.hindR._thigh;
         this.shankL = this.hindL._shank;
         this.shankR = this.hindR._shank;
+
+        const makeFootPlant = (paw, joints, phaseOffset, isFore) => ({
+          paw,
+          contact: paw._groundContact,
+          joints,
+          phaseOffset,
+          isFore,
+          planted: false,
+          exhausted: false,
+          anchor: new THREE.Vector3(),
+          slip: 0,
+          groundError: 0,
+        });
+        this.footPlants = [
+          makeFootPlant(this.hindL._paw, [this.hindL._ankle, this.shankL, this.hindL], 0, false),
+          makeFootPlant(this.hindR._paw, [this.hindR._ankle, this.shankR, this.hindR], Math.PI, false),
+          makeFootPlant(this.armL._paw, [this.armL._wrist, this.armL._forearm, this.armL], Math.PI, true),
+          makeFootPlant(this.armR._paw, [this.armR._wrist, this.armR._forearm, this.armR], 0, true),
+        ];
+        this.contactFrame = {
+          legCycle: 0,
+          isMoving: false,
+          rear: 0,
+          lateralAccel: 0,
+          turnRate: 0,
+          forwardAccel: 0,
+        };
+        this.maximumFootSlip = 0;
+        this.maximumPawGroundError = 0;
+        this.minimumTailClearance = Infinity;
+        this.minimumTailClearanceIndex = -1;
 
         // CONTACT SHADOW
         this.contactShadow = createContactShadow();
@@ -2252,10 +2574,10 @@
         createTrackingNode('spine2', this.rig, new THREE.Vector3(0, 0.8, -PROP.bodyLength * 0.41));
         createTrackingNode('tailbase', this.rig, new THREE.Vector3(0, 0.3, -PROP.bodyLength * 0.93));
         // Paws attached to limb chains
-        createTrackingNode('lforepaw', this.armL._wrist, new THREE.Vector3(0, -0.06, 0.05));
-        createTrackingNode('rforepaw', this.armR._wrist, new THREE.Vector3(0, -0.06, 0.05));
-        createTrackingNode('lhindpaw', this.hindL._ankle, new THREE.Vector3(0, -0.19, 0.31));
-        createTrackingNode('rhindpaw', this.hindR._ankle, new THREE.Vector3(0, -0.19, 0.31));
+        createTrackingNode('lforepaw', this.armL._paw, new THREE.Vector3(0, -0.05, 0.12));
+        createTrackingNode('rforepaw', this.armR._paw, new THREE.Vector3(0, -0.05, 0.12));
+        createTrackingNode('lhindpaw', this.hindL._paw, new THREE.Vector3(0, -0.08, 0.18));
+        createTrackingNode('rhindpaw', this.hindR._paw, new THREE.Vector3(0, -0.08, 0.18));
 
         this.mesh.updateMatrixWorld(true);
         this.mesh.traverse(child => {
@@ -2272,6 +2594,491 @@
         this.trackingGroup.add(this.skeletonLines);
         const linePositions = new Float32Array(POSE_CONNECTIONS.length * 6);
         this.skeletonLines.geometry.setAttribute('position', new THREE.BufferAttribute(linePositions, 3));
+      }
+
+      rotateIkJointToward(joint, axisName, contact, target, baseRotation, maxOffset, scratch) {
+        this.mesh.updateMatrixWorld(true);
+        joint.getWorldPosition(scratch.jointWorld);
+        contact.getWorldPosition(scratch.effectorWorld);
+        scratch.toEffector.copy(scratch.effectorWorld).sub(scratch.jointWorld);
+        scratch.toTarget.copy(target).sub(scratch.jointWorld);
+        scratch.axisWorld
+          .set(axisName === 'x' ? 1 : 0, 0, axisName === 'z' ? 1 : 0)
+          .transformDirection(joint.matrixWorld);
+        scratch.toEffector.addScaledVector(
+          scratch.axisWorld,
+          -scratch.toEffector.dot(scratch.axisWorld)
+        );
+        scratch.toTarget.addScaledVector(
+          scratch.axisWorld,
+          -scratch.toTarget.dot(scratch.axisWorld)
+        );
+        if (scratch.toEffector.lengthSq() < 1e-8 || scratch.toTarget.lengthSq() < 1e-8) return;
+        scratch.toEffector.normalize();
+        scratch.toTarget.normalize();
+        scratch.cross.crossVectors(scratch.toEffector, scratch.toTarget);
+        const angle = Math.atan2(
+          scratch.axisWorld.dot(scratch.cross),
+          THREE.MathUtils.clamp(scratch.toEffector.dot(scratch.toTarget), -1, 1)
+        );
+        const nextRotation = joint.rotation[axisName]
+          + THREE.MathUtils.clamp(angle * 0.72, -0.16, 0.16);
+        joint.rotation[axisName] = THREE.MathUtils.clamp(
+          nextRotation,
+          baseRotation - maxOffset,
+          baseRotation + maxOffset
+        );
+      }
+
+      solveFootPlantConstraints(dt = 0.016) {
+        const scratch = {
+          jointWorld: new THREE.Vector3(),
+          effectorWorld: new THREE.Vector3(),
+          toEffector: new THREE.Vector3(),
+          toTarget: new THREE.Vector3(),
+          axisWorld: new THREE.Vector3(),
+          cross: new THREE.Vector3(),
+        };
+        this.maximumFootSlip = 0;
+        this.maximumPawGroundError = 0;
+        this.mesh.updateMatrixWorld(true);
+
+        for (const foot of this.footPlants) {
+          const stancePhase = Math.sin(this.contactFrame.legCycle + foot.phaseOffset);
+          const mayTouchGround = !foot.isFore || this.contactFrame.rear < 0.08;
+          const inStance = mayTouchGround && (
+            !this.contactFrame.isMoving || stancePhase < 0.08
+          );
+          if (!inStance) {
+            foot.planted = false;
+            foot.exhausted = false;
+            foot.slip = 0;
+            foot.groundError = 0;
+            continue;
+          }
+          if (foot.exhausted) continue;
+
+          foot.contact.getWorldPosition(scratch.effectorWorld);
+          const justPlanted = !foot.planted;
+          if (justPlanted) {
+            foot.anchor.copy(scratch.effectorWorld);
+            foot.anchor.y = 0.055;
+            foot.planted = true;
+          }
+
+          const rootJoint = foot.joints[foot.joints.length - 1];
+          rootJoint.getWorldPosition(scratch.jointWorld);
+          const maximumReach = foot.isFore ? 1.18 : 1.52;
+          if (scratch.jointWorld.distanceTo(foot.anchor) > maximumReach) {
+            foot.planted = false;
+            foot.exhausted = true;
+            foot.slip = 0;
+            foot.groundError = 0;
+            continue;
+          }
+
+          const baselines = foot.joints.map(joint => ({
+            x: joint.rotation.x,
+            z: joint.rotation.z,
+          }));
+          for (let iteration = 0; iteration < 7; iteration++) {
+            for (let index = 0; index < foot.joints.length; index++) {
+              const joint = foot.joints[index];
+              const maxOffset = index === 0 ? 0.52 : (index === 1 ? 0.66 : 0.58);
+              this.rotateIkJointToward(
+                joint,
+                'x',
+                foot.contact,
+                foot.anchor,
+                baselines[index].x,
+                maxOffset,
+                scratch
+              );
+            }
+            const rootIndex = foot.joints.length - 1;
+            this.rotateIkJointToward(
+              foot.joints[rootIndex],
+              'z',
+              foot.contact,
+              foot.anchor,
+              baselines[rootIndex].z,
+              foot.isFore ? 0.22 : 0.18,
+              scratch
+            );
+          }
+
+          this.mesh.updateMatrixWorld(true);
+          foot.contact.getWorldPosition(scratch.effectorWorld);
+          if (justPlanted) {
+            foot.anchor.x = scratch.effectorWorld.x;
+            foot.anchor.z = scratch.effectorWorld.z;
+          }
+          foot.slip = Math.hypot(
+            scratch.effectorWorld.x - foot.anchor.x,
+            scratch.effectorWorld.z - foot.anchor.z
+          );
+          foot.groundError = Math.abs(scratch.effectorWorld.y - foot.anchor.y);
+          if (foot.slip > 0.075 || foot.groundError > 0.10) {
+            foot.planted = false;
+            foot.exhausted = true;
+            foot.slip = 0;
+            foot.groundError = 0;
+            continue;
+          }
+          this.maximumFootSlip = Math.max(this.maximumFootSlip, foot.slip);
+          this.maximumPawGroundError = Math.max(
+            this.maximumPawGroundError,
+            foot.groundError
+          );
+        }
+      }
+
+      updateTailGeometry(otherMice = []) {
+        const { lateralAccel, turnRate, forwardAccel } = this.contactFrame;
+        const tailBase = new THREE.Vector3(0, -0.16, -PROP.bodyLength * 0.90);
+        this.rig.updateMatrix();
+        tailBase.applyMatrix4(this.rig.matrix);
+        const tailCurve = [];
+        const tailLenMul = this.guiParams.tailLength;
+        const segLen = this.tailSegLen * tailLenMul;
+        for (let i = 0; i <= this.tailCount; i++) {
+          const p = i / this.tailCount;
+          const lag = p * p;
+          const transmit = Math.pow(p, 1.35);
+          const midCurve = p * (1.0 - p);
+          const bodyForceX = (
+            this.bodyDyn.roll * 0.34 + lateralAccel * 0.010 - turnRate * 0.018
+          ) * transmit;
+          const bodyForceY = (
+            this.bodyDyn.pitch * 0.38 - forwardAccel * 0.008
+          ) * transmit;
+          const waveX = this.tailDyn.sway * lag + bodyForceX
+            + midCurve * 0.18 * Math.sign(this.tailDyn.sway || bodyForceX || 1);
+          let waveY = -i * PROP.tailSag * p + this.tailDyn.lift * lag
+            + bodyForceY + midCurve * 0.08;
+          waveY = Math.max(waveY, -1.3);
+          tailCurve.push(new THREE.Vector3(waveX, waveY, -i * segLen));
+        }
+
+        const offset = tailBase.clone().sub(tailCurve[0]);
+        const avoidanceAxisX = this.heading.y;
+        const avoidanceAxisZ = -this.heading.x;
+        const obstacleBodies = otherMice
+          .filter(mouse => mouse !== this)
+          .map(mouse => {
+            const ownerSide = (
+              (this.mesh.position.x - mouse.mesh.position.x) * avoidanceAxisX
+              + (this.mesh.position.z - mouse.mesh.position.z) * avoidanceAxisZ
+            );
+            const sideSign = Math.abs(ownerSide) > 0.20
+              ? Math.sign(ownerSide)
+              : ((this.trackId || 0) > (mouse.trackId || 0) ? -1 : 1);
+            return {
+              mouse,
+              discs: getMouseCollisionDiscs(mouse),
+              directionX: avoidanceAxisX * sideSign,
+              directionZ: avoidanceAxisZ * sideSign,
+            };
+          });
+        const obstacles = obstacleBodies.flatMap(body => body.discs);
+        const worldPoint = new THREE.Vector3();
+        const localPoint = new THREE.Vector3();
+        const worldStart = new THREE.Vector3();
+        const worldEnd = new THREE.Vector3();
+        const delta = new THREE.Vector3();
+        this.mesh.updateMatrixWorld(true);
+
+        const tailRadiusAt = index => {
+          const p = index / this.tailCount;
+          let radius = 1.0 - p * PROP.tailTaper;
+          radius *= 1.0 + (1.0 - THREE.MathUtils.smoothstep(p, 0.0, 0.20)) * 0.45;
+          return 0.08 * radius * this.guiParams.tailThickness + 0.035;
+        };
+        const clampPointToFloor = point => {
+          worldPoint.copy(point);
+          this.mesh.localToWorld(worldPoint);
+          if (worldPoint.y < 0.055) {
+            worldPoint.y = 0.055;
+            localPoint.copy(worldPoint);
+            this.mesh.worldToLocal(localPoint);
+            point.y = localPoint.y;
+          }
+        };
+        const projectPointOutsideBodies = (point, index) => {
+          worldPoint.copy(point);
+          this.mesh.localToWorld(worldPoint);
+          const tailRadius = tailRadiusAt(index);
+          let changed = false;
+          for (const body of obstacleBodies) {
+            const penetratesBody = body.discs.some(disc => (
+              Math.hypot(worldPoint.x - disc.x, worldPoint.z - disc.z)
+                < disc.radius + tailRadius
+            ));
+            if (!penetratesBody) continue;
+
+            // All constrained vertices choose one side of a subject. Projecting
+            // along the tail's lateral axis creates a continuous route around
+            // the silhouette instead of putting vertices on opposite sides.
+            let requiredShift = 0;
+            for (const disc of body.discs) {
+              const relativeX = worldPoint.x - disc.x;
+              const relativeZ = worldPoint.z - disc.z;
+              const alongRay = relativeX * body.directionX
+                + relativeZ * body.directionZ;
+              const perpendicularSq = Math.max(
+                0,
+                relativeX * relativeX + relativeZ * relativeZ - alongRay * alongRay
+              );
+              const requiredDistance = disc.radius + tailRadius;
+              if (perpendicularSq >= requiredDistance * requiredDistance) continue;
+              const farIntersection = -alongRay
+                + Math.sqrt(requiredDistance * requiredDistance - perpendicularSq);
+              if (farIntersection > requiredShift) requiredShift = farIntersection;
+            }
+            worldPoint.x += body.directionX * (requiredShift + 0.006);
+            worldPoint.z += body.directionZ * (requiredShift + 0.006);
+            changed = true;
+          }
+          if (!changed) return false;
+          localPoint.copy(worldPoint);
+          this.mesh.worldToLocal(localPoint);
+          point.x = localPoint.x;
+          point.z = localPoint.z;
+          return true;
+        };
+
+        const getSegmentContact = (start, end, index) => {
+          worldStart.copy(start);
+          worldEnd.copy(end);
+          this.mesh.localToWorld(worldStart);
+          this.mesh.localToWorld(worldEnd);
+          const segmentX = worldEnd.x - worldStart.x;
+          const segmentZ = worldEnd.z - worldStart.z;
+          const segmentLengthSq = segmentX * segmentX + segmentZ * segmentZ;
+          const tailRadius = Math.max(tailRadiusAt(index), tailRadiusAt(index + 1));
+          let best = { clearance: Infinity, body: null, disc: null, closestX: 0, closestZ: 0, requiredDistance: 0 };
+          for (const body of obstacleBodies) {
+            for (const disc of body.discs) {
+              const toCenterX = disc.x - worldStart.x;
+              const toCenterZ = disc.z - worldStart.z;
+              const along = segmentLengthSq > 1e-8
+                ? THREE.MathUtils.clamp(
+                  (toCenterX * segmentX + toCenterZ * segmentZ) / segmentLengthSq,
+                  0,
+                  1
+                )
+                : 0;
+              const closestX = worldStart.x + segmentX * along;
+              const closestZ = worldStart.z + segmentZ * along;
+              const clearance = Math.hypot(closestX - disc.x, closestZ - disc.z)
+                - disc.radius - tailRadius;
+              if (clearance < best.clearance) {
+                best = {
+                  clearance,
+                  body,
+                  disc,
+                  closestX,
+                  closestZ,
+                  requiredDistance: disc.radius + tailRadius,
+                };
+              }
+            }
+          }
+          return best;
+        };
+
+        const projectSegmentOutsideBodies = (start, end, index) => {
+          worldStart.copy(start);
+          worldEnd.copy(end);
+          this.mesh.localToWorld(worldStart);
+          this.mesh.localToWorld(worldEnd);
+          const tailRadius = Math.max(tailRadiusAt(index), tailRadiusAt(index + 1));
+          let changed = false;
+
+          for (const body of obstacleBodies) {
+            const segmentX = worldEnd.x - worldStart.x;
+            const segmentZ = worldEnd.z - worldStart.z;
+            const segmentLengthSq = segmentX * segmentX + segmentZ * segmentZ;
+            let requiredShift = 0;
+            for (const disc of body.discs) {
+              const toCenterX = disc.x - worldStart.x;
+              const toCenterZ = disc.z - worldStart.z;
+              const alongSegment = segmentLengthSq > 1e-8
+                ? THREE.MathUtils.clamp(
+                  (toCenterX * segmentX + toCenterZ * segmentZ) / segmentLengthSq,
+                  0,
+                  1
+                )
+                : 0;
+              const closestX = worldStart.x + segmentX * alongSegment;
+              const closestZ = worldStart.z + segmentZ * alongSegment;
+              const relativeX = closestX - disc.x;
+              const relativeZ = closestZ - disc.z;
+              const requiredDistance = disc.radius + tailRadius;
+              if (Math.hypot(relativeX, relativeZ) >= requiredDistance) continue;
+              const alongDirection = relativeX * body.directionX
+                + relativeZ * body.directionZ;
+              const perpendicularSq = Math.max(
+                0,
+                relativeX * relativeX + relativeZ * relativeZ
+                  - alongDirection * alongDirection
+              );
+              if (perpendicularSq >= requiredDistance * requiredDistance) continue;
+              const axisExit = -alongDirection + Math.sqrt(
+                requiredDistance * requiredDistance - perpendicularSq
+              );
+              requiredShift = Math.max(requiredShift, axisExit + 0.016);
+            }
+            if (requiredShift <= 0) continue;
+            if (index > 0) {
+              worldStart.x += body.directionX * requiredShift;
+              worldStart.z += body.directionZ * requiredShift;
+            }
+            worldEnd.x += body.directionX * requiredShift;
+            worldEnd.z += body.directionZ * requiredShift;
+            changed = true;
+          }
+
+          if (!changed) return false;
+          if (index > 0) {
+            localPoint.copy(worldStart);
+            this.mesh.worldToLocal(localPoint);
+            start.x = localPoint.x;
+            start.z = localPoint.z;
+          }
+          localPoint.copy(worldEnd);
+          this.mesh.worldToLocal(localPoint);
+          end.x = localPoint.x;
+          end.z = localPoint.z;
+          return true;
+        };
+
+        for (const point of tailCurve) {
+          point.add(offset);
+          clampPointToFloor(point);
+        }
+        const fixedRoot = tailCurve[0].clone();
+        for (let pass = 0; pass < 10 && obstacles.length > 0; pass++) {
+          let corrected = false;
+          tailCurve[0].copy(fixedRoot);
+          for (let i = 1; i <= this.tailCount; i++) {
+            delta.copy(tailCurve[i]).sub(tailCurve[i - 1]);
+            if (delta.lengthSq() < 1e-8) delta.set(0, 0, -1);
+            tailCurve[i].copy(tailCurve[i - 1]).addScaledVector(delta.normalize(), segLen);
+            clampPointToFloor(tailCurve[i]);
+          }
+          for (let i = 1; i <= this.tailCount; i++) {
+            corrected = projectPointOutsideBodies(tailCurve[i], i) || corrected;
+            clampPointToFloor(tailCurve[i]);
+          }
+          for (let i = 0; i < this.tailCount; i++) {
+            corrected = projectSegmentOutsideBodies(tailCurve[i], tailCurve[i + 1], i)
+              || corrected;
+          }
+          if (!corrected) break;
+        }
+
+        // Finish on collision constraints (rather than a length projection) so
+        // the actual cylinders, including the chord between vertices, remain
+        // outside every body volume.
+        for (let pass = 0; pass < 24 && obstacles.length > 0; pass++) {
+          let corrected = false;
+          for (let i = 1; i <= this.tailCount; i++) {
+            corrected = projectPointOutsideBodies(tailCurve[i], i) || corrected;
+          }
+          for (let i = 0; i < this.tailCount; i++) {
+            corrected = projectSegmentOutsideBodies(tailCurve[i], tailCurve[i + 1], i)
+              || corrected;
+          }
+          if (!corrected) break;
+        }
+
+        this.minimumTailClearance = Infinity;
+        this.minimumTailClearanceIndex = -1;
+        for (let i = 0; i <= this.tailCount; i++) {
+          clampPointToFloor(tailCurve[i]);
+          worldPoint.copy(tailCurve[i]);
+          this.mesh.localToWorld(worldPoint);
+          const tailRadius = tailRadiusAt(i);
+          for (const disc of obstacles) {
+            const clearance = Math.hypot(worldPoint.x - disc.x, worldPoint.z - disc.z)
+              - disc.radius - tailRadius;
+            if (clearance < this.minimumTailClearance) {
+              this.minimumTailClearance = clearance;
+              this.minimumTailClearanceIndex = i;
+            }
+          }
+        }
+        for (let i = 0; i < this.tailCount; i++) {
+          const contact = getSegmentContact(tailCurve[i], tailCurve[i + 1], i);
+          if (contact.clearance < this.minimumTailClearance) {
+            this.minimumTailClearance = contact.clearance;
+            this.minimumTailClearanceIndex = i + 0.5;
+          }
+        }
+
+        for (let i = 0; i < this.tailCount; i++) {
+          const p = i / this.tailCount;
+          let radius = 1.0 - p * PROP.tailTaper;
+          const rootBlend = 1.0 - THREE.MathUtils.smoothstep(p, 0.0, 0.20);
+          radius *= 1.0 + rootBlend * 0.45;
+          radius *= 1.0 + Math.sin(i * 2.8) * 0.06;
+          if (i > 0 && i < this.tailCount) {
+            const dx = tailCurve[i + 1].x - tailCurve[i].x;
+            const prevDx = tailCurve[i].x - tailCurve[i - 1].x;
+            radius *= 1.0 + Math.abs(dx - prevDx) * 0.8;
+          }
+          this.dummy.position.copy(tailCurve[i]);
+          this.dummy.lookAt(tailCurve[i + 1]);
+          const thickMul = this.guiParams.tailThickness;
+          this.dummy.scale.set(radius * thickMul, radius * thickMul, segLen * 1.3);
+          this.dummy.updateMatrix();
+          this.tailInstanced.setMatrixAt(i, this.dummy.matrix);
+          const isTailVisible = this.tailInstanced.visible;
+          if (i === Math.floor(this.tailCount * 0.4)) {
+            this.poseNodes.tailmid.position.copy(tailCurve[i + 1]);
+            this.poseNodes.tailmid.visible = guiParams.showTrackingKeypoints && isTailVisible;
+          }
+          if (i === this.tailCount - 1) {
+            this.poseNodes.tailend.position.copy(tailCurve[i + 1]);
+            this.poseNodes.tailend.visible = guiParams.showTrackingKeypoints && isTailVisible;
+          }
+        }
+        this.tailInstanced.instanceMatrix.needsUpdate = true;
+        if (this.tailRoot && tailCurve.length > 4) {
+          const thickMul = this.guiParams.tailThickness;
+          const dir = tailCurve[3].clone().sub(tailCurve[0]).normalize();
+          this.tailRoot.position.copy(tailCurve[0]).addScaledVector(dir, segLen * 0.25);
+          this.tailRoot.lookAt(tailCurve[3]);
+          const scale = 1.0 + (thickMul - 1.0) * 0.7;
+          this.tailRoot.scale.set(0.95 * scale, 0.68 * scale, 1.15 * scale);
+        }
+      }
+
+      updateTrackingGeometry() {
+        this.mesh.updateMatrixWorld(true);
+        if (!this.trackingGroup.visible) return;
+        const positions = this.skeletonLines.geometry.attributes.position.array;
+        let index = 0;
+        const inverseTrackingMatrix = this.trackingGroup.matrixWorld.clone().invert();
+        const pointA = new THREE.Vector3();
+        const pointB = new THREE.Vector3();
+        for (const [idA, idB] of POSE_CONNECTIONS) {
+          const nodeA = this.poseNodes[idA];
+          const nodeB = this.poseNodes[idB];
+          if (!nodeA || !nodeB) continue;
+          nodeA.getWorldPosition(pointA);
+          nodeB.getWorldPosition(pointB);
+          pointA.applyMatrix4(inverseTrackingMatrix);
+          pointB.applyMatrix4(inverseTrackingMatrix);
+          positions[index++] = pointA.x;
+          positions[index++] = pointA.y;
+          positions[index++] = pointA.z;
+          positions[index++] = pointB.x;
+          positions[index++] = pointB.y;
+          positions[index++] = pointB.z;
+        }
+        this.skeletonLines.geometry.attributes.position.needsUpdate = true;
       }
 
 
@@ -2568,12 +3375,12 @@
 
         if (!guiParams.isPaused) {
           // Vertical body suspension with gravity.
-          const targetBodyY = 1.30 + speedNorm * 0.06;
+          const targetBodyY = 1.17 + speedNorm * 0.045;
           const bodyK = 24.0, bodyD = 8.0, gravity = 3.4;
           this.bodyDyn.vy += (bodyK * (targetBodyY - this.bodyDyn.y) - bodyD * this.bodyDyn.vy - gravity) * dt;
           this.bodyDyn.y += this.bodyDyn.vy * dt;
-          if (this.bodyDyn.y < 1.12) {
-            this.bodyDyn.y = 1.12;
+          if (this.bodyDyn.y < 1.04) {
+            this.bodyDyn.y = 1.04;
             this.bodyDyn.vy = Math.max(0, this.bodyDyn.vy) * 0.2;
           }
 
@@ -2612,43 +3419,57 @@
         this.contactShadow.position.set(0, -this.rig.position.y + 0.02, 0);
 
         // ═══ GAIT ANIMATION (anatomically correct) ═══
-        const legCycle = this.locomotionTime * 3.8;
-        const gaitAmp = Math.min(speedNorm * 1.25, 1.0) * 0.38 * this.motion.gaitAmpMul;
+        const legCycle = this.locomotionTime * 4.1;
+        const gaitAmp = Math.min(speedNorm * 1.35, 1.0) * 0.44 * this.motion.gaitAmpMul;
 
         if (isMoving) {
-          // Hindlimb: hip drives, knee follows with phase offset
-          this.hindL.rotation.x = -0.18 + Math.sin(legCycle) * gaitAmp * 0.42;
-          this.hindR.rotation.x = -0.18 + Math.sin(legCycle + Math.PI) * gaitAmp * 0.42;
-          this.shankL.rotation.x = 0.50 + Math.max(0, Math.sin(legCycle + 0.5)) * gaitAmp * 0.24;
-          this.shankR.rotation.x = 0.50 + Math.max(0, Math.sin(legCycle + Math.PI + 0.5)) * gaitAmp * 0.24;
+          // Diagonal rodent walk: hind hip drives while knee and ankle fold in swing.
+          this.hindL.rotation.x = -0.24 + Math.sin(legCycle) * gaitAmp * 0.48;
+          this.hindR.rotation.x = -0.24 + Math.sin(legCycle + Math.PI) * gaitAmp * 0.48;
+          this.hindL.rotation.z = 0;
+          this.hindR.rotation.z = 0;
+          this.shankL.rotation.x = 0.56 + Math.max(0, Math.sin(legCycle + 0.5)) * gaitAmp * 0.34;
+          this.shankR.rotation.x = 0.56 + Math.max(0, Math.sin(legCycle + Math.PI + 0.5)) * gaitAmp * 0.34;
           // Ankle follows shank, pushes off
-          if (this.hindL._ankle) this.hindL._ankle.rotation.x = -0.28 + Math.sin(legCycle - 0.3) * gaitAmp * 0.14;
-          if (this.hindR._ankle) this.hindR._ankle.rotation.x = -0.28 + Math.sin(legCycle + Math.PI - 0.3) * gaitAmp * 0.14;
+          if (this.hindL._ankle) this.hindL._ankle.rotation.x = -0.36 + Math.sin(legCycle - 0.3) * gaitAmp * 0.22;
+          if (this.hindR._ankle) this.hindR._ankle.rotation.x = -0.36 + Math.sin(legCycle + Math.PI - 0.3) * gaitAmp * 0.22;
+          if (this.hindL._paw) this.hindL._paw.rotation.x = -0.10 - Math.sin(legCycle - 0.3) * gaitAmp * 0.12;
+          if (this.hindR._paw) this.hindR._paw.rotation.x = -0.10 - Math.sin(legCycle + Math.PI - 0.3) * gaitAmp * 0.12;
 
           // Forelimb: shoulder drives, elbow/wrist follow
-          this.armL.rotation.x = -0.12 + Math.sin(legCycle + Math.PI) * gaitAmp * 0.36;
-          this.armR.rotation.x = -0.12 + Math.sin(legCycle) * gaitAmp * 0.36;
+          this.armL.rotation.x = -0.18 + Math.sin(legCycle + Math.PI) * gaitAmp * 0.46;
+          this.armR.rotation.x = -0.18 + Math.sin(legCycle) * gaitAmp * 0.46;
+          this.armL.rotation.z = -0.04;
+          this.armR.rotation.z = 0.04;
           // Elbow flex
-          if (this.armL._forearm) this.armL._forearm.rotation.x = -0.55 + Math.max(0, Math.sin(legCycle + Math.PI + 0.4)) * gaitAmp * 0.18;
-          if (this.armR._forearm) this.armR._forearm.rotation.x = -0.55 + Math.max(0, Math.sin(legCycle + 0.4)) * gaitAmp * 0.18;
+          if (this.armL._forearm) this.armL._forearm.rotation.x = -0.62 + Math.max(0, Math.sin(legCycle + Math.PI + 0.4)) * gaitAmp * 0.28;
+          if (this.armR._forearm) this.armR._forearm.rotation.x = -0.62 + Math.max(0, Math.sin(legCycle + 0.4)) * gaitAmp * 0.28;
           // Wrist flex
-          if (this.armL._wrist) this.armL._wrist.rotation.x = -0.08 + Math.sin(legCycle + Math.PI + 0.6) * gaitAmp * 0.08;
-          if (this.armR._wrist) this.armR._wrist.rotation.x = -0.08 + Math.sin(legCycle + 0.6) * gaitAmp * 0.08;
+          if (this.armL._wrist) this.armL._wrist.rotation.x = -0.12 + Math.sin(legCycle + Math.PI + 0.6) * gaitAmp * 0.16;
+          if (this.armR._wrist) this.armR._wrist.rotation.x = -0.12 + Math.sin(legCycle + 0.6) * gaitAmp * 0.16;
+          if (this.armL._paw) this.armL._paw.rotation.x = -0.12 - Math.sin(legCycle + Math.PI + 0.6) * gaitAmp * 0.10;
+          if (this.armR._paw) this.armR._paw.rotation.x = -0.12 - Math.sin(legCycle + 0.6) * gaitAmp * 0.10;
+          this.rig.position.y += Math.sin(legCycle * 2.0) * speedNorm * 0.018;
         } else {
           // Idle pose
-          this.hindL.rotation.x = -0.18; this.hindR.rotation.x = -0.18;
-          this.shankL.rotation.x = 0.50; this.shankR.rotation.x = 0.50;
-          if (this.hindL._ankle) this.hindL._ankle.rotation.x = -0.28;
-          if (this.hindR._ankle) this.hindR._ankle.rotation.x = -0.28;
+          this.hindL.rotation.x = -0.24; this.hindR.rotation.x = -0.24;
+          this.hindL.rotation.z = 0; this.hindR.rotation.z = 0;
+          this.shankL.rotation.x = 0.56; this.shankR.rotation.x = 0.56;
+          if (this.hindL._ankle) this.hindL._ankle.rotation.x = -0.36;
+          if (this.hindR._ankle) this.hindR._ankle.rotation.x = -0.36;
+          if (this.hindL._paw) this.hindL._paw.rotation.x = -0.10;
+          if (this.hindR._paw) this.hindR._paw.rotation.x = -0.10;
 
           // Neutral planted stance with subtle weight-shift micro-motion
           const pawShift = Math.sin(time * 1.3 + this.timeOffset) * 0.008;
-          this.armL.rotation.x = -0.12; this.armR.rotation.x = -0.12;
+          this.armL.rotation.x = -0.18; this.armR.rotation.x = -0.18;
           this.armL.rotation.z = -0.04 + pawShift; this.armR.rotation.z = 0.04 - pawShift;
-          if (this.armL._forearm) this.armL._forearm.rotation.x = -0.55;
-          if (this.armR._forearm) this.armR._forearm.rotation.x = -0.55;
-          if (this.armL._wrist) this.armL._wrist.rotation.x = -0.08;
-          if (this.armR._wrist) this.armR._wrist.rotation.x = -0.08;
+          if (this.armL._forearm) this.armL._forearm.rotation.x = -0.62;
+          if (this.armR._forearm) this.armR._forearm.rotation.x = -0.62;
+          if (this.armL._wrist) this.armL._wrist.rotation.x = -0.12;
+          if (this.armR._wrist) this.armR._wrist.rotation.x = -0.12;
+          if (this.armL._paw) this.armL._paw.rotation.x = -0.12;
+          if (this.armR._paw) this.armR._paw.rotation.x = -0.12;
         }
 
         const rear = this.rearAmount;
@@ -2664,10 +3485,18 @@
           if (this.armR._forearm) this.armR._forearm.rotation.x = THREE.MathUtils.lerp(this.armR._forearm.rotation.x, 0.85, rear);
           if (this.armL._wrist) this.armL._wrist.rotation.x = THREE.MathUtils.lerp(this.armL._wrist.rotation.x, 0.45, rear);
           if (this.armR._wrist) this.armR._wrist.rotation.x = THREE.MathUtils.lerp(this.armR._wrist.rotation.x, 0.45, rear);
+          if (this.armL._paw) this.armL._paw.rotation.x = THREE.MathUtils.lerp(this.armL._paw.rotation.x, 0.30, rear);
+          if (this.armR._paw) this.armR._paw.rotation.x = THREE.MathUtils.lerp(this.armR._paw.rotation.x, 0.30, rear);
           this.hindL.rotation.x = THREE.MathUtils.lerp(this.hindL.rotation.x, 0.35, rear);
           this.hindR.rotation.x = THREE.MathUtils.lerp(this.hindR.rotation.x, 0.35, rear);
           this.contactShadow.position.set(0, -this.rig.position.y + 0.02, 0);
         }
+        this.contactFrame.legCycle = legCycle;
+        this.contactFrame.isMoving = isMoving;
+        this.contactFrame.rear = rear;
+        this.contactFrame.lateralAccel = lateralAccel;
+        this.contactFrame.turnRate = turnRate;
+        this.contactFrame.forwardAccel = forwardAccel;
 
         // Head animation with irregular sniff pulses
         const calmIdle = !isMoving && speed < 0.45 && this.lowSpeedTimer > 0.6;
@@ -2686,17 +3515,23 @@
           this.snoutTip.position.y = -0.15 + sniffPulse * 0.024;
           const noseScalePulse = 1.0 + sniffPulse * 0.018;
           this.snoutTip.scale.z = 0.72 * this.guiParams.snoutLength * noseScalePulse;
-          this.padL.rotation.y = 0.16 + sniffPulse * 0.13;
-          this.padR.rotation.y = -0.16 - sniffPulse * 0.13;
-          this.padL.rotation.z = sniffPulse * 0.018;
-          this.padR.rotation.z = -sniffPulse * 0.018;
+          this.padL.rotation.y = 0.11 + sniffPulse * 0.055;
+          this.padR.rotation.y = -0.11 - sniffPulse * 0.055;
+          this.padL.rotation.x = -0.015 + sniffPulse * 0.008;
+          this.padR.rotation.x = -0.015 + sniffPulse * 0.008;
+          this.padL.rotation.z = sniffPulse * 0.009;
+          this.padR.rotation.z = -sniffPulse * 0.009;
         } else if (!isMoving) {
           if (calmIdle) {
             this.headGroup.rotation.y *= 0.85;
             this.headGroup.rotation.x *= 0.85;
             this.snoutTip.position.y = -0.15 + sniffPulse * 0.006;
-            this.padL.rotation.y = 0.1 + sniffPulse * 0.02;
-            this.padR.rotation.y = -0.1 - sniffPulse * 0.02;
+            this.padL.rotation.y = 0.045 + sniffPulse * 0.012;
+            this.padR.rotation.y = -0.045 - sniffPulse * 0.012;
+            this.padL.rotation.x = -0.008;
+            this.padR.rotation.x = -0.008;
+            this.padL.rotation.z = 0;
+            this.padR.rotation.z = 0;
           } else {
             this.headGroup.rotation.y = (
               Math.sin(time * 2.1 + this.timeOffset * 0.03) * 0.11
@@ -2710,8 +3545,12 @@
             // Nose scale pulse during sniffing (compression)
             const noseScalePulse = 1.0 + sniffPulse * 0.015;
             this.snoutTip.scale.z = 0.72 * this.guiParams.snoutLength * noseScalePulse;
-            this.padL.rotation.y = sniffPulse * 0.1 + 0.1;
-            this.padR.rotation.y = -sniffPulse * 0.1 - 0.1;
+            this.padL.rotation.y = sniffPulse * 0.040 + 0.070;
+            this.padR.rotation.y = -sniffPulse * 0.040 - 0.070;
+            this.padL.rotation.x = -0.010 + sniffPulse * 0.006;
+            this.padR.rotation.x = -0.010 + sniffPulse * 0.006;
+            this.padL.rotation.z = sniffPulse * 0.007;
+            this.padR.rotation.z = -sniffPulse * 0.007;
           }
         } else {
           const turnAmount = this.velocity.x * this.heading.y - this.velocity.y * this.heading.x;
@@ -2719,7 +3558,9 @@
           const headStab = Math.sin(this.locomotionTime * 3.8) * 0.018;
           this.headGroup.rotation.set(Math.sin(time * 1.8) * 0.030 + headStab, turnAmount * 0.06, 0);
           this.snoutTip.position.y = -0.15;
-          this.padL.rotation.y = -0.3; this.padR.rotation.y = 0.3;
+          this.padL.rotation.y = -0.14; this.padR.rotation.y = 0.14;
+          this.padL.rotation.x = 0.012; this.padR.rotation.x = 0.012;
+          this.padL.rotation.z = 0; this.padR.rotation.z = 0;
         }
         if (rear > 0) this.headGroup.rotation.x += rear * 0.32;
 
@@ -2728,12 +3569,12 @@
           this.earMicro.twitchTimerL += dt;
           this.earMicro.twitchTimerR += dt;
           if (this.earMicro.twitchTimerL > this.earMicro.nextIntervalL) {
-            this.earMicro.twitchAngleL = (Math.random() - 0.5) * 0.14;
+            this.earMicro.twitchAngleL = (Math.random() - 0.5) * 0.08;
             this.earMicro.twitchTimerL = 0;
             this.earMicro.nextIntervalL = 0.5 + Math.random() * 4.0;
           }
           if (this.earMicro.twitchTimerR > this.earMicro.nextIntervalR) {
-            this.earMicro.twitchAngleR = (Math.random() - 0.5) * 0.14;
+            this.earMicro.twitchAngleR = (Math.random() - 0.5) * 0.08;
             this.earMicro.twitchTimerR = 0;
             this.earMicro.nextIntervalR = 0.5 + Math.random() * 4.0;
           }
@@ -2742,10 +3583,13 @@
           this.earMicro.twitchAngleR *= Math.exp(-4.0 * dt);
           // Locomotion secondary bounce
           const earBounce = isMoving ? Math.sin(this.locomotionTime * 5.0) * 0.02 : 0;
+          const earScan = Math.sin(time * 0.72 + this.timeOffset * 0.013) * 0.022;
           this.earL.rotation.z = this.earMicro.baseRotL.z + this.earMicro.twitchAngleL + earBounce;
           this.earR.rotation.z = this.earMicro.baseRotR.z + this.earMicro.twitchAngleR - earBounce;
           this.earL.rotation.x = this.earMicro.baseRotL.x + this.earMicro.twitchAngleL * 0.5;
           this.earR.rotation.x = this.earMicro.baseRotR.x + this.earMicro.twitchAngleR * 0.5;
+          this.earL.rotation.y = this.earMicro.baseRotL.y + earScan + this.earMicro.twitchAngleL * 0.25;
+          this.earR.rotation.y = this.earMicro.baseRotR.y - earScan + this.earMicro.twitchAngleR * 0.25;
         }
 
         // Subtle rodent blink/wince cycle. It briefly compresses the glossy eye
@@ -2773,72 +3617,7 @@
           this.corneaR.scale.y = corneaY;
         }
 
-        // ═══ TAIL ═══
-        let tailBase = new THREE.Vector3(0, -0.16, -PROP.bodyLength * 0.90);
-        this.rig.updateMatrix();
-        tailBase.applyMatrix4(this.rig.matrix);
-        let tailCurve = [];
-        const tailLenMul = this.guiParams.tailLength;
-        const segLen = this.tailSegLen * tailLenMul;
-        for (let i = 0; i <= this.tailCount; i++) {
-          const p = i / this.tailCount;
-          const lag = p * p;
-          const transmit = Math.pow(p, 1.35);
-          const midCurve = p * (1.0 - p);
-          const bodyForceX = (this.bodyDyn.roll * 0.34 + lateralAccel * 0.010 - turnRate * 0.018) * transmit;
-          const bodyForceY = (this.bodyDyn.pitch * 0.38 - forwardAccel * 0.008) * transmit;
-          const waveX = this.tailDyn.sway * lag + bodyForceX + midCurve * 0.18 * Math.sign(this.tailDyn.sway || bodyForceX || 1);
-          let waveY = -i * PROP.tailSag * p + this.tailDyn.lift * lag + bodyForceY + midCurve * 0.08;
-          waveY = Math.max(waveY, -1.3);
-          tailCurve.push(new THREE.Vector3(waveX, waveY, -i * segLen));
-        }
-        let offset = tailBase.clone().sub(tailCurve[0]);
-        for (let i = 0; i <= this.tailCount; i++) {
-          tailCurve[i].add(offset);
-          const worldY = tailCurve[i].y + this.mesh.position.y;
-          if (worldY < 0.05) tailCurve[i].y += (0.05 - worldY);
-        }
-        for (let i = 0; i < this.tailCount; i++) {
-          let p = i / this.tailCount;
-          let radius = 1.0 - p * PROP.tailTaper;
-          const rootBlend = 1.0 - THREE.MathUtils.smoothstep(p, 0.0, 0.20);
-          radius *= 1.0 + rootBlend * 0.45;
-          // Annular ring segmentation — more pronounced
-          radius *= 1.0 + Math.sin(i * 2.8) * 0.06;
-          // Wrinkle-on-bend: compress segments on inner curve of bends
-          if (i > 0 && i < this.tailCount) {
-            const dx = tailCurve[i + 1].x - tailCurve[i].x;
-            const prevDx = tailCurve[i].x - tailCurve[i - 1].x;
-            const bendAmount = Math.abs(dx - prevDx);
-            radius *= 1.0 + bendAmount * 0.8; // slight bulge at bend
-          }
-          this.dummy.position.copy(tailCurve[i]);
-          this.dummy.lookAt(tailCurve[i + 1]);
-          const thickMul = this.guiParams.tailThickness;
-          this.dummy.scale.set(radius * thickMul, radius * thickMul, segLen * 1.3);
-          this.dummy.updateMatrix();
-          this.tailInstanced.setMatrixAt(i, this.dummy.matrix);
-          let isTailVisible = this.tailInstanced.visible;
-          if (i === Math.floor(this.tailCount * 0.4)) {
-            this.poseNodes['tailmid'].position.copy(tailCurve[i + 1]);
-            this.poseNodes['tailmid'].visible = guiParams.showTrackingKeypoints && isTailVisible;
-          }
-          if (i === this.tailCount - 1) {
-            this.poseNodes['tailend'].position.copy(tailCurve[i + 1]);
-            this.poseNodes['tailend'].visible = guiParams.showTrackingKeypoints && isTailVisible;
-          }
-        }
-        this.tailInstanced.instanceMatrix.needsUpdate = true;
-        // Keep a soft root collar aligned with the first tail segment.
-        if (this.tailRoot && tailCurve.length > 4) {
-          const thickMul = this.guiParams.tailThickness;
-          const dir = tailCurve[3].clone().sub(tailCurve[0]).normalize();
-          this.tailRoot.position.copy(tailCurve[0]).addScaledVector(dir, segLen * 0.25);
-          this.tailRoot.lookAt(tailCurve[3]);
-          const s = 1.0 + (thickMul - 1.0) * 0.7;
-          this.tailRoot.scale.set(0.95 * s, 0.68 * s, 1.15 * s);
-        }
-
+        // Tail geometry is refreshed after final body contact resolution.
         // Tracking visibility
         this.trackingGroup.visible = guiParams.showTrackingKeypoints;
         for (const key in this.poseNodes) this.poseNodes[key].visible = guiParams.showTrackingKeypoints;
@@ -2858,24 +3637,7 @@
         }
         this.prevVelocity.copy(this.velocity);
 
-        this.mesh.updateMatrixWorld(true);
-
-        if (this.trackingGroup.visible) {
-          const positions = this.skeletonLines.geometry.attributes.position.array;
-          let idx = 0;
-          const invMat = this.trackingGroup.matrixWorld.clone().invert();
-          const ptA = new THREE.Vector3(), ptB = new THREE.Vector3();
-          for (const [idA, idB] of POSE_CONNECTIONS) {
-            const nA = this.poseNodes[idA], nB = this.poseNodes[idB];
-            if (nA && nB) {
-              nA.getWorldPosition(ptA); nB.getWorldPosition(ptB);
-              ptA.applyMatrix4(invMat); ptB.applyMatrix4(invMat);
-              positions[idx++] = ptA.x; positions[idx++] = ptA.y; positions[idx++] = ptA.z;
-              positions[idx++] = ptB.x; positions[idx++] = ptB.y; positions[idx++] = ptB.z;
-            }
-          }
-          this.skeletonLines.geometry.attributes.position.needsUpdate = true;
-        }
+        this.updateTrackingGeometry();
       }
     }
 
@@ -3115,6 +3877,7 @@
     // 13. GUI & LOGIC
     // ═══════════════════════════════════════════════════════════════
     const mice = [];
+    let nextTrackId = 1;
     const hudElements = {
       count: document.getElementById('hud-count'),
       state: document.getElementById('hud-state'),
@@ -3138,8 +3901,8 @@
       presets: 'BALB/c (White)',
       // Body part controls
       tailLength: 0.85, tailThickness: 0.92,
-      headSize: 1.0, snoutLength: 1.0,
-      bodyLength: 1.0, legLength: 1.18, legThickness: 1.0,
+      headSize: PROP.headSize, snoutLength: 1.0,
+      bodyLength: 1.0, legLength: 1.06, legThickness: 1.10,
       // Physics
       maxSpeed: 5.4, dragCoeff: 2.55, wanderForce: 5.8, wallAttraction: 1.8,
       // Quality
@@ -3173,13 +3936,14 @@
     function getStrainProfile(presetName) {
       if (presetName === 'C57BL/6 (Black)') {
         return {
-          earOuterTransmission: 0.22, earInnerTransmission: 0.32,
-          earInnerSatOffset: 0.05, earInnerLightOffset: 0.00, earOuterRoughness: 0.62,
-          earOuterColor: '#403536', earInnerColor: '#8d6a63',
-          earSkinBlend: 0.34, earInnerSkinBlend: 0.20, earScaleMul: 0.92,
+          eyeColor: '#070505', eyeRimColor: '#241818',
+          earOuterTransmission: 0.12, earInnerTransmission: 0.22,
+          earInnerSatOffset: 0.035, earInnerLightOffset: 0.00, earOuterRoughness: 0.66,
+          earOuterColor: '#312e2f', earInnerColor: '#765a59',
+          earSkinBlend: 0.18, earInnerSkinBlend: 0.12, earScaleMul: 0.94,
           earSheenColor: 0x9b8278, earAttenuationColor: 0x8a5148, earAttenuationDistance: 0.10,
-          earYaw: 0.82, earHeightOffset: -0.02, padDarken: 0.88, clawColor: 0xcccccc,
-          pawColor: '#c28b86', pawPadColor: '#c98f89',
+          earYaw: 0.72, earHeightOffset: -0.02, padDarken: 0.94, clawColor: 0xc8beb6,
+          pawColor: '#b2827f', pawPadColor: '#9a6c69',
           noseColor: '#b97972', pawSpreadMul: 1.0, toeLenMul: 0.98,
           gaitAmpMul: 0.92, headIdleYawMul: 0.82, headIdlePitchMul: 0.88,
           sniffAmpMul: 0.75, breathIdleAmp: 0.010, breathMoveAmp: 0.012,
@@ -3188,13 +3952,14 @@
       }
       if (presetName === 'CBA (Brown)') {
         return {
-          earOuterTransmission: 0.32, earInnerTransmission: 0.40,
+          eyeColor: '#120b09', eyeRimColor: '#3a201a',
+          earOuterTransmission: 0.20, earInnerTransmission: 0.30,
           earInnerSatOffset: 0.035, earInnerLightOffset: 0.015, earOuterRoughness: 0.58,
-          earOuterColor: '#8c6552', earInnerColor: '#c49383',
-          earSkinBlend: 0.38, earInnerSkinBlend: 0.22, earScaleMul: 0.95,
+          earOuterColor: '#765b4e', earInnerColor: '#b78378',
+          earSkinBlend: 0.24, earInnerSkinBlend: 0.16, earScaleMul: 0.96,
           earSheenColor: 0xc6a08e, earAttenuationColor: 0xb77668, earAttenuationDistance: 0.14,
-          earYaw: 0.58, earHeightOffset: -0.01, padDarken: 0.86, clawColor: 0xd7c8bc,
-          pawColor: '#d0a090', pawPadColor: '#d6a79a',
+          earYaw: 0.58, earHeightOffset: -0.01, padDarken: 0.93, clawColor: 0xd1c2b7,
+          pawColor: '#c8948b', pawPadColor: '#aa7771',
           noseColor: '#b8786f', pawSpreadMul: 1.0, toeLenMul: 1.0,
           gaitAmpMul: 1.0, headIdleYawMul: 1.0, headIdlePitchMul: 1.0,
           sniffAmpMul: 1.0, breathIdleAmp: 0.013, breathMoveAmp: 0.016,
@@ -3203,13 +3968,14 @@
       }
       if (presetName === 'Nude/Hairless') {
         return {
-          earOuterTransmission: 0.50, earInnerTransmission: 0.62,
+          eyeColor: '#5a171c', eyeRimColor: '#8c4d50',
+          earOuterTransmission: 0.36, earInnerTransmission: 0.46,
           earInnerSatOffset: 0.10, earInnerLightOffset: 0.08, earOuterRoughness: 0.44,
-          earOuterColor: '#efc2ba', earInnerColor: '#ffd9ce',
-          earSkinBlend: 0.36, earInnerSkinBlend: 0.20, earScaleMul: 1.04,
+          earOuterColor: '#d9b2ad', earInnerColor: '#e8b9b5',
+          earSkinBlend: 0.28, earInnerSkinBlend: 0.18, earScaleMul: 1.02,
           earSheenColor: 0xffd6c8, earAttenuationColor: 0xea9d8f, earAttenuationDistance: 0.18,
-          earYaw: 0.48, earHeightOffset: 0.00, padDarken: 0.88, clawColor: 0xe1d7cb,
-          pawColor: '#f0bbb2', pawPadColor: '#f3c4bb',
+          earYaw: 0.48, earHeightOffset: 0.00, padDarken: 0.94, clawColor: 0xddd1c8,
+          pawColor: '#e9b8b2', pawPadColor: '#d39390',
           noseColor: '#d29089', pawSpreadMul: 1.04, toeLenMul: 1.05,
           gaitAmpMul: 1.08, headIdleYawMul: 1.15, headIdlePitchMul: 1.12,
           sniffAmpMul: 1.25, breathIdleAmp: 0.018, breathMoveAmp: 0.024,
@@ -3217,14 +3983,15 @@
         };
       }
       return { // BALB/c default
-        earOuterTransmission: 0.42, earInnerTransmission: 0.54,
-        earInnerSatOffset: 0.08, earInnerLightOffset: 0.055, earOuterRoughness: 0.50,
-        earOuterColor: '#d6b3a2', earInnerColor: '#efc7ba',
-        earSkinBlend: 0.34, earInnerSkinBlend: 0.20, earScaleMul: 0.94,
-        earSheenColor: 0xffd8c0, earAttenuationColor: 0xde9386, earAttenuationDistance: 0.16,
-        earYaw: 0.50, earHeightOffset: -0.01, padDarken: 0.84, clawColor: 0xd7cdc2,
-        pawColor: '#dfaea5', pawPadColor: '#e7bab0',
-        noseColor: '#c9867f', pawSpreadMul: 1.0, toeLenMul: 1.0,
+        eyeColor: '#65171c', eyeRimColor: '#9a5b5e',
+        earOuterTransmission: 0.28, earInnerTransmission: 0.40,
+        earInnerSatOffset: 0.055, earInnerLightOffset: 0.035, earOuterRoughness: 0.60,
+        earOuterColor: '#d6c9c7', earInnerColor: '#e5c0c2',
+        earSkinBlend: 0.16, earInnerSkinBlend: 0.12, earScaleMul: 0.95,
+        earSheenColor: 0xecd0d0, earAttenuationColor: 0xd7a3a6, earAttenuationDistance: 0.16,
+        earYaw: 0.50, earHeightOffset: -0.01, padDarken: 0.94, clawColor: 0xddd2cb,
+        pawColor: '#e3b3b1', pawPadColor: '#d3999b',
+        noseColor: '#e39b9e', pawSpreadMul: 1.04, toeLenMul: 1.03,
         gaitAmpMul: 1.0, headIdleYawMul: 1.0, headIdlePitchMul: 1.0,
         sniffAmpMul: 1.0, breathIdleAmp: 0.013, breathMoveAmp: 0.016,
         breathIdleFreq: 12.0, breathMoveFreq: 20.0, tailWaveAmpMul: 1.0, tailWaveFreqMul: 1.0
@@ -3233,10 +4000,10 @@
 
     function applyStrainPreset(name) {
       guiParams.presets = name;
-      if (name === 'BALB/c (White)') { guiParams.furColor = '#d8d1c4'; guiParams.skinColor = '#dda99f'; guiParams.furDensity = 0.80; guiParams.earSize = 0.76; }
-      if (name === 'C57BL/6 (Black)') { guiParams.furColor = '#171515'; guiParams.skinColor = '#40383a'; guiParams.furDensity = 0.90; guiParams.earSize = 0.74; }
-      if (name === 'CBA (Brown)') { guiParams.furColor = '#6a4b3a'; guiParams.skinColor = '#d0a090'; guiParams.furDensity = 0.76; guiParams.earSize = 0.76; }
-      if (name === 'Nude/Hairless') { guiParams.furColor = '#ffd0c8'; guiParams.skinColor = '#ffc0b8'; guiParams.furDensity = 0.0; guiParams.earSize = 0.84; }
+      if (name === 'BALB/c (White)') { guiParams.furColor = '#cec9bf'; guiParams.skinColor = '#e2aaa4'; guiParams.furDensity = 0.82; guiParams.earSize = 0.68; }
+      if (name === 'C57BL/6 (Black)') { guiParams.furColor = '#171515'; guiParams.skinColor = '#40383a'; guiParams.furDensity = 0.92; guiParams.earSize = 0.66; }
+      if (name === 'CBA (Brown)') { guiParams.furColor = '#6a4b3a'; guiParams.skinColor = '#d0a090'; guiParams.furDensity = 0.80; guiParams.earSize = 0.68; }
+      if (name === 'Nude/Hairless') { guiParams.furColor = '#ffd0c8'; guiParams.skinColor = '#ffc0b8'; guiParams.furDensity = 0.0; guiParams.earSize = 0.75; }
     }
 
     const gui = new GUI({ title: 'OPEN FIELD CONTROLS' });
@@ -3434,6 +4201,8 @@
     // ═══════════════════════════════════════════════════════════════
     function spawnMouse(options = {}) {
       const m = new ExpertMouse(guiParams);
+      m.trackId = nextTrackId++;
+      m.strainName = guiParams.presets;
       let inX = 0, inZ = 0;
       if (options.position && Array.isArray(options.position)) {
         m.mesh.position.set(
@@ -3494,16 +4263,148 @@
     gui.controllersRecursive().forEach(c => c.updateDisplay());
     spawnMouse({ position: [3.3, 2.6], heading: [-1.0, -0.12], speed: 0.85 });
 
+    // Deterministic, hidden QA pose: one tail starts through the other subject
+    // while the body envelopes remain separated. The post-contact solver must
+    // route it around the obstacle without changing the normal scene defaults.
+    if (CONTACT_QA === 'tail') {
+      const tailOwner = mice[1];
+      const bodyObstacle = mice[0];
+      tailOwner.mesh.position.set(0, 0, 3.5);
+      tailOwner.velocity.set(0, 0);
+      tailOwner.heading.set(0, 1);
+      tailOwner.yawAngle = 0;
+      tailOwner.prevHeadingAngle = 0;
+      tailOwner.tailDyn.sway = 0;
+      tailOwner.tailDyn.lift = -0.04;
+      bodyObstacle.mesh.position.set(0, 0, -3.0);
+      bodyObstacle.velocity.set(0, 0);
+      bodyObstacle.heading.set(1, 0);
+      bodyObstacle.yawAngle = Math.PI / 2;
+      bodyObstacle.prevHeadingAngle = Math.PI / 2;
+      bodyObstacle.tailDyn.sway = 0;
+      bodyObstacle.tailDyn.lift = -0.04;
+      guiParams.isPaused = true;
+      camera.position.set(0, 18, 0.1);
+      camera.up.set(0, 0, -1);
+      controls.target.set(0, 0, 0);
+      controls.update();
+    }
+    if (CONTACT_QA === 'framing') {
+      const leftMouse = mice[0];
+      const rightMouse = mice[1];
+      leftMouse.mesh.position.set(-8.0, 0, 0);
+      leftMouse.velocity.set(0, 0);
+      leftMouse.heading.set(-1, 0);
+      leftMouse.yawAngle = -Math.PI / 2;
+      leftMouse.prevHeadingAngle = -Math.PI / 2;
+      rightMouse.mesh.position.set(8.0, 0, 0);
+      rightMouse.velocity.set(0, 0);
+      rightMouse.heading.set(1, 0);
+      rightMouse.yawAngle = Math.PI / 2;
+      rightMouse.prevHeadingAngle = Math.PI / 2;
+      guiParams.isPaused = true;
+    }
+
+    function projectPoseNode(node, width, height) {
+      const worldPosition = new THREE.Vector3();
+      node.getWorldPosition(worldPosition);
+      const projected = worldPosition.clone().project(camera);
+      const x = (projected.x * 0.5 + 0.5) * width;
+      const y = (-projected.y * 0.5 + 0.5) * height;
+      const inFrame = Number.isFinite(x) && Number.isFinite(y)
+        && projected.z >= -1 && projected.z <= 1
+        && x >= 0 && x < width && y >= 0 && y < height;
+      return inFrame
+        ? { x: Number(x.toFixed(3)), y: Number(y.toFixed(3)), visibility: 2 }
+        : { x: 0, y: 0, visibility: 0 };
+    }
+
+    function buildPoseAnnotation(mouse, imageId, width, height) {
+      const projectedPoints = POSE_KEYPOINTS.map(({ id }) =>
+        projectPoseNode(mouse.poseNodes[id], width, height)
+      );
+      const visiblePoints = projectedPoints.filter(point => point.visibility > 0);
+      const keypoints = projectedPoints.flatMap(point => [point.x, point.y, point.visibility]);
+      let bbox = [0, 0, 0, 0];
+      if (visiblePoints.length > 0) {
+        const padding = 10;
+        const minX = Math.max(0, Math.min(...visiblePoints.map(point => point.x)) - padding);
+        const minY = Math.max(0, Math.min(...visiblePoints.map(point => point.y)) - padding);
+        const maxX = Math.min(width, Math.max(...visiblePoints.map(point => point.x)) + padding);
+        const maxY = Math.min(height, Math.max(...visiblePoints.map(point => point.y)) + padding);
+        bbox = [minX, minY, Math.max(0, maxX - minX), Math.max(0, maxY - minY)]
+          .map(value => Number(value.toFixed(3)));
+      }
+      return {
+        id: (imageId - 1) * mice.length + mouse.trackId,
+        image_id: imageId,
+        category_id: POSE_CATEGORY.id,
+        track_id: mouse.trackId,
+        subject_name: mouse.strainName,
+        keypoints,
+        num_keypoints: visiblePoints.length,
+        bbox,
+        area: Number((bbox[2] * bbox[3]).toFixed(3)),
+        iscrowd: 0,
+      };
+    }
+
+    function buildDatasetFramePayload() {
+      controls.update();
+      scene.updateMatrixWorld(true);
+      camera.updateMatrixWorld(true);
+      const width = Math.round(canvas.getBoundingClientRect().width || innerWidth);
+      const height = Math.round(canvas.getBoundingClientRect().height || innerHeight);
+      const imageId = datasetCurrentFrameIndex + 1;
+      const clearance = getMinimumMouseClearance(mice);
+      const tailClearance = getMinimumTailClearance(mice);
+      const maximumFootSlip = getMaximumFootSlip(mice);
+      const maximumPawGroundError = getMaximumPawGroundError(mice);
+      return {
+        schema_version: 1,
+        seed: DATASET_SEED,
+        fps: DATASET_CAPTURE_FPS,
+        image: {
+          id: imageId,
+          file_name: `images/frame_${String(datasetCurrentFrameIndex).padStart(6, '0')}.jpg`,
+          width,
+          height,
+          video_id: 1,
+          frame_id: datasetCurrentFrameIndex,
+          timestamp: Number((datasetCurrentFrameIndex / DATASET_CAPTURE_FPS).toFixed(6)),
+          minimum_subject_clearance: Number.isFinite(clearance)
+            ? Number(clearance.toFixed(6))
+            : null,
+          subject_overlap: Number.isFinite(clearance) && clearance < -0.01,
+          minimum_tail_clearance: Number.isFinite(tailClearance)
+            ? Number(tailClearance.toFixed(6))
+            : null,
+          tail_overlap: Number.isFinite(tailClearance) && tailClearance < -0.001,
+          maximum_foot_slip: Number(maximumFootSlip.toFixed(6)),
+          maximum_paw_ground_error: Number(maximumPawGroundError.toFixed(6)),
+        },
+        annotations: mice.map(mouse => buildPoseAnnotation(mouse, imageId, width, height)),
+        category: POSE_CATEGORY,
+      };
+    }
+
     // ═══════════════════════════════════════════════════════════════
     // 15. RENDER LOOP
     // ═══════════════════════════════════════════════════════════════
     window.addEventListener('resize', () => {
       camera.aspect = innerWidth / innerHeight;
       const portraitFit = THREE.MathUtils.clamp((0.90 - camera.aspect) / 0.45, 0, 1);
-      const cameraDistanceScale = 1.0 + portraitFit * 0.58;
-      camera.fov = THREE.MathUtils.lerp(34, 52, portraitFit);
-      camera.position.copy(cameraBasePosition).sub(cameraTarget).multiplyScalar(cameraDistanceScale).add(cameraTarget);
-      controls.target.copy(cameraTarget);
+      const cameraDistanceScale = 1.0 + portraitFit * 1.15;
+      camera.fov = THREE.MathUtils.lerp(34, 58, portraitFit);
+      if (CONTACT_QA === 'tail') {
+        camera.position.set(0, 18, 0.1);
+        camera.up.set(0, 0, -1);
+        controls.target.set(0, 0, 0);
+      } else {
+        camera.up.set(0, 1, 0);
+        camera.position.copy(cameraBasePosition).sub(cameraTarget).multiplyScalar(cameraDistanceScale).add(cameraTarget);
+        controls.target.copy(cameraTarget);
+      }
       camera.updateProjectionMatrix();
       renderer.setSize(innerWidth, innerHeight);
       postFX.resize();
@@ -3513,22 +4414,47 @@
     const clock = new THREE.Clock();
     let accumulatedTime = 0;
     let minimumObservedSubjectClearance = Infinity;
+    let minimumObservedTailClearance = Infinity;
+    let minimumObservedTailDetails = null;
+    let maximumObservedFootSlip = 0;
+    let maximumObservedPawGroundError = 0;
+    let datasetCurrentFrameIndex = 0;
+    let datasetInitialized = false;
 
-    function animate() {
-      requestAnimationFrame(animate);
-      const dt = clock.getDelta();
-      if (!guiParams.isPaused) accumulatedTime += dt;
-      mice.forEach((m, i) => {
-        m.update(accumulatedTime, mice, i === 0 ? hudElements : null, dt);
-      });
-      resolveAllMouseBodyOverlaps(mice);
+    function updateCollisionTelemetry() {
       const minimumSubjectClearance = getMinimumMouseClearance(mice);
+      const minimumTailClearance = getMinimumTailClearance(mice);
+      const maximumFootSlip = getMaximumFootSlip(mice);
+      const maximumPawGroundError = getMaximumPawGroundError(mice);
       if (Number.isFinite(minimumSubjectClearance)) {
         minimumObservedSubjectClearance = Math.min(
           minimumObservedSubjectClearance,
           minimumSubjectClearance
         );
       }
+      if (Number.isFinite(minimumTailClearance)) {
+        if (minimumTailClearance < minimumObservedTailClearance) {
+          const closestTail = mice.reduce((closest, mouse) => (
+            mouse.minimumTailClearance < (closest?.minimumTailClearance ?? Infinity)
+              ? mouse
+              : closest
+          ), null);
+          minimumObservedTailDetails = closestTail ? {
+            trackId: closestTail.trackId,
+            clearance: Number(closestTail.minimumTailClearance.toFixed(6)),
+            pointIndex: closestTail.minimumTailClearanceIndex,
+          } : null;
+        }
+        minimumObservedTailClearance = Math.min(
+          minimumObservedTailClearance,
+          minimumTailClearance
+        );
+      }
+      maximumObservedFootSlip = Math.max(maximumObservedFootSlip, maximumFootSlip);
+      maximumObservedPawGroundError = Math.max(
+        maximumObservedPawGroundError,
+        maximumPawGroundError
+      );
       canvas.dataset.minimumSubjectClearance = Number.isFinite(minimumSubjectClearance)
         ? minimumSubjectClearance.toFixed(4)
         : 'na';
@@ -3536,9 +4462,97 @@
         ? minimumObservedSubjectClearance.toFixed(4)
         : 'na';
       canvas.dataset.subjectOverlap = minimumSubjectClearance < -0.01 ? 'true' : 'false';
+      canvas.dataset.minimumTailClearance = Number.isFinite(minimumTailClearance)
+        ? minimumTailClearance.toFixed(4)
+        : 'na';
+      canvas.dataset.minimumObservedTailClearance = Number.isFinite(minimumObservedTailClearance)
+        ? minimumObservedTailClearance.toFixed(4)
+        : 'na';
+      canvas.dataset.tailOverlap = minimumTailClearance < -0.001 ? 'true' : 'false';
+      canvas.dataset.observedTailOverlap = minimumObservedTailClearance < -0.001
+        ? 'true'
+        : 'false';
+      canvas.dataset.minimumObservedTailDetails = JSON.stringify(minimumObservedTailDetails);
+      canvas.dataset.maximumFootSlip = maximumFootSlip.toFixed(4);
+      canvas.dataset.maximumObservedFootSlip = maximumObservedFootSlip.toFixed(4);
+      canvas.dataset.maximumPawGroundError = maximumPawGroundError.toFixed(4);
+      canvas.dataset.maximumObservedPawGroundError = maximumObservedPawGroundError.toFixed(4);
+      canvas.dataset.tailClearanceBySubject = JSON.stringify(mice.map(mouse => ({
+        trackId: mouse.trackId,
+        clearance: Number.isFinite(mouse.minimumTailClearance)
+          ? Number(mouse.minimumTailClearance.toFixed(4))
+          : null,
+        pointIndex: mouse.minimumTailClearanceIndex,
+      })));
+      canvas.dataset.footContactBySubject = JSON.stringify(mice.map(mouse => ({
+        trackId: mouse.trackId,
+        slip: Number((mouse.maximumFootSlip || 0).toFixed(4)),
+        groundError: Number((mouse.maximumPawGroundError || 0).toFixed(4)),
+        plantedFeet: mouse.footPlants.filter(foot => foot.planted).length,
+      })));
+    }
+
+    function advanceDatasetFrame(targetFrame) {
+      const parsedTarget = Number.parseInt(targetFrame, 10);
+      const clampedTarget = Math.max(0, Math.min(10000, parsedTarget || 0));
+      if (clampedTarget < datasetCurrentFrameIndex) {
+        throw new RangeError('Dataset capture frames must advance monotonically.');
+      }
+      const dt = 1 / DATASET_SIMULATION_HZ;
+      if (!datasetInitialized) {
+        mice.forEach(m => m.update(0, mice, null, 0));
+        resolveAllMouseContacts(mice, dt);
+        datasetInitialized = true;
+      }
+      const targetSimulationSteps = Math.round(
+        clampedTarget * DATASET_SIMULATION_HZ / DATASET_CAPTURE_FPS
+      );
+      const currentSimulationSteps = Math.round(
+        datasetCurrentFrameIndex * DATASET_SIMULATION_HZ / DATASET_CAPTURE_FPS
+      );
+      const simulationSteps = targetSimulationSteps - currentSimulationSteps;
+      for (let step = 0; step < simulationSteps; step++) {
+        accumulatedTime += dt;
+        guiParams.isPaused = false;
+        mice.forEach(m => m.update(accumulatedTime, mice, null, dt));
+        resolveAllMouseContacts(mice, dt);
+        updateCollisionTelemetry();
+      }
+      datasetCurrentFrameIndex = clampedTarget;
+      guiParams.isPaused = true;
+      updateCollisionTelemetry();
+      controls.update();
+      scene.updateMatrixWorld(true);
+    }
+
+    if (DATASET_CAPTURE) {
+      advanceDatasetFrame(DATASET_FRAME_INDEX);
+      window.annolidPoseDataset = Object.freeze({
+        getFrame: buildDatasetFramePayload,
+        setFrame: targetFrame => {
+          advanceDatasetFrame(targetFrame);
+          postFX.render(scene, camera, accumulatedTime);
+          canvas.dataset.datasetReady = 'true';
+          return buildDatasetFramePayload();
+        },
+      });
+    }
+
+    function animate() {
+      if (!DATASET_CAPTURE) requestAnimationFrame(animate);
+      if (!DATASET_CAPTURE) {
+        const dt = clock.getDelta();
+        if (!guiParams.isPaused) accumulatedTime += dt;
+        mice.forEach((m, i) => {
+          m.update(accumulatedTime, mice, i === 0 ? hudElements : null, dt);
+        });
+        resolveAllMouseContacts(mice, dt);
+        updateCollisionTelemetry();
+      }
       controls.update();
       // Render via post-processing pipeline (passes through if disabled)
       postFX.render(scene, camera, accumulatedTime);
+      if (DATASET_CAPTURE) canvas.dataset.datasetReady = 'true';
       canvas.dataset.sceneReady = 'true';
     }
     animate();

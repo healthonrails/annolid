@@ -40,13 +40,52 @@ def test_two_mice_example_preserves_subject_appearance_and_render_readiness():
     assert "const portraitFit = THREE.MathUtils.clamp" in source
     assert "cameraDistanceScale" in source
     assert "const MOUSE_COLLISION_DISC_LAYOUT" in source
-    assert "resolveAllMouseBodyOverlaps(mice);" in source
+    assert "resolveAllMouseContacts(mice, dt);" in source
     assert "canvas.dataset.minimumObservedSubjectClearance" in source
     assert "canvas.dataset.subjectOverlap" in source
+    assert "canvas.dataset.minimumObservedTailClearance" in source
+    assert "canvas.dataset.tailOverlap" in source
+    assert "canvas.dataset.observedTailOverlap" in source
+    assert "canvas.dataset.maximumObservedFootSlip" in source
+    assert "canvas.dataset.maximumObservedPawGroundError" in source
+    assert "solveFootPlantConstraints(dt = 0.016)" in source
+    assert "updateTailGeometry(otherMice = [])" in source
+    assert "const getSegmentContact = (start, end, index)" in source
+    assert "const CONTACT_QA = datasetQuery.get('contact_qa')" in source
     assert "const thighMuscle = new THREE.Mesh" in source
     assert "const legLengthScale = params.legLength" in source
+    assert "paw.name = isFore ? 'connected-forepaw' : 'connected-hindpaw'" in source
+    assert "rootBridge.name = isFore ? 'forepaw-root-bridge'" in source
+    assert "toe.add(toeTip);" in source
+    assert "toe.add(toePad);" in source
+    assert "toe.add(claw);" in source
+    assert "paw._groundContact = groundContact;" in source
+    assert "paw.add(toeTip)" not in source
+    assert "paw.position.set(sign * 0.035, -0.13, 0.07)" in source
+    assert "paw.position.set(sign * 0.045, -0.20, 0.31)" in source
+    assert "this.hindL._paw.rotation.x = -0.10" in source
     assert "this.maxSpeed = params.maxSpeed" in source
-    assert "const legCycle = this.locomotionTime * 3.8" in source
+    assert "bodyLength: 2.72, bodyGirthX: 1.36, bodyGirthY: 1.32" in source
+    assert "function createPinnaShellGeometry()" in source
+    assert "function createPinnaSurfaceGeometry(" in source
+    assert "const lowerOpen = THREE.MathUtils.smoothstep" in source
+    assert "const openingYaw = 0.28 +" in source
+    assert "sideSign * openingYaw + asymmetryYaw" in source
+    assert "const farEarScale" not in source
+    assert "earOuterColor: '#d6c9c7'" in source
+    assert "function createTaperedWhiskerGeometry(" in source
+    assert "function createAnatomicalWhiskers(" in source
+    assert "earBackingGeo" not in source
+    assert "new THREE.TubeGeometry" not in source
+    assert "createTrackingNode('lforepaw', this.armL._paw" in source
+    assert "createTrackingNode('lhindpaw', this.hindL._paw" in source
+    assert "const legCycle = this.locomotionTime * 4.1" in source
+    assert "const DATASET_CAPTURE" in source
+    assert "const POSE_KEYPOINTS = Object.freeze" in source
+    assert "window.annolidPoseDataset = Object.freeze" in source
+    assert "setFrame: targetFrame =>" in source
+    assert "track_id: mouse.trackId" in source
+    assert "canvas.dataset.datasetReady = 'true';" in source
 
 
 def test_generate_flybody_example_uses_repo_mesh_when_available(

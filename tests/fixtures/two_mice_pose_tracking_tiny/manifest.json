@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "generator": "scripts/generate_two_mice_pose_dataset.py",
+  "scene": "annolid/gui/assets/threejs/two_mice.html",
+  "seed": 20260710,
+  "fps": 5,
+  "frame_count": 12,
+  "train_frames": 8,
+  "validation_frames": 4,
+  "width": 640,
+  "height": 480,
+  "keypoint_count": 13,
+  "track_ids": [
+    1,
+    2
+  ]
+}

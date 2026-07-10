@@ -1,0 +1,20 @@
+format: coco
+path: .
+image_root: .
+train: annotations/train.json
+val: annotations/val.json
+kpt_shape: [13, 3]
+keypoint_names:
+  - nose
+  - left_ear
+  - right_ear
+  - neck
+  - spine_1
+  - spine_2
+  - tail_base
+  - left_forepaw
+  - right_forepaw
+  - left_hindpaw
+  - right_hindpaw
+  - tail_mid
+  - tail_tip
