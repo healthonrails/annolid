@@ -16,7 +16,7 @@
       width: 100%;
       height: 100%;
       overflow: hidden;
-      background: #ece8df;
+      background: #d8dad9;
       font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       user-select: none;
     }
@@ -31,8 +31,8 @@
       position: absolute;
       inset: 0;
       pointer-events: none;
-      background: radial-gradient(circle at 50% 48%, transparent 56%, rgba(40, 34, 26, 0.28) 118%);
-      box-shadow: inset 0 0 80px rgba(58, 47, 36, 0.22);
+      background: radial-gradient(circle at 50% 48%, transparent 56%, rgba(35, 39, 38, 0.24) 118%);
+      box-shadow: inset 0 0 80px rgba(40, 45, 43, 0.18);
     }
 
     .hud {
@@ -126,21 +126,23 @@
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.18;
+    renderer.toneMappingExposure = 0.94;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0xe7e0d5);
-    scene.fog = new THREE.FogExp2(0xe7e0d5, 0.0045);
+    scene.background = new THREE.Color(0xd8dad9);
+    scene.fog = new THREE.FogExp2(0xd8dad9, 0.0045);
 
-    const camera = new THREE.PerspectiveCamera(35, innerWidth / innerHeight, 0.03, 500);
-    camera.position.set(7.2, 6.3, 20.5);
+    const camera = new THREE.PerspectiveCamera(34, innerWidth / innerHeight, 0.03, 500);
+    const cameraBasePosition = new THREE.Vector3(8.4, 5.4, 22.5);
+    const cameraTarget = new THREE.Vector3(0, 1.05, 0);
+    camera.position.copy(cameraBasePosition);
 
     const controls = new OrbitControls(camera, canvas);
     controls.enableDamping = true;
     controls.dampingFactor = 0.05;
-    controls.target.set(0, 1.4, 0);
+    controls.target.copy(cameraTarget);
     controls.maxPolarAngle = Math.PI / 2 - 0.02;
 
     // IBL environment (True HDR Studio Lighting)
@@ -155,14 +157,14 @@
     // ═══════════════════════════════════════════════════════════════
     function defaultProportions() {
       return {
-        bodyLength: 3.0, bodyGirthX: 1.50, bodyGirthY: 1.44,
-        ribcageDepth: 1.0, waistTaper: 0.64, haunchWidth: 1.00, shoulderWidth: 0.82,
-        neckLength: 0.8, neckGirth: 0.55,
-        headSize: 0.98, snoutLength: 1.44, snoutWidth: 1.10, cheekFullness: 0.34,
-        earSize: 0.85, earSetBack: -0.35, earYaw: 0.75, earThickness: 0.06,
-        eyeSize: 0.16, eyeSpacing: 0.50, eyeProtrusion: 1.15, eyeYaw: 0.5,
-        foreLimbLength: 1.0, hindLimbLength: 0.78,
-        forePawSize: 1.0, hindPawSize: 0.88,
+        bodyLength: 3.25, bodyGirthX: 1.30, bodyGirthY: 1.18,
+        ribcageDepth: 1.0, waistTaper: 0.70, haunchWidth: 0.94, shoulderWidth: 0.76,
+        neckLength: 0.72, neckGirth: 0.62,
+        headSize: 0.94, snoutLength: 1.28, snoutWidth: 0.96, cheekFullness: 0.28,
+        earSize: 0.76, earSetBack: -0.35, earYaw: 0.68, earThickness: 0.05,
+        eyeSize: 0.135, eyeSpacing: 0.46, eyeProtrusion: 1.10, eyeYaw: 0.48,
+        foreLimbLength: 0.96, hindLimbLength: 0.72,
+        forePawSize: 0.90, hindPawSize: 0.82,
         tailLength: 1.0, tailThickness: 1.0, tailTaper: 0.88, tailSag: 0.02,
       };
     }
@@ -192,9 +194,9 @@
       const c = document.createElement('canvas'); c.width = c.height = size;
       const ctx = c.getContext('2d');
       const base = ctx.createLinearGradient(0, 0, size, size);
-      base.addColorStop(0.0, '#ded8c8');
-      base.addColorStop(0.52, '#e9e2d0');
-      base.addColorStop(1.0, '#d4cbbb');
+      base.addColorStop(0.0, '#bfc3c1');
+      base.addColorStop(0.52, '#d2d4d1');
+      base.addColorStop(1.0, '#b7bcba');
       ctx.fillStyle = base;
       ctx.fillRect(0, 0, size, size);
 
@@ -588,18 +590,23 @@
       const hsl = {}; base.getHSL(hsl);
       const root = base.clone().offsetHSL(0.0, -0.02, -0.08);
       const tip = base.clone().offsetHSL(0.015, 0.01, hsl.l > 0.65 ? -0.015 : 0.06);
-      const grad = ctx.createLinearGradient(0, 0, size, size);
-      grad.addColorStop(0.0, `#${tip.getHexString()}`);
-      grad.addColorStop(0.55, `#${base.getHexString()}`);
-      grad.addColorStop(1.0, `#${root.getHexString()}`);
-      ctx.fillStyle = grad;
+      // Keep the base tileable. A full-canvas gradient creates visible bands
+      // when the map repeats around the torso's UV seam.
+      ctx.fillStyle = `#${base.getHexString()}`;
       ctx.fillRect(0, 0, size, size);
-      for (let y = 0; y < size; y++) {
-        const sweep = Math.sin(y * 0.035) * 0.018 + Math.sin(y * 0.13) * 0.010;
-        ctx.fillStyle = `rgba(255,255,255,${Math.max(0, sweep)})`;
-        ctx.fillRect(0, y, size, 1);
-        ctx.fillStyle = `rgba(0,0,0,${Math.max(0, -sweep)})`;
-        ctx.fillRect(0, y, size, 1);
+      ctx.lineCap = 'round';
+      for (let i = 0; i < 2800; i++) {
+        const x = Math.random() * size;
+        const y = Math.random() * size;
+        const len = 4 + Math.random() * 18;
+        const useTip = Math.random() > 0.52;
+        const fiber = useTip ? tip : root;
+        ctx.strokeStyle = `rgba(${Math.round(fiber.r * 255)},${Math.round(fiber.g * 255)},${Math.round(fiber.b * 255)},${0.025 + Math.random() * 0.055})`;
+        ctx.lineWidth = 0.35 + Math.random() * 0.75;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + (Math.random() - 0.5) * 1.8, y + len);
+        ctx.stroke();
       }
       const isPaleCoat = hsl.l > 0.70;
       for (let i = 0; i < 5000; i++) {
@@ -616,7 +623,7 @@
       }
       const tex = new THREE.CanvasTexture(c);
       tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-      tex.repeat.set(2.5, 1.4);
+      tex.repeat.set(3.0, 2.0);
       tex.colorSpace = THREE.SRGBColorSpace;
       tex.anisotropy = 8;
       return tex;
@@ -700,60 +707,43 @@
       clearcoat: 1.0, clearcoatRoughness: 0.0, envMapIntensity: 5.0,
     });
 
-    function colorToRgbArray(color) {
-      return [color.r, color.g, color.b];
-    }
-
-    function computeCoatColor(furColor, skinColor, density) {
-      const fur = new THREE.Color(furColor);
-      const skin = new THREE.Color(skinColor);
-      return skin.lerp(fur, THREE.MathUtils.clamp(0.50 + density * 0.45, 0.0, 0.96));
-    }
-
     function createCoatMaterial(furColor, skinColor, density, params) {
       const fur = new THREE.Color(furColor);
       const hsl = {}; fur.getHSL(hsl);
-      const coatColor = computeCoatColor(furColor, skinColor, density);
       const material = new THREE.MeshPhysicalMaterial({
-        color: coatColor,
-        roughness: hsl.l > 0.65 ? 0.72 : 0.82,
+        // The albedo map already contains the strain pigment. Keeping the
+        // material tint neutral avoids multiplying dark coats into black.
+        color: 0xffffff,
+        roughness: hsl.l > 0.65 ? 0.78 : 0.86,
         metalness: 0.0,
-        clearcoat: hsl.l > 0.65 ? 0.14 : 0.05,
-        clearcoatRoughness: 0.55,
-        sheen: 1.0,
-        sheenColor: fur.clone().offsetHSL(0.0, -0.06, hsl.l > 0.55 ? -0.10 : 0.16),
-        sheenRoughness: 0.48,
+        clearcoat: hsl.l > 0.65 ? 0.04 : 0.02,
+        clearcoatRoughness: 0.72,
+        sheen: 0.62,
+        sheenColor: fur.clone().offsetHSL(0.0, -0.04, hsl.l > 0.55 ? -0.06 : 0.08),
+        sheenRoughness: 0.70,
         map: createCoatAlbedoMap(furColor),
         normalMap: createCoatNormalMap(),
-        normalScale: new THREE.Vector2(0.10 + density * 0.08, 0.12 + density * 0.10),
+        normalScale: new THREE.Vector2(0.07 + density * 0.05, 0.08 + density * 0.06),
         roughnessMap: createCoatRoughnessMap(),
       });
       if (params.enableMicroDetail !== false) {
         annolidShaders.applyMicroDetail(material, {
           scale: Math.max(70.0, params.microScale ?? 80.0),
-          strength: Math.max(0.035, (params.microStrength ?? 0.06) * 0.65)
+          strength: Math.min(0.024, (params.microStrength ?? 0.06) * 0.32)
         });
       }
       return material;
     }
 
     function enhanceFurMaterial(material, furColor, isUndercoat = false) {
-      const root = new THREE.Color(furColor).offsetHSL(0.0, -0.02, isUndercoat ? -0.03 : -0.10);
-      const tip = new THREE.Color(furColor).offsetHSL(0.015, 0.02, isUndercoat ? 0.035 : 0.09);
-      material.transparent = true;
-      material.depthWrite = false;
-      material.alphaTest = 0.02;
-      material.envMapIntensity = isUndercoat ? 0.22 : 0.45;
-      material.sheen = isUndercoat ? 0.75 : 1.25;
-      material.sheenColor = tip;
-      material.sheenRoughness = isUndercoat ? 0.75 : 0.45;
-      annolidShaders.applyFurShader(material, {
-        rootColor: colorToRgbArray(root),
-        tipColor: colorToRgbArray(tip),
-        anisotropy: isUndercoat ? 42.0 : 90.0,
-        specIntensity: isUndercoat ? 0.10 : 0.24,
-        flowDirection: [0.0, 0.18, -1.0]
-      });
+      const base = new THREE.Color(furColor);
+      material.color.copy(base).offsetHSL(0.0, -0.01, isUndercoat ? -0.018 : 0.012);
+      material.transparent = false;
+      material.depthWrite = true;
+      material.envMapIntensity = isUndercoat ? 0.12 : 0.30;
+      material.sheen = isUndercoat ? 0.30 : 0.68;
+      material.sheenColor = base.clone().offsetHSL(0.01, -0.03, 0.045);
+      material.sheenRoughness = isUndercoat ? 0.88 : 0.68;
       return material;
     }
 
@@ -1132,42 +1122,43 @@
       const chain = new THREE.Group();
       const fl = PROP.foreLimbLength;
       // Scapula/shoulder anchor — place at shoulder width, slightly below spine
-      chain.position.set(sign * 0.76 * PROP.shoulderWidth / 0.85, -0.14, PROP.bodyLength * 0.70);
+      chain.position.set(sign * 0.61 * PROP.shoulderWidth / 0.76, 0.02, PROP.bodyLength * 0.68);
 
       // Upper arm (humerus) — substantial visible segment
       const upperArm = new THREE.Group();
-      const uaLen = 0.5 * fl;
+      const uaLen = 0.42 * fl;
       const upperArmMesh = new THREE.Mesh(
-        new THREE.CapsuleGeometry(0.16, uaLen, 10, 10), surfaceMat
+        new THREE.CapsuleGeometry(0.11, uaLen, 10, 10), surfaceMat
       );
       upperArmMesh.position.y = -uaLen * 0.5;
       upperArmMesh.castShadow = true;
       upperArm.add(upperArmMesh);
-      upperArm.rotation.x = -0.26;
+      upperArm.rotation.x = 0.44;
       // Shoulder joint sphere (visible scapula bump)
-      const shoulderJoint = new THREE.Mesh(new THREE.SphereGeometry(0.18, 12, 12), surfaceMat);
-      shoulderJoint.scale.set(1.1, 0.9, 1.0);
+      const shoulderJoint = new THREE.Mesh(new THREE.SphereGeometry(0.13, 12, 12), surfaceMat);
+      shoulderJoint.scale.set(1.0, 0.82, 1.05);
       shoulderJoint.castShadow = true;
       upperArm.add(shoulderJoint);
       chain.add(upperArm);
 
       // Forearm (radius/ulna) — attached at elbow
       const forearm = new THREE.Group();
-      const faLen = 0.45 * fl;
-      forearm.position.set(0, -uaLen - 0.01, 0.08);
+      const faLen = 0.44 * fl;
+      forearm.position.set(0, -uaLen - 0.01, -0.01);
+      forearm.rotation.x = -0.62;
       // Soft-tissue bridge to avoid segmented look between upper arm and forearm.
-      const elbowBridge = new THREE.Mesh(new THREE.CapsuleGeometry(0.125, 0.09, 10, 10), surfaceMat);
+      const elbowBridge = new THREE.Mesh(new THREE.CapsuleGeometry(0.092, 0.075, 10, 10), surfaceMat);
       elbowBridge.position.set(0, -uaLen * 0.92, 0.03);
       elbowBridge.rotation.x = 0.15;
       elbowBridge.castShadow = true;
       upperArm.add(elbowBridge);
       // Elbow joint
-      const elbowJoint = new THREE.Mesh(new THREE.SphereGeometry(0.12, 10, 10), surfaceMat);
+      const elbowJoint = new THREE.Mesh(new THREE.SphereGeometry(0.088, 10, 10), surfaceMat);
       elbowJoint.scale.set(1.08, 0.95, 1.0);
       elbowJoint.castShadow = true;
       forearm.add(elbowJoint);
       const forearmMesh = new THREE.Mesh(
-        new THREE.CapsuleGeometry(0.11, faLen, 8, 8), surfaceMat
+        new THREE.CapsuleGeometry(0.072, faLen, 8, 8), surfaceMat
       );
       forearmMesh.position.y = -faLen * 0.5;
       forearmMesh.castShadow = true;
@@ -1176,12 +1167,12 @@
 
       // Wrist joint
       const wrist = new THREE.Group();
-      wrist.position.set(0, -faLen - 0.018, 0.08);
-      const wristJoint = new THREE.Mesh(new THREE.SphereGeometry(0.08, 8, 8), surfaceMat);
+      wrist.position.set(0, -faLen - 0.018, 0.03);
+      const wristJoint = new THREE.Mesh(new THREE.SphereGeometry(0.06, 8, 8), surfaceMat);
       wristJoint.scale.set(1.1, 0.95, 1.05);
       wristJoint.castShadow = true;
       wrist.add(wristJoint);
-      const wristCuff = new THREE.Mesh(new THREE.CapsuleGeometry(0.09, 0.08, 8, 8), surfaceMat);
+      const wristCuff = new THREE.Mesh(new THREE.CapsuleGeometry(0.062, 0.07, 8, 8), surfaceMat);
       wristCuff.position.set(0, -0.03, 0.02);
       wristCuff.rotation.x = 0.18;
       wristCuff.castShadow = true;
@@ -1190,8 +1181,8 @@
 
       // Paw — sits at bottom of wrist
       const paw = createPaw(skinMat, true, strain);
-      paw.position.set(0, -0.095, 0.055);
-      paw.scale.set(1.08, 1.08, 1.08);
+      paw.position.set(0, -0.085, 0.055);
+      paw.scale.set(0.92, 0.92, 0.92);
       paw.rotation.x = -0.18;
       wrist.add(paw);
 
@@ -1232,7 +1223,7 @@
       const chain = new THREE.Group();
       const hl = PROP.hindLimbLength;
       // Hip anchor — at widest haunch point
-      chain.position.set(sign * 0.68 * PROP.haunchWidth / 1.2, 0.06, -PROP.bodyLength * 0.35);
+      chain.position.set(sign * 0.60 * PROP.haunchWidth / 0.94, 0.04, -PROP.bodyLength * 0.35);
 
       // Hip joint (visible mass)
       const hipJoint = new THREE.Mesh(new THREE.SphereGeometry(0.15, 12, 12), surfaceMat);
@@ -1287,8 +1278,8 @@
 
       // Thigh (femur) — enlarged deformed sphere
       const thigh = new THREE.Mesh(thighGeo, surfaceMat);
-      thigh.position.set(0, -0.08, 0.05);
-      thigh.scale.set(0.92, 0.88 * hl, 1.02);
+      thigh.position.set(0, -0.16, 0.02);
+      thigh.scale.set(0.60, 0.68 * hl, 0.66);
       thigh.castShadow = true;
       chain.add(thigh);
       thigh.add(generateFurLayer(deformThigh, Math.floor(8200 * density), furColor, 0.15, false));
@@ -1304,8 +1295,8 @@
       kneeJoint.castShadow = true;
       shank.add(kneeJoint);
 
-      const shankLen = 0.60 * hl;
-      const shankMesh = new THREE.Mesh(new THREE.CapsuleGeometry(0.088, shankLen, 8, 8), surfaceMat);
+      const shankLen = 0.58 * hl;
+      const shankMesh = new THREE.Mesh(new THREE.CapsuleGeometry(0.066, shankLen, 8, 8), surfaceMat);
       shankMesh.rotation.x = -0.16;
       shankMesh.position.set(0, -shankLen * 0.5, 0.09);
       shankMesh.castShadow = true;
@@ -1339,13 +1330,13 @@
       const paw = createPaw(skinMat, false, strain);
       paw.position.set(0, -0.19, 0.31);
       paw.rotation.x = -0.12;
-      paw.scale.set(1.08, 1.08, 1.08);
+      paw.scale.set(0.94, 0.94, 0.94);
       ankle.add(paw);
 
       // Baseline crouched posture so underside view reads organic, not columnar.
-      chain.rotation.x = -0.08;
-      shank.rotation.x = 0.24;
-      ankle.rotation.x = -0.10;
+      chain.rotation.x = -0.22;
+      shank.rotation.x = 0.54;
+      ankle.rotation.x = -0.30;
 
       chain._thigh = thigh;
       chain._shank = shank;
@@ -1392,20 +1383,22 @@
 
     function generateFurLayer(deformFn, count, colorHex, length, isHead, isUndercoat = false) {
       if (count <= 0) return new THREE.Group();
-      const radius = isUndercoat ? 0.025 : 0.016;
-      const geo = new THREE.ConeGeometry(radius, length, 4);
-      geo.translate(0, length / 2, 0); geo.rotateX(-Math.PI / 2);
+      const radius = isUndercoat ? 0.0045 : 0.0032;
+      const geo = new THREE.ConeGeometry(radius, length, 3);
+      geo.translate(0, length / 2, 0);
+      geo.rotateX(Math.PI / 2);
       const mat = new THREE.MeshPhysicalMaterial({
-        color: colorHex, roughness: isUndercoat ? 0.92 : 0.75,
-        clearcoat: isUndercoat ? 0.0 : 0.12,
-        sheen: isUndercoat ? 0.7 : 1.2, sheenColor: new THREE.Color(0xffffff),
-        sheenRoughness: isUndercoat ? 0.7 : 0.35,
+        color: 0xffffff, roughness: isUndercoat ? 0.94 : 0.82,
+        clearcoat: 0.0,
+        sheen: isUndercoat ? 0.24 : 0.58,
+        sheenColor: new THREE.Color(colorHex),
+        sheenRoughness: isUndercoat ? 0.88 : 0.68,
       });
       enhanceFurMaterial(mat, colorHex, isUndercoat);
       const inst = new THREE.InstancedMesh(geo, mat, count);
-      inst.receiveShadow = true;
+      inst.castShadow = false;
+      inst.receiveShadow = false;
       inst.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(count * 3), 3);
-      const baseColor = new THREE.Color(colorHex);
       const strandColor = new THREE.Color();
       const dummy = new THREE.Object3D();
       const pos = new THREE.Vector3(), normal = new THREE.Vector3();
@@ -1417,7 +1410,7 @@
         const preZ = pos.z;
         const preY = pos.y;
         deformFn(pos);
-        pos.addScaledVector(normal, isUndercoat ? 0.005 : 0.012);
+        pos.addScaledVector(normal, isUndercoat ? 0.003 : 0.007);
         let flowDir;
         if (isHead) {
           // Face: fur sweeps toward nose on snout, backward on cranium
@@ -1451,31 +1444,21 @@
           }
         }
         if (isUndercoat) { flowDir.lerp(new THREE.Vector3(0, 0, -1), 0.3); flowDir.normalize(); }
+        flowDir.addScaledVector(normal, isUndercoat ? 0.42 : 0.25).normalize();
         dummy.position.copy(pos);
         dummy.lookAt(pos.clone().add(flowDir));
-        let scale = 0.5 + Math.random() * 0.7;
+        let scale = 0.72 + Math.random() * 0.42;
         if (isHead && preZ > 0.4) scale *= 0.42;
         if (isHead && preZ > 0.2 && preZ <= 0.4) scale *= 0.6;
-        if (!isHead && preZ < -0.6) scale *= 1.25;
-        if (isUndercoat) scale = 0.6 + Math.random() * 0.3;
-        const jitter = isUndercoat ? 0.15 : 0.08;
+        if (!isHead && preZ < -0.6) scale *= 1.08;
+        if (isUndercoat) scale = 0.76 + Math.random() * 0.22;
+        const jitter = isUndercoat ? 0.08 : 0.045;
         dummy.rotation.x += (Math.random() - 0.5) * jitter;
         dummy.rotation.y += (Math.random() - 0.5) * jitter;
         dummy.scale.set(scale, scale, scale); dummy.updateMatrix();
         inst.setMatrixAt(i, dummy.matrix);
-        strandColor.copy(baseColor);
-        const hsl = {}; strandColor.getHSL(hsl);
-        const lumV = isUndercoat ? 0.06 : 0.08;
-        const ventrum = isHead ? 0.0 : THREE.MathUtils.clamp((-preY - 0.18) / 1.05, 0, 1);
-        const ventrumBlend = ventrum * ventrum * (3.0 - 2.0 * ventrum);
-        const isVeryLight = hsl.l > 0.74;
-        const ventrumSatDrop = isVeryLight ? 0.010 : (hsl.l < 0.35 ? 0.020 : 0.040);
-        const ventrumLift = isVeryLight
-          ? (isUndercoat ? 0.010 : 0.006)
-          : (hsl.l < 0.35 ? (isUndercoat ? 0.030 : 0.020) : (isUndercoat ? 0.060 : 0.042));
-        strandColor.setHSL(hsl.h + (Math.random() - 0.5) * 0.02,
-          Math.max(0, Math.min(1, hsl.s + (Math.random() - 0.5) * 0.05 - ventrumBlend * ventrumSatDrop)),
-          Math.max(0, Math.min(1, hsl.l + (Math.random() - 0.5) * lumV + ventrumBlend * ventrumLift)));
+        const shade = (isUndercoat ? 0.88 : 0.92) + Math.random() * (isUndercoat ? 0.08 : 0.10);
+        strandColor.setRGB(shade, shade, shade);
         inst.instanceColor.setXYZ(i, strandColor.r, strandColor.g, strandColor.b);
       }
       return inst;
@@ -1487,12 +1470,10 @@
     function generateMultiLayerFur(deformFn, density, furColor, isHead) {
       const group = new THREE.Group();
       if (density <= 0) return group;
-      const vellusCount = Math.floor((isHead ? 8000 : 15000) * density);
-      const underCount = Math.floor((isHead ? 18000 : 35000) * density);
-      const guardCount = Math.floor((isHead ? 20000 : 40000) * density);
-      group.add(generateFurLayer(deformFn, vellusCount, furColor, isHead ? 0.03 : 0.05, isHead, true));
-      group.add(generateFurLayer(deformFn, underCount, furColor, isHead ? 0.07 : 0.12, isHead, true));
-      group.add(generateFurLayer(deformFn, guardCount, furColor, isHead ? 0.14 : 0.24, isHead, false));
+      const underCount = Math.floor((isHead ? 9000 : 18000) * density);
+      const guardCount = Math.floor((isHead ? 6500 : 12500) * density);
+      group.add(generateFurLayer(deformFn, underCount, furColor, isHead ? 0.026 : 0.038, isHead, true));
+      group.add(generateFurLayer(deformFn, guardCount, furColor, isHead ? 0.065 : 0.105, isHead, false));
       return group;
     }
 
@@ -1674,7 +1655,7 @@
         this.prevHeadingAngle = Math.atan2(this.heading.x, this.heading.y);
         this.yawAngle = this.prevHeadingAngle;
         this.yawVel = 0;
-        this.bodyDyn = { y: 1.3, vy: 0, pitch: 0, pitchV: 0, roll: 0, rollV: 0 };
+        this.bodyDyn = { y: 1.16, vy: 0, pitch: 0, pitchV: 0, roll: 0, rollV: 0 };
         this.tailDyn = { sway: 0, swayV: 0, lift: 0, liftV: 0 };
         this.behaviorTimer = 0.8 + Math.random() * 2.4;
         this.pauseTimer = Math.random() * 0.9;
@@ -1689,6 +1670,7 @@
         const earScaleByHead = THREE.MathUtils.clamp(0.9 + (params.headSize - 1.0) * 0.18, 0.82, 1.08);
         const eSize = params.earSize * earScaleByHead;
         const strain = getStrainProfile(params.presets);
+        this.appearance = Object.freeze({ furColor, skinColor, density, strain: params.presets });
 
         // Per-instance subtle asymmetry
         this.asymmetry = {
@@ -1784,9 +1766,9 @@
         // NECK
         const neckGeo = new THREE.CapsuleGeometry(PROP.neckGirth, PROP.neckLength, 12, 12);
         const neckMesh = new THREE.Mesh(neckGeo, this.surfaceMat);
-        neckMesh.position.set(0, 0.08, PROP.bodyLength * 0.79);
+        neckMesh.position.set(0, 0.08, PROP.bodyLength * 0.84);
         neckMesh.rotation.x = Math.PI / 2 + 0.08;
-        neckMesh.scale.set(0.96, 0.95, 0.82);
+        neckMesh.scale.set(1.14, 0.92, 0.96);
         neckMesh.castShadow = true;
         this.rig.add(neckMesh);
         // Neck fur
@@ -1854,7 +1836,7 @@
 
         // HEAD
         this.headGroup = new THREE.Group();
-        this.headGroup.position.set(0, 0.24 * chonk, PROP.bodyLength * 0.96);
+        this.headGroup.position.set(0, 0.22 * chonk, PROP.bodyLength * 1.02);
         this.rig.add(this.headGroup);
 
         this.head = new THREE.Mesh(headGeo, this.surfaceMat);
@@ -2484,12 +2466,12 @@
 
         if (!guiParams.isPaused) {
           // Vertical body suspension with gravity.
-          const targetBodyY = 1.26 + speedNorm * 0.10;
+          const targetBodyY = 1.14 + speedNorm * 0.07;
           const bodyK = 24.0, bodyD = 8.0, gravity = 3.4;
           this.bodyDyn.vy += (bodyK * (targetBodyY - this.bodyDyn.y) - bodyD * this.bodyDyn.vy - gravity) * dt;
           this.bodyDyn.y += this.bodyDyn.vy * dt;
-          if (this.bodyDyn.y < 1.12) {
-            this.bodyDyn.y = 1.12;
+          if (this.bodyDyn.y < 1.03) {
+            this.bodyDyn.y = 1.03;
             this.bodyDyn.vy = Math.max(0, this.bodyDyn.vy) * 0.2;
           }
 
@@ -2533,36 +2515,36 @@
 
         if (isMoving) {
           // Hindlimb: hip drives, knee follows with phase offset
-          this.hindL.rotation.x = -0.08 + Math.sin(legCycle) * gaitAmp * 0.9;
-          this.hindR.rotation.x = -0.08 + Math.sin(legCycle + Math.PI) * gaitAmp * 0.9;
-          this.shankL.rotation.x = 0.24 + Math.max(0, Math.sin(legCycle + 0.5)) * gaitAmp * 0.42;
-          this.shankR.rotation.x = 0.24 + Math.max(0, Math.sin(legCycle + Math.PI + 0.5)) * gaitAmp * 0.42;
+          this.hindL.rotation.x = -0.22 + Math.sin(legCycle) * gaitAmp * 0.68;
+          this.hindR.rotation.x = -0.22 + Math.sin(legCycle + Math.PI) * gaitAmp * 0.68;
+          this.shankL.rotation.x = 0.54 + Math.max(0, Math.sin(legCycle + 0.5)) * gaitAmp * 0.34;
+          this.shankR.rotation.x = 0.54 + Math.max(0, Math.sin(legCycle + Math.PI + 0.5)) * gaitAmp * 0.34;
           // Ankle follows shank, pushes off
-          if (this.hindL._ankle) this.hindL._ankle.rotation.x = -0.10 + Math.sin(legCycle - 0.3) * gaitAmp * 0.22;
-          if (this.hindR._ankle) this.hindR._ankle.rotation.x = -0.10 + Math.sin(legCycle + Math.PI - 0.3) * gaitAmp * 0.22;
+          if (this.hindL._ankle) this.hindL._ankle.rotation.x = -0.30 + Math.sin(legCycle - 0.3) * gaitAmp * 0.18;
+          if (this.hindR._ankle) this.hindR._ankle.rotation.x = -0.30 + Math.sin(legCycle + Math.PI - 0.3) * gaitAmp * 0.18;
 
           // Forelimb: shoulder drives, elbow/wrist follow
           this.armL.rotation.x = -0.18 + Math.sin(legCycle + Math.PI) * gaitAmp * 0.62;
           this.armR.rotation.x = -0.18 + Math.sin(legCycle) * gaitAmp * 0.62;
           // Elbow flex
-          if (this.armL._forearm) this.armL._forearm.rotation.x = 0.14 + Math.max(0, Math.sin(legCycle + Math.PI + 0.4)) * gaitAmp * 0.3;
-          if (this.armR._forearm) this.armR._forearm.rotation.x = 0.14 + Math.max(0, Math.sin(legCycle + 0.4)) * gaitAmp * 0.3;
+          if (this.armL._forearm) this.armL._forearm.rotation.x = -0.62 + Math.max(0, Math.sin(legCycle + Math.PI + 0.4)) * gaitAmp * 0.28;
+          if (this.armR._forearm) this.armR._forearm.rotation.x = -0.62 + Math.max(0, Math.sin(legCycle + 0.4)) * gaitAmp * 0.28;
           // Wrist flex
           if (this.armL._wrist) this.armL._wrist.rotation.x = -0.06 + Math.sin(legCycle + Math.PI + 0.6) * gaitAmp * 0.12;
           if (this.armR._wrist) this.armR._wrist.rotation.x = -0.06 + Math.sin(legCycle + 0.6) * gaitAmp * 0.12;
         } else {
           // Idle pose
-          this.hindL.rotation.x = -0.08; this.hindR.rotation.x = -0.08;
-          this.shankL.rotation.x = 0.24; this.shankR.rotation.x = 0.24;
-          if (this.hindL._ankle) this.hindL._ankle.rotation.x = -0.10;
-          if (this.hindR._ankle) this.hindR._ankle.rotation.x = -0.10;
+          this.hindL.rotation.x = -0.22; this.hindR.rotation.x = -0.22;
+          this.shankL.rotation.x = 0.54; this.shankR.rotation.x = 0.54;
+          if (this.hindL._ankle) this.hindL._ankle.rotation.x = -0.30;
+          if (this.hindR._ankle) this.hindR._ankle.rotation.x = -0.30;
 
           // Neutral planted stance with subtle weight-shift micro-motion
           const pawShift = Math.sin(time * 1.3 + this.timeOffset) * 0.008;
           this.armL.rotation.x = -0.18; this.armR.rotation.x = -0.18;
           this.armL.rotation.z = -0.04 + pawShift; this.armR.rotation.z = 0.04 - pawShift;
-          if (this.armL._forearm) this.armL._forearm.rotation.x = 0.14;
-          if (this.armR._forearm) this.armR._forearm.rotation.x = 0.14;
+          if (this.armL._forearm) this.armL._forearm.rotation.x = -0.62;
+          if (this.armR._forearm) this.armR._forearm.rotation.x = -0.62;
           if (this.armL._wrist) this.armL._wrist.rotation.x = -0.06;
           if (this.armR._wrist) this.armR._wrist.rotation.x = -0.06;
         }
@@ -2766,11 +2748,6 @@
         if (!isMoving || calmIdle) {
           this.snoutTip.scale.set(1.06, 0.76, this.guiParams.snoutLength * 0.72);
         }
-        this.fleshMat.color.set(this.guiParams.skinColor);
-        if (this.surfaceMat) {
-          const liveDensity = FUR_DETAIL[this.guiParams.furDetailLevel || 'Med'] * (this.guiParams.furDensity || 0.85);
-          this.surfaceMat.color.copy(computeCoatColor(this.guiParams.furColor, this.guiParams.skinColor, liveDensity));
-        }
         this.prevVelocity.copy(this.velocity);
 
         this.mesh.updateMatrixWorld(true);
@@ -2933,15 +2910,15 @@
     // ═══════════════════════════════════════════════════════════════
     const floorGeo = new THREE.PlaneGeometry(46, 34);
     const floorMat = new THREE.MeshPhysicalMaterial({
-      color: 0xf0eadc,
+      color: 0xf5f6f4,
       map: labFloorAlbedoMap,
       roughnessMap: labFloorRoughnessMap,
       normalMap: labFloorNormalMap,
       normalScale: new THREE.Vector2(0.075, 0.075),
       roughness: 0.82,
       metalness: 0.0,
-      emissive: 0xeadfce,
-      emissiveIntensity: 0.06,
+      emissive: 0xc8cbc8,
+      emissiveIntensity: 0.010,
       clearcoat: 0.05,
       clearcoatRoughness: 0.78,
       polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1
@@ -2995,14 +2972,14 @@
     // ═══════════════════════════════════════════════════════════════
     // 12. LIGHTING (3-point photographic lab setup)
     // ═══════════════════════════════════════════════════════════════
-    const ambientLight = new THREE.AmbientLight(0xf7f1e7, 0.56);
+    const ambientLight = new THREE.AmbientLight(0xf7f1e7, 0.24);
     scene.add(ambientLight);
 
-    const hemiLight = new THREE.HemisphereLight(0xf5f7fb, 0xd8cab6, 0.62);
+    const hemiLight = new THREE.HemisphereLight(0xf5f7fb, 0xb7aa98, 0.38);
     hemiLight.position.set(0, 20, 0); scene.add(hemiLight);
 
     // Key light (overhead panel)
-    const keyLight = new THREE.DirectionalLight(0xfff4e8, 1.18);
+    const keyLight = new THREE.DirectionalLight(0xfff4e8, 0.96);
     keyLight.position.set(-5, 17, 6); keyLight.castShadow = true;
     keyLight.shadow.mapSize.width = 4096; keyLight.shadow.mapSize.height = 4096;
     keyLight.shadow.camera.near = 0.5; keyLight.shadow.camera.far = 30;
@@ -3012,16 +2989,16 @@
     scene.add(keyLight);
 
     // Fill light
-    const fillLight = new THREE.DirectionalLight(0xf3f6ff, 0.34);
+    const fillLight = new THREE.DirectionalLight(0xe9f1ff, 0.20);
     fillLight.position.set(8, 7, 8); fillLight.castShadow = false;
     scene.add(fillLight);
 
     // Rim light
-    const rimLight = new THREE.DirectionalLight(0xf8fbff, 0.18);
+    const rimLight = new THREE.DirectionalLight(0xf8fbff, 0.30);
     rimLight.position.set(6, 7, -8); rimLight.castShadow = false;
     scene.add(rimLight);
 
-    const softbox = new THREE.RectAreaLight(0xfff1e2, 2.15, 16, 10);
+    const softbox = new THREE.RectAreaLight(0xfff1e2, 0.92, 16, 10);
     softbox.position.set(-2, 9, 5);
     softbox.lookAt(0, 1.0, 0);
     scene.add(softbox);
@@ -3052,7 +3029,7 @@
       addSubject: () => spawnMouse(), clearSubjects: () => clearMice(),
       presets: 'BALB/c (White)',
       // Body part controls
-      tailLength: 0.5, tailThickness: 1.0,
+      tailLength: 0.85, tailThickness: 0.92,
       headSize: 1.0, snoutLength: 1.0,
       bodyLength: 1.0, legLength: 1.18, legThickness: 1.0,
       // Physics
@@ -3061,8 +3038,8 @@
       qualityMode: 'Photo', furDetailLevel: 'Med',
       enableVignette: false, enableGrain: false, enableAO: true,
       // Lighting
-      keyIntensity: 1.18, fillIntensity: 0.34, rimIntensity: 0.18, softboxIntensity: 2.15,
-      keyColorTemp: 5600, ambientIntensity: 0.56,
+      keyIntensity: 0.96, fillIntensity: 0.20, rimIntensity: 0.30, softboxIntensity: 0.92,
+      keyColorTemp: 5600, ambientIntensity: 0.24,
       // Proportions (exposed)
       propBodyLength: PROP.bodyLength, propBodyGirthX: PROP.bodyGirthX,
       propWaistTaper: PROP.waistTaper, propHaunchWidth: PROP.haunchWidth,
@@ -3148,8 +3125,8 @@
 
     function applyStrainPreset(name) {
       guiParams.presets = name;
-      if (name === 'BALB/c (White)') { guiParams.furColor = '#e8e3d8'; guiParams.skinColor = '#e8bbae'; guiParams.furDensity = 0.80; guiParams.earSize = 0.62; }
-      if (name === 'C57BL/6 (Black)') { guiParams.furColor = '#242026'; guiParams.skinColor = '#4a3f44'; guiParams.furDensity = 0.90; guiParams.earSize = 0.66; }
+      if (name === 'BALB/c (White)') { guiParams.furColor = '#d8d1c4'; guiParams.skinColor = '#dda99f'; guiParams.furDensity = 0.80; guiParams.earSize = 0.62; }
+      if (name === 'C57BL/6 (Black)') { guiParams.furColor = '#171515'; guiParams.skinColor = '#40383a'; guiParams.furDensity = 0.90; guiParams.earSize = 0.66; }
       if (name === 'CBA (Brown)') { guiParams.furColor = '#6a4b3a'; guiParams.skinColor = '#d0a090'; guiParams.furDensity = 0.76; guiParams.earSize = 0.64; }
       if (name === 'Nude/Hairless') { guiParams.furColor = '#ffd0c8'; guiParams.skinColor = '#ffc0b8'; guiParams.furDensity = 0.0; guiParams.earSize = 0.72; }
     }
@@ -3186,8 +3163,12 @@
 
     // Biological Traits
     const traitFolder = gui.addFolder('Biological Traits');
-    traitFolder.addColor(guiParams, 'furColor').name('Fur Pigment');
-    traitFolder.addColor(guiParams, 'skinColor').name('Skin Pigment');
+    traitFolder.addColor(guiParams, 'furColor').name('Fur Pigment').onFinishChange(v => {
+      notifyRespawnRequired('furColor', v, 'Fur pigment applies to newly spawned subjects.');
+    });
+    traitFolder.addColor(guiParams, 'skinColor').name('Skin Pigment').onFinishChange(v => {
+      notifyRespawnRequired('skinColor', v, 'Skin pigment applies to newly spawned subjects.');
+    });
     traitFolder.add(guiParams, 'chonkiness', 0.5, 2.0).name('Fatness / Mass');
     traitFolder.add(guiParams, 'earSize', 0.5, 2.0).name('Ear Magnitude');
     traitFolder.add(guiParams, 'furDensity', 0.0, 1.0).name('Fur Density').onFinishChange(v => {
@@ -3400,16 +3381,21 @@
 
     // Spawn initial subjects
     applyStrainPreset('C57BL/6 (Black)');
-    spawnMouse({ position: [-4.4, -1.0], heading: [1.0, 0.0], speed: 1.2 });
+    spawnMouse({ position: [-4.6, -3.2], heading: [1.0, 0.15], speed: 0.9 });
     applyStrainPreset('BALB/c (White)');
     gui.controllersRecursive().forEach(c => c.updateDisplay());
-    spawnMouse({ position: [3.6, 1.0], heading: [-1.0, 0.0], speed: 1.1 });
+    spawnMouse({ position: [4.2, 3.0], heading: [-1.0, -0.15], speed: 0.85 });
 
     // ═══════════════════════════════════════════════════════════════
     // 15. RENDER LOOP
     // ═══════════════════════════════════════════════════════════════
     window.addEventListener('resize', () => {
       camera.aspect = innerWidth / innerHeight;
+      const portraitFit = THREE.MathUtils.clamp((0.90 - camera.aspect) / 0.45, 0, 1);
+      const cameraDistanceScale = 1.0 + portraitFit * 0.34;
+      camera.fov = THREE.MathUtils.lerp(34, 46, portraitFit);
+      camera.position.copy(cameraBasePosition).sub(cameraTarget).multiplyScalar(cameraDistanceScale).add(cameraTarget);
+      controls.target.copy(cameraTarget);
       camera.updateProjectionMatrix();
       renderer.setSize(innerWidth, innerHeight);
       postFX.resize();
@@ -3429,6 +3415,7 @@
       controls.update();
       // Render via post-processing pipeline (passes through if disabled)
       postFX.render(scene, camera, accumulatedTime);
+      canvas.dataset.sceneReady = 'true';
     }
     animate();
   </script>

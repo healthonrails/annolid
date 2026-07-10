@@ -26,6 +26,21 @@ def test_generate_threejs_example_invalid_id(tmp_path: Path):
     raise AssertionError("Expected ValueError for invalid example id")
 
 
+def test_two_mice_example_preserves_subject_appearance_and_render_readiness():
+    repo_root = Path(__file__).resolve().parents[1]
+    source = (
+        repo_root / "annolid" / "gui" / "assets" / "threejs" / "two_mice.html"
+    ).read_text(encoding="utf-8")
+
+    assert "this.appearance = Object.freeze({ furColor, skinColor, density" in source
+    assert "this.fleshMat.color.set(this.guiParams.skinColor)" not in source
+    assert "geo.rotateX(Math.PI / 2);" in source
+    assert "canvas.dataset.sceneReady = 'true';" in source
+    assert "Fur pigment applies to newly spawned subjects." in source
+    assert "const portraitFit = THREE.MathUtils.clamp" in source
+    assert "cameraDistanceScale" in source
+
+
 def test_generate_flybody_example_uses_repo_mesh_when_available(
     tmp_path: Path, monkeypatch
 ):
