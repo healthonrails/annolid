@@ -157,14 +157,14 @@
     // ═══════════════════════════════════════════════════════════════
     function defaultProportions() {
       return {
-        bodyLength: 3.25, bodyGirthX: 1.30, bodyGirthY: 1.18,
-        ribcageDepth: 1.0, waistTaper: 0.70, haunchWidth: 0.94, shoulderWidth: 0.76,
-        neckLength: 0.72, neckGirth: 0.62,
-        headSize: 0.94, snoutLength: 1.28, snoutWidth: 0.96, cheekFullness: 0.28,
-        earSize: 0.76, earSetBack: -0.35, earYaw: 0.68, earThickness: 0.05,
+        bodyLength: 3.05, bodyGirthX: 1.28, bodyGirthY: 1.22,
+        ribcageDepth: 1.0, waistTaper: 0.74, haunchWidth: 0.92, shoulderWidth: 0.82,
+        neckLength: 0.66, neckGirth: 0.64,
+        headSize: 0.94, snoutLength: 1.18, snoutWidth: 1.00, cheekFullness: 0.30,
+        earSize: 0.82, earSetBack: -0.35, earYaw: 0.66, earThickness: 0.05,
         eyeSize: 0.135, eyeSpacing: 0.46, eyeProtrusion: 1.10, eyeYaw: 0.48,
-        foreLimbLength: 0.96, hindLimbLength: 0.72,
-        forePawSize: 0.90, hindPawSize: 0.82,
+        foreLimbLength: 0.98, hindLimbLength: 0.80,
+        forePawSize: 0.96, hindPawSize: 0.90,
         tailLength: 1.0, tailThickness: 1.0, tailTaper: 0.88, tailSag: 0.02,
       };
     }
@@ -770,10 +770,10 @@
       shoulderDrop = shoulderDrop * shoulderDrop * (3.0 - 2.0 * shoulderDrop);
       const waistNarrow = Math.exp(-Math.pow((zNorm - 0.56) / 0.14, 2.0));
       // Narrower front torso than rear (asymmetric taper)
-      const frontNarrow = THREE.MathUtils.smoothstep(0.60, 0.90, zNorm) * 0.08;
-      const lateral = (1.0 + rearMass * 0.28 - shoulderDrop * 0.22 - waistNarrow * (1.0 - PROP.waistTaper) * 0.26 - frontNarrow);
+      const frontNarrow = THREE.MathUtils.smoothstep(0.64, 0.92, zNorm) * 0.04;
+      const lateral = (1.0 + rearMass * 0.18 - shoulderDrop * 0.14 - waistNarrow * (1.0 - PROP.waistTaper) * 0.20 - frontNarrow);
       v.x *= lateral * PROP.bodyGirthX;
-      v.y *= (1.0 - zNorm * 0.26) * PROP.bodyGirthY;
+      v.y *= (1.0 - zNorm * 0.20) * PROP.bodyGirthY;
       v.z *= PROP.bodyLength;
       // Rounder cross-section so top view does not show a hard flank shelf.
       const sideBlend = THREE.MathUtils.clamp((Math.abs(v.y) - 0.06) / 0.72, 0, 1);
@@ -782,7 +782,7 @@
       // Dorsal line: peak around rear-mid, shoulder and tail-base slightly lower.
       const hump = Math.exp(-Math.pow((zNorm - 0.34) / 0.19, 2.0));
       const rump = Math.exp(-Math.pow((zNorm - 0.12) / 0.10, 2.0));
-      v.y += hump * 0.38 + rump * 0.16 - shoulderDrop * 0.16;
+      v.y += hump * 0.30 + rump * 0.12 - shoulderDrop * 0.10;
 
       // Ventrum: continuous shaping (avoid crease/cut line in top view).
       const yRef = v.y;
@@ -820,8 +820,8 @@
       // Narrow neck root at very front.
       if (zNorm > 0.86) {
         const neckT = (zNorm - 0.86) / 0.14;
-        v.x *= 1.0 - neckT * 0.35;
-        v.y *= 1.0 - neckT * 0.20;
+        v.x *= 1.0 - neckT * 0.24;
+        v.y *= 1.0 - neckT * 0.14;
       }
     };
 
@@ -1117,25 +1117,26 @@
     // ═══════════════════════════════════════════════════════════════
     // 7. LIMB CHAIN BUILDERS
     // ═══════════════════════════════════════════════════════════════
-    function createForelimbChain(surfaceMat, skinMat, strain, density, furColor, side) {
+    function createForelimbChain(surfaceMat, skinMat, strain, density, furColor, side, legLengthScale = 1.0, legThicknessScale = 1.0) {
       const sign = side === 'L' ? 1 : -1;
       const chain = new THREE.Group();
-      const fl = PROP.foreLimbLength;
+      const fl = PROP.foreLimbLength * legLengthScale;
+      const thickness = THREE.MathUtils.clamp(legThicknessScale, 0.65, 1.5);
       // Scapula/shoulder anchor — place at shoulder width, slightly below spine
-      chain.position.set(sign * 0.61 * PROP.shoulderWidth / 0.76, 0.02, PROP.bodyLength * 0.68);
+      chain.position.set(sign * 0.64 * PROP.shoulderWidth / 0.82, 0.02, PROP.bodyLength * 0.67);
 
       // Upper arm (humerus) — substantial visible segment
       const upperArm = new THREE.Group();
-      const uaLen = 0.42 * fl;
+      const uaLen = 0.38 * fl;
       const upperArmMesh = new THREE.Mesh(
-        new THREE.CapsuleGeometry(0.11, uaLen, 10, 10), surfaceMat
+        new THREE.CapsuleGeometry(0.105 * thickness, uaLen, 10, 10), surfaceMat
       );
       upperArmMesh.position.y = -uaLen * 0.5;
       upperArmMesh.castShadow = true;
       upperArm.add(upperArmMesh);
-      upperArm.rotation.x = 0.44;
+      upperArm.rotation.x = 0.38;
       // Shoulder joint sphere (visible scapula bump)
-      const shoulderJoint = new THREE.Mesh(new THREE.SphereGeometry(0.13, 12, 12), surfaceMat);
+      const shoulderJoint = new THREE.Mesh(new THREE.SphereGeometry(0.13 * thickness, 12, 12), surfaceMat);
       shoulderJoint.scale.set(1.0, 0.82, 1.05);
       shoulderJoint.castShadow = true;
       upperArm.add(shoulderJoint);
@@ -1143,9 +1144,9 @@
 
       // Forearm (radius/ulna) — attached at elbow
       const forearm = new THREE.Group();
-      const faLen = 0.44 * fl;
+      const faLen = 0.40 * fl;
       forearm.position.set(0, -uaLen - 0.01, -0.01);
-      forearm.rotation.x = -0.62;
+      forearm.rotation.x = -0.55;
       // Soft-tissue bridge to avoid segmented look between upper arm and forearm.
       const elbowBridge = new THREE.Mesh(new THREE.CapsuleGeometry(0.092, 0.075, 10, 10), surfaceMat);
       elbowBridge.position.set(0, -uaLen * 0.92, 0.03);
@@ -1153,12 +1154,12 @@
       elbowBridge.castShadow = true;
       upperArm.add(elbowBridge);
       // Elbow joint
-      const elbowJoint = new THREE.Mesh(new THREE.SphereGeometry(0.088, 10, 10), surfaceMat);
+      const elbowJoint = new THREE.Mesh(new THREE.SphereGeometry(0.085 * thickness, 10, 10), surfaceMat);
       elbowJoint.scale.set(1.08, 0.95, 1.0);
       elbowJoint.castShadow = true;
       forearm.add(elbowJoint);
       const forearmMesh = new THREE.Mesh(
-        new THREE.CapsuleGeometry(0.072, faLen, 8, 8), surfaceMat
+        new THREE.CapsuleGeometry(0.068 * thickness, faLen, 8, 8), surfaceMat
       );
       forearmMesh.position.y = -faLen * 0.5;
       forearmMesh.castShadow = true;
@@ -1168,7 +1169,7 @@
       // Wrist joint
       const wrist = new THREE.Group();
       wrist.position.set(0, -faLen - 0.018, 0.03);
-      const wristJoint = new THREE.Mesh(new THREE.SphereGeometry(0.06, 8, 8), surfaceMat);
+      const wristJoint = new THREE.Mesh(new THREE.SphereGeometry(0.058 * thickness, 8, 8), surfaceMat);
       wristJoint.scale.set(1.1, 0.95, 1.05);
       wristJoint.castShadow = true;
       wrist.add(wristJoint);
@@ -1182,7 +1183,7 @@
       // Paw — sits at bottom of wrist
       const paw = createPaw(skinMat, true, strain);
       paw.position.set(0, -0.085, 0.055);
-      paw.scale.set(0.92, 0.92, 0.92);
+      paw.scale.setScalar(0.96 * Math.sqrt(thickness));
       paw.rotation.x = -0.18;
       wrist.add(paw);
 
@@ -1218,10 +1219,11 @@
       return chain;
     }
 
-    function createHindlimbChain(surfaceMat, skinMat, strain, density, furColor, side) {
+    function createHindlimbChain(surfaceMat, skinMat, strain, density, furColor, side, legLengthScale = 1.0, legThicknessScale = 1.0) {
       const sign = side === 'L' ? 1 : -1;
       const chain = new THREE.Group();
-      const hl = PROP.hindLimbLength;
+      const hl = PROP.hindLimbLength * legLengthScale;
+      const thickness = THREE.MathUtils.clamp(legThicknessScale, 0.65, 1.5);
       // Hip anchor — at widest haunch point
       chain.position.set(sign * 0.60 * PROP.haunchWidth / 0.94, 0.04, -PROP.bodyLength * 0.35);
 
@@ -1277,26 +1279,28 @@
       }
 
       // Thigh (femur) — enlarged deformed sphere
-      const thigh = new THREE.Mesh(thighGeo, surfaceMat);
-      thigh.position.set(0, -0.16, 0.02);
-      thigh.scale.set(0.60, 0.68 * hl, 0.66);
-      thigh.castShadow = true;
+      const thigh = new THREE.Group();
+      thigh.position.set(0, -0.10, 0.02);
       chain.add(thigh);
-      thigh.add(generateFurLayer(deformThigh, Math.floor(8200 * density), furColor, 0.15, false));
+      const thighMuscle = new THREE.Mesh(thighGeo, surfaceMat);
+      thighMuscle.scale.set(0.68 * thickness, 0.64 * hl, 0.75 * thickness);
+      thighMuscle.castShadow = true;
+      thigh.add(thighMuscle);
+      thighMuscle.add(generateFurLayer(deformThigh, Math.floor(8200 * density), furColor, 0.12, false));
 
       // Shank (tibia/fibula) — substantial capsule
       const shank = new THREE.Group();
-      shank.position.set(0.03 * sign, -0.73 * hl, 0.23);
+      shank.position.set(0.02 * sign, -0.32 * hl, 0.18);
       thigh.add(shank);
 
       // Knee joint (visible bump)
-      const kneeJoint = new THREE.Mesh(new THREE.SphereGeometry(0.12, 10, 10), surfaceMat);
+      const kneeJoint = new THREE.Mesh(new THREE.SphereGeometry(0.105 * thickness, 10, 10), surfaceMat);
       kneeJoint.position.set(0, 0.05, 0);
       kneeJoint.castShadow = true;
       shank.add(kneeJoint);
 
-      const shankLen = 0.58 * hl;
-      const shankMesh = new THREE.Mesh(new THREE.CapsuleGeometry(0.066, shankLen, 8, 8), surfaceMat);
+      const shankLen = 0.48 * hl;
+      const shankMesh = new THREE.Mesh(new THREE.CapsuleGeometry(0.064 * thickness, shankLen, 8, 8), surfaceMat);
       shankMesh.rotation.x = -0.16;
       shankMesh.position.set(0, -shankLen * 0.5, 0.09);
       shankMesh.castShadow = true;
@@ -1304,10 +1308,10 @@
 
       // Ankle/heel (digitigrade visible heel rise)
       const ankle = new THREE.Group();
-      ankle.position.set(0, -shankLen - 0.06, 0.20);
+      ankle.position.set(0, -shankLen - 0.04, 0.18);
       shank.add(ankle);
 
-      const ankleJoint = new THREE.Mesh(new THREE.SphereGeometry(0.085, 10, 10), surfaceMat);
+      const ankleJoint = new THREE.Mesh(new THREE.SphereGeometry(0.078 * thickness, 10, 10), surfaceMat);
       ankleJoint.castShadow = true;
       ankle.add(ankleJoint);
 
@@ -1328,15 +1332,15 @@
 
       // Hindpaw — planted on ground
       const paw = createPaw(skinMat, false, strain);
-      paw.position.set(0, -0.19, 0.31);
+      paw.position.set(0, -0.16, 0.27);
       paw.rotation.x = -0.12;
-      paw.scale.set(0.94, 0.94, 0.94);
+      paw.scale.setScalar(0.96 * Math.sqrt(thickness));
       ankle.add(paw);
 
       // Baseline crouched posture so underside view reads organic, not columnar.
-      chain.rotation.x = -0.22;
-      shank.rotation.x = 0.54;
-      ankle.rotation.x = -0.30;
+      chain.rotation.x = -0.18;
+      shank.rotation.x = 0.50;
+      ankle.rotation.x = -0.28;
 
       chain._thigh = thigh;
       chain._shank = shank;
@@ -1564,18 +1568,18 @@
       ear.add(baseFur);
 
       const strainScale = strain.earScaleMul ?? 1.0;
-      const s = eSize * 1.08 * strainScale;
+      const s = eSize * 1.04 * strainScale;
       ear.position.set(
         sideSign * 0.58,
-        0.58 + heightOffset,
-        PROP.earSetBack + 0.42
+        0.55 + heightOffset,
+        PROP.earSetBack + 0.32
       );
       ear.rotation.set(
-        -0.12 + asymmetryTilt,
-        sideSign * ((strain.earYaw ?? PROP.earYaw) * 0.26 + asymmetryYaw),
-        sideSign * -0.18
+        -0.08 + asymmetryTilt,
+        sideSign * ((strain.earYaw ?? PROP.earYaw) * 0.34 + asymmetryYaw),
+        sideSign * -0.12
       );
-      ear.scale.set(s * 0.82, s * 0.74, s * 0.50);
+      ear.scale.set(s * 0.92, s * 0.88, s * 0.38);
       return ear;
     }
 
@@ -1620,6 +1624,114 @@
       tailmid: 0xff00ff, tailend: 0xff00aa
     };
 
+    // The mouse silhouette is elongated, so a single center-radius collision
+    // allows heads and rumps to cross. These discs follow the body heading and
+    // approximate the rump, abdomen, thorax, head, and snout independently.
+    const MOUSE_COLLISION_DISC_LAYOUT = Object.freeze([
+      { offset: -1.75, radius: 1.18 },
+      { offset: -0.35, radius: 1.32 },
+      { offset: 1.15, radius: 1.18 },
+      { offset: 2.45, radius: 0.92 },
+      { offset: 3.55, radius: 0.52 },
+    ]);
+
+    function getMouseCollisionDiscs(mouse) {
+      const heading = mouse.heading.lengthSq() > 1e-8
+        ? mouse.heading
+        : new THREE.Vector2(Math.sin(mouse.mesh.rotation.y), Math.cos(mouse.mesh.rotation.y));
+      const bodyScale = THREE.MathUtils.clamp(mouse.guiParams.bodyLength ?? 1.0, 0.65, 1.6);
+      const snoutScale = THREE.MathUtils.clamp(mouse.guiParams.snoutLength ?? 1.0, 0.65, 1.6);
+      const widthScale = THREE.MathUtils.clamp(mouse.guiParams.chonkiness ?? 1.0, 0.65, 1.6);
+      return MOUSE_COLLISION_DISC_LAYOUT.map(({ offset, radius }) => {
+        const headExtension = offset > 2.4 ? (snoutScale - 1.0) * 0.55 : 0.0;
+        const scaledOffset = offset * bodyScale + headExtension;
+        return {
+          x: mouse.mesh.position.x + heading.x * scaledOffset,
+          z: mouse.mesh.position.z + heading.y * scaledOffset,
+          radius: radius * widthScale,
+        };
+      });
+    }
+
+    function findMouseBodyContact(mouseA, mouseB) {
+      const discsA = getMouseCollisionDiscs(mouseA);
+      const discsB = getMouseCollisionDiscs(mouseB);
+      let best = { clearance: Infinity, nx: 1.0, nz: 0.0 };
+      for (const discA of discsA) {
+        for (const discB of discsB) {
+          let dx = discA.x - discB.x;
+          let dz = discA.z - discB.z;
+          let distSq = dx * dx + dz * dz;
+          if (distSq < 1e-8) {
+            dx = mouseA.mesh.position.x - mouseB.mesh.position.x;
+            dz = mouseA.mesh.position.z - mouseB.mesh.position.z;
+            distSq = dx * dx + dz * dz;
+          }
+          if (distSq < 1e-8) {
+            dx = -mouseA.heading.y;
+            dz = mouseA.heading.x;
+            distSq = 1.0;
+          }
+          const dist = Math.sqrt(distSq);
+          const clearance = dist - discA.radius - discB.radius;
+          if (clearance < best.clearance) {
+            best = { clearance, nx: dx / dist, nz: dz / dist };
+          }
+        }
+      }
+      return best;
+    }
+
+    function resolveMouseBodyOverlap(mouseA, mouseB) {
+      let touched = false;
+      for (let pass = 0; pass < 4; pass++) {
+        const contact = findMouseBodyContact(mouseA, mouseB);
+        if (contact.clearance >= -0.001) break;
+        touched = true;
+        const overlap = -contact.clearance;
+        const correction = Math.min((overlap + 0.004) * 0.50, 0.42);
+        mouseA.mesh.position.x += contact.nx * correction;
+        mouseA.mesh.position.z += contact.nz * correction;
+        mouseB.mesh.position.x -= contact.nx * correction;
+        mouseB.mesh.position.z -= contact.nz * correction;
+
+        const relativeNormalSpeed = (
+          (mouseA.velocity.x - mouseB.velocity.x) * contact.nx
+          + (mouseA.velocity.y - mouseB.velocity.y) * contact.nz
+        );
+        if (relativeNormalSpeed < 0) {
+          const impulse = Math.min(-relativeNormalSpeed * 0.58, 1.8);
+          mouseA.velocity.x += contact.nx * impulse;
+          mouseA.velocity.y += contact.nz * impulse;
+          mouseB.velocity.x -= contact.nx * impulse;
+          mouseB.velocity.y -= contact.nz * impulse;
+        }
+      }
+      return { touched, contact: findMouseBodyContact(mouseA, mouseB) };
+    }
+
+    function resolveAllMouseBodyOverlaps(subjects) {
+      for (let pass = 0; pass < 3; pass++) {
+        let corrected = false;
+        for (let i = 0; i < subjects.length; i++) {
+          for (let j = i + 1; j < subjects.length; j++) {
+            corrected = resolveMouseBodyOverlap(subjects[i], subjects[j]).touched || corrected;
+          }
+        }
+        if (!corrected) break;
+      }
+    }
+
+    function getMinimumMouseClearance(subjects) {
+      let minimum = Infinity;
+      for (let i = 0; i < subjects.length; i++) {
+        for (let j = i + 1; j < subjects.length; j++) {
+          minimum = Math.min(minimum, findMouseBodyContact(subjects[i], subjects[j]).clearance);
+        }
+      }
+      return minimum;
+    }
+
     // ═══════════════════════════════════════════════════════════════
     // 10. EXPERT MOUSE CLASS (with new anatomy)
     // ═══════════════════════════════════════════════════════════════
@@ -1635,7 +1747,7 @@
         this.force = new THREE.Vector2(0, 0);
         this.heading = new THREE.Vector2(0, 1);
         this.mass = 0.025 + Math.random() * 0.010;
-        this.maxSpeed = 8.0 + Math.random() * 3.0;
+        this.maxSpeed = params.maxSpeed * (0.90 + Math.random() * 0.18);
         this.drag = 2.5;
         this.wanderAngle = Math.random() * Math.PI * 2;
         this.wanderRate = 0.8 + Math.random() * 0.6;
@@ -2065,16 +2177,18 @@
         this.corneaR = cR;
 
         // ═══ LIMBS (anatomically correct chains) ═══
+        const legLengthScale = params.legLength ?? 1.0;
+        const legThicknessScale = params.legThickness ?? 1.0;
         // Hindlimbs
-        this.hindL = createHindlimbChain(this.surfaceMat, this.fleshMat, strain, density, furColor, 'L');
+        this.hindL = createHindlimbChain(this.surfaceMat, this.fleshMat, strain, density, furColor, 'L', legLengthScale, legThicknessScale);
         this.rig.add(this.hindL);
-        this.hindR = createHindlimbChain(this.surfaceMat, this.fleshMat, strain, density, furColor, 'R');
+        this.hindR = createHindlimbChain(this.surfaceMat, this.fleshMat, strain, density, furColor, 'R', legLengthScale, legThicknessScale);
         this.rig.add(this.hindR);
 
         // Forelimbs
-        this.armL = createForelimbChain(this.surfaceMat, this.fleshMat, strain, density, furColor, 'L');
+        this.armL = createForelimbChain(this.surfaceMat, this.fleshMat, strain, density, furColor, 'L', legLengthScale, legThicknessScale);
         this.rig.add(this.armL);
-        this.armR = createForelimbChain(this.surfaceMat, this.fleshMat, strain, density, furColor, 'R');
+        this.armR = createForelimbChain(this.surfaceMat, this.fleshMat, strain, density, furColor, 'R', legLengthScale, legThicknessScale);
         this.rig.add(this.armR);
 
         // References for animation
@@ -2240,9 +2354,8 @@
           }
         }
 
-        // Mouse-to-mouse interaction: attraction at investigation distance,
-        // firm repulsion only at body overlap distance.
-        const MOUSE_RADIUS = 3.45;
+        // Mouse-to-mouse interaction uses oriented body clearance so social
+        // investigation stops before either elongated silhouette penetrates.
         const SOCIAL_RADIUS = 8.2;
         let isColliding = false;
         let nearestSocialDist = Infinity;
@@ -2252,6 +2365,9 @@
           const dx = this.mesh.position.x - other.mesh.position.x;
           const dz = this.mesh.position.z - other.mesh.position.z;
           const distSq = dx * dx + dz * dz;
+          const bodyResult = resolveMouseBodyOverlap(this, other);
+          const bodyClearance = bodyResult.contact.clearance;
+          isColliding = bodyResult.touched || bodyClearance < 0.04 || isColliding;
           if (distSq > 0.001) {
             const dist = Math.sqrt(distSq);
             const toOtherX = -dx / dist;
@@ -2261,35 +2377,21 @@
               this.socialTarget.set(toOtherX, toOtherZ);
             }
             if (dist < SOCIAL_RADIUS) {
-              const socialBand = THREE.MathUtils.clamp((SOCIAL_RADIUS - dist) / (SOCIAL_RADIUS - MOUSE_RADIUS), 0, 1);
+              const socialBand = THREE.MathUtils.clamp((SOCIAL_RADIUS - dist) / 4.6, 0, 1);
               const facing = this.heading.x * toOtherX + this.heading.y * toOtherZ;
-              if (dist > MOUSE_RADIUS * 1.18) {
+              if (bodyClearance > 0.75) {
                 const curiosity = (0.22 + 0.32 * Math.max(0, Math.sin(time * 0.78 + this.timeOffset * 0.13))) * socialBand;
                 const faceGate = facing > -0.55 ? 1.0 : 0.35;
                 this.force.x += toOtherX * driveStrength * curiosity * faceGate;
                 this.force.y += toOtherZ * driveStrength * curiosity * faceGate;
               }
-              if (dist < 5.2) {
+              if (bodyClearance < 1.35) {
                 const side = this.dir;
-                this.force.x += -toOtherZ * side * socialBand * driveStrength * 0.20;
-                this.force.y += toOtherX * side * socialBand * driveStrength * 0.20;
-                this.velocity.multiplyScalar(0.992);
+                this.force.x += -toOtherZ * side * socialBand * driveStrength * 0.14;
+                this.force.y += toOtherX * side * socialBand * driveStrength * 0.14;
+                this.velocity.multiplyScalar(bodyClearance < 0.45 ? 0.965 : 0.988);
                 this.socialContact = true;
               }
-            }
-          }
-          if (distSq < MOUSE_RADIUS * MOUSE_RADIUS && distSq > 0.001) {
-            isColliding = true;
-            const dist = Math.sqrt(distSq);
-            const overlap = MOUSE_RADIUS - dist;
-            this.force.x += (dx / dist) * overlap * 40.0;
-            this.force.y += (dz / dist) * overlap * 40.0;
-            if (overlap > 0) {
-              const corr = overlap * 0.5;
-              this.mesh.position.x += (dx / dist) * corr;
-              this.mesh.position.z += (dz / dist) * corr;
-              other.mesh.position.x -= (dx / dist) * corr;
-              other.mesh.position.z -= (dz / dist) * corr;
             }
           }
         }
@@ -2466,12 +2568,12 @@
 
         if (!guiParams.isPaused) {
           // Vertical body suspension with gravity.
-          const targetBodyY = 1.14 + speedNorm * 0.07;
+          const targetBodyY = 1.30 + speedNorm * 0.06;
           const bodyK = 24.0, bodyD = 8.0, gravity = 3.4;
           this.bodyDyn.vy += (bodyK * (targetBodyY - this.bodyDyn.y) - bodyD * this.bodyDyn.vy - gravity) * dt;
           this.bodyDyn.y += this.bodyDyn.vy * dt;
-          if (this.bodyDyn.y < 1.03) {
-            this.bodyDyn.y = 1.03;
+          if (this.bodyDyn.y < 1.12) {
+            this.bodyDyn.y = 1.12;
             this.bodyDyn.vy = Math.max(0, this.bodyDyn.vy) * 0.2;
           }
 
@@ -2510,43 +2612,43 @@
         this.contactShadow.position.set(0, -this.rig.position.y + 0.02, 0);
 
         // ═══ GAIT ANIMATION (anatomically correct) ═══
-        const legCycle = this.locomotionTime * 5.0;
-        const gaitAmp = Math.min(speedNorm * 1.2, 1.0) * 0.6 * this.motion.gaitAmpMul;
+        const legCycle = this.locomotionTime * 3.8;
+        const gaitAmp = Math.min(speedNorm * 1.25, 1.0) * 0.38 * this.motion.gaitAmpMul;
 
         if (isMoving) {
           // Hindlimb: hip drives, knee follows with phase offset
-          this.hindL.rotation.x = -0.22 + Math.sin(legCycle) * gaitAmp * 0.68;
-          this.hindR.rotation.x = -0.22 + Math.sin(legCycle + Math.PI) * gaitAmp * 0.68;
-          this.shankL.rotation.x = 0.54 + Math.max(0, Math.sin(legCycle + 0.5)) * gaitAmp * 0.34;
-          this.shankR.rotation.x = 0.54 + Math.max(0, Math.sin(legCycle + Math.PI + 0.5)) * gaitAmp * 0.34;
+          this.hindL.rotation.x = -0.18 + Math.sin(legCycle) * gaitAmp * 0.42;
+          this.hindR.rotation.x = -0.18 + Math.sin(legCycle + Math.PI) * gaitAmp * 0.42;
+          this.shankL.rotation.x = 0.50 + Math.max(0, Math.sin(legCycle + 0.5)) * gaitAmp * 0.24;
+          this.shankR.rotation.x = 0.50 + Math.max(0, Math.sin(legCycle + Math.PI + 0.5)) * gaitAmp * 0.24;
           // Ankle follows shank, pushes off
-          if (this.hindL._ankle) this.hindL._ankle.rotation.x = -0.30 + Math.sin(legCycle - 0.3) * gaitAmp * 0.18;
-          if (this.hindR._ankle) this.hindR._ankle.rotation.x = -0.30 + Math.sin(legCycle + Math.PI - 0.3) * gaitAmp * 0.18;
+          if (this.hindL._ankle) this.hindL._ankle.rotation.x = -0.28 + Math.sin(legCycle - 0.3) * gaitAmp * 0.14;
+          if (this.hindR._ankle) this.hindR._ankle.rotation.x = -0.28 + Math.sin(legCycle + Math.PI - 0.3) * gaitAmp * 0.14;
 
           // Forelimb: shoulder drives, elbow/wrist follow
-          this.armL.rotation.x = -0.18 + Math.sin(legCycle + Math.PI) * gaitAmp * 0.62;
-          this.armR.rotation.x = -0.18 + Math.sin(legCycle) * gaitAmp * 0.62;
+          this.armL.rotation.x = -0.12 + Math.sin(legCycle + Math.PI) * gaitAmp * 0.36;
+          this.armR.rotation.x = -0.12 + Math.sin(legCycle) * gaitAmp * 0.36;
           // Elbow flex
-          if (this.armL._forearm) this.armL._forearm.rotation.x = -0.62 + Math.max(0, Math.sin(legCycle + Math.PI + 0.4)) * gaitAmp * 0.28;
-          if (this.armR._forearm) this.armR._forearm.rotation.x = -0.62 + Math.max(0, Math.sin(legCycle + 0.4)) * gaitAmp * 0.28;
+          if (this.armL._forearm) this.armL._forearm.rotation.x = -0.55 + Math.max(0, Math.sin(legCycle + Math.PI + 0.4)) * gaitAmp * 0.18;
+          if (this.armR._forearm) this.armR._forearm.rotation.x = -0.55 + Math.max(0, Math.sin(legCycle + 0.4)) * gaitAmp * 0.18;
           // Wrist flex
-          if (this.armL._wrist) this.armL._wrist.rotation.x = -0.06 + Math.sin(legCycle + Math.PI + 0.6) * gaitAmp * 0.12;
-          if (this.armR._wrist) this.armR._wrist.rotation.x = -0.06 + Math.sin(legCycle + 0.6) * gaitAmp * 0.12;
+          if (this.armL._wrist) this.armL._wrist.rotation.x = -0.08 + Math.sin(legCycle + Math.PI + 0.6) * gaitAmp * 0.08;
+          if (this.armR._wrist) this.armR._wrist.rotation.x = -0.08 + Math.sin(legCycle + 0.6) * gaitAmp * 0.08;
         } else {
           // Idle pose
-          this.hindL.rotation.x = -0.22; this.hindR.rotation.x = -0.22;
-          this.shankL.rotation.x = 0.54; this.shankR.rotation.x = 0.54;
-          if (this.hindL._ankle) this.hindL._ankle.rotation.x = -0.30;
-          if (this.hindR._ankle) this.hindR._ankle.rotation.x = -0.30;
+          this.hindL.rotation.x = -0.18; this.hindR.rotation.x = -0.18;
+          this.shankL.rotation.x = 0.50; this.shankR.rotation.x = 0.50;
+          if (this.hindL._ankle) this.hindL._ankle.rotation.x = -0.28;
+          if (this.hindR._ankle) this.hindR._ankle.rotation.x = -0.28;
 
           // Neutral planted stance with subtle weight-shift micro-motion
           const pawShift = Math.sin(time * 1.3 + this.timeOffset) * 0.008;
-          this.armL.rotation.x = -0.18; this.armR.rotation.x = -0.18;
+          this.armL.rotation.x = -0.12; this.armR.rotation.x = -0.12;
           this.armL.rotation.z = -0.04 + pawShift; this.armR.rotation.z = 0.04 - pawShift;
-          if (this.armL._forearm) this.armL._forearm.rotation.x = -0.62;
-          if (this.armR._forearm) this.armR._forearm.rotation.x = -0.62;
-          if (this.armL._wrist) this.armL._wrist.rotation.x = -0.06;
-          if (this.armR._wrist) this.armR._wrist.rotation.x = -0.06;
+          if (this.armL._forearm) this.armL._forearm.rotation.x = -0.55;
+          if (this.armR._forearm) this.armR._forearm.rotation.x = -0.55;
+          if (this.armL._wrist) this.armL._wrist.rotation.x = -0.08;
+          if (this.armR._wrist) this.armR._wrist.rotation.x = -0.08;
         }
 
         const rear = this.rearAmount;
@@ -2596,8 +2698,14 @@
             this.padL.rotation.y = 0.1 + sniffPulse * 0.02;
             this.padR.rotation.y = -0.1 - sniffPulse * 0.02;
           } else {
-            this.headGroup.rotation.y = Math.sin(time * 6.0) * 0.3 * this.motion.headIdleYawMul;
-            this.headGroup.rotation.x = Math.sin(time * 9.0) * 0.15 * this.motion.headIdlePitchMul;
+            this.headGroup.rotation.y = (
+              Math.sin(time * 2.1 + this.timeOffset * 0.03) * 0.11
+              + Math.sin(time * 0.73 + this.timeOffset) * 0.035
+            ) * this.motion.headIdleYawMul;
+            this.headGroup.rotation.x = (
+              Math.sin(time * 3.2 + this.timeOffset * 0.05) * 0.045
+              + sniffPulse * 0.014
+            ) * this.motion.headIdlePitchMul;
             this.snoutTip.position.y = -0.15 + sniffPulse * 0.02;
             // Nose scale pulse during sniffing (compression)
             const noseScalePulse = 1.0 + sniffPulse * 0.015;
@@ -2608,8 +2716,8 @@
         } else {
           const turnAmount = this.velocity.x * this.heading.y - this.velocity.y * this.heading.x;
           // Head stabilization: slight counter-rotation during locomotion
-          const headStab = Math.sin(this.locomotionTime * 5.0) * 0.025;
-          this.headGroup.rotation.set(Math.sin(time * 2) * 0.08 + headStab, turnAmount * 0.08, 0);
+          const headStab = Math.sin(this.locomotionTime * 3.8) * 0.018;
+          this.headGroup.rotation.set(Math.sin(time * 1.8) * 0.030 + headStab, turnAmount * 0.06, 0);
           this.snoutTip.position.y = -0.15;
           this.padL.rotation.y = -0.3; this.padR.rotation.y = 0.3;
         }
@@ -3033,7 +3141,7 @@
       headSize: 1.0, snoutLength: 1.0,
       bodyLength: 1.0, legLength: 1.18, legThickness: 1.0,
       // Physics
-      maxSpeed: 7.2, dragCoeff: 2.15, wanderForce: 7.4, wallAttraction: 2.4,
+      maxSpeed: 5.4, dragCoeff: 2.55, wanderForce: 5.8, wallAttraction: 1.8,
       // Quality
       qualityMode: 'Photo', furDetailLevel: 'Med',
       enableVignette: false, enableGrain: false, enableAO: true,
@@ -3125,10 +3233,10 @@
 
     function applyStrainPreset(name) {
       guiParams.presets = name;
-      if (name === 'BALB/c (White)') { guiParams.furColor = '#d8d1c4'; guiParams.skinColor = '#dda99f'; guiParams.furDensity = 0.80; guiParams.earSize = 0.62; }
-      if (name === 'C57BL/6 (Black)') { guiParams.furColor = '#171515'; guiParams.skinColor = '#40383a'; guiParams.furDensity = 0.90; guiParams.earSize = 0.66; }
-      if (name === 'CBA (Brown)') { guiParams.furColor = '#6a4b3a'; guiParams.skinColor = '#d0a090'; guiParams.furDensity = 0.76; guiParams.earSize = 0.64; }
-      if (name === 'Nude/Hairless') { guiParams.furColor = '#ffd0c8'; guiParams.skinColor = '#ffc0b8'; guiParams.furDensity = 0.0; guiParams.earSize = 0.72; }
+      if (name === 'BALB/c (White)') { guiParams.furColor = '#d8d1c4'; guiParams.skinColor = '#dda99f'; guiParams.furDensity = 0.80; guiParams.earSize = 0.76; }
+      if (name === 'C57BL/6 (Black)') { guiParams.furColor = '#171515'; guiParams.skinColor = '#40383a'; guiParams.furDensity = 0.90; guiParams.earSize = 0.74; }
+      if (name === 'CBA (Brown)') { guiParams.furColor = '#6a4b3a'; guiParams.skinColor = '#d0a090'; guiParams.furDensity = 0.76; guiParams.earSize = 0.76; }
+      if (name === 'Nude/Hairless') { guiParams.furColor = '#ffd0c8'; guiParams.skinColor = '#ffc0b8'; guiParams.furDensity = 0.0; guiParams.earSize = 0.84; }
     }
 
     const gui = new GUI({ title: 'OPEN FIELD CONTROLS' });
@@ -3381,10 +3489,10 @@
 
     // Spawn initial subjects
     applyStrainPreset('C57BL/6 (Black)');
-    spawnMouse({ position: [-4.6, -3.2], heading: [1.0, 0.15], speed: 0.9 });
+    spawnMouse({ position: [-3.6, -2.6], heading: [1.0, 0.12], speed: 0.9 });
     applyStrainPreset('BALB/c (White)');
     gui.controllersRecursive().forEach(c => c.updateDisplay());
-    spawnMouse({ position: [4.2, 3.0], heading: [-1.0, -0.15], speed: 0.85 });
+    spawnMouse({ position: [3.3, 2.6], heading: [-1.0, -0.12], speed: 0.85 });
 
     // ═══════════════════════════════════════════════════════════════
     // 15. RENDER LOOP
@@ -3392,8 +3500,8 @@
     window.addEventListener('resize', () => {
       camera.aspect = innerWidth / innerHeight;
       const portraitFit = THREE.MathUtils.clamp((0.90 - camera.aspect) / 0.45, 0, 1);
-      const cameraDistanceScale = 1.0 + portraitFit * 0.34;
-      camera.fov = THREE.MathUtils.lerp(34, 46, portraitFit);
+      const cameraDistanceScale = 1.0 + portraitFit * 0.58;
+      camera.fov = THREE.MathUtils.lerp(34, 52, portraitFit);
       camera.position.copy(cameraBasePosition).sub(cameraTarget).multiplyScalar(cameraDistanceScale).add(cameraTarget);
       controls.target.copy(cameraTarget);
       camera.updateProjectionMatrix();
@@ -3404,6 +3512,7 @@
 
     const clock = new THREE.Clock();
     let accumulatedTime = 0;
+    let minimumObservedSubjectClearance = Infinity;
 
     function animate() {
       requestAnimationFrame(animate);
@@ -3412,6 +3521,21 @@
       mice.forEach((m, i) => {
         m.update(accumulatedTime, mice, i === 0 ? hudElements : null, dt);
       });
+      resolveAllMouseBodyOverlaps(mice);
+      const minimumSubjectClearance = getMinimumMouseClearance(mice);
+      if (Number.isFinite(minimumSubjectClearance)) {
+        minimumObservedSubjectClearance = Math.min(
+          minimumObservedSubjectClearance,
+          minimumSubjectClearance
+        );
+      }
+      canvas.dataset.minimumSubjectClearance = Number.isFinite(minimumSubjectClearance)
+        ? minimumSubjectClearance.toFixed(4)
+        : 'na';
+      canvas.dataset.minimumObservedSubjectClearance = Number.isFinite(minimumObservedSubjectClearance)
+        ? minimumObservedSubjectClearance.toFixed(4)
+        : 'na';
+      canvas.dataset.subjectOverlap = minimumSubjectClearance < -0.01 ? 'true' : 'false';
       controls.update();
       // Render via post-processing pipeline (passes through if disabled)
       postFX.render(scene, camera, accumulatedTime);

@@ -39,6 +39,14 @@ def test_two_mice_example_preserves_subject_appearance_and_render_readiness():
     assert "Fur pigment applies to newly spawned subjects." in source
     assert "const portraitFit = THREE.MathUtils.clamp" in source
     assert "cameraDistanceScale" in source
+    assert "const MOUSE_COLLISION_DISC_LAYOUT" in source
+    assert "resolveAllMouseBodyOverlaps(mice);" in source
+    assert "canvas.dataset.minimumObservedSubjectClearance" in source
+    assert "canvas.dataset.subjectOverlap" in source
+    assert "const thighMuscle = new THREE.Mesh" in source
+    assert "const legLengthScale = params.legLength" in source
+    assert "this.maxSpeed = params.maxSpeed" in source
+    assert "const legCycle = this.locomotionTime * 3.8" in source
 
 
 def test_generate_flybody_example_uses_repo_mesh_when_available(
