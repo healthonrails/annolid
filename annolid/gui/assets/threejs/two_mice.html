@@ -131,6 +131,7 @@
     const DATASET_SEED = Number.parseInt(datasetQuery.get('seed') || '20260710', 10) >>> 0;
     const DATASET_SIMULATION_HZ = 30;
     const CONTACT_QA = datasetQuery.get('contact_qa');
+    const REARING_QA = datasetQuery.get('rearing_qa');
 
     function createSeededRandom(seed) {
       let state = seed >>> 0;
@@ -2028,6 +2029,7 @@
     function resolveAllMouseContacts(subjects, dt = 0.016) {
       resolveAllMouseBodyOverlaps(subjects);
       for (const mouse of subjects) mouse.solveFootPlantConstraints(dt);
+      for (const mouse of subjects) mouse.solveRearSupportConstraints();
       for (const mouse of subjects) mouse.updateTailGeometry(subjects);
       for (const mouse of subjects) mouse.updateTrackingGeometry();
     }
@@ -2063,6 +2065,21 @@
         this.rearAmount = 0;
         this.rearVel = 0;
         this.rearCooldown = 0;
+        this.rearing = {
+          mode: 'none',
+          phase: 'idle',
+          phaseTime: 0,
+          elapsed: 0,
+          peakAmount: 0,
+          riseDuration: 0,
+          holdDuration: 0,
+          settleDuration: 0,
+          sideLean: 0,
+          supportDirection: new THREE.Vector2(0, 1),
+          supportPoint: new THREE.Vector2(0, 0),
+          nextSpontaneousAt: 3.2 + (this.timeOffset % 4.8),
+        };
+        this.maximumRearSupportError = 0;
         this.prevVelocity = new THREE.Vector2(0, 0);
         this.prevHeadingAngle = Math.atan2(this.heading.x, this.heading.y);
         this.yawAngle = this.prevHeadingAngle;
@@ -3081,6 +3098,214 @@
         this.skeletonLines.geometry.attributes.position.needsUpdate = true;
       }
 
+      startRearing(mode, supportDirection = null, holdDuration = null) {
+        if (!['unsupported', 'wall-supported'].includes(mode)) return false;
+        if (this.rearing.mode !== 'none') return false;
+
+        const state = this.rearing;
+        state.mode = mode;
+        state.phase = 'rise';
+        state.phaseTime = 0;
+        state.elapsed = 0;
+        state.peakAmount = mode === 'wall-supported' ? 0.94 : 0.80;
+        state.riseDuration = mode === 'wall-supported' ? 0.42 : 0.36;
+        state.holdDuration = holdDuration ?? (
+          mode === 'wall-supported'
+            ? 1.05 + (this.timeOffset * 0.017) % 0.50
+            : 0.85 + (this.timeOffset * 0.013) % 0.55
+        );
+        state.settleDuration = mode === 'wall-supported' ? 0.58 : 0.50;
+        state.sideLean = Math.sin(this.timeOffset * 0.37) * (
+          mode === 'wall-supported' ? 0.018 : 0.052
+        );
+
+        if (mode === 'wall-supported') {
+          if (supportDirection && supportDirection.lengthSq() > 1e-8) {
+            state.supportDirection.copy(supportDirection).normalize();
+          } else {
+            state.supportDirection.copy(this.heading).normalize();
+          }
+          if (Math.abs(state.supportDirection.x) >= Math.abs(state.supportDirection.y)) {
+            state.supportPoint.set(
+              Math.sign(state.supportDirection.x || 1) * (ENCLOSURE_HALF_X - 0.08),
+              this.mesh.position.z
+            );
+          } else {
+            state.supportPoint.set(
+              this.mesh.position.x,
+              Math.sign(state.supportDirection.y || 1) * (ENCLOSURE_HALF_Z - 0.08)
+            );
+          }
+        }
+
+        this.pauseTimer = Math.max(
+          this.pauseTimer,
+          state.riseDuration + state.holdDuration + state.settleDuration + 0.2
+        );
+        this.velocity.multiplyScalar(0.14);
+        return true;
+      }
+
+      updateRearingBehavior(time, dt, context) {
+        const state = this.rearing;
+        this.rearCooldown = Math.max(0, this.rearCooldown - dt);
+
+        if (state.mode === 'none' && guiParams.enableRearing && this.rearCooldown <= 0) {
+          const supportDirection = new THREE.Vector2(
+            -context.nearestWall.normalX,
+            -context.nearestWall.normalZ
+          );
+          const impactRear = context.hitWall && context.impactNorm > 0.14;
+          const nearWall = context.wallDist < context.bodyMargin + 0.55;
+          const wallScanOpportunity = Math.sin(
+            time * 0.86 + this.timeOffset * 0.031
+          ) > 0.992;
+          const supportedRear = nearWall
+            && context.behaviorPause
+            && context.speed < 1.35
+            && wallScanOpportunity;
+          const openZone = context.wallDist > context.bodyMargin + 1.35;
+          const unsupportedRear = time >= state.nextSpontaneousAt
+            && context.behaviorPause
+            && context.speed < 1.15
+            && !this.socialContact
+            && openZone;
+
+          if (impactRear || supportedRear) {
+            this.startRearing('wall-supported', supportDirection);
+          } else if (unsupportedRear) {
+            this.startRearing('unsupported');
+          }
+        }
+
+        if (state.mode === 'none') {
+          this.rearAmount = 0;
+          this.rearVel = 0;
+          return;
+        }
+
+        state.phaseTime += dt;
+        state.elapsed += dt;
+        if (state.phase === 'rise' && state.phaseTime >= state.riseDuration) {
+          state.phase = 'hold';
+          state.phaseTime = 0;
+        } else if (state.phase === 'hold' && state.phaseTime >= state.holdDuration) {
+          state.phase = 'settle';
+          state.phaseTime = 0;
+        }
+
+        const target = state.phase === 'settle' ? 0 : state.peakAmount;
+        const stiffness = state.phase === 'settle' ? 30.0 : 42.0;
+        const damping = state.phase === 'settle' ? 10.5 : 9.2;
+        this.rearVel += (
+          stiffness * (target - this.rearAmount) - damping * this.rearVel
+        ) * dt;
+        this.rearAmount = THREE.MathUtils.clamp(
+          this.rearAmount + this.rearVel * dt,
+          0,
+          1
+        );
+        this.velocity.multiplyScalar(Math.exp(-8.0 * dt));
+
+        if (state.mode === 'wall-supported') {
+          const desiredX = state.supportPoint.x - state.supportDirection.x * 2.15;
+          const desiredZ = state.supportPoint.y - state.supportDirection.y * 2.15;
+          const approach = 1.0 - Math.exp(
+            -8.0 * dt * (0.35 + this.rearAmount)
+          );
+          this.mesh.position.x = THREE.MathUtils.lerp(this.mesh.position.x, desiredX, approach);
+          this.mesh.position.z = THREE.MathUtils.lerp(this.mesh.position.z, desiredZ, approach);
+        }
+
+        if (
+          state.phase === 'settle'
+          && state.phaseTime >= state.settleDuration
+          && this.rearAmount < 0.018
+          && Math.abs(this.rearVel) < 0.08
+        ) {
+          const frequency = THREE.MathUtils.clamp(guiParams.rearingFrequency ?? 1, 0.25, 2);
+          state.mode = 'none';
+          state.phase = 'idle';
+          state.phaseTime = 0;
+          state.elapsed = 0;
+          state.nextSpontaneousAt = time
+            + (7.5 + (this.timeOffset * 0.019) % 4.5) / frequency;
+          this.rearAmount = 0;
+          this.rearVel = 0;
+          this.rearCooldown = (2.4 + (this.timeOffset * 0.011) % 1.8) / frequency;
+        }
+      }
+
+      solveRearSupportConstraints() {
+        this.maximumRearSupportError = 0;
+        if (this.rearing.mode !== 'wall-supported') return;
+
+        const support = this.rearing.supportDirection;
+        const poseAmount = THREE.MathUtils.clamp(
+          this.rearAmount / Math.max(this.rearing.peakAmount, 0.01),
+          0,
+          1
+        );
+        // Forepaws only lock after the chest has rotated close enough for the
+        // connected limb chain to reach the wall without stretching.
+        if (poseAmount < 0.72) return;
+        const lateralX = support.y;
+        const lateralZ = -support.x;
+        const scratch = {
+          jointWorld: new THREE.Vector3(),
+          effectorWorld: new THREE.Vector3(),
+          toEffector: new THREE.Vector3(),
+          toTarget: new THREE.Vector3(),
+          axisWorld: new THREE.Vector3(),
+          cross: new THREE.Vector3(),
+        };
+        const targets = [
+          { plant: this.footPlants[2], side: 1 },
+          { plant: this.footPlants[3], side: -1 },
+        ];
+
+        for (const { plant, side } of targets) {
+          const target = new THREE.Vector3(
+            this.rearing.supportPoint.x + lateralX * side * 0.25,
+            1.55 + poseAmount * 1.55,
+            this.rearing.supportPoint.y + lateralZ * side * 0.25
+          );
+          const baselines = plant.joints.map(joint => ({
+            x: joint.rotation.x,
+            z: joint.rotation.z,
+          }));
+          for (let iteration = 0; iteration < 7; iteration++) {
+            for (let index = 0; index < plant.joints.length; index++) {
+              this.rotateIkJointToward(
+                plant.joints[index],
+                'x',
+                plant.contact,
+                target,
+                baselines[index].x,
+                index === 0 ? 0.48 : (index === 1 ? 0.72 : 0.66),
+                scratch
+              );
+            }
+            const rootIndex = plant.joints.length - 1;
+            this.rotateIkJointToward(
+              plant.joints[rootIndex],
+              'z',
+              plant.contact,
+              target,
+              baselines[rootIndex].z,
+              0.30,
+              scratch
+            );
+          }
+          this.mesh.updateMatrixWorld(true);
+          plant.contact.getWorldPosition(scratch.effectorWorld);
+          this.maximumRearSupportError = Math.max(
+            this.maximumRearSupportError,
+            scratch.effectorWorld.distanceTo(target)
+          );
+        }
+      }
+
 
       update(time, otherMice = [], hudRef = null, dt = 0.016) {
         dt = Math.min(dt, 0.05);
@@ -3096,13 +3321,17 @@
             if (Math.random() < 0.22) this.wallFollowDir *= -1;
           }
         }
-        const isPausing = this.pauseTimer > 0;
+        const behaviorPause = this.pauseTimer > 0;
+        const rearingActive = this.rearing.mode !== 'none';
+        const isPausing = behaviorPause || rearingActive;
 
         // --- FORCE ACCUMULATION ---
         this.force.set(0, 0);
         let burst = Math.sin(t * 1.5 + this.burstPhase);
         burst = 0.7 + 0.3 * Math.max(0, burst);
-        const driveStrength = burst * this.guiParams.wanderForce * (isPausing ? 0.18 : 1.0);
+        const driveStrength = burst * this.guiParams.wanderForce * (
+          rearingActive ? 0.05 : (isPausing ? 0.18 : 1.0)
+        );
 
         // Thigmotaxis
         const px = this.mesh.position.x, pz = this.mesh.position.z;
@@ -3265,7 +3494,14 @@
         let hitXWall = false;
         let hitZWall = false;
         // Keep full body+head away from walls (not just the body center point).
-        const HM = Math.max(3.8, 3.2 * this.guiParams.bodyLength + 0.9 * this.guiParams.snoutLength);
+        const baseBodyMargin = Math.max(
+          3.8,
+          3.2 * this.guiParams.bodyLength + 0.9 * this.guiParams.snoutLength
+        );
+        const uprightMarginReduction = this.rearing.mode === 'wall-supported'
+          ? this.rearAmount * 2.10
+          : 0;
+        const HM = baseBodyMargin - uprightMarginReduction;
         if (this.mesh.position.x > ENCLOSURE_HALF_X - HM) { this.mesh.position.x = ENCLOSURE_HALF_X - HM; this.velocity.x = -Math.abs(this.velocity.x) * 0.25; hitWall = true; hitXWall = true; }
         if (this.mesh.position.x < -ENCLOSURE_HALF_X + HM) { this.mesh.position.x = -ENCLOSURE_HALF_X + HM; this.velocity.x = Math.abs(this.velocity.x) * 0.25; hitWall = true; hitXWall = true; }
         if (this.mesh.position.z > ENCLOSURE_HALF_Z - HM) { this.mesh.position.z = ENCLOSURE_HALF_Z - HM; this.velocity.y = -Math.abs(this.velocity.y) * 0.25; hitWall = true; hitZWall = true; }
@@ -3297,28 +3533,33 @@
           }
           // Heading will reorient through angular inertia below.
         }
+        const impactNorm = Math.min(
+          this.velocity.length() / Math.max(this.guiParams.maxSpeed, 1e-3),
+          1.0
+        );
         if (!guiParams.isPaused) {
-          this.rearCooldown = Math.max(0, this.rearCooldown - dt);
-          const impactNorm = Math.min(this.velocity.length() / Math.max(this.guiParams.maxSpeed, 1e-3), 1.0);
-          if (hitWall && impactNorm > 0.14 && this.rearCooldown <= 0) {
-            this.rearVel += 2.0 + impactNorm * 1.8;
-            this.rearCooldown = 0.7;
-          }
-          // Damped spring so rearing rises quickly and settles smoothly.
-          this.rearVel += (-18.0 * this.rearAmount - 7.5 * this.rearVel) * dt;
-          this.rearAmount = THREE.MathUtils.clamp(this.rearAmount + this.rearVel * dt, 0, 1);
-          if (this.rearAmount < 1e-3 && this.rearVel < 1e-3) {
-            this.rearAmount = 0;
-            this.rearVel = 0;
-          }
+          this.updateRearingBehavior(time, dt, {
+            hitWall,
+            impactNorm,
+            nearestWall: nearest,
+            wallDist,
+            bodyMargin: baseBodyMargin,
+            behaviorPause,
+            speed: this.velocity.length(),
+          });
         }
 
         // Heading
         const speed = this.velocity.length();
-        let isMoving = speed > 0.3;
+        let isMoving = speed > 0.3 && this.rearing.mode === 'none';
         if (!guiParams.isPaused) {
           let targetYaw = this.yawAngle;
-          if (isMoving) {
+          if (this.rearing.mode === 'wall-supported') {
+            targetYaw = Math.atan2(
+              this.rearing.supportDirection.x,
+              this.rearing.supportDirection.y
+            );
+          } else if (isMoving) {
             targetYaw = Math.atan2(this.velocity.x, this.velocity.y);
           } else if (this.force.lengthSq() > 1e-6) {
             targetYaw = Math.atan2(this.force.x, this.force.y);
@@ -3326,10 +3567,14 @@
           let yawErr = targetYaw - this.yawAngle;
           if (yawErr > Math.PI) yawErr -= Math.PI * 2;
           if (yawErr < -Math.PI) yawErr += Math.PI * 2;
-          const yawK = isColliding ? 18.0 : 12.0;
+          const yawK = this.rearing.mode === 'wall-supported'
+            ? 24.0
+            : (isColliding ? 18.0 : 12.0);
           const yawD = 7.0;
           this.yawVel += (yawK * yawErr - yawD * this.yawVel) * dt;
-          const maxYawRate = isColliding ? 2.8 : 2.2;
+          const maxYawRate = this.rearing.mode === 'wall-supported'
+            ? 3.0
+            : (isColliding ? 2.8 : 2.2);
           this.yawVel = THREE.MathUtils.clamp(this.yawVel, -maxYawRate, maxYawRate);
           this.yawAngle += this.yawVel * dt;
         }
@@ -3339,8 +3584,15 @@
         if (hudRef) {
           let stateText = "EXPLORING";
           let stateColor = "#2f3c30";
-          if (this.rearAmount > 0.10) {
-            stateText = "REARING // WALL CHECK";
+          if (this.rearAmount > 0.10 && this.rearing.mode === 'wall-supported') {
+            stateText = this.rearing.phase === 'settle'
+              ? "SETTLING // WALL REAR"
+              : "SUPPORTED REARING";
+            stateColor = "#6e4d2f";
+          } else if (this.rearAmount > 0.10 && this.rearing.mode === 'unsupported') {
+            stateText = this.rearing.phase === 'settle'
+              ? "SETTLING // REARING"
+              : "EXPLORATORY REARING";
             stateColor = "#6e4d2f";
           } else if (this.socialContact) {
             stateText = "SOCIAL SNIFFING";
@@ -3395,7 +3647,12 @@
 
           // Tail inertial follow-through.
           const targetTailSway = THREE.MathUtils.clamp(-turnRate * 0.06 - lateralAccel * 0.01, -0.9, 0.9);
-          const targetTailLift = THREE.MathUtils.clamp(-0.05 - forwardAccel * 0.004 + speedNorm * 0.03, -0.18, 0.08);
+          const targetTailLift = THREE.MathUtils.clamp(
+            -0.05 - forwardAccel * 0.004 + speedNorm * 0.03
+              + this.rearAmount * 0.10,
+            -0.18,
+            0.15
+          );
           const tailK = 14.0, tailD = 4.8;
           this.tailDyn.swayV += (tailK * (targetTailSway - this.tailDyn.sway) - tailD * this.tailDyn.swayV) * dt;
           this.tailDyn.liftV += (tailK * (targetTailLift - this.tailDyn.lift) - tailD * this.tailDyn.liftV) * dt;
@@ -3412,6 +3669,7 @@
         }
 
         this.rig.position.y = this.bodyDyn.y;
+        this.rig.position.z = 0;
         this.rig.rotation.x = this.bodyDyn.pitch;
         this.rig.rotation.z = this.bodyDyn.roll;
 
@@ -3474,21 +3732,55 @@
 
         const rear = this.rearAmount;
         if (rear > 0) {
-          // Rearing posture near walls: raise front body and forelimbs.
-          this.rig.position.y += rear * 0.85;
-          this.rig.rotation.x -= rear * 0.40;
-          this.armL.rotation.x = THREE.MathUtils.lerp(this.armL.rotation.x, -1.18, rear);
-          this.armR.rotation.x = THREE.MathUtils.lerp(this.armR.rotation.x, -1.18, rear);
-          this.armL.rotation.z = THREE.MathUtils.lerp(this.armL.rotation.z, -0.16, rear);
-          this.armR.rotation.z = THREE.MathUtils.lerp(this.armR.rotation.z, 0.16, rear);
-          if (this.armL._forearm) this.armL._forearm.rotation.x = THREE.MathUtils.lerp(this.armL._forearm.rotation.x, 0.85, rear);
-          if (this.armR._forearm) this.armR._forearm.rotation.x = THREE.MathUtils.lerp(this.armR._forearm.rotation.x, 0.85, rear);
-          if (this.armL._wrist) this.armL._wrist.rotation.x = THREE.MathUtils.lerp(this.armL._wrist.rotation.x, 0.45, rear);
-          if (this.armR._wrist) this.armR._wrist.rotation.x = THREE.MathUtils.lerp(this.armR._wrist.rotation.x, 0.45, rear);
-          if (this.armL._paw) this.armL._paw.rotation.x = THREE.MathUtils.lerp(this.armL._paw.rotation.x, 0.30, rear);
-          if (this.armR._paw) this.armR._paw.rotation.x = THREE.MathUtils.lerp(this.armR._paw.rotation.x, 0.30, rear);
-          this.hindL.rotation.x = THREE.MathUtils.lerp(this.hindL.rotation.x, 0.35, rear);
-          this.hindR.rotation.x = THREE.MathUtils.lerp(this.hindR.rotation.x, 0.35, rear);
+          const supported = this.rearing.mode === 'wall-supported';
+          const poseAmount = THREE.MathUtils.clamp(
+            rear / Math.max(this.rearing.peakAmount, 0.01),
+            0,
+            1
+          );
+          const hover = Math.sin(
+            this.rearing.elapsed * 4.4 + this.timeOffset * 0.021
+          ) * poseAmount;
+          this.rig.position.y += poseAmount * (supported ? 1.30 : 1.25);
+          this.rig.position.z += poseAmount * (supported ? 0.18 : -0.08);
+          this.rig.rotation.x -= poseAmount * (supported ? 1.02 : 0.96);
+          this.rig.rotation.z += poseAmount * (
+            this.rearing.sideLean + (supported ? 0 : hover * 0.018)
+          );
+
+          const armTargetL = supported ? -0.52 : -1.24 + hover * 0.08;
+          const armTargetR = supported ? -0.52 : -1.18 - hover * 0.08;
+          const forearmTargetL = supported ? 0.12 : 0.94 - hover * 0.06;
+          const forearmTargetR = supported ? 0.12 : 0.88 + hover * 0.06;
+          const wristTarget = supported ? 0.22 : 0.54;
+          const pawTarget = supported ? 0.04 : 0.28;
+          this.armL.rotation.x = THREE.MathUtils.lerp(this.armL.rotation.x, armTargetL, poseAmount);
+          this.armR.rotation.x = THREE.MathUtils.lerp(this.armR.rotation.x, armTargetR, poseAmount);
+          this.armL.rotation.z = THREE.MathUtils.lerp(
+            this.armL.rotation.z,
+            supported ? -0.08 : -0.18,
+            poseAmount
+          );
+          this.armR.rotation.z = THREE.MathUtils.lerp(
+            this.armR.rotation.z,
+            supported ? 0.08 : 0.18,
+            poseAmount
+          );
+          if (this.armL._forearm) this.armL._forearm.rotation.x = THREE.MathUtils.lerp(this.armL._forearm.rotation.x, forearmTargetL, poseAmount);
+          if (this.armR._forearm) this.armR._forearm.rotation.x = THREE.MathUtils.lerp(this.armR._forearm.rotation.x, forearmTargetR, poseAmount);
+          if (this.armL._wrist) this.armL._wrist.rotation.x = THREE.MathUtils.lerp(this.armL._wrist.rotation.x, wristTarget, poseAmount);
+          if (this.armR._wrist) this.armR._wrist.rotation.x = THREE.MathUtils.lerp(this.armR._wrist.rotation.x, wristTarget, poseAmount);
+          if (this.armL._paw) this.armL._paw.rotation.x = THREE.MathUtils.lerp(this.armL._paw.rotation.x, pawTarget, poseAmount);
+          if (this.armR._paw) this.armR._paw.rotation.x = THREE.MathUtils.lerp(this.armR._paw.rotation.x, pawTarget, poseAmount);
+
+          this.hindL.rotation.x = THREE.MathUtils.lerp(this.hindL.rotation.x, 0.58, poseAmount);
+          this.hindR.rotation.x = THREE.MathUtils.lerp(this.hindR.rotation.x, 0.58, poseAmount);
+          this.shankL.rotation.x = THREE.MathUtils.lerp(this.shankL.rotation.x, 0.88, poseAmount);
+          this.shankR.rotation.x = THREE.MathUtils.lerp(this.shankR.rotation.x, 0.88, poseAmount);
+          if (this.hindL._ankle) this.hindL._ankle.rotation.x = THREE.MathUtils.lerp(this.hindL._ankle.rotation.x, -0.54, poseAmount);
+          if (this.hindR._ankle) this.hindR._ankle.rotation.x = THREE.MathUtils.lerp(this.hindR._ankle.rotation.x, -0.54, poseAmount);
+          if (this.hindL._paw) this.hindL._paw.rotation.x = THREE.MathUtils.lerp(this.hindL._paw.rotation.x, -0.04, poseAmount);
+          if (this.hindR._paw) this.hindR._paw.rotation.x = THREE.MathUtils.lerp(this.hindR._paw.rotation.x, -0.04, poseAmount);
           this.contactShadow.position.set(0, -this.rig.position.y + 0.02, 0);
         }
         this.contactFrame.legCycle = legCycle;
@@ -3562,7 +3854,20 @@
           this.padL.rotation.x = 0.012; this.padR.rotation.x = 0.012;
           this.padL.rotation.z = 0; this.padR.rotation.z = 0;
         }
-        if (rear > 0) this.headGroup.rotation.x += rear * 0.32;
+        if (rear > 0) {
+          const supported = this.rearing.mode === 'wall-supported';
+          const poseAmount = THREE.MathUtils.clamp(
+            rear / Math.max(this.rearing.peakAmount, 0.01),
+            0,
+            1
+          );
+          this.headGroup.rotation.x += poseAmount * (supported ? 0.72 : 0.66);
+          if (!supported) {
+            this.headGroup.rotation.y += Math.sin(
+              this.rearing.elapsed * 2.0 + this.timeOffset * 0.015
+            ) * poseAmount * 0.07;
+          }
+        }
 
         // ═══ EAR MICRO-TWITCHES ═══
         if (this.earL && this.earR && this.earMicro.baseRotL) {
@@ -3905,6 +4210,11 @@
       bodyLength: 1.0, legLength: 1.06, legThickness: 1.10,
       // Physics
       maxSpeed: 5.4, dragCoeff: 2.55, wanderForce: 5.8, wallAttraction: 1.8,
+      enableRearing: true, rearingFrequency: 1.0,
+      triggerRearing: () => {
+        const subject = mice.find(mouse => mouse.rearing.mode === 'none');
+        if (subject) subject.startRearing('unsupported');
+      },
       // Quality
       qualityMode: 'Photo', furDetailLevel: 'Med',
       enableVignette: false, enableGrain: false, enableAO: true,
@@ -4194,6 +4504,11 @@
     physicsFolder.add(guiParams, 'dragCoeff', 0.5, 10.0, 0.5).name('Drag / Friction');
     physicsFolder.add(guiParams, 'wanderForce', 0.5, 10.0, 0.5).name('Wander Force');
     physicsFolder.add(guiParams, 'wallAttraction', 0.0, 5.0, 0.25).name('Wall Attraction');
+
+    const behaviorFolder = gui.addFolder('Behavior Controls');
+    behaviorFolder.add(guiParams, 'enableRearing').name('Rearing');
+    behaviorFolder.add(guiParams, 'rearingFrequency', 0.25, 2.0, 0.05).name('Rear Frequency');
+    behaviorFolder.add(guiParams, 'triggerRearing').name('Rear Now');
     gui.close();
 
     // ═══════════════════════════════════════════════════════════════
@@ -4304,6 +4619,42 @@
       rightMouse.prevHeadingAngle = Math.PI / 2;
       guiParams.isPaused = true;
     }
+    if (
+      REARING_QA === 'unsupported'
+      || REARING_QA === 'wall-supported'
+      || REARING_QA === 'wall-transition'
+    ) {
+      const subject = mice[0];
+      const observer = mice[1];
+      observer.velocity.set(0, 0);
+      observer.pauseTimer = 5;
+      if (REARING_QA === 'wall-supported' || REARING_QA === 'wall-transition') {
+        observer.mesh.position.set(-8.0, 0, 4.5);
+        const supportDirection = new THREE.Vector2(0, -1);
+        subject.mesh.position.set(0, 0, -ENCLOSURE_HALF_Z + 2.15);
+        subject.heading.copy(supportDirection);
+        subject.yawAngle = Math.PI;
+        subject.prevHeadingAngle = Math.PI;
+        subject.startRearing('wall-supported', supportDirection, 999);
+      } else {
+        observer.mesh.position.set(6.0, 0, -5.5);
+        subject.mesh.position.set(0, 0, 0.5);
+        subject.heading.set(-0.60, 0.80).normalize();
+        subject.yawAngle = Math.atan2(subject.heading.x, subject.heading.y);
+        subject.prevHeadingAngle = subject.yawAngle;
+        subject.startRearing('unsupported', null, 999);
+      }
+      subject.velocity.set(0, 0);
+      if (REARING_QA === 'wall-transition') {
+        subject.rearing.holdDuration = 0.70;
+      } else {
+        subject.rearing.phase = 'hold';
+        subject.rearing.phaseTime = 0;
+        subject.rearAmount = subject.rearing.peakAmount;
+        subject.rearVel = 0;
+        guiParams.isPaused = true;
+      }
+    }
 
     function projectPoseNode(node, width, height) {
       const worldPosition = new THREE.Vector3();
@@ -4341,6 +4692,10 @@
         category_id: POSE_CATEGORY.id,
         track_id: mouse.trackId,
         subject_name: mouse.strainName,
+        behavior: mouse.rearing.mode === 'none' ? 'ground' : 'rearing',
+        rearing_mode: mouse.rearing.mode,
+        rearing_phase: mouse.rearing.phase,
+        rearing_amount: Number(mouse.rearAmount.toFixed(4)),
         keypoints,
         num_keypoints: visiblePoints.length,
         bbox,
@@ -4396,7 +4751,11 @@
       const portraitFit = THREE.MathUtils.clamp((0.90 - camera.aspect) / 0.45, 0, 1);
       const cameraDistanceScale = 1.0 + portraitFit * 1.15;
       camera.fov = THREE.MathUtils.lerp(34, 58, portraitFit);
-      if (CONTACT_QA === 'tail') {
+      if (REARING_QA === 'wall-supported' || REARING_QA === 'wall-transition') {
+        camera.position.set(15.0, 6.2, 2.0);
+        camera.up.set(0, 1, 0);
+        controls.target.set(0, 2.4, -ENCLOSURE_HALF_Z + 2.15);
+      } else if (CONTACT_QA === 'tail') {
         camera.position.set(0, 18, 0.1);
         camera.up.set(0, 0, -1);
         controls.target.set(0, 0, 0);
@@ -4418,6 +4777,8 @@
     let minimumObservedTailDetails = null;
     let maximumObservedFootSlip = 0;
     let maximumObservedPawGroundError = 0;
+    let maximumObservedRearSupportError = 0;
+    const observedRearingModes = new Set();
     let datasetCurrentFrameIndex = 0;
     let datasetInitialized = false;
 
@@ -4426,6 +4787,13 @@
       const minimumTailClearance = getMinimumTailClearance(mice);
       const maximumFootSlip = getMaximumFootSlip(mice);
       const maximumPawGroundError = getMaximumPawGroundError(mice);
+      const maximumRearSupportError = Math.max(
+        0,
+        ...mice.map(mouse => mouse.maximumRearSupportError || 0)
+      );
+      for (const mouse of mice) {
+        if (mouse.rearing.mode !== 'none') observedRearingModes.add(mouse.rearing.mode);
+      }
       if (Number.isFinite(minimumSubjectClearance)) {
         minimumObservedSubjectClearance = Math.min(
           minimumObservedSubjectClearance,
@@ -4455,6 +4823,10 @@
         maximumObservedPawGroundError,
         maximumPawGroundError
       );
+      maximumObservedRearSupportError = Math.max(
+        maximumObservedRearSupportError,
+        maximumRearSupportError
+      );
       canvas.dataset.minimumSubjectClearance = Number.isFinite(minimumSubjectClearance)
         ? minimumSubjectClearance.toFixed(4)
         : 'na';
@@ -4477,6 +4849,18 @@
       canvas.dataset.maximumObservedFootSlip = maximumObservedFootSlip.toFixed(4);
       canvas.dataset.maximumPawGroundError = maximumPawGroundError.toFixed(4);
       canvas.dataset.maximumObservedPawGroundError = maximumObservedPawGroundError.toFixed(4);
+      canvas.dataset.maximumRearSupportError = maximumRearSupportError.toFixed(4);
+      canvas.dataset.maximumObservedRearSupportError = maximumObservedRearSupportError.toFixed(4);
+      canvas.dataset.rearingActive = mice.some(mouse => mouse.rearing.mode !== 'none')
+        ? 'true'
+        : 'false';
+      canvas.dataset.observedRearingModes = JSON.stringify([...observedRearingModes]);
+      canvas.dataset.rearingBySubject = JSON.stringify(mice.map(mouse => ({
+        trackId: mouse.trackId,
+        mode: mouse.rearing.mode,
+        phase: mouse.rearing.phase,
+        amount: Number(mouse.rearAmount.toFixed(4)),
+      })));
       canvas.dataset.tailClearanceBySubject = JSON.stringify(mice.map(mouse => ({
         trackId: mouse.trackId,
         clearance: Number.isFinite(mouse.minimumTailClearance)

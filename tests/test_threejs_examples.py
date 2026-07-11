@@ -52,6 +52,18 @@ def test_two_mice_example_preserves_subject_appearance_and_render_readiness():
     assert "updateTailGeometry(otherMice = [])" in source
     assert "const getSegmentContact = (start, end, index)" in source
     assert "const CONTACT_QA = datasetQuery.get('contact_qa')" in source
+    assert "const REARING_QA = datasetQuery.get('rearing_qa')" in source
+    assert "REARING_QA === 'wall-transition'" in source
+    assert "startRearing(mode, supportDirection = null, holdDuration = null)" in source
+    assert "updateRearingBehavior(time, dt, context)" in source
+    assert "solveRearSupportConstraints()" in source
+    assert "this.startRearing('wall-supported', supportDirection)" in source
+    assert "this.startRearing('unsupported')" in source
+    assert "canvas.dataset.rearingBySubject" in source
+    assert "canvas.dataset.observedRearingModes" in source
+    assert "rearing_mode: mouse.rearing.mode" in source
+    assert "rearing_phase: mouse.rearing.phase" in source
+    assert "behaviorFolder.add(guiParams, 'triggerRearing').name('Rear Now')" in source
     assert "const thighMuscle = new THREE.Mesh" in source
     assert "const legLengthScale = params.legLength" in source
     assert "paw.name = isFore ? 'connected-forepaw' : 'connected-hindpaw'" in source
