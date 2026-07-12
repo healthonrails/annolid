@@ -132,6 +132,12 @@
     const DATASET_SIMULATION_HZ = 30;
     const CONTACT_QA = datasetQuery.get('contact_qa');
     const REARING_QA = datasetQuery.get('rearing_qa');
+    const GROOMING_QA = datasetQuery.get('grooming_qa');
+    const ANATOMY_QA = datasetQuery.get('anatomy_qa');
+    const ANATOMY_QA_VIEWS = new Set(['ears', 'ears-front', 'torso-side', 'torso-front']);
+    const IS_ANATOMY_QA = ANATOMY_QA_VIEWS.has(ANATOMY_QA);
+    const IS_TORSO_ANATOMY_QA = ANATOMY_QA === 'torso-side'
+      || ANATOMY_QA === 'torso-front';
 
     function createSeededRandom(seed) {
       let state = seed >>> 0;
@@ -189,10 +195,10 @@
     // ═══════════════════════════════════════════════════════════════
     function defaultProportions() {
       return {
-        bodyLength: 2.72, bodyGirthX: 1.36, bodyGirthY: 1.32,
+        bodyLength: 2.68, bodyGirthX: 1.27, bodyGirthY: 1.18,
         ribcageDepth: 1.04, waistTaper: 0.82, haunchWidth: 1.04, shoulderWidth: 0.90,
-        neckLength: 0.54, neckGirth: 0.68,
-        headSize: 1.04, snoutLength: 1.04, snoutWidth: 0.94, cheekFullness: 0.42,
+        neckLength: 1.34, neckGirth: 0.64,
+        headSize: 0.98, snoutLength: 1.02, snoutWidth: 0.92, cheekFullness: 0.34,
         earSize: 0.78, earSetBack: -0.40, earYaw: 0.72, earThickness: 0.08,
         eyeSize: 0.128, eyeSpacing: 0.45, eyeProtrusion: 1.08, eyeYaw: 0.43,
         foreLimbLength: 0.94, hindLimbLength: 0.80,
@@ -201,6 +207,13 @@
       };
     }
     const PROP = defaultProportions();
+    const FORELIMB_NEUTRAL = Object.freeze({
+      shoulderX: 0.20,
+      shoulderZ: 0.0,
+      elbowX: -0.62,
+      wristX: -0.12,
+      pawX: -0.12,
+    });
 
     // ═══════════════════════════════════════════════════════════════
     // 3. PROCEDURAL CANVAS TEXTURES (micro-normal + roughness)
@@ -360,20 +373,25 @@
       const c = document.createElement('canvas'); c.width = size; c.height = size;
       const ctx = c.getContext('2d');
       for (let y = 0; y < size; y++) {
-        // More pronounced annular ring segmentation
-        const band = Math.sin(y * 0.5) * 0.4 + Math.sin(y * 1.2) * 0.2 + 0.5;
-        const v = Math.floor(130 + band * 75);
+        // Mouse-tail scales read as shallow skin folds, not separate bands.
+        const fold = Math.sin(y * 0.34) * 0.55 + Math.sin(y * 0.79 + 0.8) * 0.18;
+        const grain = (Math.random() - 0.5) * 4.0;
+        const v = Math.floor(174 + fold * 10 + grain);
         ctx.fillStyle = `rgb(${v},${v},${v})`;
         ctx.fillRect(0, y, size, 1);
       }
-      // Faint scale-like cross-hatch pattern
-      ctx.globalAlpha = 0.08;
-      for (let i = 0; i < 60; i++) {
+      // Sparse, low-contrast keratin texture keeps the surface organic.
+      ctx.globalAlpha = 0.035;
+      for (let i = 0; i < 42; i++) {
         const y0 = Math.random() * size;
         const x0 = Math.random() * size;
-        ctx.strokeStyle = `rgb(${140 + Math.floor(Math.random() * 40)},${140 + Math.floor(Math.random() * 40)},${140 + Math.floor(Math.random() * 40)})`;
-        ctx.lineWidth = 0.5 + Math.random();
-        ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x0 + 8 + Math.random() * 12, y0 + (Math.random() - 0.5) * 4); ctx.stroke();
+        const shade = 158 + Math.floor(Math.random() * 26);
+        ctx.strokeStyle = `rgb(${shade},${shade},${shade})`;
+        ctx.lineWidth = 0.4 + Math.random() * 0.6;
+        ctx.beginPath();
+        ctx.moveTo(x0, y0);
+        ctx.lineTo(x0 + 6 + Math.random() * 10, y0 + (Math.random() - 0.5) * 3);
+        ctx.stroke();
       }
       ctx.globalAlpha = 1.0;
       const tex = new THREE.CanvasTexture(c);
@@ -797,26 +815,27 @@
     const deformBody = (v) => {
       const zNorm = (v.z + 1) / 2;
       // Compact murine silhouette: broad haunches, arched dorsum, narrower chest.
-      const rearMass = Math.exp(-Math.pow((zNorm - 0.27) / 0.24, 2.0));
+      const rearMass = Math.exp(-Math.pow((zNorm - 0.27) / 0.26, 2.0));
       let shoulderDrop = THREE.MathUtils.clamp((zNorm - 0.68) / 0.32, 0, 1);
       shoulderDrop = shoulderDrop * shoulderDrop * (3.0 - 2.0 * shoulderDrop);
       const waistNarrow = Math.exp(-Math.pow((zNorm - 0.58) / 0.16, 2.0));
       const frontNarrow = THREE.MathUtils.smoothstep(0.66, 0.94, zNorm) * 0.035;
       const lateral = (
-        1.0 + rearMass * 0.26 - shoulderDrop * 0.08
+        1.0 + rearMass * 0.18 - shoulderDrop * 0.045
         - waistNarrow * (1.0 - PROP.waistTaper) * 0.14 - frontNarrow
       );
       v.x *= lateral * PROP.bodyGirthX;
-      v.y *= (1.02 + rearMass * 0.12 - zNorm * 0.16) * PROP.bodyGirthY;
+      v.y *= (0.99 + rearMass * 0.07 - zNorm * 0.10) * PROP.bodyGirthY;
       v.z *= PROP.bodyLength;
       // Rounder cross-section so top view does not show a hard flank shelf.
       const sideBlend = THREE.MathUtils.clamp((Math.abs(v.y) - 0.06) / 0.72, 0, 1);
       v.x *= 0.95 + sideBlend * 0.05;
 
       // Dorsal line: peak around rear-mid, shoulder and tail-base slightly lower.
-      const hump = Math.exp(-Math.pow((zNorm - 0.34) / 0.22, 2.0));
+      const hump = Math.exp(-Math.pow((zNorm - 0.34) / 0.26, 2.0));
       const rump = Math.exp(-Math.pow((zNorm - 0.11) / 0.11, 2.0));
-      v.y += hump * 0.37 + rump * 0.13 - shoulderDrop * 0.055;
+      const withers = Math.exp(-Math.pow((zNorm - 0.73) / 0.17, 2.0));
+      v.y += hump * 0.24 + rump * 0.08 + withers * 0.13 - shoulderDrop * 0.015;
 
       // Ventrum: continuous shaping (avoid crease/cut line in top view).
       const yRef = v.y;
@@ -837,11 +856,11 @@
       // Subtle scapular and haunch emphasis from side.
       if (zNorm > 0.68 && zNorm < 0.86 && Math.abs(v.x) > 0.26) {
         const scapBulge = 1.0 - Math.abs(zNorm - 0.76) * 10.0;
-        if (scapBulge > 0) { v.x *= 1.0 + scapBulge * 0.07; if (v.y > 0) v.y += scapBulge * 0.05; }
+        if (scapBulge > 0) { v.x *= 1.0 + scapBulge * 0.045; if (v.y > 0) v.y += scapBulge * 0.035; }
       }
       if (zNorm > 0.14 && zNorm < 0.36 && Math.abs(v.x) > 0.26) {
         const hB = 1.0 - Math.abs(zNorm - 0.25) * 6.0;
-        if (hB > 0) { v.x *= 1.0 + hB * 0.18; if (v.y < 0) v.y *= 1.0 + hB * 0.10; }
+        if (hB > 0) { v.x *= 1.0 + hB * 0.12; if (v.y < 0) v.y *= 1.0 + hB * 0.07; }
       }
 
       // Tail base integration: gradual taper into pelvis
@@ -851,11 +870,12 @@
         v.y *= 0.8 + tailBlend * 0.2;
       }
 
-      // Narrow neck root at very front.
-      if (zNorm > 0.86) {
-        const neckT = (zNorm - 0.86) / 0.14;
-        v.x *= 1.0 - neckT * 0.17;
-        v.y *= 1.0 - neckT * 0.10;
+      // Taper the anterior thorax inside the cervical mantle. Without this
+      // transition the body sphere wraps around the skull as a visible ring.
+      if (zNorm > 0.62) {
+        const neckT = THREE.MathUtils.smoothstep(zNorm, 0.62, 0.98);
+        v.x *= 1.0 - neckT * 0.40;
+        v.y *= 1.0 - neckT * (v.y >= 0 ? 0.25 : 0.10);
       }
     };
 
@@ -866,12 +886,14 @@
       v.y *= snoutTaper * 1.02;
       v.z *= PROP.snoutLength;
       v.y -= zNorm * 0.14;
-      // Cheeks
-      if (zNorm < 0.55) {
-        const cF = (0.55 - zNorm) * PROP.cheekFullness;
-        v.x *= 1.08 + cF;
-        if (v.y < 0) v.x *= 1.0 + cF * 0.25;
-      }
+      // Narrow the occiput into the neck, then add cheek mass around the
+      // zygomatic region instead of inflating the entire rear hemisphere.
+      const occipitalBlend = THREE.MathUtils.smoothstep(zNorm, 0.04, 0.68);
+      v.x *= 0.91 + occipitalBlend * 0.09;
+      if (v.y > 0) v.y *= 0.93 + occipitalBlend * 0.07;
+      const cheek = Math.exp(-Math.pow((zNorm - 0.57) / 0.18, 2.0));
+      v.x *= 1.0 + cheek * PROP.cheekFullness * 0.30;
+      if (v.y < 0) v.x *= 1.0 + cheek * 0.035;
       // Vibrissal pad bulge — fleshy muzzle mass at whisker roots
       if (zNorm > 0.55 && zNorm < 0.78 && Math.abs(v.x) > 0.18) {
         const padBulge = Math.exp(-Math.pow((zNorm - 0.66) / 0.08, 2.0));
@@ -892,14 +914,18 @@
         v.x *= 1.0 + tip * 0.06;
         v.y *= 1.0 + tip * 0.03;
       }
-      // Cranium: fuller at back, shallower near frontal region.
-      if (zNorm > 0.08 && zNorm < 0.50 && v.y > 0) {
-        const dF = 1.0 - Math.abs(zNorm - 0.25) * 2.9;
-        v.y += Math.max(0, dF) * 0.26;
+      // One continuous dorsal skull slope from the occiput into the snout.
+      // A smooth bell avoids a raised rear dome that self-occludes the forehead.
+      if (zNorm > 0.04 && zNorm < 0.78 && v.y > 0) {
+        const cranium = Math.exp(-Math.pow((zNorm - 0.27) / 0.27, 2.0));
+        v.y += cranium * 0.14;
       }
-      if (zNorm > 0.50 && zNorm < 0.78 && v.y > 0) {
-        const frontalDrop = 1.0 - Math.abs(zNorm - 0.64) * 5.5;
-        if (frontalDrop > 0) v.y -= frontalDrop * 0.04;
+      // Temporal fullness supports the pinna root without making the forehead round.
+      if (zNorm > 0.10 && zNorm < 0.46 && v.y > -0.16) {
+        const temporal = Math.max(0, 1.0 - Math.abs(zNorm - 0.28) * 5.0);
+        const dorsal = THREE.MathUtils.smoothstep(v.y, -0.16, 0.58);
+        v.x *= 1.0 + temporal * dorsal * 0.050;
+        if (v.y > 0.18) v.y += temporal * 0.012;
       }
       // Orbital ridges — slightly more prominent for side-view realism
       if (zNorm > 0.32 && zNorm < 0.54 && Math.abs(v.x) > 0.26) {
@@ -907,6 +933,60 @@
         v.x *= 1.0 + 0.03; // slight lateral orbital bulge
       }
     };
+
+    function getCervicalMantleProfile(t) {
+      const eased = t * t * (3.0 - 2.0 * t);
+      const arch = Math.sin(t * Math.PI);
+      return {
+        z: (t - 0.5) * PROP.neckLength,
+        centerY: THREE.MathUtils.lerp(-0.02, 0.18, eased) + arch * 0.018,
+        radiusX: THREE.MathUtils.lerp(
+          PROP.neckGirth * 1.10,
+          PROP.neckGirth * 1.04,
+          eased
+        ) + arch * 0.035,
+        radiusY: THREE.MathUtils.lerp(
+          PROP.neckGirth * 1.10,
+          PROP.neckGirth * 1.04,
+          eased
+        ) + arch * 0.035,
+      };
+    }
+
+    function createCervicalMantleGeometry() {
+      const rings = 18;
+      const radialSegments = 36;
+      const row = radialSegments + 1;
+      const positions = [];
+      const uvs = [];
+      const indices = [];
+      for (let ring = 0; ring <= rings; ring++) {
+        const t = ring / rings;
+        const profile = getCervicalMantleProfile(t);
+        for (let segment = 0; segment <= radialSegments; segment++) {
+          const angle = segment / radialSegments * Math.PI * 2;
+          positions.push(
+            Math.cos(angle) * profile.radiusX,
+            profile.centerY + Math.sin(angle) * profile.radiusY,
+            profile.z
+          );
+          uvs.push(segment / radialSegments, t);
+        }
+      }
+      for (let ring = 0; ring < rings; ring++) {
+        for (let segment = 0; segment < radialSegments; segment++) {
+          const a = ring * row + segment;
+          const b = a + row;
+          indices.push(a, a + 1, b, b, a + 1, b + 1);
+        }
+      }
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+      geometry.setIndex(indices);
+      geometry.computeVertexNormals();
+      return geometry;
+    }
 
     const deformThigh = (v) => {
       const yN = (v.y + 1) / 2; // 0=bottom(knee), 1=top(hip)
@@ -935,10 +1015,13 @@
       const basalFold = Math.exp(-(
         Math.pow(x + 0.20, 2.0) * 9.0 + Math.pow(y + 0.48, 2.0) * 14.0
       ));
+      const attachmentBlend = THREE.MathUtils.smoothstep(-y, 0.58, 0.96);
 
-      const px = x * (0.84 + shoulder * 0.055)
-        * (0.46 + lowerOpen * 0.54) * crownTaper;
-      const py = y * 1.04 + rootPad * 0.020;
+      const px = x * (0.90 + shoulder * 0.045)
+        * (0.58 + lowerOpen * 0.42) * crownTaper;
+      const attachmentY = -0.70 + Math.abs(x) * 0.035;
+      const py = THREE.MathUtils.lerp(y * 0.94, attachmentY, attachmentBlend)
+        + rootPad * 0.020;
       const pz = (
         -centerCup * 0.112 + rim * 0.046 + upperFold * 0.028
         + basalFold * 0.038 + rootPad * 0.020
@@ -964,7 +1047,12 @@
             const y = Math.sin(angle) * normalizedRadius;
             const point = shapePinnaPoint(x, y);
             if (side === 1) {
-              const shellThickness = 0.034 + (1.0 - normalizedRadius) * 0.012;
+              const rootThickness = Math.exp(-(
+                x * x * 5.0 + Math.pow(y + 0.72, 2.0) * 12.0
+              ));
+              const shellThickness = 0.026
+                + (1.0 - normalizedRadius) * 0.010
+                + rootThickness * 0.018;
               point.z -= shellThickness;
             }
             positions.push(point.x, point.y, point.z);
@@ -1040,21 +1128,26 @@
     }
 
     function createPinnaRimGeometry() {
-      const segments = 88;
+      const segments = 76;
       const positions = [];
       const uvs = [];
       const indices = [];
       for (let band = 0; band < 2; band++) {
-        const radius = band === 0 ? 0.975 : 1.0;
         for (let seg = 0; seg <= segments; seg++) {
-          const angle = (seg / segments) * Math.PI * 2;
+          const t = seg / segments;
+          // The auricular rim terminates into the skull instead of closing
+          // across the lower attachment like a manufactured ring.
+          const angle = -Math.PI * 0.22 + t * Math.PI * 1.45;
+          const endFade = THREE.MathUtils.smoothstep(t, 0.0, 0.10)
+            * THREE.MathUtils.smoothstep(1.0 - t, 0.0, 0.10);
+          const radius = band === 0 ? 1.0 - 0.027 * endFade : 1.0;
           const point = shapePinnaPoint(
             Math.cos(angle) * radius,
             Math.sin(angle) * radius,
             1.0,
-            0.008
+            0.006 + endFade * 0.004
           );
-          positions.push(point.x, point.y, point.z);
+          positions.push(point.x, point.y, point.z + (band === 0 ? 0.001 : 0.0));
           uvs.push(seg / segments, band);
         }
       }
@@ -1083,6 +1176,7 @@
 
     const bodyGeo = deform(new THREE.SphereGeometry(1, 64, 64), deformBody);
     const headGeo = deform(new THREE.SphereGeometry(1, 48, 48), deformHead);
+    const neckGeo = createCervicalMantleGeometry();
     const thighGeo = deform(new THREE.SphereGeometry(1, 32, 32), deformThigh);
     const earGeo = createPinnaShellGeometry();
     const earInnerGeo = createPinnaSurfaceGeometry(0.945, 1.08, 0.018);
@@ -1261,6 +1355,13 @@
       groundContact.position.set(0, isFore ? -0.090 : -0.100, isFore ? 0.29 : 0.42);
       paw.add(groundContact);
       paw._groundContact = groundContact;
+      if (isFore) {
+        const groomingContact = new THREE.Object3D();
+        groomingContact.name = 'forepaw-palmar-contact';
+        groomingContact.position.set(0, -0.052, 0.17);
+        paw.add(groomingContact);
+        paw._groomingContact = groomingContact;
+      }
       return paw;
     }
 
@@ -1273,27 +1374,37 @@
       const fl = PROP.foreLimbLength * legLengthScale;
       const thickness = THREE.MathUtils.clamp(legThicknessScale, 0.65, 1.5);
       // Tucked shoulder anchor: proximal joints remain inside the chest coat.
-      chain.position.set(sign * 0.58 * PROP.shoulderWidth / 0.90, -0.06, PROP.bodyLength * 0.70);
+      chain.position.set(sign * 0.52 * PROP.shoulderWidth / 0.90, -0.08, PROP.bodyLength * 0.70);
 
-      const shoulderMantle = new THREE.Mesh(new THREE.SphereGeometry(0.22, 16, 16), surfaceMat);
+      const shoulderMantle = new THREE.Mesh(new THREE.SphereGeometry(0.19, 16, 16), surfaceMat);
       shoulderMantle.position.set(-sign * 0.06, 0.06, -0.05);
-      shoulderMantle.scale.set(1.08, 0.84, 1.28);
+      shoulderMantle.scale.set(1.0, 0.78, 1.18);
       shoulderMantle.castShadow = true;
       chain.add(shoulderMantle);
+      const scapularBridge = new THREE.Mesh(
+        new THREE.CapsuleGeometry(0.105 * thickness, 0.22, 10, 10),
+        surfaceMat
+      );
+      scapularBridge.name = `${side}-scapular-soft-tissue-bridge`;
+      scapularBridge.position.set(0, 0.01, 0.10);
+      scapularBridge.rotation.x = Math.PI / 2;
+      scapularBridge.castShadow = true;
+      chain.add(scapularBridge);
 
-      // Upper arm (humerus) — substantial visible segment
+      // Adult murine radius/ulna is slightly longer than the humerus. The
+      // remaining scale belongs to the carpus and paw, represented below.
       const upperArm = new THREE.Group();
       upperArm.name = `${side}-upper-arm`;
-      const uaLen = 0.36 * fl;
+      const uaLen = 0.42 * fl;
       const upperArmMesh = new THREE.Mesh(
         new THREE.CapsuleGeometry(0.115 * thickness, uaLen, 10, 10), surfaceMat
       );
       upperArmMesh.position.y = -uaLen * 0.5;
       upperArmMesh.castShadow = true;
       upperArm.add(upperArmMesh);
-      upperArm.rotation.x = 0.38;
+      upperArm.rotation.x = FORELIMB_NEUTRAL.shoulderX;
       // Shoulder joint sphere (visible scapula bump)
-      const shoulderJoint = new THREE.Mesh(new THREE.SphereGeometry(0.13 * thickness, 12, 12), surfaceMat);
+      const shoulderJoint = new THREE.Mesh(new THREE.SphereGeometry(0.11 * thickness, 12, 12), surfaceMat);
       shoulderJoint.scale.set(1.0, 0.82, 1.05);
       shoulderJoint.castShadow = true;
       upperArm.add(shoulderJoint);
@@ -1302,11 +1413,14 @@
       // Forearm (radius/ulna) — attached at elbow
       const forearm = new THREE.Group();
       forearm.name = `${side}-forearm`;
-      const faLen = 0.38 * fl;
+      const faLen = 0.45 * fl;
       forearm.position.set(0, -uaLen - 0.01, -0.01);
-      forearm.rotation.x = -0.55;
+      forearm.rotation.x = FORELIMB_NEUTRAL.elbowX;
       // Soft-tissue bridge to avoid segmented look between upper arm and forearm.
-      const elbowBridge = new THREE.Mesh(new THREE.CapsuleGeometry(0.092, 0.075, 10, 10), surfaceMat);
+      const elbowBridge = new THREE.Mesh(
+        new THREE.CapsuleGeometry(0.092 * thickness, 0.085, 10, 10),
+        surfaceMat
+      );
       elbowBridge.position.set(0, -uaLen * 0.92, 0.03);
       elbowBridge.rotation.x = 0.15;
       elbowBridge.castShadow = true;
@@ -1378,6 +1492,18 @@
       chain._forearm = forearm;
       chain._wrist = wrist;
       chain._paw = paw;
+      const shoulderToElbow = forearm.position.length();
+      const elbowToWrist = wrist.position.length();
+      const wristToPaw = paw.position.length();
+      const pawToContact = paw._groundContact.position.length() * paw.scale.x;
+      chain._segmentLengths = Object.freeze({
+        humerus: shoulderToElbow,
+        radiusUlna: elbowToWrist,
+        carpus: wristToPaw,
+        manus: pawToContact,
+      });
+      chain._maximumReach = shoulderToElbow + elbowToWrist
+        + wristToPaw + pawToContact;
       return chain;
     }
 
@@ -1735,32 +1861,35 @@
     }
 
     function createEarBaseFur(furColor, density, sideSign) {
-      const count = Math.floor(520 * density);
+      const count = Math.floor(620 * density);
       if (count <= 0) return new THREE.Group();
-      const geo = new THREE.ConeGeometry(0.006, 0.105, 3);
-      geo.translate(0, 0.052, 0);
+      const geo = new THREE.ConeGeometry(0.0048, 0.076, 3);
+      geo.translate(0, 0.038, 0);
       const mat = new THREE.MeshPhysicalMaterial({
         color: new THREE.Color(furColor),
-        roughness: 0.88,
+        roughness: 0.90,
         transparent: true,
-        opacity: 0.82,
-        sheen: 0.65,
+        opacity: 0.86,
+        sheen: 0.52,
         sheenColor: new THREE.Color(furColor).offsetHSL(0.0, -0.04, 0.12),
       });
       const inst = new THREE.InstancedMesh(geo, mat, count);
       const dummy = new THREE.Object3D();
       const nrm = new THREE.Vector3();
       for (let i = 0; i < count; i++) {
-        const u = Math.random();
-        const theta = -Math.PI * 0.78 + u * Math.PI * 1.56;
-        const baseR = 0.42 + Math.random() * 0.14;
-        const x = Math.cos(theta) * baseR * 0.72;
-        const y = -0.54 + Math.sin(theta) * 0.18 + Math.random() * 0.12;
-        const z = -0.018 + Math.random() * 0.035;
+        const t = Math.random() * 2.0 - 1.0;
+        const arch = 1.0 - t * t;
+        const x = t * (0.28 + Math.random() * 0.07);
+        const y = -0.035 + arch * 0.11 + Math.random() * 0.055;
+        const z = -0.09 + Math.random() * 0.075;
         dummy.position.set(x, y, z);
-        nrm.set(sideSign * 0.35 + x * 0.18, 0.22 + Math.random() * 0.20, 0.82).normalize();
+        nrm.set(
+          t * 0.36 + sideSign * 0.04,
+          0.50 + arch * 0.28,
+          0.38 + Math.random() * 0.22
+        ).normalize();
         dummy.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), nrm);
-        const s = 0.55 + Math.random() * 0.58;
+        const s = 0.58 + Math.random() * 0.48;
         dummy.scale.set(s, s, s);
         dummy.updateMatrix();
         inst.setMatrixAt(i, dummy.matrix);
@@ -1782,10 +1911,17 @@
       heightOffset,
     }) {
       const ear = new THREE.Group();
+      ear.name = sideSign > 0 ? 'left-ear-root-pivot' : 'right-ear-root-pivot';
+      const pinna = new THREE.Group();
+      pinna.name = sideSign > 0 ? 'left-pinna' : 'right-pinna';
+      pinna.position.set(sideSign * 0.012, 0.76, 0.0);
+      ear.add(pinna);
+
       const outer = new THREE.Mesh(earGeo, outerMat);
+      outer.name = 'pinna-shell';
       outer.castShadow = true;
       outer.receiveShadow = true;
-      ear.add(outer);
+      pinna.add(outer);
 
       const rimMat = outerMat.clone();
       rimMat.color = rimMat.color.clone().offsetHSL(0.0, -0.01, -0.030);
@@ -1793,33 +1929,97 @@
       rimMat.thickness = 0.040;
       rimMat.roughness = Math.min(0.62, (outerMat.roughness ?? 0.42) + 0.10);
       const rim = new THREE.Mesh(earRimGeo, rimMat);
+      rim.name = 'open-auricular-rim';
       rim.castShadow = true;
-      ear.add(rim);
+      pinna.add(rim);
 
       const inner = new THREE.Mesh(earInnerGeo, innerMat);
-      inner.position.set(sideSign * -0.014, -0.018, 0.0);
+      inner.name = 'concave-pinna-surface';
+      inner.position.set(sideSign * -0.014, -0.018, 0.006);
       inner.rotation.z = sideSign * 0.025;
       inner.castShadow = true;
-      ear.add(inner);
+      pinna.add(inner);
+
+      const rootMat = outerMat.clone();
+      rootMat.color = rootMat.color.clone().lerp(new THREE.Color(furColor), 0.30);
+      rootMat.transmission = Math.min(0.16, outerMat.transmission ?? 0.2);
+      rootMat.thickness = 0.08;
+      rootMat.roughness = 0.74;
+      rootMat.clearcoat = 0.0;
+      const pedicle = new THREE.Mesh(
+        new THREE.SphereGeometry(0.32, 24, 18),
+        rootMat
+      );
+      pedicle.name = 'buried-pinna-pedicle';
+      pedicle.position.set(0, -0.005, -0.055);
+      pedicle.scale.set(0.96, 0.46, 0.60);
+      pedicle.castShadow = true;
+      ear.add(pedicle);
+
+      const foldMat = innerMat.clone();
+      foldMat.color = foldMat.color.clone().offsetHSL(0.0, 0.015, -0.035);
+      foldMat.transmission = Math.min(0.20, innerMat.transmission ?? 0.3);
+      foldMat.roughness = 0.68;
+      const concha = new THREE.Mesh(
+        new THREE.SphereGeometry(0.28, 20, 16),
+        foldMat
+      );
+      concha.name = 'basal-conchal-fold';
+      concha.position.set(-sideSign * 0.055, 0.29, 0.045);
+      concha.scale.set(0.86, 0.64, 0.18);
+      concha.rotation.z = sideSign * 0.10;
+      concha.castShadow = true;
+      ear.add(concha);
+
+      const tragus = new THREE.Mesh(
+        new THREE.CapsuleGeometry(0.038, 0.15, 8, 10),
+        foldMat
+      );
+      tragus.name = 'auricular-tragus-fold';
+      tragus.position.set(-sideSign * 0.15, 0.20, 0.083);
+      tragus.rotation.z = sideSign * 0.48;
+      tragus.scale.z = 0.70;
+      tragus.castShadow = true;
+      ear.add(tragus);
+
+      const canalMat = new THREE.MeshPhysicalMaterial({
+        color: new THREE.Color(innerMat.color).multiplyScalar(0.45),
+        roughness: 0.78,
+        transparent: true,
+        opacity: 0.52,
+        depthWrite: true,
+      });
+      const canal = new THREE.Mesh(
+        new THREE.SphereGeometry(0.078, 16, 12),
+        canalMat
+      );
+      canal.name = 'ear-canal-shadow';
+      canal.position.set(-sideSign * 0.075, 0.135, 0.105);
+      canal.scale.set(0.90, 0.55, 0.20);
+      ear.add(canal);
 
       const baseFur = createEarBaseFur(furColor, density, sideSign);
-      baseFur.position.set(0, -0.05, 0.025);
+      baseFur.name = 'pinna-root-fur-collar';
+      baseFur.position.set(0, -0.02, -0.015);
       ear.add(baseFur);
 
       const strainScale = strain.earScaleMul ?? 1.0;
-      const s = eSize * 0.98 * strainScale;
-      const openingYaw = 0.28 + (strain.earYaw ?? PROP.earYaw) * 0.25;
+      const s = eSize * 0.88 * strainScale;
+      const openingYaw = 0.20 + (strain.earYaw ?? PROP.earYaw) * 0.22;
       ear.position.set(
-        sideSign * 0.72,
-        0.54 + heightOffset,
-        PROP.earSetBack + 0.18
+        sideSign * 0.62,
+        0.02 + heightOffset,
+        PROP.earSetBack + 0.10
       );
       ear.rotation.set(
         -0.10 + asymmetryTilt,
         sideSign * openingYaw + asymmetryYaw,
-        sideSign * -0.14
+        sideSign * -0.11
       );
-      ear.scale.set(s * 0.90, s, s);
+      ear.scale.set(s * 0.94, s, s);
+      ear._pinna = pinna;
+      ear._pedicle = pedicle;
+      ear._canal = canal;
       return ear;
     }
 
@@ -2000,6 +2200,214 @@
       return minimum;
     }
 
+    function tailSurfaceRadiusAt(p, thickness = 1.0) {
+      const fraction = THREE.MathUtils.clamp(p, 0, 1);
+      const taper = Math.max(0.08, 1.0 - fraction * PROP.tailTaper);
+      const rootBlend = 1.0 - THREE.MathUtils.smoothstep(fraction, 0.0, 0.20);
+      return Math.max(0.008, 0.08 * taper * (1.0 + rootBlend * 0.45) * thickness);
+    }
+
+    function createDynamicTailTubeGeometry(segmentCount, radialSegments = 12) {
+      const ringCount = segmentCount + 1;
+      const ringStride = radialSegments + 1;
+      const sideVertexCount = ringCount * ringStride;
+      const capStride = radialSegments + 1;
+      const startCapOffset = sideVertexCount;
+      const endCapOffset = startCapOffset + capStride;
+      const vertexCount = sideVertexCount + capStride * 2;
+      const positions = new Float32Array(vertexCount * 3);
+      const normals = new Float32Array(vertexCount * 3);
+      const uvs = new Float32Array(vertexCount * 2);
+      const indices = [];
+
+      for (let ring = 0; ring < ringCount; ring++) {
+        const v = ring / segmentCount;
+        for (let side = 0; side <= radialSegments; side++) {
+          const vertex = ring * ringStride + side;
+          uvs[vertex * 2] = side / radialSegments;
+          uvs[vertex * 2 + 1] = v;
+        }
+      }
+      for (let ring = 0; ring < segmentCount; ring++) {
+        const row = ring * ringStride;
+        const nextRow = (ring + 1) * ringStride;
+        for (let side = 0; side < radialSegments; side++) {
+          const a = row + side;
+          const b = row + side + 1;
+          const c = nextRow + side;
+          const d = nextRow + side + 1;
+          indices.push(a, b, c, b, d, c);
+        }
+      }
+
+      const startCenter = startCapOffset + radialSegments;
+      const endCenter = endCapOffset + radialSegments;
+      uvs[startCenter * 2] = uvs[startCenter * 2 + 1] = 0.5;
+      uvs[endCenter * 2] = uvs[endCenter * 2 + 1] = 0.5;
+      for (let side = 0; side < radialSegments; side++) {
+        const nextSide = (side + 1) % radialSegments;
+        const angle = side / radialSegments * Math.PI * 2;
+        for (const offset of [startCapOffset, endCapOffset]) {
+          const vertex = offset + side;
+          uvs[vertex * 2] = 0.5 + Math.cos(angle) * 0.5;
+          uvs[vertex * 2 + 1] = 0.5 + Math.sin(angle) * 0.5;
+        }
+        indices.push(startCenter, startCapOffset + nextSide, startCapOffset + side);
+        indices.push(endCenter, endCapOffset + side, endCapOffset + nextSide);
+      }
+
+      const geometry = new THREE.BufferGeometry();
+      const positionAttribute = new THREE.BufferAttribute(positions, 3);
+      const normalAttribute = new THREE.BufferAttribute(normals, 3);
+      positionAttribute.setUsage(THREE.DynamicDrawUsage);
+      normalAttribute.setUsage(THREE.DynamicDrawUsage);
+      geometry.setAttribute('position', positionAttribute);
+      geometry.setAttribute('normal', normalAttribute);
+      geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+      geometry.setIndex(indices);
+      geometry.userData.tailTube = {
+        segmentCount,
+        radialSegments,
+        ringStride,
+        ringCount,
+        startCapOffset,
+        endCapOffset,
+        startCenter,
+        endCenter,
+        tangents: new Float32Array(ringCount * 3),
+        normals: new Float32Array(ringCount * 3),
+        binormals: new Float32Array(ringCount * 3),
+      };
+      return geometry;
+    }
+
+    function updateDynamicTailTubeGeometry(geometry, points, thickness = 1.0) {
+      const state = geometry.userData.tailTube;
+      if (!state || points.length < state.ringCount) return;
+      const positions = geometry.attributes.position.array;
+      const vertexNormals = geometry.attributes.normal.array;
+      const {
+        tangents,
+        normals,
+        binormals,
+        radialSegments,
+        ringStride,
+        ringCount,
+      } = state;
+
+      for (let ring = 0; ring < ringCount; ring++) {
+        const previous = points[Math.max(0, ring - 1)];
+        const next = points[Math.min(ringCount - 1, ring + 1)];
+        let tx = next.x - previous.x;
+        let ty = next.y - previous.y;
+        let tz = next.z - previous.z;
+        let tangentLength = Math.hypot(tx, ty, tz);
+        if (tangentLength < 1e-7 && ring > 0) {
+          tx = tangents[(ring - 1) * 3];
+          ty = tangents[(ring - 1) * 3 + 1];
+          tz = tangents[(ring - 1) * 3 + 2];
+          tangentLength = 1;
+        } else if (tangentLength < 1e-7) {
+          tx = 0; ty = 0; tz = -1;
+          tangentLength = 1;
+        }
+        tx /= tangentLength; ty /= tangentLength; tz /= tangentLength;
+
+        let nx;
+        let ny;
+        let nz;
+        if (ring === 0) {
+          const useXAxis = Math.abs(ty) > 0.90;
+          nx = useXAxis ? 1 : 0;
+          ny = useXAxis ? 0 : 1;
+          nz = 0;
+        } else {
+          nx = normals[(ring - 1) * 3];
+          ny = normals[(ring - 1) * 3 + 1];
+          nz = normals[(ring - 1) * 3 + 2];
+        }
+        const normalAlongTangent = nx * tx + ny * ty + nz * tz;
+        nx -= tx * normalAlongTangent;
+        ny -= ty * normalAlongTangent;
+        nz -= tz * normalAlongTangent;
+        let normalLength = Math.hypot(nx, ny, nz);
+        if (normalLength < 1e-7) {
+          nx = Math.abs(ty) > 0.90 ? 1 : 0;
+          ny = Math.abs(ty) > 0.90 ? 0 : 1;
+          nz = 0;
+          const fallbackAlongTangent = nx * tx + ny * ty + nz * tz;
+          nx -= tx * fallbackAlongTangent;
+          ny -= ty * fallbackAlongTangent;
+          nz -= tz * fallbackAlongTangent;
+          normalLength = Math.max(Math.hypot(nx, ny, nz), 1e-7);
+        }
+        nx /= normalLength; ny /= normalLength; nz /= normalLength;
+        let bx = ty * nz - tz * ny;
+        let by = tz * nx - tx * nz;
+        let bz = tx * ny - ty * nx;
+        const binormalLength = Math.max(Math.hypot(bx, by, bz), 1e-7);
+        bx /= binormalLength; by /= binormalLength; bz /= binormalLength;
+        nx = by * tz - bz * ty;
+        ny = bz * tx - bx * tz;
+        nz = bx * ty - by * tx;
+
+        const frameOffset = ring * 3;
+        tangents[frameOffset] = tx;
+        tangents[frameOffset + 1] = ty;
+        tangents[frameOffset + 2] = tz;
+        normals[frameOffset] = nx;
+        normals[frameOffset + 1] = ny;
+        normals[frameOffset + 2] = nz;
+        binormals[frameOffset] = bx;
+        binormals[frameOffset + 1] = by;
+        binormals[frameOffset + 2] = bz;
+
+        const radius = tailSurfaceRadiusAt(ring / (ringCount - 1), thickness);
+        for (let side = 0; side <= radialSegments; side++) {
+          const angle = side / radialSegments * Math.PI * 2;
+          const cosine = Math.cos(angle);
+          const sine = Math.sin(angle);
+          const rx = nx * cosine + bx * sine;
+          const ry = ny * cosine + by * sine;
+          const rz = nz * cosine + bz * sine;
+          const vertexOffset = (ring * ringStride + side) * 3;
+          positions[vertexOffset] = points[ring].x + rx * radius;
+          positions[vertexOffset + 1] = points[ring].y + ry * radius;
+          positions[vertexOffset + 2] = points[ring].z + rz * radius;
+          vertexNormals[vertexOffset] = rx;
+          vertexNormals[vertexOffset + 1] = ry;
+          vertexNormals[vertexOffset + 2] = rz;
+        }
+      }
+
+      for (const cap of [
+        { ring: 0, offset: state.startCapOffset, center: state.startCenter, sign: -1 },
+        { ring: ringCount - 1, offset: state.endCapOffset, center: state.endCenter, sign: 1 },
+      ]) {
+        const frameOffset = cap.ring * 3;
+        const centerOffset = cap.center * 3;
+        positions[centerOffset] = points[cap.ring].x;
+        positions[centerOffset + 1] = points[cap.ring].y;
+        positions[centerOffset + 2] = points[cap.ring].z;
+        vertexNormals[centerOffset] = tangents[frameOffset] * cap.sign;
+        vertexNormals[centerOffset + 1] = tangents[frameOffset + 1] * cap.sign;
+        vertexNormals[centerOffset + 2] = tangents[frameOffset + 2] * cap.sign;
+        for (let side = 0; side < radialSegments; side++) {
+          const sourceOffset = (cap.ring * ringStride + side) * 3;
+          const targetOffset = (cap.offset + side) * 3;
+          positions[targetOffset] = positions[sourceOffset];
+          positions[targetOffset + 1] = positions[sourceOffset + 1];
+          positions[targetOffset + 2] = positions[sourceOffset + 2];
+          vertexNormals[targetOffset] = vertexNormals[centerOffset];
+          vertexNormals[targetOffset + 1] = vertexNormals[centerOffset + 1];
+          vertexNormals[targetOffset + 2] = vertexNormals[centerOffset + 2];
+        }
+      }
+
+      geometry.attributes.position.needsUpdate = true;
+      geometry.attributes.normal.needsUpdate = true;
+    }
+
     function getMinimumTailClearance(subjects) {
       let minimum = Infinity;
       for (const mouse of subjects) {
@@ -2008,6 +2416,17 @@
         }
       }
       return minimum;
+    }
+
+    function getMaximumTailSegmentLengthError(subjects) {
+      return Math.max(
+        0,
+        ...subjects.map(mouse => mouse.maximumTailSegmentLengthError || 0)
+      );
+    }
+
+    function getMaximumTailBendAngle(subjects) {
+      return Math.max(0, ...subjects.map(mouse => mouse.maximumTailBendAngle || 0));
     }
 
     function getMaximumFootSlip(subjects) {
@@ -2026,10 +2445,83 @@
       return maximum;
     }
 
+    function integrateRearAngularDynamics(state, dt, mass, effectiveLength) {
+      const stepDt = THREE.MathUtils.clamp(dt, 0, 0.05);
+      const poseFraction = THREE.MathUtils.clamp(
+        state.angle / Math.max(state.maxAngle, 0.01),
+        0,
+        1
+      );
+      const contactQuality = state.mode === 'wall-supported'
+        ? 1.0 - THREE.MathUtils.clamp(state.wallSupportError / 0.22, 0, 1)
+        : 0;
+      state.wallContactLoad = state.mode === 'wall-supported'
+        ? THREE.MathUtils.smoothstep(poseFraction, 0.62, 0.92) * contactQuality
+        : 0;
+      state.balanceAngleCorrection = state.mode === 'unsupported'
+        ? THREE.MathUtils.clamp(
+          state.centerOfMassForwardOffset * 0.12,
+          -0.10,
+          0.10
+        )
+        : 0;
+      const targetAngle = state.phase === 'settle'
+        ? 0
+        : THREE.MathUtils.clamp(
+          state.maxAngle + state.balanceAngleCorrection,
+          state.maxAngle * 0.88,
+          state.maxAngle * 1.06
+        );
+
+      const centerOfMassLever = Math.max(0.9, effectiveLength * 0.46);
+      const momentOfInertia = Math.max(
+        0.055,
+        mass * Math.pow(effectiveLength * 1.15, 2) / 3
+      );
+      const gravity = 9.81;
+      const gravityTorque = mass * gravity * centerOfMassLever
+        * Math.sin(state.angle);
+      const wallReactionTorque = gravityTorque * state.wallContactLoad * 0.72;
+      const muscleStiffness = state.phase === 'rise'
+        ? 2.35
+        : (state.phase === 'settle' ? 1.75 : 1.30);
+      const angularDamping = state.phase === 'rise'
+        ? 0.86
+        : (state.phase === 'settle' ? 0.78 : 0.64);
+      const targetGravityCompensation = mass * gravity * centerOfMassLever
+        * Math.sin(targetAngle) * (1.0 - state.wallContactLoad * 0.72);
+      const muscleTorque = muscleStiffness * (targetAngle - state.angle)
+        + targetGravityCompensation;
+      state.angularAcceleration = (
+        muscleTorque + wallReactionTorque - gravityTorque
+        - angularDamping * state.angularVelocity
+      ) / momentOfInertia;
+      state.angularVelocity = THREE.MathUtils.clamp(
+        state.angularVelocity + state.angularAcceleration * stepDt,
+        -3.2,
+        3.2
+      );
+      state.angle += state.angularVelocity * stepDt;
+      if (state.angle < 0) {
+        state.angle = 0;
+        state.angularVelocity = Math.max(0, state.angularVelocity) * 0.12;
+      }
+      const maximumAngle = state.maxAngle * 1.08;
+      if (state.angle > maximumAngle) {
+        state.angle = maximumAngle;
+        state.angularVelocity = Math.min(0, state.angularVelocity) * 0.18;
+      }
+      state.gravityTorque = gravityTorque;
+      state.muscleTorque = muscleTorque;
+      state.wallReactionTorque = wallReactionTorque;
+    }
+
     function resolveAllMouseContacts(subjects, dt = 0.016) {
       resolveAllMouseBodyOverlaps(subjects);
+      for (const mouse of subjects) mouse.solveRearBalanceConstraints(dt);
       for (const mouse of subjects) mouse.solveFootPlantConstraints(dt);
       for (const mouse of subjects) mouse.solveRearSupportConstraints();
+      for (const mouse of subjects) mouse.solveForelimbBehaviorConstraints();
       for (const mouse of subjects) mouse.updateTailGeometry(subjects);
       for (const mouse of subjects) mouse.updateTrackingGeometry();
     }
@@ -2075,9 +2567,53 @@
           holdDuration: 0,
           settleDuration: 0,
           sideLean: 0,
+          maxAngle: 0,
+          angle: 0,
+          angularVelocity: 0,
+          angularAcceleration: 0,
+          gravityTorque: 0,
+          muscleTorque: 0,
+          wallReactionTorque: 0,
+          wallContactLoad: 0,
+          balanceAngleCorrection: 0,
+          centerOfMassForwardOffset: 0,
+          centerOfMassLateralOffset: 0,
+          centerOfMassProjectionError: 0,
+          hindSupportError: 0,
+          hindSupportHorizontalError: 0,
+          hindSupportVerticalError: 0,
+          wallSupportError: 0,
+          wallSupportNormalError: 0,
+          wallSupportVerticalError: 0,
+          baseAdvance: 0,
+          baseAdvanceVelocity: 0,
+          maximumBaseAdvance: 0,
+          hindStanceOffset: 0,
+          hindStanceVelocity: 0,
+          maximumHindStanceOffset: 0,
+          lastConstraintDt: 0,
+          rearFeetPlanted: false,
+          rearSupportReleased: false,
+          hindAnchors: [new THREE.Vector3(), new THREE.Vector3()],
           supportDirection: new THREE.Vector2(0, 1),
           supportPoint: new THREE.Vector2(0, 0),
           nextSpontaneousAt: 3.2 + (this.timeOffset % 4.8),
+        };
+        this.groomAmount = 0;
+        this.groomVel = 0;
+        this.groomCooldown = 0;
+        this.grooming = {
+          mode: 'none',
+          phase: 'idle',
+          phaseTime: 0,
+          elapsed: 0,
+          peakAmount: 1,
+          prepareDuration: 0,
+          activeDuration: 0,
+          settleDuration: 0,
+          side: 1,
+          sequenceIndex: Math.sin(this.timeOffset * 0.17) > 0 ? 0 : 1,
+          nextSpontaneousAt: 5.5 + (this.timeOffset % 5.5),
         };
         this.maximumRearSupportError = 0;
         this.prevVelocity = new THREE.Vector2(0, 0);
@@ -2190,40 +2726,104 @@
         this.bodyMesh.scale.set(chonk, chonk, params.bodyLength || 1.0);
         this.bodyMesh.castShadow = true;
         this.rig.add(this.bodyMesh);
-        this.bodyMesh.add(generateMultiLayerFur(deformBody, density, furColor, false));
+        this.bodyFur = generateMultiLayerFur(deformBody, density, furColor, false);
+        this.bodyFur.name = 'body-fur-coat';
+        this.bodyMesh.add(this.bodyFur);
 
-        // NECK
-        const neckGeo = new THREE.CapsuleGeometry(PROP.neckGirth, PROP.neckLength, 12, 12);
-        const neckMesh = new THREE.Mesh(neckGeo, this.surfaceMat);
-        neckMesh.position.set(0, 0.08, PROP.bodyLength * 0.84);
-        neckMesh.rotation.x = Math.PI / 2 + 0.08;
-        neckMesh.scale.set(1.14, 0.92, 0.96);
-        neckMesh.castShadow = true;
+        // Tapered cervical mantle: broad at the shoulders, narrower under the
+        // occiput, and long enough to remain connected while the head bends.
+        const neckCoreMat = this.surfaceMat.clone();
+        neckCoreMat.transparent = true;
+        neckCoreMat.opacity = 0.0;
+        neckCoreMat.depthWrite = false;
+        neckCoreMat.colorWrite = false;
+        const neckMesh = new THREE.Mesh(neckGeo, neckCoreMat);
+        neckMesh.name = 'tapered-cervical-mantle';
+        neckMesh.position.set(0, 0.14, PROP.bodyLength * 0.78);
+        neckMesh.scale.set(chonk, chonk, 1.0);
+        neckMesh.castShadow = false;
+        neckMesh.receiveShadow = false;
+        this.neckMesh = neckMesh;
+        this.neckRestPosition = neckMesh.position.clone();
+        this.neckRestRotation = neckMesh.rotation.clone();
         this.rig.add(neckMesh);
-        // Neck fur
-        const neckFurCount = Math.floor(4000 * density);
-        if (neckFurCount > 0) {
-          const nfGeo = new THREE.ConeGeometry(0.008, 0.12, 3);
-          nfGeo.translate(0, 0.06, 0);
-          const nfMat = enhanceFurMaterial(
-            new THREE.MeshPhysicalMaterial({ color: new THREE.Color(furColor), roughness: 0.78, transparent: true, opacity: 0.82 }),
-            furColor
+        const buildCervicalFurLayer = ({
+          baseCount,
+          length,
+          radius,
+          normalWeight,
+          caudalFlow,
+          roughness,
+          opacity,
+          name,
+        }) => {
+          const count = Math.floor(baseCount * density);
+          if (count <= 0) return null;
+          const geometry = new THREE.ConeGeometry(radius, length, 3);
+          geometry.translate(0, length * 0.5, 0);
+          const material = enhanceFurMaterial(
+            new THREE.MeshPhysicalMaterial({
+              color: new THREE.Color(furColor),
+              roughness,
+              transparent: true,
+              opacity,
+            }),
+            furColor,
+            normalWeight > 0.5
           );
-          const nfInst = new THREE.InstancedMesh(nfGeo, nfMat, neckFurCount);
-          const nkDummy = new THREE.Object3D(), nkNrm = new THREE.Vector3();
-          for (let i = 0; i < neckFurCount; i++) {
-            const theta = Math.random() * Math.PI * 2;
-            const phi = (Math.random() - 0.5) * Math.PI * 0.8;
-            nkNrm.set(Math.cos(theta) * Math.cos(phi) * 0.55, Math.sin(phi) * 0.4, Math.sin(theta) * Math.cos(phi) * 0.55);
-            nkDummy.position.copy(nkNrm); nkDummy.position.y += (Math.random() - 0.5) * 0.6;
-            nkNrm.normalize();
-            nkDummy.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), nkNrm);
-            const s = 0.8 + Math.random() * 0.4;
+          const layer = new THREE.InstancedMesh(geometry, material, count);
+          layer.name = name;
+          const nkDummy = new THREE.Object3D();
+          const nkNrm = new THREE.Vector3();
+          const nkFlow = new THREE.Vector3(0, -0.045, -caudalFlow);
+          const localUp = new THREE.Vector3(0, 1, 0);
+          for (let i = 0; i < count; i++) {
+            const t = Math.random();
+            const angle = Math.random() * Math.PI * 2;
+            const profile = getCervicalMantleProfile(t);
+            const cos = Math.cos(angle);
+            const sin = Math.sin(angle);
+            const anteriorFade = 1.0 - THREE.MathUtils.smoothstep(t, 0.35, 0.82);
+            const anteriorInset = 0.68 + anteriorFade * 0.32;
+            nkDummy.position.set(
+              cos * profile.radiusX * anteriorInset,
+              profile.centerY + sin * profile.radiusY * anteriorInset,
+              profile.z
+            );
+            nkNrm.set(cos / profile.radiusX, sin / profile.radiusY, 0).normalize();
+            nkNrm.multiplyScalar(normalWeight).add(nkFlow).normalize();
+            nkDummy.quaternion.setFromUnitVectors(localUp, nkNrm);
+            const baseScale = 0.72 + Math.random() * (normalWeight > 0.5 ? 0.26 : 0.36);
+            const s = baseScale * (0.18 + anteriorFade * 0.82);
             nkDummy.scale.set(s, s, s); nkDummy.updateMatrix();
-            nfInst.setMatrixAt(i, nkDummy.matrix);
+            layer.setMatrixAt(i, nkDummy.matrix);
           }
-          neckMesh.add(nfInst);
-        }
+          return layer;
+        };
+        const cervicalUndercoat = buildCervicalFurLayer({
+          baseCount: 11000,
+          length: 0.036,
+          radius: 0.0044,
+          normalWeight: 0.82,
+          caudalFlow: 0.12,
+          roughness: 0.94,
+          opacity: 0.80,
+          name: 'cervical-undercoat',
+        });
+        const cervicalGuardHairs = buildCervicalFurLayer({
+          baseCount: 7000,
+          length: 0.078,
+          radius: 0.0038,
+          normalWeight: 0.24,
+          caudalFlow: 0.88,
+          roughness: 0.80,
+          opacity: 0.84,
+          name: 'cervical-guard-hairs',
+        });
+        this.cervicalUndercoat = cervicalUndercoat;
+        this.cervicalGuardHairs = cervicalGuardHairs;
+        if (cervicalUndercoat) neckMesh.add(cervicalUndercoat);
+        if (cervicalGuardHairs) neckMesh.add(cervicalGuardHairs);
 
         // BELLY FUR ANCHOR (no visible geometry; avoids hard side cut-lines from above)
         const bellyFurAnchor = new THREE.Group();
@@ -2263,15 +2863,25 @@
           bellyFurAnchor.add(bfInst);
         }
 
-        // HEAD
+        // HEAD: rotate from the atlanto-occipital joint rather than the center
+        // of the skull. The child offset preserves the established rest pose.
         this.headGroup = new THREE.Group();
-        this.headGroup.position.set(0, 0.22 * chonk, PROP.bodyLength * 1.02);
+        this.headGroup.name = 'atlanto-occipital-head-pivot';
+        this.headGroup.position.set(0, 0.18 * chonk, PROP.bodyLength * 0.73);
+        this.headRestPosition = this.headGroup.position.clone();
         this.rig.add(this.headGroup);
 
         this.head = new THREE.Mesh(headGeo, this.surfaceMat);
-        this.head.castShadow = true;
+        this.head.name = 'cranium-and-muzzle';
+        this.head.position.set(0, 0.14 * chonk, PROP.bodyLength * 0.20);
+        this.headCenterOffset = this.head.position.clone();
+        // The head overlaps the cervical volume; casting into that overlap
+        // creates an artificial dark collar around the posterior skull.
+        this.head.castShadow = false;
         this.headGroup.add(this.head);
-        this.head.add(generateMultiLayerFur(deformHead, density, furColor, true));
+        this.headFur = generateMultiLayerFur(deformHead, density, furColor, true);
+        this.headFur.name = 'head-fur-coat';
+        this.head.add(this.headFur);
 
         // SNOUT — Anatomically correct rhinarium
         const noseMat = this.fleshMat.clone();
@@ -2504,37 +3114,77 @@
         this.thighR = this.hindR._thigh;
         this.shankL = this.hindL._shank;
         this.shankR = this.hindR._shank;
+        this.upperArmL = this.armL._upperArm;
+        this.upperArmR = this.armR._upperArm;
 
-        const makeFootPlant = (paw, joints, phaseOffset, isFore) => ({
+        const makeFootPlant = (
+          paw,
+          joints,
+          phaseOffset,
+          isFore,
+          side,
+          maximumReach = null
+        ) => ({
           paw,
           contact: paw._groundContact,
           joints,
           phaseOffset,
           isFore,
+          side,
+          maximumReach,
           planted: false,
           exhausted: false,
           anchor: new THREE.Vector3(),
           slip: 0,
           groundError: 0,
+          reachRatio: 0,
+          rejectionReason: 'none',
+          candidateSlip: 0,
+          candidateGroundError: 0,
+          constraintError: new THREE.Vector3(),
+          constraintTargetLocal: new THREE.Vector3(),
+          constraintContactLocal: new THREE.Vector3(),
         });
         this.footPlants = [
-          makeFootPlant(this.hindL._paw, [this.hindL._ankle, this.shankL, this.hindL], 0, false),
-          makeFootPlant(this.hindR._paw, [this.hindR._ankle, this.shankR, this.hindR], Math.PI, false),
-          makeFootPlant(this.armL._paw, [this.armL._wrist, this.armL._forearm, this.armL], Math.PI, true),
-          makeFootPlant(this.armR._paw, [this.armR._wrist, this.armR._forearm, this.armR], 0, true),
+          makeFootPlant(this.hindL._paw, [this.hindL._ankle, this.shankL, this.hindL], 0, false, 1),
+          makeFootPlant(this.hindR._paw, [this.hindR._ankle, this.shankR, this.hindR], Math.PI, false, -1),
+          makeFootPlant(
+            this.armL._paw,
+            [this.armL._wrist, this.armL._forearm, this.upperArmL],
+            Math.PI,
+            true,
+            1,
+            this.armL._maximumReach
+          ),
+          makeFootPlant(
+            this.armR._paw,
+            [this.armR._wrist, this.armR._forearm, this.upperArmR],
+            0,
+            true,
+            -1,
+            this.armR._maximumReach
+          ),
         ];
         this.contactFrame = {
           legCycle: 0,
           isMoving: false,
           rear: 0,
+          groom: 0,
           lateralAccel: 0,
           turnRate: 0,
           forwardAccel: 0,
         };
         this.maximumFootSlip = 0;
         this.maximumPawGroundError = 0;
+        this.maximumForelimbExtensionRatio = 0;
+        this.groomingPawContactError = 0;
+        this.groomingSupportError = 0;
+        this.groomingReachDeficit = 0;
+        this.groomingTargetReachRatio = 0;
         this.minimumTailClearance = Infinity;
         this.minimumTailClearanceIndex = -1;
+        this.maximumTailSegmentLengthError = 0;
+        this.maximumTailBendAngle = 0;
 
         // CONTACT SHADOW
         this.contactShadow = createContactShadow();
@@ -2546,11 +3196,13 @@
         tailMat.roughness = 0.6; tailMat.transmission = 0.25;
         tailMat.thickness = 0.4; tailMat.clearcoat = 0.15;
         tailMat.roughnessMap = tailRoughnessMap;
-        const tGeo = new THREE.CylinderGeometry(0.08, 0.08, 1, 12);
-        tGeo.translate(0, 0.5, 0); tGeo.rotateX(Math.PI / 2);
-        this.tailInstanced = new THREE.InstancedMesh(tGeo, tailMat, this.tailCount);
-        this.tailInstanced.castShadow = true; this.tailInstanced.receiveShadow = true;
-        this.mesh.add(this.tailInstanced);
+        const tGeo = createDynamicTailTubeGeometry(this.tailCount, 12);
+        this.tailMesh = new THREE.Mesh(tGeo, tailMat);
+        this.tailMesh.name = 'continuous-tail-tube';
+        this.tailMesh.castShadow = true;
+        this.tailMesh.receiveShadow = true;
+        this.tailMesh.frustumCulled = false;
+        this.mesh.add(this.tailMesh);
         // Root bridge to blend tail emergence into the rump.
         const tailRootGeo = new THREE.CylinderGeometry(0.11, 0.13, 0.30, 12);
         tailRootGeo.translate(0, 0.15, 0);
@@ -2559,7 +3211,6 @@
         this.tailRoot.castShadow = true;
         this.tailRoot.scale.set(1.0, 0.72, 1.18);
         this.mesh.add(this.tailRoot);
-        this.dummy = new THREE.Object3D();
 
         // POSE TRACKING SKELETON
         this.poseNodes = {};
@@ -2583,10 +3234,14 @@
         };
 
         // Tracking nodes at anatomical landmarks
-        createTrackingNode('snout', this.headGroup, new THREE.Vector3(0, -0.15, PROP.snoutLength * 1.04));
-        createTrackingNode('lear', this.headGroup, new THREE.Vector3(0.55, 0.45, -0.15));
-        createTrackingNode('rear', this.headGroup, new THREE.Vector3(-0.55, 0.45, -0.15));
-        createTrackingNode('neck', this.rig, new THREE.Vector3(0, 0.6, PROP.bodyLength * 0.62));
+        createTrackingNode('snout', this.head, new THREE.Vector3(0, -0.15, PROP.snoutLength * 1.04));
+        createTrackingNode('lear', this.head, new THREE.Vector3(0.55, 0.45, -0.15));
+        createTrackingNode('rear', this.head, new THREE.Vector3(-0.55, 0.45, -0.15));
+        createTrackingNode(
+          'neck',
+          this.neckMesh,
+          new THREE.Vector3(0, 0.46, -PROP.neckLength * 0.26)
+        );
         createTrackingNode('spine1', this.rig, new THREE.Vector3(0, 0.9, 0.2));
         createTrackingNode('spine2', this.rig, new THREE.Vector3(0, 0.8, -PROP.bodyLength * 0.41));
         createTrackingNode('tailbase', this.rig, new THREE.Vector3(0, 0.3, -PROP.bodyLength * 0.93));
@@ -2614,7 +3269,8 @@
       }
 
       rotateIkJointToward(joint, axisName, contact, target, baseRotation, maxOffset, scratch) {
-        this.mesh.updateMatrixWorld(true);
+        joint.updateWorldMatrix(true, false);
+        contact.updateWorldMatrix(true, false);
         joint.getWorldPosition(scratch.jointWorld);
         contact.getWorldPosition(scratch.effectorWorld);
         scratch.toEffector.copy(scratch.effectorWorld).sub(scratch.jointWorld);
@@ -2647,6 +3303,379 @@
         );
       }
 
+      blendForelimbPose(chain, pose, amount = 1) {
+        const shoulder = chain._upperArm;
+        shoulder.position.z = THREE.MathUtils.lerp(
+          shoulder.position.z,
+          pose.shoulderProtraction ?? 0,
+          amount
+        );
+        shoulder.rotation.x = THREE.MathUtils.lerp(
+          shoulder.rotation.x,
+          pose.shoulderX,
+          amount
+        );
+        shoulder.rotation.z = THREE.MathUtils.lerp(
+          shoulder.rotation.z,
+          pose.shoulderZ,
+          amount
+        );
+        chain._forearm.rotation.x = THREE.MathUtils.lerp(
+          chain._forearm.rotation.x,
+          pose.elbowX,
+          amount
+        );
+        chain._wrist.rotation.x = THREE.MathUtils.lerp(
+          chain._wrist.rotation.x,
+          pose.wristX,
+          amount
+        );
+        chain._paw.rotation.x = THREE.MathUtils.lerp(
+          chain._paw.rotation.x,
+          pose.pawX,
+          amount
+        );
+      }
+
+      getGroomingMotion() {
+        const washCycle = this.grooming.elapsed * 8.6;
+        const leftWashStroke = 0.5 + 0.5 * Math.sin(washCycle);
+        const rightWashStroke = 0.5 + 0.5 * Math.sin(washCycle + 0.72);
+        const washStroke = (leftWashStroke + rightWashStroke) * 0.5;
+        const pawLead = leftWashStroke - rightWashStroke;
+        const pawLick = Math.pow(
+          Math.max(0, 1.0 - Math.max(leftWashStroke, rightWashStroke)),
+          1.35
+        );
+        const flankLick = 0.5 + 0.5 * Math.sin(this.grooming.elapsed * 7.4);
+        return {
+          leftWashStroke,
+          rightWashStroke,
+          washStroke,
+          pawLead,
+          pawLick,
+          flankLick,
+          flankPulse: flankLick * 2.0 - 1.0,
+        };
+      }
+
+      solveIkConstraint(
+        plant,
+        contact,
+        target,
+        {
+          iterations = 8,
+          jointXOffsets = [0.48, 0.70, 0.72],
+          jointXLimits = null,
+          rootZOffset = 0.28,
+        } = {}
+      ) {
+        const scratch = {
+          jointWorld: new THREE.Vector3(),
+          effectorWorld: new THREE.Vector3(),
+          toEffector: new THREE.Vector3(),
+          toTarget: new THREE.Vector3(),
+          axisWorld: new THREE.Vector3(),
+          cross: new THREE.Vector3(),
+        };
+        const baselines = plant.joints.map(joint => ({
+          x: joint.rotation.x,
+          z: joint.rotation.z,
+        }));
+        for (let iteration = 0; iteration < iterations; iteration++) {
+          for (let index = 0; index < plant.joints.length; index++) {
+            this.rotateIkJointToward(
+              plant.joints[index],
+              'x',
+              contact,
+              target,
+              baselines[index].x,
+              jointXOffsets[index],
+              scratch
+            );
+            if (jointXLimits?.[index]) {
+              plant.joints[index].rotation.x = THREE.MathUtils.clamp(
+                plant.joints[index].rotation.x,
+                jointXLimits[index][0],
+                jointXLimits[index][1]
+              );
+            }
+          }
+          const rootIndex = plant.joints.length - 1;
+          this.rotateIkJointToward(
+            plant.joints[rootIndex],
+            'z',
+            contact,
+            target,
+            baselines[rootIndex].z,
+            rootZOffset,
+            scratch
+          );
+        }
+        contact.updateWorldMatrix(true, false);
+        contact.getWorldPosition(scratch.effectorWorld);
+        return {
+          error: scratch.effectorWorld.distanceTo(target),
+        };
+      }
+
+      updateForelimbExtensionMetrics() {
+        this.maximumForelimbExtensionRatio = 0;
+        const shoulderPosition = new THREE.Vector3();
+        const wristPosition = new THREE.Vector3();
+        const contactPosition = new THREE.Vector3();
+        for (const plant of this.footPlants.slice(2)) {
+          const shoulder = plant.joints[plant.joints.length - 1];
+          const wrist = plant.joints[0];
+          const chain = plant.side > 0 ? this.armL : this.armR;
+          shoulder.updateWorldMatrix(true, false);
+          wrist.updateWorldMatrix(true, false);
+          plant.contact.updateWorldMatrix(true, false);
+          shoulder.getWorldPosition(shoulderPosition);
+          wrist.getWorldPosition(wristPosition);
+          plant.contact.getWorldPosition(contactPosition);
+          const boneLength = chain._segmentLengths.humerus
+            + chain._segmentLengths.radiusUlna;
+          plant.extensionRatio = shoulderPosition.distanceTo(wristPosition)
+            / boneLength;
+          plant.pawReachRatio = shoulderPosition.distanceTo(contactPosition)
+            / plant.maximumReach;
+          this.maximumForelimbExtensionRatio = Math.max(
+            this.maximumForelimbExtensionRatio,
+            plant.extensionRatio
+          );
+        }
+      }
+
+      solveForelimbBehaviorConstraints() {
+        this.groomingPawContactError = 0;
+        this.groomingSupportError = 0;
+        this.groomingReachDeficit = 0;
+        this.groomingTargetReachRatio = 0;
+        const groomAmount = THREE.MathUtils.clamp(
+          this.groomAmount / Math.max(this.grooming.peakAmount, 0.01),
+          0,
+          1
+        );
+        if (this.grooming.mode === 'face-wash' && groomAmount > 0.08) {
+          const motion = this.getGroomingMotion();
+          const targets = [
+            { plant: this.footPlants[2], stroke: motion.leftWashStroke, side: 1 },
+            { plant: this.footPlants[3], stroke: motion.rightWashStroke, side: -1 },
+          ];
+          const desiredTarget = new THREE.Vector3();
+          const constrainedTarget = new THREE.Vector3();
+          const currentContact = new THREE.Vector3();
+          const shoulderPosition = new THREE.Vector3();
+          const constraintAmount = THREE.MathUtils.smoothstep(
+            groomAmount,
+            0.35,
+            0.95
+          );
+          this.mesh.updateMatrixWorld(true);
+          for (const { plant, stroke, side } of targets) {
+            const contact = plant.paw._groomingContact;
+            desiredTarget.set(
+              side * THREE.MathUtils.lerp(0.11, 0.27, stroke),
+              THREE.MathUtils.lerp(-0.28, 0.07, stroke) - motion.pawLick * 0.035,
+              THREE.MathUtils.lerp(0.47, 0.43, stroke) + motion.pawLick * 0.025
+            );
+            plant.constraintTargetLocal.copy(desiredTarget);
+            this.head.localToWorld(desiredTarget);
+            contact.updateWorldMatrix(true, false);
+            contact.getWorldPosition(currentContact);
+            constrainedTarget.copy(currentContact).lerp(desiredTarget, constraintAmount);
+            const shoulder = plant.joints[plant.joints.length - 1];
+            shoulder.updateWorldMatrix(true, false);
+            shoulder.getWorldPosition(shoulderPosition);
+            this.groomingTargetReachRatio = Math.max(
+              this.groomingTargetReachRatio,
+              shoulderPosition.distanceTo(desiredTarget) / plant.maximumReach
+            );
+            this.groomingReachDeficit = Math.max(
+              this.groomingReachDeficit,
+              shoulderPosition.distanceTo(desiredTarget) - plant.maximumReach * 0.97
+            );
+            const elbowPole = THREE.MathUtils.lerp(
+              plant.joints[1].rotation.x,
+              -1.0,
+              constraintAmount
+            );
+            this.solveIkConstraint(plant, contact, constrainedTarget, {
+              iterations: 14,
+              jointXOffsets: [0.72, 0.78, 0.92],
+              jointXLimits: [
+                [-0.20, 1.10],
+                [elbowPole, elbowPole],
+                [-1.65, -0.20],
+              ],
+              rootZOffset: 0.42,
+            });
+            contact.updateWorldMatrix(true, false);
+            contact.getWorldPosition(currentContact);
+            plant.constraintError.copy(currentContact).sub(desiredTarget);
+            plant.constraintContactLocal.copy(currentContact);
+            this.head.worldToLocal(plant.constraintContactLocal);
+            this.groomingPawContactError = Math.max(
+              this.groomingPawContactError,
+              currentContact.distanceTo(desiredTarget) * constraintAmount
+            );
+            if (constraintAmount > 0.02) {
+              plant.planted = false;
+              plant.exhausted = false;
+            }
+          }
+          this.groomingReachDeficit = Math.max(0, this.groomingReachDeficit);
+        } else if (this.grooming.mode === 'flank-groom' && groomAmount > 0.08) {
+          const loadedSupportSide = -this.grooming.side;
+          const supportPlant = this.footPlants.slice(2).find(
+            plant => plant.side === loadedSupportSide
+          );
+          this.groomingSupportError = supportPlant?.planted
+            ? Math.hypot(supportPlant.slip, supportPlant.groundError)
+            : 1.0;
+        }
+        this.updateForelimbExtensionMetrics();
+      }
+
+      captureRearFootAnchors() {
+        const state = this.rearing;
+        for (let index = 0; index < 2; index++) {
+          const plant = this.footPlants[index];
+          plant.contact.updateWorldMatrix(true, false);
+          plant.contact.getWorldPosition(state.hindAnchors[index]);
+          state.hindAnchors[index].y = 0.055;
+          plant.anchor.copy(state.hindAnchors[index]);
+          plant.planted = true;
+          plant.exhausted = false;
+        }
+        state.rearFeetPlanted = true;
+      }
+
+      solveRearBalanceConstraints(dt = 0.016) {
+        const state = this.rearing;
+        state.lastConstraintDt = dt;
+        this.maximumRearSupportError = 0;
+        if (state.mode === 'none' || state.angle < 0.012) {
+          state.hindSupportError = 0;
+          state.hindSupportHorizontalError = 0;
+          state.hindSupportVerticalError = 0;
+          state.centerOfMassProjectionError = 0;
+          return;
+        }
+        const poseAmount = THREE.MathUtils.clamp(
+          state.angle / Math.max(state.maxAngle, 0.01),
+          0,
+          1
+        );
+        if (state.phase === 'settle' && poseAmount < 0.82) {
+          state.rearSupportReleased = true;
+          state.rearFeetPlanted = false;
+          state.hindSupportError = 0;
+          state.hindSupportHorizontalError = 0;
+          state.hindSupportVerticalError = 0;
+          for (const plant of this.footPlants.slice(0, 2)) {
+            plant.planted = false;
+            plant.exhausted = false;
+          }
+          return;
+        }
+        if (state.rearSupportReleased) return;
+        if (!state.rearFeetPlanted) this.captureRearFootAnchors();
+
+        const placementAmount = state.phase === 'settle' ? 1.0 : poseAmount;
+        if (state.mode === 'wall-supported' && state.maximumBaseAdvance > 0) {
+          const targetAdvance = state.maximumBaseAdvance
+            * THREE.MathUtils.smoothstep(placementAmount, 0.25, 0.95);
+          let nextAdvance;
+          if (guiParams.isPaused) {
+            nextAdvance = targetAdvance;
+            state.baseAdvanceVelocity = 0;
+          } else {
+            const advanceAcceleration = 34.0 * (targetAdvance - state.baseAdvance)
+              - 10.5 * state.baseAdvanceVelocity;
+            state.baseAdvanceVelocity += advanceAcceleration * Math.min(dt, 0.05);
+            nextAdvance = THREE.MathUtils.clamp(
+              state.baseAdvance + state.baseAdvanceVelocity * Math.min(dt, 0.05),
+              0,
+              state.maximumBaseAdvance * 1.02
+            );
+          }
+          const advanceDelta = nextAdvance - state.baseAdvance;
+          state.baseAdvance = nextAdvance;
+          for (const anchor of state.hindAnchors) {
+            anchor.x += state.supportDirection.x * advanceDelta;
+            anchor.z += state.supportDirection.y * advanceDelta;
+          }
+        }
+        if (state.maximumHindStanceOffset > 0) {
+          const targetStanceOffset = state.maximumHindStanceOffset
+            * THREE.MathUtils.smoothstep(placementAmount, 0.15, 0.65);
+          let nextStanceOffset;
+          if (guiParams.isPaused) {
+            nextStanceOffset = targetStanceOffset;
+            state.hindStanceVelocity = 0;
+          } else {
+            const stanceAcceleration = 30.0 * (
+              targetStanceOffset - state.hindStanceOffset
+            ) - 10.0 * state.hindStanceVelocity;
+            state.hindStanceVelocity += stanceAcceleration * Math.min(dt, 0.05);
+            nextStanceOffset = THREE.MathUtils.clamp(
+              state.hindStanceOffset + state.hindStanceVelocity * Math.min(dt, 0.05),
+              0,
+              state.maximumHindStanceOffset * 1.02
+            );
+          }
+          const stanceDelta = nextStanceOffset - state.hindStanceOffset;
+          state.hindStanceOffset = nextStanceOffset;
+          const lateralX = this.heading.y;
+          const lateralZ = -this.heading.x;
+          // Draw the rear contacts under the COM as the haunches adduct.
+          state.hindAnchors[0].x -= lateralX * stanceDelta;
+          state.hindAnchors[0].z -= lateralZ * stanceDelta;
+          state.hindAnchors[1].x += lateralX * stanceDelta;
+          state.hindAnchors[1].z += lateralZ * stanceDelta;
+        }
+
+        const leftContact = new THREE.Vector3();
+        const rightContact = new THREE.Vector3();
+        this.footPlants[0].contact.updateWorldMatrix(true, false);
+        this.footPlants[1].contact.updateWorldMatrix(true, false);
+        this.footPlants[0].contact.getWorldPosition(leftContact);
+        this.footPlants[1].contact.getWorldPosition(rightContact);
+        const currentCenter = leftContact.add(rightContact).multiplyScalar(0.5);
+        const targetCenter = state.hindAnchors[0].clone()
+          .add(state.hindAnchors[1])
+          .multiplyScalar(0.5);
+        const correction = targetCenter.sub(currentCenter);
+        // Ground contact is a positional constraint. Resolve it as a bounded
+        // impulse so the body rotates around the rear support polygon instead
+        // of being translated upward by the animation pose.
+        const horizontalLength = Math.hypot(correction.x, correction.z);
+        const maximumHorizontalCorrection = guiParams.isPaused
+          ? Infinity
+          : 0.18 + poseAmount * 0.16;
+        if (horizontalLength > maximumHorizontalCorrection) {
+          const scale = maximumHorizontalCorrection / horizontalLength;
+          correction.x *= scale;
+          correction.z *= scale;
+        }
+        this.mesh.position.x += correction.x;
+        this.mesh.position.z += correction.z;
+        this.rig.position.y += THREE.MathUtils.clamp(
+          correction.y,
+          guiParams.isPaused ? -2.0 : -0.42,
+          guiParams.isPaused ? 2.0 : 0.42
+        );
+
+        for (let index = 0; index < 2; index++) {
+          const plant = this.footPlants[index];
+          plant.anchor.copy(state.hindAnchors[index]);
+          plant.planted = true;
+          plant.exhausted = false;
+        }
+      }
+
       solveFootPlantConstraints(dt = 0.016) {
         const scratch = {
           jointWorld: new THREE.Vector3(),
@@ -2658,11 +3687,24 @@
         };
         this.maximumFootSlip = 0;
         this.maximumPawGroundError = 0;
-        this.mesh.updateMatrixWorld(true);
 
         for (const foot of this.footPlants) {
           const stancePhase = Math.sin(this.contactFrame.legCycle + foot.phaseOffset);
-          const mayTouchGround = !foot.isFore || this.contactFrame.rear < 0.08;
+          const flankGroomSupport = foot.isFore
+            && this.grooming.mode === 'flank-groom'
+            && this.contactFrame.rear < 0.08;
+          const faceWashRecovery = foot.isFore
+            && this.grooming.mode === 'face-wash'
+            && this.grooming.phase === 'settle'
+            && this.contactFrame.groom < 0.12;
+          const mayTouchGround = !foot.isFore || (
+            this.contactFrame.rear < 0.08
+              && (
+                this.contactFrame.groom < 0.08
+                  || flankGroomSupport
+                  || faceWashRecovery
+              )
+          );
           const inStance = mayTouchGround && (
             !this.contactFrame.isMoving || stancePhase < 0.08
           );
@@ -2671,10 +3713,26 @@
             foot.exhausted = false;
             foot.slip = 0;
             foot.groundError = 0;
+            foot.rejectionReason = 'not-stance';
             continue;
           }
-          if (foot.exhausted) continue;
+          if (foot.exhausted) {
+            const mayReplantDuringBodyPose = flankGroomSupport
+              || faceWashRecovery
+              || (
+                !foot.isFore && (
+                  this.contactFrame.rear >= 0.08 || this.contactFrame.groom >= 0.08
+                )
+              );
+            const mayRecoverAtRest = !this.contactFrame.isMoving
+              && this.contactFrame.rear < 0.08
+              && this.contactFrame.groom < 0.08;
+            if (!mayReplantDuringBodyPose && !mayRecoverAtRest) continue;
+            foot.exhausted = false;
+            foot.planted = false;
+          }
 
+          foot.contact.updateWorldMatrix(true, false);
           foot.contact.getWorldPosition(scratch.effectorWorld);
           const justPlanted = !foot.planted;
           if (justPlanted) {
@@ -2684,13 +3742,22 @@
           }
 
           const rootJoint = foot.joints[foot.joints.length - 1];
+          rootJoint.updateWorldMatrix(true, false);
           rootJoint.getWorldPosition(scratch.jointWorld);
-          const maximumReach = foot.isFore ? 1.18 : 1.52;
-          if (scratch.jointWorld.distanceTo(foot.anchor) > maximumReach) {
+          const rearSupportFoot = !foot.isFore && this.contactFrame.rear >= 0.08;
+          const groomingHindSupport = !foot.isFore
+            && this.contactFrame.groom >= 0.08;
+          const maximumReach = foot.isFore
+            ? foot.maximumReach * 0.985
+            : (rearSupportFoot ? 1.78 : (groomingHindSupport ? 1.68 : 1.52));
+          const targetDistance = scratch.jointWorld.distanceTo(foot.anchor);
+          foot.reachRatio = targetDistance / maximumReach;
+          if (targetDistance > maximumReach) {
             foot.planted = false;
             foot.exhausted = true;
             foot.slip = 0;
             foot.groundError = 0;
+            foot.rejectionReason = 'reach';
             continue;
           }
 
@@ -2698,10 +3765,19 @@
             x: joint.rotation.x,
             z: joint.rotation.z,
           }));
-          for (let iteration = 0; iteration < 7; iteration++) {
+          const iterationCount = flankGroomSupport
+            ? 12
+            : (rearSupportFoot || groomingHindSupport
+              ? 10
+              : 9);
+          for (let iteration = 0; iteration < iterationCount; iteration++) {
             for (let index = 0; index < foot.joints.length; index++) {
               const joint = foot.joints[index];
-              const maxOffset = index === 0 ? 0.52 : (index === 1 ? 0.66 : 0.58);
+              const maxOffset = rearSupportFoot || groomingHindSupport
+                ? (index === 0 ? 0.62 : (index === 1 ? 0.78 : 0.68))
+                : (flankGroomSupport
+                  ? (index === 0 ? 0.58 : (index === 1 ? 0.78 : 0.72))
+                  : (index === 0 ? 0.52 : (index === 1 ? 0.66 : 0.58)));
               this.rotateIkJointToward(
                 joint,
                 'x',
@@ -2711,6 +3787,13 @@
                 maxOffset,
                 scratch
               );
+              if (foot.isFore && index === 1) {
+                const maximumElbowExtension = flankGroomSupport ? -0.46 : -0.50;
+                joint.rotation.x = Math.min(
+                  joint.rotation.x,
+                  maximumElbowExtension
+                );
+              }
             }
             const rootIndex = foot.joints.length - 1;
             this.rotateIkJointToward(
@@ -2719,29 +3802,55 @@
               foot.contact,
               foot.anchor,
               baselines[rootIndex].z,
-              foot.isFore ? 0.22 : 0.18,
+              foot.isFore
+                ? (flankGroomSupport ? 0.34 : 0.22)
+                : (rearSupportFoot ? 0.48 : (groomingHindSupport ? 0.38 : 0.18)),
               scratch
             );
           }
 
-          this.mesh.updateMatrixWorld(true);
+          foot.contact.updateWorldMatrix(true, false);
           foot.contact.getWorldPosition(scratch.effectorWorld);
           if (justPlanted) {
             foot.anchor.x = scratch.effectorWorld.x;
             foot.anchor.z = scratch.effectorWorld.z;
+          }
+          const flankRepositioningPaw = flankGroomSupport
+            && foot.side === this.grooming.side;
+          if (flankRepositioningPaw && !justPlanted) {
+            const regripAmount = 1.0 - Math.exp(-36.0 * Math.min(dt, 0.05));
+            foot.anchor.x = THREE.MathUtils.lerp(
+              foot.anchor.x,
+              scratch.effectorWorld.x,
+              regripAmount
+            );
+            foot.anchor.z = THREE.MathUtils.lerp(
+              foot.anchor.z,
+              scratch.effectorWorld.z,
+              regripAmount
+            );
           }
           foot.slip = Math.hypot(
             scratch.effectorWorld.x - foot.anchor.x,
             scratch.effectorWorld.z - foot.anchor.z
           );
           foot.groundError = Math.abs(scratch.effectorWorld.y - foot.anchor.y);
-          if (foot.slip > 0.075 || foot.groundError > 0.10) {
+          foot.candidateSlip = foot.slip;
+          foot.candidateGroundError = foot.groundError;
+          const poseSupportFoot = rearSupportFoot
+            || groomingHindSupport
+            || flankGroomSupport;
+          const maximumSlip = poseSupportFoot ? 0.11 : 0.08;
+          const maximumGroundError = poseSupportFoot ? 0.12 : 0.115;
+          if (foot.slip > maximumSlip || foot.groundError > maximumGroundError) {
             foot.planted = false;
             foot.exhausted = true;
             foot.slip = 0;
             foot.groundError = 0;
+            foot.rejectionReason = 'contact';
             continue;
           }
+          foot.rejectionReason = 'none';
           this.maximumFootSlip = Math.max(this.maximumFootSlip, foot.slip);
           this.maximumPawGroundError = Math.max(
             this.maximumPawGroundError,
@@ -2807,19 +3916,42 @@
 
         const tailRadiusAt = index => {
           const p = index / this.tailCount;
-          let radius = 1.0 - p * PROP.tailTaper;
-          radius *= 1.0 + (1.0 - THREE.MathUtils.smoothstep(p, 0.0, 0.20)) * 0.45;
-          return 0.08 * radius * this.guiParams.tailThickness + 0.035;
+          return tailSurfaceRadiusAt(p, this.guiParams.tailThickness) + 0.035;
         };
-        const clampPointToFloor = point => {
+        const clampPointToArena = (point, index) => {
           worldPoint.copy(point);
           this.mesh.localToWorld(worldPoint);
-          if (worldPoint.y < 0.055) {
-            worldPoint.y = 0.055;
-            localPoint.copy(worldPoint);
-            this.mesh.worldToLocal(localPoint);
-            point.y = localPoint.y;
+          const surfaceRadius = tailSurfaceRadiusAt(
+            index / this.tailCount,
+            this.guiParams.tailThickness
+          );
+          const horizontalMargin = surfaceRadius + 0.018;
+          const minimumY = surfaceRadius + 0.012;
+          let changed = false;
+          if (worldPoint.y < minimumY) {
+            worldPoint.y = minimumY;
+            changed = true;
           }
+          if (index > 0) {
+            const clampedX = THREE.MathUtils.clamp(
+              worldPoint.x,
+              -ENCLOSURE_HALF_X + horizontalMargin,
+              ENCLOSURE_HALF_X - horizontalMargin
+            );
+            const clampedZ = THREE.MathUtils.clamp(
+              worldPoint.z,
+              -ENCLOSURE_HALF_Z + horizontalMargin,
+              ENCLOSURE_HALF_Z - horizontalMargin
+            );
+            changed = changed || clampedX !== worldPoint.x || clampedZ !== worldPoint.z;
+            worldPoint.x = clampedX;
+            worldPoint.z = clampedZ;
+          }
+          if (!changed) return false;
+          localPoint.copy(worldPoint);
+          this.mesh.worldToLocal(localPoint);
+          point.copy(localPoint);
+          return true;
         };
         const projectPointOutsideBodies = (point, index) => {
           worldPoint.copy(point);
@@ -2970,42 +4102,58 @@
           return true;
         };
 
-        for (const point of tailCurve) {
-          point.add(offset);
-          clampPointToFloor(point);
+        for (let i = 0; i <= this.tailCount; i++) {
+          tailCurve[i].add(offset);
+          clampPointToArena(tailCurve[i], i);
         }
         const fixedRoot = tailCurve[0].clone();
-        for (let pass = 0; pass < 10 && obstacles.length > 0; pass++) {
+        const bendTarget = new THREE.Vector3();
+        for (let pass = 0; pass < 10; pass++) {
           let corrected = false;
           tailCurve[0].copy(fixedRoot);
+
+          // A light bend constraint removes contact-induced kinks before the
+          // inextensible centerline and collision constraints are projected.
+          for (let parity = 0; parity < 2; parity++) {
+            for (let i = 1 + parity; i < this.tailCount; i += 2) {
+              bendTarget.copy(tailCurve[i - 1]).add(tailCurve[i + 1]).multiplyScalar(0.5);
+              tailCurve[i].lerp(bendTarget, pass < 4 ? 0.16 : 0.10);
+            }
+          }
           for (let i = 1; i <= this.tailCount; i++) {
             delta.copy(tailCurve[i]).sub(tailCurve[i - 1]);
             if (delta.lengthSq() < 1e-8) delta.set(0, 0, -1);
             tailCurve[i].copy(tailCurve[i - 1]).addScaledVector(delta.normalize(), segLen);
-            clampPointToFloor(tailCurve[i]);
+            corrected = clampPointToArena(tailCurve[i], i) || corrected;
           }
           for (let i = 1; i <= this.tailCount; i++) {
             corrected = projectPointOutsideBodies(tailCurve[i], i) || corrected;
-            clampPointToFloor(tailCurve[i]);
+            corrected = clampPointToArena(tailCurve[i], i) || corrected;
           }
           for (let i = 0; i < this.tailCount; i++) {
             corrected = projectSegmentOutsideBodies(tailCurve[i], tailCurve[i + 1], i)
               || corrected;
+          }
+          for (let i = 1; i <= this.tailCount; i++) {
+            corrected = clampPointToArena(tailCurve[i], i) || corrected;
           }
           if (!corrected) break;
         }
 
-        // Finish on collision constraints (rather than a length projection) so
-        // the actual cylinders, including the chord between vertices, remain
-        // outside every body volume.
-        for (let pass = 0; pass < 24 && obstacles.length > 0; pass++) {
+        // Finish on contact constraints so every chord of the continuous tube
+        // remains outside nearby mouse bodies and the enclosure surfaces.
+        for (let pass = 0; pass < this.tailCount * 2; pass++) {
           let corrected = false;
           for (let i = 1; i <= this.tailCount; i++) {
             corrected = projectPointOutsideBodies(tailCurve[i], i) || corrected;
+            corrected = clampPointToArena(tailCurve[i], i) || corrected;
           }
           for (let i = 0; i < this.tailCount; i++) {
             corrected = projectSegmentOutsideBodies(tailCurve[i], tailCurve[i + 1], i)
               || corrected;
+          }
+          for (let i = 1; i <= this.tailCount; i++) {
+            corrected = clampPointToArena(tailCurve[i], i) || corrected;
           }
           if (!corrected) break;
         }
@@ -3013,7 +4161,7 @@
         this.minimumTailClearance = Infinity;
         this.minimumTailClearanceIndex = -1;
         for (let i = 0; i <= this.tailCount; i++) {
-          clampPointToFloor(tailCurve[i]);
+          clampPointToArena(tailCurve[i], i);
           worldPoint.copy(tailCurve[i]);
           this.mesh.localToWorld(worldPoint);
           const tailRadius = tailRadiusAt(i);
@@ -3034,34 +4182,50 @@
           }
         }
 
+        this.maximumTailSegmentLengthError = 0;
+        this.maximumTailBendAngle = 0;
+        let previousDx = 0;
+        let previousDy = 0;
+        let previousDz = 0;
+        let previousLength = 0;
         for (let i = 0; i < this.tailCount; i++) {
-          const p = i / this.tailCount;
-          let radius = 1.0 - p * PROP.tailTaper;
-          const rootBlend = 1.0 - THREE.MathUtils.smoothstep(p, 0.0, 0.20);
-          radius *= 1.0 + rootBlend * 0.45;
-          radius *= 1.0 + Math.sin(i * 2.8) * 0.06;
-          if (i > 0 && i < this.tailCount) {
-            const dx = tailCurve[i + 1].x - tailCurve[i].x;
-            const prevDx = tailCurve[i].x - tailCurve[i - 1].x;
-            radius *= 1.0 + Math.abs(dx - prevDx) * 0.8;
+          const dx = tailCurve[i + 1].x - tailCurve[i].x;
+          const dy = tailCurve[i + 1].y - tailCurve[i].y;
+          const dz = tailCurve[i + 1].z - tailCurve[i].z;
+          const length = Math.max(Math.hypot(dx, dy, dz), 1e-7);
+          this.maximumTailSegmentLengthError = Math.max(
+            this.maximumTailSegmentLengthError,
+            Math.abs(length / segLen - 1.0)
+          );
+          if (previousLength > 0) {
+            const cosine = THREE.MathUtils.clamp(
+              (dx * previousDx + dy * previousDy + dz * previousDz)
+                / (length * previousLength),
+              -1,
+              1
+            );
+            this.maximumTailBendAngle = Math.max(
+              this.maximumTailBendAngle,
+              THREE.MathUtils.radToDeg(Math.acos(cosine))
+            );
           }
-          this.dummy.position.copy(tailCurve[i]);
-          this.dummy.lookAt(tailCurve[i + 1]);
-          const thickMul = this.guiParams.tailThickness;
-          this.dummy.scale.set(radius * thickMul, radius * thickMul, segLen * 1.3);
-          this.dummy.updateMatrix();
-          this.tailInstanced.setMatrixAt(i, this.dummy.matrix);
-          const isTailVisible = this.tailInstanced.visible;
-          if (i === Math.floor(this.tailCount * 0.4)) {
-            this.poseNodes.tailmid.position.copy(tailCurve[i + 1]);
-            this.poseNodes.tailmid.visible = guiParams.showTrackingKeypoints && isTailVisible;
-          }
-          if (i === this.tailCount - 1) {
-            this.poseNodes.tailend.position.copy(tailCurve[i + 1]);
-            this.poseNodes.tailend.visible = guiParams.showTrackingKeypoints && isTailVisible;
-          }
+          previousDx = dx;
+          previousDy = dy;
+          previousDz = dz;
+          previousLength = length;
         }
-        this.tailInstanced.instanceMatrix.needsUpdate = true;
+
+        updateDynamicTailTubeGeometry(
+          this.tailMesh.geometry,
+          tailCurve,
+          this.guiParams.tailThickness
+        );
+        const isTailVisible = this.tailMesh.visible;
+        const tailMidIndex = Math.max(1, Math.floor(this.tailCount * 0.4));
+        this.poseNodes.tailmid.position.copy(tailCurve[tailMidIndex]);
+        this.poseNodes.tailmid.visible = guiParams.showTrackingKeypoints && isTailVisible;
+        this.poseNodes.tailend.position.copy(tailCurve[this.tailCount]);
+        this.poseNodes.tailend.visible = guiParams.showTrackingKeypoints && isTailVisible;
         if (this.tailRoot && tailCurve.length > 4) {
           const thickMul = this.guiParams.tailThickness;
           const dir = tailCurve[3].clone().sub(tailCurve[0]).normalize();
@@ -3098,9 +4262,121 @@
         this.skeletonLines.geometry.attributes.position.needsUpdate = true;
       }
 
+      startGrooming(mode, activeDuration = null) {
+        if (!['face-wash', 'flank-groom'].includes(mode)) return false;
+        if (this.grooming.mode !== 'none' || this.rearing.mode !== 'none') return false;
+
+        const state = this.grooming;
+        state.mode = mode;
+        state.phase = 'prepare';
+        state.phaseTime = 0;
+        state.elapsed = 0;
+        state.peakAmount = 1;
+        state.prepareDuration = mode === 'face-wash' ? 0.30 : 0.38;
+        state.activeDuration = activeDuration ?? (
+          mode === 'face-wash'
+            ? 1.75 + (this.timeOffset * 0.013) % 0.65
+            : 1.95 + (this.timeOffset * 0.017) % 0.75
+        );
+        state.settleDuration = mode === 'face-wash' ? 0.48 : 0.56;
+        state.side = Math.sin(
+          this.timeOffset * 0.31 + state.sequenceIndex * 1.7
+        ) >= 0 ? 1 : -1;
+        state.sequenceIndex += 1;
+
+        this.pauseTimer = Math.max(
+          this.pauseTimer,
+          state.prepareDuration + state.activeDuration + state.settleDuration + 0.25
+        );
+        this.stuckTimer = 0;
+        this.velocity.multiplyScalar(0.08);
+        return true;
+      }
+
+      updateGroomingBehavior(time, dt, context) {
+        const state = this.grooming;
+        this.groomCooldown = Math.max(0, this.groomCooldown - dt);
+
+        if (
+          state.mode === 'none'
+          && this.rearing.mode === 'none'
+          && guiParams.enableGrooming
+          && this.groomCooldown <= 0
+        ) {
+          const quietOpportunity = time >= state.nextSpontaneousAt
+            && !context.hitWall
+            && context.behaviorPause
+            && context.speed < 1.25
+            && !this.socialContact
+            && context.wallDist > context.bodyMargin + 0.35;
+          if (quietOpportunity) {
+            const nextMode = state.sequenceIndex % 2 === 0
+              ? 'face-wash'
+              : 'flank-groom';
+            this.startGrooming(nextMode);
+          }
+        }
+
+        if (state.mode === 'none') {
+          this.groomAmount = 0;
+          this.groomVel = 0;
+          return;
+        }
+
+        if (this.socialContact && state.phase !== 'settle') {
+          state.phase = 'settle';
+          state.phaseTime = 0;
+        }
+
+        state.phaseTime += dt;
+        state.elapsed += dt;
+        if (state.phase === 'prepare' && state.phaseTime >= state.prepareDuration) {
+          state.phase = 'active';
+          state.phaseTime = 0;
+        } else if (state.phase === 'active' && state.phaseTime >= state.activeDuration) {
+          state.phase = 'settle';
+          state.phaseTime = 0;
+        }
+
+        const target = state.phase === 'settle' ? 0 : state.peakAmount;
+        const stiffness = state.phase === 'settle' ? 24.0 : 34.0;
+        const damping = state.phase === 'settle' ? 9.6 : 8.4;
+        this.groomVel += (
+          stiffness * (target - this.groomAmount) - damping * this.groomVel
+        ) * dt;
+        this.groomAmount = THREE.MathUtils.clamp(
+          this.groomAmount + this.groomVel * dt,
+          0,
+          1
+        );
+        this.velocity.multiplyScalar(Math.exp(-10.0 * dt));
+
+        if (
+          state.phase === 'settle'
+          && state.phaseTime >= state.settleDuration
+          && this.groomAmount < 0.018
+          && Math.abs(this.groomVel) < 0.08
+        ) {
+          const frequency = THREE.MathUtils.clamp(
+            guiParams.groomingFrequency ?? 1,
+            0.25,
+            2
+          );
+          state.mode = 'none';
+          state.phase = 'idle';
+          state.phaseTime = 0;
+          state.elapsed = 0;
+          state.nextSpontaneousAt = time
+            + (8.5 + (this.timeOffset * 0.023) % 5.0) / frequency;
+          this.groomAmount = 0;
+          this.groomVel = 0;
+          this.groomCooldown = (3.2 + (this.timeOffset * 0.015) % 2.2) / frequency;
+        }
+      }
+
       startRearing(mode, supportDirection = null, holdDuration = null) {
         if (!['unsupported', 'wall-supported'].includes(mode)) return false;
-        if (this.rearing.mode !== 'none') return false;
+        if (this.rearing.mode !== 'none' || this.grooming.mode !== 'none') return false;
 
         const state = this.rearing;
         state.mode = mode;
@@ -3108,7 +4384,33 @@
         state.phaseTime = 0;
         state.elapsed = 0;
         state.peakAmount = mode === 'wall-supported' ? 0.94 : 0.80;
-        state.riseDuration = mode === 'wall-supported' ? 0.42 : 0.36;
+        state.maxAngle = mode === 'wall-supported' ? 1.06 : 1.02;
+        state.angle = 0;
+        state.angularVelocity = 0;
+        state.angularAcceleration = 0;
+        state.gravityTorque = 0;
+        state.muscleTorque = 0;
+        state.wallReactionTorque = 0;
+        state.wallContactLoad = 0;
+        state.balanceAngleCorrection = 0;
+        state.centerOfMassForwardOffset = 0;
+        state.centerOfMassLateralOffset = 0;
+        state.centerOfMassProjectionError = 0;
+        state.hindSupportError = 0;
+        state.hindSupportHorizontalError = 0;
+        state.hindSupportVerticalError = 0;
+        state.wallSupportError = mode === 'wall-supported' ? 1.0 : 0;
+        state.wallSupportNormalError = 0;
+        state.wallSupportVerticalError = 0;
+        state.baseAdvance = 0;
+        state.baseAdvanceVelocity = 0;
+        state.maximumBaseAdvance = 0;
+        state.hindStanceOffset = 0;
+        state.hindStanceVelocity = 0;
+        state.maximumHindStanceOffset = mode === 'unsupported' ? 0.52 : 0;
+        state.rearFeetPlanted = false;
+        state.rearSupportReleased = false;
+        state.riseDuration = mode === 'wall-supported' ? 0.66 : 0.58;
         state.holdDuration = holdDuration ?? (
           mode === 'wall-supported'
             ? 1.05 + (this.timeOffset * 0.017) % 0.50
@@ -3136,6 +4438,23 @@
               Math.sign(state.supportDirection.y || 1) * (ENCLOSURE_HALF_Z - 0.08)
             );
           }
+          const wallDistance = (
+            (state.supportPoint.x - this.mesh.position.x) * state.supportDirection.x
+            + (state.supportPoint.y - this.mesh.position.z) * state.supportDirection.y
+          );
+          state.maximumBaseAdvance = THREE.MathUtils.clamp(
+            wallDistance - 0.95,
+            0,
+            2.82
+          );
+        } else {
+          state.supportDirection.copy(this.heading).normalize();
+          state.supportPoint.set(this.mesh.position.x, this.mesh.position.z);
+        }
+
+        for (const plant of this.footPlants.slice(0, 2)) {
+          plant.planted = false;
+          plant.exhausted = false;
         }
 
         this.pauseTimer = Math.max(
@@ -3150,7 +4469,12 @@
         const state = this.rearing;
         this.rearCooldown = Math.max(0, this.rearCooldown - dt);
 
-        if (state.mode === 'none' && guiParams.enableRearing && this.rearCooldown <= 0) {
+        if (
+          state.mode === 'none'
+          && this.grooming.mode === 'none'
+          && guiParams.enableRearing
+          && this.rearCooldown <= 0
+        ) {
           const supportDirection = new THREE.Vector2(
             -context.nearestWall.normalX,
             -context.nearestWall.normalZ
@@ -3181,12 +4505,28 @@
         if (state.mode === 'none') {
           this.rearAmount = 0;
           this.rearVel = 0;
+          state.angle = 0;
+          state.angularVelocity = 0;
+          state.angularAcceleration = 0;
+          state.gravityTorque = 0;
+          state.muscleTorque = 0;
+          state.wallReactionTorque = 0;
+          state.wallContactLoad = 0;
+          state.balanceAngleCorrection = 0;
+          state.centerOfMassForwardOffset = 0;
+          state.centerOfMassLateralOffset = 0;
+          state.centerOfMassProjectionError = 0;
           return;
         }
 
         state.phaseTime += dt;
         state.elapsed += dt;
-        if (state.phase === 'rise' && state.phaseTime >= state.riseDuration) {
+        const angleError = state.maxAngle - state.angle;
+        if (
+          state.phase === 'rise'
+          && state.phaseTime >= state.riseDuration
+          && (Math.abs(angleError) < 0.08 || state.phaseTime >= state.riseDuration * 1.75)
+        ) {
           state.phase = 'hold';
           state.phaseTime = 0;
         } else if (state.phase === 'hold' && state.phaseTime >= state.holdDuration) {
@@ -3194,34 +4534,27 @@
           state.phaseTime = 0;
         }
 
-        const target = state.phase === 'settle' ? 0 : state.peakAmount;
-        const stiffness = state.phase === 'settle' ? 30.0 : 42.0;
-        const damping = state.phase === 'settle' ? 10.5 : 9.2;
-        this.rearVel += (
-          stiffness * (target - this.rearAmount) - damping * this.rearVel
-        ) * dt;
-        this.rearAmount = THREE.MathUtils.clamp(
-          this.rearAmount + this.rearVel * dt,
+        const effectiveLength = PROP.bodyLength * this.guiParams.bodyLength;
+        integrateRearAngularDynamics(
+          state,
+          dt,
+          this.mass,
+          effectiveLength
+        );
+        this.rearAmount = state.peakAmount * THREE.MathUtils.clamp(
+          state.angle / Math.max(state.maxAngle, 0.01),
           0,
           1
         );
+        this.rearVel = state.angularVelocity
+          / Math.max(state.maxAngle, 0.01) * state.peakAmount;
         this.velocity.multiplyScalar(Math.exp(-8.0 * dt));
-
-        if (state.mode === 'wall-supported') {
-          const desiredX = state.supportPoint.x - state.supportDirection.x * 2.15;
-          const desiredZ = state.supportPoint.y - state.supportDirection.y * 2.15;
-          const approach = 1.0 - Math.exp(
-            -8.0 * dt * (0.35 + this.rearAmount)
-          );
-          this.mesh.position.x = THREE.MathUtils.lerp(this.mesh.position.x, desiredX, approach);
-          this.mesh.position.z = THREE.MathUtils.lerp(this.mesh.position.z, desiredZ, approach);
-        }
 
         if (
           state.phase === 'settle'
           && state.phaseTime >= state.settleDuration
-          && this.rearAmount < 0.018
-          && Math.abs(this.rearVel) < 0.08
+          && state.angle < 0.018
+          && Math.abs(state.angularVelocity) < 0.08
         ) {
           const frequency = THREE.MathUtils.clamp(guiParams.rearingFrequency ?? 1, 0.25, 2);
           state.mode = 'none';
@@ -3232,78 +4565,200 @@
             + (7.5 + (this.timeOffset * 0.019) % 4.5) / frequency;
           this.rearAmount = 0;
           this.rearVel = 0;
+          state.angle = 0;
+          state.angularVelocity = 0;
+          state.angularAcceleration = 0;
+          state.baseAdvance = 0;
+          state.baseAdvanceVelocity = 0;
+          state.maximumBaseAdvance = 0;
+          state.hindStanceOffset = 0;
+          state.hindStanceVelocity = 0;
+          state.maximumHindStanceOffset = 0;
+          state.rearFeetPlanted = false;
+          state.rearSupportReleased = false;
+          for (const plant of this.footPlants.slice(0, 2)) {
+            plant.planted = false;
+            plant.exhausted = false;
+          }
           this.rearCooldown = (2.4 + (this.timeOffset * 0.011) % 1.8) / frequency;
         }
       }
 
       solveRearSupportConstraints() {
+        const state = this.rearing;
         this.maximumRearSupportError = 0;
-        if (this.rearing.mode !== 'wall-supported') return;
+        if (state.mode === 'none' || state.angle < 0.012) {
+          state.hindSupportError = 0;
+          state.wallSupportError = 0;
+          state.wallSupportNormalError = 0;
+          state.wallSupportVerticalError = 0;
+          state.centerOfMassProjectionError = 0;
+          return;
+        }
+        if (state.rearSupportReleased) {
+          state.hindSupportError = 0;
+          state.hindSupportHorizontalError = 0;
+          state.hindSupportVerticalError = 0;
+          state.wallSupportError = 0;
+          state.wallSupportNormalError = 0;
+          state.wallSupportVerticalError = 0;
+          state.wallContactLoad = 0;
+          return;
+        }
+        if (!state.rearFeetPlanted) this.captureRearFootAnchors();
 
-        const support = this.rearing.supportDirection;
+        const contactPosition = new THREE.Vector3();
+        let hindSupportError = 0;
+        let hindSupportHorizontalError = 0;
+        let hindSupportVerticalError = 0;
+        for (let index = 0; index < 2; index++) {
+          this.footPlants[index].contact.updateWorldMatrix(true, false);
+          this.footPlants[index].contact.getWorldPosition(contactPosition);
+          const anchor = state.hindAnchors[index];
+          hindSupportHorizontalError = Math.max(
+            hindSupportHorizontalError,
+            Math.hypot(contactPosition.x - anchor.x, contactPosition.z - anchor.z)
+          );
+          hindSupportVerticalError = Math.max(
+            hindSupportVerticalError,
+            Math.abs(contactPosition.y - anchor.y)
+          );
+          hindSupportError = Math.max(
+            hindSupportError,
+            contactPosition.distanceTo(anchor)
+          );
+        }
+        state.hindSupportError = hindSupportError;
+        state.hindSupportHorizontalError = hindSupportHorizontalError;
+        state.hindSupportVerticalError = hindSupportVerticalError;
+        this.maximumRearSupportError = hindSupportError;
+
+        const bodyCenter = new THREE.Vector3();
+        const headCenter = new THREE.Vector3();
+        this.bodyMesh.updateWorldMatrix(true, false);
+        this.head.updateWorldMatrix(true, false);
+        this.bodyMesh.getWorldPosition(bodyCenter);
+        this.head.getWorldPosition(headCenter);
+        const centerOfMass = bodyCenter.multiplyScalar(0.76)
+          .addScaledVector(headCenter, 0.24);
+        const supportCenter = state.hindAnchors[0].clone()
+          .add(state.hindAnchors[1])
+          .multiplyScalar(0.5);
+        const toCenterOfMass = centerOfMass.sub(supportCenter);
+        const forwardOffset = toCenterOfMass.x * this.heading.x
+          + toCenterOfMass.z * this.heading.y;
+        const lateralX = this.heading.y;
+        const lateralZ = -this.heading.x;
+        const lateralOffset = toCenterOfMass.x * lateralX
+          + toCenterOfMass.z * lateralZ;
+        const hindSpan = state.hindAnchors[0].distanceTo(state.hindAnchors[1]);
+        const lateralLimit = hindSpan * 0.5 + 0.16;
+        const forwardLimit = state.mode === 'wall-supported'
+          ? 3.8
+          : (forwardOffset >= 0 ? 0.68 : 1.10);
+        const forwardError = Math.max(0, Math.abs(forwardOffset) - forwardLimit);
+        const lateralError = Math.max(0, Math.abs(lateralOffset) - lateralLimit);
+        state.centerOfMassForwardOffset = forwardOffset;
+        state.centerOfMassLateralOffset = lateralOffset;
+        state.centerOfMassProjectionError = Math.hypot(forwardError, lateralError);
+
+        if (state.mode !== 'wall-supported') {
+          state.wallSupportError = 0;
+          state.wallSupportNormalError = 0;
+          state.wallSupportVerticalError = 0;
+          state.wallContactLoad = 0;
+          return;
+        }
+
+        const support = state.supportDirection;
         const poseAmount = THREE.MathUtils.clamp(
-          this.rearAmount / Math.max(this.rearing.peakAmount, 0.01),
+          state.angle / Math.max(state.maxAngle, 0.01),
           0,
           1
         );
-        // Forepaws only lock after the chest has rotated close enough for the
-        // connected limb chain to reach the wall without stretching.
-        if (poseAmount < 0.72) return;
-        const lateralX = support.y;
-        const lateralZ = -support.x;
-        const scratch = {
-          jointWorld: new THREE.Vector3(),
-          effectorWorld: new THREE.Vector3(),
-          toEffector: new THREE.Vector3(),
-          toTarget: new THREE.Vector3(),
-          axisWorld: new THREE.Vector3(),
-          cross: new THREE.Vector3(),
-        };
+        if (poseAmount < 0.58) {
+          state.wallSupportError = 1.0;
+          state.wallSupportNormalError = 1.0;
+          state.wallSupportVerticalError = 0;
+          state.wallContactLoad = 0;
+          for (const plant of this.footPlants.slice(2)) plant.planted = false;
+          return;
+        }
+        const wallLateralX = support.y;
+        const wallLateralZ = -support.x;
         const targets = [
           { plant: this.footPlants[2], side: 1 },
           { plant: this.footPlants[3], side: -1 },
         ];
+        const shoulderPosition = new THREE.Vector3();
+        const wallContactPosition = new THREE.Vector3();
+        let wallSupportError = 0;
+        let wallSupportNormalError = 0;
+        let wallSupportVerticalError = 0;
 
         for (const { plant, side } of targets) {
           const target = new THREE.Vector3(
-            this.rearing.supportPoint.x + lateralX * side * 0.25,
-            1.55 + poseAmount * 1.55,
-            this.rearing.supportPoint.y + lateralZ * side * 0.25
+            state.supportPoint.x + wallLateralX * side * 0.25,
+            0,
+            state.supportPoint.y + wallLateralZ * side * 0.25
           );
-          const baselines = plant.joints.map(joint => ({
-            x: joint.rotation.x,
-            z: joint.rotation.z,
-          }));
-          for (let iteration = 0; iteration < 7; iteration++) {
-            for (let index = 0; index < plant.joints.length; index++) {
-              this.rotateIkJointToward(
-                plant.joints[index],
-                'x',
-                plant.contact,
-                target,
-                baselines[index].x,
-                index === 0 ? 0.48 : (index === 1 ? 0.72 : 0.66),
-                scratch
-              );
-            }
-            const rootIndex = plant.joints.length - 1;
-            this.rotateIkJointToward(
-              plant.joints[rootIndex],
-              'z',
-              plant.contact,
-              target,
-              baselines[rootIndex].z,
-              0.30,
-              scratch
-            );
-          }
-          this.mesh.updateMatrixWorld(true);
-          plant.contact.getWorldPosition(scratch.effectorWorld);
-          this.maximumRearSupportError = Math.max(
-            this.maximumRearSupportError,
-            scratch.effectorWorld.distanceTo(target)
+          const shoulder = plant.joints[plant.joints.length - 1];
+          shoulder.updateWorldMatrix(true, false);
+          shoulder.getWorldPosition(shoulderPosition);
+          const horizontalReachSquared = Math.pow(target.x - shoulderPosition.x, 2)
+            + Math.pow(target.z - shoulderPosition.z, 2);
+          const usableReach = plant.maximumReach * 0.96;
+          const availableVerticalReach = Math.sqrt(Math.max(
+            0,
+            usableReach * usableReach - horizontalReachSquared
+          ));
+          target.y = Math.min(
+            1.30 + poseAmount * 1.82,
+            shoulderPosition.y + availableVerticalReach
           );
+          const result = this.solveIkConstraint(plant, plant.contact, target, {
+            iterations: 14,
+            jointXOffsets: [0.62, 0.82, 0.86],
+            jointXLimits: [[-0.35, 0.82], [-1.18, -0.58], [-1.20, 0.62]],
+            rootZOffset: 0.36,
+          });
+          plant.contact.updateWorldMatrix(true, false);
+          plant.contact.getWorldPosition(wallContactPosition);
+          const error = result.error;
+          wallSupportError = Math.max(wallSupportError, error);
+          wallSupportNormalError = Math.max(
+            wallSupportNormalError,
+            Math.abs(
+              (target.x - wallContactPosition.x) * support.x
+                + (target.z - wallContactPosition.z) * support.y
+            )
+          );
+          wallSupportVerticalError = Math.max(
+            wallSupportVerticalError,
+            Math.abs(target.y - wallContactPosition.y)
+          );
+          plant.anchor.copy(target);
+          plant.planted = error < 0.16;
+          plant.exhausted = false;
+          plant.slip = error;
+          plant.groundError = 0;
+          plant.reachRatio = shoulderPosition.distanceTo(target)
+            / plant.maximumReach;
+          plant.candidateSlip = error;
+          plant.candidateGroundError = Math.abs(
+            target.y - wallContactPosition.y
+          );
+          plant.rejectionReason = 'wall-support';
         }
+        state.wallSupportError = wallSupportError;
+        state.wallSupportNormalError = wallSupportNormalError;
+        state.wallSupportVerticalError = wallSupportVerticalError;
+        state.wallContactLoad = THREE.MathUtils.smoothstep(poseAmount, 0.62, 0.92)
+          * (1.0 - THREE.MathUtils.clamp(wallSupportError / 0.22, 0, 1));
+        this.maximumRearSupportError = Math.max(
+          this.maximumRearSupportError,
+          wallSupportError * state.wallContactLoad
+        );
       }
 
 
@@ -3323,14 +4778,15 @@
         }
         const behaviorPause = this.pauseTimer > 0;
         const rearingActive = this.rearing.mode !== 'none';
-        const isPausing = behaviorPause || rearingActive;
+        const groomingActive = this.grooming.mode !== 'none';
+        const isPausing = behaviorPause || rearingActive || groomingActive;
 
         // --- FORCE ACCUMULATION ---
         this.force.set(0, 0);
         let burst = Math.sin(t * 1.5 + this.burstPhase);
         burst = 0.7 + 0.3 * Math.max(0, burst);
         const driveStrength = burst * this.guiParams.wanderForce * (
-          rearingActive ? 0.05 : (isPausing ? 0.18 : 1.0)
+          rearingActive || groomingActive ? 0.04 : (isPausing ? 0.18 : 1.0)
         );
 
         // Thigmotaxis
@@ -3363,13 +4819,13 @@
         this.force.x += tX * driveStrength * (0.5 + nwF * 1.5);
         this.force.y += tZ * driveStrength * (0.5 + nwF * 1.5);
 
-        if (!guiParams.isPaused) {
+        if (!guiParams.isPaused && !groomingActive) {
           this.force.x += (Math.sin(t * 2.3) * 0.3 + (Math.random() - 0.5) * 0.2) * driveStrength * 0.3;
           this.force.y += (Math.cos(t * 1.7) * 0.3 + (Math.random() - 0.5) * 0.2) * driveStrength * 0.3;
         }
 
         // Anti-stuck
-        if (!guiParams.isPaused) {
+        if (!guiParams.isPaused && !rearingActive && !groomingActive) {
           const dxS = px - this.lastPos.x, dzS = pz - this.lastPos.y;
           this.stuckTimer += dt;
           if (this.stuckTimer > 1.0) {
@@ -3538,7 +4994,7 @@
           1.0
         );
         if (!guiParams.isPaused) {
-          this.updateRearingBehavior(time, dt, {
+          const behaviorContext = {
             hitWall,
             impactNorm,
             nearestWall: nearest,
@@ -3546,12 +5002,16 @@
             bodyMargin: baseBodyMargin,
             behaviorPause,
             speed: this.velocity.length(),
-          });
+          };
+          this.updateGroomingBehavior(time, dt, behaviorContext);
+          this.updateRearingBehavior(time, dt, behaviorContext);
         }
 
         // Heading
         const speed = this.velocity.length();
-        let isMoving = speed > 0.3 && this.rearing.mode === 'none';
+        let isMoving = speed > 0.3
+          && this.rearing.mode === 'none'
+          && this.grooming.mode === 'none';
         if (!guiParams.isPaused) {
           let targetYaw = this.yawAngle;
           if (this.rearing.mode === 'wall-supported') {
@@ -3593,6 +5053,15 @@
             stateText = this.rearing.phase === 'settle'
               ? "SETTLING // REARING"
               : "EXPLORATORY REARING";
+            stateColor = "#6e4d2f";
+          } else if (this.groomAmount > 0.08 && this.grooming.mode !== 'none') {
+            if (this.grooming.phase === 'settle') {
+              stateText = "SETTLING // GROOMING";
+            } else {
+              stateText = this.grooming.mode === 'face-wash'
+                ? "FACE GROOMING"
+                : "FLANK GROOMING";
+            }
             stateColor = "#6e4d2f";
           } else if (this.socialContact) {
             stateText = "SOCIAL SNIFFING";
@@ -3646,10 +5115,17 @@
           this.bodyDyn.roll += this.bodyDyn.rollV * dt;
 
           // Tail inertial follow-through.
-          const targetTailSway = THREE.MathUtils.clamp(-turnRate * 0.06 - lateralAccel * 0.01, -0.9, 0.9);
+          const groomingTailSway = this.grooming.mode === 'flank-groom'
+            ? this.grooming.side * this.groomAmount * 0.18
+            : 0;
+          const targetTailSway = THREE.MathUtils.clamp(
+            -turnRate * 0.06 - lateralAccel * 0.01 + groomingTailSway,
+            -0.9,
+            0.9
+          );
           const targetTailLift = THREE.MathUtils.clamp(
             -0.05 - forwardAccel * 0.004 + speedNorm * 0.03
-              + this.rearAmount * 0.10,
+              + this.rearAmount * 0.10 + this.groomAmount * 0.025,
             -0.18,
             0.15
           );
@@ -3672,6 +5148,9 @@
         this.rig.position.z = 0;
         this.rig.rotation.x = this.bodyDyn.pitch;
         this.rig.rotation.z = this.bodyDyn.roll;
+        this.neckMesh.position.copy(this.neckRestPosition);
+        this.neckMesh.rotation.copy(this.neckRestRotation);
+        this.headGroup.position.copy(this.headRestPosition);
 
         // Contact shadow follows mouse on ground
         this.contactShadow.position.set(0, -this.rig.position.y + 0.02, 0);
@@ -3695,10 +5174,14 @@
           if (this.hindR._paw) this.hindR._paw.rotation.x = -0.10 - Math.sin(legCycle + Math.PI - 0.3) * gaitAmp * 0.12;
 
           // Forelimb: shoulder drives, elbow/wrist follow
-          this.armL.rotation.x = -0.18 + Math.sin(legCycle + Math.PI) * gaitAmp * 0.46;
-          this.armR.rotation.x = -0.18 + Math.sin(legCycle) * gaitAmp * 0.46;
-          this.armL.rotation.z = -0.04;
-          this.armR.rotation.z = 0.04;
+          this.upperArmL.position.z = 0;
+          this.upperArmR.position.z = 0;
+          this.upperArmL.rotation.x = FORELIMB_NEUTRAL.shoulderX
+            + Math.sin(legCycle + Math.PI) * gaitAmp * 0.46;
+          this.upperArmR.rotation.x = FORELIMB_NEUTRAL.shoulderX
+            + Math.sin(legCycle) * gaitAmp * 0.46;
+          this.upperArmL.rotation.z = -0.04;
+          this.upperArmR.rotation.z = 0.04;
           // Elbow flex
           if (this.armL._forearm) this.armL._forearm.rotation.x = -0.62 + Math.max(0, Math.sin(legCycle + Math.PI + 0.4)) * gaitAmp * 0.28;
           if (this.armR._forearm) this.armR._forearm.rotation.x = -0.62 + Math.max(0, Math.sin(legCycle + 0.4)) * gaitAmp * 0.28;
@@ -3720,8 +5203,12 @@
 
           // Neutral planted stance with subtle weight-shift micro-motion
           const pawShift = Math.sin(time * 1.3 + this.timeOffset) * 0.008;
-          this.armL.rotation.x = -0.18; this.armR.rotation.x = -0.18;
-          this.armL.rotation.z = -0.04 + pawShift; this.armR.rotation.z = 0.04 - pawShift;
+          this.upperArmL.position.z = 0;
+          this.upperArmR.position.z = 0;
+          this.upperArmL.rotation.x = FORELIMB_NEUTRAL.shoulderX;
+          this.upperArmR.rotation.x = FORELIMB_NEUTRAL.shoulderX;
+          this.upperArmL.rotation.z = -0.04 + pawShift;
+          this.upperArmR.rotation.z = 0.04 - pawShift;
           if (this.armL._forearm) this.armL._forearm.rotation.x = -0.62;
           if (this.armR._forearm) this.armR._forearm.rotation.x = -0.62;
           if (this.armL._wrist) this.armL._wrist.rotation.x = -0.12;
@@ -3731,6 +5218,9 @@
         }
 
         const rear = this.rearAmount;
+        if (rear > 0 && !this.rearing.rearFeetPlanted) {
+          this.captureRearFootAnchors();
+        }
         if (rear > 0) {
           const supported = this.rearing.mode === 'wall-supported';
           const poseAmount = THREE.MathUtils.clamp(
@@ -3738,54 +5228,131 @@
             0,
             1
           );
-          const hover = Math.sin(
-            this.rearing.elapsed * 4.4 + this.timeOffset * 0.021
-          ) * poseAmount;
-          this.rig.position.y += poseAmount * (supported ? 1.30 : 1.25);
-          this.rig.position.z += poseAmount * (supported ? 0.18 : -0.08);
-          this.rig.rotation.x -= poseAmount * (supported ? 1.02 : 0.96);
+          const balanceResponse = THREE.MathUtils.clamp(
+            this.rearing.angularVelocity * 0.035
+              - this.rearing.centerOfMassLateralOffset * 0.025,
+            -0.065,
+            0.065
+          );
+          this.rig.rotation.x -= this.rearing.angle;
           this.rig.rotation.z += poseAmount * (
-            this.rearing.sideLean + (supported ? 0 : hover * 0.018)
+            this.rearing.sideLean + (supported ? 0 : balanceResponse * 0.35)
           );
 
-          const armTargetL = supported ? -0.52 : -1.24 + hover * 0.08;
-          const armTargetR = supported ? -0.52 : -1.18 - hover * 0.08;
-          const forearmTargetL = supported ? 0.12 : 0.94 - hover * 0.06;
-          const forearmTargetR = supported ? 0.12 : 0.88 + hover * 0.06;
-          const wristTarget = supported ? 0.22 : 0.54;
-          const pawTarget = supported ? 0.04 : 0.28;
-          this.armL.rotation.x = THREE.MathUtils.lerp(this.armL.rotation.x, armTargetL, poseAmount);
-          this.armR.rotation.x = THREE.MathUtils.lerp(this.armR.rotation.x, armTargetR, poseAmount);
-          this.armL.rotation.z = THREE.MathUtils.lerp(
-            this.armL.rotation.z,
-            supported ? -0.08 : -0.18,
-            poseAmount
-          );
-          this.armR.rotation.z = THREE.MathUtils.lerp(
-            this.armR.rotation.z,
-            supported ? 0.08 : 0.18,
-            poseAmount
-          );
-          if (this.armL._forearm) this.armL._forearm.rotation.x = THREE.MathUtils.lerp(this.armL._forearm.rotation.x, forearmTargetL, poseAmount);
-          if (this.armR._forearm) this.armR._forearm.rotation.x = THREE.MathUtils.lerp(this.armR._forearm.rotation.x, forearmTargetR, poseAmount);
-          if (this.armL._wrist) this.armL._wrist.rotation.x = THREE.MathUtils.lerp(this.armL._wrist.rotation.x, wristTarget, poseAmount);
-          if (this.armR._wrist) this.armR._wrist.rotation.x = THREE.MathUtils.lerp(this.armR._wrist.rotation.x, wristTarget, poseAmount);
-          if (this.armL._paw) this.armL._paw.rotation.x = THREE.MathUtils.lerp(this.armL._paw.rotation.x, pawTarget, poseAmount);
-          if (this.armR._paw) this.armR._paw.rotation.x = THREE.MathUtils.lerp(this.armR._paw.rotation.x, pawTarget, poseAmount);
+          const shoulderTargetL = supported ? -0.14 : -0.72 + balanceResponse;
+          const shoulderTargetR = supported ? -0.14 : -0.72 - balanceResponse;
+          const forearmTargetL = supported ? -0.58 : -1.20 + balanceResponse * 0.65;
+          const forearmTargetR = supported ? -0.58 : -1.20 - balanceResponse * 0.65;
+          const wristTarget = supported ? 0.22 : 0.36;
+          const pawTarget = supported ? 0.04 : 0.18;
+          this.blendForelimbPose(this.armL, {
+            shoulderProtraction: supported ? 0.08 : 0.04,
+            shoulderX: shoulderTargetL,
+            shoulderZ: supported ? -0.08 : -0.18,
+            elbowX: forearmTargetL,
+            wristX: wristTarget,
+            pawX: pawTarget,
+          }, poseAmount);
+          this.blendForelimbPose(this.armR, {
+            shoulderProtraction: supported ? 0.08 : 0.04,
+            shoulderX: shoulderTargetR,
+            shoulderZ: supported ? 0.08 : 0.18,
+            elbowX: forearmTargetR,
+            wristX: wristTarget,
+            pawX: pawTarget,
+          }, poseAmount);
 
-          this.hindL.rotation.x = THREE.MathUtils.lerp(this.hindL.rotation.x, 0.58, poseAmount);
-          this.hindR.rotation.x = THREE.MathUtils.lerp(this.hindR.rotation.x, 0.58, poseAmount);
-          this.shankL.rotation.x = THREE.MathUtils.lerp(this.shankL.rotation.x, 0.88, poseAmount);
-          this.shankR.rotation.x = THREE.MathUtils.lerp(this.shankR.rotation.x, 0.88, poseAmount);
-          if (this.hindL._ankle) this.hindL._ankle.rotation.x = THREE.MathUtils.lerp(this.hindL._ankle.rotation.x, -0.54, poseAmount);
-          if (this.hindR._ankle) this.hindR._ankle.rotation.x = THREE.MathUtils.lerp(this.hindR._ankle.rotation.x, -0.54, poseAmount);
+          this.hindL.rotation.x = THREE.MathUtils.lerp(this.hindL.rotation.x, 0.46, poseAmount);
+          this.hindR.rotation.x = THREE.MathUtils.lerp(this.hindR.rotation.x, 0.46, poseAmount);
+          this.shankL.rotation.x = THREE.MathUtils.lerp(this.shankL.rotation.x, 0.76, poseAmount);
+          this.shankR.rotation.x = THREE.MathUtils.lerp(this.shankR.rotation.x, 0.76, poseAmount);
+          if (this.hindL._ankle) this.hindL._ankle.rotation.x = THREE.MathUtils.lerp(this.hindL._ankle.rotation.x, -0.58, poseAmount);
+          if (this.hindR._ankle) this.hindR._ankle.rotation.x = THREE.MathUtils.lerp(this.hindR._ankle.rotation.x, -0.58, poseAmount);
           if (this.hindL._paw) this.hindL._paw.rotation.x = THREE.MathUtils.lerp(this.hindL._paw.rotation.x, -0.04, poseAmount);
           if (this.hindR._paw) this.hindR._paw.rotation.x = THREE.MathUtils.lerp(this.hindR._paw.rotation.x, -0.04, poseAmount);
+          this.contactShadow.position.set(0, -this.rig.position.y + 0.02, 0);
+        }
+        const groom = this.groomAmount;
+        const {
+          leftWashStroke,
+          rightWashStroke,
+          washStroke,
+          pawLead,
+          pawLick,
+          flankLick,
+          flankPulse,
+        } = this.getGroomingMotion();
+        if (groom > 0) {
+          const groomPose = THREE.MathUtils.clamp(
+            groom / Math.max(this.grooming.peakAmount, 0.01),
+            0,
+            1
+          );
+          const faceWash = this.grooming.mode === 'face-wash';
+
+          if (faceWash) {
+            this.rig.position.y += groomPose * (0.68 + pawLick * 0.04);
+            this.rig.position.z -= groomPose * 0.10;
+            this.rig.rotation.x -= groomPose * (0.56 + pawLick * 0.04);
+            this.rig.rotation.z += pawLead * groomPose * 0.040;
+
+            this.blendForelimbPose(this.armL, {
+              shoulderProtraction: 0.04 + leftWashStroke * 0.02,
+              shoulderX: -0.82 - leftWashStroke * 0.38 - pawLick * 0.04,
+              shoulderZ: -0.20 - leftWashStroke * 0.14,
+              elbowX: -0.66 - leftWashStroke * 0.31 - pawLick * 0.05,
+              wristX: 0.32 + leftWashStroke * 0.32,
+              pawX: 0.14 + leftWashStroke * 0.27,
+            }, groomPose);
+            this.blendForelimbPose(this.armR, {
+              shoulderProtraction: 0.04 + rightWashStroke * 0.02,
+              shoulderX: -0.82 - rightWashStroke * 0.38 - pawLick * 0.04,
+              shoulderZ: 0.20 + rightWashStroke * 0.14,
+              elbowX: -0.66 - rightWashStroke * 0.31 - pawLick * 0.05,
+              wristX: 0.32 + rightWashStroke * 0.32,
+              pawX: 0.14 + rightWashStroke * 0.27,
+            }, groomPose);
+          } else {
+            const side = this.grooming.side;
+            this.rig.position.y -= groomPose * 0.04;
+            this.rig.position.z -= groomPose * 0.08;
+            this.rig.rotation.x += groomPose * 0.07;
+            this.rig.rotation.z += side * groomPose * (0.10 + flankPulse * 0.020);
+
+            const sameSideShoulder = 0.02 - flankLick * 0.04;
+            const supportShoulder = 0.23 + flankLick * 0.015;
+            this.blendForelimbPose(this.armL, {
+              shoulderProtraction: 0.02,
+              shoulderX: side > 0 ? sameSideShoulder : supportShoulder,
+              shoulderZ: side > 0 ? -0.10 : -0.16,
+              elbowX: side > 0 ? -0.30 + flankLick * 0.05 : -0.58,
+              wristX: side > 0 ? -0.06 : -0.13,
+              pawX: side > 0 ? -0.08 : -0.12,
+            }, groomPose);
+            this.blendForelimbPose(this.armR, {
+              shoulderProtraction: 0.02,
+              shoulderX: side < 0 ? sameSideShoulder : supportShoulder,
+              shoulderZ: side < 0 ? 0.10 : 0.16,
+              elbowX: side < 0 ? -0.30 + flankLick * 0.05 : -0.58,
+              wristX: side < 0 ? -0.06 : -0.13,
+              pawX: side < 0 ? -0.08 : -0.12,
+            }, groomPose);
+          }
+
+          const hipTarget = faceWash ? 0.46 : 0.14;
+          const shankTarget = faceWash ? 0.82 : 0.62;
+          this.hindL.rotation.x = THREE.MathUtils.lerp(this.hindL.rotation.x, hipTarget, groomPose);
+          this.hindR.rotation.x = THREE.MathUtils.lerp(this.hindR.rotation.x, hipTarget, groomPose);
+          this.shankL.rotation.x = THREE.MathUtils.lerp(this.shankL.rotation.x, shankTarget, groomPose);
+          this.shankR.rotation.x = THREE.MathUtils.lerp(this.shankR.rotation.x, shankTarget, groomPose);
+          if (this.hindL._ankle) this.hindL._ankle.rotation.x = THREE.MathUtils.lerp(this.hindL._ankle.rotation.x, -0.48, groomPose);
+          if (this.hindR._ankle) this.hindR._ankle.rotation.x = THREE.MathUtils.lerp(this.hindR._ankle.rotation.x, -0.48, groomPose);
           this.contactShadow.position.set(0, -this.rig.position.y + 0.02, 0);
         }
         this.contactFrame.legCycle = legCycle;
         this.contactFrame.isMoving = isMoving;
         this.contactFrame.rear = rear;
+        this.contactFrame.groom = groom;
         this.contactFrame.lateralAccel = lateralAccel;
         this.contactFrame.turnRate = turnRate;
         this.contactFrame.forwardAccel = forwardAccel;
@@ -3868,6 +5435,71 @@
             ) * poseAmount * 0.07;
           }
         }
+        if (groom > 0) {
+          const groomPose = THREE.MathUtils.clamp(
+            groom / Math.max(this.grooming.peakAmount, 0.01),
+            0,
+            1
+          );
+          if (this.grooming.mode === 'face-wash') {
+            this.headGroup.position.y -= groomPose * (
+              0.05 + washStroke * 0.025 + pawLick * 0.015
+            );
+            this.headGroup.position.z -= groomPose * 0.04;
+            this.headGroup.rotation.x = THREE.MathUtils.lerp(
+              this.headGroup.rotation.x,
+              0.50 + washStroke * 0.13 + pawLick * 0.05,
+              groomPose
+            );
+            this.headGroup.rotation.y = THREE.MathUtils.lerp(
+              this.headGroup.rotation.y,
+              -pawLead * 0.13,
+              groomPose
+            );
+            this.headGroup.rotation.z = THREE.MathUtils.lerp(
+              this.headGroup.rotation.z,
+              pawLead * 0.055,
+              groomPose
+            );
+            this.snoutTip.position.y -= groomPose * (
+              washStroke * 0.017 + pawLick * 0.014
+            );
+          } else {
+            const side = this.grooming.side;
+            this.headGroup.position.x += side * groomPose * (0.08 + flankLick * 0.025);
+            this.headGroup.position.y -= groomPose * (0.02 + flankLick * 0.035);
+            this.headGroup.position.z -= groomPose * (0.12 + flankLick * 0.04);
+            this.headGroup.rotation.x = THREE.MathUtils.lerp(
+              this.headGroup.rotation.x,
+              0.15 + flankLick * 0.09,
+              groomPose
+            );
+            this.headGroup.rotation.y = THREE.MathUtils.lerp(
+              this.headGroup.rotation.y,
+              side * (1.30 + flankLick * 0.12),
+              groomPose
+            );
+            this.headGroup.rotation.z = THREE.MathUtils.lerp(
+              this.headGroup.rotation.z,
+              -side * (0.18 + flankLick * 0.035),
+              groomPose
+            );
+            this.snoutTip.position.y -= groomPose * (0.014 + flankLick * 0.026);
+          }
+        }
+
+        // The cervical mantle follows a fraction of head translation and
+        // rotation, preserving a continuous neck during sniffing and large
+        // rearing/grooming arcs without making the shoulders rotate as a unit.
+        const headOffsetX = this.headGroup.position.x - this.headRestPosition.x;
+        const headOffsetY = this.headGroup.position.y - this.headRestPosition.y;
+        const headOffsetZ = this.headGroup.position.z - this.headRestPosition.z;
+        this.neckMesh.position.x += headOffsetX * 0.48;
+        this.neckMesh.position.y += headOffsetY * 0.36;
+        this.neckMesh.position.z += headOffsetZ * 0.32;
+        this.neckMesh.rotation.x += this.headGroup.rotation.x * 0.24;
+        this.neckMesh.rotation.y += this.headGroup.rotation.y * 0.30;
+        this.neckMesh.rotation.z += this.headGroup.rotation.z * 0.26;
 
         // ═══ EAR MICRO-TWITCHES ═══
         if (this.earL && this.earR && this.earMicro.baseRotL) {
@@ -3895,6 +5527,23 @@
           this.earR.rotation.x = this.earMicro.baseRotR.x + this.earMicro.twitchAngleR * 0.5;
           this.earL.rotation.y = this.earMicro.baseRotL.y + earScan + this.earMicro.twitchAngleL * 0.25;
           this.earR.rotation.y = this.earMicro.baseRotR.y - earScan + this.earMicro.twitchAngleR * 0.25;
+          if (groom > 0) {
+            const groomPose = THREE.MathUtils.clamp(groom, 0, 1);
+            if (this.grooming.mode === 'face-wash') {
+              this.earL.rotation.x += groomPose * leftWashStroke * 0.075;
+              this.earR.rotation.x += groomPose * rightWashStroke * 0.075;
+              this.earL.rotation.z -= groomPose * leftWashStroke * 0.050;
+              this.earR.rotation.z += groomPose * rightWashStroke * 0.050;
+            } else {
+              const side = this.grooming.side;
+              this.earL.rotation.y += side > 0
+                ? groomPose * (0.07 + flankLick * 0.025)
+                : -groomPose * 0.03;
+              this.earR.rotation.y += side < 0
+                ? -groomPose * (0.07 + flankLick * 0.025)
+                : groomPose * 0.03;
+            }
+          }
         }
 
         // Subtle rodent blink/wince cycle. It briefly compresses the glossy eye
@@ -3936,7 +5585,16 @@
         this.bodyMesh.scale.x = this.guiParams.chonkiness + thoraxBreath * 0.35;
         this.bodyMesh.scale.y = this.guiParams.chonkiness + abdomenBreath * 0.3;
         this.bodyMesh.scale.z = this.guiParams.bodyLength + thoraxBreath;
-        this.head.scale.setScalar(this.guiParams.headSize);
+        this.neckMesh.scale.set(
+          this.guiParams.chonkiness + thoraxBreath * 0.18,
+          this.guiParams.chonkiness + thoraxBreath * 0.12,
+          1.0 + thoraxBreath * 0.10
+        );
+        this.head.scale.set(
+          this.guiParams.headSize * 0.92,
+          this.guiParams.headSize * 0.94,
+          this.guiParams.headSize * 1.03
+        );
         if (!isMoving || calmIdle) {
           this.snoutTip.scale.set(1.06, 0.76, this.guiParams.snoutLength * 0.72);
         }
@@ -4212,8 +5870,20 @@
       maxSpeed: 5.4, dragCoeff: 2.55, wanderForce: 5.8, wallAttraction: 1.8,
       enableRearing: true, rearingFrequency: 1.0,
       triggerRearing: () => {
-        const subject = mice.find(mouse => mouse.rearing.mode === 'none');
+        const subject = mice.find(mouse => (
+          mouse.rearing.mode === 'none' && mouse.grooming.mode === 'none'
+        ));
         if (subject) subject.startRearing('unsupported');
+      },
+      enableGrooming: true, groomingFrequency: 1.0, groomingMode: 'Face wash',
+      triggerGrooming: () => {
+        const subject = mice.find(mouse => (
+          mouse.rearing.mode === 'none' && mouse.grooming.mode === 'none'
+        ));
+        if (!subject) return;
+        subject.startGrooming(
+          guiParams.groomingMode === 'Flank groom' ? 'flank-groom' : 'face-wash'
+        );
       },
       // Quality
       qualityMode: 'Photo', furDetailLevel: 'Med',
@@ -4509,6 +6179,10 @@
     behaviorFolder.add(guiParams, 'enableRearing').name('Rearing');
     behaviorFolder.add(guiParams, 'rearingFrequency', 0.25, 2.0, 0.05).name('Rear Frequency');
     behaviorFolder.add(guiParams, 'triggerRearing').name('Rear Now');
+    behaviorFolder.add(guiParams, 'enableGrooming').name('Grooming');
+    behaviorFolder.add(guiParams, 'groomingFrequency', 0.25, 2.0, 0.05).name('Groom Frequency');
+    behaviorFolder.add(guiParams, 'groomingMode', ['Face wash', 'Flank groom']).name('Groom Type');
+    behaviorFolder.add(guiParams, 'triggerGrooming').name('Groom Now');
     gui.close();
 
     // ═══════════════════════════════════════════════════════════════
@@ -4578,6 +6252,27 @@
     gui.controllersRecursive().forEach(c => c.updateDisplay());
     spawnMouse({ position: [3.3, 2.6], heading: [-1.0, -0.12], speed: 0.85 });
 
+    if (IS_ANATOMY_QA) {
+      const anatomySubjectIndex = datasetQuery.get('anatomy_subject') === 'white' ? 1 : 0;
+      const subject = mice[anatomySubjectIndex];
+      const observer = mice[1 - anatomySubjectIndex];
+      subject.mesh.position.set(0, 0, 0);
+      subject.velocity.set(0, 0);
+      subject.heading.set(0, -1);
+      subject.yawAngle = Math.PI;
+      subject.prevHeadingAngle = Math.PI;
+      subject.pauseTimer = 999;
+      subject.groomCooldown = 999;
+      subject.rearCooldown = 999;
+      subject.tailMesh.visible = false;
+      subject.tailRoot.visible = false;
+      observer.mesh.visible = false;
+      observer.mesh.position.set(8.0, 0, 5.0);
+      observer.velocity.set(0, 0);
+      observer.pauseTimer = 999;
+      guiParams.isPaused = true;
+    }
+
     // Deterministic, hidden QA pose: one tail starts through the other subject
     // while the body envelopes remain separated. The post-contact solver must
     // route it around the obstacle without changing the normal scene defaults.
@@ -4631,7 +6326,9 @@
       if (REARING_QA === 'wall-supported' || REARING_QA === 'wall-transition') {
         observer.mesh.position.set(-8.0, 0, 4.5);
         const supportDirection = new THREE.Vector2(0, -1);
-        subject.mesh.position.set(0, 0, -ENCLOSURE_HALF_Z + 2.15);
+        // Begin with the nose at the boundary; rear-foot advance then carries
+        // the support base toward the wall as the body rotates upright.
+        subject.mesh.position.set(0, 0, -ENCLOSURE_HALF_Z + 4.10);
         subject.heading.copy(supportDirection);
         subject.yawAngle = Math.PI;
         subject.prevHeadingAngle = Math.PI;
@@ -4650,8 +6347,43 @@
       } else {
         subject.rearing.phase = 'hold';
         subject.rearing.phaseTime = 0;
+        subject.rearing.angle = subject.rearing.maxAngle;
+        subject.rearing.angularVelocity = 0;
         subject.rearAmount = subject.rearing.peakAmount;
         subject.rearVel = 0;
+        guiParams.isPaused = true;
+      }
+    }
+    if (
+      GROOMING_QA === 'face-wash'
+      || GROOMING_QA === 'flank-groom'
+      || GROOMING_QA === 'transition'
+    ) {
+      const subject = mice[0];
+      const observer = mice[1];
+      const groomingMode = GROOMING_QA === 'flank-groom'
+        ? 'flank-groom'
+        : 'face-wash';
+      subject.mesh.position.set(0, 0, 0.5);
+      subject.velocity.set(0, 0);
+      subject.heading.set(-0.58, 0.82).normalize();
+      subject.yawAngle = Math.atan2(subject.heading.x, subject.heading.y);
+      subject.prevHeadingAngle = subject.yawAngle;
+      subject.startGrooming(groomingMode, 999);
+      if (groomingMode === 'flank-groom') subject.grooming.side = 1;
+      observer.mesh.position.set(7.0, 0, -5.5);
+      observer.velocity.set(0, 0);
+      observer.pauseTimer = 5;
+      observer.groomCooldown = 999;
+      observer.rearCooldown = 999;
+      if (GROOMING_QA === 'transition') {
+        subject.grooming.activeDuration = 0.75;
+      } else {
+        subject.grooming.phase = 'active';
+        subject.grooming.phaseTime = 0;
+        subject.grooming.elapsed = groomingMode === 'face-wash' ? 0.17 : 0.23;
+        subject.groomAmount = subject.grooming.peakAmount;
+        subject.groomVel = 0;
         guiParams.isPaused = true;
       }
     }
@@ -4692,10 +6424,33 @@
         category_id: POSE_CATEGORY.id,
         track_id: mouse.trackId,
         subject_name: mouse.strainName,
-        behavior: mouse.rearing.mode === 'none' ? 'ground' : 'rearing',
+        behavior: mouse.rearing.mode !== 'none'
+          ? 'rearing'
+          : (mouse.grooming.mode !== 'none' ? 'grooming' : 'ground'),
         rearing_mode: mouse.rearing.mode,
         rearing_phase: mouse.rearing.phase,
         rearing_amount: Number(mouse.rearAmount.toFixed(4)),
+        rearing_angle_degrees: Number(
+          THREE.MathUtils.radToDeg(mouse.rearing.angle).toFixed(3)
+        ),
+        rearing_angular_velocity: Number(mouse.rearing.angularVelocity.toFixed(5)),
+        rearing_com_projection_error: Number(
+          mouse.rearing.centerOfMassProjectionError.toFixed(5)
+        ),
+        rearing_hind_support_error: Number(mouse.rearing.hindSupportError.toFixed(5)),
+        rearing_wall_support_error: Number(mouse.rearing.wallSupportError.toFixed(5)),
+        rearing_wall_contact_load: Number(mouse.rearing.wallContactLoad.toFixed(4)),
+        rearing_base_advance: Number(mouse.rearing.baseAdvance.toFixed(5)),
+        grooming_mode: mouse.grooming.mode,
+        grooming_phase: mouse.grooming.phase,
+        grooming_amount: Number(mouse.groomAmount.toFixed(4)),
+        grooming_paw_contact_error: Number(
+          mouse.groomingPawContactError.toFixed(5)
+        ),
+        grooming_support_error: Number(mouse.groomingSupportError.toFixed(5)),
+        forelimb_extension_ratio: Number(
+          mouse.maximumForelimbExtensionRatio.toFixed(5)
+        ),
         keypoints,
         num_keypoints: visiblePoints.length,
         bbox,
@@ -4713,6 +6468,8 @@
       const imageId = datasetCurrentFrameIndex + 1;
       const clearance = getMinimumMouseClearance(mice);
       const tailClearance = getMinimumTailClearance(mice);
+      const maximumTailSegmentLengthError = getMaximumTailSegmentLengthError(mice);
+      const maximumTailBendAngle = getMaximumTailBendAngle(mice);
       const maximumFootSlip = getMaximumFootSlip(mice);
       const maximumPawGroundError = getMaximumPawGroundError(mice);
       return {
@@ -4735,6 +6492,10 @@
             ? Number(tailClearance.toFixed(6))
             : null,
           tail_overlap: Number.isFinite(tailClearance) && tailClearance < -0.001,
+          maximum_tail_segment_length_error: Number(
+            maximumTailSegmentLengthError.toFixed(6)
+          ),
+          maximum_tail_bend_angle_degrees: Number(maximumTailBendAngle.toFixed(4)),
           maximum_foot_slip: Number(maximumFootSlip.toFixed(6)),
           maximum_paw_ground_error: Number(maximumPawGroundError.toFixed(6)),
         },
@@ -4749,9 +6510,38 @@
     window.addEventListener('resize', () => {
       camera.aspect = innerWidth / innerHeight;
       const portraitFit = THREE.MathUtils.clamp((0.90 - camera.aspect) / 0.45, 0, 1);
-      const cameraDistanceScale = 1.0 + portraitFit * 1.15;
-      camera.fov = THREE.MathUtils.lerp(34, 58, portraitFit);
-      if (REARING_QA === 'wall-supported' || REARING_QA === 'wall-transition') {
+      const cameraDistanceScale = 1.0 + portraitFit * 0.42;
+      camera.fov = THREE.MathUtils.lerp(34, 50, portraitFit);
+      if (ANATOMY_QA === 'torso-side') {
+        const anatomyTarget = new THREE.Vector3(0, 0.62, -0.35);
+        const anatomyCamera = new THREE.Vector3(9.20, 2.20, -0.35);
+        camera.fov = THREE.MathUtils.lerp(31, 50, portraitFit);
+        camera.up.set(0, 1, 0);
+        camera.position.copy(anatomyCamera).sub(anatomyTarget)
+          .multiplyScalar(1.0 + portraitFit * 0.55)
+          .add(anatomyTarget);
+        controls.target.copy(anatomyTarget);
+      } else if (ANATOMY_QA === 'torso-front') {
+        const anatomyTarget = new THREE.Vector3(0, 0.64, -1.45);
+        const anatomyCamera = new THREE.Vector3(0, 1.42, -10.60);
+        camera.fov = THREE.MathUtils.lerp(31, 48, portraitFit);
+        camera.up.set(0, 1, 0);
+        camera.position.copy(anatomyCamera).sub(anatomyTarget)
+          .multiplyScalar(1.0 + portraitFit * 0.48)
+          .add(anatomyTarget);
+        controls.target.copy(anatomyTarget);
+      } else if (ANATOMY_QA === 'ears' || ANATOMY_QA === 'ears-front') {
+        const anatomyTarget = new THREE.Vector3(0, 0.64, -2.60);
+        const anatomyCamera = ANATOMY_QA === 'ears-front'
+          ? new THREE.Vector3(0, 1.28, -9.10)
+          : new THREE.Vector3(5.00, 2.32, -7.85);
+        camera.fov = THREE.MathUtils.lerp(31, 46, portraitFit);
+        camera.up.set(0, 1, 0);
+        camera.position.copy(anatomyCamera).sub(anatomyTarget)
+          .multiplyScalar(1.0 + portraitFit * 0.42)
+          .add(anatomyTarget);
+        controls.target.copy(anatomyTarget);
+      } else if (REARING_QA === 'wall-supported' || REARING_QA === 'wall-transition') {
         camera.position.set(15.0, 6.2, 2.0);
         camera.up.set(0, 1, 0);
         controls.target.set(0, 2.4, -ENCLOSURE_HALF_Z + 2.15);
@@ -4778,13 +6568,17 @@
     let maximumObservedFootSlip = 0;
     let maximumObservedPawGroundError = 0;
     let maximumObservedRearSupportError = 0;
+    let maximumObservedRearSupportDetails = null;
     const observedRearingModes = new Set();
+    const observedGroomingModes = new Set();
     let datasetCurrentFrameIndex = 0;
     let datasetInitialized = false;
 
     function updateCollisionTelemetry() {
       const minimumSubjectClearance = getMinimumMouseClearance(mice);
       const minimumTailClearance = getMinimumTailClearance(mice);
+      const maximumTailSegmentLengthError = getMaximumTailSegmentLengthError(mice);
+      const maximumTailBendAngle = getMaximumTailBendAngle(mice);
       const maximumFootSlip = getMaximumFootSlip(mice);
       const maximumPawGroundError = getMaximumPawGroundError(mice);
       const maximumRearSupportError = Math.max(
@@ -4793,6 +6587,7 @@
       );
       for (const mouse of mice) {
         if (mouse.rearing.mode !== 'none') observedRearingModes.add(mouse.rearing.mode);
+        if (mouse.grooming.mode !== 'none') observedGroomingModes.add(mouse.grooming.mode);
       }
       if (Number.isFinite(minimumSubjectClearance)) {
         minimumObservedSubjectClearance = Math.min(
@@ -4823,10 +6618,31 @@
         maximumObservedPawGroundError,
         maximumPawGroundError
       );
-      maximumObservedRearSupportError = Math.max(
-        maximumObservedRearSupportError,
-        maximumRearSupportError
-      );
+      if (maximumRearSupportError > maximumObservedRearSupportError) {
+        const mostLoadedSupport = mice.reduce((current, mouse) => (
+          mouse.maximumRearSupportError > (current?.maximumRearSupportError ?? -1)
+            ? mouse
+            : current
+        ), null);
+        maximumObservedRearSupportDetails = mostLoadedSupport ? {
+          trackId: mostLoadedSupport.trackId,
+          mode: mostLoadedSupport.rearing.mode,
+          phase: mostLoadedSupport.rearing.phase,
+          angleDegrees: Number(
+            THREE.MathUtils.radToDeg(mostLoadedSupport.rearing.angle).toFixed(3)
+          ),
+          hindSupportError: Number(
+            mostLoadedSupport.rearing.hindSupportError.toFixed(5)
+          ),
+          wallSupportError: Number(
+            mostLoadedSupport.rearing.wallSupportError.toFixed(5)
+          ),
+          wallContactLoad: Number(
+            mostLoadedSupport.rearing.wallContactLoad.toFixed(4)
+          ),
+        } : null;
+        maximumObservedRearSupportError = maximumRearSupportError;
+      }
       canvas.dataset.minimumSubjectClearance = Number.isFinite(minimumSubjectClearance)
         ? minimumSubjectClearance.toFixed(4)
         : 'na';
@@ -4845,12 +6661,17 @@
         ? 'true'
         : 'false';
       canvas.dataset.minimumObservedTailDetails = JSON.stringify(minimumObservedTailDetails);
+      canvas.dataset.maximumTailSegmentLengthError = maximumTailSegmentLengthError.toFixed(4);
+      canvas.dataset.maximumTailBendAngle = maximumTailBendAngle.toFixed(2);
       canvas.dataset.maximumFootSlip = maximumFootSlip.toFixed(4);
       canvas.dataset.maximumObservedFootSlip = maximumObservedFootSlip.toFixed(4);
       canvas.dataset.maximumPawGroundError = maximumPawGroundError.toFixed(4);
       canvas.dataset.maximumObservedPawGroundError = maximumObservedPawGroundError.toFixed(4);
       canvas.dataset.maximumRearSupportError = maximumRearSupportError.toFixed(4);
       canvas.dataset.maximumObservedRearSupportError = maximumObservedRearSupportError.toFixed(4);
+      canvas.dataset.maximumObservedRearSupportDetails = JSON.stringify(
+        maximumObservedRearSupportDetails
+      );
       canvas.dataset.rearingActive = mice.some(mouse => mouse.rearing.mode !== 'none')
         ? 'true'
         : 'false';
@@ -4861,6 +6682,100 @@
         phase: mouse.rearing.phase,
         amount: Number(mouse.rearAmount.toFixed(4)),
       })));
+      canvas.dataset.rearingPhysicsBySubject = JSON.stringify(mice.map(mouse => ({
+        trackId: mouse.trackId,
+        angleDegrees: Number(THREE.MathUtils.radToDeg(mouse.rearing.angle).toFixed(3)),
+        angularVelocity: Number(mouse.rearing.angularVelocity.toFixed(4)),
+        angularAcceleration: Number(mouse.rearing.angularAcceleration.toFixed(4)),
+        centerOfMassForwardOffset: Number(
+          mouse.rearing.centerOfMassForwardOffset.toFixed(4)
+        ),
+        centerOfMassLateralOffset: Number(
+          mouse.rearing.centerOfMassLateralOffset.toFixed(4)
+        ),
+        centerOfMassProjectionError: Number(
+          mouse.rearing.centerOfMassProjectionError.toFixed(4)
+        ),
+        hindSupportError: Number(mouse.rearing.hindSupportError.toFixed(4)),
+        hindSupportHorizontalError: Number(
+          mouse.rearing.hindSupportHorizontalError.toFixed(4)
+        ),
+        hindSupportVerticalError: Number(
+          mouse.rearing.hindSupportVerticalError.toFixed(4)
+        ),
+        wallSupportError: Number(mouse.rearing.wallSupportError.toFixed(4)),
+        wallSupportNormalError: Number(
+          mouse.rearing.wallSupportNormalError.toFixed(4)
+        ),
+        wallSupportVerticalError: Number(
+          mouse.rearing.wallSupportVerticalError.toFixed(4)
+        ),
+        wallContactLoad: Number(mouse.rearing.wallContactLoad.toFixed(4)),
+        baseAdvance: Number(mouse.rearing.baseAdvance.toFixed(4)),
+        baseAdvanceVelocity: Number(mouse.rearing.baseAdvanceVelocity.toFixed(4)),
+        maximumBaseAdvance: Number(mouse.rearing.maximumBaseAdvance.toFixed(4)),
+        hindStanceOffset: Number(mouse.rearing.hindStanceOffset.toFixed(4)),
+        hindStanceVelocity: Number(mouse.rearing.hindStanceVelocity.toFixed(4)),
+        supportReleased: mouse.rearing.rearSupportReleased,
+        constraintDt: Number(mouse.rearing.lastConstraintDt.toFixed(5)),
+        positionX: Number(mouse.mesh.position.x.toFixed(4)),
+        positionZ: Number(mouse.mesh.position.z.toFixed(4)),
+        rigHeight: Number(mouse.rig.position.y.toFixed(4)),
+        gravityTorque: Number(mouse.rearing.gravityTorque.toFixed(5)),
+        muscleTorque: Number(mouse.rearing.muscleTorque.toFixed(5)),
+        wallReactionTorque: Number(mouse.rearing.wallReactionTorque.toFixed(5)),
+        forelimbExtensionRatio: Number(
+          mouse.maximumForelimbExtensionRatio.toFixed(4)
+        ),
+      })));
+      canvas.dataset.groomingActive = mice.some(mouse => mouse.grooming.mode !== 'none')
+        ? 'true'
+        : 'false';
+      canvas.dataset.observedGroomingModes = JSON.stringify([...observedGroomingModes]);
+      canvas.dataset.groomingBySubject = JSON.stringify(mice.map(mouse => ({
+        trackId: mouse.trackId,
+        mode: mouse.grooming.mode,
+        phase: mouse.grooming.phase,
+        amount: Number(mouse.groomAmount.toFixed(4)),
+        pawContactError: Number(mouse.groomingPawContactError.toFixed(4)),
+        supportError: Number(mouse.groomingSupportError.toFixed(4)),
+        reachDeficit: Number(mouse.groomingReachDeficit.toFixed(4)),
+        targetReachRatio: Number(mouse.groomingTargetReachRatio.toFixed(4)),
+      })));
+      canvas.dataset.forelimbKinematicsBySubject = JSON.stringify(mice.map(mouse => ({
+        trackId: mouse.trackId,
+        maximumExtensionRatio: Number(
+          mouse.maximumForelimbExtensionRatio.toFixed(4)
+        ),
+        leftReach: Number(mouse.armL._maximumReach.toFixed(4)),
+        rightReach: Number(mouse.armR._maximumReach.toFixed(4)),
+        humerusLength: Number(mouse.armL._segmentLengths.humerus.toFixed(4)),
+        radiusUlnaLength: Number(
+          mouse.armL._segmentLengths.radiusUlna.toFixed(4)
+        ),
+        forepaws: mouse.footPlants.slice(2).map(plant => ({
+          side: plant.side,
+          planted: plant.planted,
+          exhausted: plant.exhausted,
+          rejectionReason: plant.rejectionReason,
+          reachRatio: Number(plant.reachRatio.toFixed(4)),
+          candidateSlip: Number(plant.candidateSlip.toFixed(4)),
+          candidateGroundError: Number(plant.candidateGroundError.toFixed(4)),
+          extensionRatio: Number((plant.extensionRatio || 0).toFixed(4)),
+          pawReachRatio: Number((plant.pawReachRatio || 0).toFixed(4)),
+          constraintError: {
+            x: Number(plant.constraintError.x.toFixed(4)),
+            y: Number(plant.constraintError.y.toFixed(4)),
+            z: Number(plant.constraintError.z.toFixed(4)),
+          },
+          constraintTargetLocal: plant.constraintTargetLocal.toArray().map(
+            value => Number(value.toFixed(4))
+          ),
+          constraintContactLocal: plant.constraintContactLocal.toArray().map(
+            value => Number(value.toFixed(4))
+          ),
+        })),
+      })));
       canvas.dataset.tailClearanceBySubject = JSON.stringify(mice.map(mouse => ({
         trackId: mouse.trackId,
         clearance: Number.isFinite(mouse.minimumTailClearance)
@@ -4868,12 +6783,91 @@
           : null,
         pointIndex: mouse.minimumTailClearanceIndex,
       })));
+      canvas.dataset.tailContinuityBySubject = JSON.stringify(mice.map(mouse => ({
+        trackId: mouse.trackId,
+        segmentLengthError: Number(
+          (mouse.maximumTailSegmentLengthError || 0).toFixed(4)
+        ),
+        bendAngleDegrees: Number((mouse.maximumTailBendAngle || 0).toFixed(2)),
+      })));
       canvas.dataset.footContactBySubject = JSON.stringify(mice.map(mouse => ({
         trackId: mouse.trackId,
         slip: Number((mouse.maximumFootSlip || 0).toFixed(4)),
         groundError: Number((mouse.maximumPawGroundError || 0).toFixed(4)),
         plantedFeet: mouse.footPlants.filter(foot => foot.planted).length,
+        contacts: mouse.footPlants.map(foot => ({
+          side: foot.side,
+          fore: foot.isFore,
+          planted: foot.planted,
+          exhausted: foot.exhausted,
+          rejectionReason: foot.rejectionReason,
+          reachRatio: Number(foot.reachRatio.toFixed(4)),
+          candidateSlip: Number(foot.candidateSlip.toFixed(4)),
+          candidateGroundError: Number(foot.candidateGroundError.toFixed(4)),
+        })),
       })));
+      if (ANATOMY_QA) {
+        canvas.dataset.anatomyQa = ANATOMY_QA;
+        canvas.dataset.anatomySubject = datasetQuery.get('anatomy_subject') === 'white'
+          ? 'white'
+          : 'black';
+        canvas.dataset.torsoQa = IS_TORSO_ANATOMY_QA ? 'true' : 'false';
+        canvas.dataset.torsoProportions = JSON.stringify({
+          bodyLength: PROP.bodyLength,
+          bodyGirthX: PROP.bodyGirthX,
+          bodyGirthY: PROP.bodyGirthY,
+          neckLength: PROP.neckLength,
+          neckGirth: PROP.neckGirth,
+          headSize: PROP.headSize,
+          headScale: [0.92, 0.94, 1.03],
+          lengthToHeightRatio: Number(
+            (PROP.bodyLength / PROP.bodyGirthY).toFixed(4)
+          ),
+        });
+        canvas.dataset.headNeckBodyBySubject = JSON.stringify(mice.map(mouse => {
+          const bodyCenter = new THREE.Vector3();
+          const neckCenter = new THREE.Vector3();
+          const headPivot = new THREE.Vector3();
+          const headCenter = new THREE.Vector3();
+          mouse.bodyMesh.getWorldPosition(bodyCenter);
+          mouse.neckMesh.getWorldPosition(neckCenter);
+          mouse.headGroup.getWorldPosition(headPivot);
+          mouse.head.getWorldPosition(headCenter);
+          return {
+            trackId: mouse.trackId,
+            bodyToNeck: Number(bodyCenter.distanceTo(neckCenter).toFixed(4)),
+            neckToHeadPivot: Number(neckCenter.distanceTo(headPivot).toFixed(4)),
+            headPivotToCenter: Number(headPivot.distanceTo(headCenter).toFixed(4)),
+            headScale: mouse.head.scale.toArray().map(
+              value => Number(value.toFixed(4))
+            ),
+            neckRotation: [
+              mouse.neckMesh.rotation.x,
+              mouse.neckMesh.rotation.y,
+              mouse.neckMesh.rotation.z,
+            ].map(value => Number(value.toFixed(4))),
+          };
+        }));
+        canvas.dataset.earAttachmentBySubject = JSON.stringify(mice.map(mouse => {
+          const headCenter = new THREE.Vector3();
+          const leftRoot = new THREE.Vector3();
+          const rightRoot = new THREE.Vector3();
+          const leftPinna = new THREE.Vector3();
+          const rightPinna = new THREE.Vector3();
+          mouse.head.getWorldPosition(headCenter);
+          mouse.earL.getWorldPosition(leftRoot);
+          mouse.earR.getWorldPosition(rightRoot);
+          mouse.earL._pinna.getWorldPosition(leftPinna);
+          mouse.earR._pinna.getWorldPosition(rightPinna);
+          return {
+            trackId: mouse.trackId,
+            leftRootToHead: Number(leftRoot.distanceTo(headCenter).toFixed(4)),
+            rightRootToHead: Number(rightRoot.distanceTo(headCenter).toFixed(4)),
+            leftPinnaRise: Number(leftPinna.distanceTo(leftRoot).toFixed(4)),
+            rightPinnaRise: Number(rightPinna.distanceTo(rightRoot).toFixed(4)),
+          };
+        }));
+      }
     }
 
     function advanceDatasetFrame(targetFrame) {
@@ -4922,6 +6916,39 @@
       });
     }
 
+    const visualQaPixel = new Uint8Array(4);
+    function updateVisualQaPixelTelemetry() {
+      if (!CONTACT_QA && !REARING_QA && !GROOMING_QA && !ANATOMY_QA) return;
+      const gl = renderer.getContext();
+      const width = gl.drawingBufferWidth;
+      const height = gl.drawingBufferHeight;
+      if (width < 2 || height < 2) return;
+      const luminances = [];
+      for (let row = 1; row <= 5; row++) {
+        for (let column = 1; column <= 5; column++) {
+          const x = Math.min(width - 1, Math.floor(width * column / 6));
+          const y = Math.min(height - 1, Math.floor(height * row / 6));
+          gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, visualQaPixel);
+          luminances.push(
+            visualQaPixel[0] * 0.2126
+              + visualQaPixel[1] * 0.7152
+              + visualQaPixel[2] * 0.0722
+          );
+        }
+      }
+      const mean = luminances.reduce((total, value) => total + value, 0)
+        / luminances.length;
+      const variance = luminances.reduce(
+        (total, value) => total + Math.pow(value - mean, 2),
+        0
+      ) / luminances.length;
+      canvas.dataset.pixelLuminanceMean = mean.toFixed(2);
+      canvas.dataset.pixelLuminanceStd = Math.sqrt(variance).toFixed(2);
+      canvas.dataset.pixelLuminanceRange = (
+        Math.max(...luminances) - Math.min(...luminances)
+      ).toFixed(2);
+    }
+
     function animate() {
       if (!DATASET_CAPTURE) requestAnimationFrame(animate);
       if (!DATASET_CAPTURE) {
@@ -4936,6 +6963,7 @@
       controls.update();
       // Render via post-processing pipeline (passes through if disabled)
       postFX.render(scene, camera, accumulatedTime);
+      updateVisualQaPixelTelemetry();
       if (DATASET_CAPTURE) canvas.dataset.datasetReady = 'true';
       canvas.dataset.sceneReady = 'true';
     }
