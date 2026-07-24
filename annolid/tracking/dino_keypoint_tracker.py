@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image
-import math
 
 from annolid.data.videos import CV2Video
 from annolid.features import Dinov3Config, Dinov3FeatureExtractor
@@ -117,6 +117,15 @@ class PixelFlowEstimate:
 
 
 @dataclass(frozen=True)
+class FrameMotionEstimate:
+    """Current-frame point estimate and the observed displacement behind it."""
+
+    predicted_xy: Tuple[float, float]
+    flow_vec: Optional[Tuple[float, float]]
+    pixel_flow: Optional[PixelFlowEstimate]
+
+
+@dataclass(frozen=True)
 class PixelRefineOptions:
     enabled: bool
     weight: float
@@ -149,6 +158,15 @@ class PixelRefineOptions:
                 float(getattr(runtime_config, "pixel_refine_max_jump_px", 24.0)),
             ),
         )
+
+    def error_confidence(self, error: float) -> float:
+        """Map LK error to confidence; a zero limit disables error gating."""
+        error = float(error)
+        if not math.isfinite(error):
+            return 0.0
+        if self.max_error <= 0.0:
+            return 1.0
+        return float(np.clip(1.0 - (max(0.0, error) / self.max_error), 0.0, 1.0))
 
 
 @dataclass
@@ -609,34 +627,14 @@ class DinoKeypointTracker:
                 track.patch_rc = (prev_r, prev_c)
             base_x = float(patch_centers_x[prev_c])
             base_y = float(patch_centers_y[prev_r])
-            flow_dx = flow_dy = 0.0
-            flow_vec_tuple: Optional[Tuple[float, float]] = None
-            if flow is not None:
-                fy = int(round(base_y))
-                fx = int(round(base_x))
-                if 0 <= fy < flow.shape[0] and 0 <= fx < flow.shape[1]:
-                    flow_vec = flow[fy, fx]
-                    flow_dx, flow_dy = float(flow_vec[0]), float(flow_vec[1])
-                    flow_vec_tuple = (flow_dx, flow_dy)
-
-            pixel_flow = self._track_pixel_flow(
-                prev_gray,
-                frame_gray,
-                track.last_position,
+            motion = self._estimate_frame_motion(
+                track,
+                prev_gray=prev_gray,
+                frame_gray=frame_gray,
+                dense_flow=flow,
             )
-            pixel_flow_by_track[track.key] = pixel_flow
-            if pixel_flow is not None:
-                flow_dx = float(pixel_flow.xy[0] - track.last_position[0])
-                flow_dy = float(pixel_flow.xy[1] - track.last_position[1])
-                flow_vec_tuple = (flow_dx, flow_dy)
-
-            velocity_dx, velocity_dy = track.velocity
-            if pixel_flow is not None:
-                predicted_x = float(pixel_flow.xy[0] + velocity_dx)
-                predicted_y = float(pixel_flow.xy[1] + velocity_dy)
-            else:
-                predicted_x = base_x + flow_dx + velocity_dx
-                predicted_y = base_y + flow_dy + velocity_dy
+            pixel_flow_by_track[track.key] = motion.pixel_flow
+            predicted_x, predicted_y = motion.predicted_xy
             predicted_r, predicted_c = self._pixel_to_patch(
                 predicted_x,
                 predicted_y,
@@ -650,7 +648,7 @@ class DinoKeypointTracker:
                 base_xy=(base_x, base_y),
                 predicted_xy=(predicted_x, predicted_y),
                 predicted_rc=(predicted_r, predicted_c),
-                flow_vec=flow_vec_tuple,
+                flow_vec=motion.flow_vec,
                 scale_x=scale_x,
                 scale_y=scale_y,
             )
@@ -1066,10 +1064,7 @@ class DinoKeypointTracker:
                         track, matching_feats, normalized_feats=matching_feats
                     )
                     self._update_support_probe_mask_flags(track, patch_mask)
-                    if pixel_refine_confidence > 0.0:
-                        velocity_base_x, velocity_base_y = track.last_position
-                    else:
-                        velocity_base_x, velocity_base_y = base_x, base_y
+                    velocity_base_x, velocity_base_y = track.last_position
                     delta_x = x - velocity_base_x
                     delta_y = y - velocity_base_y
                     track.velocity = (
@@ -1430,6 +1425,59 @@ class DinoKeypointTracker:
         penalty = min(1.0, (dist - float(tolerance)) / radius)
         return -weight * best_sim * penalty
 
+    def _estimate_frame_motion(
+        self,
+        track: KeypointTrack,
+        *,
+        prev_gray: Optional[np.ndarray],
+        frame_gray: np.ndarray,
+        dense_flow: Optional[np.ndarray],
+    ) -> FrameMotionEstimate:
+        """Estimate the current point without counting the same motion twice.
+
+        A valid per-point LK estimate is already a current-frame position. When
+        LK is unavailable, dense flow is sampled at the last emitted point and
+        applied once. Stored velocity is a fallback for frames without a valid
+        flow observation, rather than an additional displacement.
+        """
+        last_x, last_y = (float(value) for value in track.last_position)
+        pixel_flow = self._track_pixel_flow(
+            prev_gray,
+            frame_gray,
+            (last_x, last_y),
+        )
+        if pixel_flow is not None:
+            flow_vec = (
+                float(pixel_flow.xy[0] - last_x),
+                float(pixel_flow.xy[1] - last_y),
+            )
+            return FrameMotionEstimate(
+                predicted_xy=(float(pixel_flow.xy[0]), float(pixel_flow.xy[1])),
+                flow_vec=flow_vec,
+                pixel_flow=pixel_flow,
+            )
+
+        if dense_flow is not None and dense_flow.ndim >= 3 and dense_flow.shape[2] >= 2:
+            height, width = dense_flow.shape[:2]
+            sample_x = math.floor(last_x)
+            sample_y = math.floor(last_y)
+            if 0 <= sample_x < width and 0 <= sample_y < height:
+                flow_dx = float(dense_flow[sample_y, sample_x, 0])
+                flow_dy = float(dense_flow[sample_y, sample_x, 1])
+                if math.isfinite(flow_dx) and math.isfinite(flow_dy):
+                    return FrameMotionEstimate(
+                        predicted_xy=(last_x + flow_dx, last_y + flow_dy),
+                        flow_vec=(flow_dx, flow_dy),
+                        pixel_flow=None,
+                    )
+
+        velocity_dx, velocity_dy = (float(value) for value in track.velocity)
+        return FrameMotionEstimate(
+            predicted_xy=(last_x + velocity_dx, last_y + velocity_dy),
+            flow_vec=None,
+            pixel_flow=None,
+        )
+
     def _track_pixel_flow(
         self,
         prev_gray: Optional[np.ndarray],
@@ -1479,6 +1527,8 @@ class DinoKeypointTracker:
         error = 0.0
         if err is not None:
             error = float(err.reshape(-1)[0])
+            if not math.isfinite(error):
+                return None
             if options.max_error > 0.0 and error > options.max_error:
                 return None
         return PixelFlowEstimate(xy=(nx, ny), error=error)
@@ -1504,9 +1554,7 @@ class DinoKeypointTracker:
             return dino_x, dino_y, 0.0
 
         similarity_conf = float(np.clip((float(similarity) + 1.0) * 0.5, 0.0, 1.0))
-        error = max(0.0, float(flow_estimate.error))
-        max_error = max(1e-6, float(options.max_error))
-        error_conf = float(np.clip(1.0 - (error / max_error), 0.0, 1.0))
+        error_conf = options.error_confidence(flow_estimate.error)
         confidence = max(0.0, min(1.0, 0.5 * (similarity_conf + error_conf)))
         alpha = weight * confidence
         refined_x = (1.0 - alpha) * dino_x + alpha * flow_x

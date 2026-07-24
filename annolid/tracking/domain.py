@@ -50,6 +50,7 @@ class KeypointState:
     velocity_y: float = 0.0
     misses: int = 0
     quality: float = 1.0
+    storage_label_override: Optional[str] = None
 
     def to_tracker_payload(self) -> KeypointPayload:
         """Convert to the payload expected by the Dino tracker."""
@@ -65,6 +66,8 @@ class KeypointState:
     @property
     def storage_label(self) -> str:
         """Stable label used for JSON serialization to avoid collisions."""
+        if self.storage_label_override:
+            return str(self.storage_label_override)
         return combine_labels(self.instance_label, self.label)
 
     def update(

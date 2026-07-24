@@ -22,6 +22,8 @@ from annolid.tracking.domain import (
 from annolid.tracking.dino_keypoint_tracker import (
     DinoKeypointTracker,
     DinoKeypointVideoProcessor,
+    KeypointTrack,
+    PixelFlowEstimate,
     PixelRefineOptions,
     RefineRegion,
     SupportProbe,
@@ -108,6 +110,72 @@ def test_pixel_refine_options_normalize_runtime_values() -> None:
     assert options.window == 11
     assert options.max_error == 0.0
     assert options.max_jump_px == 0.0
+    assert options.error_confidence(1000.0) == 1.0
+
+
+def test_frame_motion_uses_lk_position_without_adding_velocity(monkeypatch) -> None:
+    tracker = object.__new__(DinoKeypointTracker)
+    track = KeypointTrack(
+        key="animalnose",
+        storage_label="animalnose",
+        instance_label="animal",
+        display_label="nose",
+        patch_rc=(1, 1),
+        descriptor=torch.ones(1),
+        reference_descriptor=torch.ones(1),
+        velocity=(4.0, -2.0),
+        last_position=(10.0, 10.0),
+    )
+    lk_estimate = PixelFlowEstimate(xy=(13.0, 9.0), error=1.0)
+    monkeypatch.setattr(
+        tracker,
+        "_track_pixel_flow",
+        lambda *_args, **_kwargs: lk_estimate,
+    )
+
+    motion = tracker._estimate_frame_motion(
+        track,
+        prev_gray=np.zeros((24, 24), dtype=np.uint8),
+        frame_gray=np.zeros((24, 24), dtype=np.uint8),
+        dense_flow=None,
+    )
+
+    assert motion.predicted_xy == pytest.approx((13.0, 9.0))
+    assert motion.flow_vec == pytest.approx((3.0, -1.0))
+    assert motion.pixel_flow is lk_estimate
+
+
+def test_frame_motion_samples_dense_flow_at_last_emitted_point(monkeypatch) -> None:
+    tracker = object.__new__(DinoKeypointTracker)
+    track = KeypointTrack(
+        key="animalnose",
+        storage_label="animalnose",
+        instance_label="animal",
+        display_label="nose",
+        patch_rc=(2, 2),
+        descriptor=torch.ones(1),
+        reference_descriptor=torch.ones(1),
+        velocity=(8.0, 8.0),
+        last_position=(12.0, 10.0),
+    )
+    monkeypatch.setattr(
+        tracker,
+        "_track_pixel_flow",
+        lambda *_args, **_kwargs: None,
+    )
+    dense_flow = np.zeros((24, 24, 2), dtype=np.float32)
+    dense_flow[10, 12] = (2.5, -1.5)
+
+    motion = tracker._estimate_frame_motion(
+        track,
+        prev_gray=np.zeros((24, 24), dtype=np.uint8),
+        frame_gray=np.zeros((24, 24), dtype=np.uint8),
+        dense_flow=dense_flow,
+    )
+
+    assert motion.predicted_xy == pytest.approx((14.5, 8.5))
+    assert motion.flow_vec == pytest.approx((2.5, -1.5))
+    assert motion.pixel_flow is None
 
 
 def test_annotation_adapter_roundtrip_preserves_keypoints_and_masks(tmp_path):
@@ -164,6 +232,119 @@ def test_annotation_adapter_roundtrip_preserves_keypoints_and_masks(tmp_path):
     assert produced_shapes == expected_shapes
 
     assert produced_shapes[0]["instance_label"] == produced_shapes[1]["instance_label"]
+
+
+def test_annotation_adapter_associates_plain_points_with_containing_polygon(
+    tmp_path,
+):
+    source_dir = tmp_path / "mouse"
+    source_dir.mkdir()
+    json_path = source_dir / "mouse_000000000.json"
+    json_path.write_text(
+        json.dumps(
+            {
+                "shapes": [
+                    {
+                        "label": "mouse",
+                        "shape_type": "polygon",
+                        "group_id": 0,
+                        "points": [[20, 20], [60, 20], [60, 60], [20, 60]],
+                    },
+                    {
+                        "label": "teaball",
+                        "shape_type": "polygon",
+                        "group_id": 1,
+                        "points": [[80, 70], [100, 70], [100, 90], [80, 90]],
+                    },
+                    {
+                        "label": "ear",
+                        "shape_type": "point",
+                        "points": [[50, 50]],
+                    },
+                    {
+                        "label": "tailbase",
+                        "shape_type": "point",
+                        "points": [[25, 25]],
+                    },
+                    {
+                        "label": "unassigned",
+                        "shape_type": "point",
+                        "points": [[5, 5]],
+                    },
+                    {
+                        "label": "grouped_marker",
+                        "shape_type": "point",
+                        "group_id": 1,
+                        "points": [[5, 5]],
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    adapter = AnnotationAdapter(image_height=100, image_width=120)
+    registry = adapter.read_annotation(json_path)
+
+    assert set(registry.instances) == {"mouse", "teaball", "unassigned"}
+    mouse_keypoints = registry.instances["mouse"].keypoints
+    assert set(mouse_keypoints) == {"mouseear", "mousetailbase"}
+    assert mouse_keypoints["mouseear"].storage_label == "ear"
+    assert mouse_keypoints["mousetailbase"].storage_label == "tailbase"
+    assert "teaballgrouped_marker" in registry.instances["teaball"].keypoints
+
+    output_path = adapter.write_annotation(
+        frame_number=1,
+        registry=registry,
+        output_dir=source_dir,
+    )
+    output = json.loads(output_path.read_text(encoding="utf-8"))
+    point_shapes = {
+        shape["label"]: shape
+        for shape in output["shapes"]
+        if shape["shape_type"] == "point"
+    }
+    assert point_shapes["ear"]["instance_label"] == "mouse"
+    assert point_shapes["ear"]["display_label"] == "ear"
+    assert point_shapes["tailbase"]["instance_label"] == "mouse"
+
+    roundtrip = adapter.read_annotation(output_path)
+    assert roundtrip.instances["mouse"].keypoints["mouseear"].storage_label == "ear"
+
+
+def test_annotation_adapter_explicit_instance_wins_over_polygon_inference(tmp_path):
+    json_path = tmp_path / "seed.json"
+    json_path.write_text(
+        json.dumps(
+            {
+                "shapes": [
+                    {
+                        "label": "mouse",
+                        "shape_type": "polygon",
+                        "points": [[10, 10], [40, 10], [40, 40], [10, 40]],
+                    },
+                    {
+                        "label": "ear",
+                        "shape_type": "point",
+                        "points": [[20, 20]],
+                        "flags": {
+                            "instance_label": "explicit_animal",
+                            "display_label": "ear",
+                        },
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    registry = AnnotationAdapter(image_height=50, image_width=50).read_annotation(
+        json_path
+    )
+
+    assert "explicit_animal" in registry.instances
+    assert "explicit_animalear" in registry.instances["explicit_animal"].keypoints
+    assert not registry.instances["mouse"].keypoints
 
 
 def test_annotation_adapter_uses_latest_manual_frame(tmp_path):

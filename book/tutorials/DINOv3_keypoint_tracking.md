@@ -23,6 +23,7 @@ Tip: If the DINOv3 checkpoint is gated, accept the model license on Hugging Face
 Notes on keypoint naming:
 - To enable symmetry constraints (prevent left/right swaps), set `symmetry_pairs` in `CutieDinoTrackerConfig`, e.g. `symmetry_pairs=(("leftear","rightear"),)`.
 - Annolid stores instance/keypoint association in the shape list; adding points while your instance is selected ensures correct linkage.
+- For legacy plain points without instance metadata, Annolid uses the single polygon containing the point. Explicit instance metadata takes priority; overlapping or out-of-polygon points require an explicit association.
 
 ## 2. Choose and cache the DINO-family feature backbone
 Open **Tools → Advanced Parameters → Tracker → DINO feature model** and pick a model. Recommended starting point: **DINOv3 ViT-S/16 (gated, recommended)**. You can also paste a Hugging Face model id into this editable field.
@@ -65,7 +66,7 @@ The patch similarity and PCA map tools still have their own model setting under 
 2. Press Pred button. Annolid will:
    - Load the selected DINO-family model and extract dense patch features for each frame.
    - Use your labeled points as anchors and follow them with feature similarity, motion priors, and stateful track memory.
-   - Use dense Farneback flow plus per-point pyramidal Lucas-Kanade flow to guide local search and sub-patch refinement.
+   - Use valid per-point pyramidal Lucas-Kanade flow as the current-frame motion estimate, otherwise use dense Farneback flow at the last point, and fall back to recent velocity when flow is unavailable.
    - Optionally constrain search to the instance mask (from your polygon, or propagated by Cutie if enabled).
 3. Tracking runs from the current frame to the end of the video. Progress appears in the status bar.
 
@@ -84,7 +85,7 @@ Open Tools → Advanced Parameters to fine‑tune tracking:
 - DINOv3 backward consistency: prefer candidates whose nearest match in the previous frame maps back to the prior keypoint patch.
 - Coherent peak refinement: refine a keypoint using the connected local similarity peak around the selected seed, rather than unrelated nearby peaks.
 - Keypoint refine radius/sigma/temperature: track a small patch neighborhood around each keypoint and report the Gaussian‑weighted centroid (sub‑patch smoothing).
-- Pixel refinement weight/window/error/jump: blend the DINO-selected point with a valid Lucas-Kanade estimate to recover motion inside one ViT patch.
+- Pixel refinement: the tracker presets configure the Lucas-Kanade blend used to recover motion inside one ViT patch; programmatic callers can tune the `pixel_refine_*` runtime fields.
 - Appearance bundle, context, support probes, and structural consistency: add local state that helps distinguish similar landmarks and recover after short misses.
 
 Defaults work well on most videos; increase Search tighten and reduce Max radius for tighter, slower motion; do the opposite for fast motion.

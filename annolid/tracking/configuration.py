@@ -281,12 +281,16 @@ class CutieDinoTrackerConfig:
         return cfg
 
     def normalize(self) -> None:
-        self.__post_init__()
+        """Normalize current values without reapplying the selected preset."""
+        self._normalize_values()
 
     def __post_init__(self) -> None:
         if self.tracker_preset:
             self._apply_preset_defaults(str(self.tracker_preset))
 
+        self._normalize_values()
+
+    def _normalize_values(self) -> None:
         set_dino_model_on_runtime(self, resolve_dino_model_from_runtime(self))
 
         if self.mask_enforce_snap_radius is None:

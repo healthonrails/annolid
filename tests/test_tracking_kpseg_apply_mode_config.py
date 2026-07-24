@@ -14,6 +14,22 @@ def test_fly_keypoint_preset_enables_pixel_refinement():
     assert cfg.keypoint_cluster_refine is True
 
 
+def test_preset_explicit_overrides_survive_normalization():
+    cfg = CutieDinoTrackerConfig.from_preset(
+        "fly_70fps_keypoints",
+        pixel_refine_weight=0.85,
+        motion_search_max_radius=12.0,
+    )
+
+    assert cfg.pixel_refine_weight == 0.85
+    assert cfg.motion_search_max_radius == 12.0
+
+    cfg.normalize()
+
+    assert cfg.pixel_refine_weight == 0.85
+    assert cfg.motion_search_max_radius == 12.0
+
+
 def test_insid3_dinov3_methods_default_to_enabled():
     cfg = CutieDinoTrackerConfig()
 

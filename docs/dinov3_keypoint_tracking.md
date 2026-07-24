@@ -39,6 +39,8 @@ The tracker starts from saved LabelMe-compatible Annolid annotations:
 - `point` shapes become named keypoints to track;
 - `polygon` or mask shapes are optional but recommended because they constrain
   ambiguous points to the instance;
+- a plain point without instance metadata is associated with the single polygon
+  that contains it, while explicit `instance_label` metadata always wins;
 - later manually corrected frames can be used as new seed frames when you rerun
   tracking.
 
@@ -47,7 +49,8 @@ no instance context. Annolid preserves `instance_label` and `display_label`
 metadata when those flags are present, and uses them to keep output labels
 reviewable. In scripted LabelMe JSON, set those flags explicitly for each point;
 in the GUI, check the saved frame before a long run to confirm the point belongs
-to the intended animal.
+to the intended animal. Points inside overlapping polygons, or outside every
+polygon, remain unassociated unless their instance metadata is explicit.
 
 Keep display labels stable across frames and animals. Labels such as `nose`,
 `leftear`, `rightear`, `tail_base`, `fore_top`, or `abdomen_bot` should mean the
@@ -73,8 +76,9 @@ frame, Annolid:
 
 1. extracts the current DINO feature grid;
 2. optionally debiases coordinate-correlated DINO responses;
-3. estimates motion using previous velocity, dense Farneback flow, and
-   per-point pyramidal Lucas-Kanade flow;
+3. estimates the current point from valid per-point pyramidal Lucas-Kanade
+   flow, otherwise uses dense Farneback flow at the last emitted point, and
+   falls back to previous velocity when neither flow observation is valid;
 4. searches a bounded candidate region around the motion prior;
 5. scores candidates with DINO similarity, appearance/context/support evidence,
    mask or structure priors, backward consistency, and a motion penalty;
@@ -195,8 +199,9 @@ Key settings:
   previous feature location.
 - **Coherent peak refinement**: refines around the connected similarity peak
   instead of unrelated nearby peaks.
-- **Pixel refinement** settings: control Lucas-Kanade sub-patch correction,
-  including blend weight, window size, error threshold, and max jump.
+- **Pixel refinement**: the tracker presets configure Lucas-Kanade sub-patch
+  correction; programmatic callers can tune its blend weight, window size,
+  error threshold, and max jump through the `pixel_refine_*` runtime fields.
 
 ## Outputs And Review Contract
 

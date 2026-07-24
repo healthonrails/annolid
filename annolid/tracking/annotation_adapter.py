@@ -17,11 +17,12 @@ from annolid.tracking.domain import (
     InstanceRegistry,
     KeypointState,
 )
+from annolid.utils.annotation_store import load_labelme_json
 from annolid.utils.files import (
     find_manual_seed_json_files,
     get_frame_number_from_json,
 )
-from annolid.utils.annotation_store import load_labelme_json
+from annolid.utils.logger import logger
 
 
 DEFAULT_KEYPOINT_LABEL = "centroid"
@@ -66,43 +67,82 @@ class AnnotationAdapter:
         payload = load_labelme_json(json_path)
         shapes: Sequence[Dict[str, object]] = payload.get("shapes", [])  # type: ignore[assignment]
         registry = InstanceRegistry()
+
+        polygon_masks: List[Tuple[str, np.ndarray]] = []
+        group_instances: Dict[str, Optional[str]] = {}
         for shape in shapes:
             label = str(shape.get("label", "")).strip()
             shape_type = str(shape.get("shape_type", "")).strip() or "point"
+            if shape_type != "polygon":
+                continue
+            instance_label = self._parse_mask_label(label, shape)
+            if not instance_label:
+                continue
+            polygon_points = [
+                (float(pt[0]), float(pt[1])) for pt in shape.get("points", [])
+            ]
+            if not polygon_points:
+                continue
+            polygon = self._sanitize_polygon(polygon_points)
+            registry.ensure_instance(instance_label).set_mask(
+                bitmap=None,
+                polygon=polygon,
+            )
+            polygon_masks.append(
+                (instance_label, self.mask_bitmap_from_polygon(polygon))
+            )
+            group_key = self._group_id_key(shape)
+            if group_key is not None:
+                if group_key not in group_instances:
+                    group_instances[group_key] = instance_label
+                elif group_instances[group_key] != instance_label:
+                    group_instances[group_key] = None
 
-            if shape_type == "point":
-                instance_label, keypoint_label = self._split_keypoint_label(
-                    label, shape
+        for shape in shapes:
+            label = str(shape.get("label", "")).strip()
+            shape_type = str(shape.get("shape_type", "")).strip() or "point"
+            if shape_type != "point":
+                continue
+            point = (shape.get("points") or [[None, None]])[0]
+            if point[0] is None or point[1] is None:
+                continue
+            x, y = float(point[0]), float(point[1])
+
+            instance_label, keypoint_label = self._split_keypoint_label(label, shape)
+            if not self._has_explicit_keypoint_instance(label, shape):
+                group_key = self._group_id_key(shape)
+                inferred_instance = (
+                    group_instances.get(group_key) if group_key is not None else None
                 )
-                point = (shape.get("points") or [[None, None]])[0]
-                if point[0] is None or point[1] is None:
-                    continue
+                if inferred_instance is None:
+                    inferred_instance = self._instance_containing_point(
+                        x,
+                        y,
+                        polygon_masks,
+                    )
+                if inferred_instance:
+                    instance_label = inferred_instance
+                elif polygon_masks:
+                    logger.warning(
+                        "Keypoint '%s' in %s is not associated with a unique "
+                        "polygon; tracking it without mask constraints. Add "
+                        "instance_label metadata or a matching group_id.",
+                        label or keypoint_label,
+                        json_path,
+                    )
 
-                key = self._build_key(instance_label, keypoint_label)
-                keypoint_state = KeypointState(
+            key = self._build_key(instance_label, keypoint_label)
+            registry.register_keypoint(
+                KeypointState(
                     key=key,
                     instance_label=instance_label,
                     label=keypoint_label,
-                    x=float(point[0]),
-                    y=float(point[1]),
+                    x=x,
+                    y=y,
                     visible=bool(shape.get("visible", True)),
+                    storage_label_override=label or None,
                 )
-
-                registry.register_keypoint(keypoint_state)
-
-            elif shape_type == "polygon":
-                instance_label = self._parse_mask_label(label, shape)
-                if not instance_label:
-                    continue
-                polygon_points = [
-                    (float(pt[0]), float(pt[1])) for pt in shape.get("points", [])
-                ]
-                if not polygon_points:
-                    continue
-                registry.ensure_instance(instance_label).set_mask(
-                    bitmap=None,
-                    polygon=self._sanitize_polygon(polygon_points),
-                )
+            )
         return registry
 
     def write_annotation(
@@ -174,6 +214,47 @@ class AnnotationAdapter:
         keypoint_label = display_label or label or DEFAULT_KEYPOINT_LABEL
         instance_label = label or keypoint_label
         return instance_label, keypoint_label
+
+    def _has_explicit_keypoint_instance(
+        self,
+        label: str,
+        shape: Dict[str, object],
+    ) -> bool:
+        if KEYPOINT_DELIMITER and KEYPOINT_DELIMITER in label:
+            return True
+        return bool(self._flag_instance_label(shape))
+
+    @staticmethod
+    def _group_id_key(shape: Dict[str, object]) -> Optional[str]:
+        value = shape.get("group_id")
+        if value is None or isinstance(value, bool):
+            return None
+        if isinstance(value, float):
+            if not np.isfinite(value):
+                return None
+            if value.is_integer():
+                value = int(value)
+        text = str(value).strip()
+        return text or None
+
+    def _instance_containing_point(
+        self,
+        x: float,
+        y: float,
+        polygon_masks: Sequence[Tuple[str, np.ndarray]],
+    ) -> Optional[str]:
+        pixel_x = int(round(float(x)))
+        pixel_y = int(round(float(y)))
+        containing: List[str] = []
+        for instance_label, mask in polygon_masks:
+            if (
+                0 <= pixel_y < int(mask.shape[0])
+                and 0 <= pixel_x < int(mask.shape[1])
+                and bool(mask[pixel_y, pixel_x])
+            ):
+                containing.append(instance_label)
+        unique = list(dict.fromkeys(containing))
+        return unique[0] if len(unique) == 1 else None
 
     def _parse_mask_label(self, label: str, shape: Dict[str, object]) -> Optional[str]:
         if MASK_SUFFIX and label.endswith(MASK_SUFFIX):
