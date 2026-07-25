@@ -12,6 +12,7 @@ from annolid.core.agent.config import (
     load_config,
     save_config,
 )
+from annolid.core.agent.security_policy import DEFAULT_SANDBOX_CONTAINER_IMAGE
 
 
 def test_agent_config_load_creates_default_template(tmp_path: Path) -> None:
@@ -21,6 +22,7 @@ def test_agent_config_load_creates_default_template(tmp_path: Path) -> None:
     assert loaded.tools.calendar.enabled is False
     payload = json.loads(cfg_path.read_text(encoding="utf-8"))
     tools = payload.get("tools") or {}
+    exec_config = tools.get("exec") or {}
     skills = payload.get("skills") or {}
     memory = payload.get("memory") or {}
     update = payload.get("update") or {}
@@ -41,6 +43,10 @@ def test_agent_config_load_creates_default_template(tmp_path: Path) -> None:
     assert email.get("polling_interval", email.get("pollingInterval")) == 300
     assert zulip.get("polling_interval", zulip.get("pollingInterval")) == 30
     assert "watch" in skill_load
+    assert loaded.tools.restrict_to_workspace is True
+    assert (
+        exec_config.get("containerImage") or exec_config.get("container_image")
+    ) == DEFAULT_SANDBOX_CONTAINER_IMAGE
     assert memory.get("mode") in {"semantic_keyword", "lexical"}
     assert update_auto.get("channel") in {"stable", "beta", "dev"}
 
@@ -63,6 +69,10 @@ def test_agent_config_load_save_roundtrip(tmp_path: Path) -> None:
     )
     cfg.providers["gemini"] = ProviderConfig(api_key="secret", api_base="")
     cfg.tools.restrict_to_workspace = True
+    cfg.tools.exec.container_image = (
+        "example.invalid/annolid-sandbox@"
+        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    )
     cfg.tools.allowed_read_roots = [
         str(tmp_path / "videos"),
         str(tmp_path / "datasets"),
@@ -86,6 +96,7 @@ def test_agent_config_load_save_roundtrip(tmp_path: Path) -> None:
     cfg.tools.whatsapp.bridge_headless = False
     cfg.tools.whatsapp.phone_number_id = "123456"
     cfg.tools.whatsapp.verify_token = "verify"
+    cfg.tools.whatsapp.app_secret = "meta-app-secret"
     cfg.tools.whatsapp.preview_url = True
     cfg.tools.whatsapp.webhook_enabled = True
     cfg.tools.whatsapp.webhook_host = "127.0.0.1"
@@ -146,6 +157,7 @@ def test_agent_config_load_save_roundtrip(tmp_path: Path) -> None:
     assert loaded.agents.defaults.session.main_session_key == "main"
     assert loaded.providers["gemini"].api_key == "secret"
     assert loaded.tools.restrict_to_workspace is True
+    assert loaded.tools.exec.container_image == cfg.tools.exec.container_image
     assert loaded.tools.allowed_read_roots == [
         str(tmp_path / "videos"),
         str(tmp_path / "datasets"),
@@ -166,6 +178,7 @@ def test_agent_config_load_save_roundtrip(tmp_path: Path) -> None:
     assert loaded.tools.whatsapp.bridge_headless is False
     assert loaded.tools.whatsapp.phone_number_id == "123456"
     assert loaded.tools.whatsapp.verify_token == "verify"
+    assert loaded.tools.whatsapp.app_secret == "meta-app-secret"
     assert loaded.tools.whatsapp.preview_url is True
     assert loaded.tools.whatsapp.webhook_enabled is True
     assert loaded.tools.whatsapp.webhook_host == "127.0.0.1"

@@ -13,6 +13,8 @@ SENSITIVE_LEAF_KEYS = frozenset(
         "accesstoken",
         "api_key",
         "apikey",
+        "app_secret",
+        "appsecret",
         "client_secret",
         "clientsecret",
         "bridge_token",

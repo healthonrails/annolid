@@ -36,10 +36,22 @@ class WhatsAppWebhookServer:
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
 
+    def _validate_startup_security(self) -> None:
+        if self.channel.has_webhook_app_secret:
+            return
+        raise RuntimeError(
+            "Refusing to start an unsigned WhatsApp webhook. Configure "
+            "tools.whatsapp.app_secret first."
+        )
+
+    def _is_valid_post_signature(self, raw_body: bytes, signature: str) -> bool:
+        return self.channel.verify_webhook_signature(raw_body, signature)
+
     def start(self) -> str:
         with self._lock:
             if self._httpd is not None:
                 return self.webhook_url
+            self._validate_startup_security()
 
             owner = self
 
@@ -84,9 +96,8 @@ class WhatsAppWebhookServer:
                     )
                     if accepted is None:
                         logger.warning(
-                            "WhatsApp webhook verify rejected mode=%s token_prefix=%s",
+                            "WhatsApp webhook verify rejected mode=%s",
                             mode,
-                            str(verify_token)[:4],
                         )
                         self.send_error(403)
                         return
@@ -126,6 +137,13 @@ class WhatsAppWebhookServer:
                         self.send_error(400)
                         return
                     raw = self.rfile.read(length)
+                    signature = self.headers.get("X-Hub-Signature-256", "")
+                    if not owner._is_valid_post_signature(raw, signature):
+                        logger.warning(
+                            "WhatsApp webhook POST rejected: invalid signature"
+                        )
+                        self.send_error(401)
+                        return
                     try:
                         payload = json.loads(raw.decode("utf-8"))
                     except Exception:

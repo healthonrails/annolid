@@ -1499,6 +1499,23 @@ def test_ollama_non_vision_routing_uses_capability_probe(monkeypatch) -> None:
     )
 
 
+def test_known_nvidia_text_only_model_is_not_routed_as_vision() -> None:
+    assert (
+        segment_labeling_module.is_likely_non_vision_model(
+            provider="nvidia",
+            model="nvidia/nemotron-3-ultra-550b-a55b",
+        )
+        is True
+    )
+    assert (
+        segment_labeling_module.is_likely_non_vision_model(
+            provider="nvidia",
+            model="nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+        )
+        is False
+    )
+
+
 def test_behavior_segment_vlm_worker_uses_single_local_vlm_attempt(
     monkeypatch, tmp_path: Path
 ) -> None:

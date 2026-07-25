@@ -32,7 +32,7 @@ class ExecTool(FunctionTool):
         working_dir: str | None = None,
         deny_patterns: list[str] | None = None,
         allow_patterns: list[str] | None = None,
-        restrict_to_workspace: bool = False,
+        restrict_to_workspace: bool = True,
     ):
         self.timeout = timeout
         self.working_dir = working_dir
@@ -142,12 +142,15 @@ class ExecTool(FunctionTool):
                     "Error: Command blocked by safety guard "
                     "(working_dir outside the configured workspace)"
                 )
-            abs_paths = re.findall(r"(?:^|[\s|>])(/[^\s\"'>]+)", cmd)
+            abs_paths = self._extract_absolute_paths(cmd)
             for raw in abs_paths:
                 try:
-                    p = Path(raw.strip()).resolve()
-                except Exception:
-                    continue
+                    p = Path(raw.strip()).expanduser().resolve()
+                except (OSError, RuntimeError):
+                    return (
+                        "Error: Command blocked by safety guard "
+                        "(path could not be validated)"
+                    )
                 if str(p) in self._BENIGN_DEVICE_PATHS or str(p).startswith("/dev/fd/"):
                     continue
                 if not self._is_within_root(p, workspace_root):
@@ -156,6 +159,23 @@ class ExecTool(FunctionTool):
                         "(path outside working dir)"
                     )
         return None
+
+    @staticmethod
+    def _extract_absolute_paths(command: str) -> list[str]:
+        """Extract absolute and home-relative paths from shell arguments.
+
+        The delimiter set includes ``=`` so paths in options such as
+        ``--output=/tmp/result`` cannot bypass the workspace guard.
+        """
+        posix_paths = re.findall(
+            r"(?:^|[\s|>&;=('\"])(/[^\s\"'>;|<&]+)",
+            command,
+        )
+        home_paths = re.findall(
+            r"(?:^|[\s|>&;=('\"])(~[^\s\"'>;|<&]+)",
+            command,
+        )
+        return posix_paths + home_paths
 
     @staticmethod
     def _is_within_root(path: Path, root: Path) -> bool:

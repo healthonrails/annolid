@@ -49,7 +49,9 @@ Safety notes:
 - Prefer non-destructive commands.
 - Keep command scope limited to relevant directories.
 - Treat external downloads and scripts as untrusted until verified.
-- For multi-step shell workflows, prefer `exec_start` + `exec_process` instead of chaining large one-shot shell commands.
+- For multi-step shell workflows, use `exec_start` + `exec_process` only when
+  those host-backed tools are available in the active policy. Secure
+  workspace-restricted configurations omit them.
 - Prefer `annolid_run` over shelling out when the task maps to `annolid-run` CLI functionality. Mutating subcommands require `allow_mutation=true`.
 
 ## Git and GitHub

@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 from pathlib import Path
 import urllib.error
 import urllib.request
+from urllib.parse import urlparse
 from typing import Any, Awaitable, Callable, Optional
 
 from annolid.core.agent.bus import OutboundMessage
+from annolid.core.agent.security_network import validate_public_url_target
 from annolid.utils.logger import logger
 
 from .base import BaseChannel
@@ -43,6 +47,7 @@ class WhatsAppChannel(BaseChannel):
         self._access_token = self._cfg_str(cfg, "access_token", "")
         self._api_version = self._cfg_str(cfg, "api_version", "v22.0")
         self._verify_token = self._cfg_str(cfg, "verify_token", "")
+        self._app_secret = self._cfg_str(cfg, "app_secret", "")
         self._bridge_url = self._cfg_str(cfg, "bridge_url", "")
         self._bridge_token = self._cfg_str(cfg, "bridge_token", "")
         self._api_base = self._cfg_str(
@@ -184,6 +189,11 @@ class WhatsAppChannel(BaseChannel):
                 if path_obj.exists() and path_obj.is_file():
                     sendable.append(str(path_obj.resolve()))
             except Exception:
+                logger.debug(
+                    "Ignoring invalid WhatsApp bridge media path: %s",
+                    candidate,
+                    exc_info=True,
+                )
                 continue
         return sendable
 
@@ -225,6 +235,25 @@ class WhatsAppChannel(BaseChannel):
 
         logger.info("WhatsApp webhook ingest complete ingested=%s", ingested)
         return ingested
+
+    @property
+    def has_webhook_app_secret(self) -> bool:
+        """Return whether POST webhook authentication is configured."""
+        return bool(self._app_secret)
+
+    def verify_webhook_signature(self, raw_body: bytes, signature: str) -> bool:
+        """Verify Meta's X-Hub-Signature-256 value for a raw request body."""
+        if not self._app_secret:
+            return False
+        supplied = str(signature or "").strip()
+        if not supplied.startswith("sha256="):
+            return False
+        digest = hmac.new(
+            self._app_secret.encode("utf-8"),
+            bytes(raw_body),
+            hashlib.sha256,
+        ).hexdigest()
+        return hmac.compare_digest(supplied, f"sha256={digest}")
 
     async def _ingest_webhook_entry(self, entry: dict[str, Any]) -> int:
         ingested = 0
@@ -310,7 +339,7 @@ class WhatsAppChannel(BaseChannel):
         expected = str(self._verify_token or "").strip()
         if not expected:
             return None
-        if str(verify_token or "").strip() != expected:
+        if not hmac.compare_digest(str(verify_token or "").strip(), expected):
             return None
         return str(challenge or "")
 
@@ -329,8 +358,20 @@ class WhatsAppChannel(BaseChannel):
         api_base = str(self._api_base or "https://graph.facebook.com").rstrip("/")
         version = str(self._api_version or "v22.0").strip() or "v22.0"
         url = f"{api_base}/{version}/{self._phone_number_id}/messages"
+        parsed_url = urlparse(url)
+        if parsed_url.scheme != "https":
+            return False, 0, "WhatsApp Cloud API endpoint must use HTTPS"
+        if str(parsed_url.hostname or "").lower().rstrip(".") != "graph.facebook.com":
+            return (
+                False,
+                0,
+                "WhatsApp Cloud API endpoint must target graph.facebook.com",
+            )
+        valid_target, target_error = validate_public_url_target(url)
+        if not valid_target:
+            return False, 0, f"Unsafe WhatsApp Cloud API endpoint: {target_error}"
 
-        req = urllib.request.Request(
+        req = urllib.request.Request(  # noqa: S310 - endpoint validated above
             url=url,
             data=json.dumps(payload).encode("utf-8"),
             method="POST",
@@ -340,7 +381,9 @@ class WhatsAppChannel(BaseChannel):
             },
         )
         try:
-            with urllib.request.urlopen(req, timeout=timeout_s) as response:
+            with urllib.request.urlopen(  # noqa: S310 - endpoint validated above
+                req, timeout=timeout_s
+            ) as response:
                 body = response.read().decode("utf-8", errors="replace")
                 return True, int(getattr(response, "status", 200) or 200), body
         except urllib.error.HTTPError as exc:

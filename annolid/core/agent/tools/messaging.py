@@ -90,7 +90,11 @@ class SpawnTool(FunctionTool):
 
     @property
     def description(self) -> str:
-        return "Spawn a background task using either the native subagent runtime or the ACP runtime."
+        return (
+            "Spawn a task using either the native subagent runtime or the ACP "
+            "runtime. Set wait=true for a native consultation whose result must "
+            "inform the current turn."
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -118,6 +122,13 @@ class SpawnTool(FunctionTool):
                     "items": {"type": "string"},
                     "description": "Optional explicit skill names to prioritize.",
                 },
+                "wait": {
+                    "type": "boolean",
+                    "description": (
+                        "Wait for a native subagent and return its result directly."
+                    ),
+                    "default": False,
+                },
             },
             "required": ["task"],
         }
@@ -132,6 +143,7 @@ class SpawnTool(FunctionTool):
         workspace: str = "",
         profile: str = "",
         skill_names: list[str] | None = None,
+        wait: bool = False,
         **kwargs: Any,
     ) -> str:
         del kwargs
@@ -149,6 +161,7 @@ class SpawnTool(FunctionTool):
                 skill_names=skill_names,
                 origin_channel=self._origin_channel,
                 origin_chat_id=self._origin_chat_id,
+                wait=bool(wait),
             )
         except TypeError:
             ret = self._spawn_callback(task, label)
@@ -202,6 +215,13 @@ class SpawnBehaviorSubagentTool(FunctionTool):
                     "type": "array",
                     "items": {"type": "string"},
                 },
+                "wait": {
+                    "type": "boolean",
+                    "description": (
+                        "Wait for the behavior subagent result in the current turn."
+                    ),
+                    "default": False,
+                },
             },
             "required": ["profile"],
         }
@@ -212,6 +232,7 @@ class SpawnBehaviorSubagentTool(FunctionTool):
         task: str = "",
         label: str | None = None,
         skill_names: list[str] | None = None,
+        wait: bool = False,
         **kwargs: Any,
     ) -> str:
         del kwargs
@@ -241,6 +262,7 @@ class SpawnBehaviorSubagentTool(FunctionTool):
                 skill_names=skill_names,
                 origin_channel=self._origin_channel,
                 origin_chat_id=self._origin_chat_id,
+                wait=bool(wait),
             )
         except TypeError:
             ret = self._spawn_callback(task_text, profile_label)

@@ -60,7 +60,7 @@ class SubagentManager:
         self._announce_callback = announce_callback
         self._workspace = Path(workspace) if workspace is not None else None
         self._max_iterations = max(1, int(max_iterations))
-        self._running: Dict[str, asyncio.Task[None]] = {}
+        self._running: Dict[str, asyncio.Task[str]] = {}
         self._tasks: Dict[str, SubagentTask] = {}
 
     async def spawn(
@@ -77,42 +77,57 @@ class SubagentManager:
         origin_chat_id: str = "direct",
     ) -> str:
         del runtime, provider, model, workspace
-        task_id = str(uuid.uuid4())[:8]
-        resolved_profile = resolve_behavior_subagent_profile(profile)
-        merged_skill_names = self._merge_skill_names(
-            provided=skill_names,
-            profile=resolved_profile,
-        )
-        display_label = label or (task[:30] + ("..." if len(task) > 30 else ""))
-        meta = SubagentTask(
-            task_id=task_id,
-            label=display_label,
+        meta = self._create_task(
             task=task,
+            label=label,
+            profile=profile,
+            skill_names=skill_names,
             origin_channel=origin_channel,
             origin_chat_id=origin_chat_id,
-            profile=resolved_profile.name if resolved_profile else str(profile or ""),
-            skill_names=list(merged_skill_names),
         )
-
-        if len(self._tasks) >= 100:
-            finished = [
-                tid
-                for tid, t in self._tasks.items()
-                if t.status not in ("running", "queued")
-            ]
-            if finished:
-                del self._tasks[finished[0]]
-            else:
-                del self._tasks[next(iter(self._tasks))]
-
-        self._tasks[task_id] = meta
+        self._remember_task(meta)
         bg = asyncio.create_task(self._run_subagent(meta))
-        self._running[task_id] = bg
-        bg.add_done_callback(lambda _: self._running.pop(task_id, None))
+        self._running[meta.task_id] = bg
+        bg.add_done_callback(lambda _: self._running.pop(meta.task_id, None))
         return (
-            f"Subagent [{display_label}] started (id: {task_id}). "
+            f"Subagent [{meta.label}] started (id: {meta.task_id}). "
             "I will notify you when it completes."
         )
+
+    async def run_inline(
+        self,
+        task: str,
+        label: Optional[str] = None,
+        runtime: str = "subagent",
+        provider: str = "",
+        model: str = "",
+        workspace: str = "",
+        profile: str = "",
+        skill_names: Optional[Sequence[str]] = None,
+        origin_channel: str = "cli",
+        origin_chat_id: str = "direct",
+    ) -> str:
+        """Run a native subagent consultation and return its result in this turn."""
+        del runtime, provider, model, workspace
+        meta = self._create_task(
+            task=task,
+            label=label,
+            profile=profile,
+            skill_names=skill_names,
+            origin_channel=origin_channel,
+            origin_chat_id=origin_chat_id,
+        )
+        self._remember_task(meta)
+        inline_task = asyncio.create_task(self._run_subagent(meta, announce=False))
+        self._running[meta.task_id] = inline_task
+        try:
+            result = await inline_task
+            if meta.status != "ok":
+                return f"Error: {meta.error or result or 'subagent execution failed'}"
+            return result
+        finally:
+            self._running.pop(meta.task_id, None)
+            self._tasks.pop(meta.task_id, None)
 
     def get_task(self, task_id: str) -> Optional[SubagentTask]:
         return self._tasks.get(task_id)
@@ -128,7 +143,7 @@ class SubagentManager:
         if task is None:
             return task_id in self._tasks
         try:
-            await asyncio.wait_for(task, timeout=timeout)
+            await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
             return True
         except asyncio.TimeoutError:
             return False
@@ -147,7 +162,12 @@ class SubagentManager:
         await meta.inbox.put(message)
         return True
 
-    async def _run_subagent(self, meta: SubagentTask) -> None:
+    async def _run_subagent(
+        self,
+        meta: SubagentTask,
+        *,
+        announce: bool = True,
+    ) -> str:
         try:
             loop_or_coro = self._loop_factory()
             if asyncio.iscoroutine(loop_or_coro):
@@ -169,16 +189,58 @@ class SubagentManager:
             )
             meta.status = "ok"
             meta.result = result.content
+            return meta.result or "Task completed but returned no result."
         except asyncio.CancelledError:
             meta.status = "cancelled"
             meta.error = "cancelled"
+            return "cancelled"
         except Exception as exc:  # pragma: no cover - defensive
             meta.status = "error"
             meta.error = str(exc)
             meta.result = f"Error: {exc}"
+            return meta.result
         finally:
             meta.finished_at = datetime.now(timezone.utc).isoformat()
-            await self._announce(meta)
+            if announce:
+                await self._announce(meta)
+
+    def _create_task(
+        self,
+        *,
+        task: str,
+        label: Optional[str],
+        profile: str,
+        skill_names: Optional[Sequence[str]],
+        origin_channel: str,
+        origin_chat_id: str,
+    ) -> SubagentTask:
+        task_id = str(uuid.uuid4())[:8]
+        resolved_profile = resolve_behavior_subagent_profile(profile)
+        merged_skill_names = self._merge_skill_names(
+            provided=skill_names,
+            profile=resolved_profile,
+        )
+        display_label = label or (task[:30] + ("..." if len(task) > 30 else ""))
+        return SubagentTask(
+            task_id=task_id,
+            label=display_label,
+            task=task,
+            origin_channel=origin_channel,
+            origin_chat_id=origin_chat_id,
+            profile=resolved_profile.name if resolved_profile else str(profile or ""),
+            skill_names=list(merged_skill_names),
+        )
+
+    def _remember_task(self, meta: SubagentTask) -> None:
+        if len(self._tasks) >= 100:
+            finished = [
+                task_id
+                for task_id, task in self._tasks.items()
+                if task.status not in ("running", "queued")
+            ]
+            remove_id = finished[0] if finished else next(iter(self._tasks))
+            self._tasks.pop(remove_id, None)
+        self._tasks[meta.task_id] = meta
 
     async def _announce(self, meta: SubagentTask) -> None:
         if self._announce_callback is None:
@@ -303,9 +365,15 @@ class RuntimeSessionRouter:
         skill_names: Optional[Sequence[str]] = None,
         origin_channel: str = "cli",
         origin_chat_id: str = "direct",
+        wait: bool = False,
     ) -> str:
         selected_runtime = str(runtime or "subagent").strip().lower()
         if selected_runtime == "acp":
+            if wait:
+                return (
+                    "Error: wait=true is only supported for the native "
+                    "subagent runtime."
+                )
             try:
                 resolved_workspace = str(
                     resolve_workspace_dir(
@@ -327,7 +395,14 @@ class RuntimeSessionRouter:
                 origin_chat_id=origin_chat_id,
             )
         try:
-            return await self._subagent_manager.spawn(
+            method = (
+                getattr(self._subagent_manager, "run_inline", None)
+                if wait
+                else self._subagent_manager.spawn
+            )
+            if method is None:
+                return "Error: configured subagent manager does not support wait=true."
+            return await method(
                 task=task,
                 label=label,
                 profile=profile,
@@ -337,6 +412,8 @@ class RuntimeSessionRouter:
             )
         except TypeError:
             # Compatibility with legacy subagent manager implementations.
+            if wait:
+                return "Error: configured subagent manager does not support wait=true."
             return await self._subagent_manager.spawn(
                 task=task,
                 label=label,
@@ -368,6 +445,7 @@ async def build_subagent_tools_registry(
         registry,
         allowed_dir=Path(workspace) if workspace is not None else None,
         allowed_read_roots=allowed_read_roots,
+        restrict_runtime_to_workspace=workspace is not None,
         mcp_servers=mcp_servers,
         stack=stack,
     )

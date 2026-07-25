@@ -38,6 +38,7 @@ from .providers import (
     UnifiedLLMProvider,
     OpenAICodexProvider,
     OpenAICompatProvider,
+    raise_for_error_response,
     resolve_codex_cli,
     resolve_openai_codex,
     resolve_openai_compat,
@@ -644,8 +645,11 @@ class AgentLoop:
                                 thinking=short_thought,
                                 parent=parent_id.lower() if parent_id else "",
                             )
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            self._logger.debug(
+                                "Swarm visualizer streaming update failed: %s",
+                                exc,
+                            )
 
                 compaction = self._plan_context_compaction(messages)
                 if compaction.skipped_due_to_active_tasks:
@@ -727,8 +731,11 @@ class AgentLoop:
                             f"Executing: {tools_str}",
                             thinking=reasoning or self._strip_think(assistant_text),
                         )
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        self._logger.debug(
+                            "Swarm visualizer tool update failed: %s",
+                            exc,
+                        )
 
                     tool_cycle_signature = tuple(
                         f"{call.get('name', '')}:{json.dumps(call.get('arguments', {}), ensure_ascii=False, sort_keys=True)}"
@@ -791,8 +798,11 @@ class AgentLoop:
                         )
 
                         update_swarm_node(active_node_id, "idle", "Awaiting Tasks")
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        self._logger.debug(
+                            "Swarm visualizer idle update failed: %s",
+                            exc,
+                        )
 
                     tool_exec_total_ms += cycle_exec_ms
                     tool_call_count += cycle_call_count
@@ -819,16 +829,22 @@ class AgentLoop:
                             update_swarm_node(
                                 active_node_id, "active", f"Executing: {tools_str}"
                             )
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            self._logger.debug(
+                                "Swarm visualizer text-tool update failed: %s",
+                                exc,
+                            )
                     try:
                         from annolid.gui.widgets.threejs_viewer_server import (
                             update_swarm_node,
                         )
 
                         update_swarm_node(active_node_id, "idle", "Awaiting Tasks")
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        self._logger.debug(
+                            "Swarm visualizer text-tool reset failed: %s",
+                            exc,
+                        )
 
                 repeated_tool_cycles = 0
                 last_tool_cycle_signature = None
@@ -1014,8 +1030,11 @@ class AgentLoop:
                         if len(clean_output) > 150
                         else clean_output,
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self._logger.debug(
+                        "Swarm visualizer final update failed: %s",
+                        exc,
+                    )
 
             result = AgentLoopResult(
                 content=final_content,
@@ -1175,8 +1194,11 @@ class AgentLoop:
             except Exception:
                 try:
                     await self._mcp_stack.aclose()
-                except Exception:
-                    pass
+                except Exception as close_exc:
+                    self._logger.debug(
+                        "MCP cleanup after connection failure failed: %s",
+                        close_exc,
+                    )
                 self._mcp_stack = None
                 raise
             self._mcp_connected = True
@@ -1198,8 +1220,11 @@ class AgentLoop:
             except Exception:
                 try:
                     await self._mcp_stack.aclose()
-                except Exception:
-                    pass
+                except Exception as close_exc:
+                    self._logger.debug(
+                        "Shared MCP cleanup after connection failure failed: %s",
+                        close_exc,
+                    )
                 self._mcp_stack = None
                 self._mcp_ref_count = max(0, self._mcp_ref_count - 1)
                 raise
@@ -1357,8 +1382,12 @@ class AgentLoop:
                                 base = Path(self._workspace or Path.cwd()).resolve()
                                 path_obj = (base / path_obj).resolve()
                             media_list.append(str(path_obj))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self._logger.debug(
+                        "Tool result media extraction failed for %s: %s",
+                        name,
+                        exc,
+                    )
             messages.append(
                 {
                     "role": "tool",
@@ -1390,8 +1419,8 @@ class AgentLoop:
                         payload["truncated_for_llm"] = True
                         payload["original_text_length"] = len(raw_text)
                         return json.dumps(payload, ensure_ascii=False)
-        except Exception:
-            pass
+        except (json.JSONDecodeError, TypeError):
+            payload = None
 
         omitted = max(0, len(text) - limit)
         return (
@@ -1885,8 +1914,8 @@ class AgentLoop:
                 return
             try:
                 await stack.aclose()
-            except Exception:
-                pass
+            except Exception as exc:
+                self._logger.debug("MCP disconnect cleanup failed: %s", exc)
             return
 
         async with self._mcp_lock:
@@ -1902,8 +1931,8 @@ class AgentLoop:
             return
         try:
             await stack.aclose()
-        except Exception:
-            pass
+        except Exception as exc:
+            self._logger.debug("Shared MCP disconnect cleanup failed: %s", exc)
 
     def remember(self, session_id: str, key: str, value: str) -> None:
         self._memory_store.set_fact(session_id, key, value)
@@ -1980,8 +2009,8 @@ class AgentLoop:
         if stack is not None:
             try:
                 await stack.aclose()
-            except Exception:
-                pass
+            except Exception as exc:
+                self._logger.debug("Agent loop MCP close failed: %s", exc)
 
     def set_subagent_manager(self, manager: Optional["SubagentManager"]) -> None:
         self._subagent_manager = manager
@@ -2668,8 +2697,8 @@ class AgentLoop:
             parsed = json.loads(raw)
             if isinstance(parsed, dict):
                 return dict(parsed)
-        except Exception:
-            pass
+        except (json.JSONDecodeError, TypeError):
+            parsed = None
         start = raw.find("{")
         end = raw.rfind("}")
         if start < 0 or end <= start:
@@ -3585,12 +3614,17 @@ class AgentLoop:
             model_id: str,
             on_token: Optional[Callable[[str], None]] = None,
         ) -> Mapping[str, Any]:
-            resp = await provider_impl.chat(
+            resp = await provider_impl.chat_with_retry(
                 messages=list(messages),
                 tools=list(tools) if tools else None,
                 model=model_id,
                 temperature=self._default_temperature,
                 on_token=on_token,
+            )
+            raise_for_error_response(
+                resp,
+                provider=provider_name,
+                model=model_id,
             )
             tool_calls: List[Dict[str, Any]] = []
             for tc in resp.tool_calls:

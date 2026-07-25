@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import re
 import socket
+from contextlib import contextmanager
+from typing import Iterator
 from urllib.parse import urlparse
+
+try:
+    import httpx as _httpx
+except ImportError:  # pragma: no cover - web tooling is optional
+    _httpx = None
 
 _BLOCKED_NETWORKS = tuple(
     ipaddress.ip_network(value)
@@ -41,8 +49,10 @@ def _is_blocked_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) 
     return any(normalized in network for network in _BLOCKED_NETWORKS)
 
 
-def validate_public_url_target(url: str) -> tuple[bool, str]:
-    """Validate a URL before tool-initiated network access.
+def resolve_public_url_target(
+    url: str,
+) -> tuple[bool, str, tuple[str, ...]]:
+    """Validate a public URL and return the exact public IPs that were checked.
 
     This blocks local, private, link-local, and cloud metadata targets even when
     they are hidden behind a hostname.
@@ -50,28 +60,33 @@ def validate_public_url_target(url: str) -> tuple[bool, str]:
     try:
         parsed = urlparse(str(url or "").strip())
     except Exception as exc:
-        return False, str(exc)
+        return False, str(exc), ()
 
     if parsed.scheme not in {"http", "https"}:
-        return False, f"Only http/https allowed, got '{parsed.scheme or 'none'}'"
+        return (
+            False,
+            f"Only http/https allowed, got '{parsed.scheme or 'none'}'",
+            (),
+        )
     if not parsed.netloc:
-        return False, "Missing domain"
+        return False, "Missing domain", ()
     hostname = str(parsed.hostname or "").strip().lower().rstrip(".")
     if not hostname:
-        return False, "Missing hostname"
+        return False, "Missing hostname", ()
 
     try:
         address = ipaddress.ip_address(hostname)
     except ValueError:
         address = None
     if address is not None and _is_blocked_address(address):
-        return False, f"Blocked private or internal address: {address}"
+        return False, f"Blocked private or internal address: {address}", ()
 
     try:
         infos = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
     except OSError:
-        return False, f"Cannot resolve hostname: {hostname}"
+        return False, f"Cannot resolve hostname: {hostname}", ()
 
+    resolved_addresses: list[str] = []
     for info in infos:
         try:
             resolved = ipaddress.ip_address(info[4][0])
@@ -81,8 +96,108 @@ def validate_public_url_target(url: str) -> tuple[bool, str]:
             return (
                 False,
                 f"Blocked private or internal resolved address: {resolved}",
+                (),
             )
-    return True, ""
+        normalized = str(_normalize_address(resolved))
+        if normalized not in resolved_addresses:
+            resolved_addresses.append(normalized)
+    if not resolved_addresses:
+        return False, f"Hostname did not resolve to a usable address: {hostname}", ()
+    return True, "", tuple(resolved_addresses)
+
+
+def validate_public_url_target(url: str) -> tuple[bool, str]:
+    """Validate a URL before tool-initiated network access."""
+    ok, error, _ = resolve_public_url_target(url)
+    return ok, error
+
+
+@contextmanager
+def pin_public_url_dns(
+    url: str,
+    resolved_ips: tuple[str, ...],
+) -> Iterator[None]:
+    """Pin the URL hostname to the public IPs validated immediately beforehand.
+
+    The process-global resolver override is only safe while serialized. HTTP
+    clients should use :class:`PinnedPublicAsyncTransport`, which owns that
+    serialization.
+    """
+    hostname = str(urlparse(str(url or "")).hostname or "").rstrip(".").lower()
+    if not hostname or not resolved_ips:
+        yield
+        return
+
+    original_getaddrinfo = socket.getaddrinfo
+
+    def _pinned_getaddrinfo(
+        host: object,
+        port: object,
+        family: int = 0,
+        type: int = 0,  # noqa: A002
+        proto: int = 0,
+        flags: int = 0,
+    ) -> list[tuple[object, ...]]:
+        if str(host).rstrip(".").lower() != hostname:
+            return original_getaddrinfo(host, port, family, type, proto, flags)
+        pinned: list[tuple[object, ...]] = []
+        for raw_ip in resolved_ips:
+            address = ipaddress.ip_address(raw_ip)
+            address_family = socket.AF_INET6 if address.version == 6 else socket.AF_INET
+            if family not in (0, socket.AF_UNSPEC, address_family):
+                continue
+            socket_address: tuple[object, ...]
+            if address_family == socket.AF_INET6:
+                socket_address = (raw_ip, port or 0, 0, 0)
+            else:
+                socket_address = (raw_ip, port or 0)
+            pinned.append(
+                (
+                    address_family,
+                    type or socket.SOCK_STREAM,
+                    proto,
+                    "",
+                    socket_address,
+                )
+            )
+        return pinned
+
+    socket.getaddrinfo = _pinned_getaddrinfo
+    try:
+        yield
+    finally:
+        socket.getaddrinfo = original_getaddrinfo
+
+
+_PINNED_DNS_LOCK = asyncio.Lock()
+
+
+if _httpx is not None:
+
+    class PinnedPublicAsyncTransport(_httpx.AsyncBaseTransport):
+        """HTTPX transport that connects using the IPs validated for each URL."""
+
+        def __init__(self, inner: object | None = None) -> None:
+            self._inner = inner or _httpx.AsyncHTTPTransport()
+
+        async def handle_async_request(self, request: object) -> object:
+            url = str(getattr(request, "url", "") or "")
+            ok, error, resolved_ips = resolve_public_url_target(url)
+            if not ok:
+                raise _httpx.RequestError(error, request=request)
+            async with _PINNED_DNS_LOCK:
+                with pin_public_url_dns(url, resolved_ips):
+                    return await self._inner.handle_async_request(request)
+
+        async def aclose(self) -> None:
+            await self._inner.aclose()
+
+else:
+
+    class PinnedPublicAsyncTransport:  # pragma: no cover - optional dependency
+        def __init__(self, inner: object | None = None) -> None:
+            del inner
+            raise RuntimeError("Pinned HTTP transport requires the `httpx` package.")
 
 
 def contains_private_url_target(text: str) -> tuple[bool, str]:
@@ -95,4 +210,37 @@ def contains_private_url_target(text: str) -> tuple[bool, str]:
     return False, ""
 
 
-__all__ = ["contains_private_url_target", "validate_public_url_target"]
+async def guard_public_httpx_request(request: object) -> None:
+    """Reject an httpx request before it follows an unsafe redirect target."""
+    url = str(getattr(request, "url", "") or "")
+    ok, error = validate_public_url_target(url)
+    if not ok:
+        raise ValueError(f"Blocked private or internal request target: {error}")
+
+
+def public_httpx_event_hooks() -> dict[str, list[object]]:
+    """Return redirect-aware httpx hooks for agent-controlled requests."""
+    return {"request": [guard_public_httpx_request]}
+
+
+def public_httpx_client_kwargs() -> dict[str, object]:
+    """Return fail-closed HTTPX settings for public agent-controlled requests."""
+    return {
+        "event_hooks": public_httpx_event_hooks(),
+        "transport": PinnedPublicAsyncTransport(),
+        # Environment proxies resolve the destination outside this process, so
+        # the validated address cannot be pinned to the actual connection.
+        "trust_env": False,
+    }
+
+
+__all__ = [
+    "contains_private_url_target",
+    "guard_public_httpx_request",
+    "pin_public_url_dns",
+    "PinnedPublicAsyncTransport",
+    "public_httpx_client_kwargs",
+    "public_httpx_event_hooks",
+    "resolve_public_url_target",
+    "validate_public_url_target",
+]

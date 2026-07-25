@@ -4,6 +4,7 @@ from pathlib import Path
 from threading import Lock
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Sequence
 
+from annolid.core.agent.security_policy import DEFAULT_SANDBOX_CONTAINER_IMAGE
 from annolid.utils.logger import logger
 
 from .citation import (
@@ -126,6 +127,9 @@ async def register_nanobot_style_tools(
     *,
     allowed_dir: Path | None = None,
     allowed_read_roots: Sequence[str | Path] | None = None,
+    restrict_runtime_to_workspace: bool = True,
+    exec_timeout: int = 60,
+    exec_container_image: str = DEFAULT_SANDBOX_CONTAINER_IMAGE,
     cron_store_path: Path | None = None,
     send_callback: Callable[[str, str, str], Awaitable[None] | None] | None = None,
     spawn_callback: Callable[[str, str | None], Awaitable[str] | str] | None = None,
@@ -217,9 +221,22 @@ async def register_nanobot_style_tools(
             allowed_dir=allowed_dir, allowed_read_roots=allowed_read_roots
         )
     )
-    register_tool(SandboxedExecTool())
-    register_tool(ExecStartTool())
-    register_tool(ExecProcessTool())
+    runtime_working_dir = str(allowed_dir) if allowed_dir is not None else None
+    register_tool(
+        SandboxedExecTool(
+            timeout=max(1, int(exec_timeout)),
+            working_dir=runtime_working_dir,
+            restrict_to_workspace=bool(restrict_runtime_to_workspace),
+            container_image=str(
+                exec_container_image or DEFAULT_SANDBOX_CONTAINER_IMAGE
+            ),
+        )
+    )
+    if not restrict_runtime_to_workspace:
+        # Managed shell sessions run directly on the host and cannot provide a
+        # real filesystem sandbox. Do not expose them under workspace-only mode.
+        register_tool(ExecStartTool())
+        register_tool(ExecProcessTool())
     register_tool(WebSearchTool())
     register_tool(WebFetchTool())
     register_tool(DownloadUrlTool(allowed_dir=allowed_dir))

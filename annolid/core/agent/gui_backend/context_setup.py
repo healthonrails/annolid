@@ -98,6 +98,7 @@ async def prepare_context_tools(
         calendar_cfg = getattr(agent_cfg.tools, "calendar", None)
         box_cfg = getattr(agent_cfg.tools, "box", None)
         google_auth_cfg = getattr(agent_cfg.tools, "google_auth", None)
+        exec_cfg = getattr(agent_cfg.tools, "exec", None)
         google_drive_enabled = bool(
             getattr(agent_cfg.tools, "google_drive_enabled", False)
         )
@@ -105,6 +106,11 @@ async def prepare_context_tools(
             tools,
             allowed_dir=workspace,
             allowed_read_roots=allowed_read_roots,
+            restrict_runtime_to_workspace=bool(
+                getattr(agent_cfg.tools, "restrict_to_workspace", True)
+            ),
+            exec_timeout=int(getattr(exec_cfg, "timeout", 60)),
+            exec_container_image=str(getattr(exec_cfg, "container_image", "") or ""),
             email_cfg=agent_cfg.tools.email,
             calendar_cfg=calendar_cfg,
             google_auth_cfg=google_auth_cfg,

@@ -1,15 +1,39 @@
 # Using the Sandboxed Shell Tool in Annolid
 
-Annolid now features a **Sandboxed Exec Tool** that intelligently runs shell commands requested by the AI inside of an isolated Docker container rather than directly on your host machine. This protects your system from accidental command mistakes or complex dependencies while allowing the AI to run powerful tools.
+Annolid provides a **Sandboxed Exec Tool** that runs shell commands requested by the AI inside an isolated Docker container rather than directly on your host machine.
 
 ## How It Works
 
-By default, when Annolid attempts to run a shell command on your behalf, it checks your system for `docker`.
+By default, Annolid restricts runtime tools to the configured workspace and
+checks your system for `docker` before executing a shell command.
 
-- **If Docker is running**: Annolid automatically pulls the official `ubuntu:24.04` image and runs the command inside it. It mounts your **current workspace directory** into the container so the AI can still read code and output files, but the rest of your computer is completely safe.
-- **If Docker is missing**: Annolid operates normally, falling back to safe local host command execution using regex guards (like blocking `rm -rf`).
+- **If Docker is running**: Annolid runs the command with a reviewed official Ubuntu 24.04 image pinned to an immutable multi-architecture SHA-256 digest. It mounts your **current workspace directory** read-only and applies network, capability, process, privilege, and temporary-filesystem restrictions.
+- **If Docker is missing or unavailable**: the sandboxed command fails closed. Annolid does not silently run it on the host.
 
-You do not need to do any manual configuration within Annolid for this to work!
+The workspace mount is read-only by default. Commands can use the container's
+temporary `/tmp`, but they cannot modify workspace files through this tool.
+
+The secure defaults are equivalent to:
+
+```json
+{
+  "tools": {
+    "restrictToWorkspace": true,
+    "exec": {
+      "containerImage": "ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90"
+    }
+  }
+}
+```
+
+The image reference must end in `@sha256:` followed by a 64-character digest;
+floating tags fail closed. Updating the sandbox base is therefore an explicit,
+reviewable config or source change.
+
+Workspace restriction removes the host-backed `exec_start` and `exec_process`
+tools from the registered tool set. An existing config can explicitly set
+`restrictToWorkspace` to `false` for compatibility, but the security audit
+reports that configuration as high risk.
 
 ## Setup Instructions
 
@@ -43,14 +67,15 @@ To enable container isolation, you must install and start Docker on your compute
 
 ## Verifying It Works
 
-Once Docker is running, open the Annolid Bot chat and give it a CLI-style task. For example:
+Once Docker is running, open the Annolid Bot chat and give it a read-only CLI-style task. For example:
 
-> *"Run a command to create a new folder named 'test_container', then print 'Hello from Docker' inside it."*
+> *"Run a command to list the Python files in this workspace."*
 
 If the container isolation is working, you will see a flash of the `docker run` command in the agent's internal reasoning logs. If you open your system's terminal, you can temporarily run `docker ps` while Annolid is "thinking" to actually see the transient Ubuntu container alive and working!
 
 ## Troubleshooting
 
-- **"falling back to local executor" error:** If you see logging indicating the sandbox was bypassed, ensure Docker Desktop is actively running and that the `docker` command is available in your PATH.
-- **Missing dependencies in the container:** The container launches as a relatively empty Ubuntu environment. If the AI needs `python3` or `git` inside the container, it is smart enough to run `apt-get install` internally to quickly get what it needs. However, the exact state disappears after each command runs (they are stateless commands).
-- **Files disappear:** Remember that the Sandbox *only mounts your current Annolid workspace*. If the AI creates temporary files inside `/tmp` of the container, you will not see them on your host. If it needs to save something for you, tell it specifically to save the file inside your project directory.
+- **"Sandbox unavailable" error:** Ensure Docker Desktop or the Docker daemon is running and that the `docker` command is available in your `PATH`.
+- **Missing dependencies in the container:** The pinned Ubuntu image is intentionally minimal, runs without network access, and is stateless. It cannot install packages during a command. Use Annolid's typed tools or configure a reviewed custom image pinned by digest.
+- **"Sandbox image must be pinned" error:** replace a floating image tag with a reviewed digest reference. Run `annolid-run agent-security-audit` to find unsafe runtime configuration.
+- **Files disappear:** The sandbox's `/tmp` is temporary and the workspace mount is read-only. Use Annolid's workspace file tools for reviewed file changes.

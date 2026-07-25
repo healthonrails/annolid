@@ -394,6 +394,12 @@ class AIChatManager(QtCore.QObject):
                         await register_nanobot_style_tools(
                             tools,
                             allowed_dir=workspace,
+                            allowed_read_roots=config.tools.allowed_read_roots,
+                            restrict_runtime_to_workspace=bool(
+                                config.tools.restrict_to_workspace
+                            ),
+                            exec_timeout=int(config.tools.exec.timeout),
+                            exec_container_image=str(config.tools.exec.container_image),
                             cron_store_path=cron_store_path,
                             email_cfg=config.tools.email,
                             calendar_cfg=calendar_cfg,
@@ -502,21 +508,34 @@ class AIChatManager(QtCore.QObject):
                                     webhook_path=config.tools.whatsapp.webhook_path,
                                     ingest_loop=loop,
                                 )
-                                webhook_url = self._whatsapp_webhook_server.start()
-                                logger.info(
-                                    "WhatsApp webhook server enabled at %s", webhook_url
-                                )
-                                host = (
-                                    str(config.tools.whatsapp.webhook_host or "")
-                                    .strip()
-                                    .lower()
-                                )
-                                if host in {"127.0.0.1", "localhost", "0.0.0.0"}:
-                                    logger.warning(
-                                        "WhatsApp webhook server is bound to %s. Meta cannot reach localhost directly. Use a public HTTPS URL/tunnel that forwards to %s",
-                                        host or "localhost",
+                                try:
+                                    webhook_url = self._whatsapp_webhook_server.start()
+                                except RuntimeError as exc:
+                                    self._whatsapp_webhook_server = None
+                                    logger.error(
+                                        "WhatsApp webhook server was not started: %s",
+                                        exc,
+                                    )
+                                else:
+                                    logger.info(
+                                        "WhatsApp webhook server enabled at %s",
                                         webhook_url,
                                     )
+                                    host = (
+                                        str(config.tools.whatsapp.webhook_host or "")
+                                        .strip()
+                                        .lower()
+                                    )
+                                    if host in {"127.0.0.1", "localhost"}:
+                                        logger.warning(
+                                            "WhatsApp webhook server is bound to %s. Meta cannot reach localhost directly. Use a public HTTPS URL/tunnel that forwards to %s",
+                                            host or "localhost",
+                                            webhook_url,
+                                        )
+                                    elif host == "0.0.0.0":
+                                        logger.warning(
+                                            "WhatsApp webhook server is exposed on all interfaces. Put it behind HTTPS and restrict network access."
+                                        )
                             else:
                                 logger.warning(
                                     "WhatsApp webhook requested but whatsapp channel is not initialized"

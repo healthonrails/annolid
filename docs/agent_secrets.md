@@ -9,7 +9,7 @@ This is intended for:
 - provider API keys,
 - Zulip API keys,
 - email passwords,
-- WhatsApp access and verify tokens,
+- WhatsApp access tokens, verify tokens, and webhook app secrets,
 - Box access tokens,
 - other agent channel credentials.
 
@@ -116,6 +116,7 @@ annolid-run agent-secrets-set --path tools.email.password --local tools.email.pa
 annolid-run agent-secrets-set --path tools.box.access_token --env BOX_ACCESS_TOKEN
 annolid-run agent-secrets-set --path tools.box.client_secret --env BOX_CLIENT_SECRET
 annolid-run agent-secrets-set --path tools.box.refresh_token --env BOX_REFRESH_TOKEN
+annolid-run agent-secrets-set --path tools.whatsapp.app_secret --env WHATSAPP_APP_SECRET
 ```
 
 ### `annolid-run agent-secrets-remove`

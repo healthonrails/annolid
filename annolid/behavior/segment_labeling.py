@@ -21,6 +21,9 @@ from annolid.behavior.labels import (
     normalize_behavior_label_list,
 )
 from annolid.behavior import prompting as behavior_prompting
+from annolid.core.agent.providers.model_capabilities import (
+    is_known_text_only_model,
+)
 from annolid.behavior.timeline_sampling import format_hhmmss
 from annolid.core.media.video import build_segment_frame_grid, save_rgb_image
 
@@ -162,16 +165,7 @@ def is_likely_non_vision_model(*, provider: str, model: str) -> bool:
             return False
         if supports_vision is False:
             return True
-        return False
-    known_text_only_tokens = (
-        "kimi-k2.5",
-        "kimi-k2",
-    )
-    if any(token in model_text for token in known_text_only_tokens):
-        return True
-    if provider_text == "nvidia" and "moonshotai/kimi-k2.5" in model_text:
-        return True
-    return False
+    return is_known_text_only_model(provider=provider_text, model=model_text)
 
 
 def behavior_label_empty_response_segment_limit(

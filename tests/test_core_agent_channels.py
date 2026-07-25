@@ -1370,7 +1370,13 @@ def test_whatsapp_channel_send_cloud_api_text() -> None:
         },
         bus,
     )
-    with patch("urllib.request.urlopen", return_value=_FakeResponse()) as mocked:
+    with (
+        patch(
+            "annolid.core.agent.channels.whatsapp.validate_public_url_target",
+            return_value=(True, ""),
+        ),
+        patch("urllib.request.urlopen", return_value=_FakeResponse()) as mocked,
+    ):
         ok, code, body = channel._send_cloud_api_text(
             OutboundMessage(
                 channel="whatsapp",
@@ -1382,6 +1388,58 @@ def test_whatsapp_channel_send_cloud_api_text() -> None:
     assert ok is True
     assert code == 200
     assert "wamid.sent" in body
+
+
+def test_whatsapp_channel_blocks_unsafe_cloud_api_endpoint() -> None:
+    bus = MessageBus()
+    channel = WhatsAppChannel(
+        {
+            "access_token": "token",
+            "phone_number_id": "123",
+            "api_base": "http://169.254.169.254",
+        },
+        bus,
+    )
+
+    with patch("urllib.request.urlopen") as mocked:
+        ok, code, body = channel._send_cloud_api_text(
+            OutboundMessage(
+                channel="whatsapp",
+                chat_id="15551234567",
+                content="hello",
+            )
+        )
+
+    assert mocked.called is False
+    assert ok is False
+    assert code == 0
+    assert "must use HTTPS" in body
+
+
+def test_whatsapp_channel_blocks_cloud_api_lookalike_host() -> None:
+    bus = MessageBus()
+    channel = WhatsAppChannel(
+        {
+            "access_token": "token",
+            "phone_number_id": "123",
+            "api_base": "https://graph.facebook.com.attacker.example",
+        },
+        bus,
+    )
+
+    with patch("urllib.request.urlopen") as mocked:
+        ok, code, body = channel._send_cloud_api_text(
+            OutboundMessage(
+                channel="whatsapp",
+                chat_id="15551234567",
+                content="hello",
+            )
+        )
+
+    assert mocked.called is False
+    assert ok is False
+    assert code == 0
+    assert "must target graph.facebook.com" in body
 
 
 def test_whatsapp_channel_bridge_message_ingest() -> None:

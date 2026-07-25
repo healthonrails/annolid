@@ -9,6 +9,9 @@ from pathlib import Path
 from typing import Any, Sequence
 from urllib.parse import parse_qsl, unquote, urlencode, urlparse, urlunparse
 
+from annolid.core.agent.security_network import public_httpx_client_kwargs
+from annolid.utils.logger import logger
+
 from .common import _normalize, _resolve_read_path, _resolve_write_path
 from .function_base import FunctionTool
 from .web import DownloadUrlTool
@@ -461,8 +464,8 @@ class DownloadPdfTool(FunctionTool):
             }
         dst.parent.mkdir(parents=True, exist_ok=True)
         parsed = urlparse(url)
-        host = str(parsed.netloc or "").strip().lower()
-        if "pmc.ncbi.nlm.nih.gov" not in host:
+        host = str(parsed.hostname or "").strip().lower().rstrip(".")
+        if host != "pmc.ncbi.nlm.nih.gov":
             return None
 
         headers = {
@@ -476,6 +479,7 @@ class DownloadPdfTool(FunctionTool):
                 follow_redirects=True,
                 max_redirects=8,
                 timeout=60.0,
+                **public_httpx_client_kwargs(),
             ) as client:
                 initial = await client.get(url, headers=headers)
                 if (
@@ -556,6 +560,7 @@ class DownloadPdfTool(FunctionTool):
                 follow_redirects=True,
                 max_redirects=5,
                 timeout=20.0,
+                **public_httpx_client_kwargs(),
             ) as client:
                 response = await client.get(
                     endpoint,
@@ -569,10 +574,15 @@ class DownloadPdfTool(FunctionTool):
         except Exception:
             return []
 
-        if not body:
+        if not body or len(body.encode("utf-8")) > 1_048_576:
+            return []
+        upper_body = body.upper()
+        if "<!DOCTYPE" in upper_body or "<!ENTITY" in upper_body:
             return []
         try:
-            root = ET.fromstring(body)
+            # The response is size-bounded and entity/doctype declarations are
+            # rejected above before parsing the fixed NCBI endpoint response.
+            root = ET.fromstring(body)  # noqa: S314
         except Exception:
             return []
 
@@ -594,10 +604,10 @@ class DownloadPdfTool(FunctionTool):
             return []
         candidates = [primary]
         parsed = urlparse(primary)
-        host = str(parsed.netloc or "").lower()
+        host = str(parsed.hostname or "").lower().rstrip(".")
         path = str(parsed.path or "")
 
-        if "pmc.ncbi.nlm.nih.gov" in host and "/pdf/" in path.lower():
+        if host == "pmc.ncbi.nlm.nih.gov" and "/pdf/" in path.lower():
             pmcid = DownloadPdfTool._extract_pmcid(primary)
             if pmcid:
                 epmc_url = f"https://europepmc.org/backend/ptpmcrender.fcgi?accid={pmcid}&blobtype=pdf"
@@ -613,7 +623,7 @@ class DownloadPdfTool(FunctionTool):
                 if fallback not in candidates:
                     candidates.append(fallback)
 
-        if "arxiv.org" in host:
+        if host == "arxiv.org" or host.endswith(".arxiv.org"):
             abs_match = re.search(
                 r"^/abs/(\d{4}\.\d{4,5}(?:v\d+)?)$",
                 path,
@@ -658,7 +668,7 @@ class DownloadPdfTool(FunctionTool):
                         if len(candidate) >= 8:
                             return candidate
         except Exception:
-            pass
+            logger.debug("PyMuPDF could not extract a PDF title", exc_info=True)
 
         try:
             from pypdf import PdfReader  # type: ignore
@@ -676,7 +686,7 @@ class DownloadPdfTool(FunctionTool):
                     if len(candidate) >= 8:
                         return candidate
         except Exception:
-            pass
+            logger.debug("pypdf could not extract a PDF title", exc_info=True)
         return None
 
     @staticmethod
@@ -707,11 +717,12 @@ class DownloadPdfTool(FunctionTool):
         result = ""
         pmcid = self._extract_pmcid(url)
         source_url = str(url or "").strip()
-        lower_source = source_url.lower()
+        source_host = str(urlparse(source_url).hostname or "").lower().rstrip(".")
+        is_pmc_source = source_host == "pmc.ncbi.nlm.nih.gov"
         candidates = self._candidate_pdf_urls(url) or [source_url]
         # Prefer canonical OA-hosted PDF links first for PMC URLs to avoid
         # predictable 403s on direct article PDF endpoints.
-        if pmcid and "pmc.ncbi.nlm.nih.gov" in lower_source:
+        if pmcid and is_pmc_source:
             oa_first = await self._fetch_pmc_oa_pdf_urls(pmcid)
             if oa_first:
                 ordered: list[str] = []
@@ -758,9 +769,11 @@ class DownloadPdfTool(FunctionTool):
                 break
             error_text = str(payload_try.get("error") or "").strip().lower()
             parsed_candidate = urlparse(candidate_url)
-            host_candidate = str(parsed_candidate.netloc or "").strip().lower()
+            host_candidate = (
+                str(parsed_candidate.hostname or "").strip().lower().rstrip(".")
+            )
             if (
-                "pmc.ncbi.nlm.nih.gov" in host_candidate
+                host_candidate == "pmc.ncbi.nlm.nih.gov"
                 and "content-type" in error_text
             ):
                 pow_payload = await self._download_pmc_pow_pdf(
@@ -776,12 +789,7 @@ class DownloadPdfTool(FunctionTool):
                         result = json.dumps(pow_payload)
                         break
                     last_error_payload = pow_payload
-            if (
-                idx >= len(candidates)
-                and not oa_resolved
-                and pmcid
-                and "pmc.ncbi.nlm.nih.gov" in lower_source
-            ):
+            if idx >= len(candidates) and not oa_resolved and pmcid and is_pmc_source:
                 oa_resolved = True
                 oa_urls = await self._fetch_pmc_oa_pdf_urls(pmcid)
                 for oa_url in oa_urls:

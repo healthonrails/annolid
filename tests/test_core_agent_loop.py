@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 import pytest
 
+import annolid.core.agent.loop as agent_loop_module
 from annolid.core.agent.loop import AgentLoop, AgentMemoryConfig, AgentToolRun
+from annolid.core.agent.providers.base import LLMResponse, ProviderCallError
 from annolid.core.agent.session_manager import (
     AgentSessionManager,
     PersistentSessionStore,
@@ -1047,6 +1049,64 @@ def test_agent_loop_persists_user_message_before_model_failure() -> None:
     assert history
     assert history[-1]["role"] == "user"
     assert history[-1]["content"] == "please persist me"
+
+
+def test_default_agent_provider_error_is_not_persisted_as_assistant_text(
+    monkeypatch,
+) -> None:
+    class _FailingProvider:
+        async def chat_with_retry(self, **kwargs):  # noqa: ANN003
+            del kwargs
+            return LLMResponse(
+                content="service unavailable",
+                finish_reason="error",
+                error_status_code=503,
+                error_kind="server_error",
+            )
+
+        async def close(self) -> None:
+            return None
+
+    config = type(
+        "_Config",
+        (),
+        {
+            "provider": "openai",
+            "model": "test-model",
+            "params": {
+                "api_key": "sk-test",
+                "base_url": "https://example.com/v1",
+            },
+        },
+    )()
+    monkeypatch.setattr(
+        agent_loop_module,
+        "resolve_llm_config",
+        lambda **_kwargs: config,
+    )
+    monkeypatch.setattr(
+        agent_loop_module,
+        "resolve_openai_compat",
+        lambda _config: type("_Resolved", (), {"model": "test-model"})(),
+    )
+    monkeypatch.setattr(
+        agent_loop_module,
+        "OpenAICompatProvider",
+        lambda resolved: _FailingProvider(),
+    )
+
+    loop = AgentLoop(
+        tools=FunctionToolRegistry(),
+        provider="openai",
+        model="test-model",
+    )
+    with pytest.raises(ProviderCallError) as exc_info:
+        asyncio.run(loop.run("please retry later", session_id="provider-error"))
+
+    assert exc_info.value.retryable is True
+    history = loop.get_session_history("provider-error")
+    assert [item["role"] for item in history] == ["user"]
+    assert history[0]["content"] == "please retry later"
 
 
 def test_agent_loop_tool_timeout_returns_error_result() -> None:

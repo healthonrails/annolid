@@ -7,7 +7,14 @@ from urllib.parse import urlparse, urlunparse
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Sequence, Tuple
 
-from .base import LLMProvider, LLMResponse, ToolCallRequest
+from annolid.utils.logger import logger
+
+from .base import (
+    LLMProvider,
+    LLMResponse,
+    ToolCallRequest,
+    error_response_from_exception,
+)
 
 DEFAULT_CODEX_URL = "https://chatgpt.com/backend-api/codex/responses"
 DEFAULT_ORIGINATOR = "annolid"
@@ -82,15 +89,17 @@ class OpenAICodexProvider(LLMProvider):
                         "`.venv/bin/pip install oauth-cli-kit`."
                     ),
                     finish_reason="error",
+                    error_kind="configuration",
+                    error_should_retry=False,
                 )
             token_getter = get_codex_token
 
         try:
             token = await asyncio.to_thread(token_getter)
         except Exception as exc:
-            return LLMResponse(
-                content=f"Error getting Codex OAuth token: {exc}",
-                finish_reason="error",
+            return error_response_from_exception(
+                exc,
+                prefix="Error getting Codex OAuth token",
             )
 
         system_prompt, input_items = _convert_messages(messages)
@@ -134,9 +143,9 @@ class OpenAICodexProvider(LLMProvider):
                 websocket_request_callable=self._websocket_request_callable,
             )
         except Exception as exc:
-            return LLMResponse(
-                content=f"Error calling Codex: {exc}",
-                finish_reason="error",
+            return error_response_from_exception(
+                exc,
+                prefix=(f"Error calling openai_codex:{model or self._resolved.model}"),
             )
         return LLMResponse(
             content=content,
@@ -189,11 +198,14 @@ async def _request_codex(
         async with client.stream("POST", url, headers=headers, json=body) as response:
             if response.status_code != 200:
                 text = await response.aread()
-                raise RuntimeError(
+                exc = RuntimeError(
                     _friendly_error(
                         response.status_code, text.decode("utf-8", "ignore")
                     )
                 )
+                exc.status_code = response.status_code  # type: ignore[attr-defined]
+                exc.headers = dict(response.headers)  # type: ignore[attr-defined]
+                raise exc
             return await _consume_sse(response, on_token=on_token)
 
 
@@ -349,15 +361,11 @@ def _convert_messages(
             continue
         if role == "tool":
             call_id, _ = _split_tool_call_id(msg.get("tool_call_id"))
-            if isinstance(content, str):
-                output_text = content
-            else:
-                output_text = json.dumps(content, ensure_ascii=False)
             input_items.append(
                 {
                     "type": "function_call_output",
                     "call_id": call_id,
-                    "output": output_text,
+                    "output": _convert_tool_output(content),
                 }
             )
     return system_prompt, input_items
@@ -382,6 +390,86 @@ def _convert_user_message(content: Any) -> Dict[str, Any]:
         if converted:
             return {"role": "user", "content": converted}
     return {"role": "user", "content": [{"type": "input_text", "text": ""}]}
+
+
+def _convert_tool_output(content: Any) -> str | List[Dict[str, Any]]:
+    """Preserve supported Responses API image/file tool outputs.
+
+    Unknown or mixed list schemas are serialized intact instead of being
+    partially converted, which prevents silent tool-result data loss.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        converted: List[Dict[str, Any]] = []
+        for item in content:
+            if not isinstance(item, dict):
+                break
+            item_type = item.get("type")
+            if item_type in {"text", "input_text"}:
+                if set(item) - {"type", "text", "_meta"}:
+                    break
+                text = item.get("text")
+                if not isinstance(text, str):
+                    break
+                converted.append({"type": "input_text", "text": text})
+            elif item_type in {"image_url", "input_image"}:
+                image = item.get("image_url")
+                if isinstance(image, dict) and set(image) - {"url", "detail"}:
+                    break
+                if set(item) - {
+                    "type",
+                    "image_url",
+                    "file_id",
+                    "detail",
+                    "_meta",
+                }:
+                    break
+                url = image.get("url") if isinstance(image, dict) else image
+                file_id = item.get("file_id")
+                detail = item.get(
+                    "detail",
+                    image.get("detail", "auto") if isinstance(image, dict) else "auto",
+                )
+                if detail not in {"low", "high", "auto", "original"}:
+                    break
+                block: Dict[str, Any] = {
+                    "type": "input_image",
+                    "detail": detail,
+                }
+                if isinstance(url, str) and url:
+                    block["image_url"] = url
+                elif isinstance(file_id, str) and file_id:
+                    block["file_id"] = file_id
+                else:
+                    break
+                converted.append(block)
+            elif item_type in {"file", "input_file"}:
+                if set(item) - {
+                    "type",
+                    "file_data",
+                    "file_id",
+                    "file_url",
+                    "filename",
+                    "_meta",
+                }:
+                    break
+                block = {"type": "input_file"}
+                for key in ("file_data", "file_id", "file_url", "filename"):
+                    value = item.get(key)
+                    if isinstance(value, str) and value:
+                        block[key] = value
+                if not any(
+                    key in block for key in ("file_data", "file_id", "file_url")
+                ):
+                    break
+                converted.append(block)
+            else:
+                break
+        else:
+            if converted:
+                return converted
+    return json.dumps(content, ensure_ascii=False)
 
 
 def _split_tool_call_id(tool_call_id: Any) -> Tuple[str, Optional[str]]:
@@ -416,7 +504,8 @@ async def _iter_sse(response: Any) -> AsyncGenerator[Dict[str, Any], None]:
                     continue
                 try:
                     yield json.loads(data)
-                except Exception:
+                except json.JSONDecodeError:
+                    logger.debug("Ignoring malformed OpenAI Codex SSE event.")
                     continue
             continue
         buffer.append(line)

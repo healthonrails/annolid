@@ -11,7 +11,9 @@ from pathlib import Path
 from threading import Event as ThreadEvent, Lock
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
-from .base import LLMProvider, LLMResponse
+from annolid.utils.logger import logger
+
+from .base import LLMProvider, LLMResponse, error_response_from_exception
 
 DEFAULT_CODEX_CLI = "codex"
 DEFAULT_CODEX_CLI_MODEL = "codex-cli/gpt-5.3-codex"
@@ -79,13 +81,16 @@ class CodexCLIProvider(LLMProvider):
     ) -> LLMResponse:
         del max_tokens, temperature
         cli_path = str(self._resolved.cli_path or DEFAULT_CODEX_CLI).strip()
-        if not shutil.which(cli_path):
+        resolved_cli_path = shutil.which(cli_path)
+        if not resolved_cli_path:
             return LLMResponse(
                 content=(
                     "Codex CLI provider requires the `codex` executable. "
                     "Install Codex and ensure `codex` is available on PATH."
                 ),
                 finish_reason="error",
+                error_kind="configuration",
+                error_should_retry=False,
             )
 
         prompt = _render_prompt(
@@ -96,7 +101,9 @@ class CodexCLIProvider(LLMProvider):
         timeout_s = float(timeout_seconds) if timeout_seconds else 180.0
         try:
             runner_kwargs = {
-                "cli_path": cli_path,
+                # Pin the executable found during validation instead of resolving
+                # PATH a second time in the subprocess call.
+                "cli_path": resolved_cli_path,
                 "prompt": prompt,
                 "model": _strip_model_prefix(model or self._resolved.model),
                 "workdir": self._resolved.workdir,
@@ -113,11 +120,13 @@ class CodexCLIProvider(LLMProvider):
             return LLMResponse(
                 content=f"Codex CLI request timed out after {timeout_s:.0f}s.",
                 finish_reason="error",
+                error_kind="timeout",
+                error_should_retry=True,
             )
         except Exception as exc:
-            return LLMResponse(
-                content=f"Error calling Codex CLI: {exc}",
-                finish_reason="error",
+            return error_response_from_exception(
+                exc,
+                prefix=f"Error calling codex_cli:{model or self._resolved.model}",
             )
 
         if on_token is not None and content:
@@ -263,7 +272,7 @@ def _invoke_codex_cli(
     for image_path in images:
         cmd.extend(["--image", image_path])
     if cancel_event is None:
-        return subprocess.run(
+        return subprocess.run(  # noqa: S603 - executable is resolved with shutil.which
             cmd,
             input=prompt,
             text=True,
@@ -273,7 +282,7 @@ def _invoke_codex_cli(
             cwd=workdir,
             env=env,
         )
-    proc = subprocess.Popen(
+    proc = subprocess.Popen(  # noqa: S603 - executable is resolved with shutil.which
         cmd,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -499,7 +508,8 @@ def _parse_thread_id(stdout: str) -> str:
             continue
         try:
             payload = json.loads(line)
-        except Exception:
+        except json.JSONDecodeError:
+            logger.debug("Ignoring malformed Codex CLI session event.")
             continue
         if str(payload.get("type") or "").strip() != "thread.started":
             continue

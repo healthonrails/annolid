@@ -1,10 +1,21 @@
 from __future__ import annotations
 
 import json
-import os
 from typing import Any, Callable, Dict, List, Optional
 
-from .base import LLMProvider, LLMResponse, ToolCallRequest
+from annolid.utils.logger import logger
+
+from .base import (
+    LLMProvider,
+    LLMResponse,
+    ToolCallRequest,
+    error_response_from_exception,
+)
+from .call_runtime import (
+    sanitize_openai_messages,
+    sanitize_provider_error,
+    sanitize_tool_schemas,
+)
 from .registry import find_by_model, find_by_name, find_gateway
 
 
@@ -35,7 +46,6 @@ class UnifiedLLMProvider(LLMProvider):
             api_key=self.api_key,
             api_base=self.api_base,
         )
-        self._configure_env()
 
     def get_default_model(self) -> str:
         return self.default_model
@@ -52,22 +62,6 @@ class UnifiedLLMProvider(LLMProvider):
         if isinstance(obj, dict):
             return obj.get(key, default)
         return getattr(obj, key, default)
-
-    def _configure_env(self) -> None:
-        spec = self._provider_spec()
-        if spec is None:
-            return
-        if self.api_key:
-            if self._gateway:
-                os.environ[spec.env_key] = self.api_key
-            else:
-                os.environ.setdefault(spec.env_key, self.api_key)
-
-        effective_base = self.api_base or spec.default_api_base
-        for env_name, env_val in spec.env_extras:
-            resolved = env_val.replace("{api_key}", self.api_key or "")
-            resolved = resolved.replace("{api_base}", effective_base)
-            os.environ.setdefault(env_name, resolved)
 
     def _resolve_model(self, model: str) -> str:
         model_name = str(model or self.default_model)
@@ -104,25 +98,7 @@ class UnifiedLLMProvider(LLMProvider):
 
     @staticmethod
     def _sanitize_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        allowed = {
-            "role",
-            "content",
-            "tool_calls",
-            "tool_call_id",
-            "name",
-            "reasoning_content",
-        }
-        sanitized: List[Dict[str, Any]] = []
-        for msg in messages:
-            clean = {k: v for k, v in dict(msg).items() if k in allowed}
-            if (
-                str(clean.get("role") or "") == "assistant"
-                and clean.get("tool_calls")
-                and ("content" not in clean or clean.get("content") == "")
-            ):
-                clean["content"] = None
-            sanitized.append(clean)
-        return sanitized
+        return sanitize_openai_messages(messages)
 
     @classmethod
     def _to_openai_messages(
@@ -156,8 +132,11 @@ class UnifiedLLMProvider(LLMProvider):
                     repaired = json_repair.loads(text)
                     if isinstance(repaired, dict):
                         return dict(repaired)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug(
+                        "Failed to repair provider tool arguments: %s",
+                        sanitize_provider_error(exc),
+                    )
             return {"_raw": raw_args}
         return {"_raw": raw_args}
 
@@ -185,6 +164,7 @@ class UnifiedLLMProvider(LLMProvider):
             api_key=self.api_key or "no-key",
             base_url=self.api_base or None,
             default_headers=(dict(self.extra_headers) if self.extra_headers else None),
+            max_retries=0,
         )
         return self._openai_client
 
@@ -205,6 +185,7 @@ class UnifiedLLMProvider(LLMProvider):
             kwargs["base_url"] = self.api_base
         if self.extra_headers:
             kwargs["default_headers"] = dict(self.extra_headers)
+        kwargs["max_retries"] = 0
         self._anthropic_client = AsyncAnthropic(**kwargs)
         return self._anthropic_client
 
@@ -368,6 +349,7 @@ class UnifiedLLMProvider(LLMProvider):
         tools: Optional[List[Dict[str, Any]]],
         max_tokens: int,
         temperature: Optional[float],
+        timeout_seconds: Optional[float],
         on_token: Optional[Callable[[str], None]],
     ) -> LLMResponse:
         client = self._ensure_openai_client()
@@ -378,10 +360,12 @@ class UnifiedLLMProvider(LLMProvider):
         }
         if temperature is not None:
             payload["temperature"] = float(temperature)
+        if timeout_seconds is not None:
+            payload["timeout"] = float(timeout_seconds)
         self._apply_model_overrides(resolved_model, payload)
         should_stream = bool(on_token) and not tools
         if tools:
-            payload["tools"] = list(tools)
+            payload["tools"] = sanitize_tool_schemas(list(tools))
             payload["tool_choice"] = "auto"
             should_stream = False
 
@@ -443,6 +427,7 @@ class UnifiedLLMProvider(LLMProvider):
         tools: Optional[List[Dict[str, Any]]],
         max_tokens: int,
         temperature: Optional[float],
+        timeout_seconds: Optional[float],
         on_token: Optional[Callable[[str], None]],
     ) -> LLMResponse:
         client = self._ensure_anthropic_client()
@@ -458,6 +443,8 @@ class UnifiedLLMProvider(LLMProvider):
             payload["system"] = system_text
         if temperature is not None:
             payload["temperature"] = float(temperature)
+        if timeout_seconds is not None:
+            payload["timeout"] = float(timeout_seconds)
         converted_tools = self._convert_tools_for_anthropic(tools)
         if converted_tools:
             payload["tools"] = converted_tools
@@ -476,6 +463,7 @@ class UnifiedLLMProvider(LLMProvider):
         model: Optional[str] = None,
         max_tokens: int = 4096,
         temperature: Optional[float] = 0.7,
+        timeout_seconds: Optional[float] = None,
         on_token: Optional[Callable[[str], None]] = None,
     ) -> LLMResponse:
         resolved_model = self._resolve_model(model or self.default_model)
@@ -488,6 +476,7 @@ class UnifiedLLMProvider(LLMProvider):
                     tools=tools,
                     max_tokens=max_tokens,
                     temperature=temperature,
+                    timeout_seconds=timeout_seconds,
                     on_token=on_token,
                 )
             return await self._chat_openai_compat(
@@ -496,11 +485,17 @@ class UnifiedLLMProvider(LLMProvider):
                 tools=tools,
                 max_tokens=max_tokens,
                 temperature=temperature,
+                timeout_seconds=timeout_seconds,
                 on_token=on_token,
             )
         except Exception as exc:
-            return LLMResponse(
-                content=f"Error calling LLM: {exc}", finish_reason="error"
+            return error_response_from_exception(
+                exc,
+                prefix=(
+                    "Error calling "
+                    f"{self._resolved_provider_name(resolved_model) or 'provider'}:"
+                    f"{resolved_model}"
+                ),
             )
 
     @classmethod
@@ -513,8 +508,11 @@ class UnifiedLLMProvider(LLMProvider):
         if hasattr(module, "set_verbose"):
             try:
                 module.set_verbose = False
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(
+                    "Failed to disable provider runtime verbosity: %s",
+                    sanitize_provider_error(exc),
+                )
         if cls._runtime_logging_configured:
             return
         cls._runtime_logging_configured = True
@@ -522,16 +520,22 @@ class UnifiedLLMProvider(LLMProvider):
     def _parse_response(self, completion: Any) -> LLMResponse:
         choices = self._get_value(completion, "choices", None)
         if not choices:
-            return LLMResponse(content="", finish_reason="stop", usage={})
+            return LLMResponse(
+                content="Model provider returned no response choices.",
+                finish_reason="error",
+                usage={},
+                error_kind="empty",
+                error_should_retry=True,
+            )
         choice = choices[0]
         message = self._get_value(choice, "message", None)
         if message is None:
             return LLMResponse(
-                content="",
-                finish_reason=str(
-                    self._get_value(choice, "finish_reason", "stop") or "stop"
-                ),
+                content="Model provider returned a choice without a message.",
+                finish_reason="error",
                 usage={},
+                error_kind="empty",
+                error_should_retry=True,
             )
 
         tool_calls: List[ToolCallRequest] = []
@@ -562,14 +566,28 @@ class UnifiedLLMProvider(LLMProvider):
                 "total_tokens": int(self._get_value(usage_obj, "total_tokens", 0) or 0),
             }
 
+        content = str(self._get_value(message, "content", "") or "")
+        finish_reason = str(self._get_value(choice, "finish_reason", "stop") or "stop")
+        reasoning_content = self._get_value(message, "reasoning_content", None)
+        if (
+            not content
+            and not tool_calls
+            and not reasoning_content
+            and finish_reason == "stop"
+        ):
+            return LLMResponse(
+                content="Model provider returned an empty response.",
+                finish_reason="error",
+                usage=usage,
+                error_kind="empty",
+                error_should_retry=True,
+            )
         return LLMResponse(
-            content=str(self._get_value(message, "content", "") or ""),
+            content=content,
             tool_calls=tool_calls,
-            finish_reason=str(
-                self._get_value(choice, "finish_reason", "stop") or "stop"
-            ),
+            finish_reason=finish_reason,
             usage=usage,
-            reasoning_content=self._get_value(message, "reasoning_content", None),
+            reasoning_content=reasoning_content,
         )
 
     async def close(self) -> None:
@@ -586,7 +604,11 @@ class UnifiedLLMProvider(LLMProvider):
                     result = close_fn()
                     if hasattr(result, "__await__"):
                         await result
-                except Exception:
+                except Exception as exc:
+                    logger.debug(
+                        "Failed to close OpenAI client cleanly: %s",
+                        sanitize_provider_error(exc),
+                    )
                     continue
                 continue
             close_fn = getattr(client, "close", None)
@@ -595,5 +617,9 @@ class UnifiedLLMProvider(LLMProvider):
                     result = close_fn()
                     if hasattr(result, "__await__"):
                         await result
-                except Exception:
+                except Exception as exc:
+                    logger.debug(
+                        "Failed to close provider client cleanly: %s",
+                        sanitize_provider_error(exc),
+                    )
                     continue

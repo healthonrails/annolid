@@ -7,6 +7,8 @@ from .function_base import FunctionTool
 from .common import _resolve_read_path, _resolve_write_path
 from .pdf import ExtractPdfImagesTool, ExtractPdfTextTool, OpenPdfTool
 
+_MAX_TEXT_FILE_SIZE_BYTES = 100 * 1024 * 1024
+
 
 class ReadFileTool(FunctionTool):
     def __init__(
@@ -45,6 +47,12 @@ class ReadFileTool(FunctionTool):
                 return f"Error: File not found: {path}"
             if not file_path.is_file():
                 return f"Error: Not a file: {path}"
+            file_size = file_path.stat().st_size
+            if file_size > _MAX_TEXT_FILE_SIZE_BYTES:
+                return (
+                    f"Error: File too large to read ({file_size / (1024 * 1024):.1f} "
+                    "MiB). Maximum is 100 MiB."
+                )
             if file_path.suffix.lower() == ".pdf":
                 return (
                     "Error: PDF is a binary file. Use extract_pdf_text(path=...) "
@@ -133,6 +141,14 @@ class EditFileTool(FunctionTool):
             file_path = _resolve_write_path(path, allowed_dir=self._allowed_dir)
             if not file_path.exists():
                 return f"Error: File not found: {path}"
+            if not file_path.is_file():
+                return f"Error: Not a file: {path}"
+            file_size = file_path.stat().st_size
+            if file_size > _MAX_TEXT_FILE_SIZE_BYTES:
+                return (
+                    f"Error: File too large to edit ({file_size / (1024 * 1024):.1f} "
+                    "MiB). Maximum is 100 MiB."
+                )
 
             content = file_path.read_text(encoding="utf-8")
             if old_text not in content:

@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import json
 import sys
 import types
 from types import SimpleNamespace
 from pathlib import Path
 import subprocess
 
+import pytest
+
+import annolid.core.agent.gui_backend.provider_fallback as provider_fallback_mod
 import annolid.core.agent.providers.background_chat as background_chat_mod
+import annolid.core.agent.providers.openai_codex_provider as openai_codex_mod
 from annolid.core.agent.providers.openai_compat import (
     OpenAICompatProvider,
     resolve_openai_compat,
@@ -20,10 +25,192 @@ from annolid.core.agent.providers.openai_codex_provider import (
     OpenAICodexProvider,
     resolve_openai_codex,
 )
-from annolid.core.agent.providers.base import ToolCallRequest
+from annolid.core.agent.providers.base import (
+    LLMProvider,
+    LLMResponse,
+    ProviderCallError,
+    ToolCallRequest,
+    error_response_from_exception,
+)
+from annolid.core.agent.providers.call_runtime import (
+    sanitize_openai_messages,
+    sanitize_tool_schemas,
+)
 from annolid.core.agent.providers.unified_provider import UnifiedLLMProvider
 from annolid.core.agent.providers.registry import find_by_model
 from annolid.utils.llm_settings import LLMConfig
+
+
+def test_provider_payload_sanitization_drops_internal_metadata_without_mutation() -> (
+    None
+):
+    messages = [
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,abc"},
+                    "_meta": {"path": "/private/secret.png"},
+                }
+            ],
+            "tools_used": ["read_file"],
+        }
+    ]
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "parameters": {"type": "object"},
+                "_meta": {"source": "/private/tool.py"},
+            },
+        }
+    ]
+
+    sanitized_messages = sanitize_openai_messages(messages)
+    sanitized_tools = sanitize_tool_schemas(tools)
+
+    assert "tools_used" not in sanitized_messages[0]
+    assert "_meta" not in str(sanitized_messages)
+    assert "_meta" not in str(sanitized_tools)
+    assert messages[0]["tools_used"] == ["read_file"]
+    assert "_meta" in messages[0]["content"][0]
+    assert "_meta" in tools[0]["function"]
+
+
+def test_provider_exception_is_structured_and_redacted() -> None:
+    class _RateLimitError(RuntimeError):
+        status_code = 429
+        headers = {
+            "retry-after-ms": "250",
+            "x-should-retry": "true",
+        }
+        body = {
+            "error": {
+                "type": "rate_limit_error",
+                "code": "too_many_requests",
+            }
+        }
+
+    response = error_response_from_exception(
+        _RateLimitError(
+            "request failed API key provided: sk-super-secret-value "
+            "Authorization: Bearer bearer-secret "
+            "at https://user:password@example.com/v1"
+        )
+    )
+
+    assert response.finish_reason == "error"
+    assert response.error_status_code == 429
+    assert response.error_kind == "rate_limit"
+    assert response.error_type == "rate_limit_error"
+    assert response.error_code == "too_many_requests"
+    assert response.error_retry_after_s == 0.25
+    assert response.error_should_retry is True
+    assert "sk-super-secret-value" not in str(response.content)
+    assert "bearer-secret" not in str(response.content)
+    assert "password@example.com" not in str(response.content)
+    assert str(response.content).count("<redacted>") == 3
+
+
+def test_provider_retry_is_bounded_and_recovers_transient_error() -> None:
+    class _SequenceProvider(LLMProvider):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def chat(self, **kwargs):  # noqa: ANN003
+            del kwargs
+            self.calls += 1
+            if self.calls == 1:
+                return LLMResponse(
+                    content="temporary outage",
+                    finish_reason="error",
+                    error_status_code=503,
+                    error_kind="server_error",
+                )
+            return LLMResponse(content="ok")
+
+        def get_default_model(self) -> str:
+            return "test-model"
+
+    provider = _SequenceProvider()
+    response = __import__("asyncio").run(
+        provider.chat_with_retry(
+            messages=[{"role": "user", "content": "hello"}],
+            retry_delays=(0.0,),
+        )
+    )
+
+    assert response.content == "ok"
+    assert provider.calls == 2
+
+
+def test_provider_retry_stops_after_streamed_content() -> None:
+    class _StreamingFailureProvider(LLMProvider):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def chat(self, **kwargs):  # noqa: ANN003
+            self.calls += 1
+            kwargs["on_token"]("partial")
+            return LLMResponse(
+                content="stream disconnected",
+                finish_reason="error",
+                error_kind="connection",
+            )
+
+        def get_default_model(self) -> str:
+            return "test-model"
+
+    provider = _StreamingFailureProvider()
+    chunks: list[str] = []
+    response = __import__("asyncio").run(
+        provider.chat_with_retry(
+            messages=[{"role": "user", "content": "hello"}],
+            on_token=chunks.append,
+            retry_delays=(0.0,),
+        )
+    )
+
+    assert response.finish_reason == "error"
+    assert provider.calls == 1
+    assert provider.is_retryable_response(response) is False
+    assert chunks == ["partial"]
+
+
+def test_provider_retry_does_not_block_on_long_retry_after() -> None:
+    class _RateLimitedProvider(LLMProvider):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def chat(self, **kwargs):  # noqa: ANN003
+            del kwargs
+            self.calls += 1
+            return LLMResponse(
+                content="rate limited",
+                finish_reason="error",
+                error_status_code=429,
+                error_kind="rate_limit",
+                error_retry_after_s=120.0,
+            )
+
+        def get_default_model(self) -> str:
+            return "test-model"
+
+    provider = _RateLimitedProvider()
+    response = __import__("asyncio").run(
+        provider.chat_with_retry(
+            messages=[{"role": "user", "content": "hello"}],
+            retry_delays=(0.0,),
+            max_retry_after_s=30.0,
+        )
+    )
+
+    assert response.finish_reason == "error"
+    assert provider.calls == 1
+    assert provider.is_retryable_response(response) is False
 
 
 def test_resolve_openai_compat_for_ollama() -> None:
@@ -38,6 +225,71 @@ def test_resolve_openai_compat_for_ollama() -> None:
     assert resolved.base_url.endswith("/v1")
 
 
+def test_openai_codex_preserves_multimodal_tool_output() -> None:
+    _, items = openai_codex_mod._convert_messages(  # noqa: SLF001
+        [
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "data:image/png;base64,abc",
+                            "detail": "high",
+                        },
+                        "_meta": {"path": "/private/image.png"},
+                    },
+                    {"type": "text", "text": "Rendered page"},
+                    {
+                        "type": "input_file",
+                        "file_id": "file_123",
+                        "filename": "report.pdf",
+                        "_meta": {"path": "/private/report.pdf"},
+                    },
+                ],
+            }
+        ]
+    )
+
+    assert items[0]["output"] == [
+        {
+            "type": "input_image",
+            "image_url": "data:image/png;base64,abc",
+            "detail": "high",
+        },
+        {"type": "input_text", "text": "Rendered page"},
+        {
+            "type": "input_file",
+            "file_id": "file_123",
+            "filename": "report.pdf",
+        },
+    ]
+    assert "_meta" not in str(items[0])
+
+
+def test_openai_codex_preserves_unknown_tool_lists_as_json() -> None:
+    content = [
+        {"type": "text", "text": "status", "code": 7},
+        {"kind": "record", "value": 42},
+    ]
+
+    _, items = openai_codex_mod._convert_messages(  # noqa: SLF001
+        [
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": content,
+            }
+        ]
+    )
+
+    assert items[0]["output"] == json.dumps(
+        content,
+        ensure_ascii=False,
+    )
+
+
 def test_resolve_openai_compat_for_openrouter_key_prefix() -> None:
     cfg = LLMConfig(
         provider="openai",
@@ -47,6 +299,34 @@ def test_resolve_openai_compat_for_openrouter_key_prefix() -> None:
     resolved = resolve_openai_compat(cfg)
     assert resolved.provider == "openrouter"
     assert "openrouter.ai" in resolved.base_url
+
+
+def test_provider_resolution_does_not_export_credentials_to_process_env(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "existing-key")
+    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+
+    resolved = resolve_openai_compat(
+        LLMConfig(
+            provider="nvidia",
+            model="nvidia/nemotron-3-ultra-550b-a55b",
+            params={
+                "api_key": "nvapi-configured-secret",
+                "base_url": "https://integrate.api.nvidia.com/v1",
+            },
+        )
+    )
+    _ = UnifiedLLMProvider(
+        provider_name="openrouter",
+        api_key="sk-or-configured-secret",
+        api_base="https://openrouter.ai/api/v1",
+        default_model="openrouter/test-model",
+    )
+
+    assert resolved.api_key == "nvapi-configured-secret"
+    assert __import__("os").environ["OPENAI_API_KEY"] == "existing-key"
+    assert "NVIDIA_API_KEY" not in __import__("os").environ
 
 
 def test_openai_compat_provider_parses_tool_calls() -> None:
@@ -89,6 +369,195 @@ def test_openai_compat_provider_parses_tool_calls() -> None:
     assert resp.usage["total_tokens"] == 3
 
 
+def test_openai_compat_omits_image_for_known_text_only_model() -> None:
+    calls: list[dict] = []
+
+    class _FakeCompletions:
+        async def create(self, **kwargs):  # noqa: ANN003
+            calls.append(dict(kwargs))
+            if "data:image" in str(kwargs.get("messages")):
+                raise ValueError(
+                    "Received multimodal data but multimodal processing is not "
+                    "enabled. Use --enable-multimodal flag to enable multimodal "
+                    "processing."
+                )
+            msg = SimpleNamespace(
+                content="Hello!",
+                tool_calls=[],
+                reasoning_content=None,
+            )
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=msg, finish_reason="stop")],
+                usage=None,
+            )
+
+    class _FakeClient:
+        def __init__(self):
+            self.chat = SimpleNamespace(completions=_FakeCompletions())
+
+    resolved = resolve_openai_compat(
+        LLMConfig(
+            provider="nvidia",
+            model="nvidia/nemotron-3-ultra-550b-a55b",
+            params={
+                "api_key": "nvapi-test",
+                "base_url": "https://integrate.api.nvidia.com/v1",
+            },
+        )
+    )
+    provider = OpenAICompatProvider(
+        resolved=resolved,
+        client_factory=lambda _resolved: _FakeClient(),
+    )
+    original_content = [
+        {"type": "text", "text": "hello"},
+        {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64,abc"},
+        },
+    ]
+
+    resp = __import__("asyncio").run(
+        provider.chat(
+            messages=[{"role": "user", "content": original_content}],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "description": "Read a file.",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+        )
+    )
+
+    assert resp.content == "Hello!"
+    assert len(calls) == 1
+    request_content = calls[0]["messages"][0]["content"]
+    assert isinstance(request_content, str)
+    assert "hello" in request_content
+    assert "accepts text-only input" in request_content
+    assert "data:image" not in request_content
+    assert calls[0]["tool_choice"] == "auto"
+    assert calls[0]["tools"]
+    assert original_content[1]["image_url"]["url"] == "data:image/png;base64,abc"
+
+
+def test_openai_compat_retries_explicit_text_only_model_error_without_image() -> None:
+    calls: list[dict] = []
+
+    class _FakeCompletions:
+        async def create(self, **kwargs):  # noqa: ANN003
+            calls.append(dict(kwargs))
+            if len(calls) == 1:
+                raise ValueError("vendor/text-model is not a multimodal model")
+            msg = SimpleNamespace(
+                content="Text fallback",
+                tool_calls=[],
+                reasoning_content=None,
+            )
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=msg, finish_reason="stop")],
+                usage=None,
+            )
+
+    class _FakeClient:
+        def __init__(self):
+            self.chat = SimpleNamespace(completions=_FakeCompletions())
+
+    resolved = resolve_openai_compat(
+        LLMConfig(
+            provider="openai",
+            model="vendor/text-model",
+            params={
+                "api_key": "sk-test",
+                "base_url": "https://api.openai.com/v1",
+            },
+        )
+    )
+    provider = OpenAICompatProvider(
+        resolved=resolved,
+        client_factory=lambda _resolved: _FakeClient(),
+    )
+
+    resp = __import__("asyncio").run(
+        provider.chat(
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "hello"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,abc"},
+                        },
+                    ],
+                }
+            ]
+        )
+    )
+
+    assert resp.content == "Text fallback"
+    assert len(calls) == 2
+    assert "data:image" in str(calls[0]["messages"])
+    assert "data:image" not in str(calls[1]["messages"])
+    assert "accepts text-only input" in str(calls[1]["messages"])
+
+
+def test_openai_compat_does_not_hide_multimodal_server_misconfiguration() -> None:
+    calls: list[dict] = []
+
+    class _FakeCompletions:
+        async def create(self, **kwargs):  # noqa: ANN003
+            calls.append(dict(kwargs))
+            raise ValueError(
+                "Received multimodal data but multimodal processing is not enabled. "
+                "Use --enable-multimodal flag to enable multimodal processing."
+            )
+
+    class _FakeClient:
+        def __init__(self):
+            self.chat = SimpleNamespace(completions=_FakeCompletions())
+
+    resolved = resolve_openai_compat(
+        LLMConfig(
+            provider="nvidia",
+            model="nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+            params={
+                "api_key": "nvapi-test",
+                "base_url": "https://integrate.api.nvidia.com/v1",
+            },
+        )
+    )
+    provider = OpenAICompatProvider(
+        resolved=resolved,
+        client_factory=lambda _resolved: _FakeClient(),
+    )
+
+    resp = __import__("asyncio").run(
+        provider.chat(
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "describe"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,abc"},
+                        },
+                    ],
+                }
+            ]
+        )
+    )
+
+    assert resp.finish_reason == "error"
+    assert "--enable-multimodal" in str(resp.content)
+    assert len(calls) == 1
+
+
 def test_openai_compat_provider_handles_empty_choices() -> None:
     class _FakeCompletions:
         async def create(self, **kwargs):  # noqa: ANN003
@@ -116,7 +585,10 @@ def test_openai_compat_provider_handles_empty_choices() -> None:
     resp = __import__("asyncio").run(
         provider.chat(messages=[{"role": "user", "content": "x"}])
     )
-    assert resp.content == ""
+    assert resp.content == "Model provider returned no response choices."
+    assert resp.finish_reason == "error"
+    assert resp.error_kind == "empty"
+    assert resp.error_should_retry is True
     assert resp.has_tool_calls is False
 
 
@@ -290,6 +762,127 @@ def test_run_openai_compat_chat_closes_provider_on_timeout(monkeypatch) -> None:
         raise AssertionError("Expected timeout")
 
     assert closed["value"] is True
+
+
+def test_run_openai_compat_chat_raises_provider_error_instead_of_returning_text(
+    monkeypatch,
+) -> None:
+    closed = {"value": False}
+
+    class _FakeProvider:
+        async def chat_with_retry(self, **kwargs):  # noqa: ANN003
+            del kwargs
+            return LLMResponse(
+                content="service unavailable",
+                finish_reason="error",
+                error_status_code=503,
+                error_kind="server_error",
+            )
+
+        async def close(self) -> None:
+            closed["value"] = True
+
+    monkeypatch.setattr(
+        background_chat_mod, "resolve_openai_compat", lambda _cfg: object()
+    )
+    monkeypatch.setattr(
+        background_chat_mod, "OpenAICompatProvider", lambda resolved: _FakeProvider()
+    )
+
+    with pytest.raises(ProviderCallError) as exc_info:
+        background_chat_mod.run_openai_compat_chat(
+            prompt="hello",
+            image_path="",
+            model="fake-model",
+            provider_name="openai",
+            settings={
+                "openai": {
+                    "api_key": "x",
+                    "base_url": "https://example.com/v1",
+                }
+            },
+            load_history_messages=lambda: [],
+            timeout_s=1.0,
+        )
+
+    assert exc_info.value.retryable is True
+    assert exc_info.value.status_code == 503
+    assert closed["value"] is True
+
+
+def test_inline_model_image_has_bounded_read_limit(tmp_path: Path, monkeypatch) -> None:
+    image_path = tmp_path / "large.png"
+    image_path.write_bytes(b"12345")
+    monkeypatch.setattr(background_chat_mod, "MAX_INLINE_MODEL_IMAGE_BYTES", 4)
+
+    with pytest.raises(ValueError, match="model-call limit"):
+        background_chat_mod._read_image_data_url(str(image_path))
+
+
+def test_gui_provider_fallback_skips_non_retryable_model_error() -> None:
+    provider_calls: list[str] = []
+    final: list[tuple[str, bool]] = []
+    error = ProviderCallError(
+        "invalid multimodal request",
+        provider="openai",
+        model="test-model",
+        error_kind="invalid_request",
+        retryable=False,
+    )
+
+    provider_fallback_mod.run_provider_fallback(
+        original_error=error,
+        settings={"openai": {"kind": "openai_compat"}},
+        provider="openai",
+        model="test-model",
+        session_id="test-session",
+        fallback_timeout_retry_seconds=lambda: 1.0,
+        fallback_retry_timeout_seconds=lambda: 1.0,
+        run_ollama=lambda: provider_calls.append("ollama"),
+        run_openai=lambda *_args: provider_calls.append("openai"),
+        run_gemini=lambda: provider_calls.append("gemini"),
+        emit_progress=lambda _text: None,
+        emit_final=lambda message, is_error: final.append((message, is_error)),
+        format_dependency_error=lambda message: message,
+        logger=SimpleNamespace(warning=lambda *_args: None),
+    )
+
+    assert provider_calls == []
+    assert final == [("invalid multimodal request", True)]
+
+
+def test_gui_provider_fallback_redacts_raw_fallback_errors() -> None:
+    final: list[tuple[str, bool]] = []
+
+    def _fail_provider(*_args) -> None:
+        raise RuntimeError("Authorization: Bearer secret-provider-token")
+
+    provider_fallback_mod.run_provider_fallback(
+        original_error=RuntimeError("API key: sk-original-secret-value"),
+        settings={"openai": {"kind": "openai_compat"}},
+        provider="openai",
+        model="test-model",
+        session_id="test-session",
+        fallback_timeout_retry_seconds=lambda: 1.0,
+        fallback_retry_timeout_seconds=lambda: 1.0,
+        run_ollama=lambda: None,
+        run_openai=_fail_provider,
+        run_gemini=lambda: None,
+        emit_progress=lambda _text: None,
+        emit_final=lambda message, is_error: final.append((message, is_error)),
+        format_dependency_error=lambda message: message,
+        logger=SimpleNamespace(
+            warning=lambda *_args: None,
+            info=lambda *_args: None,
+            exception=lambda *_args: None,
+        ),
+    )
+
+    assert len(final) == 1
+    assert final[0][1] is True
+    assert "sk-original-secret-value" not in final[0][0]
+    assert "secret-provider-token" not in final[0][0]
+    assert final[0][0].count("<redacted>") == 2
 
 
 def test_provider_registry_matches_openai_codex_explicit_prefix() -> None:
@@ -555,6 +1148,7 @@ def test_codex_cli_provider_runs_text_only_cli(monkeypatch) -> None:
     )
     assert resp.content == "final cli reply"
     assert resp.has_tool_calls is False
+    assert calls["cli_path"] == "/usr/local/bin/codex"
     assert calls["model"] == "gpt-5.1-codex"
     assert calls["timeout_seconds"] == 42.0
     assert calls["workdir"] == "/tmp/annolid-codex"

@@ -119,8 +119,11 @@ class AgentBusService:
                 transient_retry_initial_backoff_s,
                 float(getattr(defaults, "transient_retry_max_backoff_s", 4.0)),
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "Invalid agent bus runtime settings; using safe defaults: %s",
+                exc,
+            )
         return cls(
             bus=bus,
             loop=loop,
@@ -713,7 +716,7 @@ class AgentBusService:
                 str(meta.get("error_type") or ""),
             ]
         )
-        key = hashlib.sha1(digest_src.encode("utf-8")).hexdigest()
+        key = hashlib.sha256(digest_src.encode("utf-8")).hexdigest()
         now = time.monotonic()
         stamp = self._outbound_dedupe_cache.get(key)
         self._outbound_dedupe_cache[key] = now
@@ -766,6 +769,9 @@ class AgentBusService:
 
     @staticmethod
     def _is_transient_failure(exc: Exception) -> bool:
+        retryable = getattr(exc, "retryable", None)
+        if retryable is not None:
+            return bool(retryable)
         if isinstance(
             exc, (TimeoutError, ConnectionError, OSError, asyncio.TimeoutError)
         ):

@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from .secrets import SecretsConfig
 from annolid.core.agent.providers.registry import PROVIDERS
+from annolid.core.agent.security_policy import DEFAULT_SANDBOX_CONTAINER_IMAGE
 
 
 @dataclass
@@ -97,6 +98,7 @@ class WhatsAppChannelConfig:
     access_token: str = ""
     phone_number_id: str = ""
     verify_token: str = ""
+    app_secret: str = ""
     api_version: str = "v22.0"
     api_base: str = "https://graph.facebook.com"
     preview_url: bool = False
@@ -143,6 +145,7 @@ class WhatsAppChannelConfig:
             verify_token=str(
                 payload.get("verify_token") or payload.get("verifyToken") or ""
             ),
+            app_secret=str(payload.get("app_secret") or payload.get("appSecret") or ""),
             api_version=str(
                 payload.get("api_version") or payload.get("apiVersion") or "v22.0"
             ),
@@ -191,6 +194,7 @@ class WhatsAppChannelConfig:
             "access_token": self.access_token,
             "phone_number_id": self.phone_number_id,
             "verify_token": self.verify_token,
+            "app_secret": self.app_secret,
             "api_version": self.api_version,
             "api_base": self.api_base,
             "preview_url": self.preview_url,
@@ -667,14 +671,25 @@ class AgentsConfig:
 @dataclass
 class ExecToolConfig:
     timeout: int = 60
+    container_image: str = DEFAULT_SANDBOX_CONTAINER_IMAGE
 
     @classmethod
     def from_dict(cls, data: Optional[Dict[str, Any]]) -> "ExecToolConfig":
         payload = data or {}
-        return cls(timeout=int(payload.get("timeout", 180)))
+        return cls(
+            timeout=int(payload.get("timeout", 180)),
+            container_image=str(
+                payload.get("container_image")
+                or payload.get("containerImage")
+                or DEFAULT_SANDBOX_CONTAINER_IMAGE
+            ).strip(),
+        )
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"timeout": self.timeout}
+        return {
+            "timeout": self.timeout,
+            "container_image": self.container_image,
+        }
 
 
 @dataclass
@@ -777,7 +792,7 @@ class GoogleAuthConfig:
 @dataclass
 class ToolsConfig:
     exec: ExecToolConfig = field(default_factory=ExecToolConfig)
-    restrict_to_workspace: bool = False
+    restrict_to_workspace: bool = True
     allowed_read_roots: list[str] = field(default_factory=list)
     profile: str = "full"
     allow: list[str] = field(default_factory=list)
@@ -797,7 +812,7 @@ class ToolsConfig:
         payload = data or {}
         restrict_value = payload.get(
             "restrict_to_workspace",
-            payload.get("restrictToWorkspace", False),
+            payload.get("restrictToWorkspace", True),
         )
         roots_raw = payload.get(
             "allowed_read_roots", payload.get("allowedReadRoots", [])

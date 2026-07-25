@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import json
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+from annolid.utils.logger import logger
 
 from ..tool_call_utils import sanitize_tool_call_requests
 
@@ -93,8 +96,10 @@ def normalize_messages_for_ollama(
                                 images.append(
                                     base64.b64decode(url.split(";base64,", 1)[1])
                                 )
-                            except Exception:
-                                continue
+                            except (ValueError, binascii.Error):
+                                logger.debug(
+                                    "Ignoring malformed base64 Ollama image content."
+                                )
             out["content"] = "\n".join([p for p in text_parts if p]).strip()
             if images:
                 out["images"] = images

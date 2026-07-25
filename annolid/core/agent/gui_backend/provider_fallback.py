@@ -2,10 +2,16 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from annolid.core.agent.providers.call_runtime import sanitize_provider_error
 from annolid.utils.llm_settings import provider_kind
 
 
 def is_provider_config_error(exc: Exception | str) -> bool:
+    if str(getattr(exc, "error_kind", "") or "").lower() in {
+        "authentication",
+        "configuration",
+    }:
+        return True
     text = str(exc or "").strip().lower()
     if not text:
         return False
@@ -32,6 +38,8 @@ def format_provider_config_error(raw_error: str, *, provider: str) -> str:
 
 
 def is_provider_timeout_error(exc: Exception | str) -> bool:
+    if str(getattr(exc, "error_kind", "") or "").lower() == "timeout":
+        return True
     text = str(exc or "").strip().lower()
     if not text:
         return False
@@ -61,6 +69,20 @@ def run_provider_fallback(
     logger: Any,
 ) -> None:
     """Run legacy provider fallback when agent loop setup/execution fails."""
+    if getattr(original_error, "retryable", None) is False:
+        message = (
+            sanitize_provider_error(original_error) or "Model provider request failed."
+        )
+        logger.warning(
+            "annolid-bot skipping fallback for non-retryable provider error "
+            "session=%s provider=%s model=%s kind=%s",
+            session_id,
+            provider,
+            model,
+            str(getattr(original_error, "error_kind", "") or "unknown"),
+        )
+        emit_final(message, True)
+        return
     try:
         # Keep backward-compatible fallback behavior if agent loop setup fails.
         emit_progress("Agent loop failed, trying provider fallback")
@@ -95,14 +117,18 @@ def run_provider_fallback(
             model,
         )
     except Exception as fallback_exc:
+        safe_fallback_error = sanitize_provider_error(fallback_exc)
         if is_provider_config_error(fallback_exc):
-            message = format_provider_config_error(str(fallback_exc), provider=provider)
+            message = format_provider_config_error(
+                safe_fallback_error,
+                provider=provider,
+            )
             logger.warning(
                 "annolid-bot fallback provider config error session=%s provider=%s model=%s error=%s",
                 session_id,
                 provider,
                 model,
-                fallback_exc,
+                safe_fallback_error,
             )
             emit_final(message, True)
             logger.info(
@@ -119,7 +145,7 @@ def run_provider_fallback(
                 session_id,
                 provider,
                 model,
-                fallback_exc,
+                safe_fallback_error,
             )
             emit_final(message, True)
             logger.info(
@@ -140,7 +166,7 @@ def run_provider_fallback(
                 session_id,
                 provider,
                 model,
-                fallback_exc,
+                safe_fallback_error,
             )
             emit_final(message, True)
             logger.info(
@@ -157,6 +183,8 @@ def run_provider_fallback(
             model,
         )
         emit_final(
-            f"Error in chat interaction: {original_error}; fallback failed: {fallback_exc}",
+            "Error in chat interaction: "
+            f"{sanitize_provider_error(original_error)}; "
+            f"fallback failed: {safe_fallback_error}",
             True,
         )

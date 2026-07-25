@@ -79,6 +79,48 @@ $env:ANNOLID_ENABLE_BOT_AUTOSTART = "1"
 `ANNOLID_DISABLE_BOT_AUTOSTART=1` still disables hidden startup on every
 platform.
 
+### Text-only and Multimodal Models
+
+The GUI may attach the current canvas or window to a chat turn. If an
+OpenAI-compatible model is known to be text-only, Annolid removes multimodal
+blocks before the request while preserving the text and adding an explicit note
+that the attachment was omitted. If an endpoint independently reports that its
+selected model is not multimodal, Annolid retries once with the same text-only
+conversion. This lets models such as NVIDIA Nemotron 3 Ultra handle ordinary
+chat without requiring a multimodal server flag.
+
+Annolid does not hide the same error for a vision-language model whose server
+was started without multimodal processing. In that case, enable multimodal
+processing in the model server or choose a text-only turn/model as appropriate.
+
+### Model Call Reliability
+
+Annolid normalizes model calls across OpenAI-compatible, Anthropic, OpenAI
+Codex, and Codex CLI runtimes:
+
+- transient failures such as connection errors, timeouts, HTTP 429 responses,
+  and server errors receive one bounded retry before normal GUI or channel
+  fallback handling;
+- provider `Retry-After` values up to 30 seconds are respected, while longer
+  waits are surfaced immediately so the GUI and channel workers do not hang;
+- a stream is never retried after visible content has been emitted, avoiding
+  duplicated partial answers;
+- empty successful responses are treated as retryable provider failures rather
+  than saved as blank assistant turns;
+- provider errors are bounded and common credential forms are redacted before
+  they reach logs or user-facing error handling; and
+- session-only metadata and internal `_meta` paths are removed from outbound
+  messages and tool schemas.
+
+Configured provider credentials are passed directly to the selected SDK client;
+model resolution does not copy them into process-wide environment variables.
+Existing environment-based configuration remains supported when loading
+settings.
+
+Inline images sent through an API data URL are limited to 20 MiB. Larger images
+must be resized before sending. Codex CLI image paths are not base64-encoded by
+Annolid and keep the CLI runtime's own input limits.
+
 ## Dream Memory Runs
 
 Annolid Bot now supports phase-based Dreaming memory maintenance commands in chat:
@@ -115,6 +157,21 @@ Background scheduling is optional and config-driven under:
 
 When enabled, Annolid Bot registers a protected system cron job (`dream`) that
 executes Dream runs directly (no model guesswork).
+
+## Inline Subagent Consultations
+
+The `spawn` tool supports both independent background work and blocking
+consultation:
+
+- `wait=false` (default) starts a background task and reports its task ID.
+- `wait=true` runs a native subagent consultation and returns the result to the
+  current agent turn so it can inform the final answer.
+
+Inline consultations are tracked by the same task lifecycle and cancellation
+manager while running, then removed after completion so they do not appear as
+stale background tasks. `wait=true` is intentionally unavailable for ACP
+sessions, which are long-lived interactive coding sessions. Specialized
+`spawn_behavior_subagent` calls support the same `wait` option.
 
 ## Bot Training Workflows
 

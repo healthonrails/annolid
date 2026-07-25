@@ -214,6 +214,10 @@ class AgentContextBuilder:
             "work, call the tool before answering. Do not end with a promise such "
             'as "I\'ll check", "I\'ll read", or "I\'ll extract" unless the action '
             "has already completed or a specific missing input blocks it.\n"
+            "Treat a clear user request as authorization to complete reversible "
+            "work now. For multi-step tasks, plan briefly, execute through "
+            "verification, and pause only for irreversible actions or an essential "
+            "unresolved choice.\n"
         )
 
     def _load_bootstrap_files(self) -> str:
@@ -292,6 +296,8 @@ class AgentContextBuilder:
         if len(cleaned) <= max_chars:
             return cleaned
         marker = f"\n...[{label} truncated to fit system prompt budget]"
+        if len(marker) >= max_chars:
+            return marker[-max_chars:]
         keep = max(0, max_chars - len(marker))
         return cleaned[:keep].rstrip() + marker
 
@@ -329,7 +335,7 @@ class AgentContextBuilder:
             if idx == len(present) - 1:
                 budget = max(0, available - consumed)
             else:
-                budget = max(120, int((available * weight) / weight_total))
+                budget = max(0, int((available * weight) / weight_total))
                 consumed += budget
             budgets[name] = budget
         fitted: dict[str, str] = {}
@@ -350,7 +356,7 @@ class AgentContextBuilder:
             current = fitted.get(name, "")
             if not current:
                 continue
-            target = max(120, len(current) - overflow)
+            target = max(0, len(current) - overflow)
             fitted[name] = self._truncate_section(current, target, name)
             result = divider.join(
                 [identity, *[fitted[n] for n, _ in present if fitted[n]]]

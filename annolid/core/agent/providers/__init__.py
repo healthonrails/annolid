@@ -1,6 +1,12 @@
 """Agent provider abstraction layer."""
 
-from .base import LLMProvider, LLMResponse, ToolCallRequest
+from .base import (
+    LLMProvider,
+    LLMResponse,
+    ProviderCallError,
+    ToolCallRequest,
+    raise_for_error_response,
+)
 from .background_chat import (
     build_ollama_llm_callable,
     run_codex_cli_chat,
@@ -28,7 +34,9 @@ from .transcription import OpenAICompatTranscriptionProvider
 __all__ = [
     "LLMProvider",
     "LLMResponse",
+    "ProviderCallError",
     "ToolCallRequest",
+    "raise_for_error_response",
     "dependency_error_for_kind",
     "build_ollama_llm_callable",
     "run_codex_cli_chat",

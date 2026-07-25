@@ -175,6 +175,11 @@ def build_compact_system_prompt(
     parts: List[str] = [
         "You are Annolid Bot. Be concise, practical, and return plain text answers."
     ]
+    parts.append(
+        "Treat a clear user request as authorization to complete reversible work "
+        "now. For multi-step tasks, plan briefly, execute through verification, "
+        "and pause only for irreversible actions or an essential unresolved choice."
+    )
     tooling_section = _build_tooling_section(
         tool_names=tool_names,
         policy_profile=inputs.tool_policy_profile,
@@ -228,12 +233,20 @@ def build_compact_system_prompt(
         "`git_status`, `git_diff`, `git_log`, `git_cli`, `github_pr_status`, `github_pr_checks`, and `gh_cli` "
         "(subject to runtime policy). Do not claim these tools are unavailable unless an actual tool call fails."
     )
-    parts.append(
-        "For file operations, use built-in tools first: `rename_file` for rename/move, "
-        "`list_dir` for discovery, `read_file`/`write_file`/`edit_file` for content edits, "
-        "and `exec_start`/`exec_process` for long-running shell sessions. "
-        "Do not ask the user to rename files manually before attempting these tools."
+    file_tool_guidance = (
+        "For file operations, use built-in tools first: `rename_file` for "
+        "rename/move, `list_dir` for discovery, and "
+        "`read_file`/`write_file`/`edit_file` for content edits."
     )
+    if {"exec_start", "exec_process"}.issubset({name.lower() for name in tool_names}):
+        file_tool_guidance += (
+            " Use `exec_start`/`exec_process` for long-running shell sessions."
+        )
+    file_tool_guidance += (
+        " Do not ask the user to rename files manually before attempting "
+        "available tools."
+    )
+    parts.append(file_tool_guidance)
     parts.append(
         "For shape operations, do not claim you lack live canvas access. "
         "If the request references JSON/NDJSON annotations, use file-backed shape tools "

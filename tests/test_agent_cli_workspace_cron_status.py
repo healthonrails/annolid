@@ -1068,7 +1068,16 @@ def test_agent_security_audit_reports_risky_config(
                 },
                 "tools": {
                     "profile": "coding",
-                    "allow": ["group:automation"],
+                    "restrictToWorkspace": False,
+                    "exec": {"containerImage": "ubuntu:24.04"},
+                    "allow": ["group:automation", "intent:high-risk"],
+                    "whatsapp": {
+                        "enabled": True,
+                        "bridgeMode": "cloud",
+                        "webhookEnabled": True,
+                        "webhookHost": "127.0.0.1",
+                        "allowFrom": ["15551234567"],
+                    },
                     "zulip": {
                         "enabled": True,
                         "serverUrl": "https://zulip.example.com",
@@ -1099,6 +1108,9 @@ def test_agent_security_audit_reports_risky_config(
     assert "channel-allowlist-zulip" in finding_ids
     assert "strict-runtime-tool-guard-disabled" in finding_ids
     assert "runtime-with-messaging-or-automation" in finding_ids
+    assert "runtime-workspace-unrestricted" in finding_ids
+    assert "sandbox-image-unpinned" in finding_ids
+    assert "unsigned-whatsapp-webhook" in finding_ids
     assert "unsigned-auto-update" in finding_ids
 
 

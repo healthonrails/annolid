@@ -10,7 +10,10 @@ import urllib.parse
 from pathlib import Path
 from typing import Any
 
-from annolid.core.agent.security_network import validate_public_url_target
+from annolid.core.agent.security_network import (
+    public_httpx_client_kwargs,
+    validate_public_url_target,
+)
 
 from .function_base import FunctionTool
 from .common import _normalize, _resolve_write_path, _strip_tags
@@ -391,6 +394,7 @@ class WebFetchTool(FunctionTool):
                 follow_redirects=True,
                 max_redirects=5,
                 timeout=30.0,
+                **public_httpx_client_kwargs(),
             ) as client:
                 response = await client.get(
                     clean_url, headers={"User-Agent": self.USER_AGENT}
@@ -557,6 +561,7 @@ class DownloadUrlTool(FunctionTool):
                 follow_redirects=True,
                 max_redirects=5,
                 timeout=60.0,
+                **public_httpx_client_kwargs(),
             ) as client:
                 async with client.stream(
                     "GET",

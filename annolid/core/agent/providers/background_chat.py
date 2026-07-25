@@ -13,13 +13,17 @@ from threading import Event as ThreadEvent
 
 from annolid.utils.llm_settings import LLMConfig
 from annolid.utils.llm_settings import provider_definitions, provider_kind
+from annolid.utils.logger import logger
 
 from ..tool_call_utils import sanitize_tool_call_requests, tool_names_from_schemas
+from .base import LLMProvider, raise_for_error_response
+from .call_runtime import sanitize_provider_error
 from .codex_cli_provider import CodexCLIProvider, resolve_codex_cli
 from .openai_codex_provider import OpenAICodexProvider, resolve_openai_codex
 from .openai_compat import OpenAICompatProvider, resolve_openai_compat
 
 OLLAMA_PLAIN_MODE_COOLDOWN_TURNS = 2
+MAX_INLINE_MODEL_IMAGE_BYTES = 20 * 1024 * 1024
 _OLLAMA_TOOL_SUPPORT_CACHE: Dict[str, bool] = {}
 _OLLAMA_FORCE_PLAIN_CACHE: Dict[str, int] = {}
 
@@ -42,8 +46,11 @@ async def _await_provider_close(provider: Any) -> None:
     except RuntimeError as exc:
         if "event loop is closed" not in str(exc).lower():
             raise
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug(
+            "Failed to close background model provider cleanly: %s",
+            sanitize_provider_error(exc),
+        )
 
 
 def dependency_error_for_kind(kind: str) -> Optional[str]:
@@ -132,6 +139,98 @@ def _inject_openai_compat_env_defaults(
     return out
 
 
+def _read_image_data_url(image_path: str) -> Optional[str]:
+    path = str(image_path or "").strip()
+    if not path or not os.path.exists(path):
+        return None
+    mime, _ = mimetypes.guess_type(path)
+    mime = str(mime or "").strip().lower()
+    if not mime.startswith("image/"):
+        return None
+    with open(path, "rb") as image_file:
+        raw = image_file.read(MAX_INLINE_MODEL_IMAGE_BYTES + 1)
+    if len(raw) > MAX_INLINE_MODEL_IMAGE_BYTES:
+        limit_mib = MAX_INLINE_MODEL_IMAGE_BYTES // (1024 * 1024)
+        raise ValueError(
+            f"Image attachment exceeds the {limit_mib} MiB model-call limit."
+        )
+    encoded = base64.b64encode(raw).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
+
+
+def _build_provider_messages(
+    *,
+    prompt: str,
+    image_path: str,
+    load_history_messages: Callable[[], List[Dict[str, Any]]],
+    image_mode: str,
+) -> tuple[str, List[Dict[str, Any]]]:
+    user_prompt = str(prompt or "")
+    messages = [dict(message) for message in load_history_messages()]
+    user_content: Any = user_prompt
+    path = str(image_path or "").strip()
+    if image_mode == "path" and path and os.path.exists(path):
+        user_content = [
+            {"type": "text", "text": user_prompt},
+            {"type": "input_image", "image_path": path},
+        ]
+    elif image_mode == "data_url":
+        data_url = _read_image_data_url(path)
+        if data_url:
+            user_content = [
+                {"type": "text", "text": user_prompt},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": data_url},
+                },
+            ]
+    messages.append({"role": "user", "content": user_content})
+    return user_prompt, messages
+
+
+async def _run_provider_text_request(
+    *,
+    provider: LLMProvider,
+    provider_name: str,
+    model: str,
+    messages: List[Dict[str, Any]],
+    max_tokens: int,
+    timeout_s: Optional[float],
+    temperature: Optional[float],
+    extra_chat_kwargs: Optional[Dict[str, Any]] = None,
+    timeout_grace_s: float = 0.0,
+) -> str:
+    try:
+        chat_kwargs: Dict[str, Any] = {
+            "messages": messages,
+            "model": model,
+            "max_tokens": int(max_tokens),
+            "temperature": temperature,
+            "timeout_seconds": timeout_s,
+        }
+        chat_kwargs.update(dict(extra_chat_kwargs or {}))
+        retry_call = getattr(provider, "chat_with_retry", None)
+        if callable(retry_call):
+            request = retry_call(**chat_kwargs)
+        else:
+            request = provider.chat(**chat_kwargs)
+        if timeout_s is not None and float(timeout_s) > 0:
+            response = await asyncio.wait_for(
+                request,
+                timeout=float(timeout_s) + max(0.0, float(timeout_grace_s)),
+            )
+        else:
+            response = await request
+        raise_for_error_response(
+            response,
+            provider=provider_name,
+            model=model,
+        )
+        return str(response.content or "")
+    finally:
+        await _await_provider_close(provider)
+
+
 def run_ollama_streaming_chat(
     *,
     prompt: str,
@@ -212,43 +311,25 @@ def run_openai_compat_chat(
     )
     resolved = resolve_openai_compat(cfg)
     provider = OpenAICompatProvider(resolved=resolved)
-
-    user_prompt = str(prompt or "")
-    messages = load_history_messages()
-    user_content: Any = user_prompt
-    if image_path and os.path.exists(image_path):
-        mime, _ = mimetypes.guess_type(image_path)
-        mime = str(mime or "").strip().lower()
-        if mime.startswith("image/"):
-            with open(image_path, "rb") as f:
-                raw = base64.b64encode(f.read()).decode("utf-8")
-            user_content = [
-                {"type": "text", "text": user_prompt},
-                {
-                    "type": "image_url",
-                    "image_url": {"url": f"data:{mime};base64,{raw}"},
-                },
-            ]
-    messages.append({"role": "user", "content": user_content})
+    user_prompt, messages = _build_provider_messages(
+        prompt=prompt,
+        image_path=image_path,
+        load_history_messages=load_history_messages,
+        image_mode="data_url",
+    )
 
     async def _chat_once() -> str:
         model_lower = (model or "").lower()
         temperature = 0.7 if "gpt-5" not in model_lower else None
-        try:
-            coro = provider.chat(
-                messages=messages,
-                model=model,
-                max_tokens=int(max_tokens),
-                temperature=temperature,
-                timeout_seconds=timeout_s,
-            )
-            if timeout_s is not None and float(timeout_s) > 0:
-                resp = await asyncio.wait_for(coro, timeout=float(timeout_s))
-            else:
-                resp = await coro
-            return str(resp.content or "")
-        finally:
-            await _await_provider_close(provider)
+        return await _run_provider_text_request(
+            provider=provider,
+            provider_name=provider_key,
+            model=model,
+            messages=messages,
+            max_tokens=max_tokens,
+            timeout_s=timeout_s,
+            temperature=temperature,
+        )
 
     try:
         text = asyncio.run(_chat_once())
@@ -276,41 +357,23 @@ def run_openai_codex_chat(
     cfg = LLMConfig(provider=provider_key, model=model, params=provider_block)
     resolved = resolve_openai_codex(cfg)
     provider = OpenAICodexProvider(resolved=resolved)
-
-    user_prompt = str(prompt or "")
-    messages = load_history_messages()
-    user_content: Any = user_prompt
-    if image_path and os.path.exists(image_path):
-        mime, _ = mimetypes.guess_type(image_path)
-        mime = str(mime or "").strip().lower()
-        if mime.startswith("image/"):
-            with open(image_path, "rb") as f:
-                raw = base64.b64encode(f.read()).decode("utf-8")
-            user_content = [
-                {"type": "text", "text": user_prompt},
-                {
-                    "type": "image_url",
-                    "image_url": {"url": f"data:{mime};base64,{raw}"},
-                },
-            ]
-    messages.append({"role": "user", "content": user_content})
+    user_prompt, messages = _build_provider_messages(
+        prompt=prompt,
+        image_path=image_path,
+        load_history_messages=load_history_messages,
+        image_mode="data_url",
+    )
 
     async def _chat_once() -> str:
-        try:
-            resp = await provider.chat(
-                messages=messages,
-                model=model,
-                max_tokens=int(max_tokens),
-                timeout_seconds=timeout_s,
-            )
-            if str(resp.finish_reason or "").strip().lower() == "error":
-                detail = str(resp.content or "").strip() or "Error calling Codex."
-                if "timed out" in detail.lower():
-                    raise TimeoutError(detail)
-                raise RuntimeError(detail)
-            return str(resp.content or "")
-        finally:
-            await _await_provider_close(provider)
+        return await _run_provider_text_request(
+            provider=provider,
+            provider_name=provider_key,
+            model=model,
+            messages=messages,
+            max_tokens=max_tokens,
+            timeout_s=timeout_s,
+            temperature=None,
+        )
 
     try:
         text = asyncio.run(_chat_once())
@@ -345,42 +408,27 @@ def run_codex_cli_chat(
     cfg = LLMConfig(provider=provider_key, model=model, params=provider_block)
     resolved = resolve_codex_cli(cfg)
     provider = CodexCLIProvider(resolved=resolved)
-
-    user_prompt = str(prompt or "")
-    messages = load_history_messages()
-    user_content: Any = user_prompt
-    if image_path and os.path.exists(image_path):
-        user_content = [
-            {"type": "text", "text": user_prompt},
-            {"type": "input_image", "image_path": image_path},
-        ]
-    messages.append({"role": "user", "content": user_content})
+    user_prompt, messages = _build_provider_messages(
+        prompt=prompt,
+        image_path=image_path,
+        load_history_messages=load_history_messages,
+        image_mode="path",
+    )
 
     async def _chat_once() -> str:
-        try:
-            coro = provider.chat(
-                messages=messages,
-                model=model,
-                max_tokens=int(max_tokens),
-                timeout_seconds=timeout_s,
-                cancel_event=cancel_event,
-            )
-            if timeout_s is not None and float(timeout_s) > 0:
-                resp = await asyncio.wait_for(coro, timeout=float(timeout_s) + 5.0)
-            else:
-                resp = await coro
-            if str(resp.finish_reason or "").strip().lower() == "error":
-                detail = str(resp.content or "").strip() or "Error calling Codex CLI."
-                if "timed out" in detail.lower():
-                    raise TimeoutError(detail)
-                raise RuntimeError(detail)
-            return str(resp.content or "")
-        finally:
-            close_fn = getattr(provider, "close", None)
-            if callable(close_fn):
-                result = close_fn()
-                if hasattr(result, "__await__"):
-                    await result
+        return await _run_provider_text_request(
+            provider=provider,
+            provider_name=provider_key,
+            model=model,
+            messages=messages,
+            max_tokens=max_tokens,
+            timeout_s=timeout_s,
+            temperature=None,
+            extra_chat_kwargs={"cancel_event": cancel_event}
+            if cancel_event is not None
+            else None,
+            timeout_grace_s=5.0,
+        )
 
     try:
         text = asyncio.run(_chat_once())
@@ -655,8 +703,11 @@ def build_ollama_llm_callable(
                             if callable(on_token):
                                 try:
                                     on_token(content)
-                                except Exception:
-                                    pass
+                                except Exception as exc:
+                                    logger.debug(
+                                        "Background model token callback failed: %s",
+                                        sanitize_provider_error(exc),
+                                    )
                         raw_tool_calls = msg.get("tool_calls")
                         if raw_tool_calls:
                             for call in sanitize_tool_call_requests(

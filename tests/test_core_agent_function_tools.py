@@ -19,6 +19,7 @@ from PIL import Image
 import yaml
 
 from annolid.core.agent.config import BoxToolConfig, CalendarToolConfig
+from annolid.core.agent.security_policy import DEFAULT_SANDBOX_CONTAINER_IMAGE
 from annolid.core.agent.tools.function_base import FunctionTool
 from annolid.core.agent.tools.function_builtin import (
     AnnolidDatasetInspectTool,
@@ -2077,6 +2078,28 @@ def test_filesystem_tools_round_trip(tmp_path: Path) -> None:
     assert "note.txt" in listed
 
 
+def test_read_and_edit_file_reject_oversized_input_before_loading(
+    tmp_path: Path,
+) -> None:
+    oversized = tmp_path / "oversized.txt"
+    with oversized.open("wb") as handle:
+        handle.truncate((100 * 1024 * 1024) + 1)
+
+    read_result = asyncio.run(
+        ReadFileTool(allowed_dir=tmp_path).execute(path=str(oversized))
+    )
+    edit_result = asyncio.run(
+        EditFileTool(allowed_dir=tmp_path).execute(
+            path=str(oversized),
+            old_text="x",
+            new_text="y",
+        )
+    )
+
+    assert "File too large to read" in read_result
+    assert "File too large to edit" in edit_result
+
+
 def test_rename_file_tool_rename_and_overwrite(tmp_path: Path) -> None:
     writer = WriteFileTool(allowed_dir=tmp_path)
     renamer = RenameFileTool(allowed_dir=tmp_path)
@@ -2726,6 +2749,19 @@ def test_exec_tool_blocks_private_network_targets(monkeypatch) -> None:
     assert "internal URL target" in result
 
 
+def test_sandboxed_exec_tool_refuses_implicit_host_fallback(monkeypatch) -> None:
+    tool = SandboxedExecTool()
+
+    async def _docker_unavailable() -> bool:
+        return False
+
+    monkeypatch.setattr(tool, "_check_docker", _docker_unavailable)
+    result = asyncio.run(tool.execute(command="echo should-not-run"))
+
+    assert "Sandbox unavailable" in result
+    assert "host execution was refused" in result
+
+
 def test_exec_tool_rejects_working_dir_outside_configured_workspace(tmp_path: Path):
     workspace = tmp_path / "workspace"
     outside = tmp_path / "outside"
@@ -2751,7 +2787,7 @@ def test_exec_tool_allows_benign_device_redirect_inside_workspace(tmp_path: Path
 
 
 def test_sandboxed_exec_tool_builds_hardened_docker_command(tmp_path: Path) -> None:
-    tool = SandboxedExecTool(container_image="ubuntu:24.04")
+    tool = SandboxedExecTool()
     cmd = tool._build_docker_command(  # noqa: SLF001 - targeted unit test
         command="echo hi",
         cwd_path=tmp_path.resolve(),
@@ -2764,12 +2800,11 @@ def test_sandboxed_exec_tool_builds_hardened_docker_command(tmp_path: Path) -> N
     assert "--security-opt no-new-privileges" in joined
     assert "--pids-limit 256" in joined
     assert "--tmpfs /tmp:rw,noexec,nosuid,nodev,size=128m" in joined
-    assert "ubuntu:24.04 bash -c echo hi" in joined
+    assert f"{DEFAULT_SANDBOX_CONTAINER_IMAGE} bash -c echo hi" in joined
 
 
 def test_sandboxed_exec_tool_can_enable_writable_host_mount(tmp_path: Path) -> None:
     tool = SandboxedExecTool(
-        container_image="ubuntu:24.04",
         docker_host_mount_read_only=False,
     )
     cmd = tool._build_docker_command(  # noqa: SLF001 - targeted unit test
@@ -2779,6 +2814,56 @@ def test_sandboxed_exec_tool_can_enable_writable_host_mount(tmp_path: Path) -> N
     joined = " ".join(cmd)
     assert f"-v {tmp_path.resolve()}:{tmp_path.resolve()}" in joined
     assert f"-v {tmp_path.resolve()}:{tmp_path.resolve()}:ro" not in joined
+
+
+def test_sandboxed_exec_tool_rejects_unpinned_container_image(
+    tmp_path: Path,
+) -> None:
+    tool = SandboxedExecTool(container_image="ubuntu:24.04")
+
+    with pytest.raises(ValueError, match="immutable SHA-256 digest"):
+        tool._build_docker_command(  # noqa: SLF001 - targeted security test
+            command="echo hi",
+            cwd_path=tmp_path.resolve(),
+        )
+
+
+def test_exec_tool_blocks_absolute_path_after_option_equals(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    tool = SandboxedExecTool(
+        working_dir=str(workspace),
+        restrict_to_workspace=True,
+    )
+
+    result = tool._guard_command(
+        f"python process.py --output={outside / 'result.json'}",
+        str(workspace),
+    )
+
+    assert result is not None
+    assert "path outside working dir" in result
+
+
+def test_exec_tool_blocks_home_path_after_option_equals(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    tool = SandboxedExecTool(
+        working_dir=str(workspace),
+        restrict_to_workspace=True,
+    )
+
+    result = tool._guard_command(
+        "python process.py --output=~/result.json",
+        str(workspace),
+    )
+
+    assert result is not None
+    assert "path outside working dir" in result
 
 
 def test_exec_start_foreground_returns_output(tmp_path: Path) -> None:
@@ -3633,8 +3718,8 @@ def test_register_nanobot_style_tools(tmp_path: Path) -> None:
     assert registry.has("coding_session_close")
     assert registry.has("automation_schedule")
     assert registry.has("exec")
-    assert registry.has("exec_start")
-    assert registry.has("exec_process")
+    assert registry.has("exec_start") is False
+    assert registry.has("exec_process") is False
     assert registry.has("annolid_dataset_inspect")
     assert registry.has("annolid_dataset_prepare")
     assert registry.has("annolid_train_start")
@@ -3654,6 +3739,44 @@ def test_register_nanobot_style_tools(tmp_path: Path) -> None:
     assert registry.has("clawhub_search_skills")
     assert registry.has("clawhub_install_skill")
     assert registry.has("box") is False
+
+
+def test_register_nanobot_style_tools_can_explicitly_allow_host_sessions(
+    tmp_path: Path,
+) -> None:
+    registry = FunctionToolRegistry()
+    asyncio.run(
+        register_nanobot_style_tools(
+            registry,
+            allowed_dir=tmp_path,
+            restrict_runtime_to_workspace=False,
+        )
+    )
+
+    assert registry.has("exec_start") is True
+    assert registry.has("exec_process") is True
+
+
+def test_register_nanobot_style_tools_workspace_mode_omits_host_shell_sessions(
+    tmp_path: Path,
+) -> None:
+    registry = FunctionToolRegistry()
+    asyncio.run(
+        register_nanobot_style_tools(
+            registry,
+            allowed_dir=tmp_path,
+            restrict_runtime_to_workspace=True,
+            exec_timeout=17,
+        )
+    )
+
+    exec_tool = registry.get("exec")
+    assert isinstance(exec_tool, SandboxedExecTool)
+    assert exec_tool.timeout == 17
+    assert exec_tool.working_dir == str(tmp_path)
+    assert exec_tool.restrict_to_workspace is True
+    assert registry.has("exec_start") is False
+    assert registry.has("exec_process") is False
 
 
 def test_register_nanobot_style_tools_honors_ignored_tool_names(
@@ -3939,9 +4062,23 @@ def test_mcp_tool_wrapper_execute_falls_back_to_structured_content(
     assert json.loads(payload) == {"ok": True, "value": 1}
 
 
+@pytest.fixture
+def allow_public_download_test_urls(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep download unit tests independent from external DNS availability."""
+    monkeypatch.setattr(
+        web_tools,
+        "_validate_public_web_url",
+        lambda _url: (True, ""),
+    )
+
+
 def test_download_url_tool_saves_file_and_blocks_outside_dir(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path,
+    monkeypatch,
+    allow_public_download_test_urls,
 ) -> None:
+    del allow_public_download_test_urls
+
     class _FakeResponse:
         status_code = 200
         headers = {"content-type": "text/plain; charset=utf-8"}
@@ -4004,8 +4141,12 @@ def test_download_url_tool_saves_file_and_blocks_outside_dir(
 
 
 def test_download_pdf_tool_enforces_pdf_content_type(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path,
+    monkeypatch,
+    allow_public_download_test_urls,
 ) -> None:
+    del allow_public_download_test_urls
+
     class _FakePdfResponse:
         status_code = 200
         headers = {"content-type": "application/pdf"}
@@ -4079,8 +4220,12 @@ def test_download_pdf_tool_enforces_pdf_content_type(
 
 
 def test_download_pdf_tool_renames_generic_pdf_filename(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path,
+    monkeypatch,
+    allow_public_download_test_urls,
 ) -> None:
+    del allow_public_download_test_urls
+
     class _FakePdfResponse:
         status_code = 200
         headers = {"content-type": "application/pdf"}
@@ -4136,8 +4281,12 @@ def test_download_pdf_tool_renames_generic_pdf_filename(
 
 
 def test_download_pdf_tool_renames_non_generic_when_title_differs(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path,
+    monkeypatch,
+    allow_public_download_test_urls,
 ) -> None:
+    del allow_public_download_test_urls
+
     class _FakePdfResponse:
         status_code = 200
         headers = {"content-type": "application/pdf"}
@@ -4197,8 +4346,12 @@ def test_download_pdf_tool_renames_non_generic_when_title_differs(
 
 
 def test_download_pdf_tool_retries_pmc_with_download_query(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path,
+    monkeypatch,
+    allow_public_download_test_urls,
 ) -> None:
+    del allow_public_download_test_urls
+
     class _ForbiddenResponse:
         status_code = 403
         headers = {"content-type": "text/html; charset=utf-8"}
@@ -4263,9 +4416,65 @@ def test_download_pdf_tool_retries_pmc_with_download_query(
     assert Path(str(payload["output_path"])).exists()
 
 
-def test_download_pdf_tool_uses_pmc_oa_metadata_after_pmc_403(
-    tmp_path: Path, monkeypatch
+def test_download_pdf_tool_does_not_trust_lookalike_hosts() -> None:
+    pmc_lookalike = (
+        "https://pmc.ncbi.nlm.nih.gov.attacker.example/"
+        "articles/PMC8219259/pdf/paper.pdf"
+    )
+    arxiv_lookalike = "https://notarxiv.org/abs/2501.12345"
+
+    assert DownloadPdfTool._candidate_pdf_urls(pmc_lookalike) == [pmc_lookalike]
+    assert DownloadPdfTool._candidate_pdf_urls(arxiv_lookalike) == [arxiv_lookalike]
+
+
+def test_download_pdf_tool_rejects_declared_entities_in_oa_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    class _EntityResponse:
+        text = (
+            '<!DOCTYPE response [<!ENTITY x "unsafe">]>'
+            '<OA><records><record><link format="pdf" href="&x;"/></record>'
+            "</records></OA>"
+        )
+
+        def raise_for_status(self) -> None:
+            return None
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs):
+            del args, kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+        async def get(self, url, headers=None):
+            del url, headers
+            return _EntityResponse()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "httpx",
+        types.SimpleNamespace(AsyncClient=_FakeClient),
+    )
+    tool = DownloadPdfTool(allowed_dir=tmp_path)
+
+    urls = asyncio.run(tool._fetch_pmc_oa_pdf_urls("PMC8219259"))
+
+    assert urls == []
+
+
+def test_download_pdf_tool_uses_pmc_oa_metadata_after_pmc_403(
+    tmp_path: Path,
+    monkeypatch,
+    allow_public_download_test_urls,
+) -> None:
+    del allow_public_download_test_urls
+
     class _ForbiddenResponse:
         status_code = 403
         headers = {"content-type": "text/html; charset=utf-8"}
@@ -4352,8 +4561,11 @@ def test_download_pdf_tool_uses_pmc_oa_metadata_after_pmc_403(
 
 
 def test_download_pdf_tool_prefers_pmc_oa_before_direct_pdf_urls(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path,
+    monkeypatch,
+    allow_public_download_test_urls,
 ) -> None:
+    del allow_public_download_test_urls
     attempts: list[str] = []
 
     class _OaPdfResponse:
@@ -4431,8 +4643,11 @@ def test_download_pdf_tool_prefers_pmc_oa_before_direct_pdf_urls(
 
 
 def test_download_pdf_tool_solves_pmc_pow_challenge(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path,
+    monkeypatch,
+    allow_public_download_test_urls,
 ) -> None:
+    del allow_public_download_test_urls
     challenge = "abc123:token"
 
     class _TextHtmlResponse:

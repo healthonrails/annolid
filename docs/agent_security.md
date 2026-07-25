@@ -87,6 +87,14 @@ Or attach explicit refs:
 annolid-run agent-secrets-set --path tools.zulip.api_key --env ZULIP_API_KEY
 ```
 
+For a WhatsApp Cloud API webhook, store the Meta app secret through a ref:
+
+```bash
+annolid-run agent-secrets-set \
+  --path tools.whatsapp.app_secret \
+  --env WHATSAPP_APP_SECRET
+```
+
 ### Unresolved Secret Refs
 
 If a secret ref exists but its environment variable or local-store value is missing, the audit reports it as unresolved.
@@ -158,10 +166,47 @@ addresses, including local hosts and cloud metadata ranges. Workspace-scoped
 shell execution also treats the configured workspace as the trusted root, so a
 tool call cannot widen access by passing a different `working_dir`.
 
+Agent web-fetch and download clients apply the same public-target validation to
+every outgoing request, including each redirect hop. Redirect targets that
+resolve to localhost, private networks, or cloud metadata services are rejected
+before the redirected request is sent. The validated public DNS result is pinned
+to the actual HTTP connection to prevent DNS rebinding between validation and
+connect. Environment proxies are disabled for these requests because a proxy
+would resolve the destination outside Annolid's pinned connection boundary.
+
+Workspace restriction is enabled by default. Annolid does not register the host-backed
+`exec_start` and `exec_process` tools. The Docker-backed `exec` tool also fails
+closed when Docker is unavailable instead of silently falling back to the host.
+Shell guards also inspect absolute paths after option separators such as
+`--output=/outside/path`.
+
+The default Docker image is pinned to a reviewed immutable SHA-256 digest.
+Floating image tags are refused at execution time and reported by
+`agent-security-audit`. Existing configurations can explicitly set
+`tools.restrict_to_workspace=false`, but doing so re-enables host-backed managed
+shell sessions and is reported as a high-severity finding.
+
 Filesystem tools report workspace-boundary failures as hard policy boundaries.
 If the same outside target is retried across equivalent tools, the tool registry
 returns a refusal that tells the agent to ask the user how to proceed instead of
 trying shell or path-workaround variants.
+
+Text read/edit tools reject files larger than 100 MiB before loading them into
+memory. Use a format-specific or streaming workflow for larger artifacts.
+
+### WhatsApp Webhook Authentication
+
+When `tools.whatsapp.app_secret` is configured, POST requests must carry a valid
+Meta `X-Hub-Signature-256` signature over the exact request body. Invalid or
+missing signatures are rejected before the payload reaches the message bus.
+
+Annolid refuses to start an unsigned listener, including on loopback. This
+prevents another local process or a browser-originated cross-site request from
+injecting a message into the agent. Configure the app secret before enabling
+the webhook or forwarding it through a public HTTPS tunnel.
+
+Outbound WhatsApp Cloud API calls also require an HTTPS, publicly resolvable
+`graph.facebook.com` endpoint before Annolid attaches the access token.
 
 ### Unsigned Auto Updates
 

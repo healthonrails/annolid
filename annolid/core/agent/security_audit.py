@@ -13,6 +13,7 @@ from annolid.core.agent.config.secrets import (
     read_raw_agent_config,
 )
 from annolid.core.agent.security_policy import (
+    is_digest_pinned_container_image,
     require_signed_skills,
     require_signed_updates,
 )
@@ -260,6 +261,32 @@ def run_agent_security_audit(
                 )
             )
 
+    whatsapp_cfg = getattr(agent_cfg.tools, "whatsapp", None)
+    whatsapp_bridge_mode = (
+        str(getattr(whatsapp_cfg, "bridge_mode", "") or "").strip().lower()
+    )
+    whatsapp_bridge_url = str(getattr(whatsapp_cfg, "bridge_url", "") or "").strip()
+    if (
+        whatsapp_cfg is not None
+        and bool(getattr(whatsapp_cfg, "enabled", False))
+        and bool(getattr(whatsapp_cfg, "webhook_enabled", False))
+        and whatsapp_bridge_mode != "python"
+        and not whatsapp_bridge_url
+        and not str(getattr(whatsapp_cfg, "app_secret", "") or "").strip()
+    ):
+        findings.append(
+            SecurityFinding(
+                check_id="unsigned-whatsapp-webhook",
+                severity="high",
+                summary="WhatsApp webhook POST authentication is not configured.",
+                details="tools.whatsapp.app_secret is empty.",
+                recommendation=(
+                    "Store the Meta app secret through a secret ref before exposing "
+                    "or tunneling the webhook listener."
+                ),
+            )
+        )
+
     if not bool(agent_cfg.agents.defaults.strict_runtime_tool_guard):
         findings.append(
             SecurityFinding(
@@ -309,6 +336,36 @@ def run_agent_security_audit(
         model="audit",
     )
     allowed = set(resolved_policy.allowed_tools)
+    if allowed & _RUNTIME_EXEC_TOOLS and not bool(
+        agent_cfg.tools.restrict_to_workspace
+    ):
+        findings.append(
+            SecurityFinding(
+                check_id="runtime-workspace-unrestricted",
+                severity="high",
+                summary="Runtime shell tools are allowed outside the agent workspace.",
+                details=", ".join(sorted(allowed & _RUNTIME_EXEC_TOOLS)),
+                recommendation=(
+                    "Set tools.restrict_to_workspace=true. This also disables "
+                    "host-backed managed shell sessions."
+                ),
+            )
+        )
+    if allowed & _RUNTIME_EXEC_TOOLS and not is_digest_pinned_container_image(
+        getattr(agent_cfg.tools.exec, "container_image", "")
+    ):
+        findings.append(
+            SecurityFinding(
+                check_id="sandbox-image-unpinned",
+                severity="high",
+                summary="The runtime sandbox image is not digest-pinned.",
+                details=str(getattr(agent_cfg.tools.exec, "container_image", "") or ""),
+                recommendation=(
+                    "Use a reviewed image reference ending in an immutable "
+                    "@sha256:<64-hex-digest> value."
+                ),
+            )
+        )
     if allowed & _RUNTIME_EXEC_TOOLS and allowed & (
         _MESSAGING_TOOLS | _AUTOMATION_TOOLS
     ):

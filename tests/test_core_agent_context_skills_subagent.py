@@ -23,7 +23,7 @@ from annolid.core.agent.subagent import (
 )
 from annolid.core.agent.tools.function_base import FunctionTool
 from annolid.core.agent.tools.function_registry import FunctionToolRegistry
-from annolid.core.agent.tools.messaging import SpawnBehaviorSubagentTool
+from annolid.core.agent.tools.messaging import SpawnBehaviorSubagentTool, SpawnTool
 from annolid.services.behavior_agent import (
     list_behavior_subagent_profiles,
     resolve_behavior_subagent_profile,
@@ -373,6 +373,7 @@ def test_context_builder_builds_user_media_payload(tmp_path: Path) -> None:
     assert "workspace instructions" in str(messages[0]["content"])
     assert "Box tool instructions" in str(messages[0]["content"])
     assert "## Current Time" in str(messages[0]["content"])
+    assert "Treat a clear user request as authorization" in str(messages[0]["content"])
     assert "(" in str(messages[0]["content"])
     assert ")" in str(messages[0]["content"])
     assert isinstance(messages[-1]["content"], list)
@@ -622,6 +623,78 @@ def test_subagent_manager_runs_background_task(tmp_path: Path) -> None:
     asyncio.run(_run())
 
 
+def test_subagent_manager_runs_inline_and_cleans_lifecycle(tmp_path: Path) -> None:
+    announcements: list[tuple[Any, ...]] = []
+
+    async def fake_llm(
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]],
+        model: str,
+        on_token: Optional[Callable[[str], None]] = None,
+    ) -> Mapping[str, Any]:
+        del messages, tools, model, on_token
+        return {"content": "consultation-result"}
+
+    async def _announce(*args: Any) -> None:
+        announcements.append(args)
+
+    manager = SubagentManager(
+        loop_factory=lambda: AgentLoop(
+            tools=FunctionToolRegistry(),
+            llm_callable=fake_llm,
+            model="fake",
+            workspace=str(tmp_path),
+        ),
+        announce_callback=_announce,
+        workspace=tmp_path,
+    )
+
+    async def _run() -> None:
+        result = await manager.run_inline(
+            task="consult",
+            label="reviewer",
+            origin_channel="gui",
+            origin_chat_id="chat-1",
+        )
+        assert result == "consultation-result"
+        assert manager.get_running_count() == 0
+        assert manager.list_tasks() == {}
+
+    asyncio.run(_run())
+    assert announcements == []
+
+
+def test_subagent_wait_timeout_does_not_cancel_background_task(
+    tmp_path: Path,
+) -> None:
+    async def _run() -> None:
+        release = asyncio.Event()
+
+        class _BlockingLoop:
+            async def run(self, *args: Any, **kwargs: Any) -> SimpleNamespace:
+                del args, kwargs
+                await release.wait()
+                return SimpleNamespace(content="completed")
+
+        manager = SubagentManager(
+            loop_factory=lambda: _BlockingLoop(),  # type: ignore[arg-type]
+            workspace=tmp_path,
+        )
+        started = await manager.spawn(task="long task")
+        task_id = started.split("id: ")[-1].split(")")[0]
+
+        assert await manager.wait(task_id, timeout=0.01) is False
+        task = manager.get_task(task_id)
+        assert task is not None
+        assert task.status == "running"
+
+        release.set()
+        assert await manager.wait(task_id, timeout=1.0) is True
+        assert task.status == "ok"
+
+    asyncio.run(_run())
+
+
 def test_coding_harness_manager_processes_long_lived_session_messages(
     tmp_path: Path,
 ) -> None:
@@ -736,6 +809,7 @@ async def _wait_for_status(
 
 def test_runtime_session_router_dispatches_subagent_and_acp(tmp_path: Path) -> None:
     subagent_calls: list[str] = []
+    inline_calls: list[str] = []
 
     class _FakeSubagent:
         async def spawn(
@@ -744,10 +818,16 @@ def test_runtime_session_router_dispatches_subagent_and_acp(tmp_path: Path) -> N
             label: str | None = None,
             origin_channel: str = "cli",
             origin_chat_id: str = "direct",
+            **kwargs: Any,
         ) -> str:
-            del label, origin_channel, origin_chat_id
+            del label, origin_channel, origin_chat_id, kwargs
             subagent_calls.append(task)
             return "subagent-ok"
+
+        async def run_inline(self, task: str, **kwargs: Any) -> str:
+            del kwargs
+            inline_calls.append(task)
+            return "inline-ok"
 
         def list_tasks(self) -> dict[str, Any]:
             return {"sub_1": SimpleNamespace(status="ok", label="sub", result="ok")}
@@ -778,6 +858,11 @@ def test_runtime_session_router_dispatches_subagent_and_acp(tmp_path: Path) -> N
 
     async def _run() -> None:
         subagent_reply = await router.spawn(task="inspect", runtime="subagent")
+        inline_reply = await router.spawn(
+            task="consult",
+            runtime="subagent",
+            wait=True,
+        )
         acp_reply = await router.spawn(
             task="code",
             runtime="acp",
@@ -785,8 +870,14 @@ def test_runtime_session_router_dispatches_subagent_and_acp(tmp_path: Path) -> N
             model="codex-cli/gpt-5.1-codex",
         )
         assert subagent_reply == "subagent-ok"
+        assert inline_reply == "inline-ok"
         assert acp_reply == "acp-ok"
         assert subagent_calls == ["inspect"]
+        assert inline_calls == ["consult"]
+        assert (
+            await router.spawn(task="code", runtime="acp", wait=True)
+            == "Error: wait=true is only supported for the native subagent runtime."
+        )
         assert fake_acp.calls[-1]["workspace"] == str(tmp_path.resolve())
         outside_reply = await router.spawn(
             task="code outside",
@@ -865,6 +956,8 @@ def test_build_subagent_tools_registry_excludes_recursive_tools(
     assert registry.has("edit_file")
     assert registry.has("list_dir")
     assert registry.has("exec")
+    assert not registry.has("exec_start")
+    assert not registry.has("exec_process")
     assert not registry.has("spawn")
     assert not registry.has("message")
     assert not registry.has("cron")
@@ -995,6 +1088,31 @@ def test_behavior_subagent_injects_builtin_skill_bodies_into_system_prompt(
     assert "detect bout starts and ends" in system_prompt
 
 
+def test_spawn_tool_forwards_inline_wait_request() -> None:
+    calls: list[dict[str, Any]] = []
+
+    async def _spawn_callback(**kwargs: Any) -> str:
+        calls.append(dict(kwargs))
+        return "consulted"
+
+    tool = SpawnTool(spawn_callback=_spawn_callback)
+    tool.set_context("gui", "chat-1")
+
+    result = asyncio.run(
+        tool.execute(
+            task="review evidence",
+            label="reviewer",
+            runtime="subagent",
+            wait=True,
+        )
+    )
+
+    assert result == "consulted"
+    assert calls[0]["wait"] is True
+    assert calls[0]["origin_channel"] == "gui"
+    assert calls[0]["origin_chat_id"] == "chat-1"
+
+
 def test_spawn_behavior_subagent_tool_validates_profile_and_forwards_args() -> None:
     calls: list[dict[str, Any]] = []
 
@@ -1010,6 +1128,7 @@ def test_spawn_behavior_subagent_tool_validates_profile_and_forwards_args() -> N
             task="summarize run artifacts",
             label="reporter",
             skill_names=["custom-report-skill"],
+            wait=True,
         )
     )
     assert result == "spawned"
@@ -1022,6 +1141,7 @@ def test_spawn_behavior_subagent_tool_validates_profile_and_forwards_args() -> N
     assert payload["origin_channel"] == "gui"
     assert payload["origin_chat_id"] == "chat-1"
     assert payload["skill_names"] == ["custom-report-skill"]
+    assert payload["wait"] is True
 
 
 def test_spawn_behavior_subagent_tool_rejects_unknown_profile() -> None:
