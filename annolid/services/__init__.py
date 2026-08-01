@@ -120,6 +120,7 @@ _EXPORTS = {
     "set_agent_cron_job_enabled": "annolid.services.agent_cron",
     "shadow_agent_skills": "annolid.services.agent_workspace",
     "resolve_chat_pdf_path": "annolid.services.chat_runtime",
+    "resolve_chat_local_file_path": "annolid.services.chat_runtime",
     "resolve_chat_video_path": "annolid.services.chat_runtime",
     "resolve_chat_video_path_for_gui_tool": "annolid.services.chat_video",
     "train_behavior_model": "annolid.services.training",

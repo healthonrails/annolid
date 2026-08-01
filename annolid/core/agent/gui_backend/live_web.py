@@ -144,17 +144,68 @@ def is_tool_first_live_web_prompt(prompt: str) -> bool:
     )
 
 
-def tool_first_live_web_error_message(prompt: str) -> str:
-    if is_weather_prompt(prompt) and is_bare_weather_prompt(prompt):
-        return (
-            "I couldn't retrieve weather from the available Annolid tools. "
-            "I tried a local-context lookup first; verify browser/web tools and retry."
+def tool_first_live_web_error_message(
+    prompt: str,
+    *,
+    attempts: Sequence[Any] = (),
+    provider: str = "",
+    model: str = "",
+    model_was_called: bool = False,
+) -> str:
+    subject = "weather" if is_weather_prompt(prompt) else "current web data"
+    details = _summarize_web_attempts(attempts)
+    parts = [f"I couldn't retrieve {subject} from the available Annolid web routes."]
+    if details:
+        parts.append("Lookup diagnostics: " + "; ".join(details) + ".")
+    else:
+        parts.append(
+            "No web route returned usable content; verify that Web Tools are "
+            "enabled and registered."
         )
-    return (
-        "I couldn't retrieve current web data with the available Annolid tools. "
-        "Verify web tools/network access, then retry or switch provider if the "
-        "model keeps returning empty output."
+    if model_was_called:
+        configured_model = ":".join(
+            value
+            for value in (
+                str(provider or "").strip(),
+                str(model or "").strip(),
+            )
+            if value
+        )
+        suffix = f" ({configured_model})" if configured_model else ""
+        parts.append(
+            "The configured model"
+            f"{suffix} was still called, but it did not provide a verifiable live result."
+        )
+    parts.append(
+        "Resolve the listed web-tool or network issue, then retry; changing the "
+        "model alone will not restore live retrieval."
     )
+    return " ".join(parts)
+
+
+def _summarize_web_attempts(attempts: Sequence[Any]) -> list[str]:
+    summaries: list[str] = []
+    seen: set[tuple[str, str, str]] = set()
+    for attempt in attempts:
+        status = str(getattr(attempt, "status", "") or "").strip().lower()
+        if not status or status == "success":
+            continue
+        step = str(getattr(attempt, "step", "") or "web").strip()
+        detail = (
+            " ".join(str(getattr(attempt, "detail", "") or "").split())
+            .strip()
+            .rstrip(".")
+        )
+        if not detail:
+            detail = status.replace("_", " ")
+        key = (step, status, detail)
+        if key in seen:
+            continue
+        seen.add(key)
+        summaries.append(f"{step}: {detail}")
+        if len(summaries) >= 4:
+            break
+    return summaries
 
 
 async def run_tool_first_live_web_response(
@@ -182,8 +233,8 @@ async def run_tool_first_live_web_response(
             tools=tools,
             route="weather",
             steps=(
-                ("browser", try_browser_search_fallback),
                 ("web_search", try_web_search_fallback),
+                ("browser", try_browser_search_fallback),
                 ("web_fetch", try_web_fetch_fallback),
             ),
             sanitize_text=sanitize_text,
@@ -199,6 +250,9 @@ async def run_tool_first_live_web_response(
             )
             emit_progress("Answered with weather tools")
             return result
+        # The weather route already exhausts browser, search, and fetch. Do not
+        # execute the generic plan and repeat the same network requests.
+        return result
 
     text = await apply_web_response_fallbacks("", tools, 0)
     text = sanitize_text(text)

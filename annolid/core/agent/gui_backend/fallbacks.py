@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import quote_plus
 
@@ -12,6 +13,7 @@ from annolid.core.agent.gui_backend.heuristics import (
 )
 from annolid.core.agent.web_prompt_utils import normalize_web_lookup_prompt
 from annolid.core.agent.tools import FunctionToolRegistry
+from annolid.core.agent.tools.web_runtime import sanitize_web_error
 
 
 _LOCAL_SEARCH_STOPWORDS = {
@@ -43,6 +45,39 @@ _LOCAL_SEARCH_STOPWORDS = {
     "will",
     "with",
 }
+
+
+@dataclass(frozen=True)
+class WebFallbackResult:
+    """Structured outcome from one live-web recovery step."""
+
+    step: str
+    status: str
+    text: str = ""
+    detail: str = ""
+
+    @property
+    def attempted(self) -> bool:
+        return self.status not in {"unavailable", "not_applicable"}
+
+    @property
+    def succeeded(self) -> bool:
+        return self.status == "success" and bool(self.text)
+
+
+def _web_fallback_result(
+    step: str,
+    status: str,
+    *,
+    text: str = "",
+    detail: object = "",
+) -> WebFallbackResult:
+    return WebFallbackResult(
+        step=step,
+        status=status,
+        text=str(text or "").strip(),
+        detail=sanitize_web_error(detail, limit=300).strip() if detail else "",
+    )
 
 
 def _derive_local_search_query(prompt: str, fallback_text: str = "") -> str:
@@ -175,17 +210,43 @@ async def try_web_fetch_fallback(
     build_summary: Callable[..., str],
     emit_progress: Callable[[str], None],
 ) -> str:
+    result = await try_web_fetch_fallback_result(
+        prompt=prompt,
+        tools=tools,
+        candidate_urls_for_prompt=candidate_urls_for_prompt,
+        build_summary=build_summary,
+        emit_progress=emit_progress,
+    )
+    return result.text
+
+
+async def try_web_fetch_fallback_result(
+    *,
+    prompt: str,
+    tools: Optional[FunctionToolRegistry],
+    candidate_urls_for_prompt: Callable[[str], List[str]],
+    build_summary: Callable[..., str],
+    emit_progress: Callable[[str], None],
+) -> WebFallbackResult:
     registry = tools
     if registry is None:
-        return ""
+        return _web_fallback_result(
+            "web_fetch", "unavailable", detail="Tool registry is unavailable."
+        )
     if not registry.has("web_fetch"):
-        return ""
+        return _web_fallback_result(
+            "web_fetch", "unavailable", detail="web_fetch is not registered."
+        )
     normalized_prompt, repaired = normalize_web_lookup_prompt(prompt)
     if repaired:
         emit_progress("Repairing web_fetch prompt context")
     urls = candidate_urls_for_prompt(normalized_prompt)
     if not urls:
-        return ""
+        return _web_fallback_result(
+            "web_fetch",
+            "not_applicable",
+            detail="No URL was found in the prompt or recent user history.",
+        )
     target_url = urls[0]
     try:
         emit_progress("Retrying with web_fetch")
@@ -193,25 +254,45 @@ async def try_web_fetch_fallback(
             "web_fetch",
             {"url": target_url, "extractMode": "text", "maxChars": 12000},
         )
-    except Exception:
-        return ""
+    except Exception as exc:
+        return _web_fallback_result("web_fetch", "error", detail=exc)
     try:
         payload = json.loads(str(payload_raw or "{}"))
-    except Exception:
-        payload = {}
-    if not isinstance(payload, dict) or payload.get("error"):
-        return ""
+    except Exception as exc:
+        return _web_fallback_result(
+            "web_fetch",
+            "invalid_response",
+            detail=f"web_fetch returned invalid JSON: {exc}",
+        )
+    if not isinstance(payload, dict):
+        return _web_fallback_result(
+            "web_fetch",
+            "invalid_response",
+            detail="web_fetch returned a non-object response.",
+        )
+    if payload.get("error"):
+        return _web_fallback_result("web_fetch", "error", detail=payload.get("error"))
     page_text = str(payload.get("text") or "").strip()
     if not page_text:
-        return ""
+        return _web_fallback_result(
+            "web_fetch", "empty", detail="web_fetch returned no page text."
+        )
     summary = build_summary(page_text)
     if not summary:
-        return ""
+        return _web_fallback_result(
+            "web_fetch",
+            "empty",
+            detail="The fetched page did not contain summarizable text.",
+        )
     source_url = str(payload.get("finalUrl") or target_url).strip() or target_url
-    return (
-        f"Summary of {source_url}:\n{summary}\n\n"
-        f"Source: {source_url}\n"
-        "(Generated via web_fetch fallback after a browsing-capability refusal.)"
+    return _web_fallback_result(
+        "web_fetch",
+        "success",
+        text=(
+            f"Summary of {source_url}:\n{summary}\n\n"
+            f"Source: {source_url}\n"
+            "(Generated via web_fetch fallback after a browsing-capability refusal.)"
+        ),
     )
 
 
@@ -221,15 +302,35 @@ async def try_web_search_fallback(
     tools: Optional[FunctionToolRegistry],
     emit_progress: Callable[[str], None],
 ) -> str:
+    result = await try_web_search_fallback_result(
+        prompt=prompt,
+        tools=tools,
+        emit_progress=emit_progress,
+    )
+    return result.text
+
+
+async def try_web_search_fallback_result(
+    *,
+    prompt: str,
+    tools: Optional[FunctionToolRegistry],
+    emit_progress: Callable[[str], None],
+) -> WebFallbackResult:
     registry = tools
     if registry is None:
-        return ""
+        return _web_fallback_result(
+            "web_search", "unavailable", detail="Tool registry is unavailable."
+        )
     if not registry.has("web_search"):
-        return ""
+        return _web_fallback_result(
+            "web_search", "unavailable", detail="web_search is not registered."
+        )
     query, repaired = normalize_web_lookup_prompt(prompt)
     query = " ".join(str(query or "").split()).strip()
     if not query:
-        return ""
+        return _web_fallback_result(
+            "web_search", "not_applicable", detail="The search query is empty."
+        )
     if len(query) > 280:
         query = query[:280].rstrip()
     try:
@@ -240,15 +341,21 @@ async def try_web_search_fallback(
             "web_search",
             {"query": query, "count": 5},
         )
-    except Exception:
-        return ""
+    except Exception as exc:
+        return _web_fallback_result("web_search", "error", detail=exc)
     text = str(payload_raw or "").strip()
     if not text:
-        return ""
+        return _web_fallback_result(
+            "web_search", "empty", detail="web_search returned no output."
+        )
     lowered = text.lower()
-    if lowered.startswith("error:") or lowered.startswith("no results for:"):
-        return ""
-    return text
+    if lowered.startswith("error:"):
+        return _web_fallback_result(
+            "web_search", "error", detail=text.partition(":")[2].strip()
+        )
+    if lowered.startswith("no results for:"):
+        return _web_fallback_result("web_search", "no_results", detail=text)
+    return _web_fallback_result("web_search", "success", text=text)
 
 
 def extract_page_text_from_web_steps(payload: Dict[str, Any]) -> str:
@@ -279,15 +386,39 @@ async def try_browser_search_fallback(
     emit_progress: Callable[[str], None],
     build_summary: Callable[..., str],
 ) -> str:
+    result = await try_browser_search_fallback_result(
+        prompt=prompt,
+        tools=tools,
+        emit_progress=emit_progress,
+        build_summary=build_summary,
+    )
+    return result.text
+
+
+async def try_browser_search_fallback_result(
+    *,
+    prompt: str,
+    tools: Optional[FunctionToolRegistry],
+    emit_progress: Callable[[str], None],
+    build_summary: Callable[..., str],
+) -> WebFallbackResult:
     registry = tools
     if registry is None:
-        return ""
+        return _web_fallback_result(
+            "browser", "unavailable", detail="Tool registry is unavailable."
+        )
     if not registry.has("gui_web_run_steps"):
-        return ""
+        return _web_fallback_result(
+            "browser",
+            "unavailable",
+            detail="Embedded browser automation is not registered.",
+        )
     query, repaired = normalize_web_lookup_prompt(prompt)
     query = " ".join(str(query or "").split()).strip()
     if not query:
-        return ""
+        return _web_fallback_result(
+            "browser", "not_applicable", detail="The browser search query is empty."
+        )
     if len(query) > 280:
         query = query[:280].rstrip()
     encoded_query = quote_plus(query)
@@ -307,23 +438,50 @@ async def try_browser_search_fallback(
             "gui_web_run_steps",
             {"steps": steps, "stop_on_error": True, "max_steps": 12},
         )
-    except Exception:
-        return ""
+    except Exception as exc:
+        return _web_fallback_result("browser", "error", detail=exc)
     try:
         payload = json.loads(str(payload_raw or "{}"))
-    except Exception:
-        payload = {}
-    if not isinstance(payload, dict) or payload.get("error"):
-        return ""
+    except Exception as exc:
+        return _web_fallback_result(
+            "browser",
+            "invalid_response",
+            detail=f"Embedded browser returned invalid JSON: {exc}",
+        )
+    if not isinstance(payload, dict):
+        return _web_fallback_result(
+            "browser",
+            "invalid_response",
+            detail="Embedded browser returned a non-object response.",
+        )
+    if payload.get("error"):
+        return _web_fallback_result("browser", "error", detail=payload.get("error"))
     if not bool(payload.get("ok")):
-        return ""
+        return _web_fallback_result(
+            "browser",
+            "error",
+            detail="Embedded browser workflow returned ok=false.",
+        )
     page_text = extract_page_text_from_web_steps(payload)
     if not page_text:
-        return ""
+        return _web_fallback_result(
+            "browser", "empty", detail="Embedded browser returned no page text."
+        )
     summary = build_summary(page_text, max_sentences=8, max_chars=1400)
     if not summary:
-        return ""
-    return f"Web lookup via embedded browser:\n{summary}\n\nSource: {EMBEDDED_SEARCH_SOURCE}"
+        return _web_fallback_result(
+            "browser",
+            "empty",
+            detail="The browser page did not contain summarizable text.",
+        )
+    return _web_fallback_result(
+        "browser",
+        "success",
+        text=(
+            f"Web lookup via embedded browser:\n{summary}\n\n"
+            f"Source: {EMBEDDED_SEARCH_SOURCE}"
+        ),
+    )
 
 
 def try_open_page_content_fallback(

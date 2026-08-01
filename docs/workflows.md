@@ -79,6 +79,16 @@ Current bot workflow highlights:
 
 Install optional Bot dependencies only when you need them. See [Installation](installation.md) for the `annolid_bot`, `bot`, `ai_chat`, and related extras.
 
+For current-data requests, enable **Web Tools** in Annolid Bot. The bot tries
+DDGS search first, with hardened HTML and optional Brave fallbacks, then uses
+the embedded browser or direct fetch route as applicable. If live retrieval
+fails, it still calls the configured model, avoids repeating the same failed
+routes, and reports a bounded diagnostic for each route (for example, a missing
+tool, missing URL, network error, CAPTCHA, empty response, or unconfigured
+search backend). Annolid does not present model-only knowledge as verified
+current data. Fix the reported web-tool or network issue before changing
+models; changing the provider does not restore a failed live-data route.
+
 When you use background integrations such as Zulip, WhatsApp, calendar services, or Box, the agent config is loaded from the Annolid agent config path, not the LLM settings file.
 
 For Google Calendar, Annolid now prefers an existing cached token by default. If you want the agent to perform first-run OAuth authorization, set `tools.google_auth.allowInteractiveAuth=true` explicitly in the agent config and run that flow from an interactive session.

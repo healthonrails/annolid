@@ -4,9 +4,21 @@ import asyncio
 import json
 from pathlib import Path
 
+import pytest
+
 from annolid.core.agent.bus import InboundMessage
+from annolid.core.agent.tools import FunctionToolRegistry
 from annolid.core.models.base import ModelResponse
 from annolid.gui.widgets.ai_chat_backend import StreamingChatTask
+
+
+@pytest.fixture
+def allow_public_gui_test_urls(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "annolid.core.agent.gui_backend.tool_handlers_openers."
+        "validate_public_url_target",
+        lambda _url: (True, ""),
+    )
 
 
 def test_parse_ollama_tool_calls_handles_mixed_argument_shapes() -> None:
@@ -503,7 +515,12 @@ def test_build_agent_context_enables_web_tools_when_requested(monkeypatch) -> No
     assert "message" not in tool_names
 
 
-def test_gui_tool_callbacks_validate_and_queue(monkeypatch, tmp_path: Path) -> None:
+def test_gui_tool_callbacks_validate_and_queue(
+    monkeypatch,
+    tmp_path: Path,
+    allow_public_gui_test_urls,
+) -> None:
+    del allow_public_gui_test_urls
     import annolid.gui.widgets.ai_chat_backend as backend
 
     class _Cfg:
@@ -1718,7 +1735,12 @@ def test_gui_open_pdf_returns_already_open_without_requeue(
     assert calls == []
 
 
-def test_gui_open_url_queues(monkeypatch, tmp_path: Path) -> None:
+def test_gui_open_url_queues(
+    monkeypatch,
+    tmp_path: Path,
+    allow_public_gui_test_urls,
+) -> None:
+    del allow_public_gui_test_urls
     import annolid.gui.widgets.ai_chat_backend as backend
 
     class _Cfg:
@@ -1749,8 +1771,11 @@ def test_gui_open_url_queues(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_gui_open_url_queues_for_domain_without_scheme(
-    monkeypatch, tmp_path: Path
+    monkeypatch,
+    tmp_path: Path,
+    allow_public_gui_test_urls,
 ) -> None:
+    del allow_public_gui_test_urls
     import annolid.gui.widgets.ai_chat_backend as backend
 
     class _Cfg:
@@ -1873,7 +1898,67 @@ def test_gui_open_url_blocks_file_scheme(monkeypatch, tmp_path: Path) -> None:
     assert "file:// URLs are blocked for safety" in str(payload.get("error") or "")
 
 
-def test_gui_open_url_arxiv_uses_arxiv_flow(monkeypatch, tmp_path: Path) -> None:
+def test_gui_open_url_blocks_private_network_target(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    class _Cfg:
+        class tools:  # noqa: N801
+            email = None
+            allowed_read_roots = [str(tmp_path)]
+
+    monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
+    monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
+
+    task = StreamingChatTask("hi", widget=None)
+    calls: list[str] = []
+    task._invoke_widget_slot = lambda slot_name, *args: calls.append(slot_name) or True  # type: ignore[method-assign]
+
+    payload = asyncio.run(
+        task._tool_gui_open_url("http://169.254.169.254/latest/meta-data/")
+    )
+
+    assert payload["ok"] is False
+    assert "private or internal" in str(payload.get("error") or "")
+    assert calls == []
+
+
+def test_gui_open_url_blocks_local_file_outside_read_roots(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import annolid.gui.widgets.ai_chat_backend as backend
+
+    class _Cfg:
+        class tools:  # noqa: N801
+            email = None
+            allowed_read_roots = [str(tmp_path)]
+
+    monkeypatch.setattr(backend, "load_config", lambda: _Cfg())
+    monkeypatch.setattr(backend, "get_agent_workspace_path", lambda: tmp_path)
+    monkeypatch.setattr(backend, "get_chat_workspace", lambda: tmp_path)
+    monkeypatch.setattr(backend, "build_chat_vcs_read_roots", lambda: [str(tmp_path)])
+
+    outside_file = tmp_path.parent / f"{tmp_path.name}-outside.html"
+    outside_file.write_text("<html>outside</html>", encoding="utf-8")
+    task = StreamingChatTask("hi", widget=None)
+    calls: list[str] = []
+    task._invoke_widget_slot = lambda slot_name, *args: calls.append(slot_name) or True  # type: ignore[method-assign]
+
+    payload = asyncio.run(task._tool_gui_open_url(f"open {outside_file}"))
+
+    assert payload["ok"] is False
+    assert "outside configured workspace/read roots" in str(payload.get("error") or "")
+    assert calls == []
+
+
+def test_gui_open_url_arxiv_uses_arxiv_flow(
+    monkeypatch,
+    tmp_path: Path,
+    allow_public_gui_test_urls,
+) -> None:
+    del allow_public_gui_test_urls
     import annolid.gui.widgets.ai_chat_backend as backend
 
     class _Cfg:
@@ -1902,7 +1987,12 @@ def test_gui_open_url_arxiv_uses_arxiv_flow(monkeypatch, tmp_path: Path) -> None
     assert calls == []
 
 
-def test_gui_web_run_steps_executes_sequence(monkeypatch, tmp_path: Path) -> None:
+def test_gui_web_run_steps_executes_sequence(
+    monkeypatch,
+    tmp_path: Path,
+    allow_public_gui_test_urls,
+) -> None:
+    del allow_public_gui_test_urls
     import annolid.gui.widgets.ai_chat_backend as backend
 
     class _Cfg:
@@ -2779,7 +2869,10 @@ def test_finalize_agent_text_strips_raw_tool_call_markup() -> None:
     assert used_direct_gui_fallback is False
     assert "<|tool_calls_section_begin|>" not in text
     assert "functions.read_file" not in text
-    assert "I couldn't retrieve current web data" in text
+    assert "I couldn't retrieve weather" in text
+    assert "Tool registry is unavailable" in text
+    assert "was still called" in text
+    assert "changing the model alone" in text
 
 
 def test_finalize_agent_text_uses_web_fallback_after_markup_sanitization() -> None:
@@ -2852,7 +2945,7 @@ def test_tool_first_live_web_response_uses_web_search_before_model() -> None:
     assert "39 F, light rain" in text
 
 
-def test_tool_first_weather_response_prefers_browser_skill_order() -> None:
+def test_tool_first_weather_response_uses_browser_after_search_miss() -> None:
     calls: list[str] = []
 
     class _DummyRegistry:
@@ -2861,6 +2954,8 @@ def test_tool_first_weather_response_prefers_browser_skill_order() -> None:
 
         async def execute(self, name: str, params: dict) -> str:
             calls.append(name)
+            if name == "web_search":
+                return "Error: search backend unavailable"
             if name == "gui_web_run_steps":
                 return json.dumps(
                     {
@@ -2876,8 +2971,6 @@ def test_tool_first_weather_response_prefers_browser_skill_order() -> None:
                         ],
                     }
                 )
-            if name == "web_search":
-                return "Results for: weather in Ithaca NY"
             raise AssertionError(f"Unexpected tool {name}")
 
     task = StreamingChatTask(
@@ -2893,7 +2986,7 @@ def test_tool_first_weather_response_prefers_browser_skill_order() -> None:
         )
     )
     assert "Ithaca weather today" in text
-    assert calls == ["gui_web_run_steps"]
+    assert calls == ["web_search", "gui_web_run_steps"]
 
 
 def test_weather_empty_output_uses_tool_context_message_after_attempt() -> None:
@@ -2906,8 +2999,30 @@ def test_weather_empty_output_uses_tool_context_message_after_attempt() -> None:
     )
     task._live_web_fallback_attempted = True
     text = task._ensure_non_empty_final_text("")
-    assert "I tried a local-context lookup first" in text
+    assert "No web route returned usable content" in text
+    assert "Web Tools are enabled and registered" in text
     assert "Model returned empty output" not in text
+
+
+def test_failed_live_lookup_rejects_unverified_model_only_text() -> None:
+    class _Result:
+        content = "It is probably sunny and 70 F."
+        tool_runs = ()
+
+    task = StreamingChatTask(
+        "weather in Ithaca NY",
+        widget=None,
+        enable_web_tools=True,
+        provider="nvidia",
+        model="moonshotai/kimi-k2.6",
+    )
+    task._run_async(task._try_tool_first_live_web_response(FunctionToolRegistry()))
+
+    text, _, _ = task._finalize_agent_text(_Result())
+
+    assert "It is probably sunny and 70 F." not in text
+    assert "I couldn't retrieve weather" in text
+    assert "did not provide a verifiable live result" in text
 
 
 def test_finalize_agent_text_does_not_force_web_search_for_non_web_empty_output() -> (
@@ -4790,7 +4905,12 @@ def test_gui_generate_tutorial_saves_and_opens_markdown_in_web_viewer(
     assert "## Goal" not in tutorial
 
 
-def test_execute_direct_gui_command_routes_actions(monkeypatch, tmp_path: Path) -> None:
+def test_execute_direct_gui_command_routes_actions(
+    monkeypatch,
+    tmp_path: Path,
+    allow_public_gui_test_urls,
+) -> None:
+    del allow_public_gui_test_urls
     import annolid.gui.widgets.ai_chat_backend as backend
 
     video_file = tmp_path / "mouse.mp4"

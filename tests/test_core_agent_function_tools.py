@@ -2982,6 +2982,108 @@ def test_web_search_tool_without_key_reports_config_error() -> None:
     assert "BRAVE_API_KEY not configured" in result
 
 
+def test_web_search_tool_reports_configured_brave_outage(monkeypatch) -> None:
+    tool = WebSearchTool(api_key="configured", backend="brave")
+
+    async def _unavailable(*, query: str, count: int):
+        del query, count
+        return None
+
+    monkeypatch.setattr(tool, "_search_with_brave", _unavailable)
+
+    result = asyncio.run(tool.execute(query="annolid"))
+
+    assert result == "Error: Brave search backend unavailable."
+
+
+def test_web_search_tool_rejects_oversized_query() -> None:
+    result = asyncio.run(
+        WebSearchTool(api_key="", backend="brave").execute(query="x" * 1001)
+    )
+
+    assert result == "Error: query exceeds maximum length (1000)"
+
+
+def test_web_search_tool_ddgs_filters_and_formats_results(monkeypatch) -> None:
+    class _DDGS:
+        def __init__(self, *, timeout: int):
+            assert timeout == 10
+
+        def text(self, query: str, *, max_results: int):
+            assert query == "annolid"
+            assert max_results == 3
+            return [
+                {
+                    "title": "<b>Annolid</b>",
+                    "href": "https://example.org/annolid",
+                    "body": "Animal behavior analysis",
+                },
+                {
+                    "title": "Unsafe",
+                    "href": "https://user:secret@example.org/private",
+                    "body": "must be filtered",
+                },
+            ]
+
+    monkeypatch.setitem(sys.modules, "ddgs", types.SimpleNamespace(DDGS=_DDGS))
+    tool = WebSearchTool(api_key="")
+
+    rows = asyncio.run(tool._search_with_ddgs(query="annolid", count=3))
+
+    assert rows == [
+        {
+            "title": "Annolid",
+            "url": "https://example.org/annolid",
+            "description": "Animal behavior analysis",
+        }
+    ]
+
+
+def test_web_search_tool_falls_back_to_html_when_ddgs_unavailable(
+    monkeypatch,
+) -> None:
+    tool = WebSearchTool(api_key="")
+
+    async def _missing_ddgs(*, query: str, count: int):
+        del query, count
+        return None
+
+    async def _html_result(*, query: str, count: int):
+        del query, count
+        return [
+            {
+                "title": "HTML fallback",
+                "url": "https://example.org/fallback",
+                "description": "",
+            }
+        ]
+
+    monkeypatch.setattr(tool, "_search_with_ddgs", _missing_ddgs)
+    monkeypatch.setattr(tool, "_search_with_duckduckgo_html", _html_result)
+
+    result = asyncio.run(tool.execute(query="annolid"))
+
+    assert "HTML fallback" in result
+
+
+def test_web_search_tool_treats_duckduckgo_challenge_as_unavailable(
+    monkeypatch,
+) -> None:
+    tool = WebSearchTool(api_key="")
+
+    async def _challenge(_url: str) -> str:
+        return (
+            "Unfortunately, bots use DuckDuckGo too. "
+            "Select all squares containing a duck."
+        )
+
+    monkeypatch.setattr(tool, "_fetch_html_with_httpx", _challenge)
+
+    rows = asyncio.run(tool._search_with_duckduckgo_html(query="annolid", count=3))
+
+    assert rows is None
+
+
 def test_web_search_tool_prefers_scrapling_backend(monkeypatch) -> None:
     tool = WebSearchTool(api_key="test-key")
 
@@ -3059,25 +3161,78 @@ def test_web_search_tool_cache_can_be_disabled(monkeypatch) -> None:
     assert calls["scrapling"] == 2
 
 
-def test_web_search_tool_scrapling_fetchers_class_api(monkeypatch) -> None:
+def test_web_search_tool_bounds_cache_and_labels_external_results(monkeypatch) -> None:
+    tool = WebSearchTool(api_key="", cache_ttl_seconds=900, cache_max_entries=2)
+
+    async def _fake_duckduckgo(*, query: str, count: int):
+        del count
+        return [
+            {
+                "title": query,
+                "url": f"https://example.org/{query}",
+                "description": "external text",
+            }
+        ]
+
+    monkeypatch.setattr(tool, "_search_with_scrapling", _fake_duckduckgo)
+    for query in ("one", "two", "three"):
+        result = asyncio.run(tool.execute(query=query))
+        assert result.startswith("[External content")
+
+    assert len(tool._cache) == 2
+    assert WebSearchTool._cache_key("one", "auto", 5) not in tool._cache
+
+
+def test_web_search_tool_legacy_scrapling_alias_uses_safe_httpx(monkeypatch) -> None:
     called: dict[str, object] = {}
 
-    class _Page:
-        html = '<a class="result__a" href="https://example.org/docs">Example Docs</a>'
+    class _Response:
+        status_code = 200
+        headers = {"content-type": "text/html; charset=utf-8"}
+        url = "https://html.duckduckgo.com/html/?q=annolid"
 
-    class _AsyncFetcher:
-        @classmethod
-        async def fetch(cls, url: str, **kwargs):
+        def raise_for_status(self) -> None:
+            return None
+
+        async def aiter_bytes(self):
+            yield (
+                b'<a class="result__a" href="https://example.org/docs">Example Docs</a>'
+            )
+
+    class _StreamContext:
+        async def __aenter__(self):
+            return _Response()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            del args
+            called["client_kwargs"] = dict(kwargs)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+        def stream(self, method: str, url: str, **kwargs):
+            del kwargs
+            assert method == "GET"
             called["url"] = url
-            called["kwargs"] = dict(kwargs)
-            return _Page()
+            return _StreamContext()
 
-    scrapling_mod = types.ModuleType("scrapling")
-    fetchers_mod = types.ModuleType("scrapling.fetchers")
-    setattr(fetchers_mod, "AsyncFetcher", _AsyncFetcher)
-    setattr(scrapling_mod, "fetchers", fetchers_mod)
-    monkeypatch.setitem(sys.modules, "scrapling", scrapling_mod)
-    monkeypatch.setitem(sys.modules, "scrapling.fetchers", fetchers_mod)
+    monkeypatch.setattr(
+        web_tools,
+        "public_httpx_client_kwargs",
+        lambda: {"trust_env": False, "transport": "pinned"},
+    )
+    monkeypatch.setitem(
+        sys.modules, "httpx", types.SimpleNamespace(AsyncClient=_Client)
+    )
 
     tool = WebSearchTool(api_key="")
     result = asyncio.run(tool.execute(query="annolid", backend="scrapling"))
@@ -3086,6 +3241,87 @@ def test_web_search_tool_scrapling_fetchers_class_api(monkeypatch) -> None:
     assert str(called.get("url") or "").startswith(
         "https://html.duckduckgo.com/html/?q="
     )
+    assert called["client_kwargs"]["trust_env"] is False
+    assert called["client_kwargs"]["transport"] == "pinned"
+
+
+def test_web_search_tool_retries_one_brave_rate_limit_and_bounds_response(
+    monkeypatch,
+) -> None:
+    statuses = [429, 200]
+    sleeps: list[float] = []
+
+    class _Response:
+        headers = {"content-type": "application/json"}
+
+        def __init__(self, status_code: int):
+            self.status_code = status_code
+
+        def raise_for_status(self) -> None:
+            assert self.status_code == 200
+
+        async def aiter_bytes(self):
+            yield json.dumps(
+                {
+                    "web": {
+                        "results": [
+                            {
+                                "title": "Unsafe",
+                                "url": "https://user:secret@example.org/",
+                            },
+                            {
+                                "title": "Safe",
+                                "url": "https://example.org/result",
+                                "description": "ok",
+                            },
+                        ]
+                    }
+                }
+            ).encode("utf-8")
+
+    class _StreamContext:
+        def __init__(self, status_code: int):
+            self.response = _Response(status_code)
+
+        async def __aenter__(self):
+            return self.response
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            del args, kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+        def stream(self, method, url, **kwargs):
+            del method, url, kwargs
+            return _StreamContext(statuses.pop(0))
+
+    async def _sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(web_tools.asyncio, "sleep", _sleep)
+    monkeypatch.setattr(web_tools, "public_httpx_client_kwargs", lambda: {})
+    monkeypatch.setitem(
+        sys.modules, "httpx", types.SimpleNamespace(AsyncClient=_Client)
+    )
+
+    result = asyncio.run(
+        WebSearchTool(api_key="test-key", backend="brave").execute(query="annolid")
+    )
+
+    assert "Safe" in result
+    assert "Unsafe" not in result
+    assert sleeps == [0.25]
+    assert statuses == []
 
 
 def test_web_search_tool_returns_no_results_when_scrapling_empty(monkeypatch) -> None:
@@ -3145,6 +3381,26 @@ def test_web_search_tool_parses_duckduckgo_snippets() -> None:
     assert rows[0]["description"] == "Useful summary text."
 
 
+def test_web_search_tool_filters_unsafe_result_urls() -> None:
+    html = """
+    <html><body>
+      <a class="result__a" href="javascript:alert(1)">Script</a>
+      <a class="result__a" href="https://user:secret@example.org/">Credentials</a>
+      <a class="result__a" href="https://example.org/safe">Safe</a>
+    </body></html>
+    """
+
+    rows = WebSearchTool._parse_duckduckgo_results(html, count=10)
+
+    assert rows == [
+        {
+            "title": "Safe",
+            "url": "https://example.org/safe",
+            "description": "",
+        }
+    ]
+
+
 def test_web_search_tool_coerces_string_count(monkeypatch) -> None:
     captured: dict[str, int] = {}
     tool = WebSearchTool(api_key="")
@@ -3182,16 +3438,29 @@ def test_web_fetch_tool_cleans_url_marks_untrusted_and_blocks_private_redirect(
         status_code = 200
         headers = {"content-type": "text/html; charset=utf-8"}
         url = "https://example.org/page"
-        text = "<html><title>Example</title><body>Hello <b>Annolid</b></body></html>"
-
-        def json(self):
-            return {}
 
         def raise_for_status(self) -> None:
             return None
 
+        async def aiter_bytes(self):
+            yield b"<html><title>Example</title><body>Hello "
+            yield b"<b>Annolid</b></body></html>"
+
     class _RedirectResponse(_FakeResponse):
         url = "http://127.0.0.1/private"
+
+    class _StreamContext:
+        response_type = _FakeResponse
+
+        async def __aenter__(self):
+            return self.response_type()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+    class _RedirectStreamContext(_StreamContext):
+        response_type = _RedirectResponse
 
     class _FakeClient:
         def __init__(self, *args, **kwargs):
@@ -3204,15 +3473,15 @@ def test_web_fetch_tool_cleans_url_marks_untrusted_and_blocks_private_redirect(
             del exc_type, exc, tb
             return None
 
-        async def get(self, url, headers=None):
-            del headers
+        def stream(self, method, url, headers=None):
+            del method, headers
             assert url == "https://example.org/page"
-            return _FakeResponse()
+            return _StreamContext()
 
     class _RedirectClient(_FakeClient):
-        async def get(self, url, headers=None):
-            del url, headers
-            return _RedirectResponse()
+        def stream(self, method, url, headers=None):
+            del method, url, headers
+            return _RedirectStreamContext()
 
     fake_httpx = types.SimpleNamespace(AsyncClient=_FakeClient)
     monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
@@ -3223,12 +3492,125 @@ def test_web_fetch_tool_cleans_url_marks_untrusted_and_blocks_private_redirect(
     assert payload["url"] == "https://example.org/page"
     assert payload["title"] == "Example"
     assert payload["untrusted"] is True
+    assert payload["text"].startswith("[External content")
     assert "Hello\nAnnolid" in payload["text"]
 
     monkeypatch.setattr(fake_httpx, "AsyncClient", _RedirectClient)
     redirected = json.loads(asyncio.run(tool.execute(url="https://example.org/page")))
     assert "Final URL validation failed" in redirected["error"]
     assert redirected["finalUrl"] == "http://127.0.0.1/private"
+
+
+def test_web_fetch_tool_enforces_stream_byte_limit(monkeypatch) -> None:
+    monkeypatch.setattr(
+        web_tools,
+        "_validate_public_web_url",
+        lambda _url: (True, ""),
+    )
+
+    class _Response:
+        status_code = 200
+        headers = {"content-type": "text/plain"}
+        url = "https://example.org/large.txt"
+
+        def raise_for_status(self) -> None:
+            return None
+
+        async def aiter_bytes(self):
+            yield b"12345"
+            yield b"678901"
+
+    class _StreamContext:
+        async def __aenter__(self):
+            return _Response()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            del args, kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+        def stream(self, method, url, headers=None):
+            del method, url, headers
+            return _StreamContext()
+
+    monkeypatch.setitem(
+        sys.modules, "httpx", types.SimpleNamespace(AsyncClient=_Client)
+    )
+
+    payload = json.loads(
+        asyncio.run(
+            WebFetchTool(max_response_bytes=10).execute(
+                url="https://example.org/large.txt"
+            )
+        )
+    )
+
+    assert "exceeds byte limit (10)" in payload["error"]
+
+
+def test_web_fetch_tool_rejects_binary_content_without_reading_body(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        web_tools,
+        "_validate_public_web_url",
+        lambda _url: (True, ""),
+    )
+
+    class _Response:
+        status_code = 200
+        headers = {"content-type": "application/octet-stream"}
+        url = "https://example.org/model.bin"
+
+        def raise_for_status(self) -> None:
+            return None
+
+        async def aiter_bytes(self):
+            raise AssertionError("binary response body should not be buffered")
+            yield b""
+
+    class _StreamContext:
+        async def __aenter__(self):
+            return _Response()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            del args, kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+        def stream(self, method, url, headers=None):
+            del method, url, headers
+            return _StreamContext()
+
+    monkeypatch.setitem(
+        sys.modules, "httpx", types.SimpleNamespace(AsyncClient=_Client)
+    )
+
+    payload = json.loads(
+        asyncio.run(WebFetchTool().execute(url="https://example.org/model.bin"))
+    )
+
+    assert "use download_url for binary content" in payload["error"]
 
 
 def test_cron_tool_add_list_remove(tmp_path: Path) -> None:
@@ -4140,6 +4522,103 @@ def test_download_url_tool_saves_file_and_blocks_outside_dir(
     assert "outside allowed directory" in blocked_payload["error"]
 
 
+def test_download_url_tool_preserves_existing_file_when_replacement_exceeds_limit(
+    tmp_path: Path,
+    monkeypatch,
+    allow_public_download_test_urls,
+) -> None:
+    del allow_public_download_test_urls
+
+    class _Response:
+        status_code = 200
+        headers = {"content-type": "text/plain"}
+        url = "https://example.org/note.txt"
+
+        def raise_for_status(self) -> None:
+            return None
+
+        async def aiter_bytes(self):
+            yield b"12345"
+            yield b"6"
+
+    class _StreamContext:
+        async def __aenter__(self):
+            return _Response()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            del args, kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+        def stream(self, method, url, headers=None):
+            del method, url, headers
+            return _StreamContext()
+
+    monkeypatch.setitem(
+        sys.modules, "httpx", types.SimpleNamespace(AsyncClient=_Client)
+    )
+
+    destination = tmp_path / "note.txt"
+    destination.write_text("keep me", encoding="utf-8")
+    payload = json.loads(
+        asyncio.run(
+            DownloadUrlTool(allowed_dir=tmp_path, max_bytes=5).execute(
+                url="https://example.org/note.txt",
+                output_path=str(destination),
+                max_bytes=500,
+                overwrite=True,
+            )
+        )
+    )
+
+    assert "max_bytes (5)" in payload["error"]
+    assert destination.read_text(encoding="utf-8") == "keep me"
+    assert not list(tmp_path.glob(".note.txt.*.part"))
+
+
+def test_download_url_tool_rejects_sensitive_request_headers(
+    tmp_path: Path,
+    monkeypatch,
+    allow_public_download_test_urls,
+) -> None:
+    del allow_public_download_test_urls
+    client_created = False
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            del args, kwargs
+            nonlocal client_created
+            client_created = True
+
+    monkeypatch.setitem(
+        sys.modules, "httpx", types.SimpleNamespace(AsyncClient=_Client)
+    )
+
+    payload = json.loads(
+        asyncio.run(
+            DownloadUrlTool(allowed_dir=tmp_path).execute(
+                url="https://example.org/note.txt",
+                output_path=str(tmp_path / "note.txt"),
+                request_headers={"Authorization": "Bearer secret"},
+            )
+        )
+    )
+
+    assert "disallowed header(s): Authorization" in payload["error"]
+    assert "secret" not in payload["error"]
+    assert client_created is False
+
+
 def test_download_pdf_tool_enforces_pdf_content_type(
     tmp_path: Path,
     monkeypatch,
@@ -4432,6 +4911,8 @@ def test_download_pdf_tool_rejects_declared_entities_in_oa_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class _EntityResponse:
+        status_code = 200
+        headers = {"content-type": "application/xml; charset=utf-8"}
         text = (
             '<!DOCTYPE response [<!ENTITY x "unsafe">]>'
             '<OA><records><record><link format="pdf" href="&x;"/></record>'
@@ -4439,6 +4920,17 @@ def test_download_pdf_tool_rejects_declared_entities_in_oa_metadata(
         )
 
         def raise_for_status(self) -> None:
+            return None
+
+        async def aiter_bytes(self):
+            yield self.text.encode("utf-8")
+
+    class _StreamContext:
+        async def __aenter__(self):
+            return _EntityResponse()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
             return None
 
     class _FakeClient:
@@ -4452,9 +4944,9 @@ def test_download_pdf_tool_rejects_declared_entities_in_oa_metadata(
             del exc_type, exc, tb
             return None
 
-        async def get(self, url, headers=None):
-            del url, headers
-            return _EntityResponse()
+        def stream(self, method, url, headers=None):
+            del method, url, headers
+            return _StreamContext()
 
     monkeypatch.setitem(
         sys.modules,
@@ -4501,6 +4993,7 @@ def test_download_pdf_tool_uses_pmc_oa_metadata_after_pmc_403(
 
     class _OaXmlResponse:
         status_code = 200
+        headers = {"content-type": "application/xml; charset=utf-8"}
         text = (
             "<?xml version='1.0' encoding='UTF-8'?>"
             "<OA><records><record id='PMC8219259'>"
@@ -4510,6 +5003,9 @@ def test_download_pdf_tool_uses_pmc_oa_metadata_after_pmc_403(
 
         def raise_for_status(self) -> None:
             return None
+
+        async def aiter_bytes(self):
+            yield self.text.encode("utf-8")
 
     class _FakeStreamContext:
         def __init__(self, response):
@@ -4533,15 +5029,11 @@ def test_download_pdf_tool_uses_pmc_oa_metadata_after_pmc_403(
             del exc_type, exc, tb
             return None
 
-        async def get(self, url, headers=None):
-            del headers
-            if "oa.fcgi?id=PMC8219259" in str(url):
-                return _OaXmlResponse()
-            raise RuntimeError("unexpected metadata URL")
-
         def stream(self, method, url, headers=None):
             del method, headers
             text = str(url)
+            if "oa.fcgi?id=PMC8219259" in text:
+                return _FakeStreamContext(_OaXmlResponse())
             if text.startswith("https://ftp.ncbi.nlm.nih.gov/"):
                 return _FakeStreamContext(_OaPdfResponse())
             return _FakeStreamContext(_ForbiddenResponse())
@@ -4583,6 +5075,7 @@ def test_download_pdf_tool_prefers_pmc_oa_before_direct_pdf_urls(
 
     class _OaXmlResponse:
         status_code = 200
+        headers = {"content-type": "application/xml; charset=utf-8"}
         text = (
             "<?xml version='1.0' encoding='UTF-8'?>"
             "<OA><records><record id='PMC8219259'>"
@@ -4592,6 +5085,9 @@ def test_download_pdf_tool_prefers_pmc_oa_before_direct_pdf_urls(
 
         def raise_for_status(self) -> None:
             return None
+
+        async def aiter_bytes(self):
+            yield self.text.encode("utf-8")
 
     class _FakeStreamContext:
         def __init__(self, response):
@@ -4615,14 +5111,10 @@ def test_download_pdf_tool_prefers_pmc_oa_before_direct_pdf_urls(
             del exc_type, exc, tb
             return None
 
-        async def get(self, url, headers=None):
-            del headers
-            if "oa.fcgi?id=PMC8219259" in str(url):
-                return _OaXmlResponse()
-            raise RuntimeError("unexpected metadata URL")
-
         def stream(self, method, url, headers=None):
             del method, headers
+            if "oa.fcgi?id=PMC8219259" in str(url):
+                return _FakeStreamContext(_OaXmlResponse())
             attempts.append(str(url))
             if str(url).startswith("https://ftp.ncbi.nlm.nih.gov/"):
                 return _FakeStreamContext(_OaPdfResponse())
@@ -4665,7 +5157,7 @@ def test_download_pdf_tool_solves_pmc_pow_challenge(
             return None
 
         async def aiter_bytes(self):
-            yield b"<html>Preparing to download</html>"
+            yield self.text.encode("utf-8")
 
     class _PdfResponse:
         status_code = 200

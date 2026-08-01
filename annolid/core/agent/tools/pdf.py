@@ -9,12 +9,21 @@ from pathlib import Path
 from typing import Any, Sequence
 from urllib.parse import parse_qsl, unquote, urlencode, urlparse, urlunparse
 
-from annolid.core.agent.security_network import public_httpx_client_kwargs
+from annolid.core.agent.security_network import (
+    public_httpx_client_kwargs,
+    validate_http_url_shape,
+)
 from annolid.utils.logger import logger
 
 from .common import _normalize, _resolve_read_path, _resolve_write_path
 from .function_base import FunctionTool
 from .web import DownloadUrlTool
+from .web_runtime import (
+    decode_response_bytes,
+    read_response_bytes,
+    sanitize_web_error,
+    stream_response_to_atomic_file,
+)
 
 
 class ExtractPdfTextTool(FunctionTool):
@@ -301,8 +310,12 @@ class DownloadPdfTool(FunctionTool):
         self, allowed_dir: Path | None = None, max_bytes: int = 100 * 1024 * 1024
     ):
         self._allowed_dir = allowed_dir
-        self._max_bytes = max_bytes
-        self._downloader = DownloadUrlTool(allowed_dir=allowed_dir, max_bytes=max_bytes)
+        self._max_bytes = max(1, int(max_bytes))
+        self._downloader = DownloadUrlTool(
+            allowed_dir=allowed_dir,
+            max_bytes=self._max_bytes,
+            allowed_request_headers=frozenset({"referer"}),
+        )
 
     @property
     def name(self) -> str:
@@ -456,17 +469,16 @@ class DownloadPdfTool(FunctionTool):
             dst = _resolve_write_path(output_path, allowed_dir=self._allowed_dir)
         except Exception:
             return None
+        parsed = urlparse(url)
+        host = str(parsed.hostname or "").strip().lower().rstrip(".")
+        if host != "pmc.ncbi.nlm.nih.gov":
+            return None
         if dst.exists() and not overwrite:
             return {
                 "error": "Destination file exists; set overwrite=true to replace.",
                 "url": url,
                 "output_path": str(dst),
             }
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        parsed = urlparse(url)
-        host = str(parsed.hostname or "").strip().lower().rstrip(".")
-        if host != "pmc.ncbi.nlm.nih.gov":
-            return None
 
         headers = {
             "User-Agent": DownloadUrlTool.USER_AGENT,
@@ -481,14 +493,16 @@ class DownloadPdfTool(FunctionTool):
                 timeout=60.0,
                 **public_httpx_client_kwargs(),
             ) as client:
-                initial = await client.get(url, headers=headers)
-                if (
-                    str(initial.headers.get("content-type", ""))
-                    .lower()
-                    .startswith("application/pdf")
-                ):
-                    return None
-                params = self._extract_pmc_pow_params(str(initial.text or ""))
+                async with client.stream("GET", url, headers=headers) as initial:
+                    initial_type = str(initial.headers.get("content-type", "")).lower()
+                    if initial_type.startswith("application/pdf"):
+                        return None
+                    initial_body = await read_response_bytes(
+                        initial, max_bytes=1_048_576
+                    )
+                params = self._extract_pmc_pow_params(
+                    decode_response_bytes(initial_body, initial_type)
+                )
                 if not params:
                     return None
                 challenge = str(params.get("challenge") or "").strip()
@@ -505,7 +519,6 @@ class DownloadPdfTool(FunctionTool):
                     path=cookie_path,
                 )
 
-                bytes_written = 0
                 status_code = 0
                 final_url = url
                 async with client.stream("GET", url, headers=headers) as response:
@@ -523,16 +536,12 @@ class DownloadPdfTool(FunctionTool):
                             "finalUrl": str(response.url),
                             "status": int(response.status_code),
                         }
-                    with dst.open("wb") as handle:
-                        async for chunk in response.aiter_bytes():
-                            if not chunk:
-                                continue
-                            bytes_written += len(chunk)
-                            if bytes_written > int(max_bytes):
-                                raise ValueError(
-                                    f"Download exceeds max_bytes ({int(max_bytes)})"
-                                )
-                            handle.write(chunk)
+                    bytes_written = await stream_response_to_atomic_file(
+                        response,
+                        dst,
+                        max_bytes=max_bytes,
+                        overwrite=overwrite,
+                    )
                 return {
                     "url": url,
                     "finalUrl": final_url,
@@ -543,10 +552,11 @@ class DownloadPdfTool(FunctionTool):
                     "pmc_pow_solved": True,
                 }
         except Exception as exc:
-            with contextlib.suppress(OSError):
-                if dst.exists():
-                    dst.unlink()
-            return {"error": str(exc), "url": url, "output_path": str(dst)}
+            return {
+                "error": sanitize_web_error(exc),
+                "url": url,
+                "output_path": str(dst),
+            }
 
     async def _fetch_pmc_oa_pdf_urls(self, pmcid: str) -> list[str]:
         identifier = str(pmcid or "").strip().upper()
@@ -562,19 +572,24 @@ class DownloadPdfTool(FunctionTool):
                 timeout=20.0,
                 **public_httpx_client_kwargs(),
             ) as client:
-                response = await client.get(
+                async with client.stream(
+                    "GET",
                     endpoint,
                     headers={
                         "User-Agent": DownloadUrlTool.USER_AGENT,
                         "Accept": "application/xml,text/xml,*/*;q=0.8",
                     },
-                )
-                response.raise_for_status()
-                body = str(response.text or "").strip()
+                ) as response:
+                    response.raise_for_status()
+                    content_type = str(response.headers.get("content-type", ""))
+                    response_body = await read_response_bytes(
+                        response, max_bytes=1_048_576
+                    )
+                body = decode_response_bytes(response_body, content_type).strip()
         except Exception:
             return []
 
-        if not body or len(body.encode("utf-8")) > 1_048_576:
+        if not body:
             return []
         upper_body = body.upper()
         if "<!DOCTYPE" in upper_body or "<!ENTITY" in upper_body:
@@ -713,10 +728,18 @@ class DownloadPdfTool(FunctionTool):
         del kwargs
         user_provided_output = output_path is not None
         destination = str(output_path or self._default_output_path(url))
+        try:
+            requested_max = int(max_bytes) if max_bytes is not None else self._max_bytes
+        except (TypeError, ValueError):
+            requested_max = self._max_bytes
+        effective_max = min(max(1, requested_max), self._max_bytes)
         last_error_payload: dict[str, Any] | None = None
         result = ""
         pmcid = self._extract_pmcid(url)
         source_url = str(url or "").strip()
+        source_ok, source_error = validate_http_url_shape(source_url)
+        if not source_ok:
+            return json.dumps({"error": f"URL validation failed: {source_error}"})
         source_host = str(urlparse(source_url).hostname or "").lower().rstrip(".")
         is_pmc_source = source_host == "pmc.ncbi.nlm.nih.gov"
         candidates = self._candidate_pdf_urls(url) or [source_url]
@@ -741,7 +764,7 @@ class DownloadPdfTool(FunctionTool):
             result = await self._downloader.execute(
                 url=candidate_url,
                 output_path=destination,
-                max_bytes=max_bytes or self._max_bytes,
+                max_bytes=effective_max,
                 overwrite=overwrite,
                 content_type_prefixes=["application/pdf"],
                 request_headers={
@@ -779,7 +802,7 @@ class DownloadPdfTool(FunctionTool):
                 pow_payload = await self._download_pmc_pow_pdf(
                     url=candidate_url,
                     output_path=destination,
-                    max_bytes=max_bytes or self._max_bytes,
+                    max_bytes=effective_max,
                     overwrite=overwrite,
                     referer=str(url or "").strip(),
                 )

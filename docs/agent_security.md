@@ -166,13 +166,34 @@ addresses, including local hosts and cloud metadata ranges. Workspace-scoped
 shell execution also treats the configured workspace as the trusted root, so a
 tool call cannot widen access by passing a different `working_dir`.
 
-Agent web-fetch and download clients apply the same public-target validation to
-every outgoing request, including each redirect hop. Redirect targets that
-resolve to localhost, private networks, or cloud metadata services are rejected
-before the redirected request is sent. The validated public DNS result is pinned
-to the actual HTTP connection to prevent DNS rebinding between validation and
-connect. Environment proxies are disabled for these requests because a proxy
-would resolve the destination outside Annolid's pinned connection boundary.
+Agent web-search, web-fetch, and download clients apply the same public-target
+validation to every outgoing request, including each redirect hop. Redirect
+targets that resolve to localhost, private networks, or cloud metadata services
+are rejected before the redirected request is sent. URLs containing embedded
+credentials, control characters, ambiguous backslashes, or invalid ports are
+also rejected. The validated public DNS result is pinned to the actual HTTP
+connection to prevent DNS rebinding between validation and connect. Environment
+proxies are disabled for these requests because a proxy would resolve the
+destination outside Annolid's pinned connection boundary.
+
+Keyless web search uses the DDGS client against its fixed search providers, so
+the user controls the query but not the request destination. Search-result URLs
+are syntax-checked before they are returned. The hardened DuckDuckGo HTML and
+optional Brave fallbacks use Annolid's pinned HTTP client; the legacy
+`scrapling` backend name remains as a compatibility alias. Search and fetched
+page text are explicitly labeled as untrusted external content before they are
+returned to a model. Fetch responses are streamed with a hard byte limit and
+binary content must use `download_url`.
+
+Downloads accept only a narrow set of representation and conditional request
+headers; credentials, cookies, proxy headers, and host overrides are refused.
+The configured download-size ceiling cannot be raised by a tool call. Files are
+downloaded to a same-directory temporary file and atomically installed only
+after validation succeeds, so a failed replacement does not destroy an
+existing destination.
+
+Agent-requested GUI URLs use the same public-target validation. Local files can
+be opened only when they resolve inside the configured workspace or read roots.
 
 Workspace restriction is enabled by default. Annolid does not register the host-backed
 `exec_start` and `exec_process` tools. The Docker-backed `exec` tool also fails

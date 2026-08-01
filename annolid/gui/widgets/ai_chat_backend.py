@@ -64,6 +64,7 @@ from annolid.services.chat_backend_support import (
     TURN_STATUS_FAILED,
     TURN_STATUS_QUEUED,
     TURN_STATUS_RUNNING,
+    WebFallbackResult,
     build_extractive_summary,
     build_gui_compact_system_prompt,
     build_gui_ollama_llm_callable,
@@ -98,7 +99,6 @@ from annolid.services.chat_backend_support import (
     gui_summarize_active_pdf_with_cache,
     gui_should_apply_web_refusal_fallback,
     gui_wrap_tool_callback,
-    is_tool_first_live_web_prompt,
     list_available_pdfs_in_roots,
     looks_like_local_access_refusal,
     looks_like_knowledge_gap_response,
@@ -126,11 +126,11 @@ from annolid.services.chat_backend_support import (
     suggest_relevant_skills_for_prompt,
     topic_tokens,
     tool_first_live_web_error_message,
-    try_browser_search_fallback,
+    try_browser_search_fallback_result,
     try_local_search_fallback,
     try_open_page_content_fallback,
-    try_web_fetch_fallback,
-    try_web_search_fallback,
+    try_web_fetch_fallback_result,
+    try_web_search_fallback_result,
 )
 from annolid.services.chat_controls import (
     run_ai_text_segmentation_tool as gui_run_ai_text_segmentation_tool,
@@ -204,6 +204,7 @@ from annolid.services.chat_runtime import (
     get_chat_tutorials_dir,
     get_chat_workspace,
     read_chat_memory_text,
+    resolve_chat_local_file_path,
     resolve_chat_pdf_path,
 )
 from annolid.services.chat_context import (
@@ -593,6 +594,9 @@ class StreamingChatTask(QRunnable):
         self._cancel_event = Event()
         self._cancelled_notice_emitted = False
         self._live_web_fallback_attempted = False
+        self._tool_first_live_web_missed = False
+        self._model_was_called = False
+        self._web_fallback_results: List[WebFallbackResult] = []
         self.turn_id = self._build_turn_id(inbound=inbound)
         self._turn_status = TURN_STATUS_QUEUED
 
@@ -1051,19 +1055,6 @@ class StreamingChatTask(QRunnable):
                 ),
             )
             return False
-        if self._live_web_fallback_attempted:
-            text = self._ensure_non_empty_final_text("")
-            emit_agent_loop_result(
-                prompt=self.prompt,
-                text=text,
-                persist_turn=lambda user, assistant: self._persist_turn(
-                    user, assistant, persist_session_history=False
-                ),
-                emit_final=lambda message, is_error: self._emit_final(
-                    message, is_error=is_error
-                ),
-            )
-            return False
 
         mcp_servers = self._resolve_mcp_servers(
             context=context, prompt_needs_tools=prompt_needs_tools
@@ -1423,6 +1414,7 @@ class StreamingChatTask(QRunnable):
         *,
         tools: Optional[FunctionToolRegistry] = None,
     ) -> Tuple[str, bool, bool]:
+        self._model_was_called = True
         text = str(getattr(result, "content", "") or "").strip()
         # Normalize provider-specific tool-call markup before deciding fallback
         # so live-web intents do not get misclassified as already having text.
@@ -1454,6 +1446,7 @@ class StreamingChatTask(QRunnable):
             tool_runs=tool_runs,
         )
         text = gui_sanitize_final_response_text(text)
+        text = self._finalize_live_web_text(text, tool_run_count=tool_run_count)
         text = self._ensure_non_empty_final_text(text)
         if self.show_tool_trace:
             trace = self._format_tool_trace(tool_runs)
@@ -1559,8 +1552,11 @@ class StreamingChatTask(QRunnable):
         tools: Optional[FunctionToolRegistry],
         tool_run_count: int,
     ) -> str:
-        if is_tool_first_live_web_prompt(self.prompt):
-            self._live_web_fallback_attempted = True
+        if self._tool_first_live_web_missed:
+            self._log_web_fallback_event(
+                "tool_first", "fallback_plan", "skip_already_exhausted"
+            )
+            return text
         return await gui_apply_web_response_fallbacks(
             text=text,
             prompt=self.prompt,
@@ -1600,6 +1596,9 @@ class StreamingChatTask(QRunnable):
         self,
         tools: Optional[FunctionToolRegistry],
     ) -> str:
+        self._web_fallback_results.clear()
+        self._live_web_fallback_attempted = False
+        self._tool_first_live_web_missed = False
         contextual = contextualize_live_web_prompt(
             self.prompt,
             history_messages=self._load_history_messages(),
@@ -1628,7 +1627,11 @@ class StreamingChatTask(QRunnable):
             session_id=self.session_id,
             model=self.model,
         )
-        self._live_web_fallback_attempted = result.attempted
+        self._tool_first_live_web_missed = bool(result.attempted and not result.text)
+        if self._tool_first_live_web_missed:
+            self._emit_progress(
+                "Web tools returned no usable result; asking the configured model"
+            )
         return result.text
 
     async def _apply_web_response_fallbacks_for_router(
@@ -1709,12 +1712,40 @@ class StreamingChatTask(QRunnable):
         )
 
     def _ensure_non_empty_final_text(self, text: str) -> str:
-        if not str(text or "").strip() and self._live_web_fallback_attempted:
-            return tool_first_live_web_error_message(self.prompt)
+        if not str(text or "").strip() and (
+            self._tool_first_live_web_missed
+            or self._live_web_fallback_attempted
+            or bool(self._web_fallback_results)
+        ):
+            return self._live_web_failure_message()
         return gui_ensure_non_empty_final_text(
             text,
             provider=self.provider,
             model=self.model,
+        )
+
+    def _finalize_live_web_text(self, text: str, *, tool_run_count: int) -> str:
+        failed_lookup = bool(self._web_fallback_results) and not any(
+            result.succeeded for result in self._web_fallback_results
+        )
+        if not (self._tool_first_live_web_missed or failed_lookup):
+            return text
+        if not str(text or "").strip() or self._should_apply_web_refusal_fallback(text):
+            return self._live_web_failure_message()
+        if tool_run_count > 0:
+            return text
+        # Do not surface unverifiable model knowledge as current data. If all
+        # live routes failed, the route diagnostics are safer and more useful
+        # than attaching a caveat to a potentially stale answer.
+        return self._live_web_failure_message()
+
+    def _live_web_failure_message(self) -> str:
+        return tool_first_live_web_error_message(
+            self.prompt,
+            attempts=tuple(self._web_fallback_results),
+            provider=self.provider,
+            model=self.model,
+            model_was_called=self._model_was_called,
         )
 
     def _log_agent_result(
@@ -1848,6 +1879,13 @@ class StreamingChatTask(QRunnable):
             run_arxiv_search=lambda query: self._safe_run_arxiv_search(query=query),
             invoke_open_url=lambda target_url: self._invoke_widget_slot(
                 "bot_open_url", QtCore.Q_ARG(str, target_url)
+            ),
+            resolve_local_file=lambda candidate: resolve_chat_local_file_path(
+                candidate,
+                roots=[
+                    Path(self.workspace),
+                    *(Path(root) for root in self._vcs_read_roots()),
+                ],
             ),
         )
 
@@ -2954,24 +2992,26 @@ class StreamingChatTask(QRunnable):
         prompt: str,
         tools: Optional[FunctionToolRegistry],
     ) -> str:
-        return await try_web_fetch_fallback(
+        result = await try_web_fetch_fallback_result(
             prompt=prompt,
             tools=tools,
             candidate_urls_for_prompt=self._candidate_web_urls_for_prompt,
             build_summary=self._build_extractive_summary,
             emit_progress=self._emit_progress,
         )
+        return self._record_web_fallback_result(result)
 
     async def _try_web_search_fallback(
         self,
         prompt: str,
         tools: Optional[FunctionToolRegistry],
     ) -> str:
-        return await try_web_search_fallback(
+        result = await try_web_search_fallback_result(
             prompt=prompt,
             tools=tools,
             emit_progress=self._emit_progress,
         )
+        return self._record_web_fallback_result(result)
 
     @staticmethod
     def _extract_page_text_from_web_steps(payload: Dict[str, Any]) -> str:
@@ -2982,12 +3022,19 @@ class StreamingChatTask(QRunnable):
         prompt: str,
         tools: Optional[FunctionToolRegistry],
     ) -> str:
-        return await try_browser_search_fallback(
+        result = await try_browser_search_fallback_result(
             prompt=prompt,
             tools=tools,
             emit_progress=self._emit_progress,
             build_summary=self._build_extractive_summary,
         )
+        return self._record_web_fallback_result(result)
+
+    def _record_web_fallback_result(self, result: WebFallbackResult) -> str:
+        self._web_fallback_results.append(result)
+        if result.attempted:
+            self._live_web_fallback_attempted = True
+        return result.text
 
     def _try_open_page_content_fallback(self) -> str:
         return try_open_page_content_fallback(

@@ -4,6 +4,8 @@ import re
 from pathlib import Path
 from typing import Awaitable, Callable, Dict, List, Optional
 
+from annolid.core.agent.security_network import validate_public_url_target
+
 
 def extract_first_web_url(
     text: str,
@@ -38,6 +40,7 @@ async def open_url_tool(
     emit_progress: Callable[[str], None],
     run_arxiv_search: Callable[[str], Awaitable[None]],
     invoke_open_url: Callable[[str], bool],
+    resolve_local_file: Callable[[str], Optional[Path]] | None = None,
 ) -> Dict[str, object]:
     raw_text = str(url or "").strip()
     if raw_text.lower().startswith("file://"):
@@ -53,13 +56,38 @@ async def open_url_tool(
         if lowered.startswith(prefix):
             candidate = candidate[len(prefix) :].strip()
             break
-    candidate_path = Path(candidate).expanduser()
-    if candidate_path.exists() and candidate_path.is_file():
-        target_url = str(candidate_path)
-    else:
+    if resolve_local_file is not None:
+        try:
+            candidate_path = resolve_local_file(candidate)
+        except PermissionError as exc:
+            return {"ok": False, "error": str(exc)}
+        if candidate_path is not None:
+            target_url = str(candidate_path)
+    if not target_url:
         target_url = extract_first_web_url_fn(raw_text)
 
-    candidate_url = target_url or raw_text
+    if not target_url:
+        return {
+            "ok": False,
+            "error": "URL or permitted local file path not found in provided text.",
+            "input": raw_text,
+            "hint": (
+                "Provide a public URL (e.g. example.org) or an existing file "
+                "inside the configured workspace/read roots."
+            ),
+        }
+
+    lower_target = target_url.lower()
+    is_web_url = lower_target.startswith(("http://", "https://"))
+    if is_web_url:
+        ok, error = validate_public_url_target(target_url)
+        if not ok:
+            return {
+                "ok": False,
+                "error": f"URL validation failed: {error}",
+            }
+
+    candidate_url = target_url
     arxiv_match = re.search(
         r"arxiv\.org/(?:pdf|abs)/(\d{4}\.\d{4,5}(?:v\d+)?)", candidate_url
     )
@@ -73,26 +101,12 @@ async def open_url_tool(
             "id": arxiv_id,
         }
 
-    if not target_url:
+    if not is_web_url and resolve_local_file is None:
         return {
             "ok": False,
-            "error": "URL or local file path not found in provided text.",
-            "input": raw_text,
-            "hint": (
-                "Provide a URL (e.g. google.com) or an existing local file path "
-                "(e.g. /path/to/file.html)."
+            "error": (
+                "Local file opening requires configured workspace/read-root validation."
             ),
-        }
-
-    lower_target = target_url.lower()
-    if not (
-        lower_target.startswith(("http://", "https://"))
-        or Path(target_url).expanduser().is_file()
-    ):
-        return {
-            "ok": False,
-            "error": "Only http(s) URLs or existing local files are supported. file:// URLs are blocked for safety.",
-            "url": target_url,
         }
     if not invoke_open_url(target_url):
         return {"ok": False, "error": "Failed to queue GUI URL open action"}
@@ -113,6 +127,9 @@ def open_in_browser_tool(
             "input": str(url or "").strip(),
             "hint": "Provide a URL, for example google.com or https://example.org.",
         }
+    ok, error = validate_public_url_target(target_url)
+    if not ok:
+        return {"ok": False, "error": f"URL validation failed: {error}"}
     if not invoke_open_in_browser(target_url):
         return {"ok": False, "error": "Failed to queue browser open action"}
     return {"ok": True, "queued": True, "url": target_url}

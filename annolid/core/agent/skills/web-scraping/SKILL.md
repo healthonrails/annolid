@@ -22,7 +22,7 @@ Primary goal: return grounded page content quickly, with source links and minima
 - If visual context matters, use `gui_web_capture_screenshot(max_width=1600)` and then `gui_web_describe_view(max_width=1600)`.
 
 3. Fallback to scraper/search tools when needed.
-- Use `web_search(query, count)` (Scrapling-first backend).
+- Use `web_search(query, count)` (DDGS with hardened DuckDuckGo HTML and optional Brave fallbacks).
 - Use `web_fetch(url, extractMode="text")` when a target URL is known.
 - Prefer returning the best available grounded result rather than refusal text.
 

@@ -7,6 +7,7 @@ from annolid.core.agent.gui_backend.fallbacks import (
     try_browser_search_fallback,
     try_web_fetch_fallback,
     try_web_search_fallback,
+    try_web_search_fallback_result,
 )
 from annolid.core.agent.web_prompt_utils import (
     derive_web_lookup_prompt_from_messages,
@@ -175,6 +176,49 @@ def test_web_lookup_fallbacks_strip_slash_controls_and_log_repairs() -> None:
     browser_steps = captures["gui_web_run_steps"][0]["steps"]
     assert "Check+today%27s+weather" in browser_steps[0]["url"]
     assert captures["web_fetch"][0]["url"] == "https://example.com/weather"
+
+
+def test_web_search_fallback_result_preserves_safe_failure_diagnostics() -> None:
+    class _Registry:
+        def has(self, name: str) -> bool:
+            return name == "web_search"
+
+        async def execute(self, name: str, params: dict[str, Any]) -> str:
+            del name, params
+            return "Error: network timeout; token=super-secret"
+
+    result = asyncio.run(
+        try_web_search_fallback_result(
+            prompt="current weather",
+            tools=_Registry(),  # type: ignore[arg-type]
+            emit_progress=lambda _message: None,
+        )
+    )
+
+    assert result.status == "error"
+    assert result.attempted is True
+    assert "network timeout" in result.detail
+    assert "super-secret" not in result.detail
+    assert "[redacted]" in result.detail
+
+
+def test_web_search_fallback_result_distinguishes_missing_tool() -> None:
+    class _Registry:
+        def has(self, name: str) -> bool:
+            del name
+            return False
+
+    result = asyncio.run(
+        try_web_search_fallback_result(
+            prompt="current weather",
+            tools=_Registry(),  # type: ignore[arg-type]
+            emit_progress=lambda _message: None,
+        )
+    )
+
+    assert result.status == "unavailable"
+    assert result.attempted is False
+    assert result.detail == "web_search is not registered."
 
 
 def test_shared_web_prompt_normalizer_strips_control_lines() -> None:

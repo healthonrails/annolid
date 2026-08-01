@@ -13,6 +13,7 @@ from annolid.core.agent.security_network import (
     public_httpx_client_kwargs,
     public_httpx_event_hooks,
     resolve_public_url_target,
+    validate_http_url_shape,
     validate_public_url_target,
 )
 
@@ -61,6 +62,28 @@ def test_validate_public_url_target_allows_public_ipv6_mapped_ipv4(
 
     assert ok is True
     assert err == ""
+
+
+@pytest.mark.parametrize(
+    ("url", "error_fragment"),
+    [
+        ("https://user:secret@example.org/file", "credentials"),
+        ("https://example.org\\@127.0.0.1/file", "unsafe"),
+        ("https://example.org/\nHost: internal", "unsafe"),
+        ("https://example.org:99999/file", "port"),
+        ("https://example.org/" + ("a" * 8192), "maximum length"),
+    ],
+    ids=["credentials", "backslash", "control-character", "port", "length"],
+)
+def test_validate_http_url_shape_rejects_ambiguous_or_sensitive_urls(
+    url: str,
+    error_fragment: str,
+) -> None:
+    ok, error = validate_http_url_shape(url)
+
+    assert ok is False
+    assert error_fragment in error.lower()
+    assert "secret" not in error
 
 
 def test_contains_private_url_target_detects_private_shell_url() -> None:

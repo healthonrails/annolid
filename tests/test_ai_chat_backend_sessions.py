@@ -596,7 +596,7 @@ def test_finalize_converts_local_search_promise_to_code_search() -> None:
     assert "I'll search" not in text
 
 
-def test_tool_first_weather_failure_skips_empty_model_turn(monkeypatch) -> None:
+def test_tool_first_weather_failure_still_calls_model(monkeypatch) -> None:
     task = StreamingChatTask(
         prompt="weather",
         widget=None,
@@ -618,13 +618,19 @@ def test_tool_first_weather_failure_skips_empty_model_turn(monkeypatch) -> None:
             strict_runtime_tool_guard=False,
         )
 
-    def _unexpected_loop(**_kwargs):
-        raise AssertionError("agent loop should not run after tool-first web failure")
+    calls = {"model": 0}
+
+    class _Loop:
+        async def run(self, prompt: str, **kwargs):
+            del prompt, kwargs
+            calls["model"] += 1
+            return SimpleNamespace(content="", tool_runs=[])
 
     monkeypatch.setattr(task, "_provider_dependency_error", lambda: None)
     monkeypatch.setattr(task, "_try_execute_direct_gui_command", _no_direct_command)
     monkeypatch.setattr(task, "_build_agent_execution_context", _fake_context)
-    monkeypatch.setattr(task, "_build_agent_loop_instance", _unexpected_loop)
+    monkeypatch.setattr(task, "_build_agent_loop_instance", lambda **_kwargs: _Loop())
+    monkeypatch.setattr(task, "_log_agent_result", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         ai_chat_backend,
         "emit_agent_loop_result",
@@ -633,4 +639,8 @@ def test_tool_first_weather_failure_skips_empty_model_turn(monkeypatch) -> None:
 
     ai_chat_backend.run_chat_awaitable_sync(task._run_agent_loop_async())
 
-    assert "I tried a local-context lookup first" in str(emitted.get("text") or "")
+    text = str(emitted.get("text") or "")
+    assert calls["model"] == 1
+    assert "I couldn't retrieve weather" in text
+    assert "was still called" in text
+    assert "changing the model alone" in text

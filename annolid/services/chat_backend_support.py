@@ -20,14 +20,18 @@ from annolid.core.agent.gui_backend.context_blocks import (
     build_live_web_context_prompt_block,
 )
 from annolid.core.agent.gui_backend.fallbacks import (
+    WebFallbackResult,
     candidate_web_urls_for_prompt,
     extract_page_text_from_web_steps,
     try_browser_search_fallback,
+    try_browser_search_fallback_result,
     try_code_search_fallback,
     try_local_search_fallback,
     try_open_page_content_fallback,
     try_web_fetch_fallback,
+    try_web_fetch_fallback_result,
     try_web_search_fallback,
+    try_web_search_fallback_result,
 )
 from annolid.core.agent.gui_backend.heuristics import (
     build_extractive_summary,
@@ -160,6 +164,7 @@ __all__ = [
     "TURN_STATUS_QUEUED",
     "TURN_STATUS_RUNNING",
     "WEATHER_INTENT_TOKENS",
+    "WebFallbackResult",
     "ToolFirstWebResult",
     "ContextualWebPrompt",
     "build_extractive_summary",
@@ -230,11 +235,14 @@ __all__ = [
     "topic_tokens",
     "tool_first_live_web_error_message",
     "try_browser_search_fallback",
+    "try_browser_search_fallback_result",
     "try_code_search_fallback",
     "try_local_search_fallback",
     "try_open_page_content_fallback",
     "try_web_fetch_fallback",
+    "try_web_fetch_fallback_result",
     "try_web_search_fallback",
+    "try_web_search_fallback_result",
     "tokenize_intent_text",
     "build_gui_ollama_llm_callable",
 ]

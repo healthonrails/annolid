@@ -10,6 +10,7 @@ from annolid.core.agent.utils import get_agent_workspace_path
 from annolid.core.agent.gui_backend.paths import (
     build_pdf_search_roots,
     build_workspace_roots,
+    resolve_file_path_for_roots,
     resolve_pdf_path_for_roots,
     resolve_video_path_for_roots,
 )
@@ -75,6 +76,17 @@ def build_chat_vcs_read_roots() -> list[str]:
 
 def resolve_chat_pdf_path(raw_path: str) -> Optional[Path]:
     return resolve_pdf_path_for_roots(raw_path, build_chat_workspace_roots())
+
+
+def resolve_chat_local_file_path(
+    raw_path: str,
+    *,
+    roots: Optional[list[Path]] = None,
+) -> Optional[Path]:
+    return resolve_file_path_for_roots(
+        raw_path,
+        roots if roots is not None else build_chat_workspace_roots(),
+    )
 
 
 def resolve_chat_video_path(raw_path: str) -> Optional[Path]:
@@ -150,5 +162,6 @@ __all__ = [
     "get_chat_workspace",
     "read_chat_memory_text",
     "resolve_chat_pdf_path",
+    "resolve_chat_local_file_path",
     "resolve_chat_video_path",
 ]

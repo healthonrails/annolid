@@ -67,6 +67,7 @@ from annolid.services import (
     remove_agent_cron_job,
     remove_agent_secret,
     resolve_chat_pdf_path,
+    resolve_chat_local_file_path,
     resolve_chat_provider_kind,
     resolve_chat_video_path_for_gui_tool,
     rollback_agent_update,
@@ -170,6 +171,7 @@ def test_services_layer_exports() -> None:
     assert services.get_chat_web_dom_text is get_chat_web_dom_text
     assert services.get_chat_web_state is get_chat_web_state
     assert services.resolve_chat_pdf_path is resolve_chat_pdf_path
+    assert services.resolve_chat_local_file_path is resolve_chat_local_file_path
     assert services.resolve_chat_provider_kind is resolve_chat_provider_kind
     assert (
         services.resolve_chat_video_path_for_gui_tool

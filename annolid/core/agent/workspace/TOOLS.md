@@ -66,9 +66,9 @@ Safety notes:
 
 ## Web
 
-- `web_search(query, count?)` (Scrapling-first backend for extraction-oriented web results; falls back to Brave Search API when configured)
-- `web_fetch(url, extractMode?, maxChars?)`
-- `download_url(url, output_path, max_bytes?, overwrite?, content_type_prefixes?, request_headers?)`
+- `web_search(query, count?, backend?)` (DDGS first, with hardened DuckDuckGo HTML and optional Brave fallbacks; legacy `scrapling` remains an alias)
+- `web_fetch(url, extractMode?, maxChars?)` (bounded text/HTML/JSON fetch; returned content is labeled untrusted)
+- `download_url(url, output_path, max_bytes?, overwrite?, content_type_prefixes?, request_headers?)` (bounded atomic download; request headers use a safety allowlist)
 - `download_pdf(url, output_path?, max_bytes?, overwrite?)`
 - `clawhub_search_skills(query, limit?)`
 - `clawhub_install_skill(slug)`
@@ -90,8 +90,8 @@ Safety notes:
 - `gui_context()`
 - `gui_shared_image_path()`
 - `gui_open_video(path)`
-- `gui_open_url(url)`
-- `gui_open_in_browser(url)`
+- `gui_open_url(url)` (public HTTP(S) URL or a local file inside configured read roots)
+- `gui_open_in_browser(url)` (public HTTP(S) URL only)
 - `gui_web_get_dom_text(max_chars?)`
 - `gui_web_capture_screenshot(max_width?)`
 - `gui_web_describe_view(max_width?)`

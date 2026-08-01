@@ -137,6 +137,27 @@ def build_pdf_search_roots(workspace: Path, read_roots_cfg: List[str]) -> List[P
     return _dedupe_roots(roots)
 
 
+def resolve_file_path_for_roots(raw_path: str, roots: List[Path]) -> Optional[Path]:
+    """Resolve an existing local file only when it is within an allowed root."""
+    try:
+        resolved = Path(str(raw_path or "").strip()).expanduser().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    try:
+        if not resolved.is_file():
+            return None
+    except OSError:
+        return None
+
+    for root in roots:
+        try:
+            resolved.relative_to(Path(root).expanduser().resolve())
+            return resolved
+        except (OSError, RuntimeError, ValueError):
+            continue
+    raise PermissionError("Local file is outside configured workspace/read roots.")
+
+
 def resolve_pdf_path_for_roots(raw_path: str, roots: List[Path]) -> Optional[Path]:
     candidates = extract_pdf_path_candidates(raw_path)
     if not candidates:

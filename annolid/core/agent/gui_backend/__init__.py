@@ -40,12 +40,16 @@ from .heuristics import (
     topic_tokens,
 )
 from .fallbacks import (
+    WebFallbackResult,
     candidate_web_urls_for_prompt,
     extract_page_text_from_web_steps,
     try_browser_search_fallback,
+    try_browser_search_fallback_result,
     try_open_page_content_fallback,
     try_web_fetch_fallback,
+    try_web_fetch_fallback_result,
     try_web_search_fallback,
+    try_web_search_fallback_result,
 )
 from .paths import (
     build_pdf_search_roots,
@@ -214,11 +218,15 @@ __all__ = [
     "extract_web_urls",
     "build_extractive_summary",
     "topic_tokens",
+    "WebFallbackResult",
     "candidate_web_urls_for_prompt",
     "try_web_fetch_fallback",
+    "try_web_fetch_fallback_result",
     "try_web_search_fallback",
+    "try_web_search_fallback_result",
     "extract_page_text_from_web_steps",
     "try_browser_search_fallback",
+    "try_browser_search_fallback_result",
     "try_open_page_content_fallback",
     "EMBEDDED_SEARCH_URL_TEMPLATE",
     "EMBEDDED_SEARCH_SOURCE",

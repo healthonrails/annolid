@@ -32,6 +32,8 @@ _BLOCKED_NETWORKS = tuple(
     )
 )
 _URL_RE = re.compile(r"https?://[^\s\"'`;|<>]+", re.IGNORECASE)
+_UNSAFE_URL_CHARACTER_RE = re.compile(r"[\x00-\x20\x7f]")
+_MAX_AGENT_URL_LENGTH = 8192
 
 
 def _normalize_address(
@@ -49,6 +51,48 @@ def _is_blocked_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) 
     return any(normalized in network for network in _BLOCKED_NETWORKS)
 
 
+def validate_http_url_shape(url: str) -> tuple[bool, str]:
+    """Validate the syntax of an agent-controlled HTTP URL without DNS access."""
+    raw_url = str(url or "").strip()
+    if not raw_url:
+        return False, "URL is required"
+    if len(raw_url) > _MAX_AGENT_URL_LENGTH:
+        return False, f"URL exceeds maximum length ({_MAX_AGENT_URL_LENGTH})"
+    if _UNSAFE_URL_CHARACTER_RE.search(raw_url) or "\\" in raw_url:
+        return False, "URL contains unsafe whitespace or control characters"
+    try:
+        parsed = urlparse(raw_url)
+    except Exception:
+        return False, "Invalid URL"
+
+    if parsed.scheme.lower() not in {"http", "https"}:
+        return (
+            False,
+            f"Only http/https allowed, got '{parsed.scheme or 'none'}'",
+        )
+    if not parsed.netloc:
+        return False, "Missing domain"
+    if parsed.username is not None or parsed.password is not None:
+        return False, "Embedded URL credentials are not allowed"
+    hostname = str(parsed.hostname or "").strip().lower().rstrip(".")
+    if not hostname:
+        return False, "Missing hostname"
+    try:
+        port = parsed.port
+    except ValueError:
+        return False, "Invalid URL port"
+    if port is not None and not 1 <= port <= 65535:
+        return False, "Invalid URL port"
+
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        address = None
+    if address is not None and _is_blocked_address(address):
+        return False, f"Blocked private or internal address: {address}"
+    return True, ""
+
+
 def resolve_public_url_target(
     url: str,
 ) -> tuple[bool, str, tuple[str, ...]]:
@@ -57,22 +101,12 @@ def resolve_public_url_target(
     This blocks local, private, link-local, and cloud metadata targets even when
     they are hidden behind a hostname.
     """
-    try:
-        parsed = urlparse(str(url or "").strip())
-    except Exception as exc:
-        return False, str(exc), ()
-
-    if parsed.scheme not in {"http", "https"}:
-        return (
-            False,
-            f"Only http/https allowed, got '{parsed.scheme or 'none'}'",
-            (),
-        )
-    if not parsed.netloc:
-        return False, "Missing domain", ()
+    raw_url = str(url or "").strip()
+    ok, error = validate_http_url_shape(raw_url)
+    if not ok:
+        return False, error, ()
+    parsed = urlparse(raw_url)
     hostname = str(parsed.hostname or "").strip().lower().rstrip(".")
-    if not hostname:
-        return False, "Missing hostname", ()
 
     try:
         address = ipaddress.ip_address(hostname)
@@ -242,5 +276,6 @@ __all__ = [
     "public_httpx_client_kwargs",
     "public_httpx_event_hooks",
     "resolve_public_url_target",
+    "validate_http_url_shape",
     "validate_public_url_target",
 ]
