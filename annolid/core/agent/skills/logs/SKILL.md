@@ -1,6 +1,6 @@
 ---
-name: Logs Manager
-description: Inspect, open, and clean Annolid logs using dedicated GUI log tools.
+name: logs
+description: "List, inspect, search, read, and clean Annolid log targets (logs, realtime, runs, label_index, app) using dedicated GUI log tools. Use when the user asks to view logs, search log content, open a log folder, read recent log entries, or delete old log files."
 ---
 
 # Logs Manager

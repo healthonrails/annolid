@@ -1,6 +1,6 @@
 ---
-name: GUI Automation
-description: Use Annolid GUI tools for robust automation across web, PDF, video, and chat controls.
+name: gui
+description: "Automate Annolid GUI interactions across web browsing, PDF reading, video analysis, and chat controls using dedicated GUI tools. Use when the user asks to open a URL, read a PDF, run video segmentation, control the chat UI, or perform any action that depends on current Annolid app state."
 ---
 
 # GUI Automation

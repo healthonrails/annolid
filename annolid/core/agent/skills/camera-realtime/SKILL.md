@@ -1,6 +1,6 @@
 ---
-name: Camera Realtime Control
-description: Operate camera streams and realtime inference with model selection, status checks, and logging tools.
+name: camera-realtime
+description: "Start, monitor, and stop camera streams and realtime inference in Annolid with model selection, status checks, snapshot capture, and email reporting. Use when the user asks to open a camera feed, run realtime detection, check stream status, take snapshots, or email camera images."
 ---
 
 # Camera Realtime Control
