@@ -7,10 +7,10 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+import torch
 
 from annolid.segmentation.cutie_vos.interactive_utils import (
     image_to_torch,
-    index_numpy_to_one_hot_torch,
     torch_prob_to_numpy_mask,
 )
 from annolid.segmentation.cutie_vos.inference.inference_core import InferenceCore
@@ -81,19 +81,24 @@ class CutieMaskManager:
             logger.warning("Cutie prime skipped: no initial mask available.")
             return
 
+        if self._initialized:
+            # A manual seed is authoritative. Keep the loaded model, but discard
+            # prior propagation memory so stale masks cannot override it.
+            self._core = InferenceCore(self._processor.cutie, cfg=self._processor.cfg)
+
         composed_mask = mask_values["mask"]
         mapping = mask_values["mapping"]
 
-        frame_tensor = image_to_torch(frame, device=self._device)
-        mask_tensor = index_numpy_to_one_hot_torch(composed_mask, len(mapping) + 1).to(
-            self._device
-        )
+        frame_tensor = self._prepare_frame_tensor(frame)
+        mask_tensor = torch.from_numpy(np.ascontiguousarray(composed_mask))
         try:
-            self._core.step(
+            self._step_core(
                 frame_tensor,
-                mask_tensor[1:],
-                idx_mask=False,
+                mask_tensor,
+                objects=list(mapping.values()),
+                idx_mask=True,
                 force_permanent=True,
+                resize_output=False,
             )
         except Exception as exc:  # pragma: no cover - device level failure
             self._handle_failure(exc, "Cutie prime inference failed")
@@ -110,9 +115,13 @@ class CutieMaskManager:
     ) -> Dict[str, MaskResult]:
         if not self.ready():
             return {}
-        frame_tensor = image_to_torch(frame, device=self._device)
+        frame_tensor = self._prepare_frame_tensor(frame)
         try:
-            prediction = self._core.step(frame_tensor)
+            prediction = self._step_core(
+                frame_tensor,
+                return_index_mask=True,
+                output_size=tuple(frame.shape[:2]),
+            )
         except Exception as exc:  # pragma: no cover - device level failure
             self._handle_failure(exc, "Cutie update failed")
             return {}
@@ -208,6 +217,30 @@ class CutieMaskManager:
             )
             self._mask_miss_counts[instance.label] = 0
 
+    def _prepare_frame_tensor(self, frame: np.ndarray) -> torch.Tensor:
+        """Resize before device transfer when the owning processor supports it."""
+        prepare = getattr(self._processor, "_prepare_frame_tensor", None)
+        if callable(prepare):
+            return prepare(frame)
+        return image_to_torch(frame, device=self._device)
+
+    def _step_core(
+        self,
+        frame: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+        **kwargs,
+    ) -> torch.Tensor:
+        """Run one CUTIE step without graph retention and with safe CUDA AMP."""
+        if self._core is None:
+            raise RuntimeError("CUTIE inference core is not initialized.")
+        cfg = getattr(self._processor, "cfg", None)
+        amp_enabled = bool(getattr(cfg, "amp", False)) and str(
+            self._device
+        ).lower().startswith("cuda")
+        with torch.inference_mode():
+            with torch.amp.autocast("cuda", enabled=amp_enabled):
+                return self._core.step(frame, mask, **kwargs)
+
     def _ensure_core(self) -> None:
         if self._core is not None:
             return
@@ -225,7 +258,7 @@ class CutieMaskManager:
 
     def _build_initial_mask(self, registry: InstanceRegistry) -> Dict[str, object]:
         composed_mask = np.zeros(
-            (self.adapter.image_height, self.adapter.image_width), dtype=np.uint8
+            (self.adapter.image_height, self.adapter.image_width), dtype=np.int32
         )
         mapping: Dict[str, int] = {}
         value = 1

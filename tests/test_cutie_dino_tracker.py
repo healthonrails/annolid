@@ -664,6 +664,114 @@ def test_cutie_mask_manager_reset_state(tmp_path):
     assert manager._mask_miss_counts == {}
 
 
+def test_cutie_mask_manager_uses_index_mask_and_single_channel_output(
+    tmp_path, monkeypatch
+):
+    adapter = AnnotationAdapter(image_height=4, image_width=6)
+    config = CutieDinoTrackerConfig(use_cutie_tracking=True)
+    manager = CutieMaskManager(tmp_path / "video.mp4", adapter, config)
+
+    prepared_shapes = []
+
+    class _Processor:
+        def _prepare_frame_tensor(self, frame):
+            prepared_shapes.append(tuple(frame.shape))
+            return torch.zeros((3, 2, 3))
+
+    class _Core:
+        def __init__(self):
+            self.calls = []
+
+        def step(self, frame, mask=None, **kwargs):
+            self.calls.append((frame, mask, kwargs, torch.is_inference_mode_enabled()))
+            if mask is not None:
+                return torch.zeros((2, 3), dtype=torch.int64)
+            output = torch.zeros((4, 6), dtype=torch.int64)
+            output[1:3, 2:4] = 1
+            return output
+
+    core = _Core()
+    manager._processor = _Processor()
+    manager._core = core
+    manager._device = "cpu"
+    monkeypatch.setattr(manager, "_ensure_core", lambda: None)
+
+    registry = InstanceRegistry()
+    instance = registry.ensure_instance("animal")
+    seed_mask = np.zeros((4, 6), dtype=bool)
+    seed_mask[1:3, 1:3] = True
+    instance.set_mask(bitmap=seed_mask, polygon=None)
+    frame = np.zeros((4, 6, 3), dtype=np.uint8)
+
+    manager.prime(0, frame, registry)
+    results = manager.update_masks(1, frame, registry)
+
+    _, prime_mask, prime_kwargs, prime_inference_mode = core.calls[0]
+    assert tuple(prime_mask.shape) == (4, 6)
+    assert prime_mask.dtype == torch.int32
+    assert prime_mask.device.type == "cpu"
+    assert prime_kwargs["objects"] == [1]
+    assert prime_kwargs["idx_mask"] is True
+    assert prime_kwargs["resize_output"] is False
+    assert prime_inference_mode is True
+
+    _, update_mask, update_kwargs, update_inference_mode = core.calls[1]
+    assert update_mask is None
+    assert update_kwargs["return_index_mask"] is True
+    assert update_kwargs["output_size"] == (4, 6)
+    assert update_inference_mode is True
+    assert prepared_shapes == [(4, 6, 3), (4, 6, 3)]
+    assert set(results) == {"animal"}
+
+
+def test_cutie_mask_manager_reprime_discards_stale_inference_memory(
+    tmp_path, monkeypatch
+):
+    adapter = AnnotationAdapter(image_height=2, image_width=2)
+    config = CutieDinoTrackerConfig(use_cutie_tracking=True)
+    manager = CutieMaskManager(tmp_path / "video.mp4", adapter, config)
+
+    old_core = object()
+    processor = type(
+        "Processor",
+        (),
+        {
+            "cutie": object(),
+            "cfg": object(),
+            "_prepare_frame_tensor": lambda self, _frame: torch.zeros((3, 2, 2)),
+        },
+    )()
+
+    class _NewCore:
+        def __init__(self, cutie, cfg):
+            self.cutie = cutie
+            self.cfg = cfg
+            self.calls = []
+
+        def step(self, frame, mask=None, **kwargs):
+            self.calls.append((frame, mask, kwargs))
+            return torch.zeros((2, 2), dtype=torch.int64)
+
+    manager._processor = processor
+    manager._core = old_core
+    manager._device = "cpu"
+    manager._initialized = True
+    monkeypatch.setattr(manager, "_ensure_core", lambda: None)
+    monkeypatch.setattr(
+        "annolid.tracking.cutie_mask_manager.InferenceCore",
+        _NewCore,
+    )
+
+    registry = InstanceRegistry()
+    instance = registry.ensure_instance("animal")
+    instance.set_mask(bitmap=np.ones((2, 2), dtype=bool), polygon=None)
+
+    manager.prime(5, np.zeros((2, 2, 3), dtype=np.uint8), registry)
+
+    assert manager._core is not old_core
+    assert len(manager._core.calls) == 1
+
+
 def test_video_processor_resets_on_manual_resume(tmp_path, monkeypatch):
     class StubVideo:
         def __init__(self, _path):

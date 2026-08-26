@@ -50,7 +50,6 @@ class ObjectManager:
                 corresponding_obj_ids.append(new_obj.id)
 
         self._recompute_obj_id_to_obj_mapping()
-        assert corresponding_tmp_ids == sorted(corresponding_tmp_ids)
         return corresponding_tmp_ids, corresponding_obj_ids
 
     def delete_objects(self, obj_ids_to_remove: Union[int, List[int]]) -> None:
@@ -104,9 +103,9 @@ class ObjectManager:
             new_mask[mask == tmp_id] = obj.id
         return new_mask
 
-    def get_tmp_to_obj_mapping(self) -> Dict[int, ObjectInfo]:
-        # returns the mapping in a dict format for saving it with pickle
-        return {obj.id: tmp_id for obj, tmp_id in self.tmp_id_to_obj.items()}
+    def get_tmp_to_obj_mapping(self) -> Dict[int, int]:
+        # returns stable object id -> temporary tensor id
+        return {obj.id: tmp_id for tmp_id, obj in self.tmp_id_to_obj.items()}
 
     def realize_dict(self, obj_dict, dim=1) -> torch.Tensor:
         # turns a dict indexed by obj id into a tensor, ordered by tmp IDs

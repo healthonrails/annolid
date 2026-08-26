@@ -19,7 +19,11 @@ from hydra.core.global_hydra import GlobalHydra
 # Assuming these are from the original Cutie VOS repository or your adaptation
 from annolid.segmentation.cutie_vos.model.cutie import CUTIE
 from annolid.segmentation.cutie_vos.inference.inference_core import InferenceCore
-from annolid.segmentation.cutie_vos.interactive_utils import image_to_torch, torch_prob_to_numpy_mask, index_numpy_to_one_hot_torch
+from annolid.segmentation.cutie_vos.interactive_utils import (
+    image_to_torch,
+    resize_frame_for_inference,
+    torch_prob_to_numpy_mask,
+)
 
 from annolid.utils.logger import logger
 from annolid.utils.devices import get_device  # For device selection
@@ -182,7 +186,10 @@ class CutieEngine:
         try:
             logger.debug(f"Loading Cutie weights from: {self.cfg.weights}")
             loaded_weights = torch.load(
-                self.cfg.weights, map_location=self.device)
+                self.cfg.weights,
+                map_location=self.device,
+                weights_only=True,
+            )
 
             # Handle potential nesting of weights (e.g. 'model', 'state_dict')
             if 'model' in loaded_weights:
@@ -255,6 +262,32 @@ class CutieEngine:
         if reset_core or self.inference_core is None:
             self.reset_inference_core()
 
+        initial_mask_np = np.asarray(initial_mask_np)
+        if initial_mask_np.ndim != 2:
+            raise ValueError(
+                "CutieEngine initial mask must be a 2D indexed mask; "
+                f"received shape {initial_mask_np.shape}."
+            )
+        initial_object_ids = [
+            int(value) for value in np.unique(initial_mask_np) if int(value) != 0
+        ]
+        if not initial_object_ids:
+            raise ValueError("CutieEngine initial mask has no foreground objects.")
+        if len(initial_object_ids) != int(num_objects_in_mask):
+            logger.warning(
+                "CutieEngine initial object count mismatch: mask contains %s, caller reported %s. Using mask ids.",
+                len(initial_object_ids),
+                num_objects_in_mask,
+            )
+        uses_temporary_ids_as_object_ids = initial_object_ids == list(
+            range(1, len(initial_object_ids) + 1)
+        )
+
+        try:
+            max_internal_size = int(self.cfg.max_internal_size)
+        except (AttributeError, TypeError, ValueError):
+            max_internal_size = -1
+
         total_video_frames = int(video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
         frames_processed_in_this_call = 0
         current_video_frame_idx = start_frame_index
@@ -300,27 +333,50 @@ class CutieEngine:
 
                     frame_rgb = cv2.cvtColor(
                         frame_bgr, cv2.COLOR_BGR2RGB)  # Cutie expects RGB
-                    frame_torch = image_to_torch(frame_rgb, device=self.device)
+                    output_size = tuple(frame_rgb.shape[:2])
+                    frame_for_inference = resize_frame_for_inference(
+                        frame_rgb,
+                        max_internal_size,
+                    )
+                    frame_torch = image_to_torch(
+                        frame_for_inference,
+                        device=self.device,
+                    )
 
                     if frames_processed_in_this_call == 0:  # First frame of this segment processing call
-                        # Convert initial_mask_np (object IDs) to one-hot for Cutie
-                        mask_torch_one_hot = index_numpy_to_one_hot_torch(
-                            initial_mask_np, num_objects_in_mask + 1  # +1 for background
-                        ).to(self.device)
+                        if tuple(initial_mask_np.shape) != output_size:
+                            raise ValueError(
+                                "CutieEngine initial mask size does not match its seed frame: "
+                                f"mask={tuple(initial_mask_np.shape)}, frame={output_size}."
+                            )
+                        mask_torch = torch.from_numpy(
+                            np.ascontiguousarray(initial_mask_np)
+                        )
 
-                        # `step` expects object masks (num_objects, H, W), so exclude background channel [0]
                         predicted_probs_torch = self.inference_core.step(
-                            frame_torch, mask_torch_one_hot[1:],
-                            idx_mask=False,  # We provide one-hot object masks
-                            force_permanent=True  # Commit this first mask
+                            frame_torch,
+                            mask_torch,
+                            objects=initial_object_ids,
+                            idx_mask=True,
+                            force_permanent=True,
+                            return_index_mask=True,
+                            output_size=output_size,
                         )
                     else:  # Subsequent frames
                         predicted_probs_torch = self.inference_core.step(
-                            frame_torch)
+                            frame_torch,
+                            return_index_mask=True,
+                            output_size=output_size,
+                        )
 
-                    # Convert probability tensor (num_objects, H, W) to an object ID mask (H, W)
+                    if uses_temporary_ids_as_object_ids:
+                        predicted_object_ids = predicted_probs_torch
+                    else:
+                        predicted_object_ids = self.inference_core.output_prob_to_mask(
+                            predicted_probs_torch
+                        )
                     predicted_mask_np = torch_prob_to_numpy_mask(
-                        predicted_probs_torch)
+                        predicted_object_ids)
 
                     yield current_video_frame_idx, frame_bgr, predicted_mask_np
 
@@ -340,5 +396,5 @@ class CutieEngine:
             del self.cutie_model
             self.cutie_model = None
 
-        if self.device.type == 'cuda':
+        if self._device_type() == 'cuda':
             torch.cuda.empty_cache()

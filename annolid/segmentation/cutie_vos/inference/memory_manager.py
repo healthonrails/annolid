@@ -309,6 +309,8 @@ class MemoryManager:
             self.long_mem.purge_except(obj_keep_idx)
         self.sensory = {k: v for k, v in self.sensory.items()
                         if k in obj_keep_idx}
+        self.obj_v = {k: v for k, v in self.obj_v.items()
+                      if k in obj_keep_idx}
 
         if not self.work_mem.engaged():
             # everything is removed!

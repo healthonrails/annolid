@@ -39,7 +39,9 @@ def torch_prob_to_numpy_mask(prob: torch.Tensor):
         mask = prob
     else:
         mask = torch.max(prob, dim=0).indices
-    mask = mask.cpu().numpy().astype(np.uint8)
+    # Keep enough range for temporary ids above 255. Callers that need a
+    # palette image can explicitly narrow the dtype after validating its range.
+    mask = mask.cpu().numpy().astype(np.int32, copy=False)
     return mask
 
 
