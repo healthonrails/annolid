@@ -31,6 +31,7 @@ from annolid.utils import draw  # For drawing flow
 # For visualization video
 from annolid.segmentation.cutie_vos.interactive_utils import overlay_davis
 from annolid.segmentation.cutie_vos.predict import find_mask_center_opencv
+from annolid.annotation.polygon_constraints import resolve_polygon_shape_conflicts
 from annolid.utils.files import create_tracking_csv_file
 
 
@@ -311,7 +312,8 @@ class SegmentedCutieExecutor:
             mask_shape_obj.mask = single_obj_mask_bool
 
             polygon_shapes = mask_shape_obj.toPolygons(
-                epsilon=self.config.get("epsilon_for_polygon", 2.0)
+                epsilon=self.config.get("epsilon_for_polygon", 2.0),
+                fill_holes=False,
             )
             if polygon_shapes:
                 main_polygon = polygon_shapes[0]
@@ -331,6 +333,20 @@ class SegmentedCutieExecutor:
                 )
 
         if label_list_for_save:
+            conflict_resolution = resolve_polygon_shape_conflicts(label_list_for_save)
+            label_list_for_save = list(conflict_resolution.shapes)
+            if conflict_resolution.adjusted_shape_indices:
+                logger.debug(
+                    "Resolved geometric conflicts for CUTIE polygon(s) %s in frame %s.",
+                    conflict_resolution.adjusted_shape_indices,
+                    frame_idx,
+                )
+            if conflict_resolution.dropped_shape_indices:
+                logger.warning(
+                    "Dropped fully occluded CUTIE polygon(s) %s in frame %s.",
+                    conflict_resolution.dropped_shape_indices,
+                    frame_idx,
+                )
             save_labels(
                 filename=str(filename_json),
                 imagePath=None,

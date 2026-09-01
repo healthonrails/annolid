@@ -82,6 +82,24 @@ def test_cutie_processor_allows_disabling_legacy_missing_fill(
     assert processor.auto_fill_missing_instances is False
 
 
+def test_cutie_identity_switch_protection_is_opt_in(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        CutieCoreVideoProcessor,
+        "_initialize_model",
+        lambda self: (object(), types.SimpleNamespace(amp=False)),
+    )
+    monkeypatch.setattr(cutie_predict, "get_device", lambda: "cpu")
+
+    default_processor = CutieCoreVideoProcessor(str(tmp_path / "default.mp4"))
+    protected_processor = CutieCoreVideoProcessor(
+        str(tmp_path / "protected.mp4"),
+        identity_switch_protection=True,
+    )
+
+    assert default_processor.identity_switch_protection_enabled is False
+    assert protected_processor.identity_switch_protection_enabled is True
+
+
 def test_cuda_amp_is_enabled_only_for_cuda_when_requested() -> None:
     assert CutieCoreVideoProcessor._cuda_amp_enabled("cuda", True) is True
     assert CutieCoreVideoProcessor._cuda_amp_enabled("cuda:0", True) is True
@@ -375,6 +393,202 @@ def test_shapes_to_mask_keeps_polygons_with_boolean_zone_metadata(
     mask, label_map = processor.shapes_to_mask(str(label_json), (40, 40, 3))
     assert mask is not None
     assert label_map == {"_background_": 0, "mouse": 1, "teaball": 2}
+
+
+def test_shapes_to_mask_rejects_cross_instance_raster_overlap(
+    tmp_path: Path,
+) -> None:
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    label_json = tmp_path / "seed_000000000.json"
+    label_json.write_text(
+        json.dumps(
+            {
+                "shapes": [
+                    {
+                        "label": "fish_3",
+                        "shape_type": "polygon",
+                        "points": [[1, 1], [12, 1], [12, 12], [1, 12]],
+                    },
+                    {
+                        "label": "fish_4",
+                        "shape_type": "polygon",
+                        "points": [[8, 8], [18, 8], [18, 18], [8, 18]],
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    mask, label_map = processor.shapes_to_mask(str(label_json), (24, 24, 3))
+
+    assert mask is None
+    assert label_map == {"_background_": 0, "fish_3": 1, "fish_4": 2}
+
+
+def test_cutie_identity_guard_requires_immediately_previous_complete_masks() -> None:
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    processor.identity_switch_protection_enabled = True
+    first_previous = np.zeros((120, 120), dtype=bool)
+    second_previous = np.zeros((120, 120), dtype=bool)
+    first_previous[57:64, 22:29] = True
+    second_previous[57:64, 92:99] = True
+    processor._recent_instance_masks = {
+        "fish_3": first_previous,
+        "fish_4": second_previous,
+    }
+    processor._recent_instance_mask_frames = {"fish_3": 9, "fish_4": 9}
+    first_current = np.zeros((120, 120), dtype=bool)
+    second_current = np.zeros((120, 120), dtype=bool)
+    first_current[57:64, 87:94] = True
+    second_current[57:64, 27:34] = True
+    current = {"fish_3": first_current, "fish_4": second_current}
+
+    ambiguity = processor._detect_identity_assignment_ambiguity(
+        current,
+        {"fish_3", "fish_4"},
+        current_frame_index=10,
+    )
+
+    assert ambiguity is not None
+    processor._recent_instance_mask_frames["fish_4"] = 8
+    assert (
+        processor._detect_identity_assignment_ambiguity(
+            current,
+            {"fish_3", "fish_4"},
+            current_frame_index=10,
+        )
+        is None
+    )
+
+
+def test_process_segment_pauses_before_persisting_identity_ambiguity(
+    monkeypatch,
+) -> None:
+    previous = np.zeros((120, 120), dtype=np.int32)
+    previous[57:64, 22:29] = 1
+    previous[57:64, 92:99] = 2
+    switched = np.zeros((120, 120), dtype=np.int32)
+    switched[57:64, 87:94] = 1
+    switched[57:64, 27:34] = 2
+
+    class _DummyInferenceCore:
+        def __init__(self, *_args, **_kwargs):
+            self._step_count = 0
+
+        def step(self, *_args, **_kwargs):
+            self._step_count += 1
+            return previous if self._step_count == 1 else switched
+
+    class _DummyCap:
+        def __init__(self):
+            self._idx = 0
+
+        def get(self, _prop):
+            return self._idx
+
+        def set(self, _prop, value):
+            self._idx = int(value)
+
+        def isOpened(self):
+            return self._idx < 2
+
+        def read(self):
+            if self._idx >= 2:
+                return False, None
+            self._idx += 1
+            return True, np.zeros((120, 120, 3), dtype=np.uint8)
+
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    processor.cutie = object()
+    processor.cfg = types.SimpleNamespace(amp=False)
+    processor.device = "cpu"
+    processor.video_folder = Path("clip")
+    processor.label_registry = {"_background_": 0, "fish_3": 1, "fish_4": 2}
+    processor._global_label_names = {}
+    processor.compute_optical_flow = False
+    processor.auto_missing_instance_recovery = False
+    processor.auto_fill_missing_instances = False
+    processor.automatic_pause_enabled = False
+    processor.continue_on_missing_instances = True
+    processor.identity_switch_protection_enabled = True
+    processor.debug = False
+    processor._optical_flow_kwargs = {}
+    processor.optical_flow_backend = "farneback"
+    processor._recent_instance_masks = {}
+    processor._recent_instance_mask_frames = {}
+    processor._last_saved_instance_masks = {}
+    processor._flow_hsv = None
+    processor._should_stop = lambda _worker=None: False
+    processor.commit_masks_into_permanent_memory = lambda *_args, **_kwargs: {
+        "_background_": 0,
+        "fish_3": 1,
+        "fish_4": 2,
+    }
+    processor._build_object_mask_tensor = lambda _mask: (
+        torch.zeros((2, 120, 120), dtype=torch.float32),
+        [1, 2],
+    )
+    processor._register_active_objects = lambda _ids: None
+    processor._cache_recovery_seed_frame = lambda *_args, **_kwargs: None
+    tracked_stats = []
+    processor._update_tracking_frame_stat = (
+        lambda frame, **kwargs: tracked_stats.append((frame, kwargs))
+    )
+    processor._flush_tracking_stats = lambda **_kwargs: None
+    stop_events = []
+    processor._emit_stop_signal = lambda _worker=None: stop_events.append(True)
+
+    saved_frames = []
+
+    def _capture_save(_filename, mask_dict, _shape, shape_notes=None):
+        processor._last_saved_instance_masks = {
+            label: mask.copy() for label, mask in mask_dict.items()
+        }
+        saved_frames.append(int(processor._frame_number))
+
+    processor._save_annotation_with_notes = _capture_save
+    processor._update_recent_instance_masks = (
+        CutieCoreVideoProcessor._update_recent_instance_masks.__get__(
+            processor, CutieCoreVideoProcessor
+        )
+    )
+
+    monkeypatch.setattr(cutie_predict, "InferenceCore", _DummyInferenceCore)
+    monkeypatch.setattr(
+        cutie_predict, "image_to_torch", lambda frame, device=None: frame
+    )
+    monkeypatch.setattr(cutie_predict, "torch_prob_to_numpy_mask", lambda pred: pred)
+
+    segment = SeedSegment(
+        seed=_seed(0),
+        start_frame=0,
+        end_frame=1,
+        mask=previous,
+        labels_map={"_background_": 0, "fish_3": 1, "fish_4": 2},
+        active_labels=["fish_3", "fish_4"],
+    )
+
+    message, should_halt = processor._process_segment(
+        cap=_DummyCap(),
+        segment=segment,
+        end_frame=1,
+        fps=30.0,
+    )
+
+    assert should_halt is True
+    assert message is not None
+    assert "identity ambiguity detected before saving frame 1" in message
+    assert saved_frames == [0]
+    assert stop_events == [True]
+    assert tracked_stats[-1] == (
+        1,
+        {
+            "source": "prediction",
+            "identity_ambiguity_count": 2,
+            "identity_ambiguity_labels": ["fish_3", "fish_4"],
+        },
+    )
 
 
 class _DummyCache:
@@ -3141,8 +3355,8 @@ def test_save_annotation_falls_back_to_previous_mask_on_frame_sized_artifact(
             self.other_data = {}
             self.mask = None
 
-        def toPolygons(self, epsilon=2.0):
-            _ = epsilon
+        def toPolygons(self, epsilon=2.0, *, fill_holes=True):
+            _ = epsilon, fill_holes
             mask = np.asarray(self.mask).astype(bool)
             ys, xs = np.where(mask)
             if xs.size == 0 or ys.size == 0:
@@ -3326,8 +3540,8 @@ def test_save_annotation_updates_prediction_tracking_stats(
             self.other_data = {}
             self.mask = None
 
-        def toPolygons(self, epsilon=2.0):
-            _ = epsilon
+        def toPolygons(self, epsilon=2.0, *, fill_holes=True):
+            _ = epsilon, fill_holes
             mask = np.asarray(self.mask).astype(bool)
             ys, xs = np.where(mask)
             if xs.size == 0 or ys.size == 0:
@@ -3455,6 +3669,30 @@ def test_tracking_stats_persist_missing_instance_frame_stats(tmp_path) -> None:
     assert int(frame_stats["12"]["unresolved_missing_instance_count"]) == 1
 
 
+def test_tracking_stats_persist_identity_ambiguity_frame_stats(tmp_path) -> None:
+    processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    processor.video_name = str(tmp_path / "clip.mp4")
+    processor.video_folder = tmp_path / "clip"
+    processor._tracking_stats_cache = None
+    processor._tracking_stats_dirty = False
+    processor._tracking_stats_pending_updates = 0
+
+    processor._update_tracking_frame_stat(
+        100,
+        source="prediction",
+        identity_ambiguity_count=2,
+        identity_ambiguity_labels=["fish_3", "fish_4"],
+    )
+    payload = processor._build_tracking_stats_persist_payload(
+        processor._load_tracking_stats()
+    )
+
+    frame_stat = payload["frame_stats"]["100"]
+    assert frame_stat["identity_ambiguity_count"] == 2
+    assert frame_stat["identity_ambiguity_labels"] == ["fish_3", "fish_4"]
+    assert payload["summary"]["identity_ambiguity_frames"] == 1
+
+
 def test_tracking_stats_missing_instance_fields_can_be_cleared_on_rerun(
     tmp_path,
 ) -> None:
@@ -3472,6 +3710,8 @@ def test_tracking_stats_missing_instance_fields_can_be_cleared_on_rerun(
         missing_instance_labels=["stim_2"],
         unresolved_missing_instance_count=1,
         unresolved_missing_instance_labels=["stim_2"],
+        identity_ambiguity_count=2,
+        identity_ambiguity_labels=["stim_1", "stim_2"],
     )
     processor._update_tracking_frame_stat(
         12,
@@ -3480,6 +3720,8 @@ def test_tracking_stats_missing_instance_fields_can_be_cleared_on_rerun(
         missing_instance_labels=[],
         unresolved_missing_instance_count=0,
         unresolved_missing_instance_labels=[],
+        identity_ambiguity_count=0,
+        identity_ambiguity_labels=[],
     )
 
     payload = processor._build_tracking_stats_persist_payload(
@@ -3488,6 +3730,7 @@ def test_tracking_stats_missing_instance_fields_can_be_cleared_on_rerun(
 
     assert "12" not in payload["frame_stats"]
     assert int(payload["summary"]["missing_instance_frames"]) == 0
+    assert int(payload["summary"]["identity_ambiguity_frames"]) == 0
 
 
 def test_collect_labeled_frame_indices_treats_empty_store_records_as_completed(
@@ -3587,8 +3830,8 @@ def test_save_annotation_records_unresolved_bad_shape_stats(
             self.other_data = {}
             self.mask = None
 
-        def toPolygons(self, epsilon=2.0):
-            _ = epsilon
+        def toPolygons(self, epsilon=2.0, *, fill_holes=True):
+            _ = epsilon, fill_holes
             return []
 
     video_path = tmp_path / "clip.mp4"
@@ -3680,8 +3923,8 @@ def test_save_annotation_repairs_bad_shape_and_records_resolved_stats(
             self.other_data = {}
             self.mask = None
 
-        def toPolygons(self, epsilon=2.0):
-            _ = epsilon
+        def toPolygons(self, epsilon=2.0, *, fill_holes=True):
+            _ = epsilon, fill_holes
             mask = np.asarray(self.mask).astype(bool)
             if int(np.count_nonzero(mask)) < 4:
                 return []

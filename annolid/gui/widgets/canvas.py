@@ -17,6 +17,10 @@ from annolid.annotation.keypoint_visibility import (
     KeypointVisibility,
     set_keypoint_visibility_on_shape_object,
 )
+from annolid.annotation.polygon_constraints import (
+    make_instance_masks_exclusive,
+    resolve_polygon_shape_conflicts,
+)
 from annolid.annotation.pose_schema import PoseSchema
 from annolid.gui.shape import Shape, MaskShape, MultipoinstShape
 from annolid.gui.shared_vertices import SharedTopologyRegistry
@@ -879,16 +883,29 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
             image_data, points_per_side=points_per_side
         )
 
+        masks = make_instance_masks_exclusive(
+            [ann["segmentation"] for ann in anns],
+            scores=[ann.get("stability_score", 0.0) for ann in anns],
+        )
+        generated_shapes = []
+        generated_priorities = []
+
         # Iterate over each segmentation annotation
-        for i, ann in enumerate(anns):
+        for i, (ann, mask) in enumerate(zip(anns, masks)):
             # Check if the output format is polygons
             if is_polygon_output:
                 # Convert segmentation to polygons
                 self.current = MaskShape(
                     label=f"{label}_{i}", flags={}, description="grounding_sam"
                 )
-                self.current.mask = ann["segmentation"]
-                self.current = self.current.toPolygons()[0]
+                self.current.mask = mask
+                polygons = self.current.toPolygons(fill_holes=False)
+                if not polygons:
+                    logger.warning(
+                        "Skipping empty text-prompt mask for '%s_%s'.", label, i
+                    )
+                    continue
+                self.current = polygons[0]
             else:
                 # Extract bounding box coordinates
                 x1, y1, x2, y2 = ann["bbox"]
@@ -900,12 +917,40 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
                     shape_type="mask",
                     points=[QtCore.QPointF(x1, y1), QtCore.QPointF(x2, y2)],
                     point_labels=[1, 1],
-                    mask=ann["segmentation"][int(y1) : int(y2), int(x1) : int(x2)],
+                    mask=mask[int(y1) : int(y2), int(x1) : int(x2)],
                 )
             # Add stability score as other data
             self.current.other_data["score"] = str(ann["stability_score"])
+            generated_shapes.append(self.current)
+            generated_priorities.append(ann.get("stability_score", 0.0))
 
-            # Finalize the process
+        self._finalise_generated_prompt_shapes(
+            generated_shapes,
+            priorities=generated_priorities,
+        )
+
+    def _finalise_generated_prompt_shapes(self, shapes, priorities=None):
+        """Finalize one prompt batch after enforcing exclusive geometry."""
+
+        if not shapes:
+            self.current = None
+            return
+        resolution = resolve_polygon_shape_conflicts(
+            shapes,
+            priorities=priorities,
+        )
+        if resolution.adjusted_shape_indices:
+            logger.info(
+                "Resolved geometric conflicts for text-prompt polygon(s) %s.",
+                resolution.adjusted_shape_indices,
+            )
+        if resolution.dropped_shape_indices:
+            logger.warning(
+                "Dropped fully occluded text-prompt polygon(s) %s.",
+                resolution.dropped_shape_indices,
+            )
+        for shape in resolution.shapes:
+            self.current = shape
             self.finalise()
 
     def predictAiRectangle(
@@ -1002,6 +1047,9 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
 
         # Segment objects using SAM HQ model with predicted bounding boxes
         masks, scores, _bboxes = self.sam_hq_model.segment_objects(image_data, _bboxes)
+        masks = make_instance_masks_exclusive(masks, scores=scores)
+        generated_shapes = []
+        generated_priorities = []
 
         # Iterate over each predicted bounding box
         for i, box in enumerate(_bboxes):
@@ -1012,7 +1060,13 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
                     label=f"{label}_{i}", flags={}, description="grounding_sam"
                 )
                 self.current.mask = masks[i]
-                self.current = self.current.toPolygons()[0]
+                polygons = self.current.toPolygons(fill_holes=False)
+                if not polygons:
+                    logger.warning(
+                        "Skipping empty text-prompt mask for '%s_%s'.", label, i
+                    )
+                    continue
+                self.current = polygons[0]
             else:
                 # Extract bounding box coordinates
                 x1, y1, x2, y2 = box
@@ -1028,9 +1082,13 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
                 )
             # Add stability score as other data
             self.current.other_data["score"] = str(scores[i])
+            generated_shapes.append(self.current)
+            generated_priorities.append(scores[i])
 
-            # Finalize the process
-            self.finalise()
+        self._finalise_generated_prompt_shapes(
+            generated_shapes,
+            priorities=generated_priorities,
+        )
 
     def loadSamPredictor(
         self,

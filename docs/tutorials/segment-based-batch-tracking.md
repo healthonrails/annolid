@@ -110,6 +110,22 @@ This is the practical "identity repair workflow" for most home-cage CUTIE ID
 switches. It is not a separate model or a separate correction algorithm; it is a
 productive way to use the existing save/retrack tools.
 
+CUTIE rejects a seed if two instance polygons rasterize to any of the same
+pixels, because overlapping seed ownership is not a valid identity instruction.
+Normal tracking does not pause on a possible identity switch. For workflows that
+prefer review interruptions, callers can opt in with
+`identity_switch_protection=True`. In that mode, Annolid compares each complete
+prediction with the immediately preceding complete frame. If a different
+identity assignment is substantially more consistent, tracking pauses before
+saving that frame and records the labels involved in the tracking statistics.
+Review the paused frame, correct and save its identities as a new manual seed,
+then continue from that frame.
+
+This guard intentionally does not swap labels automatically. With visually
+similar animals in a complete occlusion, position alone cannot prove identity;
+automatic relabeling could silently replace one error with another. The pause
+keeps the last unambiguous output intact and makes the decision reviewable.
+
 ## 11. Reduce CUTIE Analysis Time
 
 For CUTIE tracking, the largest speed lever is the number of frames sent through

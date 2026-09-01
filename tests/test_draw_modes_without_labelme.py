@@ -315,6 +315,83 @@ def test_load_pixmap_clears_transient_ai_prompt_state_when_frame_changes() -> No
         canvas.close()
 
 
+def test_text_prompt_generation_makes_masks_and_polygon_vertices_exclusive(
+    monkeypatch,
+) -> None:
+    _ensure_qapp()
+
+    import annolid.gui.widgets.canvas as canvas_mod
+    from annolid.gui.widgets.canvas import Canvas
+    from annolid.utils.annotation_compat import shape_to_mask
+    from shapely.geometry import Polygon
+
+    class _FakeDetector:
+        def predict_bboxes(self, _image, _prompt):
+            return [([10, 10, 70, 70], 0.7), ([50, 50, 90, 90], 0.9)]
+
+    first_mask = np.zeros((100, 100), dtype=bool)
+    second_mask = np.zeros((100, 100), dtype=bool)
+    first_mask[10:70, 10:70] = True
+    second_mask[50:90, 50:90] = True
+
+    class _FakeSegmenter:
+        def segment_objects(self, _image, boxes):
+            return [first_mask, second_mask], [0.7, 0.9], boxes
+
+    exclusive_results = []
+    real_make_exclusive = canvas_mod.make_instance_masks_exclusive
+
+    def _capture_exclusive(masks, scores=None):
+        result = real_make_exclusive(masks, scores=scores)
+        exclusive_results.append(result)
+        return result
+
+    monkeypatch.setattr(canvas_mod, "make_instance_masks_exclusive", _capture_exclusive)
+
+    canvas = Canvas()
+    finalized = []
+    try:
+        image = QtGui.QImage(100, 100, QtGui.QImage.Format_RGB32)
+        image.fill(QtGui.QColor(50, 60, 70))
+        canvas.loadPixmap(QtGui.QPixmap.fromImage(image), clear_shapes=False)
+        canvas.createMode = "grounding_sam"
+        canvas._ai_model_rect = _FakeDetector()
+        canvas.sam_hq_model = _FakeSegmenter()
+
+        def _capture_finalise():
+            finalized.append(canvas.current)
+            canvas.current = None
+
+        monkeypatch.setattr(canvas, "finalise", _capture_finalise)
+
+        canvas.predictAiRectangle("fish")
+
+        assert len(exclusive_results) == 1
+        exclusive_masks = exclusive_results[0]
+        assert not np.any(exclusive_masks[0] & exclusive_masks[1])
+        assert exclusive_masks[1][50, 50]
+        assert not exclusive_masks[0][50, 50]
+        assert len(finalized) == 2
+        first_points = {(point.x(), point.y()) for point in finalized[0].points}
+        second_points = {(point.x(), point.y()) for point in finalized[1].points}
+        assert first_points.isdisjoint(second_points)
+        polygon_geometries = [
+            Polygon([(point.x(), point.y()) for point in shape.points])
+            for shape in finalized
+        ]
+        assert polygon_geometries[0].disjoint(polygon_geometries[1])
+        polygon_masks = [
+            shape_to_mask(
+                (100, 100),
+                [[point.x(), point.y()] for point in shape.points],
+            )
+            for shape in finalized
+        ]
+        assert not np.any(polygon_masks[0] & polygon_masks[1])
+    finally:
+        canvas.close()
+
+
 def test_switching_ai_models_closes_previous_instance(monkeypatch):
     _ensure_qapp()
 

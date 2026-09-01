@@ -1,6 +1,8 @@
 import csv
 import os
 import re
+import shutil
+import tempfile
 from pathlib import Path
 from tqdm import tqdm
 import argparse
@@ -221,6 +223,18 @@ def _existing_csv_covers_all_frames(csv_path: Path, required_frames: set[int]) -
     return required_frames.issubset(seen_frames)
 
 
+def _temporary_sibling(path: Path) -> Path:
+    """Return a unique temporary path beside ``path`` for atomic replacement."""
+
+    file_descriptor, raw_path = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=str(path.parent),
+    )
+    os.close(file_descriptor)
+    return Path(raw_path)
+
+
 def convert_json_to_csv(
     json_folder,
     csv_file=None,
@@ -357,7 +371,10 @@ def convert_json_to_csv(
             with tracked_path.open("r", newline="", encoding="utf-8") as existing_fh:
                 reader = csv.reader(existing_fh)
                 existing_header = next(reader, [])
-                if existing_header != tracked_header:
+                # ``annotate_csv`` appends derived timestamp columns. Those are a
+                # compatible extension of the tracked schema, not a reason to
+                # discard and rebuild an otherwise complete file.
+                if existing_header[: len(tracked_header)] != tracked_header:
                     force_tracked_rewrite = True
                 frame_idx = (
                     existing_header.index("frame_number")
@@ -427,16 +444,18 @@ def convert_json_to_csv(
 
     csv_output = None
     csv_writer = None
+    csv_tmp_path = None
+    conversion_completed = False
+    stopped = False
     try:
         if should_write_tracking_csv:
-            csv_output = open(csv_file, "w", newline="")
+            csv_tmp_path = _temporary_sibling(csv_path)
+            csv_output = csv_tmp_path.open("w", newline="", encoding="utf-8")
             csv_writer = csv.writer(csv_output)
             csv_writer.writerow(csv_header)
 
         total_files = len(json_files)
         num_processed_files = 0
-        stopped = False
-
         for json_file in tqdm(json_files, desc="Converting JSON files", unit="files"):
             if stop_event is not None and stop_event.is_set():
                 stopped = True
@@ -703,11 +722,30 @@ def convert_json_to_csv(
             num_processed_files += 1
             progress = int((num_processed_files / total_files) * 100)
             _report_progress(progress)
+        conversion_completed = True
     finally:
         if csv_output is not None:
             try:
                 csv_output.close()
             except Exception:
+                pass
+
+        if csv_tmp_path is not None and (stopped or not conversion_completed):
+            try:
+                csv_tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    if stopped:
+        return "Stopped"
+
+    if csv_tmp_path is not None:
+        try:
+            os.replace(csv_tmp_path, csv_path)
+        finally:
+            try:
+                csv_tmp_path.unlink(missing_ok=True)
+            except OSError:
                 pass
 
     if tracked_csv_file and tracked_rows_to_append:
@@ -717,8 +755,11 @@ def convert_json_to_csv(
             and tracked_path.stat().st_size > 0
             and not force_tracked_rewrite
         )
+        tracked_tmp_path = _temporary_sibling(tracked_path)
         try:
-            with tracked_path.open(
+            if file_exists:
+                shutil.copyfile(tracked_path, tracked_tmp_path)
+            with tracked_tmp_path.open(
                 "a" if file_exists else "w", newline="", encoding="utf-8"
             ) as tracked_output:
                 tracked_writer = csv.writer(tracked_output)
@@ -726,9 +767,15 @@ def convert_json_to_csv(
                     tracked_writer.writerow(tracked_header)
                 for row in tracked_rows_to_append:
                     tracked_writer.writerow(row)
+            os.replace(tracked_tmp_path, tracked_path)
             wrote_new_tracked_rows = True
         except OSError:
             wrote_new_tracked_rows = False
+        finally:
+            try:
+                tracked_tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     if tracked_csv_file and wrote_new_tracked_rows:
         try:
@@ -741,9 +788,6 @@ def convert_json_to_csv(
                 annotate_csv(Path(tracked_csv_file), video_path)
         except Exception:
             pass
-
-    if stopped:
-        return "Stopped"
 
     return str(csv_file)
 

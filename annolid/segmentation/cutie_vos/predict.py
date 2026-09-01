@@ -30,7 +30,7 @@ from omegaconf import open_dict
 from hydra import compose, initialize
 from annolid.segmentation.cutie_vos.model.cutie import CUTIE
 from annolid.segmentation.cutie_vos.inference.inference_core import InferenceCore
-from annolid.utils.annotation_compat import shapes_to_label
+from annolid.utils.annotation_compat import shape_to_mask
 from annolid.utils.shapes import extract_flow_points_in_mask
 from annolid.utils.devices import get_device
 from annolid.utils.image_adjustments import (
@@ -48,6 +48,12 @@ from annolid.motion.optical_flow import (
 from annolid.utils import draw
 from annolid.utils.lru_cache import BboxCache
 from annolid.utils.annotation_store import AnnotationStore
+from annolid.annotation.polygon_constraints import resolve_polygon_shape_conflicts
+from annolid.tracking.identity_continuity import (
+    IdentityAssignmentAmbiguity,
+    detect_identity_assignment_ambiguity,
+    find_cross_instance_mask_overlaps,
+)
 from hydra.core.global_hydra import GlobalHydra
 
 """
@@ -206,6 +212,9 @@ class CutieCoreVideoProcessor:
         self.continue_on_missing_instances = bool(
             kwargs.get("continue_on_missing_instances", True)
         )
+        self.identity_switch_protection_enabled = bool(
+            kwargs.get("identity_switch_protection", False)
+        )
         self._recovery_success_log_counts: Dict[Tuple[str, ...], int] = {}
         self._suppressed_recovery_success_log_counts: Dict[Tuple[str, ...], int] = {}
         self.missing_recovery_retry_interval = self._resolve_positive_int(
@@ -214,6 +223,10 @@ class CutieCoreVideoProcessor:
         )
         logger.info(
             f"Auto missing instance recovery is set to {self.auto_missing_instance_recovery}."
+        )
+        logger.info(
+            "CUTIE identity-switch protection is set to %s.",
+            self.identity_switch_protection_enabled,
         )
         self._seed_frames: List[SeedFrame] = []
         self.label_registry: Dict[str, int] = {"_background_": 0}
@@ -691,6 +704,8 @@ class CutieCoreVideoProcessor:
             return True
         if int(entry.get("missing_instance_count", 0)) > 0:
             return True
+        if int(entry.get("identity_ambiguity_count", 0)) > 0:
+            return True
         return False
 
     def _build_tracking_stats_persist_payload(
@@ -726,6 +741,7 @@ class CutieCoreVideoProcessor:
         bad_shape_frames: Set[int] = set()
         bad_shape_failed_frames: Set[int] = set()
         missing_instance_frames: Set[int] = set()
+        identity_ambiguity_frames: Set[int] = set()
         for frame_key, entry in filtered_frame_stats.items():
             try:
                 frame_idx = int(frame_key)
@@ -741,6 +757,8 @@ class CutieCoreVideoProcessor:
                 bad_shape_failed_frames.add(frame_idx)
             if int(entry.get("missing_instance_count", 0)) > 0:
                 missing_instance_frames.add(frame_idx)
+            if int(entry.get("identity_ambiguity_count", 0)) > 0:
+                identity_ambiguity_frames.add(frame_idx)
 
         summary = {
             "manual_frames": int(len(manual_frames)),
@@ -751,6 +769,7 @@ class CutieCoreVideoProcessor:
             "bad_shape_frames": int(len(bad_shape_frames)),
             "bad_shape_failed_frames": int(len(bad_shape_failed_frames)),
             "missing_instance_frames": int(len(missing_instance_frames)),
+            "identity_ambiguity_frames": int(len(identity_ambiguity_frames)),
             "abnormal_segment_events": int(len(filtered_segments)),
         }
 
@@ -805,6 +824,7 @@ class CutieCoreVideoProcessor:
         bad_shape_frames: Set[int] = set()
         bad_shape_failed_frames: Set[int] = set()
         missing_instance_frames: Set[int] = set()
+        identity_ambiguity_frames: Set[int] = set()
         for frame_key, record in frame_stats.items():
             if not isinstance(record, dict):
                 continue
@@ -825,6 +845,8 @@ class CutieCoreVideoProcessor:
                 bad_shape_failed_frames.add(frame_idx)
             if int(record.get("missing_instance_count", 0)) > 0:
                 missing_instance_frames.add(frame_idx)
+            if int(record.get("identity_ambiguity_count", 0)) > 0:
+                identity_ambiguity_frames.add(frame_idx)
 
         stats["summary"] = {
             "manual_frames": int(len(manual_frames)),
@@ -835,6 +857,7 @@ class CutieCoreVideoProcessor:
             "bad_shape_frames": int(len(bad_shape_frames)),
             "bad_shape_failed_frames": int(len(bad_shape_failed_frames)),
             "missing_instance_frames": int(len(missing_instance_frames)),
+            "identity_ambiguity_frames": int(len(identity_ambiguity_frames)),
             "abnormal_segment_events": int(
                 len(
                     [
@@ -863,6 +886,8 @@ class CutieCoreVideoProcessor:
         missing_instance_labels: Optional[Iterable[str]] = None,
         unresolved_missing_instance_count: Optional[int] = None,
         unresolved_missing_instance_labels: Optional[Iterable[str]] = None,
+        identity_ambiguity_count: Optional[int] = None,
+        identity_ambiguity_labels: Optional[Iterable[str]] = None,
     ) -> None:
         try:
             normalized_frame = int(frame_idx)
@@ -879,13 +904,16 @@ class CutieCoreVideoProcessor:
             source_name = str(source or "")
             missing_labels = list(missing_instance_labels or [])
             unresolved_labels = list(unresolved_missing_instance_labels or [])
-            has_missing_update = (
+            identity_labels = list(identity_ambiguity_labels or [])
+            has_abnormal_update = (
                 int(missing_instance_count or 0) > 0
                 or int(unresolved_missing_instance_count or 0) > 0
+                or int(identity_ambiguity_count or 0) > 0
                 or bool(missing_labels)
                 or bool(unresolved_labels)
+                or bool(identity_labels)
             )
-            if source_name in {"", "prediction"} and not has_missing_update:
+            if source_name in {"", "prediction"} and not has_abnormal_update:
                 return
         if not isinstance(entry, dict):
             entry = {}
@@ -927,6 +955,15 @@ class CutieCoreVideoProcessor:
                 {str(item) for item in unresolved_missing_instance_labels if item}
             )
             entry["unresolved_missing_instance_labels"] = labels
+        if identity_ambiguity_count is not None:
+            entry["identity_ambiguity_count"] = max(
+                0, int(identity_ambiguity_count)
+            )
+        if identity_ambiguity_labels is not None:
+            labels = sorted(
+                {str(item) for item in identity_ambiguity_labels if item}
+            )
+            entry["identity_ambiguity_labels"] = labels
         entry["last_updated"] = datetime.utcnow().isoformat() + "Z"
         entry["frame"] = normalized_frame
 
@@ -1815,7 +1852,10 @@ class CutieCoreVideoProcessor:
             if note_text:
                 current_shape.other_data["note"] = note_text
             current_shape.mask = mask
-            _shapes = current_shape.toPolygons(epsilon=self.epsilon_for_polygon)
+            _shapes = current_shape.toPolygons(
+                epsilon=self.epsilon_for_polygon,
+                fill_holes=False,
+            )
             if len(_shapes) <= 0:
                 failed_shapes[label] = {
                     "mask": np.asarray(mask).astype(bool),
@@ -1874,7 +1914,10 @@ class CutieCoreVideoProcessor:
                     "annotation_source": "cutie_vos",
                 }
                 current_shape.mask = mask
-                _shapes = current_shape.toPolygons(epsilon=self.epsilon_for_polygon)
+                _shapes = current_shape.toPolygons(
+                    epsilon=self.epsilon_for_polygon,
+                    fill_holes=False,
+                )
                 if len(_shapes) <= 0:
                     continue
                 current_shape = _shapes[0]
@@ -1940,7 +1983,10 @@ class CutieCoreVideoProcessor:
                 "annotation_source": "cutie_vos",
             }
             recovered_shape.mask = repaired_mask
-            repaired_polys = recovered_shape.toPolygons(epsilon=self.epsilon_for_polygon)
+            repaired_polys = recovered_shape.toPolygons(
+                epsilon=self.epsilon_for_polygon,
+                fill_holes=False,
+            )
             if len(repaired_polys) <= 0:
                 self._record_bad_shape_event(
                     int(getattr(self, "_frame_number", -1)),
@@ -1967,6 +2013,20 @@ class CutieCoreVideoProcessor:
                 repair_source=repair_source,
             )
         self._last_saved_instance_masks = persisted_masks
+        conflict_resolution = resolve_polygon_shape_conflicts(label_list)
+        label_list = list(conflict_resolution.shapes)
+        if conflict_resolution.adjusted_shape_indices:
+            logger.debug(
+                "Resolved geometric conflicts for CUTIE polygon(s) %s at frame %s.",
+                conflict_resolution.adjusted_shape_indices,
+                self._frame_number,
+            )
+        if conflict_resolution.dropped_shape_indices:
+            logger.warning(
+                "Dropped fully occluded CUTIE polygon(s) %s at frame %s.",
+                conflict_resolution.dropped_shape_indices,
+                self._frame_number,
+            )
         save_labels(
             filename=filename,
             imagePath=None,
@@ -2344,6 +2404,32 @@ class CutieCoreVideoProcessor:
             self._recent_instance_masks[key] = mask_bool.copy()
             self._recent_instance_mask_frames[key] = int(frame_idx)
 
+    def _detect_identity_assignment_ambiguity(
+        self,
+        mask_dict: Dict[str, np.ndarray],
+        expected_labels: Set[str],
+        current_frame_index: int,
+    ) -> Optional[IdentityAssignmentAmbiguity]:
+        """Compare a complete prediction with the immediately preceding masks."""
+
+        if not bool(getattr(self, "identity_switch_protection_enabled", False)):
+            return None
+        normalized_labels = {str(label) for label in expected_labels}
+        if len(normalized_labels) < 2 or set(mask_dict) != normalized_labels:
+            return None
+
+        previous_frame = int(current_frame_index) - 1
+        previous_masks: Dict[str, np.ndarray] = {}
+        for label in sorted(normalized_labels):
+            if self._recent_instance_mask_frames.get(label) != previous_frame:
+                return None
+            previous_mask = self._recent_instance_masks.get(label)
+            if previous_mask is None:
+                return None
+            previous_masks[label] = previous_mask
+
+        return detect_identity_assignment_ambiguity(previous_masks, mask_dict)
+
     def _fill_missing_instances_from_recent_masks(
         self,
         mask_dict: Dict[str, np.ndarray],
@@ -2586,7 +2672,38 @@ class CutieCoreVideoProcessor:
         if len(label_name_to_value) <= 1:
             return None, label_name_to_value
 
-        mask, _ = shapes_to_label(image_size, filtered_shapes, label_name_to_value)
+        instance_masks: Dict[str, np.ndarray] = {}
+        for shape in filtered_shapes:
+            label = str(shape.get("label") or "")
+            if not label:
+                continue
+            shape_mask = shape_to_mask(
+                image_size,
+                shape.get("points") or [],
+                shape_type=shape.get("shape_type", "polygon"),
+            )
+            if label in instance_masks:
+                instance_masks[label] |= shape_mask
+            else:
+                instance_masks[label] = shape_mask
+        overlaps = find_cross_instance_mask_overlaps(instance_masks)
+        if overlaps:
+            details = ", ".join(
+                f"{overlap.first_label}/{overlap.second_label} "
+                f"({overlap.pixel_count} pixel(s))"
+                for overlap in overlaps
+            )
+            logger.error(
+                "CUTIE seed %s has ambiguous cross-instance raster ownership: %s. "
+                "Adjust the seed polygons so instances do not share pixels.",
+                label_json_file,
+                details,
+            )
+            return None, label_name_to_value
+
+        mask = np.zeros(image_size[:2], dtype=np.int32)
+        for label, instance_mask in instance_masks.items():
+            mask[instance_mask] = int(label_name_to_value[label])
         return mask, label_name_to_value
 
     def _assign_global_ids(self, label_name_to_value: Dict[str, int]) -> Dict[str, int]:
@@ -3525,6 +3642,73 @@ class CutieCoreVideoProcessor:
                         instance_names,
                     )
 
+                    identity_ambiguity = None
+                    if not frame_already_labeled:
+                        identity_ambiguity = (
+                            self._detect_identity_assignment_ambiguity(
+                                mask_dict,
+                                instance_names,
+                                current_frame_index,
+                            )
+                        )
+                    if identity_ambiguity is not None:
+                        changed_labels = sorted(
+                            {
+                                label
+                                for assignment in identity_ambiguity.changed_assignments
+                                for label in assignment
+                            }
+                        )
+                        assignment_text = ", ".join(
+                            f"{current_label} may be {previous_label}"
+                            for current_label, previous_label in (
+                                identity_ambiguity.changed_assignments
+                            )
+                        )
+                        message = (
+                            "CUTIE identity ambiguity detected before saving frame "
+                            f"{current_frame_index}.\n\n"
+                            f"Possible switch: {assignment_text}.\n"
+                            "Tracking paused so the identities can be reviewed and "
+                            "corrected before continuing."
+                        )
+                        logger.warning(
+                            "CUTIE identity-switch protection paused at frame %s: "
+                            "%s (current assignment cost %.2f px, alternative %.2f "
+                            "px, improvement %.1f%%).",
+                            current_frame_index,
+                            assignment_text,
+                            identity_ambiguity.baseline_cost_px,
+                            identity_ambiguity.alternative_cost_px,
+                            identity_ambiguity.relative_improvement * 100.0,
+                        )
+                        self._update_tracking_frame_stat(
+                            current_frame_index,
+                            source="prediction",
+                            identity_ambiguity_count=len(changed_labels),
+                            identity_ambiguity_labels=changed_labels,
+                        )
+                        self._flush_tracking_stats(force=True)
+                        if pred_worker is not None:
+                            payload = {
+                                "event": "identity_ambiguity",
+                                "frame": int(current_frame_index),
+                                "labels": changed_labels,
+                                "message": message,
+                            }
+                            try:
+                                if hasattr(pred_worker, "report_preview"):
+                                    pred_worker.report_preview(payload)
+                                elif hasattr(pred_worker, "preview_signal"):
+                                    pred_worker.preview_signal.emit(payload)
+                            except Exception:  # pragma: no cover - UI integration
+                                logger.debug(
+                                    "Failed to publish CUTIE identity-ambiguity preview.",
+                                    exc_info=True,
+                                )
+                        self._emit_stop_signal(pred_worker)
+                        return (message + delimiter + str(current_frame_index), True)
+
                     if self.compute_optical_flow and prev_frame is not None:
                         backend_val = str(self.optical_flow_backend).lower()
                         use_raft = "raft" in backend_val
@@ -3580,6 +3764,8 @@ class CutieCoreVideoProcessor:
                             missing_instance_labels=[],
                             unresolved_missing_instance_count=0,
                             unresolved_missing_instance_labels=[],
+                            identity_ambiguity_count=0,
+                            identity_ambiguity_labels=[],
                         )
 
                     if len(mask_dict) >= expected_instance_count:
@@ -4025,6 +4211,10 @@ class CutieCoreVideoProcessor:
                             frame,
                             saved_mask_dict,
                             instance_names,
+                        )
+                        self._update_recent_instance_masks(
+                            current_frame_index,
+                            saved_mask_dict,
                         )
 
                     if recording:

@@ -1208,7 +1208,7 @@ class MaskShape(MultipoinstShape):
         if qimage is not None:
             painter.drawImage(QtCore.QPoint(0, 0), qimage)
 
-    def toPolygons(self, epsilon=2.0, merge_contours=False):
+    def toPolygons(self, epsilon=2.0, merge_contours=False, *, fill_holes=True):
         if self.mask is None:
             return []
 
@@ -1237,13 +1237,18 @@ class MaskShape(MultipoinstShape):
 
         cropped = mask_uint8[y0:y1, x0:x1]
 
-        # Fill small holes inside the mask.
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-        filled_mask = cv2.morphologyEx(cropped, cv2.MORPH_CLOSE, kernel)
+        if fill_holes:
+            # Fill small holes inside the mask. Callers with mutually exclusive
+            # instance masks can disable this because closing may reconnect or
+            # expand contours across an intentional instance boundary.
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+            contour_mask = cv2.morphologyEx(cropped, cv2.MORPH_CLOSE, kernel)
+        else:
+            contour_mask = cropped
 
-        # Find the contours of the filled mask.
+        # Find the contours of the prepared mask.
         contours, _ = cv2.findContours(
-            filled_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            contour_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
         shapes = []
         if len(contours) == 0:
