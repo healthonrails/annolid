@@ -48,7 +48,10 @@ from annolid.motion.optical_flow import (
 from annolid.utils import draw
 from annolid.utils.lru_cache import BboxCache
 from annolid.utils.annotation_store import AnnotationStore
-from annolid.annotation.polygon_constraints import resolve_polygon_shape_conflicts
+from annolid.annotation.polygon_constraints import (
+    make_instance_masks_exclusive,
+    resolve_polygon_shape_conflicts,
+)
 from annolid.tracking.identity_continuity import (
     IdentityAssignmentAmbiguity,
     detect_identity_assignment_ambiguity,
@@ -2693,16 +2696,24 @@ class CutieCoreVideoProcessor:
                 f"({overlap.pixel_count} pixel(s))"
                 for overlap in overlaps
             )
-            logger.error(
-                "CUTIE seed %s has ambiguous cross-instance raster ownership: %s. "
-                "Adjust the seed polygons so instances do not share pixels.",
+            logger.debug(
+                "Resolving shared CUTIE seed pixels in %s by stable label order: %s.",
                 label_json_file,
                 details,
             )
-            return None, label_name_to_value
 
+        ordered_labels = [
+            label
+            for label, value in sorted(
+                label_name_to_value.items(), key=lambda item: item[1]
+            )
+            if value and label in instance_masks
+        ]
+        exclusive_masks = make_instance_masks_exclusive(
+            [instance_masks[label] for label in ordered_labels]
+        )
         mask = np.zeros(image_size[:2], dtype=np.int32)
-        for label, instance_mask in instance_masks.items():
+        for label, instance_mask in zip(ordered_labels, exclusive_masks):
             mask[instance_mask] = int(label_name_to_value[label])
         return mask, label_name_to_value
 

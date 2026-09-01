@@ -395,7 +395,7 @@ def test_shapes_to_mask_keeps_polygons_with_boolean_zone_metadata(
     assert label_map == {"_background_": 0, "mouse": 1, "teaball": 2}
 
 
-def test_shapes_to_mask_rejects_cross_instance_raster_overlap(
+def test_shapes_to_mask_resolves_cross_instance_raster_overlap(
     tmp_path: Path,
 ) -> None:
     processor = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
@@ -422,8 +422,10 @@ def test_shapes_to_mask_rejects_cross_instance_raster_overlap(
 
     mask, label_map = processor.shapes_to_mask(str(label_json), (24, 24, 3))
 
-    assert mask is None
+    assert mask is not None
     assert label_map == {"_background_": 0, "fish_3": 1, "fish_4": 2}
+    assert int(mask[8, 8]) == label_map["fish_3"]
+    assert np.any(mask == label_map["fish_4"])
 
 
 def test_cutie_identity_guard_requires_immediately_previous_complete_masks() -> None:

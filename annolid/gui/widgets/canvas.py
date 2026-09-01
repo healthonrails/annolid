@@ -18,6 +18,7 @@ from annolid.annotation.keypoint_visibility import (
     set_keypoint_visibility_on_shape_object,
 )
 from annolid.annotation.polygon_constraints import (
+    DEFAULT_POLYGON_CLEARANCE_PX,
     make_instance_masks_exclusive,
     resolve_polygon_shape_conflicts,
 )
@@ -166,6 +167,9 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
         self._sam_predictor_missing_logged = False
         self._sam_last_load_error = None
         self._shared_topology_registry = SharedTopologyRegistry.from_shapes([])
+        # Shared boundaries are a large-TIFF editing feature. Standard Canvas
+        # annotations keep independent polygon vertices and topology.
+        self._allow_shared_polygon_topology = False
         self._shared_boundary_reshape_mode = False
         self._shared_boundary_shape = None
         self._shared_boundary_edge_index = None
@@ -231,12 +235,16 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
         return None
 
     def _adjoining_boundary_source(self):
+        if not self._allow_shared_polygon_topology:
+            return None
         source = getattr(self, "_adjoining_source_shape", None)
         if source is not None and source in (self.shapes or []):
             return source
         return self._selected_polygon_source()
 
     def _shared_boundary_source(self):
+        if not self._allow_shared_polygon_topology:
+            return None, None
         shape = self.hShape if self.hEdge is not None else None
         edge_index = self.hEdge if self.hEdge is not None else None
         if shape is None or edge_index is None:
@@ -262,7 +270,101 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
     def _clear_adjoining_source(self):
         self._adjoining_source_shape = None
 
+    @staticmethod
+    def _detach_canvas_polygon_topology(shape) -> None:
+        """Make one standard-Canvas polygon independent of every other polygon."""
+
+        if str(getattr(shape, "shape_type", "") or "").lower() != "polygon":
+            return
+        point_count = len(getattr(shape, "points", []) or [])
+        shape.shared_vertex_ids = [""] * point_count
+        shape.shared_edge_ids = [""] * point_count
+
+    def _shared_finalize_topology_edit(self):
+        if not getattr(self, "_allow_shared_polygon_topology", False):
+            self._shared_topology_registry = SharedTopologyRegistry.from_shapes([])
+            return self._shared_topology_registry
+        return super()._shared_finalize_topology_edit()
+
+    def _separate_canvas_polygon_vertices(self, shape) -> bool:
+        """Move exact cross-polygon vertex matches by a sub-pixel clearance."""
+
+        if str(getattr(shape, "shape_type", "") or "").lower() != "polygon":
+            return False
+        points = list(getattr(shape, "points", []) or [])
+        if not points:
+            return False
+
+        occupied: list[tuple[float, float]] = []
+        for existing in self.shapes or []:
+            if str(getattr(existing, "shape_type", "") or "").lower() != "polygon":
+                continue
+            occupied.extend(
+                (float(point.x()), float(point.y()))
+                for point in (getattr(existing, "points", []) or [])
+            )
+
+        clearance = float(DEFAULT_POLYGON_CLEARANCE_PX)
+        equality_tolerance = 1e-9
+        pixmap_width = int(self.pixmap.width()) if not self.pixmap.isNull() else 0
+        pixmap_height = int(self.pixmap.height()) if not self.pixmap.isNull() else 0
+
+        def _is_available(x: float, y: float) -> bool:
+            if pixmap_width > 0 and not (0.0 <= x <= float(pixmap_width - 1)):
+                return False
+            if pixmap_height > 0 and not (0.0 <= y <= float(pixmap_height - 1)):
+                return False
+            return all(
+                abs(x - other_x) > equality_tolerance
+                or abs(y - other_y) > equality_tolerance
+                for other_x, other_y in occupied
+            )
+
+        changed = False
+        offsets = (
+            (1.0, 0.0),
+            (0.0, 1.0),
+            (-1.0, 0.0),
+            (0.0, -1.0),
+            (1.0, 1.0),
+            (-1.0, 1.0),
+            (-1.0, -1.0),
+            (1.0, -1.0),
+        )
+        for index, point in enumerate(points):
+            x, y = float(point.x()), float(point.y())
+            if _is_available(x, y):
+                occupied.append((x, y))
+                continue
+            replacement = None
+            for radius in range(1, 65):
+                for dx, dy in offsets:
+                    candidate_x = x + dx * clearance * radius
+                    candidate_y = y + dy * clearance * radius
+                    if _is_available(candidate_x, candidate_y):
+                        replacement = (candidate_x, candidate_y)
+                        break
+                if replacement is not None:
+                    break
+            if replacement is None:
+                logger.warning(
+                    "Could not separate Canvas polygon vertex %s at (%s, %s).",
+                    index,
+                    x,
+                    y,
+                )
+                occupied.append((x, y))
+                continue
+            shape.points[index] = QtCore.QPointF(*replacement)
+            occupied.append(replacement)
+            changed = True
+
+        self._detach_canvas_polygon_topology(shape)
+        return changed
+
     def _sync_shared_vertex(self, shape, index, point=None):
+        if not self._allow_shared_polygon_topology:
+            return None
         try:
             return self._shared_sync_vertex(shape, index, point=point)
         except Exception:
@@ -270,6 +372,8 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
             return None
 
     def _snap_to_adjoining_boundary(self, pos):
+        if not self._allow_shared_polygon_topology:
+            return QtCore.QPointF(pos), None
         source = self._adjoining_boundary_source()
         if source is None or str(self.createMode or "").lower() != "polygon":
             return QtCore.QPointF(pos), None
@@ -1477,7 +1581,11 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
         point = self.prevMovePoint
         if shape is None or index is None or point is None:
             return
-        self._shared_insert_vertex_on_edge(shape, index, point)
+        if self._allow_shared_polygon_topology:
+            self._shared_insert_vertex_on_edge(shape, index, point)
+        else:
+            self._detach_canvas_polygon_topology(shape)
+            shape.insertPoint(index, QtCore.QPointF(point))
         shape.highlightVertex(index, shape.MOVE_VERTEX)
         self.hShape = shape
         self.hVertex = index
@@ -1491,8 +1599,15 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
             return False
         if index < 0 or index >= len(shape.points):
             return False
-        if not self._shared_remove_vertex(shape, index):
-            return False
+        if self._allow_shared_polygon_topology:
+            if not self._shared_remove_vertex(shape, index):
+                return False
+        else:
+            self._detach_canvas_polygon_topology(shape)
+            previous_count = len(shape.points)
+            shape.removePoint(index)
+            if len(shape.points) == previous_count:
+                return False
         shape.highlightClear()
         self.hShape = shape
         if shape.points:
@@ -1547,15 +1662,22 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
         return None
 
     def canStartAdjoiningPolygon(self) -> bool:
-        return self._selected_polygon_source() is not None
+        return bool(
+            self._allow_shared_polygon_topology
+            and self._selected_polygon_source() is not None
+        )
 
     def canStartSharedBoundaryReshape(self) -> bool:
+        if not self._allow_shared_polygon_topology:
+            return False
         shape, edge_index = self._shared_boundary_source()
         if shape is not None and edge_index is not None:
             return True
         return self._selected_shared_boundary_candidate() is not None
 
     def startSharedBoundaryReshape(self) -> bool:
+        if not self._allow_shared_polygon_topology:
+            return False
         shape, edge_index = self._shared_boundary_source()
         if shape is None or edge_index is None:
             shape = self._selected_shared_boundary_candidate()
@@ -1581,6 +1703,8 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
         self._shared_boundary_last_pos = None
 
     def _reshapeSharedBoundaryBy(self, delta) -> bool:
+        if not self._allow_shared_polygon_topology:
+            return False
         shape = self._shared_boundary_shape
         edge_index = self._shared_boundary_edge_index
         if shape is None or edge_index is None:
@@ -1590,7 +1714,7 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
         return True
 
     def beginAdjoiningPolygonFromSeed(self, seed_shape) -> bool:
-        if seed_shape is None:
+        if not self._allow_shared_polygon_topology or seed_shape is None:
             return False
         seed = seed_shape
         self.mode = self.CREATE
@@ -1608,6 +1732,8 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
         return True
 
     def startAdjoiningPolygonFromSelection(self, edge_index=None) -> bool:
+        if not self._allow_shared_polygon_topology:
+            return False
         shape = self._selected_polygon_source()
         if shape is None:
             return False
@@ -1870,8 +1996,8 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
                         duplicate_action, icon_filename="duplicate_polygons.svg"
                     )
                 adjoining_action = getattr(actions, "startAdjoiningPolygon", None)
-                if adjoining_action is not None:
-                    adjoining_action.setEnabled(can_start_adjoining)
+                if adjoining_action is not None and can_start_adjoining:
+                    adjoining_action.setEnabled(True)
                     _add_existing_action(
                         adjoining_action, icon_filename="duplicate_polygons.svg"
                     )
@@ -2307,6 +2433,8 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
             return
         if self.outOfPixmap(pos):
             pos = self.intersectionPoint(point, pos)
+        if not self._allow_shared_polygon_topology:
+            self._detach_canvas_polygon_topology(shape)
         shape.moveVertexBy(index, pos - point)
         self._sync_shared_vertex(shape, index, shape[index])
 
@@ -2329,11 +2457,16 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
         # self.calculateOffsets(self.selectedShapes, pos)
         dp = pos - self.prevPoint
         if dp:
-            registry = getattr(self, "_shared_topology_registry", None)
-            if isinstance(registry, SharedTopologyRegistry):
-                registry.translate_shapes(shapes, dp)
+            if not self._allow_shared_polygon_topology:
+                for shape in list(shapes or []):
+                    self._detach_canvas_polygon_topology(shape)
+                    shape.moveBy(dp)
             else:
-                self._shared_move_selected_shapes(shapes, dp)
+                registry = getattr(self, "_shared_topology_registry", None)
+                if isinstance(registry, SharedTopologyRegistry):
+                    registry.translate_shapes(shapes, dp)
+                else:
+                    self._shared_move_selected_shapes(shapes, dp)
             self.prevPoint = pos
             return True
         return False
@@ -3067,6 +3200,8 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
             )
         if self.createMode != "grounding_sam":
             self.current.close()
+        if self.createMode != "polygonSAM":
+            self._separate_canvas_polygon_vertices(self.current)
         if self.createMode == "polygonSAM":
             self.shapes.append(self.sam_mask)
         else:

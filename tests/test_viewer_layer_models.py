@@ -2210,9 +2210,7 @@ def test_collapse_selected_polygons_updates_tiled_visibility_without_rebuild() -
         host.labelList.close()
 
 
-def test_canvas_start_adjoining_polygon_from_selection_uses_seeded_shared_vertices() -> (
-    None
-):
+def test_canvas_disables_adjoining_polygon_topology() -> None:
     _ensure_qapp()
 
     canvas = Canvas()
@@ -2226,13 +2224,9 @@ def test_canvas_start_adjoining_polygon_from_selection_uses_seeded_shared_vertic
         canvas.hShape = shape
         canvas.hEdge = 1
 
-        assert canvas.startAdjoiningPolygonFromSelection()
-        assert canvas.current is not None
-        assert len(canvas.current.points) == 2
-        assert canvas.current.shared_vertex_id(0) == shape.shared_vertex_id(0)
-        assert canvas.current.shared_vertex_id(1) == shape.shared_vertex_id(1)
-        assert canvas.current.points[0].x() == shape.points[0].x()
-        assert canvas.current.points[0].y() == shape.points[0].y()
+        assert canvas.canStartAdjoiningPolygon() is False
+        assert canvas.startAdjoiningPolygonFromSelection() is False
+        assert canvas.current is None
     finally:
         canvas.close()
 
@@ -2442,7 +2436,7 @@ def test_shape_editing_mixin_switches_to_polygon_mode_before_seed_check() -> Non
     assert host.toggle_calls == [(False, "polygon")]
 
 
-def test_canvas_context_menu_shows_adjoining_polygon_for_explicit_edge_only() -> None:
+def test_canvas_context_menu_hides_adjoining_polygon() -> None:
     _ensure_qapp()
 
     canvas = Canvas()
@@ -2464,13 +2458,7 @@ def test_canvas_context_menu_shows_adjoining_polygon_for_explicit_edge_only() ->
         canvas.selectedShapes = [shape]
         menu = canvas._build_context_menu(window)
         texts = [action.text() for action in menu.actions()]
-        assert "Start Adjoining Polygon" in texts
-        adjoining = next(
-            action
-            for action in menu.actions()
-            if action.text() == "Start Adjoining Polygon"
-        )
-        assert adjoining.isEnabled()
+        assert "Start Adjoining Polygon" not in texts
     finally:
         canvas.close()
 
@@ -2509,7 +2497,7 @@ def test_canvas_context_menu_uses_tiled_adjoining_availability() -> None:
         canvas.close()
 
 
-def test_canvas_context_menu_shows_adjoining_polygon_when_shape_selected() -> None:
+def test_canvas_selected_polygon_does_not_enable_adjoining_topology() -> None:
     _ensure_qapp()
 
     canvas = Canvas()
@@ -2526,20 +2514,12 @@ def test_canvas_context_menu_shows_adjoining_polygon_when_shape_selected() -> No
         window = _ContextMenuWindowStub(canvas)
         menu = canvas._build_context_menu(window)
         texts = [action.text() for action in menu.actions()]
-        assert "Start Adjoining Polygon" in texts
-        adjoining = next(
-            action
-            for action in menu.actions()
-            if action.text() == "Start Adjoining Polygon"
-        )
-        assert adjoining.isEnabled()
+        assert "Start Adjoining Polygon" not in texts
     finally:
         canvas.close()
 
 
-def test_canvas_context_menu_shows_shared_boundary_reshape_for_selected_shared_polygon() -> (
-    None
-):
+def test_canvas_context_menu_hides_shared_boundary_reshape() -> None:
     _ensure_qapp()
 
     canvas = Canvas()
@@ -2569,7 +2549,7 @@ def test_canvas_context_menu_shows_shared_boundary_reshape_for_selected_shared_p
         window = _ContextMenuWindowStub(canvas)
         menu = canvas._build_context_menu(window)
         texts = [action.text() for action in menu.actions()]
-        assert "Reshape Shared Boundary" in texts
+        assert "Reshape Shared Boundary" not in texts
     finally:
         canvas.close()
 
@@ -3369,7 +3349,7 @@ def test_annotation_loading_materialize_handles_none_flags_and_other_data() -> N
     assert materialized[0].other_data == {}
 
 
-def test_canvas_bounded_move_vertex_propagates_shared_vertices() -> None:
+def test_canvas_bounded_move_vertex_detaches_shared_vertices() -> None:
     _ensure_qapp()
 
     canvas = Canvas()
@@ -3398,14 +3378,15 @@ def test_canvas_bounded_move_vertex_propagates_shared_vertices() -> None:
 
         assert left.points[1].x() == 26.0
         assert left.points[1].y() == 18.0
-        assert right.points[0].x() == 26.0
-        assert right.points[0].y() == 18.0
-        assert left.shared_vertex_id(1) == right.shared_vertex_id(0) == shared_id
+        assert right.points[0].x() == 60.0
+        assert right.points[0].y() == 60.0
+        assert left.shared_vertex_id(1) in {None, ""}
+        assert right.shared_vertex_id(0) == shared_id
     finally:
         canvas.close()
 
 
-def test_canvas_bounded_move_vertex_merges_close_vertices() -> None:
+def test_canvas_bounded_move_vertex_does_not_merge_close_vertices() -> None:
     _ensure_qapp()
 
     canvas = Canvas()
@@ -3429,12 +3410,11 @@ def test_canvas_bounded_move_vertex_merges_close_vertices() -> None:
 
         canvas.boundedMoveVertex(QtCore.QPointF(40.4, 10.2))
 
-        assert left.points[1].x() == 40.0
-        assert left.points[1].y() == 10.0
+        assert left.points[1].x() == 40.4
+        assert left.points[1].y() == 10.2
         assert right.points[0].x() == 40.0
         assert right.points[0].y() == 10.0
-        assert left.shared_vertex_id(1) == right.shared_vertex_id(0)
-        assert left.shared_vertex_id(1) not in {None, ""}
+        assert left.shared_vertex_id(1) in {None, ""}
     finally:
         canvas.close()
 
@@ -3456,6 +3436,44 @@ def test_canvas_polygon_closes_normally_after_shared_topology_update() -> None:
         assert canvas.shapes[0].shape_type == "polygon"
         assert canvas.shapes[0].isClosed() is True
         assert len(canvas.shapes[0].points) == 3
+    finally:
+        canvas.close()
+
+
+def test_canvas_finalise_separates_exact_cross_polygon_vertices() -> None:
+    _ensure_qapp()
+
+    canvas = Canvas()
+    try:
+        canvas.pixmap = QtGui.QPixmap(200, 200)
+        canvas.pixmap.fill(QtCore.Qt.white)
+
+        existing = Shape(label="mouse_0", shape_type="polygon")
+        for point in [(20.0, 20.0), (80.0, 20.0), (80.0, 80.0)]:
+            existing.addPoint(QtCore.QPointF(*point))
+        existing.close()
+        canvas.shapes = [existing]
+
+        canvas.mode = canvas.CREATE
+        canvas.createMode = "polygon"
+        current = Shape(label="mouse_1", shape_type="polygon")
+        for point in [(80.0, 20.0), (120.0, 20.0), (120.0, 80.0)]:
+            current.addPoint(QtCore.QPointF(*point))
+        canvas.current = current
+
+        canvas.finalise()
+
+        new_shape = canvas.shapes[-1]
+        existing_points = {
+            (float(point.x()), float(point.y())) for point in existing.points
+        }
+        new_points = {
+            (float(point.x()), float(point.y())) for point in new_shape.points
+        }
+        assert existing_points.isdisjoint(new_points)
+        assert new_shape.points[0].x() != 80.0
+        assert all(not vertex_id for vertex_id in new_shape.shared_vertex_ids)
+        assert all(not edge_id for edge_id in new_shape.shared_edge_ids)
     finally:
         canvas.close()
 

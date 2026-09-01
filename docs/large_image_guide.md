@@ -282,6 +282,12 @@ For already shared borders, the right-click menu includes **Reshape Shared
 Boundary**, which lets you drag that boundary segment and update every linked
 polygon together.
 
+Shared polygon topology is intentionally limited to this tiled large-TIFF
+editor. The standard Canvas keeps polygons independent: it does not offer
+adjoining/shared-boundary actions, moving a vertex does not move another
+polygon, and an exact cross-polygon vertex match is separated by a sub-pixel
+offset when the new polygon is committed.
+
 For sagittal section workflows, Annolid can also infer polygon outlines for
 the pages between explicitly annotated sections. When a TIFF page does not yet
 have its own annotation JSON, Annolid can load an inferred polygon set from
