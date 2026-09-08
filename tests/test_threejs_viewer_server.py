@@ -109,6 +109,19 @@ def test_threejs_allowed_assets_include_runtime_modules() -> None:
     assert "annolid_threejs_css2d.js" in srv._THREEJS_ALLOWED_ASSETS  # noqa: SLF001
 
 
+@pytest.mark.parametrize(
+    "filename", ["two_mice_scene.js", "two_mice_model.js", "two_mice_simulation.js"]
+)
+def test_two_mice_modules_are_served_by_the_desktop_viewer(filename):
+    base_url = srv._ensure_threejs_http_server()  # noqa: SLF001
+    with urlopen(f"{base_url}/threejs/{filename}", timeout=5) as response:
+        assert response.status == 200
+        assert "javascript" in response.headers["Content-Type"]
+        assert response.read().decode("utf-8") == srv._threejs_asset_path(
+            filename
+        ).read_text(encoding="utf-8")
+
+
 def test_update_swarm_node_preserves_turn_latency() -> None:
     original_state = srv.get_swarm_state()
     try:

@@ -26,11 +26,21 @@ def test_generate_threejs_example_invalid_id(tmp_path: Path):
     raise AssertionError("Expected ValueError for invalid example id")
 
 
+def _two_mice_source():
+    assets = Path(__file__).resolve().parents[1] / "annolid/gui/assets/threejs"
+    return "\n".join(
+        (assets / name).read_text(encoding="utf-8")
+        for name in (
+            "two_mice.html",
+            "two_mice_scene.js",
+            "two_mice_model.js",
+            "two_mice_simulation.js",
+        )
+    )
+
+
 def test_two_mice_example_preserves_subject_appearance_and_render_readiness():
-    repo_root = Path(__file__).resolve().parents[1]
-    source = (
-        repo_root / "annolid" / "gui" / "assets" / "threejs" / "two_mice.html"
-    ).read_text(encoding="utf-8")
+    source = _two_mice_source()
 
     assert "this.appearance = Object.freeze({ furColor, skinColor, density" in source
     assert "this.fleshMat.color.set(this.guiParams.skinColor)" not in source
@@ -188,10 +198,7 @@ def test_two_mice_example_preserves_subject_appearance_and_render_readiness():
 
 
 def test_two_mice_head_neck_body_transition_is_articulated_and_testable():
-    repo_root = Path(__file__).resolve().parents[1]
-    source = (
-        repo_root / "annolid" / "gui" / "assets" / "threejs" / "two_mice.html"
-    ).read_text(encoding="utf-8")
+    source = _two_mice_source()
 
     assert "function getCervicalMantleProfile(t)" in source
     assert "function createCervicalMantleGeometry()" in source

@@ -94,6 +94,7 @@ nav:
       - Video Depth Anything: video_depth_anything.md
       - Brain 3D Reconstruction: brain_3d_reconstruction.md
       - Simulation and FlyBody: simulation_flybody.md
+      - Two-Mouse 3D Simulation: two_mice_simulation.md
       - COCO Data Flow: coco_data_flow.md
       - Tutorials Overview: tutorials.md
       - Video Downsample Workflow (GUI): tutorials/video_downsample_workflow.md

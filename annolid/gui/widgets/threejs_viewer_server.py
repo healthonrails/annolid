@@ -31,6 +31,9 @@ _THREEJS_ALLOWED_ASSETS = {
     "annolid_shaders.js",
     "points_3d.html",
     "two_mice.html",
+    "two_mice_scene.js",
+    "two_mice_model.js",
+    "two_mice_simulation.js",
     "swarm_visualizer.html",
     "parser.worker.js",
 }
