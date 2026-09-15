@@ -40,6 +40,24 @@ class BehaviorEventLogWidget(QtWidgets.QWidget):
         self._filter_subject: Optional[str] = None
         self._filter_category: Optional[str] = None
         self._color_getter = color_getter
+        self._pairing_issues: dict[int, str] = {}
+
+        self._search = QtWidgets.QLineEdit()
+        self._search.setPlaceholderText(
+            "Search behavior, subject, modifier or category…"
+        )
+        self._search.setClearButtonEnabled(True)
+        self._search.setAccessibleName("Search behavior events")
+        self._search.textChanged.connect(self._refresh)
+
+        self._review_filter = QtWidgets.QComboBox()
+        self._review_filter.addItem("All events", "all")
+        self._review_filter.addItem("Unconfirmed", "unconfirmed")
+        self._review_filter.addItem("Pairing issues", "issues")
+        self._review_filter.setToolTip(
+            "Find proposals to review or unmatched start/end events"
+        )
+        self._review_filter.currentIndexChanged.connect(self._refresh)
 
         self._table = QtWidgets.QTableWidget(0, 10)
         self._table.setObjectName("behaviorEventTable")
@@ -53,7 +71,7 @@ class BehaviorEventLogWidget(QtWidgets.QWidget):
                 "Category",
                 "Time",
                 "Frame",
-                "Duration",
+                "Duration (s)",
                 "Status",
             ]
         )
@@ -63,6 +81,7 @@ class BehaviorEventLogWidget(QtWidgets.QWidget):
         self._table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self._table.setAlternatingRowColors(True)
         self._table.doubleClicked.connect(self._handle_double_click)
+        self._table.itemSelectionChanged.connect(self._update_actions)
 
         header = self._table.horizontalHeader()
         header.setStretchLastSection(True)
@@ -99,9 +118,30 @@ class BehaviorEventLogWidget(QtWidgets.QWidget):
         button_layout.addWidget(self._clear_button)
         button_layout.addStretch(1)
 
+        self._jump_button = QtWidgets.QPushButton("Jump to frame")
+        self._jump_button.clicked.connect(self._jump_to_selected)
+        self._edit_button = QtWidgets.QPushButton("Edit interval…")
+        self._edit_button.clicked.connect(self._edit_selected)
+        self._review_button = QtWidgets.QPushButton("Confirm interval")
+        self._review_button.clicked.connect(self._review_selected)
+        action_layout = QtWidgets.QHBoxLayout()
+        for button in (self._jump_button, self._edit_button, self._review_button):
+            action_layout.addWidget(button)
+        self._summary = QtWidgets.QLabel()
+        self._summary.setWordWrap(True)
+        self._hint = QtWidgets.QLabel(
+            "Select an event to review it; double-click to jump to its frame."
+        )
+        self._hint.setWordWrap(True)
+
         layout = QtWidgets.QVBoxLayout(self)
+        layout.addWidget(self._search)
         layout.addLayout(filter_layout)
+        layout.addWidget(self._review_filter)
+        layout.addWidget(self._summary)
         layout.addWidget(self._table)
+        layout.addWidget(self._hint)
+        layout.addLayout(action_layout)
         layout.addLayout(button_layout)
 
         self._shortcuts = [
@@ -113,6 +153,9 @@ class BehaviorEventLogWidget(QtWidgets.QWidget):
                 QKeySequence("Ctrl+Backspace"), self, self._confirm_clear
             ),
         ]
+        for shortcut in self._shortcuts:
+            shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
+        self._refresh()
 
     def set_fps(self, fps: Optional[float]) -> None:
         if fps is not None and fps > 0:
@@ -164,16 +207,23 @@ class BehaviorEventLogWidget(QtWidgets.QWidget):
             self._category_filter.addItem("All Categories", None)
         self._filter_subject = None
         self._filter_category = None
+        with QtCore.QSignalBlocker(self._search):
+            self._search.clear()
+        with QtCore.QSignalBlocker(self._review_filter):
+            self._review_filter.setCurrentIndex(0)
+        self._fps = None
+        self._refresh()
 
     def _refresh(self) -> None:
+        selected = self.current_event()
+        durations, self._pairing_issues = self._analyze_pairs()
         display_events = [
             event for event in self._events if self._passes_filters(event)
         ]
         self._display_events = display_events
+        self._table.clearSelection()
+        self._table.setCurrentCell(-1, -1)
         self._table.setRowCount(len(display_events))
-
-        # Track starts to estimate durations when matching end events arrive.
-        open_starts: dict[str, BehaviorEvent] = {}
 
         for row, event in enumerate(display_events):
             self._table.setItem(row, 0, self._make_item(str(row + 1)))
@@ -190,17 +240,12 @@ class BehaviorEventLogWidget(QtWidgets.QWidget):
             self._table.setItem(row, 6, self._make_item(_format_seconds(time_seconds)))
             self._table.setItem(row, 7, self._make_item(str(event.frame)))
 
-            duration_text = "—"
-            if event.event == "start":
-                open_starts[event.behavior] = event
-            else:
-                start_event = open_starts.pop(event.behavior, None)
-                if start_event is not None:
-                    start_time = self._resolve_time_seconds(start_event)
-                    if start_time is not None and time_seconds is not None:
-                        duration_text = f"{time_seconds - start_time:.2f}"
+            duration_text = durations.get(id(event), "—")
             self._table.setItem(row, 8, self._make_item(duration_text))
-            status = "Confirmed" if getattr(event, "confirmed", True) else "Auto"
+            status = "Confirmed" if getattr(event, "confirmed", True) else "Unconfirmed"
+            issue = self._pairing_issues.get(id(event))
+            if issue:
+                status += f" · {issue}"
             self._table.setItem(row, 9, self._make_item(status))
 
             # Apply a subtle color cue for start/end events to improve scanning.
@@ -221,9 +266,84 @@ class BehaviorEventLogWidget(QtWidgets.QWidget):
                     item = self._table.item(row, column)
                     if item is not None:
                         item.setBackground(QtGui.QBrush(behavior_color))
+            if selected is event or selected == event:
+                self._table.selectRow(row)
 
         self._undo_button.setEnabled(bool(self._events))
         self._clear_button.setEnabled(bool(self._events))
+        unconfirmed = sum(not event.confirmed for event in self._events)
+        self._summary.setText(
+            f"{len(display_events)} of {len(self._events)} events · "
+            f"{unconfirmed} unconfirmed · {len(self._pairing_issues)} pairing issues"
+        )
+        self._hint.setText(
+            "Select an event to review it; double-click to jump to its frame."
+            if display_events
+            else (
+                "No events match these filters. Clear search or choose All events."
+                if self._events
+                else "No events yet. Select a behavior in Flags, then use S to start and E to end while viewing the video."
+            )
+        )
+        self._update_actions()
+
+    def _analyze_pairs(self) -> tuple[dict[int, str], dict[int, str]]:
+        """Inspect all boundaries before filtering, without altering annotations."""
+        durations: dict[int, str] = {}
+        issues: dict[int, str] = {}
+        pending: dict[tuple, list[BehaviorEvent]] = {}
+        for event in self._events:
+            key = (event.behavior, event.subject or "", tuple(sorted(event.modifiers)))
+            if event.event == "start":
+                pending.setdefault(key, []).append(event)
+            elif event.event == "end":
+                starts = pending.pop(key, [])
+                if not starts:
+                    issues[id(event)] = "Missing start"
+                elif len(starts) > 1:
+                    for boundary in [*starts, event]:
+                        issues[id(boundary)] = "Ambiguous starts"
+                else:
+                    start_time = self._resolve_time_seconds(starts[0])
+                    end_time = self._resolve_time_seconds(event)
+                    if start_time is not None and end_time is not None:
+                        if end_time < start_time:
+                            for boundary in (starts[0], event):
+                                issues[id(boundary)] = "Time goes backwards"
+                        else:
+                            durations[id(event)] = f"{end_time - start_time:.2f}"
+        for starts in pending.values():
+            for event in starts:
+                issues[id(event)] = (
+                    "Missing end" if len(starts) == 1 else "Ambiguous starts"
+                )
+        return durations, issues
+
+    def _update_actions(self) -> None:
+        event = self.current_event()
+        for button in (self._jump_button, self._edit_button, self._review_button):
+            button.setEnabled(event is not None)
+        self._review_button.setText(
+            "Mark interval unconfirmed"
+            if event and event.confirmed
+            else "Confirm interval"
+        )
+
+    def _jump_to_selected(self) -> None:
+        event = self.current_event()
+        if event is not None:
+            self.jumpToFrame.emit(event.frame)
+
+    def _edit_selected(self) -> None:
+        event = self.current_event()
+        if event is not None:
+            self.editRequested.emit(event)
+
+    def _review_selected(self) -> None:
+        event = self.current_event()
+        if event is not None:
+            signal = self.rejectRequested if event.confirmed else self.confirmRequested
+            signal.emit(event)
 
     def _resolve_time_seconds(self, event: BehaviorEvent) -> Optional[float]:
         if event.timestamp is not None:
@@ -233,6 +353,22 @@ class BehaviorEventLogWidget(QtWidgets.QWidget):
         return None
 
     def _passes_filters(self, event: BehaviorEvent) -> bool:
+        query = self._search.text().strip().casefold()
+        searchable = " ".join(
+            [
+                event.behavior,
+                event.subject or "",
+                event.category or "",
+                *event.modifiers,
+            ]
+        ).casefold()
+        if query and query not in searchable:
+            return False
+        review = self._review_filter.currentData()
+        if review == "unconfirmed" and event.confirmed:
+            return False
+        if review == "issues" and id(event) not in self._pairing_issues:
+            return False
         subject = self._normalize_subject(event.subject)
         category = self._normalize_category(event.category)
         if self._filter_subject and subject != self._filter_subject:

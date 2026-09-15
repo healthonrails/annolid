@@ -13,7 +13,7 @@ import ast
 import json
 import math
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -191,6 +191,7 @@ class PolygonFrameDataset(Dataset):
 
         self.video_features: Dict[str, np.ndarray] = {}
         self.video_labels: Dict[str, np.ndarray] = {}
+        self.video_segment_bounds: Dict[str, np.ndarray] = {}
         self.indices: List[Tuple[str, int]] = []
 
         self._build_video_cache()
@@ -406,6 +407,21 @@ class PolygonFrameDataset(Dataset):
                 logger.info(f"Determined feature dimension: {self.feature_dim}")
             self.video_features[video] = feature_array
             self.video_labels[video] = np.asarray(labels, dtype=np.int64)
+            frame_numbers = (
+                [_frame_sort_key(f) for f in df_sorted["frame"]]
+                if "frame" in df_sorted
+                else list(range(len(labels)))
+            )
+            breaks = (
+                np.flatnonzero(np.diff(frame_numbers) != 1) + 1
+                if all(isinstance(f, int) for f in frame_numbers)
+                else np.array([], dtype=int)
+            )
+            edges = np.r_[0, breaks, len(labels)]
+            bounds = np.empty((len(labels), 2), dtype=np.int64)
+            for start, stop in zip(edges[:-1], edges[1:]):
+                bounds[start:stop] = (start, stop)
+            self.video_segment_bounds[video] = bounds
             for idx in range(len(labels)):
                 self.indices.append((video, idx))
 
@@ -419,11 +435,12 @@ class PolygonFrameDataset(Dataset):
     def _window_slice(self, video: str, center: int) -> np.ndarray:
         half = self.window_size // 2
         feats = self.video_features[video]
-        start = max(center - half, 0)
-        end = min(center + half + 1, feats.shape[0])
+        segment_start, segment_stop = self.video_segment_bounds[video][center]
+        start = max(center - half, segment_start)
+        end = min(center + half + 1, segment_stop)
         window = feats[start:end]
         if len(window) < self.window_size:
-            pad_top = max(0, half - center)
+            pad_top = max(0, half - (center - segment_start))
             pad_bottom = self.window_size - len(window) - pad_top
             if pad_top:
                 window = np.vstack((np.repeat(window[:1], pad_top, axis=0), window))
@@ -724,7 +741,7 @@ def train_polygon_frame_classifier(
 
     full_dataset = PolygonFrameDataset(
         train_csv,
-        feature_config,
+        replace(feature_config, normalize_features=False),
         window_size=model_config.window_size,
     )
     labels_ordered = np.asarray(
@@ -785,6 +802,25 @@ def train_polygon_frame_classifier(
     )
 
     train_labels = labels_ordered[train_indices]
+    # Fit preprocessing on training observations only, after the grouped split.
+    full_dataset.feature_config = feature_config
+    if feature_config.normalize_features:
+        train_features = np.stack(
+            [
+                full_dataset.video_features[full_dataset.indices[i][0]][
+                    full_dataset.indices[i][1]
+                ]
+                for i in train_indices
+            ]
+        )
+        full_dataset._normalization = {
+            "mean": train_features.mean(axis=0, dtype=np.float64).astype(np.float32),
+            "std": (
+                train_features.std(axis=0, dtype=np.float64)
+                + feature_config.normalization_eps
+            ).astype(np.float32),
+        }
+        del train_features
     sampler = _make_sampler(train_labels, training_config.sampling_strategy)
 
     train_subset = torch.utils.data.Subset(full_dataset, train_indices)
@@ -822,9 +858,7 @@ def train_polygon_frame_classifier(
     logger.info(f"Total trainable parameters: {param_count:,}")
 
     # Weighted CE/Focal using inverse class frequency; normalize weights to mean=1 to avoid tiny losses.
-    class_counts = np.bincount(
-        labels_ordered, minlength=len(full_dataset.label_to_index)
-    )
+    class_counts = np.bincount(train_labels, minlength=len(full_dataset.label_to_index))
     class_counts = np.where(class_counts == 0, 1, class_counts)
     raw_weights = 1.0 / class_counts
     normalized_weights = raw_weights / np.mean(raw_weights)
@@ -855,6 +889,17 @@ def train_polygon_frame_classifier(
         )
 
     def _maybe_save_checkpoint(state: Dict[str, object], label: str) -> Optional[Path]:
+        state.update(
+            {
+                "training_config": training_config,
+                "train_indices": train_indices,
+                "val_indices": val_indices,
+                "train_videos": sorted(set(groups[train_indices])),
+                "val_videos": sorted(set(groups[val_indices])),
+                "class_weights": class_weights.detach().cpu().clone(),
+                "optimizer_name": "AdamW",
+            }
+        )
         if checkpoint_dir is None:
             return None
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -866,7 +911,9 @@ def train_polygon_frame_classifier(
     best_val_loss = float("inf")
     best_val_map = float("-inf")
     best_state = {
-        "model_state": model.state_dict(),
+        "model_state": {
+            k: v.detach().cpu().clone() for k, v in model.state_dict().items()
+        },
         "label_to_index": full_dataset.label_to_index,
         "feature_config": feature_config,
         "model_config": model_config,
@@ -987,8 +1034,13 @@ def train_polygon_frame_classifier(
             "polygon_lengths": full_dataset.polygon_lengths,
             "feature_dim": full_dataset.feature_dim,
             "normalization": getattr(full_dataset, "_normalization", None),
+            "epoch": epoch + 1,
+            "optimizer_state": optimizer.state_dict(),
+            "scheduler_state": scheduler.state_dict(),
         }
         _maybe_save_checkpoint(latest_state, label="latest")
+        if checkpoint_dir is not None:
+            _save_training_history(history, checkpoint_dir, checkpoint_prefix)
 
         if not has_val:
             # Without validation data, keep the latest model as the current best.
@@ -1006,7 +1058,9 @@ def train_polygon_frame_classifier(
             best_val_map = val_map
             epochs_without_improve = 0
             best_state = {
-                "model_state": model.state_dict(),
+                "model_state": {
+                    k: v.detach().cpu().clone() for k, v in model.state_dict().items()
+                },
                 "label_to_index": full_dataset.label_to_index,
                 "feature_config": feature_config,
                 "model_config": model_config,
@@ -1014,6 +1068,7 @@ def train_polygon_frame_classifier(
                 "feature_dim": full_dataset.feature_dim,
                 "best_val_map": best_val_map,
                 "best_val_loss": best_val_loss,
+                "best_epoch": epoch + 1,
                 "normalization": getattr(full_dataset, "_normalization", None),
             }
             _maybe_save_checkpoint(best_state, label="best")

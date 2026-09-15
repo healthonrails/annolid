@@ -37,6 +37,13 @@ python -m annolid.behavior.training.polygon_frame_training \
 - If you prefer passing CSVs directly, supply `--train_csv` and `--test_csv` and other flags inline.
 
 ## 5) Outputs
+Normalization and class weights are fitted only on the training partition after
+the video-grouped split. Numeric frame gaps bound temporal windows; missing
+observations are not treated as consecutive frames. Best weights are cloned when
+selected so later epochs cannot mutate them. Checkpoints record split indices,
+video identities, training configuration and class weights; latest checkpoints
+also retain the epoch, optimizer and scheduler state. History is saved each epoch.
+
 - Runs are saved under `output_dir/run_name`, auto-incremented (`exp`, `exp2`, …).
 - Artifacts: best/latest checkpoints (`polygon_frame_classifier_best_*.pt`, `*_latest_*.pt`), training curves/history, metrics JSON/YAML dumps, and a log file per run.
 - Final evaluation is run on the provided test CSV using the learned label mapping and polygon lengths.

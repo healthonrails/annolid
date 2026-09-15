@@ -212,6 +212,34 @@ metadata for scoring:
 
 Existing CSV exports (`_timestamps.csv`) remain unchanged.
 
+## Review annotations in Behavior Log
+
+The **Behavior Log** dock provides a searchable list of recorded boundaries:
+
+1. Search by behavior, subject, modifier, or category (case insensitive). Combine
+   search with the **Subject** and **Category** filters to focus on one animal or
+   behavior group.
+2. Choose **Unconfirmed** to review proposed labels. Select a row and use
+   **Jump to frame**, **Edit interval…**, or **Confirm interval**. A confirmed
+   interval can be marked unconfirmed again. These buttons use the existing
+   timeline interval editing and confirmation workflow.
+3. Choose **Pairing issues** to locate missing starts, missing ends, repeated
+   starts, or backwards timestamps. An open start during ongoing scoring is
+   expected to show **Missing end** until its end is recorded. Warnings do not
+   repair or change annotations automatically.
+4. Use **All events** and clear the search to restore the full list. The summary
+   shows visible/total boundaries and total unconfirmed and problematic
+   boundaries; these counts are events, not bouts.
+
+Durations are shown in seconds on end rows, matching starts by behavior,
+subject, and modifiers across the full log. Filtering out a start does not change
+the duration of its end. Ambiguous pairs have no estimated duration. These are
+log review checks; they do not change the timeline's storage or export format.
+Opening another video resets the log's filters and selection.
+
+This review workflow is inspired by BORIS's
+[event search, filtering, and state-event checks](https://www.boris.unito.it/user_guide/coding/).
+
 ## Recommended Operating Loop
 
 1. Define behavior names first (Flags or Timeline).
