@@ -142,6 +142,39 @@ class LabelPanelMixin:
                 return True
         return False
 
+    def _on_shape_list_order_changed(self) -> None:
+        shapes = [item.shape() for item in self.labelList]
+        current = self.canvas.shapes
+        # Only a permutation of the current annotation is a reorder.
+        if len(shapes) != len(current) or {id(s) for s in shapes} != {
+            id(s) for s in current
+        }:
+            return
+        if [id(s) for s in shapes] == [id(s) for s in current]:
+            return
+        if not self.canvas.shapesBackups:
+            self.canvas.storeShapes()
+        self.canvas.shapes = shapes
+        self.canvas.storeShapes()
+        large_view = getattr(self, "large_image_view", None)
+        if large_view is not None:
+            selected = list(self.canvas.selectedShapes)
+            large_view.set_shapes(shapes)
+            large_view.set_selected_shapes(selected)
+        self.canvas.update()
+        self.setDirty()
+
+    def _on_unique_label_order_changed(self) -> None:
+        visible_order = [
+            str(self.uniqLabelList.item(i).data(QtCore.Qt.UserRole))
+            for i in range(self.uniqLabelList.count())
+        ]
+        previous = getattr(self, "_unique_label_order", [])
+        visible_labels = set(visible_order)
+        self._unique_label_order = visible_order + [
+            label for label in previous if label not in visible_labels
+        ]
+
     def _rebuild_unique_label_list(self) -> None:
         selected = set()
         try:
@@ -159,10 +192,15 @@ class LabelPanelMixin:
                 continue
             counts[label] = counts.get(label, 0) + 1
 
+        preferred = getattr(self, "_unique_label_order", [])
+        preferred_set = set(preferred)
+        ordered = [label for label in preferred if label in counts]
+        ordered.extend(sorted(set(counts) - preferred_set, key=lambda s: s.lower()))
+
         self.uniqLabelList.blockSignals(True)
         try:
             self.uniqLabelList.clear()
-            for label in sorted(counts.keys(), key=lambda s: s.lower()):
+            for label in ordered:
                 item = self.uniqLabelList.createItemFromLabel(label)
                 self.uniqLabelList.addItem(item)
                 rgb = self._get_rgb_by_label(label)
@@ -319,6 +357,14 @@ class LabelPanelMixin:
         if getattr(self, "_label_list_connections_setup", False):
             return
         self._label_list_connections_setup = True
+        # Hosts may use plain Qt lists without drag-reordering support.
+        for widget, handler in (
+            (self.labelList, self._on_shape_list_order_changed),
+            (self.uniqLabelList, self._on_unique_label_order_changed),
+        ):
+            order_changed = getattr(widget, "orderChanged", None)
+            if order_changed is not None:
+                order_changed.connect(handler)
 
         def on_selection_changed() -> None:
             if getattr(self, "_noSelectionSlot", False):

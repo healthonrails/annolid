@@ -94,7 +94,40 @@ class AnnolidLabelListItem(QtWidgets.QListWidgetItem):
         self._shape = shape
 
 
-class AnnolidLabelListWidget(QtWidgets.QListWidget):
+class ReorderableListWidget(QtWidgets.QListWidget):
+    """Move existing items within one list; notify once per completed drop."""
+
+    orderChanged = QtCore.Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setDragDropMode(QtWidgets.QAbstractItemView.InternalMove)
+        self.setDefaultDropAction(QtCore.Qt.MoveAction)
+        self.setDragDropOverwriteMode(False)
+        self.setDropIndicatorShown(True)
+        self._dropping = False
+        self.model().rowsMoved.connect(self._rows_moved)
+
+    def _rows_moved(self, *args):
+        if not self._dropping:
+            self.orderChanged.emit()
+
+    def dropEvent(self, event):
+        if event.source() is not self:
+            event.ignore()
+            return
+        before = [self.item(i) for i in range(self.count())]
+        self._dropping = True
+        try:
+            super().dropEvent(event)
+        finally:
+            self._dropping = False
+        after = [self.item(i) for i in range(self.count())]
+        if [id(item) for item in before] != [id(item) for item in after]:
+            self.orderChanged.emit()
+
+
+class AnnolidLabelListWidget(ReorderableListWidget):
     """QListWidget with LabelMe-like iteration helpers."""
 
     VISIBILITY_STATE_ROLE = int(QtCore.Qt.UserRole) + 10
@@ -244,7 +277,7 @@ class AnnolidLabelListWidget(QtWidgets.QListWidget):
             self.labelColorResetRequested.emit(reset_color_actions[chosen])
 
 
-class AnnolidUniqLabelListWidget(QtWidgets.QListWidget):
+class AnnolidUniqLabelListWidget(ReorderableListWidget):
     """Label summary list with helper methods used by AnnolidWindow (LabelMe-style)."""
 
     labelColorChangeRequested = QtCore.Signal(str)
