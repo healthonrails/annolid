@@ -246,6 +246,11 @@ class PlaybackDrawMixin:
             if getattr(self.actions, "editMode", None) is not None:
                 self.actions.editMode.setEnabled(True)
 
+        update_polygon_actions = getattr(
+            self, "_update_polygon_tool_action_state", None
+        )
+        if callable(update_polygon_actions):
+            update_polygon_actions()
         self._sync_draw_mode_action_checks(edit=bool(edit), createMode=str(createMode))
         if not edit and createMode in ("ai_polygon", "ai_mask"):
             try:

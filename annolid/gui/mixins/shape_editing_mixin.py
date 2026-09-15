@@ -131,6 +131,45 @@ class ShapeEditingMixin:
             except Exception:
                 pass
 
+    def canMergeSelectedShapes(self) -> bool:
+        canvas = self.canvas
+        return (
+            self._active_shape_editor() is canvas
+            and canvas.editing()
+            and len(canvas.selectedShapes) >= 2
+            and all(
+                s.shape_type in {"polygon", "rectangle"} for s in canvas.selectedShapes
+            )
+        )
+
+    def mergeSelectedShapes(self, _value=False) -> bool:
+        from qtpy import QtWidgets
+        from shapely.errors import ShapelyError
+        from annolid.gui.shape_merge import merge_shapes
+
+        if not self.canMergeSelectedShapes():
+            return False
+        selected_ids = {id(s) for s in self.canvas.selectedShapes}
+        selected = [s for s in self.canvas.shapes if id(s) in selected_ids]
+        try:
+            merged = merge_shapes(selected)
+        except (ValueError, ShapelyError) as exc:
+            QtWidgets.QMessageBox.warning(self, "Cannot Merge Shapes", str(exc))
+            return False
+        replacement = []
+        for shape in self.canvas.shapes:
+            if shape is selected[0]:
+                replacement.append(merged)
+            if id(shape) not in selected_ids:
+                replacement.append(shape)
+        if not self.canvas.shapesBackups:
+            self.canvas.storeShapes()
+        self.canvas.deSelectShape()
+        self.loadShapes(replacement, replace=True)
+        self.canvas.selectShapes([merged])
+        self.setDirty()
+        return True
+
     def duplicateSelectedShapes(self, _value=False) -> None:
         duplicated = self.canvas.duplicateSelectedShapes() or []
         if not duplicated:

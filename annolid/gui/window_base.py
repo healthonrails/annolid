@@ -689,6 +689,12 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         )
         self.actions.duplicateShapes.setIcon(self._icon("duplicate_polygons.svg"))
         self.actions.duplicateShapes.setEnabled(False)
+        self.actions.mergeShapes = self._mk_action(
+            self.tr("Merge Selected Shapes"),
+            getattr(self, "mergeSelectedShapes", None),
+        )
+        self.actions.mergeShapes.setIcon(self._icon("edit_polygons.svg"))
+        self.actions.mergeShapes.setEnabled(False)
         self.actions.startAdjoiningPolygon = self._mk_action(
             self.tr("Start Adjoining Polygon"),
             getattr(self, "startAdjoiningPolygonFromSelection", None),
@@ -801,6 +807,7 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
             self.actions.undo,
             self.actions.undoLastPoint,
             self.actions.removePoint,
+            self.actions.mergeShapes,
             self.actions.inferPagePolygons,
             self.actions.collapsePolygons,
             self.actions.restorePolygons,
@@ -1156,6 +1163,7 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
             "deleteFile",
             "deleteShapes",
             "duplicateShapes",
+            "mergeShapes",
             "startAdjoiningPolygon",
             "inferPagePolygons",
             "collapsePolygons",
@@ -1283,6 +1291,11 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         action.setEnabled(can_start)
 
     def _update_polygon_tool_action_state(self) -> None:
+        merge_action = getattr(self.actions, "mergeShapes", None)
+        if merge_action is not None:
+            merge_action.setEnabled(
+                bool(getattr(self, "canMergeSelectedShapes", lambda: False)())
+            )
         collapse_action = getattr(self.actions, "collapsePolygons", None)
         restore_action = getattr(self.actions, "restorePolygons", None)
         infer_action = getattr(self.actions, "inferPagePolygons", None)

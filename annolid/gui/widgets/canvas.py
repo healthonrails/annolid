@@ -1995,6 +1995,18 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
                     _add_existing_action(
                         duplicate_action, icon_filename="duplicate_polygons.svg"
                     )
+                merge_action = getattr(actions, "mergeShapes", None)
+                if merge_action is not None and len(selected_shapes) >= 2:
+                    merge_action.setEnabled(
+                        bool(
+                            getattr(
+                                main_window, "canMergeSelectedShapes", lambda: False
+                            )()
+                        )
+                    )
+                    _add_existing_action(
+                        merge_action, icon_filename="edit_polygons.svg"
+                    )
                 adjoining_action = getattr(actions, "startAdjoiningPolygon", None)
                 if adjoining_action is not None and can_start_adjoining:
                     adjoining_action.setEnabled(True)

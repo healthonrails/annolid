@@ -822,6 +822,18 @@ def test_toggle_draw_mode_initializes_ai_model_once_for_ai_modes() -> None:
     assert host.canvas.calls == [("EfficientSam (speed)", {"custom": "model"})]
     assert host.canvas.cancel_calls == [True]
 
+    # Window hosts may also refresh polygon actions after the mode changes.
+    host = _DummyHost()
+    updates = []
+    host._update_polygon_tool_action_state = lambda: updates.append(
+        (host.canvas.editing[-1], host.canvas.createMode)
+    )
+    host.toggleDrawMode(False, createMode="ai_polygon")
+    host.toggleDrawMode(True)
+
+    assert updates == [(False, "ai_polygon"), (True, "ai_polygon")]
+    assert host.canvas.calls == [("EfficientSam (speed)", {"custom": "model"})]
+
 
 def test_canvas_key_release_accepts_qt_no_modifier() -> None:
     _ensure_qapp()
