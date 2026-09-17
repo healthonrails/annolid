@@ -75,7 +75,12 @@ curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.s
 irm https://raw.githubusercontent.com/healthonrails/annolid/main/install.ps1 | iex
 ```
 
-After installation:
+After installation, open `Launch Annolid.command` (macOS), `Launch Annolid.cmd`
+(Windows), or `Launch Annolid.desktop` (Linux) in the install folder. Matching
+`Update Annolid` shortcuts retain your install choices for future upgrades. See
+[desktop launch and upgrade details](docs/installation.md#launch-and-update-without-activating-an-environment).
+
+To launch manually:
 
 ```bash
 annolid --help

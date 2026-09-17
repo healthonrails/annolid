@@ -56,6 +56,44 @@ On Windows PowerShell:
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/healthonrails/annolid/main/install.ps1))) -NoGpu -NoInteractive
 ```
 
+### Launch and update without activating an environment
+
+After a successful one-line **venv** installation, open the install folder:
+
+| Platform | Launch | Upgrade |
+|---|---|---|
+| macOS | Double-click `Launch Annolid.command` | Double-click `Update Annolid.command` |
+| Windows | Double-click `Launch Annolid.cmd` | Double-click `Update Annolid.cmd` |
+| Linux | Open `Launch Annolid.desktop` | Open `Update Annolid.desktop` |
+
+Linux file managers may require marking the `.desktop` file as trusted or allowing
+it to launch. The adjacent `Launch Annolid.sh` and `Update Annolid.sh` can also be
+run from a terminal. Shortcuts remain in the install folder; you can create an
+alias/link to them on your desktop. Keep Windows `.cmd` files next to their
+matching `.ps1` files. No administrator access or global PATH change is needed
+for shortcut generation. Conda installs continue to use `conda activate annolid-env`.
+
+Before updating, save your annotations and close Annolid. The update shortcut asks
+you to continue, then reruns the installer with the same environment path, profile,
+extras, and CPU/GPU preference. It updates the checkout's current tracking branch
+using a fast-forward-only Git pull and reinstalls package requirements in the
+existing environment. This follows the source branch, not a pinned release channel.
+Network access is required. Non-interactive installs and updates finish without
+opening the GUI; use the launch shortcut afterward.
+
+Updates stop on tracked local edits, divergent Git history, or a failed pull.
+Commit or stash your code edits, or resolve the reported Git/network problem,
+then rerun. Existing directories that are not Annolid checkouts are refused rather
+than deleted. An invalid existing environment is also refused rather than replaced;
+repair it or select a different `--venv-dir` / `-VenvDir`. Annotation files and
+user settings are not deliberately rewritten by these installer steps.
+
+These are source-install shortcuts, not a signed native installer or an atomic
+updater. If dependency installation fails after Git updates, the checkout may
+already be updated and the environment may be partly changed; review the terminal
+error and rerun after resolving it. There is no automatic rollback. Frozen desktop
+archives retain their separate [bundle contract](packaging.md#desktop-bundle-contract).
+
 ### Local `.venv` with `uv`
 
 For development or reproducible local work, use `uv` and a repository-local `.venv`:

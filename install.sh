@@ -715,23 +715,35 @@ clone_repo() {
         INSTALL_DIR="./annolid"
     fi
 
-    # Expand path
-    INSTALL_DIR=$(eval echo "$INSTALL_DIR")
+    # Expand only the current user's home prefix; never evaluate a path as code.
+    case "$INSTALL_DIR" in
+        "~") INSTALL_DIR="$HOME" ;;
+        "~/"*) INSTALL_DIR="$HOME/${INSTALL_DIR#\~/}" ;;
+    esac
 
-    if [[ -d "$INSTALL_DIR" ]]; then
-        if [[ -d "$INSTALL_DIR/.git" ]]; then
-            print_info "Annolid directory exists. Updating..."
-            cd "$INSTALL_DIR"
-            git pull --recurse-submodules || true
-        else
-            print_warning "Directory $INSTALL_DIR exists but is not a git repository."
-            if prompt_yes_no "  Remove and re-clone?" "n"; then
-                rm -rf "$INSTALL_DIR"
-                git clone --recurse-submodules "$ANNOLID_REPO" "$INSTALL_DIR"
-                cd "$INSTALL_DIR"
-            else
-                cd "$INSTALL_DIR"
-            fi
+    if [[ -e "$INSTALL_DIR" ]]; then
+        if [[ ! -e "$INSTALL_DIR/.git" ]]; then
+            print_error "Directory $INSTALL_DIR is not an Annolid checkout. Choose a new --install-dir."
+            exit 1
+        fi
+        cd "$INSTALL_DIR"
+        if [[ ! -f annolid/__init__.py || ! -f pyproject.toml ]]; then
+            print_error "This is not an Annolid checkout. Choose a new --install-dir."
+            exit 1
+        fi
+        local tracked_changes
+        if ! tracked_changes=$(git status --porcelain --untracked-files=no); then
+            print_error "Could not inspect checkout state. Resolve the Git error above before updating."
+            exit 1
+        fi
+        if [[ -n "$tracked_changes" ]]; then
+            print_error "Local tracked changes found. Commit or stash them before updating."
+            exit 1
+        fi
+        print_info "Updating the existing checkout (fast-forward only)..."
+        if ! git pull --ff-only --recurse-submodules; then
+            print_error "Update failed. Resolve the Git error above and rerun; the environment has not been changed."
+            exit 1
         fi
     else
         git clone --recurse-submodules "$ANNOLID_REPO" "$INSTALL_DIR"
@@ -748,7 +760,20 @@ clone_repo() {
 create_venv() {
     print_step "Creating virtual environment..."
 
-    VENV_PATH="$INSTALL_DIR/$VENV_DIR"
+    case "$VENV_DIR" in
+        /*) VENV_PATH="$VENV_DIR" ;;
+        *) VENV_PATH="$INSTALL_DIR/$VENV_DIR" ;;
+    esac
+    if [[ "$USE_CONDA" == false && -e "$VENV_PATH" ]]; then
+        if [[ ! -f "$VENV_PATH/pyvenv.cfg" || ! -f "$VENV_PATH/bin/activate" ]] ||
+           ! "$VENV_PATH/bin/python" -c 'import sys; assert sys.prefix != sys.base_prefix'; then
+            print_error "Existing environment at $VENV_PATH is invalid. Choose another --venv-dir or repair it."
+            exit 1
+        fi
+        ACTIVATE_CMD="source $(printf '%q' "$VENV_PATH/bin/activate")"
+        print_success "Reusing existing virtual environment"
+        return
+    fi
 
     if [[ "$USE_CONDA" == true ]]; then
         if command -v mamba &> /dev/null; then
@@ -770,11 +795,11 @@ create_venv() {
         else
             "$UV_CMD" venv "$VENV_PATH" --python "$PYTHON_VERSION"
         fi
-        ACTIVATE_CMD="source $VENV_PATH/bin/activate"
+        ACTIVATE_CMD="source $(printf '%q' "$VENV_PATH/bin/activate")"
 
     else
         $PYTHON_CMD -m venv "$VENV_PATH"
-        ACTIVATE_CMD="source $VENV_PATH/bin/activate"
+        ACTIVATE_CMD="source $(printf '%q' "$VENV_PATH/bin/activate")"
     fi
 
     print_success "Virtual environment created"
@@ -1021,7 +1046,8 @@ print_summary() {
     echo "Annolid has been installed to: $INSTALL_DIR"
     echo "Install report: $INSTALL_REPORT_PATH"
     echo ""
-    echo "To get started:"
+    echo "For venv installs, open Launch Annolid or Update Annolid in the install folder."
+    echo "To launch manually:"
     echo ""
     echo "  1. Navigate to the directory:"
     echo -e "     ${BLUE}cd $INSTALL_DIR${NC}"
@@ -1039,7 +1065,7 @@ print_summary() {
     echo "Issues: https://github.com/healthonrails/annolid/issues"
     echo ""
 
-    if prompt_yes_no "Launch Annolid now?" "y"; then
+    if [[ "$NO_INTERACTIVE" == false ]] && prompt_yes_no "Launch Annolid now?" "y"; then
         print_step "Launching Annolid..."
 
         # We need to activate environment and run annolid
@@ -1071,6 +1097,13 @@ main() {
     install_annolid
     validate_installation
     write_install_report
+    if [[ "$USE_CONDA" == false ]]; then
+        shortcut_args=(--install-dir "$INSTALL_DIR" --venv-path "$VENV_PATH" --profile "$PROFILE" --extras "$INSTALL_EXTRAS")
+        if [[ "$NO_GPU" == true ]]; then shortcut_args+=(--no-gpu); fi
+        if ! python scripts/create_desktop_shortcuts.py "${shortcut_args[@]}"; then
+            print_warning "Shortcuts could not be created. Use the activation command below to launch Annolid."
+        fi
+    fi
     print_summary
 }
 

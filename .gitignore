@@ -165,3 +165,8 @@ annolid/tracker/cowtracker/cowtracker/thirdparty/vggt/**
 !annolid/tracker/cowtracker/cowtracker/thirdparty/vggt/vggt/
 !annolid/tracker/cowtracker/cowtracker/thirdparty/vggt/vggt/**/
 !annolid/tracker/cowtracker/cowtracker/thirdparty/vggt/vggt/**/*.py
+
+# Machine-local installer outputs
+/annolid-install-report.json
+/Launch Annolid.*
+/Update Annolid.*

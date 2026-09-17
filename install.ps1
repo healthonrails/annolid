@@ -500,24 +500,23 @@ function Clone-Repo {
 
     $script:InstallDir = [System.IO.Path]::GetFullPath($InstallDir)
 
-    if (Test-Path $InstallDir) {
-        if (Test-Path "$InstallDir\.git") {
-            Write-Info "Annolid directory exists. Updating..."
-            Set-Location $InstallDir
-            git pull --recurse-submodules 2>$null
-        } else {
-            Write-Warning-Msg "Directory exists but is not a git repository."
-            if (Prompt-YesNo "  Remove and re-clone?" $false) {
-                Remove-Item -Recurse -Force $InstallDir
-                git clone --recurse-submodules $AnnolidRepo $InstallDir
-                Set-Location $InstallDir
-            } else {
-                Set-Location $InstallDir
-            }
+    if (Test-Path -LiteralPath $InstallDir) {
+        if (!(Test-Path -LiteralPath "$InstallDir\.git") -or
+            !(Test-Path -LiteralPath "$InstallDir\annolid\__init__.py") -or
+            !(Test-Path -LiteralPath "$InstallDir\pyproject.toml")) {
+            throw "Directory is not an Annolid checkout. Choose a new -InstallDir."
         }
+        Set-Location -LiteralPath $InstallDir
+        $changes = & git status --porcelain --untracked-files=no
+        if ($LASTEXITCODE -ne 0) { throw "Could not inspect checkout state." }
+        if ($changes) { throw "Local tracked changes found. Commit or stash them before updating." }
+        Write-Info "Updating the existing checkout (fast-forward only)..."
+        & git pull --ff-only --recurse-submodules
+        if ($LASTEXITCODE -ne 0) { throw "Update failed. Resolve the Git error above and rerun; the environment has not been changed." }
     } else {
-        git clone --recurse-submodules $AnnolidRepo $InstallDir
-        Set-Location $InstallDir
+        & git clone --recurse-submodules $AnnolidRepo $InstallDir
+        if ($LASTEXITCODE -ne 0) { throw "Clone failed. Check the network and destination path." }
+        Set-Location -LiteralPath $InstallDir
     }
 
     $script:InstallDir = (Get-Location).Path
@@ -530,7 +529,19 @@ function Clone-Repo {
 function New-Venv {
     Write-Step "Creating virtual environment..."
 
-    $script:VenvPath = Join-Path $InstallDir $VenvDir
+    $script:VenvPath = if ([System.IO.Path]::IsPathRooted($VenvDir)) { $VenvDir } else { Join-Path $InstallDir $VenvDir }
+    $script:ActivateCmd = "$script:VenvPath\Scripts\Activate.ps1"
+    if (Test-Path -LiteralPath $script:VenvPath) {
+        if (!(Test-Path -LiteralPath "$script:VenvPath\pyvenv.cfg") -or
+            !(Test-Path -LiteralPath $script:ActivateCmd) -or
+            !(Test-Path -LiteralPath "$script:VenvPath\Scripts\python.exe")) {
+            throw "Existing environment is invalid. Choose another -VenvDir or repair it."
+        }
+        & "$script:VenvPath\Scripts\python.exe" -c "import sys; assert sys.prefix != sys.base_prefix"
+        if ($LASTEXITCODE -ne 0) { throw "Existing environment cannot run. Repair it before updating." }
+        Write-Success "Reusing existing virtual environment"
+        return
+    }
 
     if ($script:UseUv) {
         if ($script:UseUvPython -and $script:UvPythonVersion) {
@@ -542,6 +553,7 @@ function New-Venv {
         & $script:PythonCmd @($script:PythonArgs) -m venv $script:VenvPath
     }
 
+    if ($LASTEXITCODE -ne 0) { throw "Virtual environment creation failed." }
     $script:ActivateCmd = "$script:VenvPath\Scripts\Activate.ps1"
     Write-Success "Virtual environment created"
 }
@@ -587,16 +599,18 @@ function Install-Annolid {
     $installExtras = Merge-Extras (@("gui") + $profileExtras + @($Extras))
     $script:InstallExtras = $installExtras
     $extrasCsv = $installExtras -join ","
-    $installTarget = "-e .[$extrasCsv]"
+    $installTarget = ".[$extrasCsv]"
     Write-Host "  Profile: $Profile"
     Write-Host "  Including extras: $extrasCsv"
 
     Write-Host "  Installing annolid (this may take a few minutes)..."
     if ($script:UseUv) {
-        & $script:UvCmd pip install $installTarget
+        & $script:UvCmd pip install -e $installTarget
     } else {
-        & pip install $installTarget
+        & pip install -e $installTarget
     }
+
+    if ($LASTEXITCODE -ne 0) { throw "Annolid package installation failed. Review the error above and rerun." }
 
     if (Test-ExtraSelected $installExtras @("sam3", "sam", "segment_anything", "all")) {
         Write-Host "  Installing SAM-HQ..."
@@ -837,7 +851,8 @@ function Write-Summary {
     Write-Host "Annolid has been installed to: $script:InstallDir"
     Write-Host "Install report: $script:InstallReportPath"
     Write-Host ""
-    Write-Host "To get started:"
+    Write-Host "Double-click Launch Annolid.cmd or Update Annolid.cmd in the install folder."
+    Write-Host "To launch manually:"
     Write-Host ""
     Write-Host "  1. Navigate to the directory:"
     Write-Host "     cd $script:InstallDir" -ForegroundColor Blue
@@ -852,7 +867,7 @@ function Write-Summary {
     Write-Host "Issues: https://github.com/healthonrails/annolid/issues"
     Write-Host ""
 
-    if (Prompt-YesNo "Launch Annolid now?" $true) {
+    if (!$NoInteractive -and (Prompt-YesNo "Launch Annolid now?" $true)) {
         Write-Step "Launching Annolid..."
 
         # We need to activate environment and run annolid
@@ -880,4 +895,9 @@ Install-Annolid
 Repair-OnnxRuntime
 Test-Installation
 Write-InstallReport
+$shortcutArgs = @("scripts/create_desktop_shortcuts.py", "--install-dir", $script:InstallDir,
+    "--venv-path", $script:VenvPath, "--profile", $Profile, "--extras", ($script:InstallExtras -join ","))
+if ($NoGpu) { $shortcutArgs += "--no-gpu" }
+& python @shortcutArgs
+if ($LASTEXITCODE -ne 0) { Write-Warning-Msg "Shortcuts could not be created. Use the activation command below." }
 Write-Summary

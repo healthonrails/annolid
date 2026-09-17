@@ -274,3 +274,13 @@ Piping scripts from the internet is convenient but trust-based. For stricter sec
 - download script first,
 - inspect it,
 - then run locally with explicit options.
+
+## Desktop launch and repeat installs
+
+Successful venv installs create `Launch Annolid` and `Update Annolid` shortcuts
+in the install directory. Use the update shortcut to retain the original profile,
+extras, environment path, and CPU/GPU preference. Existing environments are reused;
+Git updates must fast-forward and tracked local edits must be committed or stashed.
+Non-interactive runs no longer launch the GUI at completion. See the
+[desktop launch and upgrade guide](installation.md#launch-and-update-without-activating-an-environment)
+for platform details, recovery, and source-update limitations.
