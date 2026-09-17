@@ -61,7 +61,7 @@ On Windows PowerShell:
 After a successful one-line **venv** installation, open the install folder:
 
 | Platform | Launch | Upgrade |
-|---|---|---|
+| --- | --- | --- |
 | macOS | Double-click `Launch Annolid.command` | Double-click `Update Annolid.command` |
 | Windows | Double-click `Launch Annolid.cmd` | Double-click `Update Annolid.cmd` |
 | Linux | Open `Launch Annolid.desktop` | Open `Update Annolid.desktop` |
