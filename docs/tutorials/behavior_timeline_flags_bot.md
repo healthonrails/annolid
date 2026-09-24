@@ -267,3 +267,16 @@ If timeline scrubbing does not move frame:
 1. Drag from the red marker area near the header.
 2. Confirm a video is loaded and frame range is set.
 3. Retry after switching focus back to the Timeline panel.
+
+### Resuming agent segment labeling
+
+When you rerun labeling without `overwrite_existing`, Annolid reuses saved
+observations that match both the frame range and the subject. Accepted labels
+and explicit `no_behavior` observations skip repeat model calls. Unsupported or
+`unclassified` responses are retried, since they do not establish that a behavior
+was absent. Legacy records without a subject use the requested default subject.
+
+If the existing segment-label JSON cannot be read, labeling stops before changing
+the timeline or progress log. Repair the file, or back it up and remove it before
+retrying. Use `overwrite_existing` only when you intend to clear existing timeline
+behavior data and relabel.

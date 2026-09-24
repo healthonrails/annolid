@@ -63,6 +63,7 @@ from annolid.behavior.labels import (
     text_indicates_no_behavior,
 )
 from annolid.behavior.segment_labeling import (
+    behavior_segment_resume_key,
     behavior_label_provider_request_interval,
     behavior_label_rate_limit_backoff_seconds,
     behavior_grid_output_path,
@@ -4763,19 +4764,16 @@ class AIChatWidget(QtWidgets.QWidget):
             )
         except Exception:
             return None
+        normalized_prediction["subject"] = normalized_prediction.get(
+            "subject"
+        ) or context.get("default_subject")
         context_predictions = list(context.get("skipped_predictions") or [])
         existing_ranges = {
-            (
-                int(pred.get("start_frame") or -1),
-                int(pred.get("end_frame") or -1),
-            )
+            behavior_segment_resume_key(pred)
             for pred in context_predictions
             if isinstance(pred, dict)
         }
-        pred_range = (
-            int(normalized_prediction.get("start_frame") or -1),
-            int(normalized_prediction.get("end_frame") or -1),
-        )
+        pred_range = behavior_segment_resume_key(normalized_prediction)
         if pred_range not in existing_ranges:
             context_predictions.append(normalized_prediction)
             context["skipped_predictions"] = context_predictions
@@ -6821,61 +6819,44 @@ class AIChatWidget(QtWidgets.QWidget):
                     segment_seconds=float(segment_seconds),
                     sample_frames_per_segment=int(sample_frames_per_segment),
                 )
+                if not resume_payload.get("ok"):
+                    raise RuntimeError(
+                        "Cannot resume from behavior progress log "
+                        f"{resume_payload.get('path')}. Repair or back up the log "
+                        "before retrying; existing progress has not been overwritten."
+                    )
                 resume_log_path = str(resume_payload.get("path") or "")
                 resumed_predictions = list(resume_payload.get("predictions") or [])
                 resumed_skipped_predictions = list(
                     resume_payload.get("skipped_predictions") or []
                 )
                 if resumed_predictions or resumed_skipped_predictions:
-                    current_ranges = {
-                        (
-                            int(item.get("start_frame") or -1),
-                            int(item.get("end_frame") or -1),
+                    default_subject = str(subject or "").strip()
+
+                    def resume_key(record):
+                        return behavior_segment_resume_key(
+                            record, default_subject=default_subject
                         )
-                        for item in intervals
-                    }
+
+                    current_ranges = {resume_key(item) for item in intervals}
                     resumed_predictions = [
                         pred
                         for pred in resumed_predictions
-                        if (
-                            int(pred.get("start_frame") or -1),
-                            int(pred.get("end_frame") or -1),
-                        )
-                        in current_ranges
+                        if resume_key(pred) in current_ranges
                     ]
                     resumed_skipped_predictions = [
                         pred
                         for pred in resumed_skipped_predictions
-                        if (
-                            int(pred.get("start_frame") or -1),
-                            int(pred.get("end_frame") or -1),
-                        )
-                        in current_ranges
+                        if resume_key(pred) in current_ranges
                     ]
                     existing_ranges = {
-                        (
-                            int(pred.get("start_frame") or -1),
-                            int(pred.get("end_frame") or -1),
-                        )
-                        for pred in resumed_predictions
+                        resume_key(pred)
+                        for pred in [*resumed_predictions, *resumed_skipped_predictions]
                     }
-                    existing_ranges.update(
-                        {
-                            (
-                                int(pred.get("start_frame") or -1),
-                                int(pred.get("end_frame") or -1),
-                            )
-                            for pred in resumed_skipped_predictions
-                        }
-                    )
                     intervals = [
                         item
                         for item in intervals
-                        if (
-                            int(item.get("start_frame") or -1),
-                            int(item.get("end_frame") or -1),
-                        )
-                        not in existing_ranges
+                        if resume_key(item) not in existing_ranges
                     ]
 
             if bool(overwrite_existing):

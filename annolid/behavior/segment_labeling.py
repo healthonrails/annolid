@@ -1271,6 +1271,21 @@ def behavior_segment_labeling_log_path(video_path: str) -> Path:
     return path.with_name(f"{path.stem}_behavior_segment_labels.json")
 
 
+def behavior_segment_resume_key(
+    record: Dict[str, Any], *, default_subject: str = ""
+) -> tuple[int, int, str]:
+    """Match completed observations by inclusive frame range and subject.
+
+    Legacy records without a subject use the run's default subject, just as
+    timeline interval creation does. Frame zero is a valid boundary.
+    """
+    return (
+        int(record["start_frame"]),
+        int(record["end_frame"]),
+        str(record.get("subject") or default_subject or "").strip(),
+    )
+
+
 def normalize_behavior_segment_prediction_for_log(
     prediction: Dict[str, Any],
 ) -> Dict[str, Any]:
@@ -1354,6 +1369,17 @@ def load_resumable_behavior_segment_predictions(
             "skipped_predictions": [],
         }
 
+    if any(
+        not isinstance(payload.get(key, []), list)
+        for key in ("predictions", "skipped_predictions")
+    ):
+        return {
+            "ok": False,
+            "path": str(output_path),
+            "predictions": [],
+            "skipped_predictions": [],
+        }
+
     allowed = normalize_behavior_label_list(labels)
     predictions: List[Dict[str, Any]] = []
     skipped_predictions: List[Dict[str, Any]] = []
@@ -1392,9 +1418,12 @@ def load_resumable_behavior_segment_predictions(
             continue
         label = str(normalized.get("label") or "").strip()
         canonical_label = canonicalize_behavior_label(label, allowed)
-        if canonical_label == NO_BEHAVIOR_LABEL:
-            normalized["label"] = NO_BEHAVIOR_LABEL
-            normalized["classification"] = NO_BEHAVIOR_LABEL
+        # Unsupported model responses are unresolved, not negative observations.
+        # Retry them on resume instead of permanently suppressing these windows.
+        if canonical_label != NO_BEHAVIOR_LABEL:
+            continue
+        normalized["label"] = NO_BEHAVIOR_LABEL
+        normalized["classification"] = NO_BEHAVIOR_LABEL
         try:
             start_frame = int(normalized.get("start_frame"))
             end_frame = int(normalized.get("end_frame"))
