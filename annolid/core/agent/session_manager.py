@@ -5,6 +5,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from threading import RLock
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 from uuid import uuid4
@@ -25,6 +26,60 @@ def _encode_key(key: str) -> str:
     raw = str(key).encode("utf-8")
     encoded = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
     return encoded or "session"
+
+
+class SessionReadError(ValueError):
+    """An existing session artifact cannot be safely read or updated."""
+
+
+def _read_jsonl(path: Path) -> Optional[List[Dict[str, Any]]]:
+    """Only a missing file means new history; preserve unreadable artifacts."""
+    try:
+        fh = path.open("r", encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise SessionReadError(f"Cannot read agent history {path}: {exc}") from exc
+    line_number = 0
+    try:
+        rows: List[Dict[str, Any]] = []
+        with fh:
+            for line_number, line in enumerate(fh, start=1):
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                if not isinstance(row, dict):
+                    raise ValueError("expected a JSON object")
+                rows.append(row)
+        if not rows:
+            raise ValueError("file contains no records")
+        return rows
+    except (OSError, ValueError) as exc:
+        raise SessionReadError(
+            f"Cannot read agent history {path} at line {line_number}: {exc}. "
+            "The file was left unchanged; back it up and repair it before retrying."
+        ) from exc
+
+
+def _write_jsonl(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
+    """Replace only a complete file, using a private temporary per writer."""
+    tmp_path: Optional[Path] = None
+    try:
+        with NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as fh:
+            tmp_path = Path(fh.name)
+            for row in rows:
+                fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+        tmp_path.replace(path)
+    finally:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
 
 
 @dataclass
@@ -83,64 +138,60 @@ class AgentSessionManager:
 
     def _load(self, key: str) -> Optional[AgentSession]:
         path = self._session_path(key)
-        if not path.exists():
+        rows = _read_jsonl(path)
+        if rows is None:
             return None
+        messages: List[Dict[str, Any]] = []
+        facts: Dict[str, str] = {}
+        metadata: Dict[str, Any] = {}
+        created_at: Optional[datetime] = None
+        updated_at: Optional[datetime] = None
         try:
-            messages: List[Dict[str, Any]] = []
-            facts: Dict[str, str] = {}
-            metadata: Dict[str, Any] = {}
-            created_at: Optional[datetime] = None
-            updated_at: Optional[datetime] = None
-            with path.open("r", encoding="utf-8") as fh:
-                for line in fh:
-                    text = line.strip()
-                    if not text:
-                        continue
-                    data = json.loads(text)
-                    if data.get("_type") == "metadata":
-                        metadata = dict(data.get("metadata") or {})
-                        facts = {
-                            str(k): str(v)
-                            for k, v in dict(data.get("facts") or {}).items()
-                        }
-                        created_text = data.get("created_at")
-                        updated_text = data.get("updated_at")
-                        if created_text:
-                            created_at = datetime.fromisoformat(str(created_text))
-                        if updated_text:
-                            updated_at = datetime.fromisoformat(str(updated_text))
-                        continue
-                    if isinstance(data, dict):
-                        messages.append(dict(data))
-            return AgentSession(
-                key=key,
-                messages=messages,
-                facts=facts,
-                created_at=created_at or datetime.now(),
-                updated_at=updated_at or datetime.now(),
-                metadata=metadata,
-            )
-        except Exception:
-            return None
+            for data in rows:
+                if data.get("_type") == "metadata":
+                    for field_name in ("metadata", "facts"):
+                        value = data.get(field_name)
+                        if value is not None and not isinstance(value, dict):
+                            raise ValueError(f"{field_name} must be a JSON object")
+                    metadata = dict(data.get("metadata") or {})
+                    facts = {
+                        str(k): str(v) for k, v in (data.get("facts") or {}).items()
+                    }
+                    created_text = data.get("created_at")
+                    updated_text = data.get("updated_at")
+                    if created_text:
+                        created_at = datetime.fromisoformat(str(created_text))
+                    if updated_text:
+                        updated_at = datetime.fromisoformat(str(updated_text))
+                    continue
+                messages.append(dict(data))
+        except ValueError as exc:
+            raise SessionReadError(
+                f"Cannot read agent session {path}: {exc}. "
+                "The file was left unchanged; back it up and repair it before retrying."
+            ) from exc
+        return AgentSession(
+            key=key,
+            messages=messages,
+            facts=facts,
+            created_at=created_at or datetime.now(),
+            updated_at=updated_at or datetime.now(),
+            metadata=metadata,
+        )
 
     def save(self, session: AgentSession) -> None:
         with self._lock:
             path = self._session_path(session.key)
-            tmp_path = path.with_name(f"{path.name}.tmp")
-            with tmp_path.open("w", encoding="utf-8") as fh:
-                meta_line = {
-                    "_type": "metadata",
-                    "key": session.key,
-                    "created_at": session.created_at.isoformat(),
-                    "updated_at": session.updated_at.isoformat(),
-                    "facts": dict(session.facts),
-                    "metadata": dict(session.metadata),
-                    "message_count": len(session.messages),
-                }
-                fh.write(json.dumps(meta_line, ensure_ascii=False) + "\n")
-                for msg in session.messages:
-                    fh.write(json.dumps(msg, ensure_ascii=False) + "\n")
-            tmp_path.replace(path)
+            meta_line = {
+                "_type": "metadata",
+                "key": session.key,
+                "created_at": session.created_at.isoformat(),
+                "updated_at": session.updated_at.isoformat(),
+                "facts": dict(session.facts),
+                "metadata": dict(session.metadata),
+                "message_count": len(session.messages),
+            }
+            _write_jsonl(path, [meta_line, *session.messages])
             self._cache[session.key] = session
 
     def delete(self, key: str) -> bool:
@@ -217,51 +268,22 @@ class AgentSessionManager:
         *,
         max_entries: int = 200,
     ) -> Path:
-        path = self._snapshot_path(key)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        payload = dict(snapshot or {})
-        payload.setdefault("timestamp", _now_iso())
-        rows: List[Dict[str, Any]] = []
-        if path.exists():
-            try:
-                with path.open("r", encoding="utf-8") as fh:
-                    for line in fh:
-                        text = line.strip()
-                        if not text:
-                            continue
-                        row = json.loads(text)
-                        if isinstance(row, dict):
-                            rows.append(dict(row))
-            except Exception:
-                rows = []
-        rows.append(payload)
-        keep = max(1, int(max_entries))
-        rows = rows[-keep:]
-        tmp_path = path.with_name(f"{path.name}.tmp")
-        with tmp_path.open("w", encoding="utf-8") as fh:
-            for row in rows:
-                fh.write(json.dumps(row, ensure_ascii=False) + "\n")
-        tmp_path.replace(path)
-        return path
+        with self._lock:
+            path = self._snapshot_path(key)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = dict(snapshot or {})
+            payload.setdefault("timestamp", _now_iso())
+            rows = _read_jsonl(path) or []
+            rows.append(payload)
+            keep = max(1, int(max_entries))
+            _write_jsonl(path, rows[-keep:])
+            return path
 
     def read_snapshots(self, key: str, *, limit: int = 50) -> List[Dict[str, Any]]:
-        path = self._snapshot_path(key)
-        if not path.exists():
-            return []
-        rows: List[Dict[str, Any]] = []
-        try:
-            with path.open("r", encoding="utf-8") as fh:
-                for line in fh:
-                    text = line.strip()
-                    if not text:
-                        continue
-                    row = json.loads(text)
-                    if isinstance(row, dict):
-                        rows.append(dict(row))
-        except Exception:
-            return []
-        keep = max(1, int(limit))
-        return rows[-keep:]
+        with self._lock:
+            rows = _read_jsonl(self._snapshot_path(key)) or []
+            keep = max(1, int(limit))
+            return rows[-keep:]
 
 
 class PersistentSessionStore:

@@ -667,14 +667,17 @@ class AgentLoop:
                     messages = compacted_messages
                     context_compaction_runs += 1
 
-                response, llm_elapsed_ms = await self._execute_llm_cycle(
-                    session_id=session_id,
-                    iteration=iteration,
-                    messages=messages,
-                    tool_definitions=tool_definitions,
-                    on_token=_on_llm_token,
-                )
-                llm_total_ms += llm_elapsed_ms
+                llm_cycle_started = time.perf_counter()
+                try:
+                    response, llm_elapsed_ms = await self._execute_llm_cycle(
+                        session_id=session_id,
+                        iteration=iteration,
+                        messages=messages,
+                        tool_definitions=tool_definitions,
+                        on_token=_on_llm_token,
+                    )
+                finally:
+                    llm_total_ms += (time.perf_counter() - llm_cycle_started) * 1000.0
 
                 assistant_text = str(response.get("content") or "")
                 reasoning = str(response.get("reasoning_content") or "").strip()
@@ -874,16 +877,21 @@ class AgentLoop:
                             self.model,
                             iteration,
                         )
-                        (
-                            final_content,
-                            repair_llm_ms,
-                        ) = await self._repair_empty_final_answer(
-                            session_id=session_id,
-                            iteration=iteration,
-                            messages=messages,
-                            on_token=_on_llm_token,
-                        )
-                        llm_total_ms += repair_llm_ms
+                        repair_started = time.perf_counter()
+                        try:
+                            (
+                                final_content,
+                                repair_llm_ms,
+                            ) = await self._repair_empty_final_answer(
+                                session_id=session_id,
+                                iteration=iteration,
+                                messages=messages,
+                                on_token=_on_llm_token,
+                            )
+                        finally:
+                            llm_total_ms += (
+                                time.perf_counter() - repair_started
+                            ) * 1000.0
                         if str(final_content or "").strip():
                             self._logger.info(
                                 "annolid-bot empty final response repaired session=%s model=%s iteration=%d repair_llm_ms=%.1f",

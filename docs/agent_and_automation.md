@@ -56,6 +56,58 @@ or running repeatable workflows through the agent stack.
 - memory-backed agent behavior,
 - security and operational guardrails.
 
+## Ollama Context Limits
+
+Annolid Bot sends an explicit `num_ctx` on Ollama agent, plain-chat, and recovery
+requests. The default is 16,384 tokens so the agent instructions and conversation
+are not constrained by a smaller server default such as 4,096 tokens.
+
+For a context-size rejection before any output, Annolid retries once with a
+larger window. When Ollama reports the prompt token count, the retry reserves an
+additional 1,024 tokens for the response and rounds up to a 1,024-token boundary.
+Otherwise it attempts to double the window. Automatic growth stops at 32,768
+tokens by default. The original messages and tool schemas are preserved.
+
+To adjust these limits, merge these fields into the existing `ollama` object in
+`~/.annolid/llm_settings.json`, then restart Annolid:
+
+```json
+{
+  "ollama": {
+    "num_ctx": 16384,
+    "max_num_ctx": 32768
+  }
+}
+```
+
+Both values must be positive integers, with `max_num_ctx >= num_ctx`. Set them
+equal to disable automatic growth. A larger window requires more model memory;
+choose limits supported by your model and hardware. These settings do not extend
+a model's trained context capacity. If the bounded retry fails, shorten the
+conversation or revise the limits. Annolid reports the error without switching
+to a plain request that omits the agent instructions. Context-size errors do not
+disable tool support, and failed requests are included in LLM timing logs.
+
+## Recovering Unreadable Agent History
+
+Agent conversations and turn snapshots are stored as JSONL files. A missing file
+starts new history. An existing file with invalid JSON, invalid metadata, or
+unreadable contents raises a storage error instead of being treated as empty
+history. Failed loads are not cached, and snapshot appends stop before replacing
+an unreadable log. The GUI logs history load and save failures, including the
+affected path, while keeping the chat interface available.
+
+If a history read fails, use the file path in the error to locate the affected
+file. Stop the affected agent, back up the file, and repair it or restore a known
+good copy before retrying. To intentionally start fresh, move the backed-up file
+out of the sessions directory and restart the affected agent. Snapshot logs live
+in the `snapshots/` subdirectory and can be recovered separately.
+
+Writes replace the destination only after serialization completes, and failed
+writes clean up their temporary files. Snapshot appends are serialized within
+one session manager; simultaneous updates from separate processes or managers
+are not merged. Use one active writer per session.
+
 ## GUI Startup
 
 Open **AI & Models -> Annolid Bot...** when you want to use the chat dock or

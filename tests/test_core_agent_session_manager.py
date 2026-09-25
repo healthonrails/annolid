@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from concurrent.futures import ThreadPoolExecutor
+
+import pytest
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
@@ -8,6 +12,7 @@ from annolid.core.agent.loop import AgentLoop
 from annolid.core.agent.session_manager import (
     AgentSessionManager,
     PersistentSessionStore,
+    SessionReadError,
 )
 from annolid.core.agent.tools.function_registry import FunctionToolRegistry
 
@@ -453,3 +458,129 @@ def test_agent_loop_records_turn_snapshot(tmp_path: Path) -> None:
     assert latest["model"] == "fake"
     assert latest["stopped_reason"] == "done"
     assert int(latest["tool_call_count"]) == 0
+
+
+@pytest.mark.parametrize("bad_record", ["{broken", "[]", "null", '"text"'])
+def test_corrupt_session_is_not_replaced_by_append(tmp_path, bad_record):
+    manager = AgentSessionManager(sessions_dir=tmp_path)
+    path = manager._session_path("damaged")
+    original = '{"role": "user", "content": "recover me"}\n' + bad_record + "\n"
+    path.write_text(original, encoding="utf-8")
+    store = PersistentSessionStore(manager)
+
+    for _ in range(2):
+        with pytest.raises(SessionReadError, match="line 2") as error:
+            store.append_history(
+                "damaged", [{"role": "user", "content": "new"}], max_messages=20
+            )
+        assert str(path) in str(error.value)
+        assert path.read_text(encoding="utf-8") == original
+    # Failed reads must not cache an empty session; repairing the file is enough.
+    path.write_text(original.splitlines()[0] + "\n", encoding="utf-8")
+    assert store.get_history("damaged")[0]["content"] == "recover me"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"",
+        b" \n",
+        b"\xff",
+        b'{"_type":"metadata","facts":[]}\n',
+        b'{"_type":"metadata","metadata":false}\n',
+        b'{"_type":"metadata","created_at":"invalid"}\n',
+    ],
+)
+def test_invalid_session_preserves_original_bytes(tmp_path, payload):
+    manager = AgentSessionManager(sessions_dir=tmp_path)
+    path = manager._session_path("invalid")
+    path.write_bytes(payload)
+    with pytest.raises(SessionReadError):
+        manager.get_or_create("invalid")
+    assert path.read_bytes() == payload
+
+
+def test_session_read_permission_error_is_not_a_new_session(tmp_path, monkeypatch):
+    manager = AgentSessionManager(sessions_dir=tmp_path)
+    path = manager._session_path("unreadable")
+    original_open = Path.open
+
+    def deny_open(self, *args, **kwargs):
+        if self == path:
+            raise PermissionError("access denied")
+        return original_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", deny_open)
+    with pytest.raises(SessionReadError, match="access denied"):
+        manager.get_or_create("unreadable")
+
+
+@pytest.mark.parametrize("bad_record", ["{broken", "[]", "null"])
+def test_corrupt_snapshots_are_preserved_on_read_and_append(tmp_path, bad_record):
+    manager = AgentSessionManager(sessions_dir=tmp_path)
+    path = manager.append_snapshot("s", {"turn": "original"})
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(bad_record + "\n")
+    original = path.read_bytes()
+    with pytest.raises(SessionReadError, match="line 2"):
+        manager.read_snapshots("s")
+    with pytest.raises(SessionReadError, match="line 2"):
+        manager.append_snapshot("s", {"turn": "new"})
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("artifact", ["session", "snapshot"])
+@pytest.mark.parametrize("failure", ["serialization", "replace"])
+def test_failed_write_preserves_file_and_cleans_temporary(
+    tmp_path, monkeypatch, artifact, failure
+):
+    manager = AgentSessionManager(sessions_dir=tmp_path)
+    session = manager.get_or_create("s")
+    session.add_message({"role": "user", "content": "original"})
+    manager.save(session)
+    snapshot_path = manager.append_snapshot("s", {"turn": "original"})
+    path = manager._session_path("s") if artifact == "session" else snapshot_path
+    original = path.read_bytes()
+    payload = {"content": object() if failure == "serialization" else "new"}
+    session.add_message(payload)
+    if failure == "replace":
+
+        def fail_replace(self, target):
+            raise OSError("replace failed")
+
+        monkeypatch.setattr(Path, "replace", fail_replace)
+    with pytest.raises(TypeError if failure == "serialization" else OSError):
+        if artifact == "session":
+            manager.save(session)
+        else:
+            manager.append_snapshot("s", payload)
+    assert path.read_bytes() == original
+    assert list(tmp_path.rglob("*.tmp")) == []
+
+
+def test_snapshot_appends_from_threads_preserve_each_turn(tmp_path):
+    manager = AgentSessionManager(sessions_dir=tmp_path)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(
+            pool.map(
+                lambda turn: manager.append_snapshot("s", {"turn": turn}), range(30)
+            )
+        )
+    rows = manager.read_snapshots("s", limit=50)
+    assert sorted(row["turn"] for row in rows) == list(range(30))
+    manager.append_snapshot("s", {"turn": 30}, max_entries=5)
+    rows = manager.read_snapshots("s", limit=50)
+    assert len(rows) == 5
+    assert rows[-1]["turn"] == 30
+
+
+def test_legacy_session_without_metadata_roundtrips(tmp_path):
+    manager = AgentSessionManager(sessions_dir=tmp_path)
+    path = manager._session_path("legacy")
+    message = {"role": "user", "content": "hello", "custom": {"preserved": True}}
+    path.write_text("\n" + json.dumps(message) + "\n", encoding="utf-8")
+    session = manager.get_or_create("legacy")
+    assert session.messages == [message]
+    manager.save(session)
+    loaded = AgentSessionManager(sessions_dir=tmp_path).get_or_create("legacy")
+    assert loaded.messages == [message]

@@ -18,6 +18,7 @@ from annolid.utils.logger import logger
 from ..tool_call_utils import sanitize_tool_call_requests, tool_names_from_schemas
 from .base import LLMProvider, raise_for_error_response
 from .call_runtime import sanitize_provider_error
+from .ollama_runtime import is_tool_support_error, stream_ollama_chat
 from .codex_cli_provider import CodexCLIProvider, resolve_codex_cli
 from .openai_codex_provider import OpenAICodexProvider, resolve_openai_codex
 from .openai_compat import OpenAICompatProvider, resolve_openai_compat
@@ -259,10 +260,12 @@ def run_ollama_streaming_chat(
             user_message["images"] = [image_path]
         messages.append(user_message)
 
-        stream = ollama_module.chat(
+        stream = stream_ollama_chat(
+            ollama_module,
+            settings=settings,
             model=model,
             messages=messages,
-            stream=True,
+            logger=logger,
         )
         full_response = ""
         for part in stream:
@@ -538,10 +541,12 @@ def recover_with_plain_ollama_reply(
                         "content": "Reply with plain text in one short paragraph.",
                     }
                 )
-            stream_iter = ollama_module.chat(
+            stream_iter = stream_ollama_chat(
+                ollama_module,
+                settings=settings,
                 model=model,
                 messages=msgs,
-                stream=True,
+                logger=logger,
             )
             chunks: List[str] = []
             for part in stream_iter:
@@ -651,6 +656,18 @@ def build_ollama_llm_callable(
         model_id: str,
         on_token: Optional[Callable[[str], None]] = None,
     ) -> Dict[str, Any]:
+        runtime_loop = asyncio.get_running_loop()
+
+        def _deliver_token(content: str) -> None:
+            if callable(on_token):
+                try:
+                    on_token(content)
+                except Exception as exc:
+                    logger.debug(
+                        "Background model token callback failed: %s",
+                        sanitize_provider_error(exc),
+                    )
+
         tool_timeout = max(5.0, float(tool_request_timeout_s))
         plain_timeout = max(5.0, float(plain_request_timeout_s))
         prepared = normalize_messages(messages)
@@ -682,11 +699,13 @@ def build_ollama_llm_callable(
                     os.environ["OLLAMA_HOST"] = host
                 else:
                     os.environ.pop("OLLAMA_HOST", None)
-                stream_iter = ollama_module.chat(
+                stream_iter = stream_ollama_chat(
+                    ollama_module,
+                    settings=settings,
                     model=model_id,
                     messages=prepared,
                     tools=tools_payload,
-                    stream=True,
+                    logger=logger,
                 )
                 chunks: List[str] = []
                 tool_calls_by_id: Dict[str, Dict[str, Any]] = {}
@@ -701,13 +720,9 @@ def build_ollama_llm_callable(
                         if isinstance(content, str) and content:
                             chunks.append(content)
                             if callable(on_token):
-                                try:
-                                    on_token(content)
-                                except Exception as exc:
-                                    logger.debug(
-                                        "Background model token callback failed: %s",
-                                        sanitize_provider_error(exc),
-                                    )
+                                runtime_loop.call_soon_threadsafe(
+                                    _deliver_token, content
+                                )
                         raw_tool_calls = msg.get("tool_calls")
                         if raw_tool_calls:
                             for call in sanitize_tool_call_requests(
@@ -734,8 +749,7 @@ def build_ollama_llm_callable(
                 tool_timeout if effective_tools is not None else plain_timeout,
             )
         except Exception as exc:
-            msg = str(exc)
-            if "400" in msg and effective_tools:
+            if is_tool_support_error(exc) and effective_tools:
                 logger.warning(
                     "annolid-bot ollama tool-call request rejected; retrying without tools model=%s error=%s",
                     model_id,

@@ -276,3 +276,40 @@ def test_format_replay_as_text_includes_media_summary() -> None:
     assert "inbound:user [image message]" in text
     assert "[image x2:" in text
     assert "[video x1:" in text
+
+
+def test_corrupt_chat_history_is_logged_and_preserved(tmp_path, caplog, monkeypatch):
+    from annolid.core.agent.session_manager import (
+        AgentSessionManager,
+        PersistentSessionStore,
+    )
+
+    manager = AgentSessionManager(sessions_dir=tmp_path)
+    store = PersistentSessionStore(manager)
+    # Other GUI tests configure parent loggers without root propagation.
+    monkeypatch.setattr(session_io.logger, "handlers", [caplog.handler])
+    monkeypatch.setattr(session_io.logger, "propagate", False)
+    key = "gui:test:corrupt"
+    path = manager._session_path(key)
+    original = b'{"role":"user","content":"recover me"}\n{broken\n'
+    path.write_bytes(original)
+    assert (
+        session_io.load_history_messages(
+            session_store=store, session_id=key, max_history_messages=20
+        )
+        == []
+    )
+    assert "Failed to load agent chat history" in caplog.text
+    assert str(path) in caplog.text
+    caplog.clear()
+    session_io.persist_turn(
+        user_text="new",
+        assistant_text="reply",
+        session_id=key,
+        session_store=store,
+        max_history_messages=20,
+        workspace_memory=None,
+    )
+    assert "Failed to persist agent chat history" in caplog.text
+    assert str(path) in caplog.text
+    assert path.read_bytes() == original

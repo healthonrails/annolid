@@ -139,7 +139,7 @@ def test_ollama_llm_callable_sanitizes_stream_tool_calls(monkeypatch) -> None:
     backend._OLLAMA_TOOL_SUPPORT_CACHE.clear()
 
     class DummyOllama:
-        def chat(self, *, model, messages, tools=None, stream=True):
+        def chat(self, *, model, messages, tools=None, stream=True, options=None):
             assert stream is True
             del model, messages, tools
             return iter(
@@ -203,7 +203,7 @@ def test_ollama_llm_callable_preserves_stream_tool_calls(monkeypatch) -> None:
     backend._OLLAMA_TOOL_SUPPORT_CACHE.clear()
 
     class DummyOllama:
-        def chat(self, *, model, messages, tools=None, stream=True):
+        def chat(self, *, model, messages, tools=None, stream=True, options=None):
             assert stream is True
             return iter(
                 [
@@ -246,7 +246,7 @@ def test_ollama_llm_callable_fast_retries_without_tools_on_empty(monkeypatch) ->
     calls = {"with_tools": 0, "without_tools": 0}
 
     class DummyOllama:
-        def chat(self, *, model, messages, tools=None, stream=True):
+        def chat(self, *, model, messages, tools=None, stream=True, options=None):
             assert stream is True
             if tools is None:
                 calls["without_tools"] += 1
@@ -275,7 +275,7 @@ def test_ollama_llm_callable_accepts_on_token_callback(monkeypatch) -> None:
     backend._OLLAMA_TOOL_SUPPORT_CACHE.clear()
 
     class DummyOllama:
-        def chat(self, *, model, messages, tools=None, stream=True):
+        def chat(self, *, model, messages, tools=None, stream=True, options=None):
             del model, messages, tools
             assert stream is True
             return iter(
@@ -2304,7 +2304,7 @@ def test_ollama_llm_callable_reprobes_tools_when_prompt_needs_tools(
     seen_tools_payloads = []
 
     class DummyOllama:
-        def chat(self, *, model, messages, tools=None, stream=True):
+        def chat(self, *, model, messages, tools=None, stream=True, options=None):
             del model, messages, stream
             seen_tools_payloads.append(tools)
             return iter(

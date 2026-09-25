@@ -2598,3 +2598,22 @@ def test_agent_loop_shadow_routing_mode_writes_shadow_log(
     _ = asyncio.run(loop.run("search web", session_id="s-shadow"))
     shadow_path = tmp_path / "eval" / "shadow_routing.ndjson"
     assert shadow_path.exists()
+
+
+def test_failed_llm_time_is_recorded_in_turn_snapshot(tmp_path, monkeypatch):
+    clock = {"now": 10.0}
+    monkeypatch.setattr(agent_loop_module.time, "perf_counter", lambda: clock["now"])
+    snapshots = []
+
+    async def fail(messages, tools, model, on_token=None):
+        clock["now"] += 0.25
+        raise RuntimeError("context overflow")
+
+    loop = AgentLoop(tools=FunctionToolRegistry(), llm_callable=fail, model="fake")
+    monkeypatch.setattr(
+        loop, "_record_turn_snapshot", lambda **kwargs: snapshots.append(kwargs)
+    )
+    with pytest.raises(RuntimeError, match="context overflow"):
+        asyncio.run(loop.run("hi", session_id="test-timing"))
+    assert snapshots[-1]["llm_total_ms"] == pytest.approx(250.0)
+    assert snapshots[-1]["bottleneck_name"] == "llm"

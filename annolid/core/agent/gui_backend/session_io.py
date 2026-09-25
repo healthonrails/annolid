@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import hashlib
 import re
 from dataclasses import dataclass
@@ -20,6 +21,9 @@ from .turn_state import (
     normalize_error_type,
     normalize_turn_status,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -246,6 +250,7 @@ def load_history_messages(
     try:
         history = session_store.get_history(session_id)
     except Exception:
+        logger.exception("Failed to load agent chat history for %s", session_id)
         return []
     cleaned: List[Dict[str, Any]] = []
     for msg in history:
@@ -336,7 +341,7 @@ def persist_turn(
                 max_messages=max_history_messages,
             )
         except Exception:
-            pass
+            logger.exception("Failed to persist agent chat history for %s", session_id)
     if session_store:
         _record_session_event(
             session_store=session_store,
