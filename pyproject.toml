@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "annolid"
-version = "1.6.9"
+version = "1.6.10"
 authors = [
     { name = "Chen Yang", email = "healthonrails@gmail.com" },
 ]
