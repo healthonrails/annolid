@@ -47,7 +47,9 @@ The tracker starts from saved LabelMe-compatible Annolid annotations:
 For multi-animal videos, avoid repeated plain point labels such as `nose` with
 no instance context. Annolid preserves `instance_label` and `display_label`
 metadata when those flags are present, and uses them to keep output labels
-reviewable. In scripted LabelMe JSON, set those flags explicitly for each point;
+reviewable. Same-named points with distinct instance metadata remain separate
+when saving predictions or rerunning tracking. In scripted LabelMe JSON, set
+those flags explicitly for each point;
 in the GUI, check the saved frame before a long run to confirm the point belongs
 to the intended animal. Points inside overlapping polygons, or outside every
 polygon, remain unassociated unless their instance metadata is explicit.
@@ -227,6 +229,10 @@ The recommended correction loop is:
 3. correct the point manually and save that frame;
 4. rerun tracking from the corrected frame;
 5. keep corrections as sparse reseed frames rather than relabeling every frame.
+
+At a correction frame, a saved manual polygon takes precedence over the previous
+tracked mask. When the correction contains only points, the previous mask is
+reused for that instance when available.
 
 ## Choosing Among Point And Mask Backends
 

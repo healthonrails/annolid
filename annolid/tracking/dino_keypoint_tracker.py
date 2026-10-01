@@ -3277,7 +3277,10 @@ class DinoKeypointVideoProcessor:
                 has_mask = instance.mask_bitmap is not None and bool(
                     np.any(instance.mask_bitmap)
                 )
-                if has_mask:
+                # Manual annotations hold polygons without a bitmap until
+                # _mask_lookup_from_registry rasterizes them. They take
+                # precedence over the previous frame's tracked mask.
+                if has_mask or instance.polygon:
                     continue
                 fallback = previous_masks.get(instance.label)
                 if fallback is None:

@@ -23,6 +23,28 @@ def test_merge_shapes_respects_group_id_and_shape_type():
     assert pts_by_gid[1] == [2, 2]
 
 
+def test_merge_shapes_matches_legacy_instance_metadata_without_mutating_inputs():
+    existing = [
+        {
+            "label": "nose",
+            "shape_type": "point",
+            "flags": {"instance_label": animal},
+            "points": [[x, 1]],
+        }
+        for animal, x in (("mouse1", 1), ("mouse2", 2))
+    ]
+    updated = {
+        "label": "nose",
+        "shape_type": "point",
+        "instance_label": "mouse1",
+        "points": [[3, 1]],
+    }
+    before = json.dumps(existing)
+    merged = merge_shapes([updated], existing)
+    assert merged == [updated, existing[1]]
+    assert json.dumps(existing) == before
+
+
 def test_dino_kpseg_annotation_parser_assigns_points_to_instance_masks(tmp_path: Path):
     payload = {
         "shapes": [

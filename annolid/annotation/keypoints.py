@@ -97,7 +97,7 @@ def load_existing_json(filename):
 def merge_shapes(new_shapes_list, existing_shapes_list):
     """
     Merges new shapes with existing shapes.
-    If a new shape has the same (label, group_id, shape_type, source) identity
+    If a new shape has the same (label, group_id, shape_type, source, instance) identity
     as an existing shape, the existing shape is replaced by the new one.
     Otherwise, the new shape is added.
 
@@ -126,12 +126,20 @@ def merge_shapes(new_shapes_list, existing_shapes_list):
 
     def _shape_identity(shape_data):
         if not isinstance(shape_data, dict):
-            return ("", None, "", "")
+            return ("", None, "", "", "")
+        # Same-named landmarks can belong to different animals even without
+        # group_id. Read both current metadata and legacy per-shape flags.
+        instance_label = shape_data.get("instance_label")
+        if not instance_label:
+            flags = shape_data.get("flags")
+            if isinstance(flags, dict):
+                instance_label = flags.get("instance_label")
         return (
             str(shape_data.get("label", "")),
             shape_data.get("group_id"),
             str(shape_data.get("shape_type", "")),
             _shape_source(shape_data),
+            str(instance_label).strip() if instance_label else "",
         )
 
     merged_shapes_dict = {

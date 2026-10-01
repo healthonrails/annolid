@@ -347,6 +347,38 @@ def test_annotation_adapter_explicit_instance_wins_over_polygon_inference(tmp_pa
     assert not registry.instances["mouse"].keypoints
 
 
+def test_annotation_adapter_preserves_same_named_points_across_animals(tmp_path):
+    adapter = AnnotationAdapter(image_height=20, image_width=20)
+    registry = InstanceRegistry()
+    for animal, x in (("mouse1", 2.0), ("mouse2", 12.0)):
+        registry.register_keypoint(
+            KeypointState(
+                key=combine_labels(animal, "nose"),
+                instance_label=animal,
+                label="nose",
+                storage_label_override="nose",
+                x=x,
+                y=5.0,
+            )
+        )
+    output_dir = tmp_path / "clip"
+    path = adapter.write_annotation(
+        frame_number=1, registry=registry, output_dir=output_dir
+    )
+    # Exercise both a new output and a rerun merged with the saved output.
+    for _ in range(2):
+        restored = adapter.read_annotation(path)
+        assert len(restored.keypoint_payload()) == 2
+        for animal, x in (("mouse1", 2.0), ("mouse2", 12.0)):
+            point = restored.get_keypoint(combine_labels(animal, "nose"))
+            assert point is not None
+            assert point.storage_label == "nose"
+            assert point.x == x
+        adapter.write_annotation(
+            frame_number=1, registry=registry, output_dir=output_dir
+        )
+
+
 def test_annotation_adapter_uses_latest_manual_frame(tmp_path):
     source_dir = tmp_path / "clip"
     source_dir.mkdir()
@@ -772,7 +804,10 @@ def test_cutie_mask_manager_reprime_discards_stale_inference_memory(
     assert len(manager._core.calls) == 1
 
 
-def test_video_processor_resets_on_manual_resume(tmp_path, monkeypatch):
+@pytest.mark.parametrize("corrected_polygon", [False, True])
+def test_video_processor_resets_on_manual_resume(
+    tmp_path, monkeypatch, corrected_polygon
+):
     class StubVideo:
         def __init__(self, _path):
             self.frames = [
@@ -897,6 +932,11 @@ def test_video_processor_resets_on_manual_resume(tmp_path, monkeypatch):
                 y=y,
             )
         )
+        if frame_number == 5 and corrected_polygon:
+            registry.ensure_instance("animal").set_mask(
+                bitmap=None,
+                polygon=[(2.0, 2.0), (3.0, 2.0), (3.0, 3.0), (2.0, 3.0)],
+            )
         json_path = adapter.write_annotation(
             frame_number=frame_number,
             registry=registry,
@@ -937,7 +977,12 @@ def test_video_processor_resets_on_manual_resume(tmp_path, monkeypatch):
     assert tracker.update_frames == [4, 6]
     assert len(tracker.start_masks) == 2
     assert tracker.start_masks[0] == {}
-    assert tracker.start_masks[1]["animal"].any()
+    if corrected_polygon:
+        expected_mask = np.zeros((4, 4), dtype=bool)
+        expected_mask[2:, 2:] = True
+    else:
+        expected_mask = np.ones((4, 4), dtype=bool)
+    np.testing.assert_array_equal(tracker.start_masks[1]["animal"], expected_mask)
 
 
 def test_video_processor_skips_finished_frames_between_seeded_frames(
