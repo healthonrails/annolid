@@ -413,6 +413,14 @@ class InferenceProcessor:
             return True
         return bool(save_pose_bbox)
 
+    @classmethod
+    def _should_save_yolo_bbox(cls, result, save_pose_bbox: Optional[bool]) -> bool:
+        has_keypoints = getattr(result, "keypoints", None) is not None
+        if has_keypoints:
+            return cls._should_save_pose_bbox(True, save_pose_bbox)
+        # Detection models have no mask or keypoint geometry to export.
+        return getattr(result, "masks", None) is None
+
     def run_inference(
         self,
         source: str,
@@ -603,12 +611,9 @@ class InferenceProcessor:
                     stopped = True
                     break
                 frame_shape = (result.orig_shape[0], result.orig_shape[1], 3)
-                has_keypoints = getattr(result, "keypoints", None) is not None
                 annotations = self.extract_yolo_results(
                     result,
-                    save_bbox=self._should_save_pose_bbox(
-                        has_keypoints, save_pose_bbox
-                    ),
+                    save_bbox=self._should_save_yolo_bbox(result, save_pose_bbox),
                 )
                 self.save_yolo_to_labelme(annotations, frame_shape, output_directory)
                 self.frame_count += 1
@@ -910,13 +915,10 @@ class InferenceProcessor:
                                 else:
                                     raise
                     if isinstance(results, (list, tuple)) and results:
-                        has_keypoints = (
-                            getattr(results[0], "keypoints", None) is not None
-                        )
                         annotations = self.extract_yolo_results(
                             results[0],
-                            save_bbox=self._should_save_pose_bbox(
-                                has_keypoints, save_pose_bbox
+                            save_bbox=self._should_save_yolo_bbox(
+                                results[0], save_pose_bbox
                             ),
                         )
                 except Exception as exc:

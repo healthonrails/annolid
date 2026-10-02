@@ -419,3 +419,26 @@ def test_prepare_data_config_upgrades_pose_yaml_from_split_local_annotations(
     finally:
         manager.cleanup()
         window.close()
+
+
+def test_prepare_data_config_rejects_non_mapping_yaml(tmp_path, monkeypatch):
+    _ensure_qapp()
+    messages = []
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "critical",
+        lambda parent, title, message: messages.append(message),
+    )
+    window = QtWidgets.QMainWindow()
+    manager = YOLOTrainingManager(window)
+    try:
+        for contents in ("- train\n- val\n", "not a mapping\n", "42\n", "[]\n", ""):
+            config = tmp_path / "data.yaml"
+            config.write_text(contents, encoding="utf-8")
+            assert manager.prepare_data_config(str(config)) is None
+            assert "YAML mapping" in messages[-1]
+        assert len(messages) == 5
+        assert manager._temp_configs == []
+    finally:
+        manager.cleanup()
+        window.close()

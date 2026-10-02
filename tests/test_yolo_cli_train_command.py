@@ -72,3 +72,22 @@ def test_build_yolo_val_command_formats_common_options():
     assert "save_json=True" in cmd
     assert "workers=0" in cmd
     assert "conf=0.25" in cmd
+
+
+def test_command_builders_preserve_numeric_gpu_zero():
+    train = build_yolo_train_command(
+        model="weights.pt",
+        data="data.yaml",
+        epochs=1,
+        imgsz=320,
+        device=0,
+        yolo_cmd=["yolo"],
+    )
+    val = build_yolo_val_command(
+        model="weights.pt",
+        data="data.yaml",
+        device=0,
+        yolo_cmd=["yolo"],
+    )
+    assert "device=0" in train
+    assert "device=0" in val

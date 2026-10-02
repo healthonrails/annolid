@@ -72,7 +72,9 @@ class YOLOTrainingManager(QtCore.QObject):
 
         try:
             with config_path.open("r", encoding="utf-8") as stream:
-                data_cfg: Dict[str, Any] = yaml.safe_load(stream) or {}
+                data_cfg: Dict[str, Any] = yaml.safe_load(stream)
+            if not isinstance(data_cfg, dict):
+                raise ValueError("Dataset configuration must be a YAML mapping.")
         except Exception as exc:
             logger.exception("Failed to load YOLO dataset config: %s", config_path)
             QtWidgets.QMessageBox.critical(
@@ -98,7 +100,9 @@ class YOLOTrainingManager(QtCore.QObject):
             config_path = prepared
             try:
                 with config_path.open("r", encoding="utf-8") as stream:
-                    data_cfg = yaml.safe_load(stream) or {}
+                    data_cfg = yaml.safe_load(stream)
+                if not isinstance(data_cfg, dict):
+                    raise ValueError("Dataset configuration must be a YAML mapping.")
             except Exception as exc:
                 logger.exception(
                     "Failed to load staged YOLO dataset config: %s", config_path

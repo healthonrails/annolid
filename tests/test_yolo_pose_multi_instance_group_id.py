@@ -149,3 +149,85 @@ def test_extract_yolo_results_uses_prompt_class_names_override() -> None:
         "resident",
         "intruder",
     }
+
+
+def test_detection_models_export_boxes_in_stream_and_frame_range(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    import cv2
+    import numpy as np
+
+    result = _FakeResult(
+        boxes=_FakeBoxes([[10, 12, 6, 8]], [0], ids=[42]),
+        keypoints=None,
+        names={0: "mouse"},
+    )
+    result.boxes.conf = torch.tensor([0.9])
+    result.orig_shape = (32, 32)
+
+    class Capture:
+        def isOpened(self):
+            return True
+
+        def get(self, prop):
+            return 2
+
+        def set(self, prop, value):
+            return True
+
+        def read(self):
+            return True, np.zeros((32, 32, 3), dtype=np.uint8)
+
+        def release(self):
+            self.released = True
+
+    capture = Capture()
+    monkeypatch.setattr(cv2, "VideoCapture", lambda source: capture)
+    source = tmp_path / "video.mp4"
+    source.touch()
+    for ranged in (False, True):
+        processor = _build_processor([])
+        processor.model_name = "yolo11n.pt"
+        processor._is_coreml = False
+        processor.persist_json = True
+        processor.model = SimpleNamespace(
+            predict=lambda source, **kwargs: iter([result])
+            if kwargs.get("stream")
+            else [result],
+        )
+        output = tmp_path / ("ranged" if ranged else "streamed")
+        message = processor.run_inference(
+            str(source),
+            output_directory=output,
+            enable_tracking=False,
+            skip_existing=False,
+            start_frame=1 if ranged else 0,
+            end_frame=1 if ranged else None,
+            save_pose_bbox=False,
+        )
+        assert message == "Done#1"
+        frame_index = 1 if ranged else 0
+        payload = json.loads(
+            processor._labelme_json_path(output, frame_index=frame_index).read_text()
+        )
+        assert len(payload["shapes"]) == 1
+        shape = payload["shapes"][0]
+        assert shape["shape_type"] == "rectangle"
+        assert shape["label"] == "mouse"
+        assert shape["points"] == [[7.0, 8.0], [13.0, 16.0]]
+        assert shape["group_id"] == 42
+        assert shape["instance_label"] == "mouse"
+        assert abs(shape["score"] - 0.9) < 1e-6
+    assert capture.released
+
+
+def test_bbox_export_policy_preserves_pose_and_segmentation():
+    from types import SimpleNamespace
+
+    pose = SimpleNamespace(keypoints=object(), masks=None)
+    segmentation = SimpleNamespace(keypoints=None, masks=object())
+    assert InferenceProcessor._should_save_yolo_bbox(pose, None)
+    assert InferenceProcessor._should_save_yolo_bbox(pose, True)
+    assert not InferenceProcessor._should_save_yolo_bbox(pose, False)
+    assert not InferenceProcessor._should_save_yolo_bbox(segmentation, None)

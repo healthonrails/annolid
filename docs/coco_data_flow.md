@@ -144,3 +144,24 @@ If COCO training fails, check these first:
 The shared COCO implementation lives in `annolid/datasets/coco.py`.
 
 For backward compatibility, `annolid/yolo/dataset_prep.py` remains as a thin re-export shim.
+
+### YOLO runtime safeguards
+
+The GUI requires dataset YAML to contain a mapping of keys such as `train`,
+`val`, and `names`. Empty files, lists, and scalar values are rejected with a
+Dataset Error before training starts; the source file is left unchanged.
+
+YOLO training and validation subprocesses monitor cancellation even when the
+model is not printing output. On cancellation or an output-handling failure,
+Annolid terminates and waits for the process, escalating to a forced shutdown
+if it does not exit within five seconds. On POSIX systems this signals the
+process group; on Windows forced shutdown targets the main process.
+Training logs retain a bounded tail for failure diagnostics. Numeric GPU index
+`0` is preserved when supplied through the shared command builders.
+
+When exporting YOLO inference to LabelMe, detection-only results are saved as
+rectangles with class labels, confidence scores, and instance IDs. This applies
+to both streamed inference and selected video frame ranges. Segmentation
+results retain polygon export; pose results retain keypoints and the existing
+optional bounding-box behavior. The pose bounding-box option does not suppress
+rectangles from detection-only models.

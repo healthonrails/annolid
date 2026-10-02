@@ -4,8 +4,11 @@ import os
 import shutil
 import signal
 import subprocess
+import threading
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
+from queue import Empty, Full, Queue
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 
@@ -65,7 +68,7 @@ def build_yolo_train_command(
     _append_kv(cmd, "imgsz", int(imgsz))
     _append_kv(cmd, "batch", int(batch) if batch is not None else None)
 
-    device_str = str(device or "").strip()
+    device_str = str(device).strip() if device is not None else ""
     _append_kv(cmd, "device", device_str if device_str else None)
     _append_kv(cmd, "project", project)
     _append_kv(cmd, "name", name)
@@ -103,7 +106,7 @@ def build_yolo_val_command(
     _append_kv(cmd, "imgsz", int(imgsz) if imgsz is not None else None)
     _append_kv(cmd, "batch", int(batch) if batch is not None else None)
 
-    device_str = str(device or "").strip()
+    device_str = str(device).strip() if device is not None else ""
     _append_kv(cmd, "device", device_str if device_str else None)
     _append_kv(cmd, "project", project)
     _append_kv(cmd, "name", name)
@@ -120,7 +123,8 @@ def build_yolo_val_command(
 
 
 def _terminate_process_tree(proc: subprocess.Popen[str]) -> None:
-    if proc.poll() is not None:
+    # A POSIX parent can exit while its children still hold the output pipe.
+    if os.name == "nt" and proc.poll() is not None:
         return
     try:
         if os.name == "nt":
@@ -152,12 +156,21 @@ def run_yolo_cli(
     tail_lines: int = 200,
 ) -> YOLOCLICompleted:
     """Run a YOLO CLI command, streaming stdout/stderr to a sink while retaining a tail for errors."""
+
+    def check_cancelled() -> None:
+        if stop_event is not None and stop_event.is_set():
+            raise RuntimeError("YOLO training cancelled.")
+
+    if tail_lines < 1:
+        raise ValueError("tail_lines must be positive")
+    check_cancelled()
     merged_env = os.environ.copy()
     if env:
         merged_env.update({str(k): str(v) for k, v in env.items()})
 
     # Prevent matplotlib backends from requiring a GUI environment in training.
     merged_env.setdefault("MPLBACKEND", "Agg")
+    merged_env.setdefault("PYTHONUNBUFFERED", "1")
 
     if output_sink is None:
 
@@ -174,6 +187,7 @@ def run_yolo_cli(
         text=True,
         bufsize=1,
         universal_newlines=True,
+        errors="replace",
         start_new_session=(os.name != "nt"),
         creationflags=(
             # type: ignore[attr-defined]
@@ -181,31 +195,80 @@ def run_yolo_cli(
         ),
     )
 
-    tail: List[str] = []
-    try:
-        assert proc.stdout is not None
-        for line in proc.stdout:
-            if (
-                stop_event is not None
-                and getattr(stop_event, "is_set", None)
-                and stop_event.is_set()
-            ):
-                _terminate_process_tree(proc)
-                raise RuntimeError("YOLO training cancelled.")
-            output_sink(line)
-            tail.append(line.rstrip("\n"))
-            if len(tail) > tail_lines:
-                tail = tail[-tail_lines:]
-    finally:
-        try:
-            proc.stdout and proc.stdout.close()
-        except Exception:
-            pass
+    # Reading a pipe can block indefinitely while a model is loading or stalled.
+    # Keep cancellation in this thread and perform blocking reads separately.
+    output: Queue[object] = Queue(maxsize=256)
+    reader_stop = threading.Event()
+    eof = object()
 
-    returncode = proc.wait()
-    return YOLOCLICompleted(
-        command=list(cmd_list), returncode=returncode, output_tail=tail
+    def enqueue(item: object) -> None:
+        while not reader_stop.is_set():
+            try:
+                output.put(item, timeout=0.1)
+                return
+            except Full:
+                continue
+
+    def read_output() -> None:
+        try:
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                if reader_stop.is_set():
+                    break
+                enqueue(line)
+        except Exception as exc:
+            enqueue(exc)
+        finally:
+            enqueue(eof)
+
+    reader = threading.Thread(
+        target=read_output, name="annolid-yolo-output", daemon=True
     )
+    tail = deque(maxlen=tail_lines)
+    completed = False
+    try:
+        reader.start()
+        reached_eof = False
+        while not reached_eof or proc.poll() is None:
+            check_cancelled()
+            try:
+                item = output.get(timeout=0.1)
+            except Empty:
+                continue
+            if item is eof:
+                reached_eof = True
+            elif isinstance(item, Exception):
+                raise item
+            else:
+                assert isinstance(item, str)
+                output_sink(item)
+                tail.append(item.rstrip("\n"))
+        check_cancelled()
+        completed = True
+        return YOLOCLICompleted(
+            command=cmd_list, returncode=proc.wait(), output_tail=list(tail)
+        )
+    finally:
+        reader_stop.set()
+        if not completed:
+            _terminate_process_tree(proc)
+        if proc.poll() is None:
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                if os.name != "nt":
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                else:
+                    proc.kill()
+                proc.wait(timeout=5)
+        if reader.ident is not None:
+            reader.join(timeout=1)
+        # An inherited pipe held by another process must not block cleanup.
+        if not reader.is_alive() and proc.stdout is not None:
+            proc.stdout.close()
 
 
 def ensure_parent_dir(path_str: str) -> str:
