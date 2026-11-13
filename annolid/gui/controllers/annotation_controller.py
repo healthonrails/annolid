@@ -12,6 +12,8 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from qtpy import QtCore
 
+from annolid.infrastructure import atomic_write_json
+
 from ..interfaces.services import IAnnotationService
 from ..services import AnnotationService
 
@@ -120,14 +122,13 @@ class AnnotationController(QtCore.QObject):
                 self.annotation_error.emit("No file path specified for saving")
                 return False
 
-            # Ensure parent directory exists
-            save_path.parent.mkdir(parents=True, exist_ok=True)
-
-            # Save annotation data
-            with open(save_path, "w", encoding="utf-8") as f:
-                import json
-
-                json.dump(annotation_data, f, indent=2, ensure_ascii=False)
+            # Save annotation data atomically
+            atomic_write_json(
+                save_path,
+                annotation_data,
+                indent=2,
+                ensure_ascii=False,
+            )
 
             self._current_annotation = annotation_data
             self._current_file_path = save_path

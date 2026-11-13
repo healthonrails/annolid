@@ -16,6 +16,7 @@ from annolid.utils.annotation_store import (
     AnnotationStoreError,
     load_labelme_json,
 )
+from annolid.utils.atomic_io import atomic_write_json
 from annolid.utils.logger import logger
 from annolid.utils.labelme_flags import (
     sanitize_labelme_flags_with_meta,
@@ -352,9 +353,13 @@ def save_labels(
         payload["imageData"] = record["imageData"]
     for key, value in (record.get("otherData") or {}).items():
         payload[key] = value
-    frame_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(frame_path, "w", encoding="utf-8") as fh:
-        json.dump(payload, fh, separators=(",", ":"))
+    atomic_write_json(
+        frame_path,
+        payload,
+        indent=None,
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
 
 
 def to_labelme(img_folder, anno_file, multiple_animals=True):

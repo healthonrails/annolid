@@ -6,6 +6,7 @@ from typing import Dict, Iterable, Optional, TYPE_CHECKING
 import yaml
 from qtpy import QtCore
 
+from annolid.infrastructure import atomic_write_text
 from annolid.utils.logger import logger
 
 if TYPE_CHECKING:
@@ -199,19 +200,29 @@ class FlagsController(QtCore.QObject):
             if name and name not in unique_names:
                 unique_names.append(name)
 
-        config = {}
+        config: Dict[str, object] = {}
         if self._config_path.exists():
             try:
                 with self._config_path.open("r", encoding="utf-8") as file:
-                    config = yaml.safe_load(file) or {}
+                    loaded = yaml.safe_load(file)
+                if loaded is not None and not isinstance(loaded, dict):
+                    logger.error(
+                        "Refusing to overwrite non-mapping flags config at %s",
+                        self._config_path,
+                    )
+                    return
+                config = loaded or {}
             except yaml.YAMLError as exc:
-                logger.error("Failed to read pinned flags config: %s", exc)
-                config = {}
+                logger.error(
+                    "Failed to read pinned flags config at %s; skipping write to preserve file: %s",
+                    self._config_path,
+                    exc,
+                )
+                return
 
         config["pinned_flags"] = unique_names
         try:
-            self._config_path.parent.mkdir(parents=True, exist_ok=True)
-            with self._config_path.open("w", encoding="utf-8") as file:
-                yaml.dump(config, file, default_flow_style=False)
+            serialized = yaml.dump(config, default_flow_style=False)
+            atomic_write_text(self._config_path, serialized)
         except Exception as exc:
             logger.error("Failed to persist pinned flags: %s", exc)

@@ -12,6 +12,8 @@ from typing import Any, Dict
 
 from qtpy import QtCore
 
+from annolid.infrastructure import atomic_write_json
+
 logger = logging.getLogger(__name__)
 
 
@@ -194,8 +196,13 @@ class SettingsManager:
             for key in self._qt_settings.allKeys():
                 settings_dict[key] = self._qt_settings.value(key)
 
-            with open(file_path, "w") as f:
-                json.dump(settings_dict, f, indent=2, default=str)
+            atomic_write_json(
+                file_path,
+                settings_dict,
+                indent=2,
+                ensure_ascii=False,
+                default=str,
+            )
 
             return True
         except Exception as e:

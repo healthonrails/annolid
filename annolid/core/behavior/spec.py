@@ -10,14 +10,36 @@ from annolid.behavior.project_schema import (
     ModifierDefinition,
     ProjectSchema,
     SubjectDefinition,
+    _dict_to_schema,
     default_schema,
     find_schema_near_video,
-    load_schema,
+    is_workspace_only_project_payload,
+    read_schema_payload,
     save_schema,
     validate_schema,
 )
 
 BehaviorSpec = ProjectSchema
+
+
+def _load_spec_from_resolved_path(
+    resolved: Path,
+    fallback: Optional[BehaviorSpec],
+) -> BehaviorSpec:
+    payload = read_schema_payload(resolved)
+    loaded = _dict_to_schema(payload)
+    if is_workspace_only_project_payload(payload):
+        seed = fallback if fallback is not None else default_behavior_spec()
+        return ProjectSchema(
+            behaviors=list(seed.behaviors),
+            categories=list(seed.categories),
+            modifiers=list(seed.modifiers),
+            subjects=list(seed.subjects),
+            pose_schema_path=loaded.pose_schema_path or seed.pose_schema_path,
+            pose_schema=loaded.pose_schema or seed.pose_schema,
+            version=loaded.version,
+        )
+    return loaded
 
 
 def load_behavior_spec(
@@ -36,12 +58,12 @@ def load_behavior_spec(
 
     if path is not None:
         resolved = Path(path)
-        return load_schema(resolved), resolved
+        return _load_spec_from_resolved_path(resolved, fallback), resolved
 
     if video_path is not None:
         discovered = find_schema_near_video(Path(video_path))
         if discovered is not None:
-            return load_schema(discovered), discovered
+            return _load_spec_from_resolved_path(discovered, fallback), discovered
 
     return fallback if fallback is not None else default_behavior_spec(), None
 

@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Set, Tuple, Union
 
+from annolid.utils.atomic_io import atomic_write_json
 from annolid.utils.logger import logger
 
 
@@ -971,8 +972,13 @@ class AnnotationStore:
             stub["caption"] = record["caption"]
         if record.get("flags"):
             stub["flags"] = record["flags"]
-        with frame_file.open("w", encoding="utf-8") as fh:
-            json.dump(stub, fh, separators=(",", ":"))
+        atomic_write_json(
+            frame_file,
+            stub,
+            indent=None,
+            ensure_ascii=True,
+            separators=(",", ":"),
+        )
 
 
 def _record_to_labelme_payload(record: Dict[str, Any]) -> Dict[str, Any]:

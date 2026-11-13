@@ -10,7 +10,9 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional
+
+from annolid.utils.atomic_io import atomic_write_text
 
 try:  # YAML is optional; fall back to JSON-only when unavailable.
     import yaml  # type: ignore
@@ -22,6 +24,20 @@ except Exception:  # pragma: no cover - optional dependency
 
 
 SchemaVersion = "1.0"
+_BEHAVIOR_CATALOG_KEYS = ("categories", "modifiers", "subjects", "behaviors")
+_WORKSPACE_ENVELOPE_KEYS = ("name", "directories", "settings", "classes", "models")
+
+
+def has_behavior_schema_fields(payload: Mapping[str, Any]) -> bool:
+    """Return True when ``payload`` explicitly defines any behavior-schema list."""
+    return any(key in payload for key in _BEHAVIOR_CATALOG_KEYS)
+
+
+def is_workspace_only_project_payload(payload: Mapping[str, Any]) -> bool:
+    """Return True when ``payload`` is a workspace config without behavior catalog keys."""
+    return not has_behavior_schema_fields(payload) and any(
+        key in payload for key in _WORKSPACE_ENVELOPE_KEYS
+    )
 
 
 @dataclass
@@ -127,6 +143,14 @@ def _dict_to_schema(payload: Dict[str, object]) -> ProjectSchema:
         items = payload.get(key, []) or []
         return [cls(**item) for item in items]
 
+    raw_version = payload.get("schema_version")
+    if raw_version is None:
+        raw_version = (
+            SchemaVersion
+            if is_workspace_only_project_payload(payload)
+            else payload.get("version", SchemaVersion)
+        )
+
     schema = ProjectSchema(
         categories=_load_list("categories", CategoryDefinition),
         modifiers=_load_list("modifiers", ModifierDefinition),
@@ -138,13 +162,13 @@ def _dict_to_schema(payload: Dict[str, object]) -> ProjectSchema:
         pose_schema=dict(payload.get("pose_schema"))
         if isinstance(payload.get("pose_schema"), dict)
         else None,
-        version=str(payload.get("version", SchemaVersion)),
+        version=str(raw_version),
     )
     return schema
 
 
-def load_schema(path: Path) -> ProjectSchema:
-    """Load a schema from JSON or YAML."""
+def read_schema_payload(path: Path) -> Dict[str, object]:
+    """Read raw schema mapping from JSON or YAML."""
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"Project schema not found: {path}")
@@ -156,18 +180,50 @@ def load_schema(path: Path) -> ProjectSchema:
         payload = json.loads(text)
     if not isinstance(payload, dict):
         raise ValueError(f"Invalid schema format in {path}")
+    return payload
+
+
+def load_schema(path: Path) -> ProjectSchema:
+    """Load a schema from JSON or YAML."""
+    payload = read_schema_payload(path)
     return _dict_to_schema(payload)
 
 
 def save_schema(schema: ProjectSchema, path: Path) -> None:
-    """Persist a schema to JSON or YAML based on file suffix."""
-    payload = _schema_to_dict(schema)
+    """Persist a schema to JSON or YAML without clobbering workspace metadata."""
+    schema_payload = _schema_to_dict(schema)
     path = Path(path)
+
+    existing: Dict[str, object] = {}
+    if path.exists():
+        existing = read_schema_payload(path)
+
+    payload: Dict[str, object] = dict(existing)
+    has_workspace_envelope = any(key in existing for key in _WORKSPACE_ENVELOPE_KEYS)
+    if has_workspace_envelope and "version" in existing:
+        payload["version"] = existing["version"]
+        payload["schema_version"] = schema.version
+    else:
+        payload["version"] = schema.version
+
+    for key in _BEHAVIOR_CATALOG_KEYS:
+        payload[key] = schema_payload[key]
+
+    if "pose_schema_path" in schema_payload:
+        payload["pose_schema_path"] = schema_payload["pose_schema_path"]
+    else:
+        payload.pop("pose_schema_path", None)
+
+    if "pose_schema" in schema_payload:
+        payload["pose_schema"] = schema_payload["pose_schema"]
+    else:
+        payload.pop("pose_schema", None)
+
     if path.suffix.lower() in {".yaml", ".yml"} and _HAS_YAML:
         text = yaml.safe_dump(payload, sort_keys=False)
     else:
         text = json.dumps(payload, indent=2, ensure_ascii=False)
-    path.write_text(text, encoding="utf-8")
+    atomic_write_text(path, text, encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------

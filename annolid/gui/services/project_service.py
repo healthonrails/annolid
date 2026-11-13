@@ -9,9 +9,21 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
+
+from annolid.infrastructure import atomic_write_json, atomic_write_text
 
 logger = logging.getLogger(__name__)
+
+_SCHEMA_ENVELOPE_KEYS = (
+    "categories",
+    "modifiers",
+    "subjects",
+    "behaviors",
+    "pose_schema_path",
+    "pose_schema",
+    "schema_version",
+)
 
 
 class ProjectService:
@@ -26,6 +38,7 @@ class ProjectService:
         """Initialize the project service."""
         self._current_project: Optional[Dict[str, Any]] = None
         self._project_config: Optional[Dict[str, Any]] = None
+        self._explicitly_updated_schema_keys: Set[str] = set()
 
     def create_project(
         self,
@@ -90,10 +103,21 @@ class ProjectService:
             if project_config:
                 self._deep_merge(default_config, project_config)
 
-            # Save project configuration
+            # Save project configuration while preserving any existing behavior schema keys
             config_path = project_dir / "project.annolid.json"
-            with open(config_path, "w", encoding="utf-8") as f:
-                json.dump(default_config, f, indent=2, ensure_ascii=False)
+            if config_path.exists():
+                with open(config_path, "r", encoding="utf-8") as f:
+                    existing_disk_config = json.load(f)
+                if isinstance(existing_disk_config, dict):
+                    for key, value in existing_disk_config.items():
+                        if key not in default_config:
+                            default_config[key] = value
+            atomic_write_json(
+                config_path,
+                default_config,
+                indent=2,
+                ensure_ascii=False,
+            )
 
             # Create .annolidignore file
             ignore_path = project_dir / ".annolidignore"
@@ -124,13 +148,14 @@ __pycache__/
 # Export directories (can be large)
 exports/
 """
-            with open(ignore_path, "w", encoding="utf-8") as f:
-                f.write(ignore_content)
+            atomic_write_text(ignore_path, ignore_content, encoding="utf-8")
 
             self._current_project = {
                 "path": str(project_dir),
                 "config": default_config,
             }
+            self._project_config = default_config
+            self._explicitly_updated_schema_keys.clear()
 
             return (
                 True,
@@ -175,6 +200,7 @@ exports/
                 "config": config,
             }
             self._project_config = config
+            self._explicitly_updated_schema_keys.clear()
 
             return True, f"Project loaded successfully: {config.get('name', 'Unknown')}"
 
@@ -241,8 +267,35 @@ exports/
             # Update modification timestamp
             config["modified"] = self._get_current_timestamp()
 
-            with open(config_path, "w", encoding="utf-8") as f:
-                json.dump(config, f, indent=2, ensure_ascii=False)
+            merged_config: Dict[str, Any] = {}
+            if config_path.exists():
+                with open(config_path, "r", encoding="utf-8") as f:
+                    disk_config = json.load(f)
+                if isinstance(disk_config, dict):
+                    merged_config.update(disk_config)
+                else:
+                    disk_config = {}
+            else:
+                disk_config = {}
+
+            merged_config.update(config)
+            for key in _SCHEMA_ENVELOPE_KEYS:
+                if key in self._explicitly_updated_schema_keys:
+                    continue
+                if key in disk_config:
+                    merged_config[key] = disk_config[key]
+                elif config_path.exists() and key not in disk_config:
+                    merged_config.pop(key, None)
+
+            atomic_write_json(
+                config_path,
+                merged_config,
+                indent=2,
+                ensure_ascii=False,
+            )
+            self._current_project["config"] = merged_config
+            self._project_config = merged_config
+            self._explicitly_updated_schema_keys.clear()
 
             return True, "Project configuration saved successfully"
 
@@ -362,6 +415,9 @@ exports/
 
         try:
             config = self._current_project["config"]
+            for key in _SCHEMA_ENVELOPE_KEYS:
+                if key in updates:
+                    self._explicitly_updated_schema_keys.add(key)
             self._deep_merge(config, updates)
 
             # Save updated configuration

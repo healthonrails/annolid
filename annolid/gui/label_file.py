@@ -1,7 +1,6 @@
 import base64
 import contextlib
 import io
-import json
 import os.path as osp
 
 import PIL.Image
@@ -13,8 +12,17 @@ from annolid.utils.logger import logger
 from annolid.utils.annotation_compat import utils
 
 from annolid.infrastructure import AnnotationStoreError, load_labelme_json
+from annolid.infrastructure.persistence import atomic_write_json
 
-PIL.Image.MAX_IMAGE_PIXELS = None
+
+@contextlib.contextmanager
+def _allow_large_pil_images():
+    previous_limit = PIL.Image.MAX_IMAGE_PIXELS
+    PIL.Image.MAX_IMAGE_PIXELS = None
+    try:
+        yield
+    finally:
+        PIL.Image.MAX_IMAGE_PIXELS = previous_limit
 
 
 @contextlib.contextmanager
@@ -49,13 +57,13 @@ class LabelFile(object):
     @staticmethod
     def load_image_file(filename):
         try:
-            image_pil = PIL.Image.open(filename)
+            with _allow_large_pil_images():
+                image_pil = PIL.Image.open(filename)
+                # apply orientation to image according to exif
+                image_pil = utils.apply_exif_orientation(image_pil)
         except IOError:
             logger.error("Failed opening image file: {}".format(filename))
             return
-
-        # apply orientation to image according to exif
-        image_pil = utils.apply_exif_orientation(image_pil)
 
         with io.BytesIO() as f:
             ext = osp.splitext(filename)[1].lower()
@@ -113,17 +121,25 @@ class LabelFile(object):
                     imageData = utils.img_data_to_png_data(imageData)
             elif data.get("imagePath") is not None and data["imagePath"] != "":
                 # relative path from label file to relative path from cwd
-                imagePath = osp.join(osp.dirname(filename), data["imagePath"])
-                if osp.exists(imagePath):
-                    imageData = self.load_image_file(imagePath)
+                resolved_image_path = osp.join(osp.dirname(filename), data["imagePath"])
+                imagePath = resolved_image_path
+                if osp.exists(resolved_image_path):
+                    imageData = self.load_image_file(resolved_image_path)
+                elif not self.is_video_frame:
+                    logger.warning(
+                        "Referenced image file not found for %s: %s",
+                        filename,
+                        resolved_image_path,
+                    )
             flags = data.get("flags") or {}
             if self.is_video_frame is None and data.get("imagePath") is not None:
                 imagePath = data["imagePath"]
-                self._check_image_height_and_width(
-                    base64.b64encode(imageData).decode("utf-8"),
-                    data.get("imageHeight"),
-                    data.get("imageWidth"),
-                )
+                if imageData is not None:
+                    self._check_image_height_and_width(
+                        base64.b64encode(imageData).decode("utf-8"),
+                        data.get("imageHeight"),
+                        data.get("imageWidth"),
+                    )
             shapes = [
                 dict(
                     label=s["label"],
@@ -179,8 +195,9 @@ class LabelFile(object):
             raw = base64.b64decode(
                 imageData.encode("utf-8") if isinstance(imageData, str) else imageData
             )
-            with PIL.Image.open(io.BytesIO(raw)) as image:
-                actual_width, actual_height = image.size
+            with _allow_large_pil_images():
+                with PIL.Image.open(io.BytesIO(raw)) as image:
+                    actual_width, actual_height = image.size
         except Exception:
             img_arr = utils.img_b64_to_arr(imageData)
             actual_height, actual_width = img_arr.shape[:2]
@@ -233,11 +250,15 @@ class LabelFile(object):
             if key not in data:
                 data[key] = value
         try:
-            with open(filename, "w") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            atomic_write_json(
+                filename,
+                data,
+                indent=2,
+                ensure_ascii=False,
+            )
             self.filename = filename
         except Exception as e:
-            raise LabelFileError(e)
+            raise LabelFileError(e) from e
 
     @staticmethod
     def is_label_file(filename):
