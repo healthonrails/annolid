@@ -21,6 +21,7 @@ from annolid.utils.annotation_store import (
     AnnotationStoreError,
     load_labelme_json,
 )
+from annolid.utils.logger import logger
 
 
 def read_json_file(file_path):
@@ -786,8 +787,12 @@ def convert_json_to_csv(
             video_path = _find_video_for_json_folder(Path(json_folder))
             if video_path is not None and video_path.exists():
                 annotate_csv(Path(tracked_csv_file), video_path)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "Failed to annotate video timestamps on '%s': %s",
+                tracked_csv_file,
+                exc,
+            )
 
     return str(csv_file)
 

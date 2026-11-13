@@ -45,8 +45,8 @@ def pred_dict_to_labelme(
             tracking_id = pred_row["tracking_id"]
         except KeyError:
             tracking_id = -1
-    except ValueError:
-        return
+    except (KeyError, TypeError, ValueError):
+        return label_list
 
     if decode_segmentation and (
         segmentation
@@ -56,16 +56,16 @@ def pred_dict_to_labelme(
     ):
         try:
             _mask = ast.literal_eval(segmentation)
-        except ValueError:
+        except (ValueError, SyntaxError):
             _mask = segmentation
         mask_area = mask_util.area(_mask)
         if mask_area >= keypoint_area_threshold:
             _mask = mask_util.decode(_mask)[:, :]
             polys, has_holes = mask_to_polygons(_mask)
-            try:
+            if polys:
                 polys = polys[0]
                 label_name = instance_name
-                if tracking_id and tracking_id >= 0:
+                if tracking_id is not None and tracking_id >= 0:
                     label_name += f"_{tracking_id}"
 
                 shape = Shape(
@@ -76,19 +76,17 @@ def pred_dict_to_labelme(
                 )
                 all_points = np.array(list(zip(polys[0::2], polys[1::2])))
                 for x, y in all_points:
-                    # do not add 0,0 to the list
-                    if x >= 1 and y >= 1:
+                    if x >= 0 and y >= 0:
                         shape.addPoint((x, y))
-                # To close the polygon
-                shape.points.append(shape.points[0])
-                label_list.append(shape)
-            except IndexError:
-                pass
+                if shape.points:
+                    # To close the polygon
+                    shape.points.append(shape.points[0])
+                    label_list.append(shape)
         else:
             shape = Shape(label=instance_name, shape_type="point", flags={})
             cx = round((x1 + x2) / 2, 2)
             cy = round((y1 + y2) / 2, 2)
-            if cx >= 1 and cy >= 1:
+            if cx >= 0 and cy >= 0:
                 shape.addPoint((cx, cy))
                 label_list.append(shape)
     if segmentation is None or segmentation == "None":
@@ -110,11 +108,11 @@ class TracksResults:
 
         self.tracking_csv = tracking_csv
         self.video_file = video_file
-        if Path(self.tracking_csv).exists:
+        if self.tracking_csv and Path(self.tracking_csv).exists():
             self.df = pd.read_csv(self.tracking_csv)
         else:
             self.df = None
-        if Path(self.video_file).exists:
+        if self.video_file and Path(self.video_file).exists():
             self.cap = cv2.VideoCapture(self.video_file)
         else:
             self.cap = None
@@ -282,7 +280,8 @@ class TracksResults:
         return instance_name
 
     def clean_up(self):
-        self.cap.release()
+        if self.cap is not None:
+            self.cap.release()
 
     def instance_center_distances(self, old_instances, cur_instances):
         """calculate the center distance between instances in the previous and current frames.
@@ -344,22 +343,33 @@ class TracksResults:
         Returns:
             pd.Dataframe: dataframe with filled instances
         """
+        import pandas as pd
+
         fill_rows = []
         missing_frames = list(
             self.get_missing_instance_frames(instance_name=instance_name)
         )
         for frame_number in sorted(missing_frames):
-            fp = self.find_future_show_position(instance_name, frame_number)
-            lp = self.find_last_show_position(instance_name, frame_number)
-            if (
+            fp = self.find_future_show_position(instance_name, frame_number).copy()
+            lp = self.find_last_show_position(instance_name, frame_number).copy()
+            if lp.empty and fp.empty:
+                continue
+            if lp.empty:
+                fp["frame_number"] = frame_number
+                fill_rows.append(fp)
+            elif fp.empty:
+                lp["frame_number"] = frame_number
+                fill_rows.append(lp)
+            elif (
                 frame_number - lp.frame_number.values[0]
                 > fp.frame_number.values[0] - frame_number
             ):
-                fp.frame_number = frame_number
+                fp["frame_number"] = frame_number
                 fill_rows.append(fp)
             else:
-                lp.frame_number = frame_number
+                lp["frame_number"] = frame_number
                 fill_rows.append(lp)
-        self.df = self.df.append(fill_rows, ignore_index=True)
+        if fill_rows:
+            self.df = pd.concat([self.df, *fill_rows], ignore_index=True)
         del fill_rows
         return self.df

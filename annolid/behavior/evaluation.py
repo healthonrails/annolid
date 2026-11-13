@@ -6,7 +6,11 @@ from sklearn.metrics import (
     precision_recall_fscore_support,
 )
 import matplotlib.pyplot as plt
-import seaborn as sns
+
+try:
+    import seaborn as sns
+except ImportError:  # Optional visualization styling dependency
+    sns = None
 
 
 def _load_data(predicted_segments_path, manual_labels_path):
@@ -107,19 +111,40 @@ def evaluate_behavior_predictions(
 
 def plot_confusion_matrix(y_true, y_pred):
     """Plots the confusion matrix."""
-    cm = confusion_matrix(y_true, y_pred, labels=np.unique(y_true))
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(
-        cm,
-        annot=True,
-        fmt="d",
-        cmap="Blues",
-        xticklabels=np.unique(y_true),
-        yticklabels=np.unique(y_true),
-    )
-    plt.xlabel("Predicted Label")
-    plt.ylabel("True Label")
-    plt.title("Confusion Matrix")
+    labels = np.unique(y_true)
+    cm = confusion_matrix(y_true, y_pred, labels=labels)
+    fig, ax = plt.subplots(figsize=(10, 8))
+    if sns is not None:
+        sns.heatmap(
+            cm,
+            annot=True,
+            fmt="d",
+            cmap="Blues",
+            xticklabels=labels,
+            yticklabels=labels,
+            ax=ax,
+        )
+    else:
+        im = ax.imshow(cm, interpolation="nearest", cmap="Blues")
+        fig.colorbar(im, ax=ax)
+        ax.set_xticks(np.arange(len(labels)))
+        ax.set_yticks(np.arange(len(labels)))
+        ax.set_xticklabels(labels)
+        ax.set_yticklabels(labels)
+        thresh = cm.max() / 2.0 if cm.size else 0.0
+        for i in range(cm.shape[0]):
+            for j in range(cm.shape[1]):
+                ax.text(
+                    j,
+                    i,
+                    format(int(cm[i, j]), "d"),
+                    ha="center",
+                    va="center",
+                    color="white" if cm[i, j] > thresh else "black",
+                )
+    ax.set_xlabel("Predicted Label")
+    ax.set_ylabel("True Label")
+    ax.set_title("Confusion Matrix")
     plt.show()
 
 

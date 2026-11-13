@@ -39,7 +39,7 @@ def create_dataset(
     class_id=None,
     is_segmentation=None,
 ):
-    """Convert COCO format dataset to YOLOV format
+    r"""Convert COCO format dataset to YOLOV format
 
     Args:
         json_file (str, optional): file path for annotation.json. Defaults to 'annotation.json'.

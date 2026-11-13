@@ -12,13 +12,17 @@ from collections import deque
 from collections import OrderedDict
 from pathlib import Path
 from threading import Lock
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
-import zmq
 from qtpy import QtCore, QtGui
 from qtpy.QtCore import QThread, Signal, QObject
+
+try:
+    import zmq
+except ImportError:  # Optional dependency (annolid[realtime])
+    zmq = None  # type: ignore[assignment]
 
 from annolid.data.videos import extract_frames_from_videos
 from annolid.gui.label_file import LabelFile
@@ -1143,8 +1147,8 @@ class RealtimeSubscriberWorker(QtCore.QThread):
         super().__init__(parent)
         self.address = address
         self._running = False
-        self._context: Optional[zmq.Context] = None
-        self._socket: Optional[zmq.Socket] = None
+        self._context: Optional[Any] = None
+        self._socket: Optional[Any] = None
         self._detections: Dict[Tuple[str, Optional[float]], List[dict]] = {}
 
     def _make_key(self, frame_index, capture_timestamp):
@@ -1175,7 +1179,8 @@ class RealtimeSubscriberWorker(QtCore.QThread):
     def _close(self):
         if self._socket is not None:
             try:
-                self._socket.setsockopt(zmq.LINGER, 0)
+                if zmq is not None:
+                    self._socket.setsockopt(zmq.LINGER, 0)
                 self._socket.close(0)
             except Exception:
                 pass
@@ -1193,6 +1198,15 @@ class RealtimeSubscriberWorker(QtCore.QThread):
         self._running = False
 
     def run(self):
+        if zmq is None:
+            msg = (
+                "Realtime subscriber requires optional dependency 'pyzmq'. "
+                'Install with: pip install "annolid[realtime]"'
+            )
+            logger.error(msg)
+            self.error.emit(msg)
+            return
+
         self._running = True
         self._detections = {}
 

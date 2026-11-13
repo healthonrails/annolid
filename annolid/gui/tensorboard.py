@@ -1,13 +1,15 @@
 """TensorBoard launch utilities used by the Annolid GUI."""
 
+import json
 import os
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Optional, Tuple
 
-import requests
 from qtpy import QtCore, QtWidgets, QtGui
 
 from annolid.utils.runs import shared_runs_root
@@ -33,7 +35,11 @@ def _tensorboard_env() -> dict:
 
 def _can_connect(url: str, *, timeout: float = 0.5) -> bool:
     try:
-        requests.get(url, timeout=timeout)
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=timeout):
+            return True
+    except urllib.error.HTTPError:
+        # An HTTP status response still proves the server socket is reachable.
         return True
     except Exception:
         return False
@@ -44,14 +50,19 @@ def _plugin_enabled(
 ) -> Optional[bool]:
     base = url.rstrip("/")
     try:
-        resp = requests.get(f"{base}/data/plugins_listing", timeout=timeout)
+        req = urllib.request.Request(f"{base}/data/plugins_listing", method="GET")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            status = getattr(resp, "status", 200)
+            if not (200 <= int(status) < 300):
+                return None
+            raw = resp.read().decode("utf-8", errors="replace")
     except Exception:
-        return None
-    if not resp.ok:
         return None
     try:
-        payload = resp.json()
+        payload = json.loads(raw)
     except Exception:
+        return None
+    if not isinstance(payload, dict):
         return None
     info = payload.get(str(plugin_name))
     if isinstance(info, dict):

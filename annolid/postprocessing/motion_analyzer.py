@@ -1,9 +1,14 @@
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-import os
 import argparse
+import os
+
+import matplotlib.pyplot as plt
+import pandas as pd
 from matplotlib.ticker import ScalarFormatter
+
+try:
+    import seaborn as sns
+except ImportError:  # Optional visualization styling dependency
+    sns = None
 
 
 def analyze_motion_index(csv_path: str, output_dir: str = "."):
@@ -133,7 +138,8 @@ def analyze_motion_index(csv_path: str, output_dir: str = "."):
 
     # --- 4. Generate High-Quality Visualizations ---
     print("\n📊 Generating the scientific dashboard...")
-    sns.set_theme(style="whitegrid", context="talk")
+    if sns is not None:
+        sns.set_theme(style="whitegrid", context="talk")
     fig = plt.figure(figsize=(20, 14))
     gs = fig.add_gridspec(2, 1, height_ratios=(3, 1))
 
@@ -145,25 +151,40 @@ def analyze_motion_index(csv_path: str, output_dir: str = "."):
 
     # === Panel 1: The Ethogram ===
     ax1 = fig.add_subplot(gs[0, 0])
+    state_order = ["Resting", "Moderate Activity", "High Activity"]
     state_palette = {
         "Resting": "#2ca02c",
         "Moderate Activity": "#ff7f0e",
         "High Activity": "#d62728",
     }
 
-    sns.scatterplot(
-        ax=ax1,
-        data=df_filtered,
-        x="frame_number",
-        y="plot_motion_index",
-        hue="behavioral_state",
-        palette=state_palette,
-        s=12,
-        alpha=0.8,
-        linewidth=0,
-        hue_order=["Resting", "Moderate Activity", "High Activity"],
-        legend="full",
-    )
+    if sns is not None:
+        sns.scatterplot(
+            ax=ax1,
+            data=df_filtered,
+            x="frame_number",
+            y="plot_motion_index",
+            hue="behavioral_state",
+            palette=state_palette,
+            s=12,
+            alpha=0.8,
+            linewidth=0,
+            hue_order=state_order,
+            legend="full",
+        )
+    else:
+        ax1.grid(True, alpha=0.3)
+        for state_name in state_order:
+            subset = df_filtered[df_filtered["behavioral_state"] == state_name]
+            if not subset.empty:
+                ax1.scatter(
+                    subset["frame_number"],
+                    subset["plot_motion_index"],
+                    c=state_palette[state_name],
+                    s=12,
+                    alpha=0.8,
+                    label=state_name,
+                )
 
     ax1.set_yscale("log")
     ax1.set_ylabel("Motion Index (Log Scale)")
@@ -191,20 +212,31 @@ def analyze_motion_index(csv_path: str, output_dir: str = "."):
 
     # === Panel 2: The Behavioral Budget ===
     ax2 = fig.add_subplot(gs[1, 0])
-    sns.barplot(
-        ax=ax2,
-        x=state_distribution.index,
-        y=state_distribution.values,
-        palette=state_palette,
-        order=["Resting", "Moderate Activity", "High Activity"],
-    )
+    ordered_values = [float(state_distribution.get(s, 0.0)) for s in state_order]
+    if sns is not None:
+        sns.barplot(
+            ax=ax2,
+            x=state_order,
+            y=ordered_values,
+            hue=state_order,
+            palette=state_palette,
+            order=state_order,
+            legend=False,
+        )
+    else:
+        ax2.grid(True, axis="y", alpha=0.3)
+        ax2.bar(
+            state_order,
+            ordered_values,
+            color=[state_palette[s] for s in state_order],
+        )
 
     ax2.set_ylabel("% of Total Time")
     ax2.set_xlabel("Behavioral State")
     ax2.set_title("Behavioral Budget", fontsize=18, pad=15)
     ax2.set_ylim(0, 100)
 
-    for index, value in enumerate(state_distribution):
+    for index, value in enumerate(ordered_values):
         ax2.text(
             index,
             value + 2,

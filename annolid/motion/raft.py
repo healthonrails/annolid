@@ -9,9 +9,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from update import BasicUpdateBlock, SmallUpdateBlock
-from extractor import BasicEncoder, SmallEncoder
-from corr import CorrBlock, AlternateCorrBlock
+try:
+    from .corr import AlternateCorrBlock, CorrBlock
+    from .extractor import BasicEncoder, SmallEncoder
+    from .update import BasicUpdateBlock, SmallUpdateBlock
+except ImportError:
+    from corr import AlternateCorrBlock, CorrBlock
+    from extractor import BasicEncoder, SmallEncoder
+    from update import BasicUpdateBlock, SmallUpdateBlock
 from annolid.motion.utils import coords_grid, upflow8
 
 try:
