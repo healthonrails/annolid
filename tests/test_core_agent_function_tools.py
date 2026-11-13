@@ -65,6 +65,7 @@ from annolid.core.agent.tools.function_builtin import (
     WriteFileTool,
     register_nanobot_style_tools,
 )
+from annolid.core.agent.tools import pdf as pdf_tools
 from annolid.core.agent.tools import web as web_tools
 from annolid.core.agent.tools.function_video import (
     VideoInfoTool,
@@ -3433,6 +3434,7 @@ def test_web_fetch_tool_cleans_url_marks_untrusted_and_blocks_private_redirect(
     monkeypatch.setattr(
         web_tools, "_validate_public_web_url", _fake_validate_public_web_url
     )
+    monkeypatch.setattr(web_tools, "public_httpx_client_kwargs", lambda: {})
 
     class _FakeResponse:
         status_code = 200
@@ -3507,6 +3509,7 @@ def test_web_fetch_tool_enforces_stream_byte_limit(monkeypatch) -> None:
         "_validate_public_web_url",
         lambda _url: (True, ""),
     )
+    monkeypatch.setattr(web_tools, "public_httpx_client_kwargs", lambda: {})
 
     class _Response:
         status_code = 200
@@ -3566,6 +3569,7 @@ def test_web_fetch_tool_rejects_binary_content_without_reading_body(
         "_validate_public_web_url",
         lambda _url: (True, ""),
     )
+    monkeypatch.setattr(web_tools, "public_httpx_client_kwargs", lambda: {})
 
     class _Response:
         status_code = 200
@@ -4452,6 +4456,8 @@ def allow_public_download_test_urls(monkeypatch: pytest.MonkeyPatch) -> None:
         "_validate_public_web_url",
         lambda _url: (True, ""),
     )
+    monkeypatch.setattr(web_tools, "public_httpx_client_kwargs", lambda: {})
+    monkeypatch.setattr(pdf_tools, "public_httpx_client_kwargs", lambda: {})
 
 
 def test_download_url_tool_saves_file_and_blocks_outside_dir(

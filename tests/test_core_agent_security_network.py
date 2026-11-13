@@ -166,7 +166,7 @@ def test_pin_public_url_dns_prevents_second_resolution_rebind(monkeypatch) -> No
 def test_pinned_public_transport_connects_with_validated_address(
     monkeypatch,
 ) -> None:
-    import httpx
+    httpx = pytest.importorskip("httpx")
 
     calls = 0
 
@@ -212,6 +212,7 @@ def test_pinned_public_transport_connects_with_validated_address(
 
 
 def test_public_httpx_client_kwargs_disable_environment_proxies() -> None:
+    pytest.importorskip("httpx")
     kwargs = public_httpx_client_kwargs()
 
     assert kwargs["trust_env"] is False
@@ -221,7 +222,7 @@ def test_public_httpx_client_kwargs_disable_environment_proxies() -> None:
 
 
 def test_httpx_request_hook_runs_before_following_redirect(monkeypatch) -> None:
-    import httpx
+    httpx = pytest.importorskip("httpx")
 
     monkeypatch.setattr(
         "annolid.core.agent.security_network.socket.getaddrinfo",
