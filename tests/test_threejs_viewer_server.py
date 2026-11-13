@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-import os
+import contextlib
+import gc
 import json
+import os
 from pathlib import Path
 from urllib.request import urlopen
 
@@ -22,6 +24,11 @@ except Exception:  # pragma: no cover - depends on environment packaging
     QtWebEngineWidgets = None  # type: ignore
 
 from annolid.gui.widgets import threejs_viewer_server as srv  # noqa: E402
+from annolid.gui.widgets.webengine_lifecycle import (  # noqa: E402
+    release_webengine_view,
+)
+
+_QAPP = None
 
 
 def test_prune_threejs_http_tokens_removes_expired_and_limits_size() -> None:
@@ -150,8 +157,11 @@ def test_update_swarm_node_preserves_turn_latency() -> None:
 
 @pytest.mark.skipif(QtWebEngineWidgets is None, reason="QtWebEngine is unavailable")
 def test_swarm_visualizer_smoke_loads_latency_dom() -> None:
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    _ = app
+    global _QAPP
+    app = QtWidgets.QApplication.instance()
+    if app is None:
+        _QAPP = QtWidgets.QApplication([])
+        app = _QAPP
 
     srv.clear_swarm_state()
     srv.update_swarm_node(
@@ -166,7 +176,17 @@ def test_swarm_visualizer_smoke_loads_latency_dom() -> None:
         visualizer_html = response.read().decode("utf-8")
     assert 'id="detail-latency"' in visualizer_html
 
-    page = QtWebEngineWidgets.QWebEnginePage()
+    profile = QtWebEngineWidgets.QWebEngineProfile()
+    cookie_policy = getattr(
+        QtWebEngineWidgets.QWebEngineProfile, "NoPersistentCookies", None
+    )
+    if cookie_policy is not None:
+        profile.setPersistentCookiesPolicy(cookie_policy)
+    cache_kind = getattr(QtWebEngineWidgets.QWebEngineProfile, "MemoryHttpCache", None)
+    if cache_kind is not None:
+        profile.setHttpCacheType(cache_kind)
+
+    page = QtWebEngineWidgets.QWebEnginePage(profile)
     load_loop = QtCore.QEventLoop()
     load_result: dict[str, bool] = {}
 
@@ -174,25 +194,36 @@ def test_swarm_visualizer_smoke_loads_latency_dom() -> None:
         load_result["ok"] = ok
         load_loop.quit()
 
-    page.loadFinished.connect(_on_load_finished)
-    page.setHtml(
-        '<div id="detail-latency">-</div>', QtCore.QUrl(f"{base_url}/threejs/")
-    )
-    QtCore.QTimer.singleShot(20000, load_loop.quit)
-    load_loop.exec()
-    page.loadFinished.disconnect(_on_load_finished)
+    load_connected = False
+    try:
+        page.loadFinished.connect(_on_load_finished)
+        load_connected = True
+        page.setHtml(
+            '<div id="detail-latency">-</div>', QtCore.QUrl(f"{base_url}/threejs/")
+        )
+        load_timer = QtCore.QTimer()
+        load_timer.setSingleShot(True)
+        load_timer.timeout.connect(load_loop.quit)
+        load_timer.start(20000)
+        try:
+            load_loop.exec()
+        finally:
+            load_timer.stop()
+            load_timer.deleteLater()
+        page.loadFinished.disconnect(_on_load_finished)
+        load_connected = False
 
-    assert load_result.get("ok") is True
+        assert load_result.get("ok") is True
 
-    js_loop = QtCore.QEventLoop()
-    js_result: dict[str, str] = {}
+        js_loop = QtCore.QEventLoop()
+        js_result: dict[str, str] = {}
 
-    def _on_js(value: object) -> None:
-        js_result["value"] = str(value or "")
-        js_loop.quit()
+        def _on_js(value: object) -> None:
+            js_result["value"] = str(value or "")
+            js_loop.quit()
 
-    page.runJavaScript(
-        """
+        page.runJavaScript(
+            """
 (() => {
   const detail = document.getElementById('detail-latency');
   const xhr = new XMLHttpRequest();
@@ -205,15 +236,33 @@ def test_swarm_visualizer_smoke_loads_latency_dom() -> None:
     payload: xhr.responseText
   });
 })()
-        """.strip(),
-        _on_js,
-    )
-    QtCore.QTimer.singleShot(10000, js_loop.quit)
-    js_loop.exec()
+            """.strip(),
+            _on_js,
+        )
+        js_timer = QtCore.QTimer()
+        js_timer.setSingleShot(True)
+        js_timer.timeout.connect(js_loop.quit)
+        js_timer.start(10000)
+        try:
+            js_loop.exec()
+        finally:
+            js_timer.stop()
+            js_timer.deleteLater()
 
-    payload = json.loads(js_result.get("value", "{}"))
-    assert payload["detailExists"] is True
-    assert payload["detailText"] == "-"
-    assert payload["statusText"] == 200
-    inner = json.loads(payload["payload"])
-    assert inner["planner"]["turn_latency_ms"] == 123.4
+        payload = json.loads(js_result.get("value", "{}"))
+        assert payload["detailExists"] is True
+        assert payload["detailText"] == "-"
+        assert payload["statusText"] == 200
+        inner = json.loads(payload["payload"])
+        assert inner["planner"]["turn_latency_ms"] == 123.4
+    finally:
+        if load_connected:
+            with contextlib.suppress(Exception):
+                page.loadFinished.disconnect(_on_load_finished)
+        release_webengine_view(None, profile, page=page)
+        del page
+        del profile
+        for _ in range(3):
+            app.sendPostedEvents(None, QtCore.QEvent.Type.DeferredDelete)
+            app.processEvents()
+        gc.collect()

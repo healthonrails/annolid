@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import logging
 import time
 from qtpy import QtCore
@@ -86,6 +87,20 @@ class LifecycleMixin:
         if not self._ensure_cleanup_once():
             return
 
+        atexit_cb = getattr(self, "_atexit_cleanup_callback", None)
+        if callable(atexit_cb):
+            try:
+                atexit.unregister(atexit_cb)
+            except Exception:
+                pass
+        find_children = getattr(self, "findChildren", None)
+        if callable(find_children):
+            try:
+                for timer in find_children(QtCore.QTimer):
+                    timer.stop()
+            except RuntimeError:
+                pass
+
         def quit_and_wait(thread, message):
             if thread is not None:
                 try:
@@ -146,3 +161,30 @@ class LifecycleMixin:
             stop_tensorboard()
         except (ImportError, AttributeError, RuntimeError, TypeError) as exc:
             logger.debug("Failed stopping tensorboard during cleanup: %s", exc)
+        for manager_attr, viewer_attr in (
+            ("pdf_manager", "pdf_viewer"),
+            ("web_manager", "web_viewer"),
+            ("threejs_manager", "threejs_viewer"),
+        ):
+            manager = getattr(self, manager_attr, None)
+            viewer = (
+                getattr(manager, viewer_attr, None) if manager is not None else None
+            )
+            if viewer is not None:
+                try:
+                    viewer.close()
+                except (AttributeError, RuntimeError, TypeError) as exc:
+                    logger.debug(
+                        "Failed closing %s.%s during cleanup: %s",
+                        manager_attr,
+                        viewer_attr,
+                        exc,
+                    )
+        screenshot_widget = getattr(self, "canvas_screenshot_widget", None)
+        if screenshot_widget is not None:
+            try:
+                if screenshot_widget.parent() is None:
+                    screenshot_widget.close()
+                    screenshot_widget.deleteLater()
+            except RuntimeError:
+                pass

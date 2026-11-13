@@ -4663,6 +4663,17 @@ class AIChatWidget(QtWidgets.QWidget):
                 "Behavior labeling is stopping. Close again after it finishes."
             )
             return
+        for timer_attr in (
+            "_typing_timer",
+            "_chat_inbound_bus_timer",
+            "_chat_bus_timer",
+        ):
+            timer = getattr(self, timer_attr, None)
+            if timer is not None:
+                try:
+                    timer.stop()
+                except RuntimeError:
+                    pass
         super().closeEvent(event)
 
     def _behavior_label_timestamp_provider(self, host: object):

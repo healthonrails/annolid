@@ -286,7 +286,9 @@ class PlaybackDrawMixin:
         def _safe_disconnect(action: QtWidgets.QAction) -> None:
             with warnings.catch_warnings():
                 warnings.filterwarnings(
-                    "ignore", category=RuntimeWarning, message="Failed to disconnect.*"
+                    "ignore",
+                    category=RuntimeWarning,
+                    message=r".*Failed to disconnect.*",
                 )
                 for sig in ("triggered", "toggled"):
                     try:

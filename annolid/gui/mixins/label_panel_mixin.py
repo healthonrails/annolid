@@ -385,7 +385,9 @@ class LabelPanelMixin:
 
         with warnings.catch_warnings():
             warnings.filterwarnings(
-                "ignore", category=RuntimeWarning, message="Failed to disconnect.*"
+                "ignore",
+                category=RuntimeWarning,
+                message=r".*Failed to disconnect.*",
             )
             try:
                 self.labelList.itemSelectionChanged.disconnect()
@@ -395,7 +397,9 @@ class LabelPanelMixin:
 
         with warnings.catch_warnings():
             warnings.filterwarnings(
-                "ignore", category=RuntimeWarning, message="Failed to disconnect.*"
+                "ignore",
+                category=RuntimeWarning,
+                message=r".*Failed to disconnect.*",
             )
             try:
                 self.labelList.itemDoubleClicked.disconnect()
@@ -507,7 +511,9 @@ class LabelPanelMixin:
 
         with warnings.catch_warnings():
             warnings.filterwarnings(
-                "ignore", category=RuntimeWarning, message="Failed to disconnect.*"
+                "ignore",
+                category=RuntimeWarning,
+                message=r".*Failed to disconnect.*",
             )
             try:
                 self.labelList.shapeVisibilityChanged.disconnect()

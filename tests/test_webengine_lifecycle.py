@@ -23,6 +23,9 @@ class _DummyPage:
     def setWebChannel(self, channel) -> None:  # noqa: N802
         self.events.append(f"setWebChannel:{channel}")
 
+    def setUrl(self, url) -> None:  # noqa: N802
+        self.events.append(f"page.setUrl:{url.toString()}")
+
     def deleteLater(self) -> None:
         self.events.append("page.deleteLater")
         self.destroyed.emit()
@@ -91,3 +94,18 @@ def test_release_webengine_view_deletes_profile_immediately_without_page() -> No
     release_webengine_view(None, profile)
 
     assert events == ["profile.deleteLater"]
+
+
+def test_release_webengine_view_supports_standalone_page() -> None:
+    events: list[str] = []
+    page = _DummyPage(events)
+    profile = _DummyProfile(events)
+
+    release_webengine_view(None, profile, page=page)
+
+    assert events == [
+        "page.setUrl:about:blank",
+        "profile.setParent:None",
+        "page.deleteLater",
+        "profile.deleteLater",
+    ]

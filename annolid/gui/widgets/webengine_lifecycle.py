@@ -10,6 +10,7 @@ def release_webengine_view(
     view,
     profile,
     *,
+    page=None,
     blank_url: str = "about:blank",
     before_page_delete: Optional[Callable[[object], None]] = None,
 ) -> None:
@@ -19,14 +20,17 @@ def release_webengine_view(
     QWebEnginePage using it. Deleting the profile in the same close event as the
     page can trigger Qt warnings because `deleteLater()` is deferred.
     """
-    page = None
     if view is not None:
         with contextlib.suppress(Exception):
             view.stop()
         with contextlib.suppress(Exception):
             view.setUrl(QtCore.QUrl(blank_url))
+        if page is None:
+            with contextlib.suppress(Exception):
+                page = view.page()
+    elif page is not None:
         with contextlib.suppress(Exception):
-            page = view.page()
+            page.setUrl(QtCore.QUrl(blank_url))
 
     if page is not None and before_page_delete is not None:
         with contextlib.suppress(Exception):

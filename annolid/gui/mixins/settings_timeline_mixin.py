@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
+import weakref
 
 from qtpy import QtCore, QtWidgets
 
@@ -95,12 +96,31 @@ class SettingsTimelineMixin:
         finally:
             del blocker
 
+        weak_self = weakref.ref(self)
         if was_normal and previous_size is not None:
-            QtCore.QTimer.singleShot(
-                0,
-                lambda sz=QtCore.QSize(previous_size): self.resize(sz),
-            )
-        QtCore.QTimer.singleShot(0, self._apply_fixed_dock_sizes)
+            target_size = QtCore.QSize(previous_size)
+
+            def _restore_window_size() -> None:
+                win = weak_self()
+                if win is None or bool(getattr(win, "_cleanup_done", False)):
+                    return
+                try:
+                    win.resize(target_size)
+                except RuntimeError:
+                    return
+
+            QtCore.QTimer.singleShot(0, _restore_window_size)
+
+        def _apply_dock_sizes_if_alive() -> None:
+            win = weak_self()
+            if win is None or bool(getattr(win, "_cleanup_done", False)):
+                return
+            try:
+                win._apply_fixed_dock_sizes()
+            except RuntimeError:
+                return
+
+        QtCore.QTimer.singleShot(0, _apply_dock_sizes_if_alive)
 
     def _apply_fixed_dock_sizes(self) -> None:
         """Set sensible initial dock sizes while keeping docks user-resizable."""

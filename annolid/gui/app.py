@@ -40,6 +40,7 @@ from annolid.gui.widgets.canvas import Canvas
 from annolid.domain import ProjectSchema
 from annolid.gui.widgets.label_dialog import AnnolidLabelDialog
 import atexit
+import weakref
 from annolid.gui.widgets.step_size_widget import StepSizeWidget
 from annolid.gui.widgets.screen_shot import CanvasScreenshotWidget
 from annolid.gui.widgets.pdf_import_widget import PdfImportWidget
@@ -336,10 +337,18 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         self.frame_loader = LoadFrameThread()
         self.seg_pred_thread = QtCore.QThread()
         self.seg_train_thread = QtCore.QThread()
-        self.destroyed.connect(self.clean_up)
+        weak_self = weakref.ref(self)
+
+        def _cleanup_from_weakref(*_args) -> None:
+            win = weak_self()
+            if win is not None:
+                win.clean_up()
+
+        self._atexit_cleanup_callback = _cleanup_from_weakref
+        self.destroyed.connect(_cleanup_from_weakref)
         self.stepSizeWidget.valueChanged.connect(self.update_step_size)
         self.stepSizeWidget.predict_button.pressed.connect(self.predict_from_next_frame)
-        atexit.register(self.clean_up)
+        atexit.register(_cleanup_from_weakref)
         # Callbacks:
         self.zoomWidget.valueChanged.connect(self.paintCanvas)
 
@@ -359,13 +368,33 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         self._setup_log_manager_action()
 
         self.populateModeActions()
-        QtCore.QTimer.singleShot(0, self._restore_last_worked_file_if_available)
+
+        def _restore_last_file_if_alive() -> None:
+            win = weak_self()
+            if win is None or bool(getattr(win, "_cleanup_done", False)):
+                return
+            win._restore_last_worked_file_if_available()
+
+        def _raise_initial_shape_dock(dock=self.shape_dock) -> None:
+            win = weak_self()
+            if win is None or bool(getattr(win, "_cleanup_done", False)):
+                return
+            try:
+                dock.show()
+                dock.raise_()
+            except RuntimeError:
+                return
+
+        QtCore.QTimer.singleShot(0, _restore_last_file_if_alive)
         # Defer bot runtime boot to keep first paint and first interaction snappy.
-        QtCore.QTimer.singleShot(2500, self._startup_annolid_bot)
-        QtCore.QTimer.singleShot(
-            0,
-            lambda dock=self.shape_dock: (dock.show(), dock.raise_()),
-        )
+        self._bot_autostart_timer: Optional[QtCore.QTimer] = None
+        if self._should_autostart_annolid_bot():
+            bot_timer = QtCore.QTimer(self)
+            bot_timer.setSingleShot(True)
+            bot_timer.timeout.connect(self._startup_annolid_bot)
+            bot_timer.start(2500)
+            self._bot_autostart_timer = bot_timer
+        QtCore.QTimer.singleShot(0, _raise_initial_shape_dock)
 
     @QtCore.Slot(str, int)
     def _show_status_message(self, message: str, timeout: int = 4000) -> None:
