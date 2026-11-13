@@ -33,6 +33,14 @@ Agent-side CLI execution:
 
 - [Annolid Agent and annolid-run](agent_annolid_run.md)
 
+Behavior analytics, quality control, and inter-rater reliability commands:
+
+```bash
+annolid-run time-budget exported_events.csv --schema project.annolid.json -o time_budget.csv
+annolid-run behavior-qc exported_events.csv --schema project.annolid.json --strict --out qc_report.json
+annolid-run behavior-irr rater_1.csv rater_2.csv --schema project.annolid.json --bin-seconds 0.1 --csv-out irr_summary.csv
+```
+
 Security-focused agent commands:
 
 ```bash

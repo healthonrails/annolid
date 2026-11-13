@@ -154,14 +154,30 @@ For GUI-first behavior scoring with timeline playhead dragging, shared behavior 
 - [Behavior labeling with Timeline, Flags, and Annolid Bot](tutorials/behavior_timeline_flags_bot.md)
 - [Behavior Agent User Guide](behavior_agent_user_guide.md)
 
-Example time-budget command:
+Example headless behavior analytics commands via `annolid-run`:
 
 ```bash
-python -m annolid.behavior.time_budget exported_events.csv \
+# 1. Validate ethogram consistency (unpaired states, point/state mismatches, exclusive_with overlaps)
+annolid-run behavior-qc exported_events.csv \
+    --schema project.annolid.json \
+    --out qc_report.json
+
+# 2. Compute time-budget and bout summaries
+annolid-run time-budget exported_events.csv \
     --schema project.annolid.json \
     --bin-size 60 \
     -o time_budget.csv
+
+# 3. Compute Inter-Rater Reliability (Cohen's kappa, Fleiss' kappa, PABAK, onset F1) across 2+ raters
+annolid-run behavior-irr rater_a.csv rater_b.csv \
+    --schema project.annolid.json \
+    --bin-seconds 0.1 \
+    --min-kappa 0.70 \
+    --out irr_report.json \
+    --csv-out irr_summary.csv
 ```
+
+The standalone module invocation `python -m annolid.behavior.time_budget ...` remains supported for backward compatibility.
 
 ### Polygon Classifier Workbench
 

@@ -17,6 +17,14 @@ class _AnnolidHelpFormatter(
 _ROOT_COMMAND_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Models", ("list-models", "dinov3-models", "train", "predict")),
     (
+        "Behavior",
+        (
+            "time-budget",
+            "behavior-qc",
+            "behavior-irr",
+        ),
+    ),
+    (
         "Agent",
         (
             "agent",
@@ -91,6 +99,7 @@ def _root_help_epilog() -> str:
         "  annolid-run help train\n\n"
         "Common areas:\n"
         "  Models: train, predict, list-models, dinov3-models\n"
+        "  Behavior: time-budget, behavior-qc, behavior-irr\n"
         "  Agent: agent, agent-behavior, agent-status, agent-capabilities, agent-security-*, agent-cron-*\n"
         "  Data: collect-labels, index-to-yolo, import-deeplabcut-training-data\n"
         "  Utilities: citations-*, validate-agent-output, validate-agent-tools"
@@ -440,6 +449,75 @@ def _cmd_dinov3_models(args: argparse.Namespace) -> int:
         )
     print(json.dumps(results, indent=2))
     return exit_code
+
+
+def _cmd_time_budget(args: argparse.Namespace) -> int:
+    from annolid.services.behavior_analytics import run_behavior_time_budget_cli
+
+    return int(
+        run_behavior_time_budget_cli(
+            events_csv=args.events_csv,
+            output_csv=getattr(args, "output", None),
+            json_out=getattr(args, "json_out", None),
+            json_stdout=bool(getattr(args, "json", False)),
+            strict=bool(getattr(args, "strict", False)),
+            bin_size=getattr(args, "bin_size", None),
+            schema_path=getattr(args, "schema", None),
+            bout_profile=getattr(args, "bout_profile", None),
+            bout_name=str(getattr(args, "bout_name", "custom_bout") or "custom_bout"),
+            bout_behaviors=getattr(args, "bout_behaviors", None),
+            bout_initiation_behaviors=getattr(args, "bout_initiation_behaviors", None),
+            bout_gap_seconds=getattr(args, "bout_gap_seconds", None),
+        )
+    )
+
+
+def _cmd_behavior_qc(args: argparse.Namespace) -> int:
+    from annolid.services.behavior_analytics import run_behavior_qc_cli
+
+    return int(
+        run_behavior_qc_cli(
+            events_csv=args.events_csv,
+            schema_path=getattr(args, "schema", None),
+            strict=bool(getattr(args, "strict", False)),
+            strict_schema=bool(getattr(args, "strict_schema", False)),
+            json_stdout=bool(getattr(args, "json", False)),
+            out_json=getattr(args, "out", None),
+            csv_out=getattr(args, "csv_out", None),
+        )
+    )
+
+
+def _cmd_behavior_irr(args: argparse.Namespace) -> int:
+    from annolid.services.behavior_analytics import run_behavior_irr_cli
+
+    raw_rater_names = getattr(args, "rater_names", None)
+    rater_names = (
+        [item.strip() for item in str(raw_rater_names).split(",") if item.strip()]
+        if raw_rater_names
+        else None
+    )
+    return int(
+        run_behavior_irr_cli(
+            csv_paths=list(args.events_csvs),
+            rater_names=rater_names,
+            schema_path=getattr(args, "schema", None),
+            bin_seconds=float(args.bin_seconds),
+            onset_tolerance_seconds=float(args.onset_tolerance_seconds),
+            subject=getattr(args, "subject", None),
+            pool_subjects=bool(getattr(args, "pool_subjects", False)),
+            session_start=getattr(args, "session_start", None),
+            session_end=getattr(args, "session_end", None),
+            session_duration=getattr(args, "session_duration", None),
+            include_empty_schema_behaviors=bool(
+                getattr(args, "include_empty_schema_behaviors", False)
+            ),
+            min_kappa=getattr(args, "min_kappa", None),
+            json_stdout=bool(getattr(args, "json", False)),
+            out_json=getattr(args, "out", None),
+            csv_out=getattr(args, "csv_out", None),
+        )
+    )
 
 
 def _cmd_validate_agent_output(args: argparse.Namespace) -> int:
@@ -2085,6 +2163,202 @@ def _build_root_parser() -> argparse.ArgumentParser:
         help="Preserve original order instead of sorting by key.",
     )
     citations_format_p.set_defaults(_handler=_cmd_citations_format)
+
+    time_budget_p = sub.add_parser(
+        "time-budget",
+        help="Compute behavior time-budget and bout summaries from an event CSV.",
+    )
+    time_budget_p.add_argument(
+        "events_csv",
+        help="Path to a behavior event CSV export.",
+    )
+    time_budget_p.add_argument(
+        "-o",
+        "--output",
+        default=None,
+        help="Optional CSV path to write the time-budget summary.",
+    )
+    time_budget_p.add_argument(
+        "--json-out",
+        default=None,
+        help="Optional JSON path to write the structured time-budget report.",
+    )
+    time_budget_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Print structured JSON report to stdout instead of a formatted table.",
+    )
+    time_budget_p.add_argument(
+        "--strict",
+        action="store_true",
+        help="Fail with exit code 2 if unmatched start/end events are encountered.",
+    )
+    time_budget_p.add_argument(
+        "--bin-size",
+        type=float,
+        default=None,
+        help="Optional bin width (seconds) for a binned secondary time-budget table.",
+    )
+    time_budget_p.add_argument(
+        "--schema",
+        default=None,
+        help="Optional project schema file (project.annolid.json or YAML).",
+    )
+    time_budget_p.add_argument(
+        "--bout-profile",
+        choices=("aggression",),
+        default=None,
+        help="Optional bout preset (e.g., aggression).",
+    )
+    time_budget_p.add_argument(
+        "--bout-name",
+        default="custom_bout",
+        help="Name for a custom bout definition (used with --bout-behaviors).",
+    )
+    time_budget_p.add_argument(
+        "--bout-behaviors",
+        default=None,
+        help="Comma-separated behaviors to group into bouts.",
+    )
+    time_budget_p.add_argument(
+        "--bout-initiation-behaviors",
+        default=None,
+        help="Comma-separated behaviors counted as bout initiations.",
+    )
+    time_budget_p.add_argument(
+        "--bout-gap-seconds",
+        type=float,
+        default=None,
+        help="Maximum gap (seconds) between intervals within the same bout.",
+    )
+    time_budget_p.set_defaults(_handler=_cmd_time_budget)
+
+    qc_p = sub.add_parser(
+        "behavior-qc",
+        help="Validate behavior event CSVs for unpaired states and schema exclusions.",
+    )
+    qc_p.add_argument(
+        "events_csv",
+        help="Path to a behavior event CSV export.",
+    )
+    qc_p.add_argument(
+        "--schema",
+        default=None,
+        help="Optional project schema file (project.annolid.json or YAML).",
+    )
+    qc_p.add_argument(
+        "--strict",
+        action="store_true",
+        help="Treat warnings as failures (exit code 2).",
+    )
+    qc_p.add_argument(
+        "--strict-schema",
+        action="store_true",
+        help="Treat undeclared behaviors, subjects, or modifiers as errors.",
+    )
+    qc_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Print structured JSON report to stdout.",
+    )
+    qc_p.add_argument(
+        "--out",
+        default=None,
+        help="Optional JSON path to write the QC report.",
+    )
+    qc_p.add_argument(
+        "--csv-out",
+        default=None,
+        help="Optional CSV path to write detected QC issues.",
+    )
+    qc_p.set_defaults(_handler=_cmd_behavior_qc)
+
+    irr_p = sub.add_parser(
+        "behavior-irr",
+        help="Compute Inter-Rater Reliability (Cohen's & Fleiss' kappa) across 2+ CSVs.",
+    )
+    irr_p.add_argument(
+        "events_csvs",
+        nargs="+",
+        help="Paths to 2 or more behavior event CSV files to compare.",
+    )
+    irr_p.add_argument(
+        "--rater-names",
+        default=None,
+        help="Optional comma-separated rater labels matching input CSV order.",
+    )
+    irr_p.add_argument(
+        "--schema",
+        default=None,
+        help="Optional project schema file (project.annolid.json or YAML).",
+    )
+    irr_p.add_argument(
+        "--bin-seconds",
+        type=float,
+        default=0.1,
+        help="Time-unit rasterization bin width in seconds (default: 0.1).",
+    )
+    irr_p.add_argument(
+        "--onset-tolerance-seconds",
+        type=float,
+        default=0.5,
+        help="Maximum timestamp offset (seconds) for matching event onsets (default: 0.5).",
+    )
+    irr_p.add_argument(
+        "--subject",
+        default=None,
+        help="Optional subject name filter.",
+    )
+    irr_p.add_argument(
+        "--pool-subjects",
+        action="store_true",
+        help="Pool events across all subjects per behavior.",
+    )
+    irr_p.add_argument(
+        "--session-start",
+        type=float,
+        default=None,
+        help="Explicit evaluation window start time in seconds.",
+    )
+    irr_p.add_argument(
+        "--session-end",
+        type=float,
+        default=None,
+        help="Explicit evaluation window end time in seconds.",
+    )
+    irr_p.add_argument(
+        "--session-duration",
+        type=float,
+        default=None,
+        help="Explicit evaluation window duration in seconds from session start.",
+    )
+    irr_p.add_argument(
+        "--include-empty-schema-behaviors",
+        action="store_true",
+        help="Include zero-occurrence behaviors from --schema in IRR rows.",
+    )
+    irr_p.add_argument(
+        "--min-kappa",
+        type=float,
+        default=None,
+        help="Optional quality gate: fail with exit code 2 if macro Cohen's kappa is below this threshold.",
+    )
+    irr_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Print structured JSON report to stdout.",
+    )
+    irr_p.add_argument(
+        "--out",
+        default=None,
+        help="Optional JSON path to write the full IRR report.",
+    )
+    irr_p.add_argument(
+        "--csv-out",
+        default=None,
+        help="Optional CSV path to write per-behavior IRR metrics.",
+    )
+    irr_p.set_defaults(_handler=_cmd_behavior_irr)
 
     collect_p = sub.add_parser(
         "collect-labels",

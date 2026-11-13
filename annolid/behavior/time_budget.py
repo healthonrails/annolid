@@ -9,16 +9,18 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 import sys
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import mean, median
 import math
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Deque, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from annolid.behavior.event_utils import normalize_event_label
 from annolid.core.behavior.spec import ProjectSchema, load_behavior_spec
+from annolid.utils.atomic_io import atomic_write_text
 
 __all__ = [
     "BehaviorInterval",
@@ -163,17 +165,20 @@ def extract_behavior_intervals(
     intervals: List[BehaviorInterval] = []
     warnings: List[str] = []
 
-    stacks: Dict[Tuple[str, str], List[float]] = defaultdict(list)
+    valid_by_key: Dict[Tuple[str, str], List[Tuple[float, str, int]]] = defaultdict(
+        list
+    )
 
     sorted_rows = sorted(
-        rows,
-        key=lambda r: (
-            _safe_float(r.get("recording time")) or 0.0,
-            str(r.get("event") or ""),
+        enumerate(rows),
+        key=lambda item: (
+            _safe_float(item[1].get("recording time")) or 0.0,
+            str(item[1].get("event") or ""),
+            item[0],
         ),
     )
 
-    for row in sorted_rows:
+    for order_idx, row in sorted_rows:
         behavior = row.get("behavior")
         subject = _normalize_subject(row.get("subject"))
         recording_time = _safe_float(row.get("recording time"))
@@ -192,36 +197,69 @@ def extract_behavior_intervals(
             )
             continue
 
-        key = (subject, str(behavior))
-        if event_type == "start":
-            stacks[key].append(recording_time)
-        else:
-            if not stacks[key]:
-                warnings.append(
-                    f"Encountered end event without matching start for subject '{subject}', behavior '{behavior}' at {recording_time:.3f}s."
-                )
-                continue
-            start_time = stacks[key].pop()
-            if recording_time < start_time:
-                warnings.append(
-                    f"End time {recording_time:.3f}s precedes start time {start_time:.3f}s for subject '{subject}', behavior '{behavior}'."
-                )
-                continue
-            intervals.append(
-                BehaviorInterval(
-                    subject=subject,
-                    behavior=str(behavior),
-                    start=start_time,
-                    end=recording_time,
-                )
-            )
+        valid_by_key[(subject, str(behavior))].append(
+            (recording_time, event_type, order_idx)
+        )
 
-    for (subject, behavior), pending in stacks.items():
-        if pending:
+    epsilon = 1e-9
+    for (subject, behavior), series in valid_by_key.items():
+        series.sort(key=lambda item: (item[0], item[2]))
+        open_starts: Deque[float] = deque()
+        idx = 0
+        n_items = len(series)
+        while idx < n_items:
+            ts = series[idx][0]
+            starts_at_ts: Deque[float] = deque()
+            ends_at_ts: Deque[float] = deque()
+            while idx < n_items and abs(series[idx][0] - ts) <= epsilon:
+                rec_t, ev_kind, _ = series[idx]
+                if ev_kind == "start":
+                    starts_at_ts.append(rec_t)
+                else:
+                    ends_at_ts.append(rec_t)
+                idx += 1
+
+            # Close intervals started prior to `ts` before opening abutting starts at `ts`.
+            while open_starts and ends_at_ts:
+                start_time = open_starts.popleft()
+                end_time = ends_at_ts.popleft()
+                intervals.append(
+                    BehaviorInterval(
+                        subject=subject,
+                        behavior=behavior,
+                        start=start_time,
+                        end=end_time,
+                    )
+                )
+
+            # Pair same-timestamp zero-duration (start, end) events.
+            while starts_at_ts and ends_at_ts:
+                start_time = starts_at_ts.popleft()
+                end_time = ends_at_ts.popleft()
+                intervals.append(
+                    BehaviorInterval(
+                        subject=subject,
+                        behavior=behavior,
+                        start=start_time,
+                        end=end_time,
+                    )
+                )
+
+            while ends_at_ts:
+                orphan_t = ends_at_ts.popleft()
+                warnings.append(
+                    f"Encountered end event without matching start for subject '{subject}', behavior '{behavior}' at {orphan_t:.3f}s."
+                )
+
+            while starts_at_ts:
+                open_starts.append(starts_at_ts.popleft())
+
+        if open_starts:
             warnings.append(
-                f"{len(pending)} unclosed start event(s) for subject '{subject}', behavior '{behavior}'."
+                f"{len(open_starts)} unclosed start event(s) for subject '{subject}', behavior '{behavior}'."
             )
 
+    intervals.sort(key=lambda item: (item.start, item.end, item.subject, item.behavior))
     return intervals, warnings
 
 
@@ -634,45 +672,46 @@ def format_category_summary(rows: Sequence[Tuple[str, float, int]]) -> str:
 def write_time_budget_csv(
     rows: Sequence[TimeBudgetRow], path: Path, schema: Optional[ProjectSchema] = None
 ) -> None:
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        headers = [
-            "Subject",
-            "Behavior",
-            "Occurrences",
-            "TotalSeconds",
-            "MeanSeconds",
-            "MedianSeconds",
-            "MinSeconds",
-            "MaxSeconds",
-            "PercentOfSession",
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    headers = [
+        "Subject",
+        "Behavior",
+        "Occurrences",
+        "TotalSeconds",
+        "MeanSeconds",
+        "MedianSeconds",
+        "MinSeconds",
+        "MaxSeconds",
+        "PercentOfSession",
+    ]
+    include_category = schema is not None
+    behavior_map = schema.behavior_map() if schema else {}
+    category_map = schema.category_map() if schema else {}
+    if include_category:
+        headers.insert(2, "Category")
+    writer.writerow(headers)
+    for row in rows:
+        item = [
+            row.subject,
+            row.behavior,
+            row.occurrences,
+            f"{row.total_duration:.6f}",
+            f"{row.mean_duration:.6f}",
+            f"{row.median_duration:.6f}",
+            f"{row.min_duration:.6f}",
+            f"{row.max_duration:.6f}",
+            f"{row.percent_of_session:.6f}",
         ]
-        include_category = schema is not None
-        behavior_map = schema.behavior_map() if schema else {}
-        category_map = schema.category_map() if schema else {}
         if include_category:
-            headers.insert(2, "Category")
-        writer.writerow(headers)
-        for row in rows:
-            item = [
-                row.subject,
-                row.behavior,
-                row.occurrences,
-                f"{row.total_duration:.6f}",
-                f"{row.mean_duration:.6f}",
-                f"{row.median_duration:.6f}",
-                f"{row.min_duration:.6f}",
-                f"{row.max_duration:.6f}",
-                f"{row.percent_of_session:.6f}",
-            ]
-            if include_category:
-                behavior = behavior_map.get(row.behavior)
-                category_name = None
-                if behavior and behavior.category_id:
-                    category = category_map.get(behavior.category_id)
-                    category_name = category.name if category else behavior.category_id
-                item.insert(2, category_name or "")
-            writer.writerow(item)
+            behavior = behavior_map.get(row.behavior)
+            category_name = None
+            if behavior and behavior.category_id:
+                category = category_map.get(behavior.category_id)
+                category_name = category.name if category else behavior.category_id
+            item.insert(2, category_name or "")
+        writer.writerow(item)
+    atomic_write_text(Path(path), buffer.getvalue(), encoding="utf-8")
 
 
 def write_bout_summary_csv(
@@ -691,38 +730,39 @@ def write_bout_summary_csv(
                     seen.append(name)
         behavior_columns = seen
 
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        headers = [
-            "Subject",
-            "Bout",
-            "Bouts",
-            "TotalSeconds",
-            "MeanSeconds",
-            "MedianSeconds",
-            "MinSeconds",
-            "MaxSeconds",
-        ]
-        headers.extend(f"{name}Count" for name in behavior_columns)
-        headers.append("InitiationBouts")
-        writer.writerow(headers)
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    headers = [
+        "Subject",
+        "Bout",
+        "Bouts",
+        "TotalSeconds",
+        "MeanSeconds",
+        "MedianSeconds",
+        "MinSeconds",
+        "MaxSeconds",
+    ]
+    headers.extend(f"{name}Count" for name in behavior_columns)
+    headers.append("InitiationBouts")
+    writer.writerow(headers)
 
-        for row in rows:
-            values: List[object] = [
-                row.subject,
-                row.bout_name,
-                int(row.bout_count),
-                f"{row.total_duration:.6f}",
-                f"{row.mean_duration:.6f}",
-                f"{row.median_duration:.6f}",
-                f"{row.min_duration:.6f}",
-                f"{row.max_duration:.6f}",
-            ]
-            values.extend(
-                int(row.behavior_counts.get(name, 0)) for name in behavior_columns
-            )
-            values.append(int(row.initiation_count))
-            writer.writerow(values)
+    for row in rows:
+        values: List[object] = [
+            row.subject,
+            row.bout_name,
+            int(row.bout_count),
+            f"{row.total_duration:.6f}",
+            f"{row.mean_duration:.6f}",
+            f"{row.median_duration:.6f}",
+            f"{row.min_duration:.6f}",
+            f"{row.max_duration:.6f}",
+        ]
+        values.extend(
+            int(row.behavior_counts.get(name, 0)) for name in behavior_columns
+        )
+        values.append(int(row.initiation_count))
+        writer.writerow(values)
+    atomic_write_text(Path(path), buffer.getvalue(), encoding="utf-8")
 
 
 def build_arg_parser() -> argparse.ArgumentParser:

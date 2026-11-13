@@ -5,7 +5,11 @@ from pathlib import Path
 from annolid import domain, infrastructure, interfaces, services
 from annolid.domain import (
     BehaviorEvent,
+    BehaviorIRRRow,
     DeepLabCutTrainingImportConfig,
+    EthogramIssue,
+    EthogramQCReport,
+    IRRReport,
     InstanceRegistry,
     ProjectSchema,
     TimeBudgetRow,
@@ -79,6 +83,11 @@ from annolid.services import (
     run_agent_update,
     run_agent_security_audit,
     run_agent_security_check,
+    run_behavior_irr,
+    run_behavior_irr_cli,
+    run_behavior_qc,
+    run_behavior_qc_cli,
+    run_behavior_time_budget_cli,
     run_behavior_training_cli,
     run_embedding_search,
     run_chat_fast_mode,
@@ -103,6 +112,10 @@ from annolid.services import (
 def test_domain_layer_exports() -> None:
     assert domain.ProjectSchema is ProjectSchema
     assert domain.BehaviorEvent is BehaviorEvent
+    assert domain.BehaviorIRRRow is BehaviorIRRRow
+    assert domain.EthogramIssue is EthogramIssue
+    assert domain.EthogramQCReport is EthogramQCReport
+    assert domain.IRRReport is IRRReport
     assert domain.Track is Track
     assert domain.InstanceRegistry is InstanceRegistry
     assert domain.TimeBudgetRow is TimeBudgetRow
@@ -113,6 +126,11 @@ def test_services_layer_exports() -> None:
     assert services.run_agent_pipeline is run_agent_pipeline
     assert services.run_embedding_search is run_embedding_search
     assert services.predict_behavior is predict_behavior
+    assert services.run_behavior_qc is run_behavior_qc
+    assert services.run_behavior_qc_cli is run_behavior_qc_cli
+    assert services.run_behavior_irr is run_behavior_irr
+    assert services.run_behavior_irr_cli is run_behavior_irr_cli
+    assert services.run_behavior_time_budget_cli is run_behavior_time_budget_cli
     assert services.analyze_chat_tracking_stats_tool is analyze_chat_tracking_stats_tool
     assert (
         services.should_attach_tracking_stats_context
@@ -223,6 +241,18 @@ def test_execution_paths_use_layer_imports() -> None:
     )
     assert (
         "from annolid.services.export import build_yolo_dataset_from_index"
+        in cli_source
+    )
+    assert (
+        "from annolid.services.behavior_analytics import run_behavior_time_budget_cli"
+        in cli_source
+    )
+    assert (
+        "from annolid.services.behavior_analytics import run_behavior_qc_cli"
+        in cli_source
+    )
+    assert (
+        "from annolid.services.behavior_analytics import run_behavior_irr_cli"
         in cli_source
     )
     assert "from annolid.domain import DeepLabCutTrainingImportConfig" in cli_source
