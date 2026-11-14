@@ -1,4 +1,4 @@
-from typing import List, Dict
+from typing import List, Dict, Optional
 import logging
 from omegaconf import DictConfig
 import torch
@@ -58,10 +58,41 @@ class CUTIE(nn.Module):
             others = torch.zeros_like(masks)
         return others
 
+    def normalize_image(self, image: torch.Tensor) -> torch.Tensor:
+        return (image - self.pixel_mean) / self.pixel_std
+
     def encode_image(self, image: torch.Tensor) -> (Iterable[torch.Tensor], torch.Tensor):
-        image = (image - self.pixel_mean) / self.pixel_std
+        image = self.normalize_image(image)
         ms_image_feat = self.pixel_encoder(image)
         return ms_image_feat, self.pix_feat_proj(ms_image_feat[0])
+
+    def encode_mask_chunk(
+        self,
+        normalized_image: torch.Tensor,
+        pix_feat: torch.Tensor,
+        sensory: torch.Tensor,
+        masks: torch.Tensor,
+        others: Optional[torch.Tensor] = None,
+        *,
+        deep_update: bool = True,
+        need_weights: bool = False,
+    ) -> (torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]):
+        """Encode one object chunk (`<= chunk_size`) using a pre-normalized image."""
+        if others is None and not self.single_object:
+            others = self._get_others(masks)
+        mask_value, new_sensory = self.mask_encoder(
+            normalized_image,
+            pix_feat,
+            sensory,
+            masks,
+            others,
+            deep_update=deep_update,
+            chunk_size=-1,
+        )
+        object_summaries, object_logits = self.object_summarizer(
+            masks, mask_value, need_weights, chunk_size=-1
+        )
+        return mask_value, new_sensory, object_summaries, object_logits
 
     def encode_mask(
             self,
@@ -73,8 +104,12 @@ class CUTIE(nn.Module):
             deep_update: bool = True,
             chunk_size: int = -1,
             need_weights: bool = False) -> (torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor):
-        image = (image - self.pixel_mean) / self.pixel_std
-        others = self._get_others(masks)
+        image = self.normalize_image(image)
+        others = (
+            None
+            if (not self.single_object and chunk_size >= 1 and masks.shape[1] > chunk_size)
+            else self._get_others(masks)
+        )
         mask_value, new_sensory = self.mask_encoder(image,
                                                     ms_features,
                                                     sensory,
@@ -83,7 +118,7 @@ class CUTIE(nn.Module):
                                                     deep_update=deep_update,
                                                     chunk_size=chunk_size)
         object_summaries, object_logits = self.object_summarizer(
-            masks, mask_value, need_weights)
+            masks, mask_value, need_weights, chunk_size=chunk_size)
         return mask_value, new_sensory, object_summaries, object_logits
 
     def transform_key(self,
@@ -145,10 +180,15 @@ class CUTIE(nn.Module):
                      sensory: torch.Tensor,
                      last_mask: torch.Tensor,
                      *,
-                     chunk_size: int = -1) -> torch.Tensor:
+                     chunk_size: int = -1,
+                     last_others: Optional[torch.Tensor] = None) -> torch.Tensor:
         last_mask = F.interpolate(
             last_mask, size=sensory.shape[-2:], mode='area')
-        last_others = self._get_others(last_mask)
+        if last_others is None:
+            last_others = self._get_others(last_mask)
+        else:
+            last_others = F.interpolate(
+                last_others, size=sensory.shape[-2:], mode='area')
         fused = self.pixel_fuser(pix_feat,
                                  pixel,
                                  sensory,
@@ -162,11 +202,58 @@ class CUTIE(nn.Module):
                       obj_memory,
                       *,
                       selector=None,
-                      need_weights=False) -> (torch.Tensor, Dict[str, torch.Tensor]):
+                      need_weights=False,
+                      chunk_size: int = -1) -> (torch.Tensor, Dict[str, torch.Tensor]):
         return self.object_transformer(pixel_readout,
                                        obj_memory,
                                        selector=selector,
-                                       need_weights=need_weights)
+                                       need_weights=need_weights,
+                                       chunk_size=chunk_size)
+
+    @staticmethod
+    def _upsample_and_softmax_logits(
+        logits_s4: torch.Tensor,
+        *,
+        chunk_size: int = -1,
+        return_logits: bool = True,
+    ) -> (Optional[torch.Tensor], torch.Tensor):
+        num_channels = logits_s4.shape[1]
+        if return_logits or chunk_size < 1 or num_channels <= chunk_size + 1:
+            logits = F.interpolate(
+                logits_s4, scale_factor=4, mode='bilinear', align_corners=False
+            )
+            prob = F.softmax(logits, dim=1)
+            return logits, prob
+
+        bs, _, h4, w4 = logits_s4.shape
+        h1, w1 = h4 * 4, w4 * 4
+        step = max(1, int(chunk_size))
+        out = logits_s4.new_empty((bs, num_channels, h1, w1))
+        max_val: Optional[torch.Tensor] = None
+        for c0 in range(0, num_channels, step):
+            c1 = min(num_channels, c0 + step)
+            chunk = F.interpolate(
+                logits_s4[:, c0:c1],
+                scale_factor=4,
+                mode='bilinear',
+                align_corners=False,
+            )
+            out[:, c0:c1] = chunk
+            chunk_max = chunk.max(dim=1, keepdim=True).values
+            max_val = chunk_max if max_val is None else torch.maximum(max_val, chunk_max)
+
+        sum_exp = logits_s4.new_zeros((bs, 1, h1, w1))
+        for c0 in range(0, num_channels, step):
+            c1 = min(num_channels, c0 + step)
+            view = out[:, c0:c1]
+            view.sub_(max_val).exp_()
+            sum_exp.add_(view.sum(dim=1, keepdim=True))
+
+        for c0 in range(0, num_channels, step):
+            c1 = min(num_channels, c0 + step)
+            out[:, c0:c1].div_(sum_exp)
+
+        return None, out
 
     def segment(self,
                 ms_image_feat: List[torch.Tensor],
@@ -175,7 +262,8 @@ class CUTIE(nn.Module):
                 *,
                 selector: bool = None,
                 chunk_size: int = -1,
-                update_sensory: bool = True) -> (torch.Tensor, torch.Tensor, torch.Tensor):
+                update_sensory: bool = True,
+                return_logits: bool = True) -> (torch.Tensor, Optional[torch.Tensor], torch.Tensor):
         """
         multi_scale_features is from the key encoder for skip-connection
         memory_readout is from working/long-term memory
@@ -196,11 +284,118 @@ class CUTIE(nn.Module):
 
         # Softmax over all objects[]
         logits = aggregate(prob, dim=1)
-        logits = F.interpolate(logits, scale_factor=4,
-                               mode='bilinear', align_corners=False)
-        prob = F.softmax(logits, dim=1)
+        logits, prob = self._upsample_and_softmax_logits(
+            logits,
+            chunk_size=chunk_size,
+            return_logits=return_logits,
+        )
 
         return sensory, logits, prob
+
+    def _decode_compact_pass1(
+        self,
+        ms_image_feat: List[torch.Tensor],
+        memory_readout: torch.Tensor,
+        sensory: torch.Tensor,
+        *,
+        selector: bool = None,
+        chunk_size: int = 16,
+        update_sensory: bool = True,
+    ) -> (torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor):
+        """Run MaskDecoder + `aggregate` + streaming full-res softmax `(m, d, best_idx)`."""
+        sensory, logits = self.mask_decoder(
+            ms_image_feat,
+            memory_readout,
+            sensory,
+            chunk_size=chunk_size,
+            update_sensory=update_sensory,
+        )
+
+        prob = torch.sigmoid(logits)
+        if selector is not None:
+            prob = prob * selector
+
+        logits_s4 = aggregate(prob, dim=1)
+        num_channels = logits_s4.shape[1]
+        step = max(
+            1,
+            int(chunk_size) if chunk_size and int(chunk_size) > 0 else num_channels,
+        )
+
+        m: Optional[torch.Tensor] = None
+        d: Optional[torch.Tensor] = None
+        best_idx: Optional[torch.Tensor] = None
+        for c0 in range(0, num_channels, step):
+            c1 = min(num_channels, c0 + step)
+            chunk = F.interpolate(
+                logits_s4[:, c0:c1],
+                scale_factor=4,
+                mode='bilinear',
+                align_corners=False,
+            )
+            chunk_max, chunk_arg = chunk.max(dim=1, keepdim=True)
+            if m is None:
+                m = chunk_max
+                best_idx = chunk_arg.squeeze(1).to(dtype=torch.int32)
+                d = torch.exp(chunk - m).sum(dim=1, keepdim=True)
+            else:
+                better = (chunk_max > m).squeeze(1)
+                best_idx = torch.where(
+                    better,
+                    chunk_arg.squeeze(1).to(dtype=torch.int32) + c0,
+                    best_idx,
+                )
+                m_new = torch.maximum(m, chunk_max)
+                d = d * torch.exp(m - m_new) + torch.exp(chunk - m_new).sum(
+                    dim=1, keepdim=True
+                )
+                m = m_new
+
+        return sensory, logits_s4, m, d, best_idx
+
+    def segment_compact(
+        self,
+        ms_image_feat: List[torch.Tensor],
+        memory_readout: torch.Tensor,
+        sensory: torch.Tensor,
+        *,
+        selector: bool = None,
+        chunk_size: int = 16,
+        update_sensory: bool = True,
+    ) -> (torch.Tensor, torch.Tensor, torch.Tensor):
+        """Stream full-res argmax + stride-16 `last_mask` in `O(chunk_size * H * W)` memory."""
+        sensory, logits_s4, m, d, best_idx = self._decode_compact_pass1(
+            ms_image_feat,
+            memory_readout,
+            sensory,
+            selector=selector,
+            chunk_size=chunk_size,
+            update_sensory=update_sensory,
+        )
+        bs, num_channels, h4, w4 = logits_s4.shape
+        num_objects = num_channels - 1
+        h1, w1 = h4 * 4, w4 * 4
+        h16, w16 = max(1, h1 // 16), max(1, w1 // 16)
+        step = max(
+            1,
+            int(chunk_size) if chunk_size and int(chunk_size) > 0 else num_channels,
+        )
+
+        last_mask_s16 = logits_s4.new_empty((bs, num_objects, h16, w16))
+        for fg0 in range(0, num_objects, step):
+            fg1 = min(num_objects, fg0 + step)
+            chunk = F.interpolate(
+                logits_s4[:, 1 + fg0 : 1 + fg1],
+                scale_factor=4,
+                mode='bilinear',
+                align_corners=False,
+            )
+            prob_chunk = torch.exp(chunk - m) / d
+            last_mask_s16[:, fg0:fg1] = F.interpolate(
+                prob_chunk, size=(h16, w16), mode='area'
+            )
+
+        return sensory, best_idx, last_mask_s16
 
     def compute_aux(self, pix_feat: torch.Tensor, aux_inputs: Dict[str, torch.Tensor],
                     selector: torch.Tensor) -> Dict[str, torch.Tensor]:

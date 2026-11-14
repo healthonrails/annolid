@@ -1208,34 +1208,68 @@ class MaskShape(MultipoinstShape):
         if qimage is not None:
             painter.drawImage(QtCore.QPoint(0, 0), qimage)
 
-    def toPolygons(self, epsilon=2.0, merge_contours=False, *, fill_holes=True):
+    def toPolygons(
+        self,
+        epsilon=2.0,
+        merge_contours=False,
+        *,
+        fill_holes=True,
+        bbox=None,
+    ):
         if self.mask is None:
             return []
 
         mask = np.asarray(self.mask)
         if mask.ndim != 2:
             mask = mask[..., 0]
-        if mask.dtype == np.bool_:
-            mask_uint8 = mask.astype(np.uint8, copy=False)
-        else:
-            mask_uint8 = (mask > 0).astype(np.uint8)
-        if not mask_uint8.any():
+        height, width = mask.shape[:2]
+        if height <= 0 or width <= 0:
             return []
 
-        # Crop to the non-zero region to reduce contour/morphology work.
-        # boundingRect accepts a binary image directly and avoids materializing
-        # the full list of foreground points for every CUTIE frame.
-        x, y, w, h = cv2.boundingRect(mask_uint8)
-        if w <= 0 or h <= 0:
-            return []
         pad = 2  # accounts for the 5x5 morphology kernel radius
-        height, width = mask_uint8.shape[:2]
-        x0 = max(0, x - pad)
-        y0 = max(0, y - pad)
-        x1 = min(width, x + w + pad)
-        y1 = min(height, y + h + pad)
+        if bbox is not None:
+            bx0, by0, bx1, by1 = (
+                int(bbox[0]),
+                int(bbox[1]),
+                int(bbox[2]),
+                int(bbox[3]),
+            )
+            bx0 = max(0, min(width, bx0))
+            by0 = max(0, min(height, by0))
+            bx1 = max(0, min(width, bx1))
+            by1 = max(0, min(height, by1))
+            if bx1 <= bx0 or by1 <= by0:
+                return []
+            x0 = max(0, bx0 - pad)
+            y0 = max(0, by0 - pad)
+            x1 = min(width, bx1 + pad)
+            y1 = min(height, by1 + pad)
+            sub = mask[y0:y1, x0:x1]
+            if sub.dtype == np.bool_:
+                cropped = np.ascontiguousarray(sub).view(np.uint8)
+            else:
+                cropped = np.ascontiguousarray(sub > 0).view(np.uint8)
+            if not cropped.any():
+                return []
+        else:
+            if mask.dtype == np.bool_:
+                mask_uint8 = np.ascontiguousarray(mask).view(np.uint8)
+            elif mask.dtype == np.uint8:
+                mask_uint8 = np.ascontiguousarray(mask)
+            else:
+                mask_uint8 = np.ascontiguousarray(mask > 0).view(np.uint8)
 
-        cropped = mask_uint8[y0:y1, x0:x1]
+            # Crop to the non-zero region to reduce contour/morphology work.
+            # boundingRect accepts a binary image directly and avoids materializing
+            # the full list of foreground points for every CUTIE frame.
+            x, y, w, h = cv2.boundingRect(mask_uint8)
+            if w <= 0 or h <= 0:
+                return []
+            x0 = max(0, x - pad)
+            y0 = max(0, y - pad)
+            x1 = min(width, x + w + pad)
+            y1 = min(height, y + h + pad)
+            cropped = mask_uint8[y0:y1, x0:x1]
 
         if fill_holes:
             # Fill small holes inside the mask. Callers with mutually exclusive

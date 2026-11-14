@@ -7,10 +7,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
-from shapely import make_valid
+from shapely import make_valid, unary_union
 from shapely.geometry import GeometryCollection, LineString, MultiPolygon, Polygon
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import nearest_points
+
+from annolid.utils.mask_geometry import tight_mask_bbox
 
 
 # LabelMe polygons have no explicit topology or shared-edge ownership. A small
@@ -84,8 +86,17 @@ def make_instance_masks_exclusive(
     claimed = np.zeros(expected_shape, dtype=bool)
     exclusive = [np.zeros(expected_shape, dtype=bool) for _ in normalized]
     for index in priority_order:
-        exclusive[index] = normalized[index] & ~claimed
-        claimed |= normalized[index]
+        mask = normalized[index]
+        bbox = tight_mask_bbox(mask)
+        if bbox is None:
+            continue
+        x0, y0, x1, y1 = bbox
+        sub_mask = mask[y0:y1, x0:x1]
+        sub_claimed = claimed[y0:y1, x0:x1]
+        owned = sub_mask & ~sub_claimed
+        if np.any(owned):
+            exclusive[index][y0:y1, x0:x1] = owned
+        sub_claimed |= sub_mask
     return exclusive
 
 
@@ -224,7 +235,8 @@ def resolve_polygon_shape_conflicts(
     )
 
     accepted_by_index: dict[int, object] = {}
-    claimed: BaseGeometry = GeometryCollection()
+    accepted_polygons: list[tuple[Polygon, tuple[float, float, float, float]]] = []
+    neighbor_margin = max(clearance * 8.0, 1.0)
     adjusted: list[int] = []
     dropped: list[int] = []
 
@@ -245,26 +257,49 @@ def resolve_polygon_shape_conflicts(
             if resolved is None:
                 dropped.append(index)
                 continue
-        if not claimed.is_empty and not resolved.disjoint(claimed):
-            exclusion = claimed.buffer(
-                clearance,
-                quad_segs=1,
-                join_style="mitre",
+        if accepted_polygons:
+            rx0, ry0, rx1, ry1 = resolved.bounds
+            has_collision = any(
+                ax0 <= rx1
+                and ax1 >= rx0
+                and ay0 <= ry1
+                and ay1 >= ry0
+                and not resolved.disjoint(acc_poly)
+                for acc_poly, (ax0, ay0, ax1, ay1) in accepted_polygons
             )
-            resolved = _largest_polygon(make_valid(resolved.difference(exclusion)))
-            if resolved is not None and resolved.interiors:
-                resolved = _open_polygon_interiors(resolved, clearance)
-            if resolved is None:
-                dropped.append(index)
-                continue
-            needs_replacement = True
+            if has_collision:
+                nearby_claimed = [
+                    acc_poly
+                    for acc_poly, (ax0, ay0, ax1, ay1) in accepted_polygons
+                    if ax0 <= rx1 + neighbor_margin
+                    and ax1 >= rx0 - neighbor_margin
+                    and ay0 <= ry1 + neighbor_margin
+                    and ay1 >= ry0 - neighbor_margin
+                ]
+                local_claimed = (
+                    nearby_claimed[0]
+                    if len(nearby_claimed) == 1
+                    else unary_union(nearby_claimed)
+                )
+                exclusion = local_claimed.buffer(
+                    clearance,
+                    quad_segs=1,
+                    join_style="mitre",
+                )
+                resolved = _largest_polygon(make_valid(resolved.difference(exclusion)))
+                if resolved is not None and resolved.interiors:
+                    resolved = _open_polygon_interiors(resolved, clearance)
+                if resolved is None:
+                    dropped.append(index)
+                    continue
+                needs_replacement = True
 
         if needs_replacement:
             _replace_shape_points(shape, resolved)
             adjusted.append(index)
 
         accepted_by_index[index] = shape
-        claimed = resolved if claimed.is_empty else claimed.union(resolved)
+        accepted_polygons.append((resolved, resolved.bounds))
 
     return PolygonConflictResolution(
         shapes=tuple(

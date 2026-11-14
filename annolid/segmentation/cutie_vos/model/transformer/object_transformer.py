@@ -119,11 +119,22 @@ class QueryTransformer(nn.Module):
                 pixel: torch.Tensor,
                 obj_summaries: torch.Tensor,
                 selector: Optional[torch.Tensor] = None,
-                need_weights: bool = False) -> (torch.Tensor, Dict[str, torch.Tensor]):
+                need_weights: bool = False,
+                *,
+                chunk_size: int = -1) -> (torch.Tensor, Dict[str, torch.Tensor]):
         # pixel: B*num_objects*embed_dim*H*W
         # obj_summaries: B*num_objects*T*num_queries*embed_dim
         T = obj_summaries.shape[2]
         bs, num_objects, _, H, W = pixel.shape
+
+        if 0 < chunk_size < num_objects:
+            return self._forward_chunked(
+                pixel,
+                obj_summaries,
+                selector=selector,
+                need_weights=need_weights,
+                chunk_size=chunk_size,
+            )
 
         # normalize object values
         # the last channel is the cumulative area of the object
@@ -143,13 +154,12 @@ class QueryTransformer(nn.Module):
         query_emb = self.query_emb.weight.unsqueeze(
             0).expand(bs * num_objects, -1, -1) + obj_emb
 
-        # positional embeddings for pixel features
+        # positional embeddings for pixel features (5D call avoids caching bs*N copies)
         pixel_init = self.pixel_init_proj(pixel)
         pixel_emb = self.pixel_emb_proj(pixel)
-        pixel_pe = self.spatial_pe(pixel.flatten(0, 1))
-        pixel_emb = pixel_emb.flatten(3, 4).flatten(
-            0, 1).transpose(1, 2).contiguous()
-        pixel_pe = pixel_pe.flatten(1, 2) + pixel_emb
+        base_spatial_pe = self.spatial_pe(pixel).flatten(2, 3)
+        pixel_emb = pixel_emb.flatten(3, 4).transpose(2, 3)
+        pixel_pe = (base_spatial_pe + pixel_emb).flatten(0, 1).contiguous()
 
         pixel = pixel_init
 
@@ -183,20 +193,131 @@ class QueryTransformer(nn.Module):
 
         return pixel, aux_features
 
-    def _get_aux_mask(self, logits: torch.Tensor, selector: torch.Tensor) -> torch.Tensor:
-        # logits: batch_size*num_objects*H*W
-        # selector: batch_size*num_objects*1*1
-        # returns a mask of shape (batch_size*num_objects*num_heads)*num_queries*(H*W)
-        # where True means the attention is blocked
+    def _forward_chunked(
+        self,
+        pixel: torch.Tensor,
+        obj_summaries: torch.Tensor,
+        *,
+        selector: Optional[torch.Tensor] = None,
+        need_weights: bool = False,
+        chunk_size: int,
+    ) -> (torch.Tensor, Dict[str, torch.Tensor]):
+        """Run `QueryTransformer` in `O(chunk_size)` working memory with exact cross-object parity."""
+        T = obj_summaries.shape[2]
+        bs, num_objects, _, H, W = pixel.shape
+        ranges = [
+            (start, min(start + chunk_size, num_objects))
+            for start in range(0, num_objects, chunk_size)
+        ]
 
+        obj_summaries_5d = obj_summaries.view(
+            bs, num_objects, T, self.num_queries, self.embed_dim + 1
+        )
+        obj_sums = obj_summaries_5d[:, :, :, :, :-1].sum(dim=2)
+        obj_area = obj_summaries_5d[:, :, :, :, -1:].sum(dim=2)
+        obj_values = obj_sums / (obj_area + 1e-4)
+        query = (
+            self.query_init.weight.view(1, 1, self.num_queries, self.embed_dim)
+            + self.summary_to_query_init(obj_values)
+        )
+        query_emb = (
+            self.query_emb.weight.view(1, 1, self.num_queries, self.embed_dim)
+            + self.summary_to_query_emb(obj_values)
+        )
+
+        base_spatial_pe_flat = self.spatial_pe(pixel).flatten(2, 3)
+        pixel_chunks = [
+            self.pixel_init_proj(pixel[:, start:end]) for start, end in ranges
+        ]
+
+        aux_logits = torch.cat(
+            [self.mask_pred[0](pc).squeeze(2) for pc in pixel_chunks],
+            dim=1,
+        )
+        fg_mask = self._compute_foreground_mask(aux_logits, selector)
+        aux_features: Dict[str, Optional[torch.Tensor]] = {'logits': [aux_logits]}
+
+        q_weights = None
+        p_weights = None
+        for i in range(self.num_blocks):
+            next_query_chunks = []
+            next_pixel_chunks = []
+            next_logit_chunks = []
+            q_weight_chunks = [] if (need_weights and i == self.num_blocks - 1) else None
+            p_weight_chunks = [] if (need_weights and i == self.num_blocks - 1) else None
+
+            for chunk_idx, (start, end) in enumerate(ranges):
+                c_n = end - start
+                q_c = query[:, start:end].reshape(
+                    bs * c_n, self.num_queries, self.embed_dim
+                )
+                q_emb_c = query_emb[:, start:end].reshape(
+                    bs * c_n, self.num_queries, self.embed_dim
+                )
+                p_emb_c = (
+                    self.pixel_emb_proj(pixel[:, start:end])
+                    .flatten(3, 4)
+                    .transpose(2, 3)
+                )
+                p_pe_c = (base_spatial_pe_flat + p_emb_c).flatten(0, 1).contiguous()
+                attn_mask_c = self._expand_aux_mask(fg_mask[:, start:end])
+
+                q_c, p_c, qw_c, pw_c = self.blocks[i](
+                    q_c,
+                    pixel_chunks[chunk_idx],
+                    q_emb_c,
+                    p_pe_c,
+                    attn_mask_c,
+                    need_weights=need_weights,
+                )
+                next_query_chunks.append(
+                    q_c.view(bs, c_n, self.num_queries, self.embed_dim)
+                )
+                next_pixel_chunks.append(p_c)
+                if q_weight_chunks is not None:
+                    q_weight_chunks.append(qw_c)
+                    p_weight_chunks.append(pw_c)
+                if self.training or i <= self.num_blocks - 1 or need_weights:
+                    next_logit_chunks.append(self.mask_pred[i + 1](p_c).squeeze(2))
+
+            query = torch.cat(next_query_chunks, dim=1)
+            pixel_chunks = next_pixel_chunks
+            if q_weight_chunks is not None:
+                q_weights = torch.cat(q_weight_chunks, dim=1)
+                p_weights = torch.cat(p_weight_chunks, dim=1)
+            if next_logit_chunks:
+                aux_logits = torch.cat(next_logit_chunks, dim=1)
+                fg_mask = self._compute_foreground_mask(aux_logits, selector)
+                aux_features['logits'].append(aux_logits)
+
+        aux_features['q_weights'] = q_weights
+        aux_features['p_weights'] = p_weights
+
+        if self.training:
+            attn_head0_chunks = [
+                self._expand_aux_mask(fg_mask[:, start:end]).view(
+                    bs, end - start, self.num_heads, self.num_queries, H, W
+                )[:, :, 0]
+                for start, end in ranges
+            ]
+            aux_features['attn_mask'] = torch.cat(attn_head0_chunks, dim=1)
+
+        return torch.cat(pixel_chunks, dim=1), aux_features
+
+    def _compute_foreground_mask(
+        self,
+        logits: torch.Tensor,
+        selector: Optional[torch.Tensor],
+    ) -> torch.Tensor:
         if selector is None:
             prob = logits.sigmoid()
         else:
             prob = logits.sigmoid() * selector
-        logits = aggregate(prob, dim=1)
+        agg_logits = aggregate(prob, dim=1)
+        is_foreground = agg_logits[:, 1:] >= agg_logits.max(dim=1, keepdim=True)[0]
+        return is_foreground.bool().flatten(start_dim=2)
 
-        is_foreground = (logits[:, 1:] >= logits.max(dim=1, keepdim=True)[0])
-        foreground_mask = is_foreground.bool().flatten(start_dim=2)
+    def _expand_aux_mask(self, foreground_mask: torch.Tensor) -> torch.Tensor:
         inv_foreground_mask = ~foreground_mask
         inv_background_mask = foreground_mask
 
@@ -210,3 +331,10 @@ class QueryTransformer(nn.Module):
         aux_mask[torch.where(aux_mask.sum(-1) == aux_mask.shape[-1])] = False
 
         return aux_mask
+
+    def _get_aux_mask(self, logits: torch.Tensor, selector: torch.Tensor) -> torch.Tensor:
+        # logits: batch_size*num_objects*H*W
+        # selector: batch_size*num_objects*1*1
+        # returns a mask of shape (batch_size*num_objects*num_heads)*num_queries*(H*W)
+        # where True means the attention is blocked
+        return self._expand_aux_mask(self._compute_foreground_mask(logits, selector))

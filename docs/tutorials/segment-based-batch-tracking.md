@@ -170,6 +170,50 @@ Hardware and runtime checks:
 - Run one GPU-heavy tracking job at a time unless each job has a separate GPU or
   enough VRAM.
 
+### Large Multi-Instance Tracking (Colonies, Schools, and 255+ Instances)
+
+When tracking large groups (for example, fish schools, insect colonies, or dense
+multi-well assays):
+
+- **Automatic object-batch chunking (`chunk_size`)**: When `chunk_size` is left
+  at its default (`-1`), CUTIE automatically chunks per-object memory readout,
+  mask encoding (including `MaskEncoder` input distribution), object
+  summarization, query-transformer decoding, and mask decoding into batches of
+  `16` objects whenever more than `16` instances are active, and streams
+  indexed seed frames, non-memory propagation frames, and memory-commit
+  propagation frames without allocating full-resolution `(N + 1, H, W)`
+  probability or one-hot buffers. This bounds peak GPU/MPS/CPU working memory
+  while preserving exact cross-object foreground competition. Python callers
+  (`CutieCoreVideoProcessor`, `CutieEngine`, or `SegmentedCutieExecutor`) can
+  override `chunk_size` (for example `chunk_size=8` on tight-VRAM GPUs or
+  `chunk_size=32` on high-memory accelerators).
+- **Compact KV value storage & adaptive KV memory budget (`kv_storage_dtype`, `max_kv_memory_mb`)**:
+  When more than `16` instances are tracked, CUTIE automatically stores working
+  and long-term `msk_value` banks in compact `float16` (`kv_storage_dtype="auto"`)
+  and enforces a configurable total KV memory cap across all active objects —
+  including both permanent seed frames and non-permanent working/long-term
+  tokens (`max_kv_memory_mb=2048` by default; pass `<= 0` to disable). At very
+  high instance counts or unresized 4K resolutions (`max_internal_size=-1`),
+  CUTIE also adaptively 2D-pools per-frame KV tokens and trims excess intermediate
+  permanent tokens while preserving the initial anchor and newest manual seeds,
+  keeping `last_mask` at stride-16 resolution between frames.
+- **Optional long-term XMem memory (`use_long_term=True`)**: Long recordings with
+  many re-entries can opt into CUTIE's prototype-compressed long-term memory via
+  `CutieCoreVideoProcessor(..., use_long_term=True)` or `SegmentedCutieExecutor`
+  with `processing_config={"use_long_term": True}`.
+- **Noise-gated background aggregation without overlap caps**: Background logit
+  aggregation bounds sub-threshold background noise to `16` channels while still
+  including every foreground channel above `0.05` when more than `16` instances
+  genuinely overlap at the same pixel.
+- **Above-255 instance IDs**: Indexed seed masks, temporary-to-global ID
+  remapping, and DAVIS/RGBA color overlays support `int32` instance counts well
+  above `255` (wrapping overlay colors across the foreground palette without
+  colliding with background `0`).
+- **Partial-occlusion memory safety**: When multiple subset instances are
+  simultaneously occluded without a full-frame collapse artifact, failed
+  reseed-recovery attempts roll back to the active `InferenceCore` and throttle
+  retries so working memory for the remaining visible instances stays intact.
+
 If a `480 x 270`, 5-minute, 30 FPS video takes about 20 minutes, that is roughly
 `7.5` processed frames per second. Whether that is expected depends mostly on
 the GPU model, VRAM, CUDA/PyTorch setup, and whether optical flow or overlay

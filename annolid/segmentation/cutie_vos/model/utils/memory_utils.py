@@ -54,8 +54,9 @@ def do_softmax(
     # normalize similarity with top-k softmax
     # similarity: B x N x [HW/P]
     # use inplace with care
-    if top_k is not None:
-        values, indices = torch.topk(similarity, k=top_k, dim=1)
+    if top_k is not None and similarity.shape[1] > int(top_k):
+        k = max(1, int(top_k))
+        values, indices = torch.topk(similarity, k=k, dim=1)
 
         x_exp = values.exp_()
         x_exp /= torch.sum(x_exp, dim=1, keepdim=True)
@@ -64,6 +65,8 @@ def do_softmax(
             affinity = similarity
         else:
             affinity = torch.zeros_like(similarity).scatter_(1, indices, x_exp)  # B*N*HW
+    elif similarity.shape[1] == 0:
+        affinity = similarity if inplace else torch.zeros_like(similarity)
     else:
         maxes = torch.max(similarity, dim=1, keepdim=True)[0]
         x_exp = torch.exp(similarity - maxes)

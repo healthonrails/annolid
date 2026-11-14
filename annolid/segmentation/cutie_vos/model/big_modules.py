@@ -8,6 +8,7 @@ g - usually denotes features that are not shared between objects
 The trailing number of a variable usually denotes the stride
 """
 
+from typing import Iterable, Optional
 from omegaconf import DictConfig
 import torch
 import torch.nn as nn
@@ -122,20 +123,18 @@ class MaskEncoder(nn.Module):
                 pix_feat: torch.Tensor,
                 sensory: torch.Tensor,
                 masks: torch.Tensor,
-                others: torch.Tensor,
+                others: Optional[torch.Tensor] = None,
                 *,
                 deep_update: bool = True,
                 chunk_size: int = -1) -> (torch.Tensor, torch.Tensor):
         # ms_features are from the key encoder
         # we only use the first one (lowest resolution), following XMem
-        if self.single_object:
-            g = masks.unsqueeze(2)
-        else:
-            g = torch.stack([masks, others], dim=2)
-
-        g = self.distributor(image, g)
-
-        batch_size, num_objects = g.shape[:2]
+        batch_size, num_objects = masks.shape[:2]
+        total_masks = (
+            None
+            if (self.single_object or others is not None)
+            else masks.sum(dim=1, keepdim=True)
+        )
         if chunk_size < 1 or chunk_size >= num_objects:
             chunk_size = num_objects
             fast_path = True
@@ -147,13 +146,20 @@ class MaskEncoder(nn.Module):
                 new_sensory = sensory
             fast_path = False
 
-        # chunk-by-chunk inference
+        # chunk-by-chunk inference (including distributor + others so full
+        # (B, num_objects, 5, H, W) is never materialized at once)
         all_g = []
         for i in range(0, num_objects, chunk_size):
-            if fast_path:
-                g_chunk = g
+            masks_chunk = masks if fast_path else masks[:, i:i + chunk_size]
+            if self.single_object:
+                g_chunk = masks_chunk.unsqueeze(2)
             else:
-                g_chunk = g[:, i:i + chunk_size]
+                if others is not None:
+                    others_chunk = others if fast_path else others[:, i:i + chunk_size]
+                else:
+                    others_chunk = (total_masks - masks_chunk).clamp(0, 1)
+                g_chunk = torch.stack([masks_chunk, others_chunk], dim=2)
+            g_chunk = self.distributor(image, g_chunk)
             actual_chunk_size = g_chunk.shape[1]
             g_chunk = g_chunk.flatten(start_dim=0, end_dim=1)
 

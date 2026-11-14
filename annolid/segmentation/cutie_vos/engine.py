@@ -140,6 +140,24 @@ class CutieEngine:
                          f"relative to 'cutie_engine.py' or is discoverable by Hydra. Error: {e}", exc_info=True)
             raise  # Re-raise the exception to stop execution if config is critical
 
+        _DEFAULT_RUNTIME_FIELDS = {
+            "mem_every": 5,
+            "use_long_term": False,
+            "max_mem_frames": 5,
+            "top_k": 30,
+            "stagger_updates": 5,
+            "chunk_size": -1,
+            "kv_storage_dtype": "auto",
+            "max_kv_memory_mb": 2048,
+            "amp": False,
+            "flip_aug": False,
+            "save_aux": False,
+        }
+        with open_dict(cfg):
+            for default_key, default_val in _DEFAULT_RUNTIME_FIELDS.items():
+                if cfg.get(default_key) is None:
+                    cfg[default_key] = default_val
+
         if overrides:
             with open_dict(cfg):  # Allow modifications
                 for key, value in overrides.items():

@@ -57,12 +57,14 @@ class ObjectSummarizer(nn.Module):
             nn.Linear(self.embed_dim, self.num_summaries),
         )
 
-    def forward(
-        self, masks: torch.Tensor, value: torch.Tensor, need_weights: bool = False
+    def _forward_chunk(
+        self,
+        masks: torch.Tensor,
+        value: torch.Tensor,
+        need_weights: bool = False,
     ) -> (torch.Tensor, Optional[torch.Tensor]):
-        # masks: B*num_objects*(H0)*(W0)
-        # value: B*num_objects*value_dim*H*W
-        # -> B*num_objects*H*W*value_dim
+        # masks: B*chunk_objects*(H0)*(W0)
+        # value: B*chunk_objects*value_dim*H*W
         h, w = value.shape[-2:]
         masks = F.interpolate(masks, size=(h, w), mode="area")
         masks = masks.unsqueeze(-1)
@@ -91,5 +93,36 @@ class ObjectSummarizer(nn.Module):
 
         if need_weights:
             return summaries, logits
-        else:
-            return summaries, None
+        return summaries, None
+
+    def forward(
+        self,
+        masks: torch.Tensor,
+        value: torch.Tensor,
+        need_weights: bool = False,
+        *,
+        chunk_size: int = -1,
+    ) -> (torch.Tensor, Optional[torch.Tensor]):
+        # masks: B*num_objects*(H0)*(W0)
+        # value: B*num_objects*value_dim*H*W
+        num_objects = value.shape[1]
+        if chunk_size <= 0 or chunk_size >= num_objects:
+            return self._forward_chunk(masks, value, need_weights=need_weights)
+
+        summary_chunks = []
+        logit_chunks = [] if need_weights else None
+        for start in range(0, num_objects, chunk_size):
+            end = min(start + chunk_size, num_objects)
+            chunk_summaries, chunk_logits = self._forward_chunk(
+                masks[:, start:end],
+                value[:, start:end],
+                need_weights=need_weights,
+            )
+            summary_chunks.append(chunk_summaries)
+            if logit_chunks is not None:
+                logit_chunks.append(chunk_logits)
+
+        summaries = torch.cat(summary_chunks, dim=1)
+        if logit_chunks is not None:
+            return summaries, torch.cat(logit_chunks, dim=1)
+        return summaries, None

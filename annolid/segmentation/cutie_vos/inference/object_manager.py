@@ -96,8 +96,44 @@ class ObjectManager:
             self.delete_objects(obj_id_to_be_deleted)
         return purge_activated, tmp_id_to_keep, obj_id_to_keep
 
+    _MAX_DIRECT_LUT_ID = 262_144
+
     def tmp_to_obj_cls(self, mask) -> torch.Tensor:
         # remap tmp id cls representation to the true object id representation
+        if not self.tmp_id_to_obj or mask.numel() == 0:
+            return torch.zeros_like(mask)
+
+        if not mask.is_floating_point() and not mask.is_complex():
+            max_tmp_id = max(self.tmp_id_to_obj)
+            min_tmp_id = min(self.tmp_id_to_obj)
+            obj_ids = [obj.id for obj in self.tmp_id_to_obj.values()]
+            min_obj_id = min(obj_ids)
+            max_obj_id = max(obj_ids)
+            dtype_info = (
+                torch.iinfo(mask.dtype)
+                if mask.dtype != torch.bool
+                else None
+            )
+            if (
+                dtype_info is not None
+                and min_tmp_id >= 0
+                and max_tmp_id <= self._MAX_DIRECT_LUT_ID
+                and dtype_info.min <= min_obj_id
+                and max_obj_id <= dtype_info.max
+            ):
+                mask_min = int(mask.min().item())
+                mask_max = int(mask.max().item())
+                if mask_min >= 0 and mask_max <= self._MAX_DIRECT_LUT_ID:
+                    lut = torch.zeros(
+                        max(max_tmp_id, mask_max) + 1,
+                        dtype=mask.dtype,
+                    )
+                    for tmp_id, obj in self.tmp_id_to_obj.items():
+                        lut[tmp_id] = obj.id
+                    if mask.device.type != "cpu":
+                        lut = lut.to(mask.device)
+                    return lut[mask.long()]
+
         new_mask = torch.zeros_like(mask)
         for tmp_id, obj in self.tmp_id_to_obj.items():
             new_mask[mask == tmp_id] = obj.id
@@ -117,16 +153,74 @@ class ObjectManager:
         output = torch.stack(output, dim=dim)
         return output
 
+    def obj_to_tmp_cls(self, cls_mask) -> torch.Tensor:
+        """Remap stable object IDs in `cls_mask` to `int32` temporary IDs (`1..num_obj`, `0` bg)."""
+        num_obj = len(self.tmp_id_to_obj)
+        if num_obj == 0 or cls_mask.numel() == 0:
+            return torch.zeros(
+                cls_mask.shape,
+                dtype=torch.int32,
+                device=cls_mask.device,
+            )
+
+        if (
+            not cls_mask.is_floating_point()
+            and not cls_mask.is_complex()
+            and cls_mask.dtype != torch.bool
+        ):
+            obj_ids = [obj.id for obj in self.tmp_id_to_obj.values()]
+            min_obj_id = min(obj_ids)
+            max_obj_id = max(obj_ids)
+            if min_obj_id >= 0 and max_obj_id <= self._MAX_DIRECT_LUT_ID:
+                mask_min = int(cls_mask.min().item())
+                mask_max = int(cls_mask.max().item())
+                if mask_min >= 0 and mask_max <= self._MAX_DIRECT_LUT_ID:
+                    lut = torch.zeros(
+                        max(max_obj_id, mask_max) + 1,
+                        dtype=torch.int32,
+                    )
+                    for tmp_id, obj in self.tmp_id_to_obj.items():
+                        lut[obj.id] = int(tmp_id)
+                    if cls_mask.device.type != "cpu":
+                        lut = lut.to(cls_mask.device)
+                    return lut[cls_mask.long()]
+
+        mapped = torch.zeros(
+            cls_mask.shape,
+            dtype=torch.int32,
+            device=cls_mask.device,
+        )
+        for tmp_id, obj in self.tmp_id_to_obj.items():
+            mapped[cls_mask == obj.id] = int(tmp_id)
+        return mapped
+
     def make_one_hot(self, cls_mask) -> torch.Tensor:
+        num_obj = len(self.tmp_id_to_obj)
+        if num_obj == 0 or cls_mask.numel() == 0:
+            return torch.zeros(
+                (num_obj, *cls_mask.shape),
+                dtype=torch.bool,
+                device=cls_mask.device,
+            )
+
+        if (
+            not cls_mask.is_floating_point()
+            and not cls_mask.is_complex()
+            and cls_mask.dtype != torch.bool
+        ):
+            mapped = self.obj_to_tmp_cls(cls_mask).long()
+            one_hot_with_bg = torch.zeros(
+                (num_obj + 1, *cls_mask.shape),
+                dtype=torch.bool,
+                device=cls_mask.device,
+            )
+            one_hot_with_bg.scatter_(0, mapped.unsqueeze(0), True)
+            return one_hot_with_bg[1:]
+
         output = []
         for _, obj in self.tmp_id_to_obj.items():
             output.append(cls_mask == obj.id)
-        if len(output) == 0:
-            output = torch.zeros((0, *cls_mask.shape),
-                                 dtype=torch.bool, device=cls_mask.device)
-        else:
-            output = torch.stack(output, dim=0)
-        return output
+        return torch.stack(output, dim=0)
 
     @property
     def all_obj_ids(self) -> List[int]:

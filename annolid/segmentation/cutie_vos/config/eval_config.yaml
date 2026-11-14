@@ -46,7 +46,9 @@ long_term:
 
 top_k: 30
 stagger_updates: 5
-chunk_size: -1 # number of objects to process in parallel; -1 means unlimited
+chunk_size: -1 # number of objects to process in parallel; -1 auto-chunks above 16
+kv_storage_dtype: auto # auto (float16 above 16 objects), float16, bfloat16, or float32
+max_kv_memory_mb: 2048 # total non-permanent KV memory cap in MB across objects; <=0 disables
 save_scores: False
 save_aux: False
 visualize: False

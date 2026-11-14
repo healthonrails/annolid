@@ -16,6 +16,8 @@ log = logging.getLogger()
 
 
 class InferenceCore:
+    DEFAULT_AUTO_CHUNK_SIZE = 16
+
     def __init__(self,
                  network: CUTIE,
                  cfg: DictConfig,
@@ -48,6 +50,25 @@ class InferenceCore:
             self.image_feature_store = image_feature_store
 
         self.last_mask = None
+
+    def _effective_chunk_size(self, num_objects: int) -> int:
+        """Return explicit `chunk_size`, or auto-chunk large object batches (`> 16`)."""
+        chunk_size = getattr(self, "chunk_size", -1)
+        if chunk_size is not None and int(chunk_size) > 0:
+            return int(chunk_size)
+        if int(num_objects) > self.DEFAULT_AUTO_CHUNK_SIZE:
+            return self.DEFAULT_AUTO_CHUNK_SIZE
+        return -1
+
+    @staticmethod
+    def _downsample_last_mask_to_stride16(last_mask: torch.Tensor) -> torch.Tensor:
+        """Store `last_mask` at stride 16 (`MemoryManager.read` resolution) between steps."""
+        h, w = last_mask.shape[-2:]
+        if h >= 16 and w >= 16 and (h % 16 == 0) and (w % 16 == 0):
+            target = (h // 16, w // 16)
+            if (h, w) != target:
+                return F.interpolate(last_mask, size=target, mode="area")
+        return last_mask
 
     @staticmethod
     def _normalize_mask_objects(
@@ -219,6 +240,19 @@ class InferenceCore:
             )[0]
         return output_prob
 
+    def _can_stream_memory_chunks(self, num_objects: int) -> bool:
+        """Return True when chunk-streaming `encode_mask_chunk` + `add_memory_chunks` is safe."""
+        return (
+            isinstance(getattr(self, "network", None), CUTIE)
+            and not self.save_aux
+            and self._effective_chunk_size(num_objects) > 0
+            and getattr(getattr(self.network, "encode_mask", None), "__func__", None)
+            is CUTIE.encode_mask
+            and getattr(getattr(self.memory, "add_memory", None), "__func__", None)
+            is MemoryManager.add_memory
+            and hasattr(self.memory, "add_memory_chunks")
+        )
+
     def _add_memory(self,
                     image: torch.Tensor,
                     pix_feat: torch.Tensor,
@@ -241,7 +275,8 @@ class InferenceCore:
         is_deep_update: whether to use deep update (e.g. with the mask encoder)
         force_permanent: whether to force the memory to be permanent
         """
-        if prob.shape[1] == 0:
+        num_objects = prob.shape[1]
+        if num_objects == 0:
             # nothing to add
             log.warn('Trying to add an empty object mask to memory!')
             return
@@ -251,27 +286,81 @@ class InferenceCore:
         else:
             as_permanent = 'first'
 
-        self.memory.initialize_sensory_if_needed(
-            key, self.object_manager.all_obj_ids)
+        effective_chunk_size = self._effective_chunk_size(num_objects)
+        all_obj_ids = self.object_manager.all_obj_ids
+        self.memory.initialize_sensory_if_needed(key, all_obj_ids)
+
+        if (
+            self._can_stream_memory_chunks(num_objects)
+            and num_objects > effective_chunk_size
+        ):
+            norm_image = self.network.normalize_image(image)
+            total_masks = (
+                None
+                if self.network.single_object
+                else prob.sum(dim=1, keepdim=True)
+            )
+
+            def _encoded_chunks():
+                for start in range(0, num_objects, effective_chunk_size):
+                    end = min(num_objects, start + effective_chunk_size)
+                    chunk_ids = all_obj_ids[start:end]
+                    prob_chunk = prob[:, start:end]
+                    others_chunk = (
+                        None
+                        if total_masks is None
+                        else (total_masks - prob_chunk).clamp(0, 1)
+                    )
+                    sensory_chunk = self.memory.get_sensory(chunk_ids)
+                    (
+                        msk_val_chunk,
+                        new_sensory_chunk,
+                        obj_val_chunk,
+                        _,
+                    ) = self.network.encode_mask_chunk(
+                        norm_image,
+                        pix_feat,
+                        sensory_chunk,
+                        prob_chunk,
+                        others_chunk,
+                        deep_update=is_deep_update,
+                        need_weights=False,
+                    )
+                    if is_deep_update:
+                        self.memory.update_sensory(new_sensory_chunk, chunk_ids)
+                    yield chunk_ids, msk_val_chunk, obj_val_chunk
+
+            self.memory.add_memory_chunks(
+                key,
+                shrinkage,
+                _encoded_chunks(),
+                all_obj_ids,
+                selection=selection,
+                as_permanent=as_permanent,
+            )
+            self.obj_logits = None
+            self.last_mem_ti = self.curr_ti
+            return
+
         msk_value, sensory, obj_value, self.obj_logits = self.network.encode_mask(
             image,
             pix_feat,
-            self.memory.get_sensory(self.object_manager.all_obj_ids),
+            self.memory.get_sensory(all_obj_ids),
             prob,
             deep_update=is_deep_update,
-            chunk_size=self.chunk_size,
+            chunk_size=effective_chunk_size,
             need_weights=self.save_aux)
         self.memory.add_memory(key,
                                shrinkage,
                                msk_value,
                                obj_value,
-                               self.object_manager.all_obj_ids,
+                               all_obj_ids,
                                selection=selection,
                                as_permanent=as_permanent)
         self.last_mem_ti = self.curr_ti
         if is_deep_update:
             self.memory.update_sensory(
-                sensory, self.object_manager.all_obj_ids)
+                sensory, all_obj_ids)
 
     def _segment(self,
                  key: torch.Tensor,
@@ -303,15 +392,30 @@ class InferenceCore:
                                device=key.device,
                                dtype=key.dtype)
 
+        effective_chunk_size = self._effective_chunk_size(
+            self.object_manager.num_obj
+        )
         memory_readout = self.memory.read(
-            pix_feat, key, selection, self.last_mask, self.network)
+            pix_feat,
+            key,
+            selection,
+            self.last_mask,
+            self.network,
+            chunk_size=effective_chunk_size,
+        )
         memory_readout = self.object_manager.realize_dict(memory_readout)
-        sensory, _, pred_prob_with_bg = self.network.segment(ms_features,
-                                                             memory_readout,
-                                                             self.memory.get_sensory(
-                                                                 self.object_manager.all_obj_ids),
-                                                             chunk_size=self.chunk_size,
-                                                             update_sensory=update_sensory)
+        segment_kwargs = dict(
+            chunk_size=effective_chunk_size,
+            update_sensory=update_sensory,
+        )
+        if isinstance(self.network, CUTIE):
+            segment_kwargs["return_logits"] = False
+        sensory, _, pred_prob_with_bg = self.network.segment(
+            ms_features,
+            memory_readout,
+            self.memory.get_sensory(self.object_manager.all_obj_ids),
+            **segment_kwargs,
+        )
         # remove batch dim
         if self.flip_aug:
             # average predictions of the non-flipped and flipped version
@@ -323,6 +427,265 @@ class InferenceCore:
             self.memory.update_sensory(
                 sensory, self.object_manager.all_obj_ids)
         return pred_prob_with_bg
+
+    def _segment_compact(
+        self,
+        key: torch.Tensor,
+        selection: torch.Tensor,
+        pix_feat: torch.Tensor,
+        ms_features: Iterable[torch.Tensor],
+        update_sensory: bool = True,
+        *,
+        memorize: bool = False,
+        image: Optional[torch.Tensor] = None,
+        shrinkage: Optional[torch.Tensor] = None,
+        force_permanent: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Stream temporary-id argmax + stride-16 `last_mask` (and optional memory commit) in `O(chunk_size * H * W)`."""
+        if not self.memory.engaged:
+            log.warn('Trying to segment without any memory!')
+            h16, w16 = key.shape[-2], key.shape[-1]
+            empty_idx = torch.zeros(
+                (h16 * 16, w16 * 16), device=key.device, dtype=torch.int32
+            )
+            empty_last = torch.zeros(
+                (1, max(1, self.object_manager.num_obj), h16, w16),
+                device=key.device,
+                dtype=key.dtype,
+            )
+            return empty_idx, empty_last
+
+        all_obj_ids = self.object_manager.all_obj_ids
+        num_objects = len(all_obj_ids)
+        effective_chunk_size = self._effective_chunk_size(num_objects)
+        memory_readout = self.memory.read(
+            pix_feat,
+            key,
+            selection,
+            self.last_mask,
+            self.network,
+            chunk_size=effective_chunk_size,
+        )
+        memory_readout = self.object_manager.realize_dict(memory_readout)
+
+        if not memorize or num_objects == 0:
+            sensory, best_idx, last_mask_s16 = self.network.segment_compact(
+                ms_features,
+                memory_readout,
+                self.memory.get_sensory(all_obj_ids),
+                chunk_size=effective_chunk_size,
+                update_sensory=update_sensory,
+            )
+            if update_sensory:
+                self.memory.update_sensory(sensory, all_obj_ids)
+            return best_idx[0], last_mask_s16
+
+        assert image is not None and shrinkage is not None
+        sensory, logits_s4, m, d, best_idx = self.network._decode_compact_pass1(
+            ms_features,
+            memory_readout,
+            self.memory.get_sensory(all_obj_ids),
+            chunk_size=effective_chunk_size,
+            update_sensory=update_sensory,
+        )
+        if update_sensory:
+            self.memory.update_sensory(sensory, all_obj_ids)
+
+        bs, _, h4, w4 = logits_s4.shape
+        h1, w1 = h4 * 4, w4 * 4
+        h16, w16 = max(1, h1 // 16), max(1, w1 // 16)
+        step = max(
+            1,
+            int(effective_chunk_size)
+            if effective_chunk_size and int(effective_chunk_size) > 0
+            else num_objects,
+        )
+        last_mask_s16 = logits_s4.new_empty((bs, num_objects, h16, w16))
+
+        self.memory.initialize_sensory_if_needed(key, all_obj_ids)
+        norm_image = self.network.normalize_image(image)
+        if self.network.single_object:
+            total_masks = None
+        else:
+            bg_logit = F.interpolate(
+                logits_s4[:, 0:1],
+                scale_factor=4,
+                mode='bilinear',
+                align_corners=False,
+            )
+            total_masks = (1.0 - torch.exp(bg_logit - m) / d).clamp(0.0, 1.0)
+
+        def _memorize_chunks():
+            for fg0 in range(0, num_objects, step):
+                fg1 = min(num_objects, fg0 + step)
+                chunk_ids = all_obj_ids[fg0:fg1]
+                chunk = F.interpolate(
+                    logits_s4[:, 1 + fg0 : 1 + fg1],
+                    scale_factor=4,
+                    mode='bilinear',
+                    align_corners=False,
+                )
+                prob_chunk = torch.exp(chunk - m) / d
+                last_mask_s16[:, fg0:fg1] = F.interpolate(
+                    prob_chunk, size=(h16, w16), mode='area'
+                )
+                others_chunk = (
+                    None
+                    if total_masks is None
+                    else (total_masks - prob_chunk).clamp(0, 1)
+                )
+                sensory_chunk = self.memory.get_sensory(chunk_ids)
+                (
+                    msk_val_chunk,
+                    new_sensory_chunk,
+                    obj_val_chunk,
+                    _,
+                ) = self.network.encode_mask_chunk(
+                    norm_image,
+                    pix_feat,
+                    sensory_chunk,
+                    prob_chunk,
+                    others_chunk,
+                    deep_update=True,
+                    need_weights=False,
+                )
+                self.memory.update_sensory(new_sensory_chunk, chunk_ids)
+                yield chunk_ids, msk_val_chunk, obj_val_chunk
+
+        as_permanent = 'all' if force_permanent else 'first'
+        self.memory.add_memory_chunks(
+            key,
+            shrinkage,
+            _memorize_chunks(),
+            all_obj_ids,
+            selection=selection,
+            as_permanent=as_permanent,
+        )
+        self.obj_logits = None
+        self.last_mem_ti = self.curr_ti
+        return best_idx[0], last_mask_s16
+
+    def _step_indexed_seed_compact(
+        self,
+        image: torch.Tensor,
+        mask: torch.Tensor,
+        objects: List[int],
+        pix_feat: torch.Tensor,
+        key: torch.Tensor,
+        shrinkage: torch.Tensor,
+        selection: Optional[torch.Tensor],
+        *,
+        memorize: bool,
+        force_permanent: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Stream an indexed seed frame without materializing `(N, H, W)` one-hot/prob buffers."""
+        self.object_manager.add_new_objects(objects)
+        padded_mask, _ = pad_divide_by(mask, 16)
+        tmp_mask = self.object_manager.obj_to_tmp_cls(padded_mask)
+
+        all_obj_ids = self.object_manager.all_obj_ids
+        num_objects = len(all_obj_ids)
+        step = max(1, self._effective_chunk_size(num_objects))
+
+        # Calibrate exact `aggregate` + `softmax` values for binary mutually-exclusive
+        # masks on a 2-pixel reference tensor `(num_objects, 2)` in `O(num_objects)`.
+        ref_one_hot = torch.zeros(
+            (num_objects, 2), dtype=image.dtype, device=image.device
+        )
+        ref_one_hot[0, 1] = 1.0
+        ref_prob = torch.softmax(aggregate(ref_one_hot, dim=0), dim=0)
+        p_fg_at_bg = ref_prob[1, 0]
+        p_owner_at_fg = ref_prob[1, 1]
+        p_other_at_fg = ref_prob[2, 1] if num_objects >= 2 else ref_prob[1, 0]
+
+        has_fg = tmp_mask > 0
+        base_non_owner = (
+            torch.where(has_fg, p_other_at_fg, p_fg_at_bg)
+            .unsqueeze(0)
+            .unsqueeze(0)
+        )
+
+        h1, w1 = tmp_mask.shape[-2:]
+        downsample_s16 = h1 >= 16 and w1 >= 16 and (h1 % 16 == 0) and (w1 % 16 == 0)
+        h16, w16 = (h1 // 16, w1 // 16) if downsample_s16 else (h1, w1)
+        last_mask_s16 = torch.empty(
+            (1, num_objects, h16, w16), dtype=ref_prob.dtype, device=image.device
+        )
+
+        def _make_prob_chunk(fg0: int, fg1: int) -> torch.Tensor:
+            chunk_tmp_ids = torch.arange(
+                fg0 + 1,
+                fg1 + 1,
+                device=tmp_mask.device,
+                dtype=tmp_mask.dtype,
+            ).view(1, -1, 1, 1)
+            is_owner = tmp_mask.unsqueeze(0).unsqueeze(0) == chunk_tmp_ids
+            prob_chunk = torch.where(is_owner, p_owner_at_fg, base_non_owner)
+            last_mask_s16[:, fg0:fg1] = (
+                F.interpolate(prob_chunk, size=(h16, w16), mode='area')
+                if downsample_s16
+                else prob_chunk
+            )
+            return prob_chunk
+
+        if memorize:
+            self.memory.initialize_sensory_if_needed(key, all_obj_ids)
+            norm_image = self.network.normalize_image(image)
+            if self.network.single_object:
+                total_masks = None
+            else:
+                total_fg_at_bg = ref_prob[1:, 0].sum()
+                total_fg_at_fg = ref_prob[1:, 1].sum()
+                total_masks = (
+                    torch.where(has_fg, total_fg_at_fg, total_fg_at_bg)
+                    .unsqueeze(0)
+                    .unsqueeze(0)
+                )
+
+            def _seed_chunks():
+                for fg0 in range(0, num_objects, step):
+                    fg1 = min(num_objects, fg0 + step)
+                    chunk_ids = all_obj_ids[fg0:fg1]
+                    prob_chunk = _make_prob_chunk(fg0, fg1)
+                    others_chunk = (
+                        None
+                        if total_masks is None
+                        else (total_masks - prob_chunk).clamp(0, 1)
+                    )
+                    sensory_chunk = self.memory.get_sensory(chunk_ids)
+                    (
+                        msk_val_chunk,
+                        new_sensory_chunk,
+                        obj_val_chunk,
+                        _,
+                    ) = self.network.encode_mask_chunk(
+                        norm_image,
+                        pix_feat,
+                        sensory_chunk,
+                        prob_chunk,
+                        others_chunk,
+                        deep_update=True,
+                        need_weights=False,
+                    )
+                    self.memory.update_sensory(new_sensory_chunk, chunk_ids)
+                    yield chunk_ids, msk_val_chunk, obj_val_chunk
+
+            as_permanent = 'all' if force_permanent else 'first'
+            self.memory.add_memory_chunks(
+                key,
+                shrinkage,
+                _seed_chunks(),
+                all_obj_ids,
+                selection=selection,
+                as_permanent=as_permanent,
+            )
+            self.obj_logits = None
+            self.last_mem_ti = self.curr_ti
+        else:
+            for fg0 in range(0, num_objects, step):
+                _make_prob_chunk(fg0, min(num_objects, fg0 + step))
+
+        return tmp_mask, last_mask_s16
 
     def step(self,
              image: torch.Tensor,
@@ -419,79 +782,181 @@ class InferenceCore:
                           in self.stagger_ti) and (not end)
 
         # encoding the image
+        want_memorize = bool(is_mem_frame or force_permanent)
+        default_add_memory = (
+            getattr(getattr(self, "_add_memory", None), "__func__", None)
+            is InferenceCore._add_memory
+        )
+        use_compact_segment = (
+            need_segment
+            and mask is None
+            and return_index_mask
+            and not self.flip_aug
+            and self._effective_chunk_size(self.object_manager.num_obj) > 0
+            and getattr(getattr(self, "_segment", None), "__func__", None)
+            is InferenceCore._segment
+            and hasattr(getattr(self, "network", None), "segment_compact")
+            and (
+                not want_memorize
+                or (
+                    default_add_memory
+                    and self._can_stream_memory_chunks(self.object_manager.num_obj)
+                    and hasattr(self.network, "_decode_compact_pass1")
+                )
+            )
+        )
+        projected_seed_objects = len(active_object_ids | provided_object_ids)
+        seed_chunk_size = self._effective_chunk_size(projected_seed_objects)
+        use_compact_indexed_seed = (
+            mask is not None
+            and idx_mask
+            and not need_segment
+            and return_index_mask
+            and not self.flip_aug
+            and seed_chunk_size > 0
+            and projected_seed_objects > seed_chunk_size
+            and (
+                not want_memorize
+                or (
+                    default_add_memory
+                    and self._can_stream_memory_chunks(projected_seed_objects)
+                )
+            )
+            and isinstance(getattr(self, "network", None), CUTIE)
+        )
+        compact_index_mask: Optional[torch.Tensor] = None
         try:
             ms_feat, pix_feat = self.image_feature_store.get_features(
                 self.curr_ti, image)
             key, shrinkage, selection = self.image_feature_store.get_key(
                 self.curr_ti, image)
 
-            # segmentation from memory if needed
-            if need_segment:
-                pred_prob_with_bg = self._segment(key,
-                                                  selection,
-                                                  pix_feat,
-                                                  ms_feat,
-                                                  update_sensory=update_sensory)
-
-            # use the input mask if provided
-            if mask is not None:
-                # Temporary ids identify tensor channels and can differ from
-                # both stable object ids and the order supplied by the caller.
-                corresponding_tmp_ids, _ = self.object_manager.add_new_objects(
-                    objects)
-
-                mask, _ = pad_divide_by(mask, 16)
+            if use_compact_segment:
+                compact_index_mask, self.last_mask = self._segment_compact(
+                    key,
+                    selection,
+                    pix_feat,
+                    ms_feat,
+                    update_sensory=update_sensory,
+                    memorize=want_memorize,
+                    image=image,
+                    shrinkage=shrinkage,
+                    force_permanent=force_permanent,
+                )
+            elif use_compact_indexed_seed:
+                compact_index_mask, self.last_mask = self._step_indexed_seed_compact(
+                    image,
+                    mask,
+                    objects,
+                    pix_feat,
+                    key,
+                    shrinkage,
+                    selection,
+                    memorize=want_memorize,
+                    force_permanent=force_permanent,
+                )
+            else:
+                # segmentation from memory if needed
                 if need_segment:
-                    # Merge predicted masks with the supplied correction while
-                    # retaining channels for every existing and new object.
-                    pred_prob_no_bg = pred_prob_with_bg[1:].clone()
-                    if idx_mask:
-                        occupied = mask > 0
-                    else:
-                        occupied = mask.max(0).values > 0.5
-                    pred_prob_no_bg[:, occupied] = 0
+                    pred_prob_with_bg = self._segment(key,
+                                                      selection,
+                                                      pix_feat,
+                                                      ms_feat,
+                                                      update_sensory=update_sensory)
 
-                    merged_mask = pred_prob_no_bg.new_zeros(
-                        (
-                            self.object_manager.num_obj,
-                            *pred_prob_no_bg.shape[-2:],
-                        )
-                    )
-                    merged_mask[:pred_prob_no_bg.shape[0]] = pred_prob_no_bg
-                    for mask_id, tmp_id in enumerate(corresponding_tmp_ids):
+                # use the input mask if provided
+                if mask is not None:
+                    # Temporary ids identify tensor channels and can differ from
+                    # both stable object ids and the order supplied by the caller.
+                    corresponding_tmp_ids, _ = self.object_manager.add_new_objects(
+                        objects)
+
+                    mask, _ = pad_divide_by(mask, 16)
+                    if need_segment:
+                        # Merge predicted masks with the supplied correction while
+                        # retaining channels for every existing and new object.
+                        pred_prob_no_bg = pred_prob_with_bg[1:].clone()
                         if idx_mask:
-                            this_mask = (mask == objects[mask_id]).type_as(
-                                pred_prob_no_bg)
+                            occupied = mask > 0
                         else:
-                            this_mask = mask[mask_id].type_as(pred_prob_no_bg)
-                        merged_mask[tmp_id - 1] = this_mask
-                    mask = merged_mask
-                elif idx_mask:
-                    mask = self.object_manager.make_one_hot(mask)
-                else:
-                    ordered_mask = mask.new_zeros(
-                        (self.object_manager.num_obj, *mask.shape[-2:])
-                    )
-                    for mask_id, tmp_id in enumerate(corresponding_tmp_ids):
-                        ordered_mask[tmp_id - 1] = mask[mask_id]
-                    mask = ordered_mask
-                pred_prob_with_bg = aggregate(mask, dim=0)
-                pred_prob_with_bg = torch.softmax(pred_prob_with_bg, dim=0)
+                            occupied = mask.max(0).values > 0.5
+                        pred_prob_no_bg[:, occupied] = 0
 
-            self.last_mask = pred_prob_with_bg[1:].unsqueeze(0)
-            if self.flip_aug:
-                self.last_mask = torch.cat(
-                    [self.last_mask, torch.flip(self.last_mask, dims=[-1])], dim=0)
+                        merged_mask = pred_prob_no_bg.new_zeros(
+                            (
+                                self.object_manager.num_obj,
+                                *pred_prob_no_bg.shape[-2:],
+                            )
+                        )
+                        merged_mask[:pred_prob_no_bg.shape[0]] = pred_prob_no_bg
+                        if (
+                            idx_mask
+                            and objects
+                            and not mask.is_floating_point()
+                            and not mask.is_complex()
+                            and max(objects) <= ObjectManager._MAX_DIRECT_LUT_ID
+                        ):
+                            mask_min = int(mask.min().item()) if mask.numel() > 0 else 0
+                            mask_max = int(mask.max().item()) if mask.numel() > 0 else 0
+                            if mask_min >= 0 and mask_max <= ObjectManager._MAX_DIRECT_LUT_ID:
+                                for tmp_id in corresponding_tmp_ids:
+                                    merged_mask[tmp_id - 1].zero_()
+                                lut = torch.zeros(
+                                    max(max(objects), mask_max) + 1,
+                                    dtype=torch.int64,
+                                )
+                                for mask_id, tmp_id in enumerate(corresponding_tmp_ids):
+                                    lut[objects[mask_id]] = tmp_id
+                                if mask.device.type != "cpu":
+                                    lut = lut.to(mask.device)
+                                mapped = lut[mask.long()]
+                                fg_pixels = mapped > 0
+                                if torch.any(fg_pixels):
+                                    ys, xs = torch.where(fg_pixels)
+                                    merged_mask[mapped[ys, xs] - 1, ys, xs] = 1.0
+                            else:
+                                for mask_id, tmp_id in enumerate(corresponding_tmp_ids):
+                                    merged_mask[tmp_id - 1] = (
+                                        mask == objects[mask_id]
+                                    ).type_as(pred_prob_no_bg)
+                        else:
+                            for mask_id, tmp_id in enumerate(corresponding_tmp_ids):
+                                if idx_mask:
+                                    this_mask = (mask == objects[mask_id]).type_as(
+                                        pred_prob_no_bg)
+                                else:
+                                    this_mask = mask[mask_id].type_as(pred_prob_no_bg)
+                                merged_mask[tmp_id - 1] = this_mask
+                        mask = merged_mask
+                    elif idx_mask:
+                        mask = self.object_manager.make_one_hot(mask)
+                    else:
+                        ordered_mask = mask.new_zeros(
+                            (self.object_manager.num_obj, *mask.shape[-2:])
+                        )
+                        for mask_id, tmp_id in enumerate(corresponding_tmp_ids):
+                            ordered_mask[tmp_id - 1] = mask[mask_id]
+                        mask = ordered_mask
+                    pred_prob_with_bg = aggregate(mask, dim=0)
+                    pred_prob_with_bg = torch.softmax(pred_prob_with_bg, dim=0)
 
-            # save as memory if needed
-            if is_mem_frame or force_permanent:
-                self._add_memory(image,
-                                 pix_feat,
-                                 self.last_mask,
-                                 key,
-                                 shrinkage,
-                                 selection,
-                                 force_permanent=force_permanent)
+                self.last_mask = pred_prob_with_bg[1:].unsqueeze(0)
+                if self.flip_aug:
+                    self.last_mask = torch.cat(
+                        [self.last_mask, torch.flip(self.last_mask, dims=[-1])], dim=0)
+
+                # save as memory if needed
+                if is_mem_frame or force_permanent:
+                    self._add_memory(image,
+                                     pix_feat,
+                                     self.last_mask,
+                                     key,
+                                     shrinkage,
+                                     selection,
+                                     force_permanent=force_permanent)
+                self.last_mask = self._downsample_last_mask_to_stride16(
+                    self.last_mask
+                )
         except BaseException:
             if delete_buffer:
                 self.image_feature_store.delete(self.curr_ti)
@@ -500,12 +965,26 @@ class InferenceCore:
         if delete_buffer:
             self.image_feature_store.delete(self.curr_ti)
 
-        output_prob = unpad(pred_prob_with_bg, self.pad)
         resolved_output_size = output_size
         if resolved_output_size is None and resize_needed:
             resolved_output_size = (h, w)
         if not resize_output:
             resolved_output_size = None
+
+        if compact_index_mask is not None:
+            output_mask = unpad(compact_index_mask, self.pad)
+            if (
+                resolved_output_size is not None
+                and tuple(output_mask.shape[-2:]) != tuple(resolved_output_size)
+            ):
+                return self._resize_index_mask(
+                    output_mask,
+                    resolved_output_size,
+                    dtype=torch.int32,
+                )
+            return output_mask.to(dtype=torch.int32)
+
+        output_prob = unpad(pred_prob_with_bg, self.pad)
         return self._finalize_output(
             output_prob,
             output_size=resolved_output_size,

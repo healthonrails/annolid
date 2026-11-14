@@ -51,17 +51,9 @@ def index_numpy_to_one_hot_torch(mask: np.ndarray, num_classes: int):
 
 
 """
-Some constants fro visualization
+Constants and device-cached helpers for segmentation visualization.
 """
-try:
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-    elif torch.backends.mps.is_available():
-        device = torch.device("mps")
-    else:
-        device = torch.device("cpu")
-except:
-    device = torch.device("cpu")
+device = torch.device("cpu")
 
 color_map_np = np.frombuffer(
     davis_palette, dtype=np.uint8).reshape(-1, 3).copy()
@@ -69,11 +61,66 @@ color_map_np = np.frombuffer(
 color_map_np = (color_map_np.astype(np.float32) *
                 1.5).clip(0, 255).astype(np.uint8)
 color_map = color_map_np.tolist()
-color_map_torch = torch.from_numpy(color_map_np).to(device) / 255
+color_map_torch = torch.from_numpy(color_map_np).float() / 255.0
 
 grayscale_weights = np.array([[0.3, 0.59, 0.11]]).astype(np.float32)
-grayscale_weights_torch = torch.from_numpy(
-    grayscale_weights).to(device).unsqueeze(0)
+grayscale_weights_torch = torch.from_numpy(grayscale_weights).unsqueeze(0)
+
+_COLOR_MAP_TORCH_CACHE: dict[torch.device, torch.Tensor] = {
+    torch.device("cpu"): color_map_torch,
+}
+_GRAYSCALE_TORCH_CACHE: dict[torch.device, torch.Tensor] = {
+    torch.device("cpu"): grayscale_weights_torch,
+}
+
+
+def _get_color_map_torch(target_device: torch.device) -> torch.Tensor:
+    resolved = torch.device(target_device)
+    cached = _COLOR_MAP_TORCH_CACHE.get(resolved)
+    if cached is None:
+        cached = color_map_torch.to(resolved)
+        _COLOR_MAP_TORCH_CACHE[resolved] = cached
+    return cached
+
+
+def _get_grayscale_weights_torch(target_device: torch.device) -> torch.Tensor:
+    resolved = torch.device(target_device)
+    cached = _GRAYSCALE_TORCH_CACHE.get(resolved)
+    if cached is None:
+        cached = grayscale_weights_torch.to(resolved)
+        _GRAYSCALE_TORCH_CACHE[resolved] = cached
+    return cached
+
+
+def _palette_indices_np(mask: np.ndarray) -> np.ndarray:
+    """Map arbitrary integer object IDs (`0..N`, including `N >= 256`) onto palette slots `0..255`."""
+    arr = np.asarray(mask)
+    if arr.dtype == np.uint8:
+        return arr
+    if arr.size == 0:
+        return np.zeros(arr.shape, dtype=np.int32)
+    min_id = int(arr.min())
+    max_id = int(arr.max())
+    palette_len = int(color_map_np.shape[0])
+    if 0 <= min_id and max_id < palette_len:
+        return arr if np.issubdtype(arr.dtype, np.integer) else arr.astype(np.int32)
+    fg_slots = max(1, palette_len - 1)
+    indices = np.zeros(arr.shape, dtype=np.int32)
+    positive = arr > 0
+    if np.any(positive):
+        indices[positive] = ((arr[positive].astype(np.int64) - 1) % fg_slots) + 1
+    return indices
+
+
+def _palette_indices_torch(mask: torch.Tensor) -> torch.Tensor:
+    palette_len = int(color_map_np.shape[0])
+    fg_slots = max(1, palette_len - 1)
+    mask_long = mask.long()
+    return torch.where(
+        mask_long > 0,
+        ((mask_long - 1) % fg_slots) + 1,
+        torch.zeros_like(mask_long),
+    )
 
 
 def get_visualization(mode: Literal['image', 'mask', 'fade', 'davis', 'light', 'popup',
@@ -82,7 +129,7 @@ def get_visualization(mode: Literal['image', 'mask', 'fade', 'davis', 'light', '
     if mode == 'image':
         return image
     elif mode == 'mask':
-        return color_map_np[mask]
+        return color_id_mask(mask)
     elif mode == 'fade':
         return overlay_davis(image, mask, fade=True)
     elif mode == 'davis':
@@ -108,7 +155,8 @@ def get_visualization_torch(mode: Literal['image', 'mask', 'fade', 'davis', 'lig
         return image
     elif mode == 'mask':
         mask = torch.max(prob, dim=0).indices
-        return (color_map_torch[mask] * 255).byte().cpu().numpy()
+        cmap = _get_color_map_torch(mask.device)
+        return (cmap[_palette_indices_torch(mask)] * 255).byte().cpu().numpy()
     elif mode == 'fade':
         return overlay_davis_torch(image, prob, fade=True)
     elif mode == 'davis':
@@ -131,7 +179,7 @@ def overlay_davis(image: np.ndarray, mask: np.ndarray, alpha: float = 0.5, fade:
     """ Overlay segmentation on top of RGB image. from davis official"""
     im_overlay = image.copy()
 
-    colored_mask = color_map_np[mask]
+    colored_mask = color_map_np[_palette_indices_np(mask)]
     foreground = image * alpha + (1 - alpha) * colored_mask
     binary_mask = (mask > 0)
     # Compose image
@@ -143,7 +191,7 @@ def overlay_davis(image: np.ndarray, mask: np.ndarray, alpha: float = 0.5, fade:
 
 def color_id_mask(mask: np.ndarray):
     """Generate color ID mask from segmentation mask."""
-    return color_map_np[mask]
+    return color_map_np[_palette_indices_np(mask)]
 
 
 def overlay_popup(image: np.ndarray, mask: np.ndarray, target_objects: List[int]):
@@ -183,9 +231,10 @@ def overlay_davis_torch(image: torch.Tensor,
     im_overlay = image
     mask = torch.max(prob, dim=0).indices
 
-    colored_mask = color_map_torch[mask]
+    cmap = _get_color_map_torch(image.device)
+    colored_mask = cmap[_palette_indices_torch(mask.to(image.device))]
     foreground = image * alpha + (1 - alpha) * colored_mask
-    binary_mask = (mask > 0)
+    binary_mask = (mask.to(image.device) > 0)
     # Compose image
     im_overlay[binary_mask] = foreground[binary_mask]
     if fade:
@@ -209,7 +258,8 @@ def overlay_popup_torch(image: torch.Tensor, prob: torch.Tensor, target_objects:
         # I am blaming this on PyTorch and calling it a day
         obj_mask = prob[np.array(target_objects, dtype=np.int32)].sum(
             0).unsqueeze(2)
-    gray_image = (image * grayscale_weights_torch).sum(-1, keepdim=True)
+    gray_weights = _get_grayscale_weights_torch(image.device)
+    gray_image = (image * gray_weights).sum(-1, keepdim=True)
     im_overlay = obj_mask * image + (1 - obj_mask) * gray_image
 
     im_overlay = (im_overlay * 255).byte().cpu().numpy()

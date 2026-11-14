@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional, Literal
+from typing import Dict, Iterable, List, Optional, Literal
 from collections import defaultdict
 import torch
 
@@ -15,14 +15,33 @@ def _coerce_index(value, *, name: str) -> int:
         raise TypeError(f"{name} must be an integer-like value, got {type(value)!r}") from exc
 
 
-def _add_last_dim(dictionary, key, new_value, prepend=False):
-    # append/prepend a new value to the last dimension of a tensor in a dictionary
+def _add_last_dim(
+    dictionary,
+    key,
+    new_value,
+    prepend: bool = False,
+    *,
+    insert_at: Optional[int] = None,
+):
+    # append/insert a new value along the last dimension of a tensor in a dictionary
     # if the key does not exist, put the new value in
-    # append by default
-    if key in dictionary:
-        dictionary[key] = torch.cat([dictionary[key], new_value], -1)
-    else:
+    if key not in dictionary:
         dictionary[key] = new_value
+        return
+    existing = dictionary[key]
+    if insert_at is not None:
+        if insert_at <= 0:
+            dictionary[key] = torch.cat([new_value, existing], -1)
+        elif insert_at >= existing.shape[-1]:
+            dictionary[key] = torch.cat([existing, new_value], -1)
+        else:
+            dictionary[key] = torch.cat(
+                [existing[..., :insert_at], new_value, existing[..., insert_at:]], -1
+            )
+    elif prepend:
+        dictionary[key] = torch.cat([new_value, existing], -1)
+    else:
+        dictionary[key] = torch.cat([existing, new_value], -1)
 
 
 class KeyValueMemoryStore:
@@ -80,77 +99,122 @@ class KeyValueMemoryStore:
             'first': only store it as permanent memory if the bucket is empty
             'all': always store it as permanent memory
         """
+        self.add_streaming(
+            key,
+            [values],
+            list(values.keys()),
+            shrinkage,
+            selection,
+            supposed_bucket_id=supposed_bucket_id,
+            as_permanent=as_permanent,
+        )
+
+    def add_streaming(
+        self,
+        key: torch.Tensor,
+        values_chunks: Iterable[Dict[int, torch.Tensor]],
+        all_objects: List[int],
+        shrinkage: torch.Tensor,
+        selection: Optional[torch.Tensor],
+        supposed_bucket_id: int = -1,
+        as_permanent: Literal['no', 'first', 'all'] = 'no',
+    ) -> None:
+        """Insert a single memory frame across one or more object-value chunks."""
         bs = key.shape[0]
         ne = key.shape[-1]
         assert len(key.shape) == 3
         assert len(shrinkage.shape) == 3
-        assert not self.save_selection or len(selection.shape) == 3
+        assert not self.save_selection or selection is None or len(selection.shape) == 3
         assert as_permanent in ['no', 'first', 'all']
 
-        # add the value and create new buckets if necessary
+        old_obj_to_bucket = {
+            obj_id: b_id
+            for b_id, object_ids in self.buckets.items()
+            for obj_id in object_ids
+        }
+        old_perm_end = {b_id: int(self.perm_end_pt[b_id]) for b_id in self.buckets}
+
+        new_bucket_id: Optional[int] = None
+        new_bucket_objs: List[int] = []
+        planned_obj_bucket: Dict[int, int] = {}
         if supposed_bucket_id >= 0:
             enabled_buckets = [supposed_bucket_id]
             bucket_exist = supposed_bucket_id in self.buckets
-            for obj, value in values.items():
-                if bucket_exist:
+            if bucket_exist:
+                for obj in all_objects:
                     assert obj in self.v
-                    assert obj in self.buckets[supposed_bucket_id]
-                    _add_last_dim(self.v, obj, value, prepend=(as_permanent == 'all'))
-                else:
+                    assert old_obj_to_bucket.get(obj) == supposed_bucket_id
+            else:
+                for obj in all_objects:
                     assert obj not in self.v
-                    self.v[obj] = value
-            self.buckets[supposed_bucket_id] = list(values.keys())
+                old_perm_end[supposed_bucket_id] = int(
+                    self.perm_end_pt[supposed_bucket_id]
+                )
+            for obj in all_objects:
+                planned_obj_bucket[obj] = supposed_bucket_id
         else:
-            new_bucket_id = None
-            enabled_buckets = set()
-            for obj, value in values.items():
-                assert len(value.shape) == 3
+            enabled_buckets = []
+            enabled_set = set()
+            for obj in all_objects:
                 if obj in self.v:
-                    _add_last_dim(self.v, obj, value, prepend=(as_permanent == 'all'))
-                    bucket_used = [
-                        bucket_id for bucket_id, object_ids in self.buckets.items()
-                        if obj in object_ids
-                    ]
-                    assert len(bucket_used) == 1  # each object should only be in one bucket
-                    enabled_buckets.add(bucket_used[0])
+                    assert obj in old_obj_to_bucket
+                    b_id = old_obj_to_bucket[obj]
+                    planned_obj_bucket[obj] = b_id
+                    if b_id not in enabled_set:
+                        enabled_set.add(b_id)
+                        enabled_buckets.append(b_id)
                 else:
-                    self.v[obj] = value
                     if new_bucket_id is None:
-                        # create new bucket
                         new_bucket_id = self.global_bucket_id
-                        self.global_bucket_id += 1
-                        self.buckets[new_bucket_id] = []
-                    # put the new object into the corresponding bucket
-                    self.buckets[new_bucket_id].append(obj)
-                    enabled_buckets.add(new_bucket_id)
+                        old_perm_end[new_bucket_id] = 0
+                        enabled_set.add(new_bucket_id)
+                        enabled_buckets.append(new_bucket_id)
+                    planned_obj_bucket[obj] = new_bucket_id
+                    new_bucket_objs.append(obj)
 
-        # increment the permanent size if necessary
-        add_as_permanent = {}  # indexed by bucket id
+        add_as_permanent: Dict[int, bool] = {}
         for bucket_id in enabled_buckets:
-            add_as_permanent[bucket_id] = False
-            if as_permanent == 'all':
-                self.perm_end_pt[bucket_id] += ne
-                add_as_permanent[bucket_id] = True
-            elif as_permanent == 'first':
-                if self.perm_end_pt[bucket_id] == 0:
-                    self.perm_end_pt[bucket_id] = ne
-                    add_as_permanent[bucket_id] = True
+            add_as_permanent[bucket_id] = (as_permanent == 'all') or (
+                as_permanent == 'first' and old_perm_end[bucket_id] == 0
+            )
 
-        # create new counters for usage if necessary
-        if self.save_usage and as_permanent != 'all':
+        seen_objs = set()
+        for chunk_values in values_chunks:
+            for obj, value in chunk_values.items():
+                assert len(value.shape) == 3
+                assert value.shape[-1] == ne
+                b_id = planned_obj_bucket[obj]
+                insert_at = old_perm_end[b_id] if add_as_permanent[b_id] else None
+                _add_last_dim(self.v, obj, value, insert_at=insert_at)
+                seen_objs.add(obj)
+        assert len(seen_objs) == len(all_objects)
+
+        if supposed_bucket_id >= 0:
+            self.buckets[supposed_bucket_id] = list(all_objects)
+        elif new_bucket_id is not None:
+            self.global_bucket_id = new_bucket_id + 1
+            self.buckets[new_bucket_id] = new_bucket_objs
+
+        for bucket_id in enabled_buckets:
+            if add_as_permanent[bucket_id]:
+                self.perm_end_pt[bucket_id] = old_perm_end[bucket_id] + ne
+
+        if self.save_usage and any(not flag for flag in add_as_permanent.values()):
             new_count = torch.zeros((bs, ne), device=key.device, dtype=torch.float32)
             new_life = torch.zeros((bs, ne), device=key.device, dtype=torch.float32) + 1e-7
 
-        # add the key to every bucket
         for bucket_id in self.buckets:
-            if bucket_id not in enabled_buckets:
-                # if we are not adding new values to a bucket, we should skip it
+            if bucket_id not in add_as_permanent:
                 continue
 
-            _add_last_dim(self.k, bucket_id, key, prepend=add_as_permanent[bucket_id])
-            _add_last_dim(self.s, bucket_id, shrinkage, prepend=add_as_permanent[bucket_id])
+            insert_at = (
+                old_perm_end[bucket_id] if add_as_permanent[bucket_id] else None
+            )
+            _add_last_dim(self.k, bucket_id, key, insert_at=insert_at)
+            _add_last_dim(self.s, bucket_id, shrinkage, insert_at=insert_at)
             if not add_as_permanent[bucket_id]:
                 if self.save_selection:
+                    assert selection is not None and len(selection.shape) == 3
                     _add_last_dim(self.e, bucket_id, selection)
                 if self.save_usage:
                     _add_last_dim(self.use_cnt, bucket_id, new_count)
@@ -306,18 +370,76 @@ class KeyValueMemoryStore:
         # remove buckets that are empty
         for bucket_id in buckets_to_remove:
             del self.buckets[bucket_id]
-            del self.k[bucket_id]
-            del self.s[bucket_id]
+            self.k.pop(bucket_id, None)
+            self.s.pop(bucket_id, None)
+            self.perm_end_pt.pop(bucket_id, None)
             if self.save_selection:
-                del self.e[bucket_id]
+                self.e.pop(bucket_id, None)
             if self.save_usage:
-                del self.use_cnt[bucket_id]
-                del self.life_cnt[bucket_id]
+                self.use_cnt.pop(bucket_id, None)
+                self.life_cnt.pop(bucket_id, None)
+
+    def trim_permanent_memory(self, bucket_id: int, max_perm_tokens: int) -> None:
+        """Bound permanent tokens in `bucket_id`, retaining initial anchor + newest permanent tokens."""
+        max_perm_tokens = _coerce_index(max_perm_tokens, name="max_perm_tokens")
+        if bucket_id not in self.buckets or max_perm_tokens <= 0:
+            return
+        p_size = int(self.perm_end_pt.get(bucket_id, 0))
+        if p_size <= max_perm_tokens:
+            return
+
+        keep_head = max(1, max_perm_tokens // 2)
+        keep_tail = max_perm_tokens - keep_head
+
+        def _slice_perm(tensor: torch.Tensor) -> torch.Tensor:
+            if keep_tail > 0:
+                return torch.cat(
+                    [tensor[..., :keep_head], tensor[..., p_size - keep_tail:]],
+                    dim=-1,
+                )
+            return torch.cat(
+                [tensor[..., :keep_head], tensor[..., p_size:]],
+                dim=-1,
+            )
+
+        self.k[bucket_id] = _slice_perm(self.k[bucket_id])
+        self.s[bucket_id] = _slice_perm(self.s[bucket_id])
+        for obj_id in self.buckets[bucket_id]:
+            self.v[obj_id] = _slice_perm(self.v[obj_id])
+        self.perm_end_pt[bucket_id] = max_perm_tokens
 
     def clear_non_permanent_memory(self):
         # clear all non-permanent memory
         for bucket_id in self.buckets:
             self.sieve_by_range(bucket_id, 0, 0, 0)
+
+    def cast_values_dtype(self, dtype: torch.dtype) -> None:
+        """Convert stored value tensors in-place to `dtype` with float16 range safety."""
+        for obj_id, val in list(self.v.items()):
+            if val.dtype == dtype:
+                continue
+            if dtype == torch.float16 and val.dtype == torch.float32:
+                self.v[obj_id] = val.clamp(-65504.0, 65504.0).to(dtype=dtype)
+            else:
+                self.v[obj_id] = val.to(dtype=dtype)
+
+    def value_bytes(self, *, non_permanent_only: bool = False) -> int:
+        """Return total byte footprint of stored `v` tensors across all objects."""
+        if not self.v:
+            return 0
+        if not non_permanent_only:
+            return sum(int(v.numel() * v.element_size()) for v in self.v.values())
+        total = 0
+        for bucket_id, object_ids in self.buckets.items():
+            p_size = int(self.perm_end_pt.get(bucket_id, 0))
+            for obj_id in object_ids:
+                val = self.v.get(obj_id)
+                if val is None:
+                    continue
+                non_perm_tokens = max(0, int(val.shape[-1]) - p_size)
+                elems = int(val[..., :1].numel()) * non_perm_tokens
+                total += elems * int(val.element_size())
+        return total
 
     def get_v_size(self, obj_id: int) -> int:
         return self.v[obj_id].shape[-1]

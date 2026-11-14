@@ -226,6 +226,89 @@ def _points_to_xy(points: Sequence[Sequence[float]]) -> list[tuple[float, float]
     return [(float(p[0]), float(p[1])) for p in points]
 
 
+def _rasterize_shape_patch(
+    img_shape: Sequence[int],
+    points: Sequence[Sequence[float]],
+    shape_type: Optional[str] = None,
+    line_width: int = 10,
+    point_size: int = 5,
+) -> Optional[tuple[np.ndarray, tuple[int, int, int, int]]]:
+    height, width = int(img_shape[0]), int(img_shape[1])
+    if height <= 0 or width <= 0:
+        return None
+
+    resolved_type = shape_type or "polygon"
+    xy = _points_to_xy(points)
+    if not xy:
+        return None
+    if not all(math.isfinite(x) and math.isfinite(y) for x, y in xy):
+        return None
+
+    if resolved_type == "circle":
+        if len(xy) < 2:
+            return None
+        (x1, y1), (x2, y2) = xy[0], xy[1]
+        radius = math.hypot(x2 - x1, y2 - y1)
+        raw_x0, raw_y0 = x1 - radius - 2.0, y1 - radius - 2.0
+        raw_x1, raw_y1 = x1 + radius + 2.0, y1 + radius + 2.0
+    elif resolved_type == "rectangle":
+        if len(xy) < 2:
+            return None
+        (x1, y1), (x2, y2) = xy[0], xy[1]
+        raw_x0, raw_y0 = min(x1, x2) - 2.0, min(y1, y2) - 2.0
+        raw_x1, raw_y1 = max(x1, x2) + 2.0, max(y1, y2) + 2.0
+    elif resolved_type in {"line", "linestrip"}:
+        if len(xy) < 2:
+            return None
+        pad = max(2.0, math.ceil(abs(float(line_width))) + 2.0)
+        xs = [p[0] for p in xy]
+        ys = [p[1] for p in xy]
+        raw_x0, raw_y0 = min(xs) - pad, min(ys) - pad
+        raw_x1, raw_y1 = max(xs) + pad, max(ys) + pad
+    elif resolved_type in {"point", "points"}:
+        x, y = xy[0]
+        pad = max(2.0, math.ceil(abs(float(point_size))) + 2.0)
+        raw_x0, raw_y0 = x - pad, y - pad
+        raw_x1, raw_y1 = x + pad, y + pad
+    else:
+        if len(xy) < 3:
+            return None
+        xs = [p[0] for p in xy]
+        ys = [p[1] for p in xy]
+        raw_x0, raw_y0 = min(xs) - 2.0, min(ys) - 2.0
+        raw_x1, raw_y1 = max(xs) + 2.0, max(ys) + 2.0
+
+    px0 = max(0, int(math.floor(raw_x0)))
+    py0 = max(0, int(math.floor(raw_y0)))
+    px1 = min(width, int(math.ceil(raw_x1)) + 1)
+    py1 = min(height, int(math.ceil(raw_y1)) + 1)
+    if px1 <= px0 or py1 <= py0:
+        return None
+
+    patch_image = Image.new("L", (px1 - px0, py1 - py0), 0)
+    draw = ImageDraw.Draw(patch_image)
+    shifted_xy = [(x - float(px0), y - float(py0)) for x, y in xy]
+
+    if resolved_type == "circle":
+        (x1, y1), (x2, y2) = shifted_xy[0], shifted_xy[1]
+        radius = math.hypot(x2 - x1, y2 - y1)
+        draw.ellipse((x1 - radius, y1 - radius, x1 + radius, y1 + radius), fill=1)
+    elif resolved_type == "rectangle":
+        (x1, y1), (x2, y2) = shifted_xy[0], shifted_xy[1]
+        draw.rectangle((min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)), fill=1)
+    elif resolved_type in {"line", "linestrip"}:
+        draw.line(xy=shifted_xy, fill=1, width=int(line_width))
+    elif resolved_type in {"point", "points"}:
+        x, y = shifted_xy[0]
+        draw.ellipse(
+            (x - point_size, y - point_size, x + point_size, y + point_size), fill=1
+        )
+    else:
+        draw.polygon(xy=shifted_xy, outline=1, fill=1)
+
+    return np.asarray(patch_image, dtype=bool), (px0, py0, px1, py1)
+
+
 def shape_to_mask(
     img_shape: Sequence[int],
     points: Sequence[Sequence[float]],
@@ -233,32 +316,19 @@ def shape_to_mask(
     line_width: int = 10,
     point_size: int = 5,
 ) -> np.ndarray:
-    shape_type = shape_type or "polygon"
-    mask_image = Image.new("L", (int(img_shape[1]), int(img_shape[0])), 0)
-    draw = ImageDraw.Draw(mask_image)
-    xy = _points_to_xy(points)
-
-    if shape_type == "circle" and len(xy) >= 2:
-        (x1, y1), (x2, y2) = xy[0], xy[1]
-        radius = math.hypot(x2 - x1, y2 - y1)
-        draw.ellipse((x1 - radius, y1 - radius, x1 + radius, y1 + radius), fill=1)
-    elif shape_type == "rectangle" and len(xy) >= 2:
-        (x1, y1), (x2, y2) = xy[0], xy[1]
-        draw.rectangle((min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)), fill=1)
-    elif shape_type == "line" and len(xy) >= 2:
-        draw.line(xy=xy, fill=1, width=int(line_width))
-    elif shape_type == "linestrip" and len(xy) >= 2:
-        draw.line(xy=xy, fill=1, width=int(line_width))
-    elif shape_type in {"point", "points"} and xy:
-        x, y = xy[0]
-        draw.ellipse(
-            (x - point_size, y - point_size, x + point_size, y + point_size), fill=1
-        )
-    else:
-        if len(xy) >= 3:
-            draw.polygon(xy=xy, outline=1, fill=1)
-
-    return np.asarray(mask_image, dtype=bool)
+    height, width = int(img_shape[0]), int(img_shape[1])
+    mask = np.zeros((height, width), dtype=bool)
+    rasterized = _rasterize_shape_patch(
+        img_shape,
+        points,
+        shape_type=shape_type,
+        line_width=line_width,
+        point_size=point_size,
+    )
+    if rasterized is not None:
+        patch_mask, (px0, py0, px1, py1) = rasterized
+        mask[py0:py1, px0:px1] = patch_mask
+    return mask
 
 
 def shapes_to_label(
@@ -270,7 +340,8 @@ def shapes_to_label(
 ) -> tuple[np.ndarray, np.ndarray]:
     cls = np.zeros(img_shape[:2], dtype=np.int32)
     ins = np.zeros(img_shape[:2], dtype=np.int32)
-    instances: list[tuple[str, Any]] = []
+    instance_to_id: dict[tuple[str, Any], int] = {}
+    allowed_labels = set(label_name_list) if label_name_list is not None else None
 
     for shape in shapes:
         points = shape.get("points")
@@ -280,7 +351,7 @@ def shapes_to_label(
         if not label:
             continue
 
-        if label_name_list is not None and label not in label_name_list:
+        if allowed_labels is not None and label not in allowed_labels:
             continue
 
         group_id = shape.get("group_id")
@@ -288,21 +359,25 @@ def shapes_to_label(
             group_id = id(shape)
 
         instance_key = (label, group_id)
-        if instance_key not in instances:
-            instances.append(instance_key)
-        ins_id = instances.index(instance_key) + 1
+        ins_id = instance_to_id.get(instance_key)
+        if ins_id is None:
+            ins_id = len(instance_to_id) + 1
+            instance_to_id[instance_key] = ins_id
 
         cls_id = label_name_to_value.get(label)
         if cls_id is None:
             continue
 
-        mask = shape_to_mask(
+        rasterized = _rasterize_shape_patch(
             img_shape,
             points,
             shape_type=shape.get("shape_type", "polygon"),
         )
-        cls[mask] = int(cls_id)
-        ins[mask] = ins_id
+        if rasterized is None:
+            continue
+        patch_mask, (px0, py0, px1, py1) = rasterized
+        cls[py0:py1, px0:px1][patch_mask] = int(cls_id)
+        ins[py0:py1, px0:px1][patch_mask] = ins_id
 
     return cls, ins
 

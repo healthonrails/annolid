@@ -19,6 +19,11 @@ from annolid.tracking.annotation_adapter import AnnotationAdapter
 from annolid.tracking.configuration import CutieDinoTrackerConfig
 from annolid.tracking.domain import InstanceRegistry, InstanceState
 from annolid.utils.logger import logger
+from annolid.utils.mask_geometry import (
+    BBoxXYXY,
+    extract_index_mask_bboxes,
+    tight_mask_bbox,
+)
 
 
 @dataclass(slots=True)
@@ -48,6 +53,8 @@ class CutieMaskManager:
         self._value_to_label: Dict[int, str] = {}
         self._initialized = False
         self._last_results: Dict[str, MaskResult] = {}
+        self._last_bboxes: Dict[str, BBoxXYXY] = {}
+        self._last_areas: Dict[str, int] = {}
         self._mask_miss_counts: Dict[str, int] = {}
 
     def ready(self) -> bool:
@@ -62,6 +69,8 @@ class CutieMaskManager:
         self._value_to_label = {}
         self._initialized = False
         self._last_results = {}
+        self._last_bboxes = {}
+        self._last_areas = {}
         self._mask_miss_counts = {}
 
     def prime(
@@ -126,16 +135,31 @@ class CutieMaskManager:
             self._handle_failure(exc, "Cutie update failed")
             return {}
 
+        output_prob_to_mask = getattr(self._core, "output_prob_to_mask", None)
+        if callable(output_prob_to_mask) and isinstance(prediction, torch.Tensor):
+            prediction = output_prob_to_mask(prediction)
+
         mask = torch_prob_to_numpy_mask(prediction)
+        pred_bboxes = extract_index_mask_bboxes(mask)
         results: Dict[str, MaskResult] = {}
+        current_bboxes: Dict[str, BBoxXYXY] = {}
+        current_areas: Dict[str, int] = {}
         for value, label in self._value_to_label.items():
-            binary_mask = mask == value
-            if not binary_mask.any():
+            bbox = pred_bboxes.get(int(value))
+            if bbox is None:
                 continue
+            x0, y0, x1, y1 = bbox
+            binary_mask = np.zeros(mask.shape, dtype=bool)
+            binary_mask[y0:y1, x0:x1] = mask[y0:y1, x0:x1] == int(value)
             binary_mask, corrected = self._sanitize_full_frame_artifact(
-                label, binary_mask
+                label,
+                binary_mask,
+                bbox=bbox,
             )
             if corrected:
+                bbox = tight_mask_bbox(binary_mask)
+                if bbox is None:
+                    continue
                 logger.warning(
                     "Cutie full-frame mask corrected for '%s' at frame %s.",
                     label,
@@ -143,14 +167,17 @@ class CutieMaskManager:
                 )
             if bool(
                 getattr(self.config, "reject_suspicious_mask_jumps", False)
-            ) and self._is_suspicious_mask_jump(label, binary_mask):
+            ) and self._is_suspicious_mask_jump(label, binary_mask, bbox=bbox):
                 logger.warning(
                     "Cutie mask jump rejected for '%s' at frame %s (possible full-frame artifact).",
                     label,
                     frame_number,
                 )
                 continue
-            polygon = self._mask_to_polygon(binary_mask)
+            polygon = self._mask_to_polygon(binary_mask, bbox=bbox)
+            bx0, by0, bx1, by1 = bbox
+            current_bboxes[label] = bbox
+            current_areas[label] = int(np.count_nonzero(binary_mask[by0:by1, bx0:bx1]))
             results[label] = MaskResult(
                 instance_label=label,
                 mask_bitmap=binary_mask,
@@ -158,19 +185,46 @@ class CutieMaskManager:
             )
 
         expected_labels = [instance.label for instance in registry]
-        results = self._apply_fallbacks(results, expected_labels)
+        results = self._apply_fallbacks(
+            results,
+            expected_labels,
+            current_bboxes=current_bboxes,
+            current_areas=current_areas,
+        )
         return results
 
     def _apply_fallbacks(
         self,
         results: Dict[str, MaskResult],
         expected_labels: List[str],
+        *,
+        current_bboxes: Optional[Dict[str, BBoxXYXY]] = None,
+        current_areas: Optional[Dict[str, int]] = None,
     ) -> Dict[str, MaskResult]:
+        last_bboxes = getattr(self, "_last_bboxes", None)
+        if not isinstance(last_bboxes, dict):
+            last_bboxes = {}
+            self._last_bboxes = last_bboxes
+        last_areas = getattr(self, "_last_areas", None)
+        if not isinstance(last_areas, dict):
+            last_areas = {}
+            self._last_areas = last_areas
+
         updated: Dict[str, MaskResult] = {}
         for label, result in results.items():
             updated[label] = result
             self._last_results[label] = result
             self._mask_miss_counts[label] = 0
+            bbox = (current_bboxes or {}).get(label)
+            if bbox is None and result.mask_bitmap is not None:
+                bbox = tight_mask_bbox(result.mask_bitmap)
+            if bbox is not None:
+                last_bboxes[label] = bbox
+                area = (current_areas or {}).get(label)
+                if area is None:
+                    x0, y0, x1, y1 = bbox
+                    area = int(np.count_nonzero(result.mask_bitmap[y0:y1, x0:x1]))
+                last_areas[label] = int(area)
 
         kernel_size = max(1, int(self.config.mask_dilation_kernel))
         if kernel_size % 2 == 0:
@@ -178,7 +232,7 @@ class CutieMaskManager:
         iterations = max(0, int(self.config.mask_dilation_iterations))
         allowed_misses = max(0, int(self.config.max_mask_fallback_frames))
 
-        for label in set(expected_labels):
+        for label in dict.fromkeys(expected_labels):
             if label in updated:
                 continue
             previous = self._last_results.get(label)
@@ -189,31 +243,54 @@ class CutieMaskManager:
             if misses > allowed_misses:
                 continue
             fallback_bitmap = previous.mask_bitmap
+            fallback_bbox = last_bboxes.get(label)
             if iterations > 0:
                 fallback_bitmap = self._dilate_bitmap(
-                    fallback_bitmap, kernel_size, iterations
+                    fallback_bitmap,
+                    kernel_size,
+                    iterations,
+                    bbox=fallback_bbox,
                 )
-            polygon = self._mask_to_polygon(fallback_bitmap)
+                fallback_bbox = tight_mask_bbox(fallback_bitmap)
+            elif fallback_bbox is None:
+                fallback_bbox = tight_mask_bbox(fallback_bitmap)
+            polygon = self._mask_to_polygon(fallback_bitmap, bbox=fallback_bbox)
             updated[label] = MaskResult(
                 instance_label=label,
                 mask_bitmap=fallback_bitmap,
                 polygon=polygon,
             )
             self._last_results[label] = updated[label]
+            if fallback_bbox is not None:
+                last_bboxes[label] = fallback_bbox
+                fx0, fy0, fx1, fy1 = fallback_bbox
+                last_areas[label] = int(
+                    np.count_nonzero(fallback_bitmap[fy0:fy1, fx0:fx1])
+                )
         return updated
 
     def _seed_last_results(self, registry: InstanceRegistry) -> None:
         self._last_results = {}
+        self._last_bboxes = {}
+        self._last_areas = {}
         self._mask_miss_counts = {}
         for instance in registry:
             mask_bitmap = self._resolve_instance_mask(instance)
-            if mask_bitmap is None or not mask_bitmap.any():
+            if mask_bitmap is None:
                 continue
-            polygon = instance.polygon or self._mask_to_polygon(mask_bitmap)
+            bbox = tight_mask_bbox(mask_bitmap)
+            if bbox is None:
+                continue
+            polygon = instance.polygon or self._mask_to_polygon(mask_bitmap, bbox=bbox)
             self._last_results[instance.label] = MaskResult(
                 instance_label=instance.label,
                 mask_bitmap=mask_bitmap,
                 polygon=polygon,
+            )
+            self._last_bboxes[instance.label] = bbox
+            bx0, by0, bx1, by1 = bbox
+            self._last_areas[instance.label] = int(
+                np.count_nonzero(mask_bitmap[by0:by1, bx0:bx1])
             )
             self._mask_miss_counts[instance.label] = 0
 
@@ -264,9 +341,13 @@ class CutieMaskManager:
         value = 1
         for instance in registry:
             mask_bitmap = self._resolve_instance_mask(instance)
-            if mask_bitmap is None or not mask_bitmap.any():
+            if mask_bitmap is None:
                 continue
-            composed_mask[mask_bitmap] = value
+            bbox = tight_mask_bbox(mask_bitmap)
+            if bbox is None:
+                continue
+            x0, y0, x1, y1 = bbox
+            composed_mask[y0:y1, x0:x1][mask_bitmap[y0:y1, x0:x1]] = value
             mapping[instance.label] = value
             value += 1
         if not mapping:
@@ -291,32 +372,49 @@ class CutieMaskManager:
         bitmap: np.ndarray,
         kernel_size: int,
         iterations: int,
+        *,
+        bbox: Optional[BBoxXYXY] = None,
     ) -> np.ndarray:
         if iterations <= 0:
             return bitmap
         cv2 = self._lazy_cv2()
+        resolved_bbox = tight_mask_bbox(bitmap) if bbox is None else bbox
+        if resolved_bbox is None:
+            return bitmap
+        x0, y0, x1, y1 = resolved_bbox
+        margin = (kernel_size // 2) * iterations + 1
+        height, width = bitmap.shape[:2]
+        cx0 = max(0, x0 - margin)
+        cy0 = max(0, y0 - margin)
+        cx1 = min(width, x1 + margin)
+        cy1 = min(height, y1 + margin)
         kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
-        dilated = cv2.dilate(bitmap.astype(np.uint8), kernel, iterations=iterations)
-        return dilated.astype(bool)
+        cropped_u8 = np.ascontiguousarray(bitmap[cy0:cy1, cx0:cx1], dtype=np.uint8)
+        dilated_crop = cv2.dilate(cropped_u8, kernel, iterations=iterations)
+        out = np.zeros(bitmap.shape[:2], dtype=bool)
+        out[cy0:cy1, cx0:cx1] = dilated_crop > 0
+        return out
 
-    def _mask_to_polygon(self, mask: np.ndarray) -> List[Tuple[float, float]]:
+    def _mask_to_polygon(
+        self,
+        mask: np.ndarray,
+        *,
+        bbox: Optional[BBoxXYXY] = None,
+    ) -> List[Tuple[float, float]]:
         cv2 = self._lazy_cv2()
-        mask_uint8 = mask.astype(bool).astype(np.uint8) * 255
-        if not mask_uint8.any():
+        resolved_bbox = tight_mask_bbox(mask) if bbox is None else bbox
+        if resolved_bbox is None:
             return []
-
-        nonzero = cv2.findNonZero(mask_uint8)
-        if nonzero is None:
-            return []
-        x, y, w, h = cv2.boundingRect(nonzero)
+        bx0, by0, bx1, by1 = resolved_bbox
         pad = 2
-        height, width = mask_uint8.shape[:2]
-        x0 = max(0, x - pad)
-        y0 = max(0, y - pad)
-        x1 = min(width, x + w + pad)
-        y1 = min(height, y + h + pad)
+        height, width = mask.shape[:2]
+        x0 = max(0, bx0 - pad)
+        y0 = max(0, by0 - pad)
+        x1 = min(width, bx1 + pad)
+        y1 = min(height, by1 + pad)
 
-        cropped = mask_uint8[y0:y1, x0:x1]
+        mask_bool = np.asarray(mask[y0:y1, x0:x1], dtype=bool)
+        cropped = mask_bool.astype(np.uint8) * 255
         contours, _ = cv2.findContours(
             cropped, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
@@ -338,12 +436,22 @@ class CutieMaskManager:
             self.config.error_hook(exc)
 
     def _sanitize_full_frame_artifact(
-        self, label: str, mask: np.ndarray
+        self,
+        label: str,
+        mask: np.ndarray,
+        *,
+        bbox: Optional[BBoxXYXY] = None,
     ) -> tuple[np.ndarray, bool]:
         frame_area = float(self.adapter.image_height * self.adapter.image_width)
         if frame_area <= 0:
             return mask, False
-        current_area = float(np.count_nonzero(mask))
+        resolved_bbox = tight_mask_bbox(mask) if bbox is None else bbox
+        if resolved_bbox is None:
+            return mask, False
+        bx0, by0, bx1, by1 = resolved_bbox
+        if float((bx1 - bx0) * (by1 - by0)) / frame_area < 0.98:
+            return mask, False
+        current_area = float(np.count_nonzero(mask[by0:by1, bx0:bx1]))
         if current_area <= 0:
             return mask, False
         if (current_area / frame_area) < 0.98:
@@ -353,13 +461,18 @@ class CutieMaskManager:
         if previous is None or previous.mask_bitmap is None:
             return mask, False
 
-        ys, xs = np.where(previous.mask_bitmap)
-        if xs.size == 0 or ys.size == 0:
+        last_bboxes = getattr(self, "_last_bboxes", None)
+        prev_bbox = last_bboxes.get(label) if isinstance(last_bboxes, dict) else None
+        if prev_bbox is None:
+            prev_bbox = tight_mask_bbox(previous.mask_bitmap)
+            if prev_bbox is not None and isinstance(last_bboxes, dict):
+                last_bboxes[label] = prev_bbox
+        if prev_bbox is None:
             return mask, False
-        x1 = float(xs.min())
-        y1 = float(ys.min())
-        x2 = float(xs.max())
-        y2 = float(ys.max())
+        x1 = float(prev_bbox[0])
+        y1 = float(prev_bbox[1])
+        x2 = float(prev_bbox[2] - 1)
+        y2 = float(prev_bbox[3] - 1)
         bbox_area = max(0.0, float(x2 - x1) * float(y2 - y1))
         bbox_ratio = bbox_area / frame_area
         if bbox_ratio <= 0.0 or bbox_ratio >= 0.85:
@@ -413,13 +526,26 @@ class CutieMaskManager:
             return mask, False
         return cleaned, True
 
-    def _is_suspicious_mask_jump(self, label: str, mask: np.ndarray) -> bool:
+    def _is_suspicious_mask_jump(
+        self,
+        label: str,
+        mask: np.ndarray,
+        *,
+        bbox: Optional[BBoxXYXY] = None,
+    ) -> bool:
         """Detect implausible mask expansions that often become full-frame polygons."""
         frame_area = float(self.adapter.image_height * self.adapter.image_width)
         if frame_area <= 0:
             return False
 
-        current_area = float(np.count_nonzero(mask))
+        resolved_bbox = tight_mask_bbox(mask) if bbox is None else bbox
+        if resolved_bbox is None:
+            return False
+        bx0, by0, bx1, by1 = resolved_bbox
+        if float((bx1 - bx0) * (by1 - by0)) / frame_area < 0.998:
+            return False
+
+        current_area = float(np.count_nonzero(mask[by0:by1, bx0:bx1]))
         if current_area <= 0:
             return False
         current_ratio = current_area / frame_area
@@ -439,7 +565,14 @@ class CutieMaskManager:
         if previous is None or previous.mask_bitmap is None:
             return current_ratio >= 0.9995
 
-        previous_area = float(np.count_nonzero(previous.mask_bitmap))
+        last_areas = getattr(self, "_last_areas", None)
+        cached_prev_area = (
+            last_areas.get(label) if isinstance(last_areas, dict) else None
+        )
+        if cached_prev_area is not None:
+            previous_area = float(cached_prev_area)
+        else:
+            previous_area = float(np.count_nonzero(previous.mask_bitmap))
         previous_ratio = previous_area / frame_area if previous_area > 0 else 0.0
         if previous_ratio >= 0.80:
             return False

@@ -9,6 +9,12 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
+from annolid.utils.mask_geometry import (
+    BBoxXYXY,
+    compute_mask_centroid_and_area,
+    tight_mask_bbox,
+)
+
 
 @dataclass(frozen=True)
 class MaskOverlap:
@@ -53,11 +59,32 @@ def find_cross_instance_mask_overlaps(
         normalized[str(label)] = mask_bool
 
     labels = sorted(normalized)
+    bboxes: dict[str, BBoxXYXY | None] = {
+        label: tight_mask_bbox(normalized[label]) for label in labels
+    }
     overlaps: list[MaskOverlap] = []
     for left_index, left_label in enumerate(labels):
+        left_bbox = bboxes[left_label]
+        if left_bbox is None:
+            continue
+        lx0, ly0, lx1, ly1 = left_bbox
+        left_mask = normalized[left_label]
         for right_label in labels[left_index + 1 :]:
+            right_bbox = bboxes[right_label]
+            if right_bbox is None:
+                continue
+            rx0, ry0, rx1, ry1 = right_bbox
+            ix0 = max(lx0, rx0)
+            iy0 = max(ly0, ry0)
+            ix1 = min(lx1, rx1)
+            iy1 = min(ly1, ry1)
+            if ix1 <= ix0 or iy1 <= iy0:
+                continue
             pixel_count = int(
-                np.count_nonzero(normalized[left_label] & normalized[right_label])
+                np.count_nonzero(
+                    left_mask[iy0:iy1, ix0:ix1]
+                    & normalized[right_label][iy0:iy1, ix0:ix1]
+                )
             )
             if pixel_count:
                 overlaps.append(
@@ -71,10 +98,10 @@ def find_cross_instance_mask_overlaps(
 
 
 def _mask_centroid(mask: np.ndarray) -> tuple[float, float] | None:
-    rows, columns = np.nonzero(mask)
-    if not columns.size:
+    stats = compute_mask_centroid_and_area(mask)
+    if stats is None:
         return None
-    return float(columns.mean()), float(rows.mean())
+    return stats[0], stats[1]
 
 
 def detect_centroid_assignment_ambiguity(

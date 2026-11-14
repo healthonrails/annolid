@@ -30,9 +30,14 @@ from annolid.utils import draw  # For drawing flow
 
 # For visualization video
 from annolid.segmentation.cutie_vos.interactive_utils import overlay_davis
-from annolid.segmentation.cutie_vos.predict import find_mask_center_opencv
 from annolid.annotation.polygon_constraints import resolve_polygon_shape_conflicts
 from annolid.utils.files import create_tracking_csv_file
+from annolid.utils.mask_geometry import (
+    BBoxXYXY,
+    compute_mask_centroid_and_area,
+    compute_mask_mean_flow_magnitude,
+    extract_index_mask_bboxes,
+)
 
 
 class SegmentedCutieExecutor:
@@ -104,8 +109,32 @@ class SegmentedCutieExecutor:
             cutie_engine_config_overrides = {
                 "mem_every": self.config.get("mem_every", 5),
                 "max_mem_frames": self.config.get("t_max_value", 5),
-                # Add other overrides if CutieEngine's Hydra config supports them
             }
+            if "chunk_size" in self.config and self.config.get("chunk_size") is not None:
+                cutie_engine_config_overrides["chunk_size"] = int(
+                    self.config["chunk_size"]
+                )
+            if (
+                "use_long_term" in self.config
+                and self.config.get("use_long_term") is not None
+            ):
+                cutie_engine_config_overrides["use_long_term"] = bool(
+                    self.config["use_long_term"]
+                )
+            if (
+                "kv_storage_dtype" in self.config
+                and self.config.get("kv_storage_dtype") is not None
+            ):
+                cutie_engine_config_overrides["kv_storage_dtype"] = str(
+                    self.config["kv_storage_dtype"]
+                )
+            if (
+                "max_kv_memory_mb" in self.config
+                and self.config.get("max_kv_memory_mb") is not None
+            ):
+                cutie_engine_config_overrides["max_kv_memory_mb"] = float(
+                    self.config["max_kv_memory_mb"]
+                )
             self.cutie_engine = CutieEngine(
                 cutie_config_overrides=cutie_engine_config_overrides,
                 device=self.device,
@@ -233,20 +262,25 @@ class SegmentedCutieExecutor:
         object_label_str: str,
         object_mask_np: np.ndarray,  # Boolean mask for this single object
         dense_flow_xy: Optional[np.ndarray],
+        *,
+        bbox: Optional[BBoxXYXY] = None,
     ):  # Optical flow (dx, dy) for the current frame transition
         """Calculates centroid and motion index for a single object mask."""
 
         motion_index = -1.0
-        try:
-            cx, cy = find_mask_center_opencv(object_mask_np)
-        except ZeroDivisionError:
+        stats = compute_mask_centroid_and_area(object_mask_np, bbox=bbox)
+        if stats is None:
             return None
+        cx, cy, area_px = stats
 
         if dense_flow_xy is not None and self.config.get("compute_optical_flow", True):
-            magnitude = np.sqrt(dense_flow_xy[..., 0] ** 2 + dense_flow_xy[..., 1] ** 2)
-            sum_mask = np.sum(object_mask_np)  # Sum of boolean mask
-            if sum_mask > 0:
-                motion_index = np.sum(object_mask_np * magnitude) / sum_mask
+            if area_px > 0:
+                mean_mag = compute_mask_mean_flow_magnitude(
+                    object_mask_np,
+                    dense_flow_xy,
+                    bbox=bbox,
+                )
+                motion_index = 0.0 if mean_mag is None else mean_mag
             else:
                 motion_index = 0.0  # No motion if mask is empty
 
@@ -280,18 +314,25 @@ class SegmentedCutieExecutor:
         )
         height, width, _ = frame_shape
         label_list_for_save: List[Shape] = []
-        unique_object_ids_in_pred = np.unique(predicted_mask_np_object_ids)
+        pred_arr = np.asarray(predicted_mask_np_object_ids)
+        object_bboxes = extract_index_mask_bboxes(pred_arr)
 
-        for obj_id in unique_object_ids_in_pred:
+        for obj_id in sorted(object_bboxes):
             if obj_id == 0:
                 continue
 
+            bbox = object_bboxes[obj_id]
+            x0, y0, x1, y1 = bbox
             obj_label_str = labels_map_id_to_name.get(obj_id, f"obj_{obj_id}")
-            single_obj_mask_bool = predicted_mask_np_object_ids == obj_id
+            single_obj_mask_bool = np.zeros(pred_arr.shape, dtype=bool)
+            single_obj_mask_bool[y0:y1, x0:x1] = pred_arr[y0:y1, x0:x1] == obj_id
 
             # Calculate motion index for this specific object's mask
             metrics = self._process_object_metrics(
-                obj_label_str, single_obj_mask_bool, dense_flow_for_this_frame
+                obj_label_str,
+                single_obj_mask_bool,
+                dense_flow_for_this_frame,
+                bbox=bbox,
             )
             if metrics is None:
                 continue
@@ -314,6 +355,7 @@ class SegmentedCutieExecutor:
             polygon_shapes = mask_shape_obj.toPolygons(
                 epsilon=self.config.get("epsilon_for_polygon", 2.0),
                 fill_holes=False,
+                bbox=bbox,
             )
             if polygon_shapes:
                 main_polygon = polygon_shapes[0]

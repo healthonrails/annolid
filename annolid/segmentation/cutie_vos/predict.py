@@ -18,6 +18,8 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from PIL import Image
 from annolid.gui.shape import MaskShape, Shape
 from annolid.annotation.keypoints import save_labels
+
+_BUILTIN_MASK_SHAPE = MaskShape
 from annolid.segmentation.cutie_vos.interactive_utils import (
     image_to_torch,
     index_numpy_to_one_hot_torch,
@@ -54,8 +56,16 @@ from annolid.annotation.polygon_constraints import (
 )
 from annolid.tracking.identity_continuity import (
     IdentityAssignmentAmbiguity,
-    detect_identity_assignment_ambiguity,
+    detect_centroid_assignment_ambiguity,
     find_cross_instance_mask_overlaps,
+)
+from annolid.utils.mask_geometry import (
+    BBoxXYXY,
+    compute_mask_centroid_and_area,
+    compute_mask_mean_scalar,
+    extract_index_mask_bboxes,
+    remap_index_mask_numpy,
+    tight_mask_bbox,
 )
 from hydra.core.global_hydra import GlobalHydra
 
@@ -71,19 +81,11 @@ https://github.com/hkchengrex/Cutie/tree/main
 """
 
 
-def find_mask_center_opencv(mask):
-    # Convert boolean mask to integer mask (0 for background, 1 for foreground).
-    # Scaling to 255 is unnecessary for centroid moments and adds work per mask.
-    mask_int = np.asarray(mask).astype(np.uint8, copy=False)
-
-    # Calculate the moments of the binary image
-    moments = cv2.moments(mask_int)
-
-    # Calculate the centroid coordinates
-    cx = moments["m10"] / moments["m00"]
-    cy = moments["m01"] / moments["m00"]
-
-    return cx, cy
+def find_mask_center_opencv(mask, bbox: Optional[BBoxXYXY] = None):
+    stats = compute_mask_centroid_and_area(mask, bbox=bbox)
+    if stats is None:
+        raise ZeroDivisionError("float division by zero")
+    return stats[0], stats[1]
 
 
 @dataclass(frozen=True)
@@ -112,6 +114,7 @@ class CutieCoreVideoProcessor:
     _TRACKING_STATS_VERSION = 5
     _TRACKING_STATS_FLUSH_INTERVAL = 100
     _PRIOR_REFERENCE_SEED_LIMIT = 3
+    _LARGE_COLONY_PRIOR_SEED_THRESHOLD = 64
     _DEFAULT_OPTICAL_FLOW_MAX_DIM = 960
 
     def _configure_frame_preprocessing(self, *, brightness: Any, contrast: Any) -> None:
@@ -145,6 +148,24 @@ class CutieCoreVideoProcessor:
         )
         self.use_amp = bool(kwargs.get("use_amp", True))
         self.use_cpu_only = kwargs.get("use_cpu_only", False)
+        self.use_long_term = bool(kwargs.get("use_long_term", False))
+        try:
+            self.chunk_size = int(kwargs.get("chunk_size", -1))
+        except (TypeError, ValueError):
+            self.chunk_size = -1
+        self.kv_storage_dtype = str(kwargs.get("kv_storage_dtype", "auto") or "auto")
+        try:
+            self.max_kv_memory_mb = float(kwargs.get("max_kv_memory_mb", 2048))
+        except (TypeError, ValueError):
+            self.max_kv_memory_mb = 2048.0
+        raw_prior_limit = kwargs.get("prior_reference_seed_limit")
+        if raw_prior_limit is None:
+            self.prior_reference_seed_limit: Optional[int] = None
+        else:
+            try:
+                self.prior_reference_seed_limit = max(0, int(raw_prior_limit))
+            except (TypeError, ValueError):
+                self.prior_reference_seed_limit = None
         self.epsilon_for_polygon = kwargs.get("epsilon_for_polygon", 2.0)
         self.processor = None
         self.num_tracking_instances = 0
@@ -249,6 +270,13 @@ class CutieCoreVideoProcessor:
         # Latest per-instance masks available in the current run.
         self._recent_instance_masks: Dict[str, np.ndarray] = {}
         self._recent_instance_mask_frames: Dict[str, int] = {}
+        self._recent_instance_centroids: Dict[str, Tuple[float, float]] = {}
+        self._recent_instance_centroid_frames: Dict[str, int] = {}
+        self._frame_mask_geometry_cache: Dict[
+            str,
+            Tuple[np.ndarray, Optional[BBoxXYXY], Optional[Tuple[float, float, int]]],
+        ] = {}
+        self._last_saved_instance_centroids: Dict[str, Tuple[float, float]] = {}
         self._recovery_seed_frame_index: Optional[int] = None
         self._recovery_seed_frame: Optional[np.ndarray] = None
         self._recovery_seed_masks: Dict[str, np.ndarray] = {}
@@ -1718,11 +1746,29 @@ class CutieCoreVideoProcessor:
                 self.device,
                 getattr(self, "use_amp", True),
             )
+            use_long_term = bool(getattr(self, "use_long_term", False))
+            try:
+                chunk_size = int(getattr(self, "chunk_size", -1))
+            except (TypeError, ValueError):
+                chunk_size = -1
+            kv_storage_dtype = str(getattr(self, "kv_storage_dtype", "auto") or "auto")
+            try:
+                max_kv_memory_mb = float(getattr(self, "max_kv_memory_mb", 2048.0))
+            except (TypeError, ValueError):
+                max_kv_memory_mb = 2048.0
             with open_dict(cfg):
                 cfg["weights"] = model_path
                 cfg["max_mem_frames"] = self.max_mem_frames
                 cfg["max_internal_size"] = max_internal_size
                 cfg["amp"] = amp_enabled
+                cfg["use_long_term"] = use_long_term
+                cfg["chunk_size"] = chunk_size
+                cfg["kv_storage_dtype"] = kv_storage_dtype
+                cfg["max_kv_memory_mb"] = max_kv_memory_mb
+                if cfg.get("top_k") is None:
+                    cfg["top_k"] = 30
+                if cfg.get("stagger_updates") is None:
+                    cfg["stagger_updates"] = 5
             cfg["mem_every"] = self.mem_every
             logger.info(f"Saving into working memory for every: {self.mem_every}.")
             logger.info(f"Tmax: max_mem_frames: {self.max_mem_frames}")
@@ -1755,21 +1801,77 @@ class CutieCoreVideoProcessor:
             if bbox_area <= (frame_area * 0.50) and bbox_area >= (frame_area * 0.0002):
                 self.cache.add_bbox(label, _bbox)
 
+    def _resolve_mask_geometry(
+        self,
+        label: str,
+        mask: np.ndarray,
+        *,
+        require_stats: bool = True,
+    ) -> Tuple[Optional[BBoxXYXY], Optional[Tuple[float, float, int]]]:
+        """Return cached `(bbox, (cx, cy, area_px))` in `O(bbox_area)` for `(label, mask)`."""
+        cache = getattr(self, "_frame_mask_geometry_cache", None)
+        if not isinstance(cache, dict):
+            cache = {}
+            self._frame_mask_geometry_cache = cache
+
+        key = str(label)
+        cached_entry = cache.get(key)
+        if cached_entry is not None and cached_entry[0] is mask:
+            bbox, stats = cached_entry[1], cached_entry[2]
+            if bbox is None:
+                return None, None
+            if require_stats and stats is None:
+                stats = compute_mask_centroid_and_area(mask, bbox=bbox)
+                cache[key] = (mask, bbox, stats)
+            return bbox, stats
+
+        bbox = tight_mask_bbox(mask)
+        if bbox is None:
+            cache[key] = (mask, None, None)
+            return None, None
+        stats = compute_mask_centroid_and_area(mask, bbox=bbox) if require_stats else None
+        cache[key] = (mask, bbox, stats)
+        return bbox, stats
+
+    def _mask_foreground_area(self, label: str, mask: np.ndarray) -> float:
+        bbox, stats = self._resolve_mask_geometry(label, mask, require_stats=True)
+        if bbox is None or stats is None:
+            return 0.0
+        return float(stats[2])
+
+    def _mask_to_polygons(
+        self,
+        shape_obj: Any,
+        *,
+        bbox: Optional[BBoxXYXY] = None,
+    ):
+        if shape_obj.__class__ is _BUILTIN_MASK_SHAPE:
+            return shape_obj.toPolygons(
+                epsilon=self.epsilon_for_polygon,
+                fill_holes=False,
+                bbox=bbox,
+            )
+        return shape_obj.toPolygons(
+            epsilon=self.epsilon_for_polygon,
+            fill_holes=False,
+        )
+
     def _save_results(self, label, mask):
-        try:
-            cx, cy = find_mask_center_opencv(mask)
-        except ZeroDivisionError as e:
-            logger.info(e)
+        bbox, stats = self._resolve_mask_geometry(label, mask, require_stats=True)
+        if bbox is None or stats is None:
+            logger.info("float division by zero")
             return None
+        cx, cy, area_px = stats
         cx = self._normalize_tracking_scalar(cx, default=0.0)
         cy = self._normalize_tracking_scalar(cy, default=0.0)
         if self._flow_hsv is not None:
-            # unnormalized magnitude
-            magnitude = self._flow_hsv[..., 2]
-            magnitude = magnitude.astype(np.float32)
-            mask_sum = np.sum(mask)
-            if mask_sum > 0:
-                self._motion_index = np.sum(mask * magnitude) / mask_sum
+            if area_px > 0:
+                mean_mag = compute_mask_mean_scalar(
+                    mask,
+                    self._flow_hsv[..., 2],
+                    bbox=bbox,
+                )
+                self._motion_index = 0.0 if mean_mag is None else mean_mag
             else:
                 self._motion_index = 0.0
         else:
@@ -1798,6 +1900,7 @@ class CutieCoreVideoProcessor:
         frame_area = height * width
         label_list = []
         persisted_masks: Dict[str, np.ndarray] = {}
+        persisted_centroids: Dict[str, Tuple[float, float]] = {}
         failed_shapes: Dict[str, Dict[str, Any]] = {}
         shape_notes = shape_notes or {}
         for label_id, mask in mask_dict.items():
@@ -1820,7 +1923,7 @@ class CutieCoreVideoProcessor:
                     % (label, self._frame_number),
                 )
                 failed_shapes[label] = {
-                    "mask": np.asarray(mask).astype(bool),
+                    "mask": np.asarray(mask, dtype=bool),
                     "reason": "suspicious_mask_jump_rejected",
                     "motion_index": None,
                 }
@@ -1829,12 +1932,15 @@ class CutieCoreVideoProcessor:
             metrics = self._save_results(label, mask)
             if metrics is None:
                 failed_shapes[label] = {
-                    "mask": np.asarray(mask).astype(bool),
+                    "mask": np.asarray(mask, dtype=bool),
                     "reason": "metrics_failed",
                     "motion_index": None,
                 }
                 continue
             cx, cy, motion_index = metrics
+            mask_bbox, _ = self._resolve_mask_geometry(
+                label, mask, require_stats=False
+            )
             self.save_KMedoids_in_mask(label_list, mask)
             note_text = str(shape_notes.get(label, "") or "").strip()
             description = f"motion_index: {motion_index}"
@@ -1855,13 +1961,10 @@ class CutieCoreVideoProcessor:
             if note_text:
                 current_shape.other_data["note"] = note_text
             current_shape.mask = mask
-            _shapes = current_shape.toPolygons(
-                epsilon=self.epsilon_for_polygon,
-                fill_holes=False,
-            )
+            _shapes = self._mask_to_polygons(current_shape, bbox=mask_bbox)
             if len(_shapes) <= 0:
                 failed_shapes[label] = {
-                    "mask": np.asarray(mask).astype(bool),
+                    "mask": np.asarray(mask, dtype=bool),
                     "reason": "polygon_conversion_failed",
                     "motion_index": motion_index,
                 }
@@ -1876,15 +1979,20 @@ class CutieCoreVideoProcessor:
             ):
                 fallback_mask = self._recent_instance_masks.get(label)
                 if fallback_mask is not None:
-                    fallback_mask = np.asarray(fallback_mask).astype(bool)
-                if fallback_mask is None or fallback_mask.ndim != 2 or not fallback_mask.any():
+                    fallback_mask = np.asarray(fallback_mask, dtype=bool)
+                fallback_bbox = (
+                    tight_mask_bbox(fallback_mask)
+                    if fallback_mask is not None and fallback_mask.ndim == 2
+                    else None
+                )
+                if fallback_mask is None or fallback_bbox is None:
                     self._log_repetitive_warning(
                         ("frame_sized_rejected", label),
                         "CUTIE frame-sized artifact rejected for '%s' at frame %s."
                         % (label, self._frame_number),
                     )
                     failed_shapes[label] = {
-                        "mask": np.asarray(mask).astype(bool),
+                        "mask": np.asarray(mask, dtype=bool),
                         "reason": "frame_sized_artifact_rejected_no_fallback",
                         "motion_index": motion_index,
                     }
@@ -1897,6 +2005,7 @@ class CutieCoreVideoProcessor:
                     % (label, self._frame_number),
                 )
                 mask = fallback_mask.copy()
+                mask_bbox = fallback_bbox
                 note_text = str(shape_notes.get(label, "") or "").strip()
                 fallback_note = "fallback_previous_mask_after_frame_sized_artifact"
                 if note_text:
@@ -1917,10 +2026,7 @@ class CutieCoreVideoProcessor:
                     "annotation_source": "cutie_vos",
                 }
                 current_shape.mask = mask
-                _shapes = current_shape.toPolygons(
-                    epsilon=self.epsilon_for_polygon,
-                    fill_holes=False,
-                )
+                _shapes = self._mask_to_polygons(current_shape, bbox=mask_bbox)
                 if len(_shapes) <= 0:
                     continue
                 current_shape = _shapes[0]
@@ -1932,7 +2038,7 @@ class CutieCoreVideoProcessor:
                     frame_area=float(frame_area),
                 ):
                     failed_shapes[label] = {
-                        "mask": np.asarray(mask).astype(bool),
+                        "mask": np.asarray(mask, dtype=bool),
                         "reason": "frame_sized_artifact_rejected_after_fallback",
                         "motion_index": motion_index,
                     }
@@ -1941,11 +2047,12 @@ class CutieCoreVideoProcessor:
             current_shape.points = points
             label_list.append(current_shape)
             persisted_masks[label] = np.asarray(mask, dtype=bool)
-            self._last_mask_area_ratio[label] = float(np.count_nonzero(mask)) / max(
-                float(frame_area), 1.0
-            )
+            persisted_centroids[label] = (float(cx), float(cy))
+            self._last_mask_area_ratio[label] = self._mask_foreground_area(
+                label, mask
+            ) / max(float(frame_area), 1.0)
         for label, failed in failed_shapes.items():
-            failed_mask = np.asarray(failed.get("mask")).astype(bool)
+            failed_mask = np.asarray(failed.get("mask"), dtype=bool)
             repaired_mask, repair_source = self._repair_bad_shape_mask(label, failed_mask)
             if repaired_mask is None:
                 self._record_bad_shape_event(
@@ -1967,6 +2074,9 @@ class CutieCoreVideoProcessor:
                 )
                 continue
             cx, cy, motion_index = metrics
+            repaired_bbox, _ = self._resolve_mask_geometry(
+                label, repaired_mask, require_stats=False
+            )
             note_text = str(shape_notes.get(label, "") or "").strip()
             repair_note = f"repaired_bad_shape({repair_source or 'unknown'})"
             if note_text:
@@ -1986,9 +2096,8 @@ class CutieCoreVideoProcessor:
                 "annotation_source": "cutie_vos",
             }
             recovered_shape.mask = repaired_mask
-            repaired_polys = recovered_shape.toPolygons(
-                epsilon=self.epsilon_for_polygon,
-                fill_holes=False,
+            repaired_polys = self._mask_to_polygons(
+                recovered_shape, bbox=repaired_bbox
             )
             if len(repaired_polys) <= 0:
                 self._record_bad_shape_event(
@@ -2005,9 +2114,10 @@ class CutieCoreVideoProcessor:
             recovered_shape.points = recovered_points
             label_list.append(recovered_shape)
             persisted_masks[label] = np.asarray(repaired_mask, dtype=bool)
-            self._last_mask_area_ratio[label] = float(np.count_nonzero(repaired_mask)) / max(
-                float(frame_area), 1.0
-            )
+            persisted_centroids[label] = (float(cx), float(cy))
+            self._last_mask_area_ratio[label] = self._mask_foreground_area(
+                label, repaired_mask
+            ) / max(float(frame_area), 1.0)
             self._record_bad_shape_event(
                 int(getattr(self, "_frame_number", -1)),
                 label,
@@ -2016,6 +2126,9 @@ class CutieCoreVideoProcessor:
                 repair_source=repair_source,
             )
         self._last_saved_instance_masks = persisted_masks
+        self._last_saved_instance_centroids = persisted_centroids
+        if isinstance(getattr(self, "_frame_mask_geometry_cache", None), dict):
+            self._frame_mask_geometry_cache.clear()
         conflict_resolution = resolve_polygon_shape_conflicts(label_list)
         label_list = list(conflict_resolution.shapes)
         if conflict_resolution.adjusted_shape_indices:
@@ -2067,7 +2180,13 @@ class CutieCoreVideoProcessor:
         """Keep component near cached bbox when mask expands to near full frame."""
         if frame_area <= 0:
             return mask, False
-        current_area = float(np.count_nonzero(mask))
+        bbox, _ = self._resolve_mask_geometry(label, mask, require_stats=False)
+        if bbox is None:
+            return mask, False
+        bx0, by0, bx1, by1 = bbox
+        if float((bx1 - bx0) * (by1 - by0)) / frame_area < 0.98:
+            return mask, False
+        current_area = self._mask_foreground_area(label, mask)
         if current_area <= 0:
             return mask, False
         if (current_area / frame_area) < 0.98:
@@ -2135,7 +2254,13 @@ class CutieCoreVideoProcessor:
         """Reject near-full-frame masks when prior bbox/area history indicates artifact."""
         if frame_area <= 0:
             return False
-        current_area = float(np.count_nonzero(mask))
+        bbox, _ = self._resolve_mask_geometry(label, mask, require_stats=False)
+        if bbox is None:
+            return False
+        bx0, by0, bx1, by1 = bbox
+        if float((bx1 - bx0) * (by1 - by0)) / frame_area < 0.97:
+            return False
+        current_area = self._mask_foreground_area(label, mask)
         if current_area <= 0:
             return False
         current_ratio = current_area / frame_area
@@ -2182,17 +2307,18 @@ class CutieCoreVideoProcessor:
         """Return True when a binary mask covers almost the whole frame."""
         if frame_area <= 0:
             return False
-        mask_bool = np.asarray(mask).astype(bool)
-        if mask_bool.ndim != 2 or not mask_bool.any():
+        arr = np.asarray(mask)
+        if arr.ndim != 2 or arr.size == 0:
             return False
-        if float(np.count_nonzero(mask_bool)) / max(float(frame_area), 1.0) < 0.97:
-            return False
-        return bool(
+        mask_bool = arr if arr.dtype == np.bool_ else (arr > 0)
+        if not (
             mask_bool[0, :].any()
             and mask_bool[-1, :].any()
             and mask_bool[:, 0].any()
             and mask_bool[:, -1].any()
-        )
+        ):
+            return False
+        return float(np.count_nonzero(mask_bool)) / max(float(frame_area), 1.0) >= 0.97
 
     def _tracking_collapse_artifact_labels(
         self,
@@ -2338,7 +2464,13 @@ class CutieCoreVideoProcessor:
     ) -> bool:
         if frame_area <= 0:
             return False
-        current_area = float(np.count_nonzero(mask))
+        bbox, _ = self._resolve_mask_geometry(label, mask, require_stats=False)
+        if bbox is None:
+            return False
+        bx0, by0, bx1, by1 = bbox
+        if float((bx1 - bx0) * (by1 - by0)) / frame_area < 0.998:
+            return False
+        current_area = self._mask_foreground_area(label, mask)
         if current_area <= 0:
             return False
         current_ratio = current_area / frame_area
@@ -2396,16 +2528,64 @@ class CutieCoreVideoProcessor:
         mask_dict: Dict[str, np.ndarray],
     ) -> None:
         """Store latest available binary mask per instance for fallback fill."""
+        recent_centroids = getattr(self, "_recent_instance_centroids", None)
+        if not isinstance(recent_centroids, dict):
+            recent_centroids = {}
+            self._recent_instance_centroids = recent_centroids
+        recent_centroid_frames = getattr(self, "_recent_instance_centroid_frames", None)
+        if not isinstance(recent_centroid_frames, dict):
+            recent_centroid_frames = {}
+            self._recent_instance_centroid_frames = recent_centroid_frames
+        recent_centroid_masks = getattr(self, "_recent_instance_centroid_masks", None)
+        if not isinstance(recent_centroid_masks, dict):
+            recent_centroid_masks = {}
+            self._recent_instance_centroid_masks = recent_centroid_masks
+        last_saved_masks = getattr(self, "_last_saved_instance_masks", None)
+        last_saved_centroids = getattr(self, "_last_saved_instance_centroids", None)
+
         for label, mask in (mask_dict or {}).items():
             try:
                 mask_bool = np.asarray(mask, dtype=bool)
             except Exception:
                 continue
-            if mask_bool.ndim != 2 or not mask_bool.any():
+            if mask_bool.ndim != 2:
                 continue
             key = str(label)
-            self._recent_instance_masks[key] = mask_bool.copy()
-            self._recent_instance_mask_frames[key] = int(frame_idx)
+            existing_mask = self._recent_instance_masks.get(key)
+            if (
+                self._recent_instance_mask_frames.get(key) == int(frame_idx)
+                and existing_mask is not None
+                and isinstance(last_saved_masks, dict)
+                and last_saved_masks.get(key) is mask
+            ):
+                stored_mask = existing_mask
+            else:
+                bbox, _ = self._resolve_mask_geometry(
+                    key, mask_bool, require_stats=False
+                )
+                if bbox is None:
+                    continue
+                stored_mask = mask_bool.copy()
+                self._recent_instance_masks[key] = stored_mask
+                self._recent_instance_mask_frames[key] = int(frame_idx)
+
+            if (
+                isinstance(last_saved_masks, dict)
+                and isinstance(last_saved_centroids, dict)
+                and last_saved_masks.get(key) is mask
+                and key in last_saved_centroids
+            ):
+                recent_centroids[key] = last_saved_centroids[key]
+                recent_centroid_frames[key] = int(frame_idx)
+                recent_centroid_masks[key] = stored_mask
+            else:
+                _, stats = self._resolve_mask_geometry(
+                    key, mask_bool, require_stats=True
+                )
+                if stats is not None:
+                    recent_centroids[key] = (float(stats[0]), float(stats[1]))
+                    recent_centroid_frames[key] = int(frame_idx)
+                    recent_centroid_masks[key] = stored_mask
 
     def _detect_identity_assignment_ambiguity(
         self,
@@ -2422,16 +2602,71 @@ class CutieCoreVideoProcessor:
             return None
 
         previous_frame = int(current_frame_index) - 1
-        previous_masks: Dict[str, np.ndarray] = {}
+        recent_centroids = getattr(self, "_recent_instance_centroids", None)
+        recent_centroid_frames = getattr(self, "_recent_instance_centroid_frames", None)
+        recent_centroid_masks = getattr(self, "_recent_instance_centroid_masks", None)
+        previous_centroids: Dict[str, Tuple[float, float]] = {}
+        current_centroids: Dict[str, Tuple[float, float]] = {}
+        expected_shape: Optional[Tuple[int, int]] = None
+
         for label in sorted(normalized_labels):
             if self._recent_instance_mask_frames.get(label) != previous_frame:
                 return None
             previous_mask = self._recent_instance_masks.get(label)
-            if previous_mask is None:
+            current_mask = mask_dict.get(label)
+            if previous_mask is None or current_mask is None:
                 return None
-            previous_masks[label] = previous_mask
+            prev_arr = np.asarray(previous_mask)
+            curr_arr = np.asarray(current_mask)
+            if (
+                prev_arr.ndim != 2
+                or curr_arr.ndim != 2
+                or prev_arr.shape != curr_arr.shape
+            ):
+                return None
+            if expected_shape is None:
+                expected_shape = (int(prev_arr.shape[0]), int(prev_arr.shape[1]))
+            elif prev_arr.shape != expected_shape:
+                return None
 
-        return detect_identity_assignment_ambiguity(previous_masks, mask_dict)
+            if (
+                isinstance(recent_centroids, dict)
+                and isinstance(recent_centroid_frames, dict)
+                and isinstance(recent_centroid_masks, dict)
+                and recent_centroid_frames.get(label) == previous_frame
+                and recent_centroid_masks.get(label) is previous_mask
+                and label in recent_centroids
+            ):
+                previous_centroid = recent_centroids[label]
+            else:
+                prev_stats = compute_mask_centroid_and_area(prev_arr)
+                if prev_stats is None:
+                    return None
+                previous_centroid = (float(prev_stats[0]), float(prev_stats[1]))
+                if (
+                    isinstance(recent_centroids, dict)
+                    and isinstance(recent_centroid_frames, dict)
+                    and isinstance(recent_centroid_masks, dict)
+                ):
+                    recent_centroids[label] = previous_centroid
+                    recent_centroid_frames[label] = previous_frame
+                    recent_centroid_masks[label] = previous_mask
+
+            _, curr_stats = self._resolve_mask_geometry(
+                label, current_mask, require_stats=True
+            )
+            if curr_stats is None:
+                return None
+            previous_centroids[label] = previous_centroid
+            current_centroids[label] = (float(curr_stats[0]), float(curr_stats[1]))
+
+        if expected_shape is None:
+            return None
+        return detect_centroid_assignment_ambiguity(
+            previous_centroids,
+            current_centroids,
+            frame_shape=expected_shape,
+        )
 
     def _fill_missing_instances_from_recent_masks(
         self,
@@ -2461,11 +2696,13 @@ class CutieCoreVideoProcessor:
         mask: np.ndarray,
         expected_shape: Tuple[int, int],
     ) -> Optional[np.ndarray]:
+        if mask is None:
+            return None
         try:
             mask_bool = np.asarray(mask, dtype=bool)
         except Exception:
             return None
-        if mask_bool.shape != expected_shape or not mask_bool.any():
+        if mask_bool.shape != expected_shape or tight_mask_bbox(mask_bool) is None:
             return None
         return mask_bool
 
@@ -2482,16 +2719,44 @@ class CutieCoreVideoProcessor:
         frame_shape = tuple(frame.shape[:2])
         complete_masks: Dict[str, np.ndarray] = {}
         for label in sorted(str(item) for item in expected_labels):
-            mask = self._valid_binary_mask(mask_dict.get(label), frame_shape)
-            if mask is None:
+            raw_mask = mask_dict.get(label)
+            if raw_mask is None:
                 return
-            complete_masks[label] = mask.copy()
+            try:
+                mask_bool = np.asarray(raw_mask, dtype=bool)
+            except Exception:
+                return
+            if mask_bool.shape != frame_shape:
+                return
+            bbox, _ = self._resolve_mask_geometry(
+                label, mask_bool, require_stats=False
+            )
+            if bbox is None:
+                return
+            complete_masks[label] = mask_bool.copy()
         self._recovery_seed_frame_index = int(frame_idx)
         self._recovery_seed_frame = np.asarray(frame)
         self._recovery_seed_masks = complete_masks
+        recent_centroids = getattr(self, "_recent_instance_centroids", None)
+        recent_centroid_frames = getattr(self, "_recent_instance_centroid_frames", None)
+        recent_centroid_masks = getattr(self, "_recent_instance_centroid_masks", None)
+        last_saved_masks = getattr(self, "_last_saved_instance_masks", None)
+        last_saved_centroids = getattr(self, "_last_saved_instance_centroids", None)
         for label, mask in complete_masks.items():
             self._recent_instance_masks[label] = mask
             self._recent_instance_mask_frames[label] = int(frame_idx)
+            if (
+                isinstance(recent_centroids, dict)
+                and isinstance(recent_centroid_frames, dict)
+                and isinstance(recent_centroid_masks, dict)
+                and isinstance(last_saved_masks, dict)
+                and isinstance(last_saved_centroids, dict)
+                and last_saved_masks.get(label) is mask_dict.get(label)
+                and label in last_saved_centroids
+            ):
+                recent_centroids[label] = last_saved_centroids[label]
+                recent_centroid_frames[label] = int(frame_idx)
+                recent_centroid_masks[label] = mask
 
     def _build_global_mask_from_instance_masks(
         self,
@@ -2504,10 +2769,19 @@ class CutieCoreVideoProcessor:
             global_id = labels_dict.get(str(label))
             if global_id is None or int(global_id) == 0:
                 continue
-            mask_bool = self._valid_binary_mask(mask, frame_shape)
-            if mask_bool is None:
+            if mask is None:
                 continue
-            global_mask[mask_bool] = int(global_id)
+            try:
+                mask_bool = np.asarray(mask, dtype=bool)
+            except Exception:
+                continue
+            if mask_bool.shape != frame_shape:
+                continue
+            bbox = tight_mask_bbox(mask_bool)
+            if bbox is None:
+                continue
+            x0, y0, x1, y1 = bbox
+            global_mask[y0:y1, x0:x1][mask_bool[y0:y1, x0:x1]] = int(global_id)
         return global_mask
 
     def _recover_missing_instances_from_recovery_seed(
@@ -2547,6 +2821,17 @@ class CutieCoreVideoProcessor:
         if mask_tensor is None or not recovered_active_ids:
             return {}, None, {str(item) for item in missing_instances}, active_ids
 
+        has_previous_processor = hasattr(self, "processor")
+        previous_processor = getattr(self, "processor", None)
+        has_previous_active = hasattr(self, "_video_active_object_ids")
+        previous_video_active_ids = set(getattr(self, "_video_active_object_ids", set()))
+
+        def _restore_previous_processor() -> None:
+            if has_previous_processor:
+                self.processor = previous_processor
+            if has_previous_active:
+                self._video_active_object_ids = previous_video_active_ids
+
         try:
             self.processor = InferenceCore(self.cutie, cfg=self.cfg)
             self._register_active_objects(recovered_active_ids)
@@ -2567,6 +2852,7 @@ class CutieCoreVideoProcessor:
             )
             prediction = torch_prob_to_numpy_mask(prediction)
         except Exception:
+            _restore_previous_processor()
             logger.warning(
                 "Failed to recover CUTIE missing instance(s) at frame %s from "
                 "non-manual seed frame %s.",
@@ -2584,6 +2870,10 @@ class CutieCoreVideoProcessor:
             instance_names,
         )
         remaining = {str(item) for item in instance_names} - set(mask_dict)
+        if len(remaining) >= len(missing_instances):
+            _restore_previous_processor()
+            return {}, None, {str(item) for item in missing_instances}, active_ids
+
         if not remaining:
             recovered_labels = tuple(sorted(str(item) for item in missing_instances))
             success_counts = getattr(self, "_recovery_success_log_counts", None)
@@ -2714,7 +3004,13 @@ class CutieCoreVideoProcessor:
         )
         mask = np.zeros(image_size[:2], dtype=np.int32)
         for label, instance_mask in zip(ordered_labels, exclusive_masks):
-            mask[instance_mask] = int(label_name_to_value[label])
+            bbox = tight_mask_bbox(instance_mask)
+            if bbox is None:
+                continue
+            x0, y0, x1, y1 = bbox
+            mask[y0:y1, x0:x1][instance_mask[y0:y1, x0:x1]] = int(
+                label_name_to_value[label]
+            )
         return mask, label_name_to_value
 
     def _assign_global_ids(self, label_name_to_value: Dict[str, int]) -> Dict[str, int]:
@@ -2733,23 +3029,22 @@ class CutieCoreVideoProcessor:
         original_label_map: Dict[str, int],
         global_label_map: Dict[str, int],
     ) -> np.ndarray:
-        remapped = np.zeros_like(mask, dtype=np.int32)
-        for label, original_value in original_label_map.items():
-            global_value = global_label_map.get(label, 0)
-            remapped[mask == original_value] = global_value
-        return remapped
+        id_map = {
+            int(original_value): int(global_label_map.get(label, 0))
+            for label, original_value in original_label_map.items()
+        }
+        return remap_index_mask_numpy(mask, id_map, dtype=np.int32)
 
     @staticmethod
     def _extract_active_labels(
         mask: np.ndarray, global_label_map: Dict[str, int]
     ) -> List[str]:
-        active: List[str] = []
-        for label, value in global_label_map.items():
-            if label == "_background_":
-                continue
-            if np.any(mask == value):
-                active.append(label)
-        return active
+        present_values = {int(v) for v in np.unique(mask) if int(v) != 0}
+        return [
+            label
+            for label, value in global_label_map.items()
+            if label != "_background_" and int(value) in present_values
+        ]
 
     def _build_object_mask_tensor(self, mask: np.ndarray):
         mask_array = np.asarray(mask, dtype=np.int32)
@@ -2765,13 +3060,21 @@ class CutieCoreVideoProcessor:
     ) -> Dict[str, np.ndarray]:
         """Build per-label masks directly from the seed segment."""
         seed_masks: Dict[str, np.ndarray] = {}
+        bboxes = extract_index_mask_bboxes(segment.mask)
+        if not bboxes:
+            return seed_masks
+        mask_shape = segment.mask.shape
         for label in sorted(expected_labels):
             value = segment.labels_map.get(label)
             if value is None:
                 continue
-            label_mask = segment.mask == int(value)
-            if not np.any(label_mask):
+            obj_id = int(value)
+            bbox = bboxes.get(obj_id)
+            if bbox is None:
                 continue
+            x0, y0, x1, y1 = bbox
+            label_mask = np.zeros(mask_shape, dtype=bool)
+            label_mask[y0:y1, x0:x1] = segment.mask[y0:y1, x0:x1] == obj_id
             seed_masks[str(label)] = label_mask
         return seed_masks
 
@@ -2790,6 +3093,7 @@ class CutieCoreVideoProcessor:
         if not labels:
             return None, []
 
+        present_values = {int(v) for v in np.unique(segment.mask) if int(v) != 0}
         allowed_values: List[int] = []
         filtered_labels: List[str] = []
         for label in labels:
@@ -2797,9 +3101,7 @@ class CutieCoreVideoProcessor:
             if value is None:
                 continue
             normalized_value = int(value)
-            if normalized_value == 0:
-                continue
-            if not np.any(segment.mask == normalized_value):
+            if normalized_value == 0 or normalized_value not in present_values:
                 continue
             allowed_values.append(normalized_value)
             filtered_labels.append(str(label))
@@ -2809,12 +3111,8 @@ class CutieCoreVideoProcessor:
         if allowed_labels is None:
             return segment.mask.astype(np.int32, copy=False), filtered_labels
 
-        filtered_mask = np.where(
-            np.isin(segment.mask, allowed_values),
-            segment.mask,
-            0,
-        ).astype(np.int32, copy=False)
-        return filtered_mask, filtered_labels
+        keep_map = {val: val for val in allowed_values}
+        return remap_index_mask_numpy(segment.mask, keep_map, dtype=np.int32), filtered_labels
 
     @staticmethod
     def _tmp_to_global_ids_from_processor(
@@ -2854,10 +3152,7 @@ class CutieCoreVideoProcessor:
         prediction: np.ndarray,
         tmp_to_global_ids: Dict[int, int],
     ) -> np.ndarray:
-        global_mask = np.zeros_like(prediction, dtype=np.int32)
-        for tmp_id, global_id in tmp_to_global_ids.items():
-            global_mask[prediction == int(tmp_id)] = int(global_id)
-        return global_mask
+        return remap_index_mask_numpy(prediction, tmp_to_global_ids, dtype=np.int32)
 
     def _prediction_to_instance_masks(
         self,
@@ -2867,42 +3162,63 @@ class CutieCoreVideoProcessor:
         value_to_label_names: Dict[int, str],
         instance_names: Set[str],
     ) -> Tuple[Dict[str, np.ndarray], Optional[np.ndarray]]:
+        geom_cache = getattr(self, "_frame_mask_geometry_cache", None)
+        if not isinstance(geom_cache, dict):
+            geom_cache = {}
+            self._frame_mask_geometry_cache = geom_cache
+        else:
+            geom_cache.clear()
+
         if prediction is None:
+            fallback_arr = np.asarray(fallback_global_mask)
+            bboxes = extract_index_mask_bboxes(fallback_arr)
             mask_dict: Dict[str, np.ndarray] = {}
             for global_id in sorted(int(obj_id) for obj_id in active_ids):
                 label_name = value_to_label_names.get(int(global_id), str(global_id))
                 if label_name not in instance_names:
                     continue
-                global_mask = fallback_global_mask == int(global_id)
-                if not global_mask.any():
+                bbox = bboxes.get(int(global_id))
+                if bbox is None:
                     continue
+                x0, y0, x1, y1 = bbox
+                global_mask = np.zeros(fallback_arr.shape, dtype=bool)
+                global_mask[y0:y1, x0:x1] = (
+                    fallback_arr[y0:y1, x0:x1] == int(global_id)
+                )
                 mask_dict[label_name] = global_mask
-            return mask_dict, fallback_global_mask.copy()
+                geom_cache[str(label_name)] = (global_mask, bbox, None)
+            return mask_dict, fallback_arr.copy()
 
         tmp_to_global_ids = self._tmp_to_global_ids_from_processor(
             self.processor,
             active_ids,
         )
-        prediction = np.asarray(prediction)
+        pred_arr = np.asarray(prediction)
+        bboxes = extract_index_mask_bboxes(pred_arr)
         mask_dict = {}
         for tmp_id, global_id in sorted(tmp_to_global_ids.items()):
             label_name = value_to_label_names.get(int(global_id), str(global_id))
             if label_name not in instance_names:
                 continue
-            local_mask = prediction == int(tmp_id)
-            if not local_mask.any():
+            bbox = bboxes.get(int(tmp_id))
+            if bbox is None:
                 continue
+            x0, y0, x1, y1 = bbox
+            local_mask = np.zeros(pred_arr.shape, dtype=bool)
+            local_mask[y0:y1, x0:x1] = pred_arr[y0:y1, x0:x1] == int(tmp_id)
             mask_dict[label_name] = local_mask
+            geom_cache[str(label_name)] = (local_mask, bbox, None)
         return mask_dict, None
 
     @staticmethod
     def _map_local_prediction_to_global(
         prediction: np.ndarray, active_global_ids: List[int]
     ) -> np.ndarray:
-        global_mask = np.zeros_like(prediction, dtype=np.int32)
-        for local_idx, global_id in enumerate(active_global_ids, start=1):
-            global_mask[prediction == local_idx] = global_id
-        return global_mask
+        id_map = {
+            int(local_idx): int(global_id)
+            for local_idx, global_id in enumerate(active_global_ids, start=1)
+        }
+        return remap_index_mask_numpy(prediction, id_map, dtype=np.int32)
 
     def _load_seed_mask(self, seed: SeedFrame) -> Optional[SeedSegment]:
         """Load mask and label mapping for a given seed frame."""
@@ -2941,17 +3257,19 @@ class CutieCoreVideoProcessor:
             frame_area = float(segment.mask.shape[0] * segment.mask.shape[1])
             if frame_area <= 0:
                 return
+            bboxes = extract_index_mask_bboxes(segment.mask)
             for label in segment.active_labels:
                 value = segment.labels_map.get(label)
                 if value is None or int(value) == 0:
                     continue
-                ys, xs = np.where(segment.mask == int(value))
-                if xs.size == 0 or ys.size == 0:
+                bbox = bboxes.get(int(value))
+                if bbox is None:
                     continue
-                x1 = float(xs.min())
-                y1 = float(ys.min())
-                x2 = float(xs.max())
-                y2 = float(ys.max())
+                x0, y0, x1_excl, y1_excl = bbox
+                x1 = float(x0)
+                y1 = float(y0)
+                x2 = float(x1_excl - 1)
+                y2 = float(y1_excl - 1)
                 bbox_area = max(0.0, (x2 - x1) * (y2 - y1))
                 if bbox_area <= 0.0 or bbox_area >= frame_area * 0.95:
                     continue
@@ -3058,15 +3376,23 @@ class CutieCoreVideoProcessor:
                         self.video_name, self.video_folder
                     )
 
-                reference_seeds = self._reference_seed_frames_for_segment(
-                    int(frame_number),
-                    candidate_seeds,
-                    segment_end=segment_end,
-                )
                 allowed_labels = (
                     {str(label) for label in active_labels}
                     if active_labels is not None
                     else None
+                )
+                prior_limit = getattr(self, "prior_reference_seed_limit", None)
+                if (
+                    prior_limit is None
+                    and allowed_labels is not None
+                    and len(allowed_labels) > self._LARGE_COLONY_PRIOR_SEED_THRESHOLD
+                ):
+                    prior_limit = 1
+                reference_seeds = self._reference_seed_frames_for_segment(
+                    int(frame_number),
+                    candidate_seeds,
+                    segment_end=segment_end,
+                    prior_limit=prior_limit,
                 )
                 for seed in reference_seeds:
                     if seed.frame_index in self._committed_seed_frames:
@@ -3594,6 +3920,7 @@ class CutieCoreVideoProcessor:
                         else:
                             self.processor.step(
                                 frame_torch,
+                                return_index_mask=True,
                                 resize_output=False,
                             )
                         skipped_persist_count += 1
@@ -3835,13 +4162,32 @@ class CutieCoreVideoProcessor:
                                 ),
                                 default=missing_log_every,
                             )
+                            frame_area_px = float(frame.shape[0] * frame.shape[1])
+                            pre_collapse_artifact_labels = (
+                                self._tracking_collapse_artifact_labels(
+                                    mask_dict,
+                                    initial_missing_instances,
+                                    frame_area_px,
+                                )
+                                if len(missing_instances) >= 2
+                                else []
+                            )
+                            partial_occlusion_eligible = bool(
+                                len(missing_instances) == 1
+                                or (
+                                    0
+                                    < len(missing_instances)
+                                    < expected_instance_count
+                                    and not pre_collapse_artifact_labels
+                                )
+                            )
                             recovery_backoff_allowed = bool(
                                 recovery_enabled
                                 and fill_enabled
                                 and not bool(
                                     getattr(self, "automatic_pause_enabled", False)
                                 )
-                                and len(missing_instances) == 1
+                                and partial_occlusion_eligible
                             )
                             backoff_active = bool(
                                 recovery_backoff_allowed
@@ -3893,7 +4239,7 @@ class CutieCoreVideoProcessor:
                             skip_single_recovery = bool(
                                 recovery_enabled
                                 and not filled_during_backoff
-                                and len(missing_instances) == 1
+                                and partial_occlusion_eligible
                                 and failed_single_recovery_key == recovery_key
                                 and failed_single_recovery_streak > 0
                                 and failed_single_recovery_streak % missing_log_every
@@ -3992,7 +4338,7 @@ class CutieCoreVideoProcessor:
                                 self._tracking_collapse_artifact_labels(
                                     mask_dict,
                                     initial_missing_instances,
-                                    float(frame.shape[0] * frame.shape[1]),
+                                    frame_area_px,
                                 )
                             )
                             collapse_missing_instances = set(missing_instances)
@@ -4078,7 +4424,16 @@ class CutieCoreVideoProcessor:
                                         str(instance) for instance in missing_instances
                                     )
                                 )
-                                if recovery_enabled and len(final_missing_key) == 1:
+                                final_partial_occlusion = bool(
+                                    len(final_missing_key) == 1
+                                    or (
+                                        0
+                                        < len(final_missing_key)
+                                        < expected_instance_count
+                                        and not collapse_artifact_labels
+                                    )
+                                )
+                                if recovery_enabled and final_partial_occlusion:
                                     final_recovery_key = (
                                         recovery_seed_key,
                                         final_missing_key,
@@ -4301,6 +4656,12 @@ class CutieCoreVideoProcessor:
         self._video_active_object_ids = set()
         self._recent_instance_masks.clear()
         self._recent_instance_mask_frames.clear()
+        self._recent_instance_centroids.clear()
+        self._recent_instance_centroid_frames.clear()
+        if isinstance(getattr(self, "_recent_instance_centroid_masks", None), dict):
+            self._recent_instance_centroid_masks.clear()
+        self._frame_mask_geometry_cache.clear()
+        self._last_saved_instance_centroids.clear()
         self._recovery_seed_frame_index = None
         self._recovery_seed_frame = None
         self._recovery_seed_masks.clear()
@@ -4358,6 +4719,12 @@ class CutieCoreVideoProcessor:
         self._video_active_object_ids = set()
         self._recent_instance_masks.clear()
         self._recent_instance_mask_frames.clear()
+        self._recent_instance_centroids.clear()
+        self._recent_instance_centroid_frames.clear()
+        if isinstance(getattr(self, "_recent_instance_centroid_masks", None), dict):
+            self._recent_instance_centroid_masks.clear()
+        self._frame_mask_geometry_cache.clear()
+        self._last_saved_instance_centroids.clear()
         self._recovery_seed_frame_index = None
         self._recovery_seed_frame = None
         self._recovery_seed_masks.clear()
