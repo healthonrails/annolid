@@ -16,12 +16,14 @@ class _AnnolidHelpFormatter(
 
 _ROOT_COMMAND_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Models", ("list-models", "dinov3-models", "train", "predict")),
+    ("Tracking", ("track-qc", "repair-tracks")),
     (
         "Behavior",
         (
             "time-budget",
             "behavior-qc",
             "behavior-irr",
+            "behavior-cohort",
         ),
     ),
     (
@@ -99,7 +101,8 @@ def _root_help_epilog() -> str:
         "  annolid-run help train\n\n"
         "Common areas:\n"
         "  Models: train, predict, list-models, dinov3-models\n"
-        "  Behavior: time-budget, behavior-qc, behavior-irr\n"
+        "  Tracking: track-qc, repair-tracks\n"
+        "  Behavior: time-budget, behavior-qc, behavior-irr, behavior-cohort\n"
         "  Agent: agent, agent-behavior, agent-status, agent-capabilities, agent-security-*, agent-cron-*\n"
         "  Data: collect-labels, index-to-yolo, import-deeplabcut-training-data\n"
         "  Utilities: citations-*, validate-agent-output, validate-agent-tools"
@@ -516,6 +519,83 @@ def _cmd_behavior_irr(args: argparse.Namespace) -> int:
             json_stdout=bool(getattr(args, "json", False)),
             out_json=getattr(args, "out", None),
             csv_out=getattr(args, "csv_out", None),
+        )
+    )
+
+
+def _cmd_behavior_cohort(args: argparse.Namespace) -> int:
+    from annolid.services.behavior_analytics import run_behavior_cohort_cli
+
+    return int(
+        run_behavior_cohort_cli(
+            manifest_path=getattr(args, "manifest", None),
+            events_csvs=list(getattr(args, "events_csvs", None) or ()),
+            metadata_csv=getattr(args, "metadata_csv", None),
+            schema_path=getattr(args, "schema", None),
+            session_duration=getattr(args, "session_duration", None),
+            max_transition_gap=getattr(args, "max_transition_gap", None),
+            exclude_self_transitions=bool(
+                getattr(args, "exclude_self_transitions", False)
+            ),
+            include_schema_behaviors=bool(
+                getattr(args, "include_schema_behaviors", False)
+            ),
+            strict=bool(getattr(args, "strict", False)),
+            json_stdout=bool(getattr(args, "json", False)),
+            out_json=getattr(args, "out", None),
+            summary_csv=getattr(args, "summary_csv", None),
+            subjects_csv=getattr(args, "subjects_csv", None),
+            transitions_csv=getattr(args, "transitions_csv", None),
+        )
+    )
+
+
+def _cmd_track_qc(args: argparse.Namespace) -> int:
+    from annolid.services.track_analytics import run_track_qc_cli
+
+    return int(
+        run_track_qc_cli(
+            input_path=args.input_path,
+            schema_path=getattr(args, "schema", None),
+            pose_schema_path=getattr(args, "pose_schema", None),
+            expected_instances=getattr(args, "expected_instances", None),
+            fps=getattr(args, "fps", None),
+            max_speed_px_per_frame=getattr(args, "max_speed_px", None),
+            speed_mad_z=float(getattr(args, "speed_mad_z", 6.0)),
+            min_jump_px=float(getattr(args, "min_jump_px", 25.0)),
+            max_area_ratio=float(getattr(args, "max_area_ratio", 2.5)),
+            overlap_iou_threshold=float(getattr(args, "overlap_iou", 0.25)),
+            close_contact_px=float(getattr(args, "close_contact_px", 80.0)),
+            max_edge_stretch_ratio=float(getattr(args, "max_edge_stretch", 2.5)),
+            min_score=float(getattr(args, "min_score", 0.35)),
+            bout_merge_gap_frames=int(getattr(args, "bout_gap_frames", 5)),
+            top_k_review=getattr(args, "top_k", 25),
+            strict=bool(getattr(args, "strict", False)),
+            json_stdout=bool(getattr(args, "json", False)),
+            out_json=getattr(args, "out", None),
+            issues_csv=getattr(args, "issues_csv", None),
+            review_csv=getattr(args, "review_csv", None),
+        )
+    )
+
+
+def _cmd_repair_tracks(args: argparse.Namespace) -> int:
+    from annolid.services.track_analytics import run_track_repair_cli
+
+    return int(
+        run_track_repair_cli(
+            annotation_dir=args.annotation_dir,
+            mode=str(getattr(args, "mode", "temporal") or "temporal"),
+            apply_changes=bool(getattr(args, "apply", False)),
+            report_path=getattr(args, "report_out", None),
+            json_out=getattr(args, "json_out", None),
+            json_stdout=bool(getattr(args, "json", False)),
+            start_frame=int(getattr(args, "start_frame", 0)),
+            expected_instance_count=getattr(args, "expected_instances", None),
+            max_gap_frames=int(getattr(args, "max_gap_frames", 5)),
+            max_match_distance=float(getattr(args, "max_match_distance", 80.0)),
+            policy_path=getattr(args, "policy", None),
+            zone_file=getattr(args, "zones", None),
         )
     )
 
@@ -2359,6 +2439,271 @@ def _build_root_parser() -> argparse.ArgumentParser:
         help="Optional CSV path to write per-behavior IRR metrics.",
     )
     irr_p.set_defaults(_handler=_cmd_behavior_irr)
+
+    cohort_p = sub.add_parser(
+        "behavior-cohort",
+        help="Aggregate multi-animal cohort behavior endpoints and Markov transition matrices.",
+    )
+    cohort_p.add_argument(
+        "events_csvs",
+        nargs="*",
+        help="Optional behavior event CSV files or directories (may be combined with --manifest).",
+    )
+    cohort_p.add_argument(
+        "--manifest",
+        default=None,
+        help="Optional CSV or JSON cohort manifest mapping recordings to experimental groups.",
+    )
+    cohort_p.add_argument(
+        "--metadata-csv",
+        default=None,
+        help="Optional metadata CSV to unblind/join experimental group assignments onto recordings.",
+    )
+    cohort_p.add_argument(
+        "--schema",
+        default=None,
+        help="Optional project schema file (project.annolid.json or YAML).",
+    )
+    cohort_p.add_argument(
+        "--session-duration",
+        type=float,
+        default=None,
+        help="Optional explicit session duration override in seconds for % session and censored latency.",
+    )
+    cohort_p.add_argument(
+        "--max-transition-gap",
+        type=float,
+        default=None,
+        help="Optional maximum inter-event gap (seconds) counted as a Markov transition.",
+    )
+    cohort_p.add_argument(
+        "--exclude-self-transitions",
+        action="store_true",
+        help="Exclude repeated B->B self-transitions when computing transition probabilities.",
+    )
+    cohort_p.add_argument(
+        "--include-schema-behaviors",
+        action="store_true",
+        help="Include zero-occurrence behaviors declared in --schema across cohort tables.",
+    )
+    cohort_p.add_argument(
+        "--strict",
+        action="store_true",
+        help="Fail with exit code 2 if unmatched state start/stop events are encountered.",
+    )
+    cohort_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Print structured JSON cohort report to stdout.",
+    )
+    cohort_p.add_argument(
+        "--out",
+        default=None,
+        help="Optional JSON path to write the full cohort report and provenance.",
+    )
+    cohort_p.add_argument(
+        "--summary-csv",
+        default=None,
+        help="Optional CSV path to write group-level mean/SD/SEM/median/IQR summaries.",
+    )
+    cohort_p.add_argument(
+        "--subjects-csv",
+        default=None,
+        help="Optional CSV path to write tidy per-(recording, subject, behavior) rows.",
+    )
+    cohort_p.add_argument(
+        "--transitions-csv",
+        default=None,
+        help="Optional CSV path to write first-order Markov transition probabilities and lift.",
+    )
+    cohort_p.set_defaults(_handler=_cmd_behavior_cohort)
+
+    track_qc_p = sub.add_parser(
+        "track-qc",
+        help="Audit multi-animal tracks and generate a prioritized active-learning review queue.",
+    )
+    track_qc_p.add_argument(
+        "input_path",
+        help="Path to a LabelMe frame JSON directory or Annolid tracking CSV (*_tracking.csv / *_tracked.csv).",
+    )
+    track_qc_p.add_argument(
+        "--schema",
+        default=None,
+        help="Optional project schema file (project.annolid.json or YAML).",
+    )
+    track_qc_p.add_argument(
+        "--pose-schema",
+        default=None,
+        help="Optional PoseSchema JSON/YAML file for anatomical keypoint bone-length checks.",
+    )
+    track_qc_p.add_argument(
+        "--expected-instances",
+        type=int,
+        default=None,
+        help="Expected number of tracked animal instances per frame.",
+    )
+    track_qc_p.add_argument(
+        "--fps",
+        type=float,
+        default=None,
+        help="Optional recording frame rate (Hz) recorded in report metadata.",
+    )
+    track_qc_p.add_argument(
+        "--max-speed-px",
+        type=float,
+        default=None,
+        help="Explicit centroid velocity threshold (px/frame); defaults to adaptive MAD threshold.",
+    )
+    track_qc_p.add_argument(
+        "--speed-mad-z",
+        type=float,
+        default=6.0,
+        help="Robust MAD z-score multiplier for adaptive velocity spike detection (default: 6.0).",
+    )
+    track_qc_p.add_argument(
+        "--min-jump-px",
+        type=float,
+        default=25.0,
+        help="Minimum displacement floor in pixels for jump and swap checks (default: 25.0).",
+    )
+    track_qc_p.add_argument(
+        "--max-area-ratio",
+        type=float,
+        default=2.5,
+        help="Frame-to-frame mask/bbox area fold-change threshold (default: 2.5).",
+    )
+    track_qc_p.add_argument(
+        "--overlap-iou",
+        type=float,
+        default=0.25,
+        help="Pairwise mask/bbox IoU threshold for close-contact overlap warnings (default: 0.25).",
+    )
+    track_qc_p.add_argument(
+        "--close-contact-px",
+        type=float,
+        default=80.0,
+        help="Centroid proximity threshold (px) for close-contact swap checks (default: 80.0).",
+    )
+    track_qc_p.add_argument(
+        "--max-edge-stretch",
+        type=float,
+        default=2.5,
+        help="Skeleton edge stretch multiplier relative to median bone length (default: 2.5).",
+    )
+    track_qc_p.add_argument(
+        "--min-score",
+        type=float,
+        default=0.35,
+        help="Minimum prediction confidence before flagging low_confidence (default: 0.35).",
+    )
+    track_qc_p.add_argument(
+        "--bout-gap-frames",
+        type=int,
+        default=5,
+        help="Maximum frame gap for merging nearby anomalies into a ReviewBout (default: 5).",
+    )
+    track_qc_p.add_argument(
+        "--top-k",
+        type=int,
+        default=25,
+        help="Maximum number of prioritized ReviewBout windows to emit (default: 25).",
+    )
+    track_qc_p.add_argument(
+        "--strict",
+        action="store_true",
+        help="Treat warnings as failures (exit code 2).",
+    )
+    track_qc_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Print structured JSON report to stdout.",
+    )
+    track_qc_p.add_argument(
+        "--out",
+        default=None,
+        help="Optional JSON path to write the full track QC report and provenance.",
+    )
+    track_qc_p.add_argument(
+        "--issues-csv",
+        default=None,
+        help="Optional CSV path to write individual detected tracking anomalies.",
+    )
+    track_qc_p.add_argument(
+        "--review-csv",
+        default=None,
+        help="Optional CSV path to write the ranked active-learning review queue.",
+    )
+    track_qc_p.set_defaults(_handler=_cmd_track_qc)
+
+    repair_tracks_p = sub.add_parser(
+        "repair-tracks",
+        help="Audit or repair multi-animal identity switches in LabelMe JSON directories (dry-run by default).",
+    )
+    repair_tracks_p.add_argument(
+        "annotation_dir",
+        help="Directory containing per-frame LabelMe JSON annotations.",
+    )
+    repair_tracks_p.add_argument(
+        "--mode",
+        choices=("temporal", "governor"),
+        default="temporal",
+        help="Repair engine: 'temporal' multi-cue continuity or 'governor' zone/evidence policy (default: temporal).",
+    )
+    repair_tracks_p.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write repaired identities back to frame JSON files (defaults to safe dry-run).",
+    )
+    repair_tracks_p.add_argument(
+        "--start-frame",
+        type=int,
+        default=0,
+        help="Reference anchor start frame for temporal repair (default: 0).",
+    )
+    repair_tracks_p.add_argument(
+        "--expected-instances",
+        type=int,
+        default=None,
+        help="Expected number of tracked animal instances in temporal mode.",
+    )
+    repair_tracks_p.add_argument(
+        "--max-gap-frames",
+        type=int,
+        default=5,
+        help="Maximum occlusion gap frames to fill/carry forward in temporal mode (default: 5).",
+    )
+    repair_tracks_p.add_argument(
+        "--max-match-distance",
+        type=float,
+        default=80.0,
+        help="Maximum centroid matching distance in pixels for temporal repair (default: 80.0).",
+    )
+    repair_tracks_p.add_argument(
+        "--policy",
+        default=None,
+        help="Path to a GovernorPolicy JSON/YAML file (required when --mode governor).",
+    )
+    repair_tracks_p.add_argument(
+        "--zones",
+        default=None,
+        help="Optional zone shapes JSON file for --mode governor.",
+    )
+    repair_tracks_p.add_argument(
+        "--report-out",
+        default=None,
+        help="Optional path for the detailed engine audit JSON report.",
+    )
+    repair_tracks_p.add_argument(
+        "--json-out",
+        default=None,
+        help="Optional path to write the CLI repair summary JSON.",
+    )
+    repair_tracks_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Print structured JSON summary to stdout.",
+    )
+    repair_tracks_p.set_defaults(_handler=_cmd_repair_tracks)
 
     collect_p = sub.add_parser(
         "collect-labels",

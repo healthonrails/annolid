@@ -175,6 +175,16 @@ annolid-run behavior-irr rater_a.csv rater_b.csv \
     --min-kappa 0.70 \
     --out irr_report.json \
     --csv-out irr_summary.csv
+
+# 4. Aggregate cohort endpoints (with blinded-to-unblinded metadata join) and Markov transition matrices
+annolid-run behavior-cohort ./scored_csvs/ \
+    --metadata-csv unblind_key.csv \
+    --schema project.annolid.json \
+    --session-duration 600 \
+    --summary-csv cohort_summary.csv \
+    --subjects-csv cohort_subjects.csv \
+    --transitions-csv cohort_transitions.csv \
+    --out cohort_report.json
 ```
 
 The standalone module invocation `python -m annolid.behavior.time_budget ...` remains supported for backward compatibility.
@@ -246,6 +256,26 @@ Use [Identity Governor](identity_governor.md) only for advanced post-processing
 cases where the IDs can be inferred from explicit assay logic or where you need a
 batch audit/report. Dry-run the policy or temporal repair first, then review the
 generated report before applying changes to downstream analysis files.
+
+Headless multi-animal track quality control, active-learning review queue export,
+and identity repair are also available via `annolid-run`:
+
+```bash
+# Audit LabelMe frame JSONs or *_tracking.csv and rank high-risk interaction bouts
+annolid-run track-qc ./video_01/ \
+    --expected-instances 2 \
+    --pose-schema pose_schema.json \
+    --review-csv review_queue.csv \
+    --issues-csv track_issues.csv \
+    --out track_qc_report.json
+
+# Dry-run temporal multi-cue identity repair first (does not modify frame JSONs)
+annolid-run repair-tracks ./video_01/ --expected-instances 2
+
+# Apply temporal repair or policy-based Identity Governor corrections
+annolid-run repair-tracks ./video_01/ --expected-instances 2 --apply
+annolid-run repair-tracks ./video_01/ --mode governor --policy policy.json --zones zones.json --apply
+```
 
 ## CUTIE Analysis Speed
 

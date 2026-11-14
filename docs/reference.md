@@ -33,12 +33,22 @@ Agent-side CLI execution:
 
 - [Annolid Agent and annolid-run](agent_annolid_run.md)
 
-Behavior analytics, quality control, and inter-rater reliability commands:
+Multi-animal track quality control, active-learning review queue, and headless track repair commands:
+
+```bash
+annolid-run track-qc ./session_frames/ --expected-instances 2 --pose-schema pose_schema.json --review-csv review_queue.csv --out track_qc.json
+annolid-run repair-tracks ./session_frames/ --expected-instances 2
+annolid-run repair-tracks ./session_frames/ --expected-instances 2 --apply
+annolid-run repair-tracks ./session_frames/ --mode governor --policy policy.json --zones zones.json --apply
+```
+
+Behavior analytics, quality control, inter-rater reliability, and cohort aggregation commands:
 
 ```bash
 annolid-run time-budget exported_events.csv --schema project.annolid.json -o time_budget.csv
 annolid-run behavior-qc exported_events.csv --schema project.annolid.json --strict --out qc_report.json
 annolid-run behavior-irr rater_1.csv rater_2.csv --schema project.annolid.json --bin-seconds 0.1 --csv-out irr_summary.csv
+annolid-run behavior-cohort ./scored_csvs/ --metadata-csv unblind_key.csv --summary-csv cohort_summary.csv --transitions-csv cohort_transitions.csv
 ```
 
 Security-focused agent commands:

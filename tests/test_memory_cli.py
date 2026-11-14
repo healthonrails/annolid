@@ -40,6 +40,8 @@ def test_engine_cli_grouped_root_help_contains_sections() -> None:
     parser = engine_cli._build_root_parser()  # noqa: SLF001
     text = engine_cli._format_root_help(parser)  # noqa: SLF001
     assert "Models:" in text
+    assert "Tracking:" in text
+    assert "Behavior:" in text
     assert "Agent:" in text
     assert "Data:" in text
     assert "Utilities:" in text

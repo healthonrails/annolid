@@ -6,14 +6,23 @@ from annolid import domain, infrastructure, interfaces, services
 from annolid.domain import (
     BehaviorEvent,
     BehaviorIRRRow,
+    CohortBehaviorReport,
+    CohortGroupSummaryRow,
+    CohortRecordingSpec,
+    CohortSubjectRow,
     DeepLabCutTrainingImportConfig,
     EthogramIssue,
     EthogramQCReport,
     IRRReport,
     InstanceRegistry,
+    InstanceTrackSummary,
     ProjectSchema,
+    ReviewBout,
     TimeBudgetRow,
     Track,
+    TrackQCIssue,
+    TrackQCReport,
+    TransitionEdge,
 )
 from annolid.infrastructure import AnnotationStore, configure_ultralytics_cache
 from annolid.interfaces.background import TrackingWorker
@@ -83,6 +92,8 @@ from annolid.services import (
     run_agent_update,
     run_agent_security_audit,
     run_agent_security_check,
+    run_behavior_cohort,
+    run_behavior_cohort_cli,
     run_behavior_irr,
     run_behavior_irr_cli,
     run_behavior_qc,
@@ -90,6 +101,10 @@ from annolid.services import (
     run_behavior_time_budget_cli,
     run_behavior_training_cli,
     run_embedding_search,
+    run_track_qc,
+    run_track_qc_cli,
+    run_track_repair,
+    run_track_repair_cli,
     run_chat_fast_mode,
     run_chat_fast_provider_chat,
     run_chat_gemini,
@@ -113,10 +128,19 @@ def test_domain_layer_exports() -> None:
     assert domain.ProjectSchema is ProjectSchema
     assert domain.BehaviorEvent is BehaviorEvent
     assert domain.BehaviorIRRRow is BehaviorIRRRow
+    assert domain.CohortBehaviorReport is CohortBehaviorReport
+    assert domain.CohortGroupSummaryRow is CohortGroupSummaryRow
+    assert domain.CohortRecordingSpec is CohortRecordingSpec
+    assert domain.CohortSubjectRow is CohortSubjectRow
     assert domain.EthogramIssue is EthogramIssue
     assert domain.EthogramQCReport is EthogramQCReport
     assert domain.IRRReport is IRRReport
     assert domain.Track is Track
+    assert domain.InstanceTrackSummary is InstanceTrackSummary
+    assert domain.ReviewBout is ReviewBout
+    assert domain.TrackQCIssue is TrackQCIssue
+    assert domain.TrackQCReport is TrackQCReport
+    assert domain.TransitionEdge is TransitionEdge
     assert domain.InstanceRegistry is InstanceRegistry
     assert domain.TimeBudgetRow is TimeBudgetRow
     assert domain.DeepLabCutTrainingImportConfig is DeepLabCutTrainingImportConfig
@@ -130,7 +154,13 @@ def test_services_layer_exports() -> None:
     assert services.run_behavior_qc_cli is run_behavior_qc_cli
     assert services.run_behavior_irr is run_behavior_irr
     assert services.run_behavior_irr_cli is run_behavior_irr_cli
+    assert services.run_behavior_cohort is run_behavior_cohort
+    assert services.run_behavior_cohort_cli is run_behavior_cohort_cli
     assert services.run_behavior_time_budget_cli is run_behavior_time_budget_cli
+    assert services.run_track_qc is run_track_qc
+    assert services.run_track_qc_cli is run_track_qc_cli
+    assert services.run_track_repair is run_track_repair
+    assert services.run_track_repair_cli is run_track_repair_cli
     assert services.analyze_chat_tracking_stats_tool is analyze_chat_tracking_stats_tool
     assert (
         services.should_attach_tracking_stats_context
@@ -253,6 +283,15 @@ def test_execution_paths_use_layer_imports() -> None:
     )
     assert (
         "from annolid.services.behavior_analytics import run_behavior_irr_cli"
+        in cli_source
+    )
+    assert (
+        "from annolid.services.behavior_analytics import run_behavior_cohort_cli"
+        in cli_source
+    )
+    assert "from annolid.services.track_analytics import run_track_qc_cli" in cli_source
+    assert (
+        "from annolid.services.track_analytics import run_track_repair_cli"
         in cli_source
     )
     assert "from annolid.domain import DeepLabCutTrainingImportConfig" in cli_source

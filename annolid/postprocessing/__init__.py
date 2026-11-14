@@ -33,6 +33,21 @@ _EXPORTS = {
         "annolid.postprocessing.temporal_identity_repair",
         "run_temporal_identity_repair",
     ),
+    "InstanceTrackSummary": (
+        "annolid.postprocessing.track_qc",
+        "InstanceTrackSummary",
+    ),
+    "ReviewBout": ("annolid.postprocessing.track_qc", "ReviewBout"),
+    "TrackQCComputationError": (
+        "annolid.postprocessing.track_qc",
+        "TrackQCComputationError",
+    ),
+    "TrackQCIssue": ("annolid.postprocessing.track_qc", "TrackQCIssue"),
+    "TrackQCReport": ("annolid.postprocessing.track_qc", "TrackQCReport"),
+    "evaluate_track_qc": (
+        "annolid.postprocessing.track_qc",
+        "evaluate_track_qc",
+    ),
     "ZoneOccupancyPolicyResult": (
         "annolid.postprocessing.zone_occupancy_policy",
         "ZoneOccupancyPolicyResult",
