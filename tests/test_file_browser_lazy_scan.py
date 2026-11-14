@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import gc
 import os
+import threading
+import time
 from types import SimpleNamespace
 from pathlib import Path
+import weakref
 
-from qtpy import QtWidgets
+from qtpy import QtCore, QtWidgets
 
 from annolid.gui.file_dock import FileDockMixin
 from annolid.gui.mixins.file_browser_mixin import FileBrowserMixin
@@ -82,6 +86,22 @@ class _DummyFileBrowserWindow(FileBrowserMixin, FileDockMixin, QtWidgets.QMainWi
         self._pending_last_worked_file = ""
 
 
+def _wait_for_scan_idle(
+    app: QtWidgets.QApplication,
+    window: _DummyFileBrowserWindow,
+    *,
+    timeout_ms: int = 5000,
+) -> None:
+    deadline = time.monotonic() + (timeout_ms / 1000.0)
+    while time.monotonic() < deadline:
+        app.processEvents()
+        if not bool(getattr(window, "_dir_scan_running", False)):
+            app.processEvents()
+            return
+        QtCore.QThread.msleep(2)
+    app.processEvents()
+
+
 def test_import_dir_images_scans_asynchronously_and_keeps_image_mode(tmp_path: Path):
     app = _ensure_qapp()
     window = _DummyFileBrowserWindow()
@@ -91,11 +111,7 @@ def test_import_dir_images_scans_asynchronously_and_keeps_image_mode(tmp_path: P
             (tmp_path / f"frame_{idx:04d}.json").write_text("{}", encoding="utf-8")
 
         window.importDirImages(str(tmp_path), load=True)
-
-        for _ in range(200):
-            app.processEvents()
-            if not bool(getattr(window, "_dir_scan_running", False)):
-                break
+        _wait_for_scan_idle(app, window)
 
         assert not bool(getattr(window, "_dir_scan_running", False))
         assert len(window.imageList) == 4
@@ -131,19 +147,15 @@ def test_import_dir_images_restores_pending_last_worked_file_only_in_opened_dir(
         window._pending_last_worked_file = str(target_png)
 
         window.importDirImages(str(wrong_dir), load=True)
-        for _ in range(200):
-            app.processEvents()
-            if not bool(getattr(window, "_dir_scan_running", False)):
-                break
+        _wait_for_scan_idle(app, window)
+        assert not bool(getattr(window, "_dir_scan_running", False))
         assert window._open_next_calls == 1
         assert window._loaded_files == []
         assert window._pending_last_worked_file == str(target_png)
 
         window.importDirImages(str(right_dir), load=True)
-        for _ in range(200):
-            app.processEvents()
-            if not bool(getattr(window, "_dir_scan_running", False)):
-                break
+        _wait_for_scan_idle(app, window)
+        assert not bool(getattr(window, "_dir_scan_running", False))
         assert window._loaded_files == [str(target_png)]
         assert window._selected_file_items == [str(target_png)]
         assert window._open_next_calls == 1
@@ -167,11 +179,9 @@ def test_import_dir_images_restores_when_pending_file_is_json_but_dock_has_image
         window._pending_last_worked_file = str(target_json)
 
         window.importDirImages(str(tmp_path), load=True)
-        for _ in range(200):
-            app.processEvents()
-            if not bool(getattr(window, "_dir_scan_running", False)):
-                break
+        _wait_for_scan_idle(app, window)
 
+        assert not bool(getattr(window, "_dir_scan_running", False))
         assert window._loaded_files == [str(target_png)]
         assert window._selected_file_items == [str(target_png)]
         assert window._pending_last_worked_file == ""
@@ -245,3 +255,86 @@ def test_import_dir_images_handles_finished_before_batch_signal_order(
         assert window._pending_last_worked_file == ""
     finally:
         window.close()
+
+
+def test_import_dir_images_callbacks_execute_on_gui_thread_without_qt_warnings(
+    tmp_path: Path,
+):
+    app = _ensure_qapp()
+    first_dir = tmp_path / "first"
+    second_dir = tmp_path / "second"
+    first_dir.mkdir()
+    second_dir.mkdir()
+    for idx in range(6):
+        (first_dir / f"a_{idx:04d}.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    for idx in range(3):
+        (second_dir / f"b_{idx:04d}.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    qt_messages: list[str] = []
+
+    def _qt_handler(_mode, _context, message: str) -> None:
+        qt_messages.append(str(message))
+
+    prev_handler = QtCore.qInstallMessageHandler(_qt_handler)
+    try:
+        window = _DummyFileBrowserWindow()
+        win_ref = weakref.ref(window)
+        main_ident = threading.get_ident()
+        consume_idents: set[int] = set()
+        finalize_idents: set[int] = set()
+
+        def _tracked_consume(paths: list[str]) -> None:
+            consume_idents.add(threading.get_ident())
+            owner = win_ref()
+            if owner is not None:
+                _DummyFileBrowserWindow._consume_import_dir_scan_paths(owner, paths)
+
+        def _tracked_finalize(token: int) -> None:
+            finalize_idents.add(threading.get_ident())
+            owner = win_ref()
+            if owner is not None:
+                _DummyFileBrowserWindow._finalize_import_dir_scan(owner, token)
+
+        window._consume_import_dir_scan_paths = _tracked_consume  # type: ignore[method-assign]
+        window._finalize_import_dir_scan = _tracked_finalize  # type: ignore[method-assign]
+
+        # Back-to-back scan triggers cancel + restart followed by async completion.
+        window.importDirImages(str(first_dir), load=True)
+        window.importDirImages(str(second_dir), load=True)
+        _wait_for_scan_idle(app, window)
+
+        assert not bool(getattr(window, "_dir_scan_running", False))
+        assert len(window.imageList) == 3
+        assert window.fileScanStatusLabel.text() == "Loaded 3"
+        assert consume_idents == {main_ident}
+        assert finalize_idents == {main_ident}
+
+        del window._consume_import_dir_scan_paths
+        del window._finalize_import_dir_scan
+        window.close()
+        window.deleteLater()
+        del window
+
+        deferred_delete = getattr(
+            getattr(QtCore.QEvent, "Type", QtCore.QEvent),
+            "DeferredDelete",
+            QtCore.QEvent.DeferredDelete,
+        )
+        for _ in range(3):
+            app.sendPostedEvents(None, deferred_delete)
+            app.processEvents()
+        gc.collect()
+        app.sendPostedEvents(None, deferred_delete)
+        app.processEvents()
+        gc.collect()
+
+        assert win_ref() is None
+    finally:
+        QtCore.qInstallMessageHandler(prev_handler)
+
+    thread_warnings = [
+        msg
+        for msg in qt_messages
+        if "different thread" in msg or "moveToThread" in msg or "QThread" in msg
+    ]
+    assert thread_warnings == []

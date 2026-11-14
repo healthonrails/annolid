@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 from pathlib import Path
 from typing import Optional
+import weakref
 
 from qtpy import QtCore, QtGui, QtWidgets
 
@@ -129,8 +130,11 @@ class FileDockMixin:
         label = getattr(self, "fileScanStatusLabel", None)
         if label is None:
             return
-        label.setText(str(text or ""))
-        label.setVisible(bool(visible))
+        try:
+            label.setText(str(text or ""))
+            label.setVisible(bool(visible))
+        except RuntimeError:
+            return
 
     def _apply_search_visibility_to_item(self, item) -> None:
         if item is None:
@@ -334,7 +338,22 @@ class FileDockMixin:
         if self._file_dock_flush_scheduled:
             return
         self._file_dock_flush_scheduled = True
-        QtCore.QTimer.singleShot(0, self._flush_file_dock_pending)
+        owner_ref = weakref.ref(self)
+
+        def _flush_if_alive() -> None:
+            owner = owner_ref()
+            if owner is None:
+                return
+            try:
+                owner._flush_file_dock_pending()
+            except RuntimeError:
+                return
+
+        dispatch = getattr(self, "_dispatch_import_dir_scan_to_owner_thread", None)
+        if callable(dispatch):
+            dispatch(_flush_if_alive)
+            return
+        QtCore.QTimer.singleShot(0, _flush_if_alive)
 
     def _flush_file_dock_pending(self) -> None:
         self._file_dock_flush_scheduled = False

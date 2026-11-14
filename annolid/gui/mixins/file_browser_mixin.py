@@ -1,14 +1,48 @@
 from __future__ import annotations
 
+from collections import deque
 import os
 import os.path as osp
 from pathlib import Path
+import threading
+import weakref
 
 from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtCore import Qt
 
 from annolid.gui.label_file import LabelFile
 from annolid.gui.window_base import AnnolidToolBar, utils
+
+
+_SCAN_CALLBACK_EVENT_TYPE = QtCore.QEvent.Type(QtCore.QEvent.registerEventType())
+
+
+class _ScanGuiDispatcher(QtCore.QObject):
+    """GUI-thread QObject draining worker scan callbacks on the owner's thread."""
+
+    def __init__(self, parent: QtCore.QObject | None = None) -> None:
+        super().__init__(parent)
+        self._lock = threading.Lock()
+        self._callbacks: deque = deque()
+
+    def post(self, callback) -> None:
+        with self._lock:
+            self._callbacks.append(callback)
+        QtCore.QCoreApplication.postEvent(
+            self, QtCore.QEvent(_SCAN_CALLBACK_EVENT_TYPE)
+        )
+
+    def clear(self) -> None:
+        with self._lock:
+            self._callbacks.clear()
+
+    def customEvent(self, event: QtCore.QEvent) -> None:  # noqa: N802
+        if event.type() != _SCAN_CALLBACK_EVENT_TYPE:
+            return
+        with self._lock:
+            callback = self._callbacks.popleft() if self._callbacks else None
+        if callback is not None:
+            callback()
 
 
 class _ImportDirScanWorker(QtCore.QObject):
@@ -61,6 +95,13 @@ class _ImportDirScanWorker(QtCore.QObject):
             self.finished.emit(self._token)
         except Exception as exc:
             self.failed.emit(self._token, str(exc))
+        finally:
+            app = QtCore.QCoreApplication.instance()
+            if app is not None and self.thread() != app.thread():
+                try:
+                    self.moveToThread(app.thread())
+                except Exception:
+                    pass
 
 
 class FileBrowserMixin:
@@ -257,6 +298,9 @@ class FileBrowserMixin:
         current = int(getattr(self, "_dir_scan_token", 0))
         had_active_scan = bool(getattr(self, "_dir_scan_running", False))
         self._dir_scan_token = current + 1
+        dispatcher = getattr(self, "_dir_scan_dispatcher", None)
+        if dispatcher is not None:
+            dispatcher.clear()
         self._stop_import_dir_scan_worker()
         self._dir_scan_load = False
         self._dir_scan_first_loaded = False
@@ -291,9 +335,53 @@ class FileBrowserMixin:
                 self._dir_scan_pending_restore = pending
                 self._dir_scan_wait_for_pending_restore = bool(pending)
         self._dir_scan_token = int(getattr(self, "_dir_scan_token", 0)) + 1
+        self._ensure_import_dir_scan_dispatcher()
         if hasattr(self, "_set_file_scan_status"):
             self._set_file_scan_status(self.tr("Scanning..."), visible=True)
         self._start_import_dir_scan_worker(dirpath)
+
+    def _ensure_import_dir_scan_dispatcher(self) -> _ScanGuiDispatcher:
+        dispatcher = getattr(self, "_dir_scan_dispatcher", None)
+        if dispatcher is not None:
+            try:
+                _ = dispatcher.objectName()
+                return dispatcher
+            except RuntimeError:
+                dispatcher = None
+        parent = (
+            self
+            if isinstance(self, QtCore.QObject)
+            and self.thread() == QtCore.QThread.currentThread()
+            else None
+        )
+        dispatcher = _ScanGuiDispatcher(parent)
+        if isinstance(self, QtCore.QObject) and dispatcher.thread() != self.thread():
+            dispatcher.moveToThread(self.thread())
+        self._dir_scan_dispatcher = dispatcher
+        return dispatcher
+
+    def _is_import_dir_scan_owner_thread(self) -> bool:
+        if isinstance(self, QtCore.QObject):
+            try:
+                return QtCore.QThread.currentThread() == self.thread()
+            except RuntimeError:
+                return False
+        app = QtCore.QCoreApplication.instance()
+        if app is None:
+            return True
+        return QtCore.QThread.currentThread() == app.thread()
+
+    def _dispatch_import_dir_scan_to_owner_thread(self, callback) -> None:
+        dispatcher = getattr(self, "_dir_scan_dispatcher", None)
+        if dispatcher is None and self._is_import_dir_scan_owner_thread():
+            dispatcher = self._ensure_import_dir_scan_dispatcher()
+        if dispatcher is not None:
+            try:
+                dispatcher.post(callback)
+                return
+            except RuntimeError:
+                pass
+        QtCore.QTimer.singleShot(0, callback)
 
     def _start_import_dir_scan_worker(self, dirpath: str) -> None:
         self._stop_import_dir_scan_worker()
@@ -305,16 +393,32 @@ class FileBrowserMixin:
             pattern=str(getattr(self, "_dir_scan_pattern", "") or ""),
             batch_size=320,
         )
-        thread = QtCore.QThread(self)
+        parent = self if isinstance(self, QtCore.QObject) else None
+        thread = QtCore.QThread(parent)
         worker.moveToThread(thread)
+        owner_ref = weakref.ref(self)
+
+        def _forward_batch(t: int, paths_obj: object, ref=owner_ref) -> None:
+            owner = ref()
+            if owner is not None:
+                owner._on_import_dir_scan_batch(t, paths_obj)
+
+        def _forward_finished(t: int, ref=owner_ref) -> None:
+            owner = ref()
+            if owner is not None:
+                owner._on_import_dir_scan_finished(t)
+
+        def _forward_failed(t: int, err: str, ref=owner_ref) -> None:
+            owner = ref()
+            if owner is not None:
+                owner._on_import_dir_scan_failed(t, err)
+
         thread.started.connect(worker.run)
-        worker.batchReady.connect(self._on_import_dir_scan_batch)
-        worker.finished.connect(self._on_import_dir_scan_finished)
-        worker.failed.connect(self._on_import_dir_scan_failed)
+        worker.batchReady.connect(_forward_batch)
+        worker.finished.connect(_forward_finished)
+        worker.failed.connect(_forward_failed)
         worker.finished.connect(thread.quit)
         worker.failed.connect(thread.quit)
-        thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
         self._dir_scan_worker = worker
         self._dir_scan_thread = thread
         thread.start()
@@ -322,6 +426,8 @@ class FileBrowserMixin:
     def _stop_import_dir_scan_worker(self) -> None:
         worker = getattr(self, "_dir_scan_worker", None)
         thread = getattr(self, "_dir_scan_thread", None)
+        self._dir_scan_worker = None
+        self._dir_scan_thread = None
         if worker is not None:
             try:
                 worker.stop()
@@ -330,14 +436,31 @@ class FileBrowserMixin:
         if thread is not None:
             try:
                 thread.quit()
-                thread.wait(250)
+                thread.wait(2000)
             except Exception:
                 pass
-        self._dir_scan_worker = None
-        self._dir_scan_thread = None
+        if worker is not None:
+            try:
+                if worker.thread() == QtCore.QThread.currentThread():
+                    worker.deleteLater()
+            except Exception:
+                pass
+        if thread is not None:
+            try:
+                thread.deleteLater()
+            except Exception:
+                pass
 
-    @QtCore.Slot(int, object)
     def _on_import_dir_scan_batch(self, token: int, paths_obj: object) -> None:
+        if not self._is_import_dir_scan_owner_thread():
+            owner_ref = weakref.ref(self)
+            batch_copy = list(paths_obj) if isinstance(paths_obj, list) else paths_obj
+            self._dispatch_import_dir_scan_to_owner_thread(
+                lambda t=token, p=batch_copy, ref=owner_ref: (
+                    ref()._on_import_dir_scan_batch(t, p) if ref() is not None else None
+                )
+            )
+            return
         if token != int(getattr(self, "_dir_scan_token", 0)):
             return
         if not bool(getattr(self, "_dir_scan_running", False)):
@@ -346,13 +469,26 @@ class FileBrowserMixin:
             return
         self._consume_import_dir_scan_paths(paths_obj)
 
-    @QtCore.Slot(int)
     def _on_import_dir_scan_finished(self, token: int) -> None:
+        owner_ref = weakref.ref(self)
+        if not self._is_import_dir_scan_owner_thread():
+            self._dispatch_import_dir_scan_to_owner_thread(
+                lambda t=token, ref=owner_ref: (
+                    ref()._on_import_dir_scan_finished(t) if ref() is not None else None
+                )
+            )
+            return
         if token != int(getattr(self, "_dir_scan_token", 0)):
             return
-        # Defer finalization by one event-loop turn so any already-queued
-        # batchReady signals are handled before scan state is closed.
-        QtCore.QTimer.singleShot(0, lambda t=token: self._finalize_import_dir_scan(t))
+        # Defer finalization by one event-loop turn on the window's thread so
+        # any already-queued batch callbacks run before closing scan state.
+
+        def _finalize_if_alive(t: int = token) -> None:
+            owner = owner_ref()
+            if owner is not None:
+                owner._finalize_import_dir_scan(t)
+
+        self._dispatch_import_dir_scan_to_owner_thread(_finalize_if_alive)
 
     def _finalize_import_dir_scan(self, token: int) -> None:
         if token != int(getattr(self, "_dir_scan_token", 0)):
@@ -366,28 +502,40 @@ class FileBrowserMixin:
         ):
             self._dir_scan_first_loaded = True
             self.openNextImg(load=True)
-        self._dir_scan_running = False
-        self._dir_scan_worker = None
-        self._dir_scan_thread = None
+        if token != int(getattr(self, "_dir_scan_token", 0)) or not bool(
+            getattr(self, "_dir_scan_running", False)
+        ):
+            return
+        self._stop_import_dir_scan_worker()
         self._dir_scan_pending_restore = ""
         self._dir_scan_wait_for_pending_restore = False
         count = len(self.imageList)
         if hasattr(self, "_set_file_scan_idle"):
             self._set_file_scan_idle(count=count, hide=False)
-        self.statusBar().showMessage(
-            self.tr("Loaded %1 files from %2")
-            .replace("%1", str(count))
-            .replace("%2", str(self.lastOpenDir or "")),
-            2500,
-        )
+        status_bar = self.statusBar() if hasattr(self, "statusBar") else None
+        if status_bar is not None:
+            status_bar.showMessage(
+                self.tr("Loaded %1 files from %2")
+                .replace("%1", str(count))
+                .replace("%2", str(self.lastOpenDir or "")),
+                2500,
+            )
+        self._dir_scan_running = False
 
-    @QtCore.Slot(int, str)
     def _on_import_dir_scan_failed(self, token: int, error_text: str) -> None:
+        if not self._is_import_dir_scan_owner_thread():
+            owner_ref = weakref.ref(self)
+            self._dispatch_import_dir_scan_to_owner_thread(
+                lambda t=token, err=str(error_text or ""), ref=owner_ref: (
+                    ref()._on_import_dir_scan_failed(t, err)
+                    if ref() is not None
+                    else None
+                )
+            )
+            return
         if token != int(getattr(self, "_dir_scan_token", 0)):
             return
-        self._dir_scan_running = False
-        self._dir_scan_worker = None
-        self._dir_scan_thread = None
+        self._stop_import_dir_scan_worker()
         self._dir_scan_pending_restore = ""
         self._dir_scan_wait_for_pending_restore = False
         if hasattr(self, "_set_file_scan_status"):
@@ -395,12 +543,15 @@ class FileBrowserMixin:
                 self.tr("Scan error: %1").replace("%1", str(error_text or "unknown")),
                 visible=True,
             )
-        self.statusBar().showMessage(
-            self.tr("Directory scan failed: %1").replace(
-                "%1", str(error_text or "unknown")
-            ),
-            4000,
-        )
+        status_bar = self.statusBar() if hasattr(self, "statusBar") else None
+        if status_bar is not None:
+            status_bar.showMessage(
+                self.tr("Directory scan failed: %1").replace(
+                    "%1", str(error_text or "unknown")
+                ),
+                4000,
+            )
+        self._dir_scan_running = False
 
     def _consume_import_dir_scan_paths(self, paths: list[str]) -> None:
         loaded_entries = []

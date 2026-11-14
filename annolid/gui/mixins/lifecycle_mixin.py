@@ -127,6 +127,14 @@ class LifecycleMixin:
 
         self._stop_frame_loader()
         self._stop_csv_worker()
+        cancel_dir_scan = getattr(self, "_cancel_import_dir_scan", None)
+        if callable(cancel_dir_scan):
+            try:
+                cancel_dir_scan()
+            except (AttributeError, RuntimeError, TypeError) as exc:
+                logger.debug(
+                    "Failed stopping directory scan worker during cleanup: %s", exc
+                )
         if hasattr(self, "realtime_manager") and self.realtime_manager:
             try:
                 self.realtime_manager.stop_realtime_inference()
