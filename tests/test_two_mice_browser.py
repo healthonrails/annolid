@@ -1,22 +1,22 @@
-"""Opt-in rendering and behavior checks against the actual desktop asset server.
+"""Opt-in rendering and behavior checks against the local desktop asset server.
 
 ANNOLID_RUN_THREEJS_BROWSER_TESTS=1 .venv/bin/python -m pytest tests/test_two_mice_browser.py
-Requires Playwright Chromium and access to the scene's pinned esm.sh dependencies.
+Requires Playwright Chromium; runs 100% offline against bundled Three.js and lil-gui assets.
 """
 
 import os
 import math
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pytest
 
 
 pytestmark = [
     pytest.mark.integration,
-    pytest.mark.network,
     pytest.mark.skipif(
         os.environ.get("ANNOLID_RUN_THREEJS_BROWSER_TESTS") != "1",
-        reason="Opt in to browser/CDN validation with ANNOLID_RUN_THREEJS_BROWSER_TESTS=1",
+        reason="Opt in to browser WebGL validation with ANNOLID_RUN_THREEJS_BROWSER_TESTS=1",
     ),
 ]
 
@@ -26,9 +26,12 @@ def browser():
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True, channel="chromium")
-        yield browser
-        browser.close()
+        try:
+            launched = playwright.chromium.launch(headless=True, channel="chromium")
+        except Exception:
+            launched = playwright.chromium.launch(headless=True)
+        yield launched
+        launched.close()
 
 
 @pytest.fixture
@@ -37,6 +40,20 @@ def scene_page(browser):
 
     page = browser.new_page(viewport={"width": 1100, "height": 800})
     errors = []
+    blocked_external_urls = []
+
+    def _guard_offline_requests(route):
+        parsed = urlparse(route.request.url)
+        if parsed.scheme in {"http", "https"} and parsed.hostname not in {
+            "127.0.0.1",
+            "localhost",
+        }:
+            blocked_external_urls.append(route.request.url)
+            route.abort()
+            return
+        route.continue_()
+
+    page.route("**/*", _guard_offline_requests)
     page.on("pageerror", lambda error: errors.append(str(error)))
     page.on(
         "console",
@@ -54,6 +71,9 @@ def scene_page(browser):
 
     yield load
     page.close()
+    assert not blocked_external_urls, (
+        f"Unexpected external network requests: {blocked_external_urls}"
+    )
     assert not errors, "\n".join(errors)
 
 
@@ -119,9 +139,40 @@ def test_live_pause_cameras_and_subject_resource_lifecycle(scene_page):
     after = page.evaluate("window.annolidTwoMice.getDiagnostics()")
     assert before["time"] == after["time"]
     assert before["subjects"] == after["subjects"]
+    skeleton_toggle = (
+        page.locator(".controller")
+        .filter(has_text="Show Pose Skeleton")
+        .locator("input")
+    )
+    skeleton_toggle.check()
+    assert skeleton_toggle.is_checked()
+    skeleton_toggle.uncheck()
+    assert not skeleton_toggle.is_checked()
     camera = page.locator(".controller").filter(has_text="Camera").locator("select")
     for view in ("Follow black", "Follow white", "Top down", "Both mice"):
         camera.select_option(label=view)
+    # Post-processing must preserve tone-mapped sRGB exposure rather than crushing linear RGB.
+    from io import BytesIO
+    from PIL import Image, ImageStat
+
+    canvas_crop = (300, 200, 750, 650)
+    off_luma = ImageStat.Stat(
+        Image.open(BytesIO(page.screenshot())).crop(canvas_crop).convert("L")
+    ).mean[0]
+    shaders_title = page.locator(".lil-gui .title", has_text="Shaders")
+    shaders_title.click()
+    postfx_toggle = (
+        page.locator(".controller").filter(has_text="Post-Processing").locator("input")
+    )
+    postfx_toggle.check()
+    page.wait_for_timeout(120)
+    on_luma = ImageStat.Stat(
+        Image.open(BytesIO(page.screenshot())).crop(canvas_crop).convert("L")
+    ).mean[0]
+    assert abs(on_luma - off_luma) < 12.0
+    postfx_toggle.uncheck()
+    shaders_title.click()
+
     pause.uncheck()
     page.wait_for_function(
         "t => window.annolidTwoMice.getDiagnostics().time > t", arg=before["time"]
@@ -133,7 +184,11 @@ def test_live_pause_cameras_and_subject_resource_lifecycle(scene_page):
     page.wait_for_timeout(100)
     empty = page.evaluate("window.annolidTwoMice.getDiagnostics().renderer")
     assert empty["geometries"] < before["renderer"]["geometries"]
-    for _ in range(2):
+    strain_select = (
+        page.locator(".controller").filter(has_text="Strains").first.locator("select")
+    )
+    for strain_label in ("BALB/c (White)", "Nude/Hairless"):
+        strain_select.select_option(label=strain_label)
         page.get_by_role("button", name="(+) Spawn Subject", exact=True).click()
         page.wait_for_function(
             "window.annolidTwoMice.getDiagnostics().subjects.length === 1"
@@ -143,6 +198,41 @@ def test_live_pause_cameras_and_subject_resource_lifecycle(scene_page):
         cleared = page.evaluate("window.annolidTwoMice.getDiagnostics().renderer")
         assert cleared["geometries"] == empty["geometries"]
         assert cleared["textures"] == empty["textures"]
+
+    # Model factory fur options and in-place shared anatomy rebuild work without leaking VBOs.
+    model_checks = page.evaluate(
+        """async () => {
+          const {THREE} = await import('./annolid_threejs_runtime.js');
+          const {AnnolidShaders} = await import('./annolid_shaders.js');
+          const {createMouseModel} = await import('./two_mice_model.js');
+          const {createSeededRandom} = await import('./two_mice_simulation.js');
+          const model = createMouseModel(THREE, new AnnolidShaders(THREE), createSeededRandom(42));
+          model.bodyGeo.computeBoundingBox();
+          const initialSpanZ = model.bodyGeo.boundingBox.max.z - model.bodyGeo.boundingBox.min.z;
+          model.PROP.bodyLength = 3.4;
+          model.rebuildSharedAnatomyGeometries();
+          const rebuiltSpanZ = model.bodyGeo.boundingBox.max.z - model.bodyGeo.boundingBox.min.z;
+          const allUnder = model.generateMultiLayerFur(model.deformBody, 0.2, '#ffffff', false, {
+            furGuardRatio: 0.0,
+            furLength: 1.4,
+            furClumpiness: 0.6,
+          });
+          const allGuard = model.generateMultiLayerFur(model.deformBody, 0.2, '#ffffff', false, {
+            furGuardRatio: 1.0,
+            furLength: 0.6,
+            furClumpiness: 0.0,
+          });
+          const counts = [allUnder.children.length, allGuard.children.length];
+          model.disposeSubject(allUnder);
+          model.disposeSubject(allGuard);
+          model.disposeSharedResources();
+          return {changed: rebuiltSpanZ > initialSpanZ + 1.0, counts};
+        }"""
+    )
+    assert model_checks == {"changed": True, "counts": [1, 1]}
+
+    # Navigating away triggers pagehide cleanup cleanly with zero uncaught errors.
+    page.goto("about:blank")
 
 
 @pytest.mark.parametrize(
@@ -166,6 +256,18 @@ def test_anatomy_and_behavior_poses_render(scene_page, query):
         assert telemetry["groomingActive"] == "true"
     if "rearing_qa" in query:
         assert telemetry["rearingActive"] == "true"
+        frame = page.evaluate("window.annolidPoseDataset.getFrame()")
+        assert frame["image"]["maximum_tail_segment_length_error"] <= 0.5
+        subject_ann = frame["annotations"][0]
+        kp_names = frame["category"]["keypoints"]
+        kp_y = {
+            name: subject_ann["keypoints"][idx * 3 + 1]
+            for idx, name in enumerate(kp_names)
+            if subject_ann["keypoints"][idx * 3 + 2] > 0
+        }
+        assert kp_y["tail_mid"] > kp_y["neck"]
+        if "tail_tip" in kp_y:
+            assert kp_y["tail_tip"] > kp_y["neck"]
     output = os.environ.get("ANNOLID_THREEJS_SCREENSHOT_DIR")
     if output:
         directory = Path(output)

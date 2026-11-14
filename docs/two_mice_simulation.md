@@ -6,9 +6,12 @@ Open **Three.js Examples → Two Mice** in the GUI, or ask Annolid Bot:
 open threejs example two mice
 ```
 
-The scene starts with a black C57BL/6 mouse and a pale BALB/c mouse. Models include
-layered curved fur, articulated paws, thin ear pinnae, whiskers, and a continuous
-tail. Exploration includes wall following, pauses to sniff, social investigation,
+The scene starts with a black C57BL/6 mouse and a snow-ivory BALB/c mouse on a
+matte anti-glare arena floor with curled aspen wood shavings. Models include
+multi-layer clumped fur with anisotropic guard-hair sheen, articulated paws,
+concave vascularized ear pinnae, mystacial and supraorbital vibrissae, almond
+palpebral rims, and a countershaded annular-ringed tail. Exploration includes
+wall following, active rhythmic whisking, pauses to sniff, social investigation,
 rearing, and grooming. This is a procedural visualization, not a validated animal
 biomechanics model. Heart rate and respiration in the HUD are illustrative estimates.
 
@@ -18,22 +21,32 @@ Drag to orbit, scroll to zoom, and use **Simulation Controls → Camera** for an
 overview, a view from above, or a camera that follows either strain. The follow
 camera preserves your orbit angle while moving with the subject.
 
-- **Pause Simulation** freezes motion and contact solving. The camera remains usable.
+- **Pause Simulation** freezes motion and contact solving. The camera and pose-skeleton
+  overlay remain usable while paused.
 - **Playback Speed** supports slow motion down to 0.25×, up to 1.5×.
 - **Quality Mode** changes pixel resolution and shadow resolution without changing
-  exposure. Post-processing remains a separate choice.
+  exposure. **Post-Processing** applies ACES tone mapping and sRGB output encoding
+  around the active orbit target so optional vignette, subtle macro depth-of-field,
+  and film grain preserve scene brightness.
 - **Fur Detail** controls coat density for newly spawned subjects. Reduce it before
   spawning more mice on machines with limited graphics memory.
 - **Clear All** releases subject-specific GPU resources. **Spawn Subject** uses the
   selected strain and biological traits.
 
-Appearance controls that require a new subject retain the existing respawn notice.
-Body and motion settings take effect on simulation updates; resume playback to see
-those changes when paused. Physics uses fixed 30 Hz steps independently of rendering.
-Long stalls have bounded catch-up, and hidden tabs do not advance the simulation.
+Appearance toggles that recompile material shaders or rebuild fur coats and limb
+chains retain the respawn notice, while continuous shader parameters, ear magnitude,
+pose skeleton overlays, and body/tail proportions update live (including while paused).
+Detailed **Proportions** controls rebuild shared trunk, head, and cervical meshes in
+place and synchronize coat/limb alignment on newly spawned subjects; **Fur** controls
+(`Fur Detail`, `Guard Hair Ratio`, `Fur Length`, and `Clumpiness`) configure multi-layer
+coat generation on newly spawned subjects. Physics uses fixed 30 Hz steps independently
+of rendering. Long stalls have bounded catch-up, hidden tabs do not advance the
+simulation, and unloading the view releases active and shared WebGL resources.
 
-The viewer needs WebGL and access to its pinned Three.js and lil-gui imports on
-`esm.sh`. A loading error is displayed if the scene cannot initialize.
+The viewer requires WebGL and loads pinned `three@0.182.0` (`OrbitControls`,
+`RoomEnvironment`) and `lil-gui@0.18.2` ES modules directly from Annolid's bundled
+local assets (`annolid/gui/assets/threejs/`), so it works offline without external CDN
+access. A loading error is displayed if WebGL initialization fails.
 
 ## Reproducible pose capture
 
@@ -62,14 +75,15 @@ construction and GPU resource ownership; `two_mice_simulation.js` supplies the
 independent timing, random-stream, and wall-force helpers. All three modules are
 served by Annolid's desktop asset server and included by the package's JS rules.
 
-Run deterministic checks without a browser (Node.js is needed for the JS core):
+Run deterministic checks without a browser (uses `node` on `PATH` or Playwright's
+bundled Node runtime when installed in `.venv`):
 
 ```bash
 source .venv/bin/activate
 pytest tests/test_two_mice_simulation.py tests/test_threejs_examples.py
 ```
 
-Run the optional browser checks with Playwright Chromium installed and CDN access:
+Run the optional offline browser checks with Playwright Chromium installed:
 
 ```bash
 ANNOLID_RUN_THREEJS_BROWSER_TESTS=1 \

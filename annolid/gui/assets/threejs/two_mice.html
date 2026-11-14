@@ -82,17 +82,27 @@
 
 
     .lil-gui {
-      --background-color: rgba(34, 33, 31, 0.86);
+      --background-color: rgba(30, 30, 29, 0.88);
       --text-color: #f3eee5;
-      --title-background-color: rgba(74, 68, 58, 0.94);
-      --widget-color: rgba(84, 78, 68, 0.95);
-      --hover-color: rgba(116, 105, 88, 0.95);
-      --focus-color: rgba(150, 131, 103, 0.95);
+      --title-background-color: rgba(68, 63, 55, 0.94);
+      --widget-color: rgba(80, 75, 66, 0.95);
+      --hover-color: rgba(112, 102, 86, 0.95);
+      --focus-color: rgba(146, 128, 102, 0.95);
       --font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      border: 1px solid rgba(255, 255, 255, 0.12);
-      box-shadow: 0 10px 30px rgba(28, 24, 20, 0.22);
+    }
+
+    .lil-gui.root {
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      box-shadow: 0 10px 30px rgba(20, 18, 16, 0.24);
       right: 20px !important;
       top: 20px !important;
+      max-height: calc(100vh - 40px) !important;
+      overflow-y: auto !important;
+    }
+
+    .lil-gui,
+    .lil-gui * {
+      transition-duration: 0.01s !important;
     }
 
     #scene-status { position: absolute; top: 24px; left: 28px; max-width: 380px;
@@ -102,7 +112,12 @@
     @media (max-width: 680px) {
       .hud { left: 12px; bottom: 12px; padding: 8px 10px; }
       .data-row { width: 235px; }
-      .lil-gui { right: 8px !important; top: 8px !important; max-width: 230px; }
+      .lil-gui.root {
+        right: 8px !important;
+        top: 8px !important;
+        max-width: 230px;
+        max-height: calc(100vh - 16px) !important;
+      }
     }
     body.dataset-capture .overlay,
     body.dataset-capture .hud,
@@ -130,7 +145,7 @@
     import('./two_mice_scene.js').catch(error => {
       console.error('Two-mouse scene failed to load:', error);
       document.getElementById('scene-status').textContent =
-        'Could not load the 3D scene. Check WebGL support and access to esm.sh, then reload.';
+        'Could not load the 3D scene. Check WebGL support in this browser view, then reload.';
     });
   </script>
 </body>

@@ -148,6 +148,33 @@ Generation seed: `{seed}`.
     (output / "README.md").write_text(readme, encoding="utf-8")
 
 
+def _validate_dataset_options(
+    *,
+    frame_count: int,
+    train_frames: int,
+    fps: int,
+    width: int,
+    height: int,
+) -> None:
+    if frame_count < 2:
+        raise ValueError("--frames must be at least 2")
+    if not 0 < train_frames < frame_count:
+        raise ValueError(
+            "--train-frames must leave at least one train and validation frame"
+        )
+    if not 1 <= fps <= 30:
+        raise ValueError("--fps must be between 1 and 30")
+    if width < 128 or height < 128:
+        raise ValueError("--width and --height must be at least 128")
+
+
+def _launch_chromium(playwright: Any) -> Any:
+    try:
+        return playwright.chromium.launch(headless=True)
+    except Exception:
+        return playwright.chromium.launch(headless=True, channel="chromium")
+
+
 def generate_dataset(
     output: Path,
     *,
@@ -158,6 +185,13 @@ def generate_dataset(
     width: int,
     height: int,
 ) -> None:
+    _validate_dataset_options(
+        frame_count=frame_count,
+        train_frames=train_frames,
+        fps=fps,
+        width=width,
+        height=height,
+    )
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
@@ -175,7 +209,7 @@ def generate_dataset(
     frames: list[dict[str, Any]] = []
     browser_errors: list[str] = []
     with _serve_repo() as base_url, sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True)
+        browser = _launch_chromium(playwright)
         page = browser.new_page(
             viewport={"width": width, "height": height}, device_scale_factor=1
         )
@@ -262,16 +296,16 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
     args = parser.parse_args()
-    if args.frames < 2:
-        parser.error("--frames must be at least 2")
-    if not 0 < args.train_frames < args.frames:
-        parser.error(
-            "--train-frames must leave at least one train and validation frame"
+    try:
+        _validate_dataset_options(
+            frame_count=args.frames,
+            train_frames=args.train_frames,
+            fps=args.fps,
+            width=args.width,
+            height=args.height,
         )
-    if not 1 <= args.fps <= 30:
-        parser.error("--fps must be between 1 and 30")
-    if args.width < 128 or args.height < 128:
-        parser.error("--width and --height must be at least 128")
+    except ValueError as exc:
+        parser.error(str(exc))
     return args
 
 

@@ -36,53 +36,79 @@ const FUR_UNIFORMS_GLSL = /* glsl */ `
 `;
 
 const FUR_VERTEX_GLSL = /* glsl */ `
-  // Pass world-space normal & position for anisotropic calc
+  // Pass world-space normal, flow tangent & position for anisotropic calc
   varying vec3 vFurWorldNormal;
+  varying vec3 vFurWorldFlow;
   varying vec3 vFurWorldPos;
 `;
 
 const FUR_VERTEX_MAIN_GLSL = /* glsl */ `
-  vFurWorldNormal = normalize((modelMatrix * vec4(objectNormal, 0.0)).xyz);
+  vFurWorldNormal = (modelMatrix * vec4(objectNormal, 0.0)).xyz;
+  vFurWorldFlow   = (modelMatrix * vec4(uFurFlowDir, 0.0)).xyz;
   vFurWorldPos    = (modelMatrix * vec4(position, 1.0)).xyz;
 `;
 
 const FUR_FRAGMENT_GLSL = /* glsl */ `
   varying vec3 vFurWorldNormal;
+  varying vec3 vFurWorldFlow;
   varying vec3 vFurWorldPos;
 `;
 
 const FUR_FRAGMENT_MAIN_GLSL = /* glsl */ `
   {
-    // Marschner-inspired double anisotropic highlight for hair/fur
-    vec3 tangent = normalize(cross(vFurWorldNormal, uFurFlowDir));
-    vec3 viewDir = normalize(cameraPosition - vFurWorldPos);
-    vec3 lightDir = normalize(vec3(0.3, 1.0, 0.2));
-    vec3 halfDir  = normalize(viewDir + lightDir);
+    // Marschner-inspired double anisotropic highlight for hair/fur (NaN-safe)
+    vec3 nrm = vFurWorldNormal * inversesqrt(max(dot(vFurWorldNormal, vFurWorldNormal), 1e-8));
+    vec3 worldFlow = vFurWorldFlow * inversesqrt(max(dot(vFurWorldFlow, vFurWorldFlow), 1e-8));
+    vec3 rawTangent = worldFlow - nrm * dot(worldFlow, nrm);
+    float rawLenSq = dot(rawTangent, rawTangent);
+    vec3 fallbackAxis = abs(nrm.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    vec3 fallbackCross = cross(nrm, fallbackAxis);
+    vec3 tangent = rawLenSq > 1e-6
+      ? rawTangent * inversesqrt(rawLenSq)
+      : fallbackCross * inversesqrt(max(dot(fallbackCross, fallbackCross), 1e-8));
 
-    // Shift tangents for primary (reflection) and secondary (transmission) highlights
-    vec3 t1 = normalize(tangent + vFurWorldNormal * -0.05); // Shift down towards root
-    vec3 t2 = normalize(tangent + vFurWorldNormal * 0.1);   // Shift up towards tip
+    vec3 toCam    = cameraPosition - vFurWorldPos;
+    vec3 viewDir  = toCam * inversesqrt(max(dot(toCam, toCam), 1e-8));
+    vec3 keyDir   = normalize(vec3(-0.26, 0.92, 0.28));
+    vec3 rimDir   = normalize(vec3(0.42, 0.62, -0.66));
+    vec3 sumKey   = viewDir + keyDir;
+    vec3 sumRim   = viewDir + rimDir;
+    vec3 halfKey  = sumKey * inversesqrt(max(dot(sumKey, sumKey), 1e-8));
+    vec3 halfRim  = sumRim * inversesqrt(max(dot(sumRim, sumRim), 1e-8));
 
-    float TdotH1 = dot(t1, halfDir);
-    float TdotH2 = dot(t2, halfDir);
+    // Primary R cuticle lobe (shifted toward root) and secondary TRT cortex lobe (shifted toward tip)
+    vec3 rawT1 = tangent - nrm * 0.08;
+    vec3 rawT2 = tangent + nrm * 0.14;
+    vec3 t1 = rawT1 * inversesqrt(max(dot(rawT1, rawT1), 1e-8));
+    vec3 t2 = rawT2 * inversesqrt(max(dot(rawT2, rawT2), 1e-8));
+
+    float TdotH1 = clamp(dot(t1, halfKey), -1.0, 1.0);
+    float TdotH2 = clamp(dot(t2, halfKey), -1.0, 1.0);
+    float TdotHR = clamp(dot(t1, halfRim), -1.0, 1.0);
 
     float sinTH1 = sqrt(max(0.0, 1.0 - TdotH1 * TdotH1));
     float sinTH2 = sqrt(max(0.0, 1.0 - TdotH2 * TdotH2));
+    float sinTHR = sqrt(max(0.0, 1.0 - TdotHR * TdotHR));
 
-    float aniso1 = pow(sinTH1, uFurAnisotropy) * uFurSpecIntensity;
-    float aniso2 = pow(sinTH2, uFurAnisotropy * 0.5) * uFurSpecIntensity * 0.5;
+    float keyFacing = smoothstep(-0.25, 0.65, dot(nrm, keyDir));
+    float rimFacing = smoothstep(-0.15, 0.75, dot(nrm, rimDir));
+    float graze = pow(1.0 - abs(dot(viewDir, nrm)), 2.4);
 
-    // Root-to-tip color gradient based on object-space Y
-    float strandProgress = clamp(
-      (vFurWorldPos.y - uFurRootColor.x * 0.01) * 0.5 + 0.5, 0.0, 1.0
-    );
-    vec3 furTint = mix(uFurRootColor, uFurTipColor, strandProgress);
+    float specExp = max(18.0, uFurAnisotropy);
+    float specScale = clamp(uFurSpecIntensity, 0.0, 0.14);
+    float anisoPrimary   = pow(sinTH1, specExp) * specScale * keyFacing;
+    float anisoSecondary = pow(sinTH2, max(10.0, specExp * 0.45)) * specScale * 0.45 * keyFacing;
+    float anisoRim       = pow(sinTHR, max(14.0, specExp * 0.60)) * specScale * 0.35 * rimFacing;
 
-    // Primary highlight is white/light, secondary is tinted by hair color
-    vec3 totalAniso = vec3(aniso1) + furTint * aniso2;
+    // Subtle dorsal-to-ventral / root-to-tip tonal richness without crushing or bleaching base albedo
+    float dorsalFactor = clamp(nrm.y * 0.5 + 0.5, 0.0, 1.0);
+    vec3 fiberTint = mix(uFurRootColor, uFurTipColor, dorsalFactor);
 
-    // Blend highlight and root-tip color
-    gl_FragColor.rgb = gl_FragColor.rgb * furTint + totalAniso;
+    vec3 pigmentSafeCuticle = mix(fiberTint * 1.4 + vec3(0.03), vec3(0.75, 0.74, 0.72), 0.35);
+    vec3 sheenCuticle = pigmentSafeCuticle * (anisoPrimary + anisoRim * 0.55);
+    vec3 sheenCortex  = fiberTint * (anisoSecondary + graze * specScale * 0.22);
+
+    gl_FragColor.rgb = gl_FragColor.rgb * mix(vec3(1.0), fiberTint, 0.10) + sheenCuticle + sheenCortex;
   }
 `;
 
@@ -101,7 +127,7 @@ const SSS_VERTEX_GLSL = /* glsl */ `
 `;
 
 const SSS_VERTEX_MAIN_GLSL = /* glsl */ `
-  vSSSWorldNormal = normalize((modelMatrix * vec4(objectNormal, 0.0)).xyz);
+  vSSSWorldNormal = (modelMatrix * vec4(objectNormal, 0.0)).xyz;
   vSSSWorldPos    = (modelMatrix * vec4(position, 1.0)).xyz;
 `;
 
@@ -112,30 +138,32 @@ const SSS_FRAGMENT_GLSL = /* glsl */ `
 
 const SSS_FRAGMENT_MAIN_GLSL = /* glsl */ `
   {
-    vec3 viewDir  = normalize(cameraPosition - vSSSWorldPos);
-    vec3 lightDir = normalize(vec3(0.3, 1.0, 0.2));
-    vec3 nrm      = normalize(vSSSWorldNormal);
+    vec3 toCam    = cameraPosition - vSSSWorldPos;
+    vec3 viewDir  = toCam * inversesqrt(max(dot(toCam, toCam), 1e-8));
+    vec3 lightDir = normalize(vec3(-0.26, 0.92, 0.28));
+    vec3 nrm      = vSSSWorldNormal * inversesqrt(max(dot(vSSSWorldNormal, vSSSWorldNormal), 1e-8));
 
-    // Wrap diffuse (soft terminator)
-    float wrapDiffuse = max(0.0,
-      (dot(nrm, lightDir) + uSSSWrap) / (1.0 + uSSSWrap)
-    );
+    // Terminator-focused wrap scatter (warms shadow transitions without blowing out highlights)
+    float NdotL = dot(nrm, lightDir);
+    float wrapDenom = max(0.001, 1.0 + uSSSWrap);
+    float wrapDiffuse = max(0.0, (NdotL + uSSSWrap) / wrapDenom);
+    float terminatorBand = max(0.0, wrapDiffuse - max(0.0, NdotL)) * 1.35;
 
-    // Pseudo-thickness based on viewing angle (edges appear thinner)
+    // Thin silhouettes transmit more light than thick centers
     float viewDotNrm = abs(dot(viewDir, nrm));
-    float thicknessMap = mix(uSSSThickness * 0.3, uSSSThickness, viewDotNrm);
+    float thinness = 1.0 - smoothstep(0.08, 0.88, viewDotNrm);
 
-    vec3 scatter = uSSSColor * wrapDiffuse * thicknessMap;
+    vec3 scatter = uSSSColor * terminatorBand * uSSSThickness * 0.55;
 
-    // Back-light transmission with spectral shift (light becomes warmer as it passes through flesh)
-    vec3 scatterDir = lightDir + nrm * uSSSDistortion;
-    float backDot   = max(0.0, dot(viewDir, -normalize(scatterDir)));
+    // Back-light transmission with melanin-scaled vascular spectral shift
+    vec3 rawScatterDir = lightDir + nrm * uSSSDistortion;
+    vec3 scatterDir = rawScatterDir * inversesqrt(max(dot(rawScatterDir, rawScatterDir), 1e-8));
+    float backDot   = max(0.0, dot(viewDir, -scatterDir));
+    float scatterPow = pow(backDot, 3.8) * (0.35 + 0.65 * thinness) * uSSSThickness;
 
-    float scatterPow = pow(backDot, 5.0) * smoothstep(0.0, 1.0, 1.0 - thicknessMap);
-
-    // Shift color towards red/orange for deep scattering
-    vec3 transmitColor = max(uSSSColor, vec3(0.8, 0.2, 0.05));
-    scatter += transmitColor * scatterPow * uSSSBacklight;
+    float skinLuma = clamp(dot(uSSSColor, vec3(0.299, 0.587, 0.114)), 0.04, 1.0);
+    vec3 transmitColor = mix(uSSSColor, vec3(0.86, 0.24, 0.16) * (0.25 + 0.75 * skinLuma), 0.38);
+    scatter += transmitColor * scatterPow * uSSSBacklight * 0.68;
 
     gl_FragColor.rgb += scatter;
   }
@@ -174,7 +202,8 @@ const MICRO_FRAGMENT_PRENORMAL_GLSL = /* glsl */ `
     noise = smoothstep(0.2, 0.8, noise);
 
     vec3 microPerturb = (noise - 0.5) * uMicroStrength;
-    normal = normalize(normal + microPerturb);
+    vec3 perturbedNormal = normal + microPerturb;
+    normal = perturbedNormal * inversesqrt(max(dot(perturbedNormal, perturbedNormal), 1e-8));
   }
 `;
 
@@ -203,8 +232,8 @@ const AO_FRAGMENT_MAIN_GLSL = /* glsl */ `
     // Height-based ambient occlusion near ground plane
     float groundDist = max(0.0, vAOWorldY - uAOGroundY);
     // Non-linear falloff for deeper shadows exactly at contact points
-    float ao = smoothstep(0.0, uAORadius, groundDist);
-    ao = mix(1.0 - uAOIntensity, 1.0, pow(ao, 0.6));
+    float ao = smoothstep(0.0, max(1e-4, uAORadius), groundDist);
+    ao = mix(1.0 - clamp(uAOIntensity, 0.0, 1.0), 1.0, pow(ao, 0.6));
     gl_FragColor.rgb *= mix(uAOColor, vec3(1.0), ao);
   }
 `;
@@ -232,11 +261,21 @@ const POST_FRAGMENT_GLSL = /* glsl */ `
   uniform float uCameraFar;
   uniform float uFocusDistance;
   uniform float uAperture;
+  uniform float uOutputSRGB;
   uniform vec2 uResolution;
 
   varying vec2 vUv;
 
   #include <packing>
+
+  vec3 annolidLinearToSRGB(vec3 value) {
+    vec3 clamped = max(value, vec3(0.0));
+    return mix(
+      pow(clamped, vec3(0.41666)) * 1.055 - vec3(0.055),
+      clamped * 12.92,
+      vec3(lessThanEqual(clamped, vec3(0.0031308)))
+    );
+  }
 
   float getLinearDepth(vec2 uv) {
     float fragCoordZ = texture2D(tDepth, uv).x;
@@ -247,73 +286,72 @@ const POST_FRAGMENT_GLSL = /* glsl */ `
   void main() {
     float d = getLinearDepth(vUv);
 
-    // CoC (Circle of Confusion)
-    float coc = abs(d - uFocusDistance) * uAperture;
-    coc = clamp(coc, 0.0, 1.0);
+    // CoC (Circle of Confusion) around the active focus plane
+    float coc = clamp(abs(d - uFocusDistance) * uAperture, 0.0, 1.0);
 
     vec2 dir = vUv - 0.5;
     float dist = length(dir);
-    vec2 offset = dir * (dist * 0.008); // Chromatic Aberration
+    vec2 offset = dir * (dist * 0.0022); // Subtle lateral chromatic aberration
 
     vec3 colorSum = vec3(0.0);
     float weightSum = 0.0;
 
-    // Center sample with CA
-    float r = texture2D(tDiffuse, vUv - offset).r;
+    // Center sample in linear HDR space
+    float r = texture2D(tDiffuse, clamp(vUv - offset, 0.0, 1.0)).r;
     float g = texture2D(tDiffuse, vUv).g;
-    float b = texture2D(tDiffuse, vUv + offset).b;
+    float b = texture2D(tDiffuse, clamp(vUv + offset, 0.0, 1.0)).b;
     colorSum += vec3(r, g, b);
     weightSum += 1.0;
 
     // DoF Blur Taps (only if CoC is meaningful)
-    if (coc > 0.01) {
-      vec2 texel = 1.0 / uResolution;
-      float radius = coc * max(10.0, min(uResolution.x, uResolution.y) * 0.02); // dynamically scale based on res
+    if (coc > 0.015) {
+      vec2 safeRes = max(uResolution, vec2(1.0));
+      vec2 texel = 1.0 / safeRes;
+      float radius = coc * max(6.0, min(safeRes.x, safeRes.y) * 0.012);
       vec2 tRad = texel * radius;
 
       const float TWO_PI = 6.28318530718;
       for (float i = 0.0; i < 8.0; i++) {
         float angle = i * (TWO_PI / 8.0);
-        vec2 suv = vUv + vec2(cos(angle), sin(angle)) * tRad;
+        vec2 suv = clamp(vUv + vec2(cos(angle), sin(angle)) * tRad, 0.0, 1.0);
 
         float sd = getLinearDepth(suv);
-        // If the sample is in front of the center pixel, only bleed if it's very out of focus.
         float w = 1.0;
         if (sd < d) {
           float sampleCoc = abs(sd - uFocusDistance) * uAperture;
           w = clamp(sampleCoc * 10.0, 0.0, 1.0);
         }
 
-        // Also apply CA to the blur taps so blur has color fringes
-        float sr = texture2D(tDiffuse, suv - offset).r;
+        float sr = texture2D(tDiffuse, clamp(suv - offset, 0.0, 1.0)).r;
         float sg = texture2D(tDiffuse, suv).g;
-        float sb = texture2D(tDiffuse, suv + offset).b;
+        float sb = texture2D(tDiffuse, clamp(suv + offset, 0.0, 1.0)).b;
 
         colorSum += vec3(sr, sg, sb) * w;
         weightSum += w;
       }
     }
 
-    vec4 color = vec4(colorSum / weightSum, 1.0);
+    // Apply renderer tone mapping (e.g. ACESFilmic) + IEC 61966-2-1 sRGB OETF
+    // (Three.js forces LinearSRGB output on ShaderMaterial, so OutputPass-style
+    // sRGB conversion is required when renderer.outputColorSpace is SRGBColorSpace).
+    gl_FragColor = vec4(max(colorSum / max(weightSum, 1e-5), vec3(0.0)), 1.0);
+    #include <tonemapping_fragment>
+    if (uOutputSRGB > 0.5) {
+      gl_FragColor.rgb = annolidLinearToSRGB(gl_FragColor.rgb);
+    }
 
-    // ── Vignette ──
-    float vig = 1.0 - smoothstep(0.3, 0.3 + uVigSoftness, dist) * uVigIntensity;
-    color.rgb *= vig;
+    // ── Vignette (in display space) ──
+    float vig = 1.0 - smoothstep(0.32, 0.32 + max(1e-4, uVigSoftness), dist) * uVigIntensity;
+    gl_FragColor.rgb *= vig;
 
-    // ── Film Grain ──
-    float grain = fract(sin(dot(vUv * (uTime * 100.0 + 1.0), vec2(12.9898, 78.233))) * 43758.5453);
-    color.rgb += (grain - 0.5) * uGrainStrength;
+    // ── Saturation & Brightness adjustment ──
+    float luma = dot(gl_FragColor.rgb, vec3(0.2126, 0.7152, 0.0722));
+    gl_FragColor.rgb = mix(vec3(luma), gl_FragColor.rgb, uSaturation) * uBrightness;
 
-    // ── Saturation adjustment ──
-    float luma = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
-    color.rgb = mix(vec3(luma), color.rgb, uSaturation);
-
-    // ── Brightness / Minor Contrast curve ──
-    color.rgb *= uBrightness;
-    // Mild S-curve for contrast
-    color.rgb = smoothstep(0.0, 1.0, color.rgb);
-
-    gl_FragColor = color;
+    // ── Subtle Film Grain ──
+    float grainPhase = mod(uTime, 60.0) * 37.0 + 1.0;
+    float grain = fract(sin(dot(vUv * grainPhase, vec2(12.9898, 78.233))) * 43758.5453);
+    gl_FragColor.rgb = clamp(gl_FragColor.rgb + (grain - 0.5) * uGrainStrength, 0.0, 1.0);
   }
 `;
 
@@ -328,25 +366,76 @@ export class AnnolidShaders {
      */
     constructor(THREE) {
         this.THREE = THREE;
-        this._applied = new WeakMap(); // Track which effects are on which materials
+        this._applied = new WeakMap(); // Track per-material shader keys & live uniform refs
     }
 
-    // ─── Internal: chain onBeforeCompile ───────────────────────
-    _chainCompile(material, key, compileFn) {
+    _ensureRecord(material) {
         if (!this._applied.has(material)) {
-            this._applied.set(material, {});
+            this._applied.set(material, {
+                keys: [],
+                applied: Object.create(null),
+                uniforms: Object.create(null),
+                baseOnBeforeCompile: material.onBeforeCompile,
+                baseCacheKey: material.customProgramCacheKey,
+            });
         }
-        const record = this._applied.get(material);
-        if (record[key]) return; // Already applied
+        return this._applied.get(material);
+    }
+
+    // ─── Internal: chain onBeforeCompile with unique program cache key ───
+    _chainCompile(material, key, compileFn) {
+        const record = this._ensureRecord(material);
+        if (record.applied[key]) return; // Already applied
+
+        record.applied[key] = true;
+        record.keys.push(key);
 
         const prevCompile = material.onBeforeCompile;
         material.onBeforeCompile = (shader, renderer) => {
             if (prevCompile) prevCompile(shader, renderer);
-            compileFn(shader);
+            compileFn(shader, record.uniforms);
         };
+
+        const baseCacheKey = record.baseCacheKey;
+        const signature = record.keys.join('+');
+        material.customProgramCacheKey = function () {
+            const prefix = typeof baseCacheKey === 'function' ? baseCacheKey.call(this) : '';
+            return `${prefix}|annolid:${signature}`;
+        };
+
         // Force recompilation
         material.needsUpdate = true;
-        record[key] = true;
+    }
+
+    /**
+     * Return tracked uniform objects for a material, or null if none applied.
+     */
+    getUniforms(material) {
+        return this._applied.get(material)?.uniforms ?? null;
+    }
+
+    /**
+     * Update live uniform values on an already-configured material without recompiling.
+     */
+    updateUniforms(material, values = {}) {
+        const uniforms = this.getUniforms(material);
+        if (!uniforms || !values) return false;
+        let updated = false;
+        for (const [name, nextVal] of Object.entries(values)) {
+            const target = uniforms[name];
+            if (!target || nextVal === undefined) continue;
+            if (target.value?.isColor && Array.isArray(nextVal)) {
+                target.value.setRGB(nextVal[0], nextVal[1], nextVal[2]);
+                updated = true;
+            } else if (target.value?.isVector3 && Array.isArray(nextVal)) {
+                target.value.set(nextVal[0], nextVal[1], nextVal[2]);
+                updated = true;
+            } else {
+                target.value = nextVal;
+                updated = true;
+            }
+        }
+        return updated;
     }
 
     // ─── Internal: inject GLSL into shader source ─────────────
@@ -371,22 +460,34 @@ export class AnnolidShaders {
      * @param {number[]} opts.tipColor   — RGB [0-1] for strand tip
      * @param {number}   opts.anisotropy — Specular exponent (20-200)
      * @param {number}   opts.specIntensity — Highlight brightness (0-2)
-     * @param {number[]} opts.flowDirection — Tangent flow direction [x,y,z]
+     * @param {number[]} [opts.flowDirection] — Tangent flow direction [x,y,z] (alias: opts.flowDir)
      */
     applyFurShader(material, opts = {}) {
-        const rootColor = opts.rootColor || [0.15, 0.12, 0.10];
-        const tipColor = opts.tipColor || [0.35, 0.30, 0.28];
-        const aniso = opts.anisotropy || 80.0;
-        const specI = opts.specIntensity || 0.4;
-        const flow = opts.flowDirection || [0.0, 0.0, -1.0];
+        const rootColor = opts.rootColor ?? [0.15, 0.12, 0.10];
+        const tipColor = opts.tipColor ?? [0.35, 0.30, 0.28];
+        const aniso = opts.anisotropy ?? 80.0;
+        const specI = opts.specIntensity ?? 0.4;
+        const flow = opts.flowDirection ?? opts.flowDir ?? [0.0, 0.0, -1.0];
+        const flowVec = new this.THREE.Vector3(flow[0] ?? 0, flow[1] ?? 0, flow[2] ?? -1);
+        if (flowVec.lengthSq() < 1e-8) flowVec.set(0, 0, -1);
+        else flowVec.normalize();
 
-        this._chainCompile(material, 'fur', (shader) => {
+        const record = this._ensureRecord(material);
+        if (!record.applied.fur) {
+            record.uniforms.uFurRootColor = { value: new this.THREE.Color(...rootColor) };
+            record.uniforms.uFurTipColor = { value: new this.THREE.Color(...tipColor) };
+            record.uniforms.uFurAnisotropy = { value: aniso };
+            record.uniforms.uFurSpecIntensity = { value: specI };
+            record.uniforms.uFurFlowDir = { value: flowVec };
+        }
+
+        this._chainCompile(material, 'fur', (shader, uniforms) => {
             // Uniforms
-            shader.uniforms.uFurRootColor = { value: new this.THREE.Color(...rootColor) };
-            shader.uniforms.uFurTipColor = { value: new this.THREE.Color(...tipColor) };
-            shader.uniforms.uFurAnisotropy = { value: aniso };
-            shader.uniforms.uFurSpecIntensity = { value: specI };
-            shader.uniforms.uFurFlowDir = { value: new this.THREE.Vector3(...flow) };
+            shader.uniforms.uFurRootColor = uniforms.uFurRootColor;
+            shader.uniforms.uFurTipColor = uniforms.uFurTipColor;
+            shader.uniforms.uFurAnisotropy = uniforms.uFurAnisotropy;
+            shader.uniforms.uFurSpecIntensity = uniforms.uFurSpecIntensity;
+            shader.uniforms.uFurFlowDir = uniforms.uFurFlowDir;
 
             // Vertex shader
             shader.vertexShader = AnnolidShaders._inject(
@@ -431,18 +532,27 @@ export class AnnolidShaders {
      * @param {number}   opts.backlight    — Back-light transmission strength
      */
     applySSSShader(material, opts = {}) {
-        const scatterColor = opts.scatterColor || [0.8, 0.3, 0.25];
-        const thickness = opts.thickness || 0.5;
-        const distortion = opts.distortion || 0.2;
-        const wrap = opts.wrap || 0.5;
-        const backlight = opts.backlight || 0.6;
+        const scatterColor = opts.scatterColor ?? [0.8, 0.3, 0.25];
+        const thickness = opts.thickness ?? 0.5;
+        const distortion = opts.distortion ?? 0.2;
+        const wrap = opts.wrap ?? 0.5;
+        const backlight = opts.backlight ?? 0.6;
 
-        this._chainCompile(material, 'sss', (shader) => {
-            shader.uniforms.uSSSColor = { value: new this.THREE.Color(...scatterColor) };
-            shader.uniforms.uSSSThickness = { value: thickness };
-            shader.uniforms.uSSSDistortion = { value: distortion };
-            shader.uniforms.uSSSWrap = { value: wrap };
-            shader.uniforms.uSSSBacklight = { value: backlight };
+        const record = this._ensureRecord(material);
+        if (!record.applied.sss) {
+            record.uniforms.uSSSColor = { value: new this.THREE.Color(...scatterColor) };
+            record.uniforms.uSSSThickness = { value: thickness };
+            record.uniforms.uSSSDistortion = { value: distortion };
+            record.uniforms.uSSSWrap = { value: wrap };
+            record.uniforms.uSSSBacklight = { value: backlight };
+        }
+
+        this._chainCompile(material, 'sss', (shader, uniforms) => {
+            shader.uniforms.uSSSColor = uniforms.uSSSColor;
+            shader.uniforms.uSSSThickness = uniforms.uSSSThickness;
+            shader.uniforms.uSSSDistortion = uniforms.uSSSDistortion;
+            shader.uniforms.uSSSWrap = uniforms.uSSSWrap;
+            shader.uniforms.uSSSBacklight = uniforms.uSSSBacklight;
 
             shader.vertexShader = AnnolidShaders._inject(
                 shader.vertexShader, 'void main() {',
@@ -476,12 +586,18 @@ export class AnnolidShaders {
      * @param {number} opts.strength — Perturbation magnitude (0-0.5)
      */
     applyMicroDetail(material, opts = {}) {
-        const scale = opts.scale || 40.0;
-        const strength = opts.strength || 0.08;
+        const scale = opts.scale ?? 40.0;
+        const strength = opts.strength ?? 0.08;
 
-        this._chainCompile(material, 'micro', (shader) => {
-            shader.uniforms.uMicroScale = { value: scale };
-            shader.uniforms.uMicroStrength = { value: strength };
+        const record = this._ensureRecord(material);
+        if (!record.applied.micro) {
+            record.uniforms.uMicroScale = { value: scale };
+            record.uniforms.uMicroStrength = { value: strength };
+        }
+
+        this._chainCompile(material, 'micro', (shader, uniforms) => {
+            shader.uniforms.uMicroScale = uniforms.uMicroScale;
+            shader.uniforms.uMicroStrength = uniforms.uMicroStrength;
 
             shader.vertexShader = AnnolidShaders._inject(
                 shader.vertexShader, 'void main() {',
@@ -519,15 +635,23 @@ export class AnnolidShaders {
      */
     applyContactAO(material, opts = {}) {
         const groundY = opts.groundY ?? 0.0;
-        const radius = opts.radius || 1.5;
-        const intensity = opts.intensity || 0.4;
-        const color = opts.color || [0.02, 0.01, 0.0];
+        const radius = opts.radius ?? 1.5;
+        const intensity = opts.intensity ?? 0.4;
+        const color = opts.color ?? [0.02, 0.01, 0.0];
 
-        this._chainCompile(material, 'ao', (shader) => {
-            shader.uniforms.uAOGroundY = { value: groundY };
-            shader.uniforms.uAORadius = { value: radius };
-            shader.uniforms.uAOIntensity = { value: intensity };
-            shader.uniforms.uAOColor = { value: new this.THREE.Color(...color) };
+        const record = this._ensureRecord(material);
+        if (!record.applied.ao) {
+            record.uniforms.uAOGroundY = { value: groundY };
+            record.uniforms.uAORadius = { value: radius };
+            record.uniforms.uAOIntensity = { value: intensity };
+            record.uniforms.uAOColor = { value: new this.THREE.Color(...color) };
+        }
+
+        this._chainCompile(material, 'ao', (shader, uniforms) => {
+            shader.uniforms.uAOGroundY = uniforms.uAOGroundY;
+            shader.uniforms.uAORadius = uniforms.uAORadius;
+            shader.uniforms.uAOIntensity = uniforms.uAOIntensity;
+            shader.uniforms.uAOColor = uniforms.uAOColor;
 
             shader.vertexShader = AnnolidShaders._inject(
                 shader.vertexShader, 'void main() {',
@@ -555,8 +679,8 @@ export class AnnolidShaders {
     // 5. POST-PROCESSING FULLSCREEN QUAD
     // ═══════════════════════════════════════════════════════════
     /**
-     * Creates a post-processing setup: renders scene to a render target,
-     * then displays it through a fullscreen quad with vignette + grain.
+     * Creates a post-processing setup: renders scene to a half-float HDR target,
+     * applies renderer tone mapping + sRGB encoding, and adds subtle DoF, vignette & grain.
      *
      * @param {WebGLRenderer} renderer
      * @param {object} opts
@@ -569,19 +693,29 @@ export class AnnolidShaders {
      */
     createPostProcessing(renderer, opts = {}) {
         const THREE = this.THREE;
-        const vigI = opts.vigIntensity || 0.35;
-        const vigS = opts.vigSoftness || 0.45;
-        const grainS = opts.grainStrength || 0.03;
-        const sat = opts.saturation || 1.05;
-        const bright = opts.brightness || 1.0;
+        const vigI = opts.vigIntensity ?? 0.16;
+        const vigS = opts.vigSoftness ?? 0.54;
+        const grainS = opts.grainStrength ?? 0.004;
+        const sat = opts.saturation ?? 1.0;
+        const bright = opts.brightness ?? 1.0;
+        const aperture = opts.aperture ?? 1.4;
 
-        const size = renderer.getSize(new THREE.Vector2());
+        const getPixelSize = () => {
+            const sz = renderer.getSize(new THREE.Vector2());
+            const pr = renderer.getPixelRatio();
+            return {
+                width: Math.max(1, Math.round(sz.x * pr)),
+                height: Math.max(1, Math.round(sz.y * pr)),
+            };
+        };
+
+        const initial = getPixelSize();
         const renderTarget = new THREE.WebGLRenderTarget(
-            size.x * renderer.getPixelRatio(),
-            size.y * renderer.getPixelRatio(),
-            { format: THREE.RGBAFormat, type: THREE.UnsignedByteType }
+            initial.width,
+            initial.height,
+            { format: THREE.RGBAFormat, type: THREE.HalfFloatType }
         );
-        renderTarget.depthTexture = new THREE.DepthTexture(size.x * renderer.getPixelRatio(), size.y * renderer.getPixelRatio());
+        renderTarget.depthTexture = new THREE.DepthTexture(initial.width, initial.height);
         renderTarget.depthTexture.type = THREE.UnsignedIntType;
 
         const postUniforms = {
@@ -596,14 +730,16 @@ export class AnnolidShaders {
             uCameraNear: { value: 0.1 },
             uCameraFar: { value: 50.0 },
             uFocusDistance: { value: 0.05 },
-            uAperture: { value: 5.0 }, // Non-zero triggers DoF
-            uResolution: { value: new THREE.Vector2(size.x * renderer.getPixelRatio(), size.y * renderer.getPixelRatio()) }
+            uAperture: { value: aperture },
+            uOutputSRGB: { value: renderer.outputColorSpace === THREE.SRGBColorSpace ? 1.0 : 0.0 },
+            uResolution: { value: new THREE.Vector2(initial.width, initial.height) }
         };
 
         const postMaterial = new THREE.ShaderMaterial({
             vertexShader: POST_VERTEX_GLSL,
             fragmentShader: POST_FRAGMENT_GLSL,
             uniforms: postUniforms,
+            toneMapped: true,
             depthTest: false,
             depthWrite: false,
         });
@@ -620,13 +756,13 @@ export class AnnolidShaders {
         return {
             /** Toggle post-processing on/off */
             get enabled() { return enabled; },
-            set enabled(val) { enabled = val; },
+            set enabled(val) { enabled = Boolean(val); },
 
             /** Uniforms for live GUI tweaking */
             uniforms: postUniforms,
 
             /** Call this instead of renderer.render(scene, camera) */
-            render(scene, camera, time = 0) {
+            render(scene, camera, time = 0, focusTarget = null) {
                 if (!enabled) {
                     renderer.render(scene, camera);
                     return;
@@ -634,22 +770,30 @@ export class AnnolidShaders {
                 postUniforms.uTime.value = time;
                 postUniforms.uCameraNear.value = camera.near;
                 postUniforms.uCameraFar.value = camera.far;
-                // Focus distance logic based on camera position, or static
+                postUniforms.uOutputSRGB.value = renderer.outputColorSpace === THREE.SRGBColorSpace ? 1.0 : 0.0;
+                if (focusTarget && camera?.position) {
+                    const span = Math.max(1e-4, camera.far - camera.near);
+                    const focusWorldDist = camera.position.distanceTo(focusTarget);
+                    postUniforms.uFocusDistance.value = THREE.MathUtils.clamp(
+                        (focusWorldDist - camera.near) / span,
+                        0.0,
+                        1.0
+                    );
+                }
 
-                // Render scene to offscreen target
+                // Render scene to offscreen linear HDR target
                 renderer.setRenderTarget(renderTarget);
                 renderer.render(scene, camera);
                 renderer.setRenderTarget(null);
-                // Render post quad to screen
+                // Render tone-mapped + sRGB-encoded post quad to screen
                 renderer.render(postScene, postCamera);
             },
 
-            /** Call on window resize */
+            /** Call on window or pixel-ratio resize */
             resize() {
-                const sz = renderer.getSize(new THREE.Vector2());
-                const pr = renderer.getPixelRatio();
-                renderTarget.setSize(sz.x * pr, sz.y * pr);
-                postUniforms.uResolution.value.set(sz.x * pr, sz.y * pr);
+                const next = getPixelSize();
+                renderTarget.setSize(next.width, next.height);
+                postUniforms.uResolution.value.set(next.width, next.height);
             },
 
             /** Cleanup */
@@ -665,10 +809,16 @@ export class AnnolidShaders {
     // UTILITY: Remove all shader effects from a material
     // ═══════════════════════════════════════════════════════════
     removeAllShaders(material) {
-        material.onBeforeCompile = () => { };
-        material.needsUpdate = true;
-        if (this._applied.has(material)) {
+        const record = this._applied.get(material);
+        if (record) {
+            material.onBeforeCompile = record.baseOnBeforeCompile || (() => { });
+            material.customProgramCacheKey = typeof record.baseCacheKey === 'function'
+                ? record.baseCacheKey
+                : function () { return ''; };
             this._applied.delete(material);
+        } else {
+            material.onBeforeCompile = () => { };
         }
+        material.needsUpdate = true;
     }
 }

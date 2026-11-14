@@ -112,18 +112,44 @@ def test_threejs_allowed_model_suffixes_include_core_formats() -> None:
 
 
 def test_threejs_allowed_assets_include_runtime_modules() -> None:
-    assert "annolid_threejs_runtime.js" in srv._THREEJS_ALLOWED_ASSETS  # noqa: SLF001
-    assert "annolid_threejs_css2d.js" in srv._THREEJS_ALLOWED_ASSETS  # noqa: SLF001
+    for runtime_asset in (
+        "annolid_threejs_runtime.js",
+        "annolid_threejs_css2d.js",
+        "annolid_shaders.js",
+        "three.core.min.js",
+        "three.module.min.js",
+        "three_orbit_controls.min.js",
+        "three_room_environment.min.js",
+        "three_css2d_renderer.min.js",
+        "lil-gui.esm.min.js",
+    ):
+        assert runtime_asset in srv._THREEJS_ALLOWED_ASSETS  # noqa: SLF001
 
 
 @pytest.mark.parametrize(
-    "filename", ["two_mice_scene.js", "two_mice_model.js", "two_mice_simulation.js"]
+    "filename",
+    [
+        "two_mice.html",
+        "two_mice_scene.js",
+        "two_mice_model.js",
+        "two_mice_simulation.js",
+        "annolid_shaders.js",
+        "annolid_threejs_runtime.js",
+        "annolid_threejs_css2d.js",
+        "three.core.min.js",
+        "three.module.min.js",
+        "three_orbit_controls.min.js",
+        "three_room_environment.min.js",
+        "three_css2d_renderer.min.js",
+        "lil-gui.esm.min.js",
+    ],
 )
 def test_two_mice_modules_are_served_by_the_desktop_viewer(filename):
     base_url = srv._ensure_threejs_http_server()  # noqa: SLF001
     with urlopen(f"{base_url}/threejs/{filename}", timeout=5) as response:
         assert response.status == 200
-        assert "javascript" in response.headers["Content-Type"]
+        expected_type = "html" if filename.endswith(".html") else "javascript"
+        assert expected_type in response.headers["Content-Type"]
         assert response.read().decode("utf-8") == srv._threejs_asset_path(
             filename
         ).read_text(encoding="utf-8")
