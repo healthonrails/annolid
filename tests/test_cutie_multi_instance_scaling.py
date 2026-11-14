@@ -201,6 +201,28 @@ def test_mask_geometry_primitives_match_dense_reference() -> None:
     )
 
 
+def test_extract_index_mask_bboxes_falls_back_without_scipy(monkeypatch) -> None:
+    import sys
+
+    bounded = np.zeros((48, 64), dtype=np.int32)
+    bounded[0, 0] = -5
+    bounded[7, 13] = 1
+    bounded[12:20, 30:44] = 9
+    expected_bounded = extract_index_mask_bboxes(bounded)
+
+    sparse = bounded.copy()
+    sparse[25:33, 5:18] = 75_000
+    sparse[40, 60] = 150_123
+    expected_sparse = extract_index_mask_bboxes(sparse)
+
+    monkeypatch.setitem(sys.modules, "scipy", None)
+    monkeypatch.setitem(sys.modules, "scipy.ndimage", None)
+
+    assert extract_index_mask_bboxes(bounded) == expected_bounded
+    assert extract_index_mask_bboxes(sparse) == expected_sparse
+    assert extract_index_mask_bboxes(np.zeros((8, 8), dtype=np.int32)) == {}
+
+
 def test_object_manager_and_inference_core_scale_above_255_objects() -> None:
     mgr = ObjectManager()
     global_ids = [idx * 2 + 3 for idx in range(265)]  # 265 instances, IDs up to 531

@@ -1076,3 +1076,5 @@ class VideoMTOnnxVideoProcessor:
                     saved += 1
 
         return f"VideoMT ONNX completed. Saved predictions for {saved} frame(s)."
+
+    process_video_frames.allow_force_thread_terminate = False

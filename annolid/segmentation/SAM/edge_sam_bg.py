@@ -545,10 +545,17 @@ class VideoProcessor:
                 if end_frame is None:
                     end_frame = self.num_frames
                 for i in range(start_frame, end_frame + 1, step):
+                    if (
+                        getattr(self, "pred_worker", None) is not None
+                        and getattr(self.pred_worker, "is_stopped", lambda: False)()
+                    ):
+                        return f"Stopped#{i}"
                     self.process_frame(i)
             else:
                 self.pred_worker.stop_signal.emit()
                 return "Not implemented#404"
+
+    process_video_frames.allow_force_thread_terminate = False
 
     def get_most_recent_file(self):
         """
@@ -559,7 +566,6 @@ class VideoProcessor:
         """
         _recent_file = find_most_recent_file(self.results_folder)
         return _recent_file
-
 
 
 if __name__ == "__main__":

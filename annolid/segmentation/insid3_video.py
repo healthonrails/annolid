@@ -908,6 +908,8 @@ class Insid3VideoProcessor:
             and self.pred_worker.is_stopped()
         )
 
+    process_video_frames.allow_force_thread_terminate = False
+
 
 def _runtime_bool(value: Any) -> bool:
     if isinstance(value, bool):

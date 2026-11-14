@@ -46,6 +46,7 @@ class AgentConfig:
     llm_provider: Optional[str] = None
     llm_model: Optional[str] = None
     llm_profile: Optional[str] = None
+    request_timeout_s: float = 120.0
 
     def __post_init__(self) -> None:
         self.prompt = require_text_prompt(
@@ -373,12 +374,25 @@ def _build_send_generate_request(
     def _send(messages):
         if is_stop_requested(stop_event):
             raise Sam3StopRequested("Stopped by user.")
-        response = _send_generate_request(
-            messages,
-            server_url=resolved.base_url,
-            model=resolved.model,
-            api_key=resolved.api_key,
-        )
+        try:
+            try:
+                response = _send_generate_request(
+                    messages,
+                    server_url=resolved.base_url,
+                    model=resolved.model,
+                    api_key=resolved.api_key,
+                    timeout=agent_cfg.request_timeout_s,
+                    stop_event=stop_event,
+                )
+            except TypeError:
+                response = _send_generate_request(
+                    messages,
+                    server_url=resolved.base_url,
+                    model=resolved.model,
+                    api_key=resolved.api_key,
+                )
+        except InferenceCancelledError as exc:
+            raise Sam3StopRequested("Stopped by user.") from exc
         if is_stop_requested(stop_event):
             raise Sam3StopRequested("Stopped by user.")
         return response

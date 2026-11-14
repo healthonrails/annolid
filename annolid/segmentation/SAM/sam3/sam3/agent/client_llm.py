@@ -5,9 +5,12 @@
 import base64
 import json
 import os
+import threading
 from typing import Any, Optional
 
 from openai import OpenAI
+
+from annolid.utils.cancellation import InferenceCancelledError, is_stop_requested
 
 
 _SAM3_TOOL_SCHEMAS = [
@@ -139,6 +142,9 @@ def send_generate_request(
     model="meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
     api_key=None,
     max_tokens=4096,
+    *,
+    timeout: Optional[float] = 120.0,
+    stop_event: Optional[Any] = None,
 ):
     """
     Sends a request to the OpenAI-compatible API endpoint using the OpenAI client library.
@@ -148,13 +154,20 @@ def send_generate_request(
         messages (list): A list of message dicts, each containing role and content.
         model (str): The model to use for generation (default: "llama-4")
         max_tokens (int): Maximum number of tokens to generate (default: 4096)
+        timeout (float, optional): Bounded HTTP socket/request timeout in seconds.
+        stop_event (Event, optional): Cooperative cancellation event; closes active HTTP sockets on set().
 
     Returns:
         str: The generated response text from the server.
     """
+    if is_stop_requested(stop_event):
+        raise InferenceCancelledError("SAM3 agent LLM request cancelled.")
+
     # Process messages to convert image paths to base64
     processed_messages = []
     for message in messages:
+        if is_stop_requested(stop_event):
+            raise InferenceCancelledError("SAM3 agent LLM request cancelled.")
         processed_message = message.copy()
         if message["role"] == "user" and "content" in message:
             processed_content = []
@@ -202,10 +215,48 @@ def send_generate_request(
             processed_message["content"] = processed_content
         processed_messages.append(processed_message)
 
-    # Create OpenAI client with custom base URL
-    client = OpenAI(api_key=api_key, base_url=server_url)
+    if is_stop_requested(stop_event):
+        raise InferenceCancelledError("SAM3 agent LLM request cancelled.")
+
+    # Create OpenAI client with custom base URL and bounded socket timeout
+    try:
+        client = OpenAI(api_key=api_key, base_url=server_url, timeout=timeout)
+    except TypeError:
+        client = OpenAI(api_key=api_key, base_url=server_url)
+
+    def _close_client() -> None:
+        close_fn = getattr(client, "close", None)
+        if callable(close_fn):
+            try:
+                close_fn()
+            except Exception:
+                pass
+
+    unsubscribe = None
+    watcher_done: Optional[threading.Event] = None
+    if stop_event is not None:
+        add_listener = getattr(stop_event, "add_listener", None)
+        if callable(add_listener):
+            unsubscribe = add_listener(_close_client)
+        elif callable(getattr(stop_event, "wait", None)):
+            watcher_done = threading.Event()
+
+            def _poll_stop() -> None:
+                while not watcher_done.is_set():
+                    if is_stop_requested(stop_event):
+                        _close_client()
+                        return
+                    watcher_done.wait(0.05)
+
+            threading.Thread(
+                target=_poll_stop,
+                name="sam3-agent-llm-cancel",
+                daemon=True,
+            ).start()
 
     try:
+        if is_stop_requested(stop_event):
+            raise InferenceCancelledError("SAM3 agent LLM request cancelled.")
         print(f"🔍 Calling model {model}...")
         response = client.chat.completions.create(
             model=model,
@@ -215,7 +266,8 @@ def send_generate_request(
             tools=_SAM3_TOOL_SCHEMAS,
             tool_choice="auto",
         )
-        # print(f"Received response: {response.choices[0].message}")
+        if is_stop_requested(stop_event):
+            raise InferenceCancelledError("SAM3 agent LLM request cancelled.")
 
         # Extract the response content
         if response.choices and len(response.choices) > 0:
@@ -236,9 +288,22 @@ def send_generate_request(
             print(f"Unexpected response format: {response}")
             return None
 
+    except InferenceCancelledError:
+        raise
     except Exception as e:
+        if is_stop_requested(stop_event):
+            raise InferenceCancelledError("SAM3 agent LLM request cancelled.") from e
         print(f"Request failed: {e}")
         return None
+    finally:
+        if watcher_done is not None:
+            watcher_done.set()
+        if callable(unsubscribe):
+            try:
+                unsubscribe()
+            except Exception:
+                pass
+        _close_client()
 
 
 def send_direct_request(

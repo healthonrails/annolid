@@ -121,6 +121,7 @@ class DepthManager(QtCore.QObject):
             worker.preview_signal.connect(self._handle_depth_preview)
 
         worker_thread = QtCore.QThread(w)
+        worker_thread.setStackSize(8 * 1024 * 1024)
         worker.moveToThread(worker_thread)
         worker.finished_signal.connect(
             functools.partial(

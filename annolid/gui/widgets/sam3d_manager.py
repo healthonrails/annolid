@@ -172,6 +172,7 @@ class Sam3DManager(QtCore.QObject):
         )
         worker = FlexibleWorker(runner, cfg, job)
         worker_thread = QtCore.QThread(w)
+        worker_thread.setStackSize(8 * 1024 * 1024)
         worker.moveToThread(worker_thread)
         worker.finished_signal.connect(
             functools.partial(self._handle_sam3d_finished, worker_thread=worker_thread)

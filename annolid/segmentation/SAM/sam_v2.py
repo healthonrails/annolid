@@ -1,5 +1,9 @@
 from annolid.utils.logger import logger
-from annolid.utils.files import download_file
+from annolid.utils.cancellation import (
+    InferenceCancelledError,
+    cancellable_download_file,
+    is_stop_requested,
+)
 from annolid.utils.devices import get_device
 from annolid.utils.annotation_store import AnnotationStore
 from annolid.gui.shape import MaskShape
@@ -33,15 +37,44 @@ os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 class BaseSAMVideoProcessor:
     """Shared utilities for SAM-style video propagation."""
 
-    def __init__(self, video_dir, id_to_labels, epsilon_for_polygon=2.0):
+    def __init__(
+        self,
+        video_dir,
+        id_to_labels,
+        epsilon_for_polygon=2.0,
+        *,
+        stop_event=None,
+        pred_worker=None,
+    ):
         self.video_path = video_dir  # original path (file or dir)
         self.video_dir = self._normalize_video_path(video_dir)
         self.id_to_labels = id_to_labels or {}
         self.epsilon_for_polygon = epsilon_for_polygon
+        self._stop_event = stop_event
+        self._pred_worker = pred_worker
+        self._stop_requested = False
         self.device = get_device()
         self.frame_names = self._load_frame_names()
         self.frame_shape = None
         self.ndjson_writer: Optional[DetectionsWriter] = None
+
+    def request_stop(self) -> None:
+        self._stop_requested = True
+        if self._stop_event is not None:
+            try:
+                self._stop_event.set()
+            except Exception:
+                pass
+
+    def _should_stop(self) -> bool:
+        if self._stop_requested or is_stop_requested(self._stop_event):
+            return True
+        if (
+            self._pred_worker is not None
+            and getattr(self._pred_worker, "is_stopped", lambda: False)()
+        ):
+            return True
+        return False
 
     def _init_ndjson_writer(self, ndjson_filename: Optional[str]) -> None:
         """Initialise an NDJSON writer if a filename is provided."""
@@ -346,6 +379,9 @@ class SAM2VideoProcessor(BaseSAMVideoProcessor):
         checkpoint_path=None,
         model_config="sam2.1_hiera_s.yaml",
         epsilon_for_polygon=2.0,
+        *,
+        stop_event=None,
+        pred_worker=None,
     ):
         """
         Initializes the SAM2VideoProcessor with the given parameters.
@@ -361,7 +397,13 @@ class SAM2VideoProcessor(BaseSAMVideoProcessor):
         self.checkpoint_path = self._resolve_checkpoint_path(
             checkpoint_path, model_config
         )
-        super().__init__(video_dir, id_to_labels, epsilon_for_polygon)
+        super().__init__(
+            video_dir,
+            id_to_labels,
+            epsilon_for_polygon,
+            stop_event=stop_event,
+            pred_worker=pred_worker,
+        )
         self.predictor = self._initialize_predictor()
         self._handle_device_specific_settings()
 
@@ -393,11 +435,19 @@ class SAM2VideoProcessor(BaseSAMVideoProcessor):
             pass
         initialize_config_module("sam2", version_base="1.2")
 
+        if self._should_stop():
+            raise InferenceCancelledError("SAM2 initialization cancelled.")
         if not os.path.exists(self.checkpoint_path):
             sam2_checkpoint_url = (
                 f"{self.BASE_URL}{os.path.basename(self.checkpoint_path)}"
             )
-            download_file(sam2_checkpoint_url, self.checkpoint_path)
+            cancellable_download_file(
+                sam2_checkpoint_url,
+                self.checkpoint_path,
+                stop_event=self._stop_event,
+            )
+        if self._should_stop():
+            raise InferenceCancelledError("SAM2 initialization cancelled.")
 
         print(self.model_config, self.checkpoint_path)
         return build_sam2_video_predictor(
@@ -541,6 +591,11 @@ class SAM2VideoProcessor(BaseSAMVideoProcessor):
             out_obj_ids,
             out_mask_logits,
         ) in self.predictor.propagate_in_video(inference_state):
+            if self._should_stop():
+                logger.info(
+                    "SAM2 propagation stopped cooperatively at frame %s.", out_frame_idx
+                )
+                break
             mask_dict = {}
             filename = os.path.join(self.video_dir, f"{out_frame_idx:09}.json")
             for i, out_obj_id in enumerate(out_obj_ids):
@@ -549,6 +604,12 @@ class SAM2VideoProcessor(BaseSAMVideoProcessor):
             self._save_annotations(
                 filename, mask_dict, self.frame_shape, frame_idx=out_frame_idx
             )
+            if self._should_stop():
+                logger.info(
+                    "SAM2 propagation stopped cooperatively after frame %s.",
+                    out_frame_idx,
+                )
+                break
 
     def run(self, annotations, frame_idx):
         """
@@ -558,6 +619,8 @@ class SAM2VideoProcessor(BaseSAMVideoProcessor):
             annotations (list): List of annotation dictionaries, each with 'type', 'points', and 'labels'.
             frame_idx (int): Index of the frame to start the analysis.
         """
+        if self._should_stop():
+            return "Stopped by user."
         inference_state = self.predictor.init_state(
             video_path=self.video_path,
             async_loading_frames=True,
@@ -566,6 +629,8 @@ class SAM2VideoProcessor(BaseSAMVideoProcessor):
         self.frame_shape = self.get_frame_shape()
 
         for annotation in annotations:
+            if self._should_stop():
+                return "Stopped by user."
             frame_idx = (
                 annotation["ann_frame_idx"]
                 if "ann_frame_idx" in annotation
@@ -686,7 +751,9 @@ def load_manual_seed_annotations_from_video(video_path):
                     mask = shape_to_mask(
                         img_shape=(int(image_height), int(image_width)),
                         points=[[float(x), float(y)] for x, y in points],
-                        shape_type="rectangle" if shape_type == "rectangle" else "polygon",
+                        shape_type="rectangle"
+                        if shape_type == "rectangle"
+                        else "polygon",
                     )
                 except Exception:
                     continue
@@ -741,6 +808,9 @@ def process_video(
     checkpoint_path=None,
     model_config="sam2.1_hiera_s.yaml",
     epsilon_for_polygon=2.0,
+    *,
+    pred_worker=None,
+    stop_event=None,
 ):
     """
     Processes a video by extracting frames, loading annotations from multiple JSON files, and running analysis.
@@ -752,20 +822,36 @@ def process_video(
         model_config (str, optional): Path to the model configuration file.
         epsilon_for_polygon (float, optional): Epsilon value for polygon approximation.
     """
+    if is_stop_requested(stop_event) or (
+        pred_worker is not None and getattr(pred_worker, "is_stopped", lambda: False)()
+    ):
+        return "Stopped by user."
     all_annotations, id_to_labels = load_annotations_from_video(video_path)
 
-    analyzer = SAM2VideoProcessor(
-        video_dir=video_path,
-        id_to_labels=id_to_labels,
-        checkpoint_path=checkpoint_path,
-        model_config=model_config,
-        epsilon_for_polygon=epsilon_for_polygon,
-    )
-
     try:
+        analyzer = SAM2VideoProcessor(
+            video_dir=video_path,
+            id_to_labels=id_to_labels,
+            checkpoint_path=checkpoint_path,
+            model_config=model_config,
+            epsilon_for_polygon=epsilon_for_polygon,
+            stop_event=stop_event,
+            pred_worker=pred_worker,
+        )
         analyzer.run(all_annotations, frame_idx)
+    except InferenceCancelledError:
+        return "Stopped by user."
     except RuntimeError as e:
+        if is_stop_requested(stop_event):
+            return "Stopped by user."
         print(e)
+        return None
+    if analyzer._should_stop():
+        return "Stopped by user."
+    return None
+
+
+process_video.allow_force_thread_terminate = False
 
 
 # -------------------------------------------------------------------------
@@ -900,6 +986,9 @@ class EfficientTAMVideoProcessor(BaseSAMVideoProcessor):
         id_to_labels,
         model_key: str = "efficienttam_s",
         epsilon_for_polygon: float = 2.0,
+        *,
+        stop_event=None,
+        pred_worker=None,
     ):
         self.model_key = model_key
         spec = EFFICIENTTAM_MODEL_SPECS.get(model_key)
@@ -911,7 +1000,15 @@ class EfficientTAMVideoProcessor(BaseSAMVideoProcessor):
         self.model_config = spec["config"]
         # checkpoint_path will be resolved lazily via HF on first use
         self.checkpoint_path: Optional[str] = None
-        super().__init__(video_dir, id_to_labels, epsilon_for_polygon)
+        super().__init__(
+            video_dir,
+            id_to_labels,
+            epsilon_for_polygon,
+            stop_event=stop_event,
+            pred_worker=pred_worker,
+        )
+        if self._should_stop():
+            raise InferenceCancelledError("EfficientTAM initialization cancelled.")
         self.predictor = self._initialize_predictor()
 
     def _initialize_predictor(self):
@@ -1003,6 +1100,12 @@ class EfficientTAMVideoProcessor(BaseSAMVideoProcessor):
             out_obj_ids,
             out_mask_logits,
         ) in self.predictor.propagate_in_video(inference_state):
+            if self._should_stop():
+                logger.info(
+                    "EfficientTAM propagation stopped cooperatively at frame %s.",
+                    out_frame_idx,
+                )
+                break
             mask_dict = {}
             filename = os.path.join(self.video_dir, f"{out_frame_idx:09}.json")
             for i, out_obj_id in enumerate(out_obj_ids):
@@ -1016,6 +1119,12 @@ class EfficientTAMVideoProcessor(BaseSAMVideoProcessor):
                 self.frame_shape,
                 frame_idx=out_frame_idx,
             )
+            if self._should_stop():
+                logger.info(
+                    "EfficientTAM propagation stopped cooperatively after frame %s.",
+                    out_frame_idx,
+                )
+                break
 
     def run(self, annotations, frame_idx):
         """
@@ -1026,6 +1135,8 @@ class EfficientTAMVideoProcessor(BaseSAMVideoProcessor):
                 'points', and 'labels'.
             frame_idx (int): Index of the frame to start the analysis.
         """
+        if self._should_stop():
+            return "Stopped by user."
         inference_state = self.predictor.init_state(
             # Use the original video file path so EfficientTAM can
             # decode frames directly (via decord or OpenCV fallback).
@@ -1036,6 +1147,8 @@ class EfficientTAMVideoProcessor(BaseSAMVideoProcessor):
         self.frame_shape = self.get_frame_shape()
 
         for annotation in annotations:
+            if self._should_stop():
+                return "Stopped by user."
             ann_frame_idx = (
                 annotation["ann_frame_idx"]
                 if "ann_frame_idx" in annotation
@@ -1056,6 +1169,9 @@ def process_video_efficienttam(
     frame_idx: int = 0,
     model_key: str = "efficienttam_s",
     epsilon_for_polygon: float = 2.0,
+    *,
+    pred_worker=None,
+    stop_event=None,
 ):
     """
     Process a video with EfficientTAM by loading annotations and running tracking.
@@ -1066,19 +1182,35 @@ def process_video_efficienttam(
         model_key (str): EfficientTAM model key (e.g. 'efficienttam_s', 'efficienttam_ti').
         epsilon_for_polygon (float): Epsilon value for polygon approximation.
     """
+    if is_stop_requested(stop_event) or (
+        pred_worker is not None and getattr(pred_worker, "is_stopped", lambda: False)()
+    ):
+        return "Stopped by user."
     all_annotations, id_to_labels = load_annotations_from_video(video_path)
 
-    analyzer = EfficientTAMVideoProcessor(
-        video_dir=video_path,
-        id_to_labels=id_to_labels,
-        model_key=model_key,
-        epsilon_for_polygon=epsilon_for_polygon,
-    )
-
     try:
+        analyzer = EfficientTAMVideoProcessor(
+            video_dir=video_path,
+            id_to_labels=id_to_labels,
+            model_key=model_key,
+            epsilon_for_polygon=epsilon_for_polygon,
+            stop_event=stop_event,
+            pred_worker=pred_worker,
+        )
         analyzer.run(all_annotations, frame_idx)
+    except InferenceCancelledError:
+        return "Stopped by user."
     except RuntimeError as e:
+        if is_stop_requested(stop_event):
+            return "Stopped by user."
         print(e)
+        return None
+    if analyzer._should_stop():
+        return "Stopped by user."
+    return None
+
+
+process_video_efficienttam.allow_force_thread_terminate = False
 
 
 if __name__ == "__main__":

@@ -2505,3 +2505,187 @@ def test_sam3_agent_orchestrator_aborts_mid_round_on_stop_event_and_disables_for
         runner = mgr.build_video_processor(mode_name, "sam3.pt", "fish")
         assert callable(runner)
         assert getattr(runner, "allow_force_thread_terminate", None) is False
+
+
+def test_sam3_agent_client_llm_closes_active_http_client_mid_flight_on_stop_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from annolid.segmentation.SAM.sam3.sam3.agent import client_llm
+    from annolid.utils.cancellation import InferenceCancelledError, ObservableStopEvent
+
+    seen_timeouts: list[object] = []
+
+    for event_factory in (ObservableStopEvent, threading.Event):
+        entered_http = threading.Event()
+        socket_closed = threading.Event()
+        close_calls = {"count": 0}
+
+        class _BlockingOpenAIClient:
+            def __init__(self, **_kwargs) -> None:
+                seen_timeouts.append(_kwargs.get("timeout"))
+                self.chat = SimpleNamespace(
+                    completions=SimpleNamespace(create=self._create)
+                )
+
+            def _create(self, **_kwargs):
+                entered_http.set()
+                if socket_closed.wait(timeout=5.0):
+                    raise RuntimeError("httpx socket closed on cancel")
+                raise AssertionError("HTTP client was not closed on stop_event.set()")
+
+            def close(self) -> None:
+                close_calls["count"] += 1
+                socket_closed.set()
+
+        monkeypatch.setattr(client_llm, "OpenAI", _BlockingOpenAIClient)
+        stop_ev = event_factory()
+        outcome: list[BaseException] = []
+
+        def _worker() -> None:
+            try:
+                client_llm.send_generate_request(
+                    [{"role": "user", "content": "segment fish"}],
+                    server_url="http://127.0.0.1:11434/v1",
+                    model="qwen-vl",
+                    api_key="none",
+                    timeout=45.0,
+                    stop_event=stop_ev,
+                )
+            except BaseException as exc:
+                outcome.append(exc)
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+        assert entered_http.wait(timeout=2.0) is True
+        started_cancel = time.perf_counter()
+        stop_ev.set()
+        t.join(timeout=1.5)
+        elapsed = time.perf_counter() - started_cancel
+
+        assert not t.is_alive()
+        assert elapsed < 1.0
+        assert close_calls["count"] >= 1
+        assert len(outcome) == 1 and isinstance(outcome[0], InferenceCancelledError)
+
+    assert seen_timeouts == [45.0, 45.0]
+
+
+def test_flexible_worker_observable_stop_event_prestart_cancel_and_partial_introspection() -> (
+    None
+):
+    _ensure_qapp()
+    import functools
+    from annolid.gui.workers import FlexibleWorker
+    from annolid.segmentation.SAM.edge_sam_bg import (
+        VideoProcessor as EdgeSamVideoProcessor,
+    )
+    from annolid.segmentation.SAM.sam_v2 import (
+        process_video,
+        process_video_efficienttam,
+    )
+    from annolid.segmentation.cutie_vos.video_processor import CutieVideoProcessor
+    from annolid.segmentation.insid3_video import Insid3VideoProcessor
+    from annolid.segmentation.videomt_onnx import VideoMTOnnxVideoProcessor
+    from annolid.tracker.base import BasePointTracker
+    from annolid.utils.cancellation import ObservableStopEvent
+
+    # 1. ObservableStopEvent fires listeners synchronously on request_stop(), and
+    #    request_stop() BEFORE run() starts is honored rather than cleared by run().
+    calls: list[str] = []
+    listener_fired: list[bool] = []
+    results: list[object] = []
+
+    def _task(*, stop_event=None):
+        calls.append(f"ran:{stop_event.is_set() if stop_event else None}")
+        return "Completed"
+
+    fw = FlexibleWorker(_task)
+    assert isinstance(fw.stop_event, ObservableStopEvent)
+    fw.stop_event.add_listener(lambda: listener_fired.append(True))
+    fw.finished_signal.connect(results.append)
+
+    fw.request_stop()
+    assert listener_fired == [True]
+    fw.run()
+    assert calls == []
+    assert results == ["Stopped"]
+
+    # Subsequent reuse without a new stop request resets cleanly and runs the task.
+    fw.run()
+    assert calls == ["ran:False"]
+    assert results == ["Stopped", "Completed"]
+
+    # 2. functools.partial-wrapped SAM2 / EfficientTAM and native video processors
+    #    report allows_force_terminate() is False and inject cancellation kwargs.
+    for fn in (
+        functools.partial(process_video, video_path="fish.mp4"),
+        functools.partial(process_video_efficienttam, video_path="fish.mp4"),
+    ):
+        partial_worker = FlexibleWorker(fn)
+        assert partial_worker.allows_force_terminate() is False
+        injected = partial_worker._inject_cancellation_kwargs({})
+        assert injected["pred_worker"] is partial_worker
+        assert injected["stop_event"] is partial_worker.stop_event
+
+    assert CutieVideoProcessor.allow_force_thread_terminate is False
+    assert BasePointTracker.allow_force_thread_terminate is False
+    for method in (
+        VideoMTOnnxVideoProcessor.process_video_frames,
+        Insid3VideoProcessor.process_video_frames,
+        EdgeSamVideoProcessor.process_video_frames,
+    ):
+        assert getattr(method, "allow_force_thread_terminate", None) is False
+
+
+def test_sam2_propagation_stops_cooperatively_and_recording_widget_writes_bgr(
+    tmp_path,
+) -> None:
+    _ensure_qapp()
+    import torch
+
+    from annolid.gui.widgets.video_recording import RecordingWidget
+    from annolid.segmentation.SAM.sam_v2 import SAM2VideoProcessor
+    from annolid.utils.cancellation import ObservableStopEvent
+
+    # 1. SAM2VideoProcessor._propagate halts immediately when stop_event is set mid-stream.
+    stop_ev = ObservableStopEvent()
+    saved_frames: list[int] = []
+
+    proc = SAM2VideoProcessor.__new__(SAM2VideoProcessor)
+    proc.video_dir = str(tmp_path)
+    proc.frame_shape = (32, 32, 3)
+    proc._stop_event = stop_ev
+    proc._pred_worker = None
+    proc._stop_requested = False
+
+    def _fake_propagate(_state):
+        for idx in range(5):
+            if idx == 1:
+                stop_ev.set()
+            yield idx, [1], [torch.ones((1, 8, 8), dtype=torch.float32)]
+
+    proc.predictor = SimpleNamespace(propagate_in_video=_fake_propagate)
+    proc._save_annotations = (  # type: ignore[method-assign]
+        lambda _fn, _md, _fs, frame_idx=None, **_kw: saved_frames.append(int(frame_idx))
+    )
+    proc._propagate(inference_state={})
+    assert saved_frames == [0]
+
+    # 2. RecordingWidget converts RGB QImage frames to BGR for cv2.VideoWriter.
+    qimg = QtGui.QImage(24, 16, QtGui.QImage.Format_RGB32)
+    qimg.fill(QtGui.QColor(220, 100, 30))
+    pix = QtGui.QPixmap.fromImage(qimg)
+    written_frames: list[np.ndarray] = []
+
+    rec = RecordingWidget(canvas=lambda: SimpleNamespace())
+    try:
+        rec.is_recording = True
+        rec._grab_canvas_pixmap = lambda _c: pix  # type: ignore[method-assign]
+        rec.video_writer = SimpleNamespace(write=written_frames.append)
+        rec.capture_frame()
+        assert len(written_frames) == 1
+        assert written_frames[0].shape == (16, 24, 3)
+        # OpenCV BGR order: [B=30, G=100, R=220]
+        assert written_frames[0][0, 0].tolist() == [30, 100, 220]
+    finally:
+        rec.close()

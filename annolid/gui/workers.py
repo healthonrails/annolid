@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import gc
 import json
 import logging
@@ -38,6 +39,7 @@ from annolid.infrastructure.filesystem import (
     find_manual_labeled_json_files,
     get_frame_number_from_json,
 )
+from annolid.utils.cancellation import ObservableStopEvent
 from annolid.utils.logger import logger
 from annolid.utils.devices import clear_device_cache
 
@@ -858,7 +860,9 @@ class FlexibleWorker(QtCore.QObject):
         self._args = args
         self._kwargs = kwargs
         self._is_stopped = False
-        self._stop_event = threading.Event()
+        self._running = False
+        self._stop_pending_before_run = False
+        self._stop_event = ObservableStopEvent()
 
         # Connect the stop signal to the stop method
         self.stop_signal.connect(self._stop)
@@ -872,19 +876,25 @@ class FlexibleWorker(QtCore.QObject):
         Executes the task function with the provided arguments.
         Emits signals for result and completion when done.
         """
-        self._is_stopped = False
-        self._stop_event.clear()
         result = None
         error = None
+        self._running = True
         try:
-            if self._is_stopped:
+            if self._stop_pending_before_run:
+                self._stop_pending_before_run = False
+                self._is_stopped = True
+                self._stop_event.set()
                 result = "Stopped"
             else:
+                self._is_stopped = False
+                self._stop_event.clear()
                 kwargs = dict(self._kwargs)
                 kwargs = self._inject_cancellation_kwargs(kwargs)
                 result = self._task_function(*self._args, **kwargs)
         except Exception as exc:
             error = exc
+        finally:
+            self._running = False
 
         if error is not None:
             self._emit_if_alive(self.finished_signal, error)
@@ -897,6 +907,8 @@ class FlexibleWorker(QtCore.QObject):
         Stops the worker by setting the stop flag.
         """
         self._is_stopped = True
+        if not self._running:
+            self._stop_pending_before_run = True
         self._stop_event.set()
         self._request_stop_on_target()
 
@@ -912,12 +924,22 @@ class FlexibleWorker(QtCore.QObject):
         """Public helper to request a cooperative stop."""
         self._stop()
 
+    def _iter_target_candidates(self):
+        """Yield task callable, unwrapped partial functions, and bound owners."""
+        seen: set[int] = set()
+        curr = self._task_function
+        while curr is not None and id(curr) not in seen:
+            seen.add(id(curr))
+            yield curr
+            owner = getattr(curr, "__self__", None)
+            if owner is not None and id(owner) not in seen:
+                seen.add(id(owner))
+                yield owner
+            curr = curr.func if isinstance(curr, functools.partial) else None
+
     def allows_force_terminate(self) -> bool:
         """Return whether the target can be safely killed with QThread.terminate()."""
-        target = self._task_function
-        for candidate in (target, getattr(target, "__self__", None)):
-            if candidate is None:
-                continue
+        for candidate in self._iter_target_candidates():
             value = getattr(candidate, "allow_force_thread_terminate", None)
             if value is not None:
                 return bool(value)
@@ -948,10 +970,7 @@ class FlexibleWorker(QtCore.QObject):
 
     def _request_stop_on_target(self) -> None:
         """If the task function exposes a stop API, invoke it."""
-        target = self._task_function
-        for candidate in (target, getattr(target, "__self__", None)):
-            if candidate is None:
-                continue
+        for candidate in self._iter_target_candidates():
             request_stop = getattr(candidate, "request_stop", None)
             if callable(request_stop):
                 try:

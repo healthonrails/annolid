@@ -13,7 +13,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 import cv2
 import numpy as np
-from scipy import ndimage
 
 
 BBoxXYXY = tuple[int, int, int, int]
@@ -47,6 +46,59 @@ def tight_mask_bbox(mask: np.ndarray) -> BBoxXYXY | None:
     return (int(x), int(y), int(x + w), int(y + h))
 
 
+def _extract_index_mask_bboxes_numpy(
+    arr: np.ndarray,
+    max_id: int,
+) -> dict[int, BBoxXYXY]:
+    """Pure-NumPy single-pass fallback when `scipy.ndimage` is unavailable."""
+    ys, xs = np.nonzero(arr)
+    if ys.size == 0:
+        return {}
+    vals = arr[ys, xs]
+    height, width = arr.shape
+
+    if max_id <= _MAX_DIRECT_FIND_OBJECTS_ID:
+        table_len = max_id + 1
+        xmin = np.full(table_len, width, dtype=np.intp)
+        ymin = np.full(table_len, height, dtype=np.intp)
+        xmax = np.full(table_len, -1, dtype=np.intp)
+        ymax = np.full(table_len, -1, dtype=np.intp)
+        np.minimum.at(xmin, vals, xs)
+        np.minimum.at(ymin, vals, ys)
+        np.maximum.at(xmax, vals, xs)
+        np.maximum.at(ymax, vals, ys)
+        present = np.flatnonzero(xmax >= xmin)
+        return {
+            int(obj_id): (
+                int(xmin[obj_id]),
+                int(ymin[obj_id]),
+                int(xmax[obj_id]) + 1,
+                int(ymax[obj_id]) + 1,
+            )
+            for obj_id in present
+        }
+
+    unique_ids, inverse = np.unique(vals, return_inverse=True)
+    count = int(unique_ids.shape[0])
+    xmin = np.full(count, width, dtype=np.intp)
+    ymin = np.full(count, height, dtype=np.intp)
+    xmax = np.full(count, -1, dtype=np.intp)
+    ymax = np.full(count, -1, dtype=np.intp)
+    np.minimum.at(xmin, inverse, xs)
+    np.minimum.at(ymin, inverse, ys)
+    np.maximum.at(xmax, inverse, xs)
+    np.maximum.at(ymax, inverse, ys)
+    return {
+        int(unique_ids[idx]): (
+            int(xmin[idx]),
+            int(ymin[idx]),
+            int(xmax[idx]) + 1,
+            int(ymax[idx]) + 1,
+        )
+        for idx in range(count)
+    }
+
+
 def extract_index_mask_bboxes(index_mask: np.ndarray) -> dict[int, BBoxXYXY]:
     """Extract tight `(x0, y0, x1, y1)` bounding boxes for all positive IDs in one `O(H * W)` pass."""
     arr = np.asarray(index_mask)
@@ -64,6 +116,11 @@ def extract_index_mask_bboxes(index_mask: np.ndarray) -> dict[int, BBoxXYXY]:
     min_id = int(arr.min())
     if min_id < 0:
         arr = np.where(arr > 0, arr, 0)
+
+    try:
+        from scipy import ndimage
+    except ModuleNotFoundError:
+        return _extract_index_mask_bboxes_numpy(arr, max_id)
 
     if max_id <= _MAX_DIRECT_FIND_OBJECTS_ID:
         slices = ndimage.find_objects(arr, max_label=max_id)

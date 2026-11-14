@@ -97,9 +97,9 @@ class RecordingWidget(QtWidgets.QWidget):
             return
         qimage = pixmap.toImage()
 
-        # Convert QImage to numpy array
+        # Convert QImage to numpy RGB array, then BGR for OpenCV VideoWriter
         frame = utils.img_qt_to_arr(qimage)
-        frame_bgr = frame[:, :, :3]
+        frame_bgr = cv2.cvtColor(frame[:, :, :3], cv2.COLOR_RGB2BGR)
         # Write the frame to the video writer
         self.video_writer.write(frame_bgr)
 

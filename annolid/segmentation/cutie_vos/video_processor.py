@@ -9,14 +9,15 @@ from annolid.segmentation.cutie_vos.dependencies import (
 
 ensure_cutie_runtime_dependencies()
 
-from annolid.data.videos import CV2Video
-from annolid.segmentation.cutie_vos.predict import CutieCoreVideoProcessor
-from annolid.utils.logger import logger
+from annolid.data.videos import CV2Video  # noqa: E402
+from annolid.segmentation.cutie_vos.predict import CutieCoreVideoProcessor  # noqa: E402
+from annolid.utils.logger import logger  # noqa: E402
 
 
 class CutieVideoProcessor:
     """CUTIE-first processor compatible with legacy VideoProcessor call sites."""
 
+    allow_force_thread_terminate = False
     _DEFAULT_MEM_EVERY = 5
     _DEFAULT_VISUALIZE_EVERY = 20
     _RUNTIME_KWARG_EXCLUDE = {
@@ -85,7 +86,7 @@ class CutieVideoProcessor:
         if self.pred_worker is None:
             return False
         try:
-                return bool(self.pred_worker.is_stopped())
+            return bool(self.pred_worker.is_stopped())
         except Exception:
             return False
 

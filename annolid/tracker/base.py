@@ -24,6 +24,8 @@ from annolid.utils.annotation_compat import shape_to_mask
 class BasePointTracker(ABC):
     """Abstract base class for point-based trackers in Annolid."""
 
+    allow_force_thread_terminate = False
+
     def __init__(
         self,
         video_path: str,
