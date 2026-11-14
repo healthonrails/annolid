@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 import tempfile
 
 import cv2
@@ -17,10 +17,15 @@ import numpy as np
 from PIL import Image
 from scipy.optimize import linear_sum_assignment
 
+from annolid.utils.cancellation import InferenceCancelledError, is_stop_requested
 from annolid.utils.llm_settings import resolve_llm_config
 from annolid.core.agent.providers.openai_compat import resolve_openai_compat
 
-from annolid.segmentation.SAM.sam3.session import Sam3SessionConfig, Sam3SessionManager
+from annolid.segmentation.SAM.sam3.session import (
+    Sam3SessionConfig,
+    Sam3SessionManager,
+    Sam3StopRequested,
+)
 from .prompt_builder import require_text_prompt
 from .sam3.agent.client_llm import send_generate_request as _send_generate_request
 from .video_window_inference import _iter_video_windows
@@ -316,6 +321,8 @@ def _run_agent_on_frame(
             send_generate_request=send_request,
             output_dir=agent_cfg.output_dir,
         )
+    except (Sam3StopRequested, InferenceCancelledError):
+        raise
     except Exception as exc:
         # Normalize assertion/missing tool responses into a clean RuntimeError for caller fallback.
         raise RuntimeError(
@@ -342,7 +349,11 @@ def _call_run_agent_on_frame(
         return _run_agent_on_frame(frame_path, agent_cfg)
 
 
-def _build_send_generate_request(agent_cfg: AgentConfig):
+def _build_send_generate_request(
+    agent_cfg: AgentConfig,
+    *,
+    stop_event: Optional[Any] = None,
+):
     """
     Build a chat completion callable from the currently selected Annolid bot
     provider/model.
@@ -360,12 +371,17 @@ def _build_send_generate_request(agent_cfg: AgentConfig):
     resolved = resolve_openai_compat(resolved_cfg)
 
     def _send(messages):
-        return _send_generate_request(
+        if is_stop_requested(stop_event):
+            raise Sam3StopRequested("Stopped by user.")
+        response = _send_generate_request(
             messages,
             server_url=resolved.base_url,
             model=resolved.model,
             api_key=resolved.api_key,
         )
+        if is_stop_requested(stop_event):
+            raise Sam3StopRequested("Stopped by user.")
+        return response
 
     return _send, resolved
 
@@ -376,6 +392,7 @@ def run_agent_seeded_sam3_video(
     tracking_cfg: TrackingConfig,
     *,
     id_to_labels: Optional[Dict[int, str]] = None,
+    stop_event: Optional[Any] = None,
 ) -> Tuple[int, int]:
     """
     Iterate over a video in windows. For each window, run the SAM3 Agent on the
@@ -385,6 +402,8 @@ def run_agent_seeded_sam3_video(
     Returns:
         (total_frames_processed, total_masks_written)
     """
+    if is_stop_requested(stop_event):
+        raise Sam3StopRequested("Stopped by user.")
     id_to_labels = id_to_labels or {}
     session_cfg = Sam3SessionConfig(
         checkpoint_path=tracking_cfg.checkpoint_path,
@@ -414,7 +433,16 @@ def run_agent_seeded_sam3_video(
         id_to_labels=id_to_labels,
         config=session_cfg,
     )
-    send_request, _resolved_llm = _build_send_generate_request(agent_cfg)
+    if stop_event is not None and hasattr(session, "bind_stop_event"):
+        session.bind_stop_event(stop_event)
+    try:
+        send_request, _resolved_llm = _build_send_generate_request(
+            agent_cfg,
+            stop_event=stop_event,
+        )
+    except TypeError:
+        # Preserve compatibility if monkeypatched in unit tests without stop_event.
+        send_request, _resolved_llm = _build_send_generate_request(agent_cfg)
 
     total_frames = 0
     total_masks = 0
@@ -428,6 +456,8 @@ def run_agent_seeded_sam3_video(
             window_size=agent_cfg.window_size,
             stride=stride,
         ):
+            if is_stop_requested(stop_event):
+                raise Sam3StopRequested("Stopped by user.")
             if not frames:
                 continue
             first_frame = frames[0]
@@ -439,6 +469,8 @@ def run_agent_seeded_sam3_video(
                     agent_cfg,
                     send_request,
                 )
+                if is_stop_requested(stop_event):
+                    raise Sam3StopRequested("Stopped by user.")
                 if not boxes_abs:
                     previous_window_end_idx = int(end_idx)
                     continue
@@ -541,6 +573,8 @@ def run_agent_seeded_sam3_video(
                         )
 
                     def refresh_mid_frame(refresh_local_idx: int) -> Tuple[int, int]:
+                        if is_stop_requested(stop_event):
+                            raise Sam3StopRequested("Stopped by user.")
                         refresh_frame = frames[int(refresh_local_idx)]
                         refresh_path = (
                             tmpdir_path
@@ -555,6 +589,8 @@ def run_agent_seeded_sam3_video(
                             )
                         finally:
                             _safe_unlink(refresh_path)
+                        if is_stop_requested(stop_event):
+                            raise Sam3StopRequested("Stopped by user.")
                         refresh_boxes_abs = _filter_duplicate_boxes(
                             refresh_boxes_abs,
                             boxes_abs,

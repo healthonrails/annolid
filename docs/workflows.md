@@ -40,6 +40,17 @@ Practical notes:
 
 ![Annolid GUI running Segment Anything assisted polygon creation](imgs/annolid_with_segment_anything.gif)
 
+### Text-Prompt Segmentation in the GUI
+
+You can seed frame annotations directly from the toolbar **Text Prompt** box (press **Enter** or click **Go**):
+
+- **Multi-class prompts**: separate object phrases with commas, semicolons, periods, or newlines (for example, `black mouse, white mouse; water spout`). GroundingDINO isolates each phrase into its own attention span, deduplicates overlapping boxes via IoU NMS, and assigns per-class indices (`black mouse_0`, `white mouse_0`).
+- **Canonical label mapping (`query=label` or `query -> label`)**: decouple visual descriptions from project class names across GroundingDINO + SAM, CountGD, Florence-2, and open-vocabulary YOLOE video prediction (for example, `black mouse -> mouse_black, white mouse = mouse_white`).
+- **Output mode & confidence controls**: choose **Polygon**, **Mask**, or **Box** output directly in the toolbar, adjust the minimum confidence threshold (`0.05`–`0.95`), toggle **Use CountGD** for dense repeated objects, or enable **Replace** to swap prior text-prompt shapes on the current frame while preserving manual shapes.
+- **Automatic SAM fallback & caching**: SAM-HQ reuses cached image embeddings when iterating on prompts or thresholds on the same frame, falls back automatically to Annolid's built-in ONNX SAM model when `segment_anything` is not installed, and supports single-step **Undo** (`Ctrl+Z`) across an entire prompt batch.
+- **Responsive background execution & safe cancellation**: interactive toolbar runs and **Florence-2** dock frame/video jobs execute on background worker threads so the GUI stays responsive during first-time weight downloads, model loading, and dense segmentation. Click **Stop** to abort an in-flight checkpoint download, video pass, or ONNX/PyTorch forward pass cleanly (without leaving partial `.part` files on disk), or switch frames safely—stale background frame runs are discarded so shapes and captions never leak onto another frame.
+- **Segment-everything & frame flags**: enter `every 32 cell` to run grid-sampled mask generation with label `cell`, or `flags: grooming, rearing` to set frame-level behavior flags.
+
 ## Sparse Keypoint Tracking Workflow
 
 Use sparse point tracking when you need reviewable body-part trajectories from

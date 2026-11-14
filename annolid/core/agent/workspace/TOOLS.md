@@ -112,7 +112,7 @@ Safety notes:
 - `gui_set_chat_model(provider, model)`
 - `gui_select_annotation_model(model_name)`
 - `gui_track_next_frames(to_frame)`
-- `gui_set_ai_text_prompt(text, use_countgd?)`
+- `gui_set_ai_text_prompt(text, use_countgd?, box_threshold?, output_mode?, replace_existing?)`
 - `gui_run_ai_text_segmentation()`
 - `gui_segment_track_video(path, text_prompt, mode?, use_countgd?, model_name?, to_frame?)`
   - Uses the legacy GroundingDINO+SAM workflow for non-SAM3 models.

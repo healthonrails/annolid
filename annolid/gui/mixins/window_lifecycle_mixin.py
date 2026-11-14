@@ -93,6 +93,27 @@ class WindowLifecycleMixin:
 
     def _closefile_reset_view_and_core_state(self) -> None:
         self._set_active_view("canvas")
+        try:
+            cancel_prompt = getattr(
+                getattr(self, "canvas", None), "cancel_async_text_prompt", None
+            )
+            if callable(cancel_prompt):
+                cancel_prompt(wait_ms=0, reason="file_closed")
+            set_running = getattr(
+                getattr(self, "aiRectangle", None), "set_running", None
+            )
+            if callable(set_running):
+                set_running(False)
+        except Exception as exc:
+            logger.debug("Failed cancelling async text prompt on file close: %s", exc)
+        try:
+            cancel_florence = getattr(
+                getattr(self, "florence_dock", None), "cancel_florence_job", None
+            )
+            if callable(cancel_florence):
+                cancel_florence(wait_ms=0, reason="file_closed")
+        except Exception as exc:
+            logger.debug("Failed cancelling Florence-2 job on file close: %s", exc)
         self.resetState()
         controller = getattr(self, "dino_controller", None)
         if controller is not None:
@@ -274,6 +295,25 @@ class WindowLifecycleMixin:
             self.realtime_manager.stop_realtime_inference()
 
     def closeEvent(self, event):
+        try:
+            cancel_prompt = getattr(
+                getattr(self, "canvas", None), "cancel_async_text_prompt", None
+            )
+            if callable(cancel_prompt):
+                cancel_prompt(wait_ms=2000, reason="closing", notify_callback=False)
+        except Exception as exc:
+            logger.debug("Failed stopping async text prompt on close: %s", exc)
+        try:
+            florence_dock = getattr(self, "florence_dock", None)
+            if florence_dock is not None:
+                cancel_florence = getattr(florence_dock, "cancel_florence_job", None)
+                if callable(cancel_florence):
+                    cancel_florence(wait_ms=2000, reason="closing")
+                close_predictors = getattr(florence_dock, "close_predictors", None)
+                if callable(close_predictors):
+                    close_predictors()
+        except Exception as exc:
+            logger.debug("Failed stopping Florence-2 dock on close: %s", exc)
         try:
             self.clean_up()
         except Exception as exc:

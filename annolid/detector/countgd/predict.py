@@ -1,18 +1,22 @@
 import random
+import shutil
 import torch
 import os
-import gdown
 from PIL import Image
 import numpy as np
 import argparse
 from .util.slconfig import SLConfig
 from .util.misc import nested_tensor_from_tensor_list
 from .datasets import transforms as T
-import warnings
-from annolid.utils.devices import get_device
+import threading
+from annolid.utils.cancellation import (
+    InferenceCancelledError,
+    cancellable_download_file,
+    is_stop_requested,
+    torch_cancellable_forward,
+)
+from annolid.utils.devices import clear_device_cache, get_device
 from typing import Union
-
-warnings.filterwarnings("ignore")
 
 DEFAULT_CONF_THRESH = 0.23
 
@@ -21,53 +25,88 @@ class ObjectCounter:
     """
     A class for counting objects in images based on text prompts and optional visual exemplars.
     """
-    device = get_device()
 
-    def __init__(self, model_path: str = "checkpoint_best_regular.pth",
-                 config_path: str = "cfg_app.py"
-                 ):
+    device = "cpu"
+
+    def __init__(
+        self,
+        model_path: str = "checkpoint_best_regular.pth",
+        config_path: str = "cfg_app.py",
+        *,
+        stop_event: threading.Event | None = None,
+    ):
         """
         Initializes the ObjectCounter with the model and configuration.
 
         Args:
             model_path: Path to the pretrained model checkpoint.
             config_path: Path to the configuration file.
-            device: Device to load the model onto.
+            stop_event: Optional cooperative cancellation event.
         """
+        if is_stop_requested(stop_event):
+            raise InferenceCancelledError("CountGD initialization cancelled.")
+
+        self.model = None
+        self.transform = None
         self.device = get_device()
         self.here = os.path.dirname(os.path.abspath(__file__))
         config_path = os.path.join(self.here, config_path)
-        model_path = os.path.join(self.here, model_path)
-        self.annolid_git_repo = "https://github.com/healthonrails/annolid/releases/download/v1.2.0"
+        preferred_model_path = os.path.join(self.here, model_path)
+        self.annolid_git_repo = (
+            "https://github.com/healthonrails/annolid/releases/download/v1.2.0"
+        )
         self._REMOTE_MODEL_URL = f"{self.annolid_git_repo}/checkpoint_best_regular.pth"
         self._MD5 = "1492bfdd161ac1de471d0aafb32b174d"
-        if not os.path.exists(model_path):
-            gdown.cached_download(self._REMOTE_MODEL_URL,
-                                  model_path,
-                                  md5=self._MD5
-                                  )
+        model_path = cancellable_download_file(
+            self._REMOTE_MODEL_URL,
+            preferred_model_path,
+            md5=self._MD5,
+            stop_event=stop_event,
+            cache_subdir="countgd",
+        )
 
         self._REMOTE_BERT_MODEL_URL = f"{self.annolid_git_repo}/model.safetensors"
         self._BERT_MD5 = "cd18ceb6b110c04a8033ce01de41b0b7"
-        self._BERT_MODEL_PATH = os.path.join(
-            self.here, "checkpoints/bert-base-uncased/model.safetensors")
-        if not os.path.exists(self._BERT_MODEL_PATH):
-            gdown.cached_download(self._REMOTE_BERT_MODEL_URL,
-                                  self._BERT_MODEL_PATH,
-                                  md5=self._BERT_MD5
-                                  )
+        bundled_bert_dir = os.path.join(self.here, "checkpoints/bert-base-uncased")
+        self._BERT_MODEL_PATH = cancellable_download_file(
+            self._REMOTE_BERT_MODEL_URL,
+            os.path.join(bundled_bert_dir, "model.safetensors"),
+            md5=self._BERT_MD5,
+            stop_event=stop_event,
+            cache_subdir="countgd/bert-base-uncased",
+        )
+        resolved_bert_dir = os.path.dirname(self._BERT_MODEL_PATH)
+        if os.path.abspath(resolved_bert_dir) != os.path.abspath(
+            bundled_bert_dir
+        ) and os.path.isdir(bundled_bert_dir):
+            for fname in os.listdir(bundled_bert_dir):
+                src_file = os.path.join(bundled_bert_dir, fname)
+                dst_file = os.path.join(resolved_bert_dir, fname)
+                if os.path.isfile(src_file) and not os.path.exists(dst_file):
+                    shutil.copy2(src_file, dst_file)
 
-        self._REMOTE_GROUNDINGDINO_MODEL_URL = f"{self.annolid_git_repo}/groundingdino_swinb_cogcoor.pth"
+        self._REMOTE_GROUNDINGDINO_MODEL_URL = (
+            f"{self.annolid_git_repo}/groundingdino_swinb_cogcoor.pth"
+        )
         self._GROUNDINGDINO_MD5 = "611367df01ee834e3baa408f54d31f02"
-        self._GROUNDINGDINO_MODEL_PATH = os.path.join(
-            self.here, "checkpoints/groundingdino_swinb_cogcoor.pth")
-        if not os.path.exists(self._GROUNDINGDINO_MODEL_PATH):
-            gdown.cached_download(self._REMOTE_GROUNDINGDINO_MODEL_URL,
-                                  self._GROUNDINGDINO_MODEL_PATH,
-                                  md5=self._GROUNDINGDINO_MD5
-                                  )
+        self._GROUNDINGDINO_MODEL_PATH = cancellable_download_file(
+            self._REMOTE_GROUNDINGDINO_MODEL_URL,
+            os.path.join(self.here, "checkpoints/groundingdino_swinb_cogcoor.pth"),
+            md5=self._GROUNDINGDINO_MD5,
+            stop_event=stop_event,
+            cache_subdir="countgd",
+        )
 
-        self.model = self._load_model(model_path, config_path, self.device)
+        self.model = self._load_model(
+            model_path,
+            config_path,
+            self.device,
+            bert_dir=resolved_bert_dir,
+            stop_event=stop_event,
+        )
+        if is_stop_requested(stop_event):
+            self.close()
+            raise InferenceCancelledError("CountGD initialization cancelled.")
         self.transform = self._build_transforms()
 
     def _build_transforms(self, size: int = 800, max_size: int = 1333) -> T.Compose:
@@ -77,14 +116,29 @@ class ObjectCounter:
         )
         return T.Compose([T.RandomResize([size], max_size=max_size), normalize])
 
-    def _load_model(self, model_path: str, config_path: str, device: str) -> torch.nn.Module:
+    def _load_model(
+        self,
+        model_path: str,
+        config_path: str,
+        device: str,
+        *,
+        bert_dir: str | None = None,
+        stop_event: threading.Event | None = None,
+    ) -> torch.nn.Module:
         """Loads the counting model from a checkpoint."""
+        if is_stop_requested(stop_event):
+            raise InferenceCancelledError("CountGD model loading cancelled.")
+
         cfg = SLConfig.fromfile(config_path)
         cfg.merge_from_dict(
-            {"text_encoder_type": os.path.join(self.here, "checkpoints/bert-base-uncased")})
+            {
+                "text_encoder_type": bert_dir
+                or os.path.join(self.here, "checkpoints/bert-base-uncased")
+            }
+        )
 
         parser = argparse.ArgumentParser("Model Config")
-        args = parser.parse_args()
+        args = parser.parse_args([])
 
         cfg_dict = cfg._cfg_dict.to_dict()
         args_vars = vars(args)
@@ -93,7 +147,8 @@ class ObjectCounter:
                 setattr(args, k, v)
             elif args_vars[k] != v:
                 print(
-                    f"Warning: Overriding config parameter '{k}' with command-line value.")
+                    f"Warning: Overriding config parameter '{k}' with command-line value."
+                )
 
         seed = 42
         torch.manual_seed(seed)
@@ -103,15 +158,40 @@ class ObjectCounter:
         from .models.registry import MODULE_BUILD_FUNCS
 
         if args.modelname not in MODULE_BUILD_FUNCS._module_dict:
-            raise ValueError(
-                f"Model name '{args.modelname}' not found in registry.")
+            raise ValueError(f"Model name '{args.modelname}' not found in registry.")
+        if is_stop_requested(stop_event):
+            raise InferenceCancelledError("CountGD model loading cancelled.")
+
         build_func = MODULE_BUILD_FUNCS.get(args.modelname)
         model, _, _ = build_func(args)
 
+        if is_stop_requested(stop_event):
+            del model
+            clear_device_cache()
+            raise InferenceCancelledError("CountGD model loading cancelled.")
+
         checkpoint = torch.load(model_path, map_location="cpu")["model"]
+        if is_stop_requested(stop_event):
+            del checkpoint
+            del model
+            clear_device_cache()
+            raise InferenceCancelledError("CountGD model loading cancelled.")
+
         model.load_state_dict(checkpoint, strict=False)
+        del checkpoint
+        if is_stop_requested(stop_event):
+            del model
+            clear_device_cache()
+            raise InferenceCancelledError("CountGD model loading cancelled.")
+
         model.to(device).eval()
         return model
+
+    def close(self) -> None:
+        """Release the loaded CountGD model and device memory cache."""
+        self.model = None
+        self.transform = None
+        clear_device_cache()
 
     def _get_box_inputs(self, prompts: list) -> list:
         """Extracts bounding box coordinates from prompt data."""
@@ -137,10 +217,12 @@ class ObjectCounter:
                 word_inds.append(ind)
             except ValueError:
                 raise ValueError(
-                    f"Keyword '{keyword}' not found in input text: '{text}'")
+                    f"Keyword '{keyword}' not found in input text: '{text}'"
+                )
 
-        inds_to_filter = [ind for ind, word_id in enumerate(
-            word_ids) if word_id in word_inds]
+        inds_to_filter = [
+            ind for ind, word_id in enumerate(word_ids) if word_id in word_inds
+        ]
         return inds_to_filter
 
     def _convert_boxes_to_xyxy(self, image: Image.Image, boxes: np.ndarray) -> list:
@@ -164,6 +246,8 @@ class ObjectCounter:
         exemplar_boxes: list = None,
         confidence_threshold: float = DEFAULT_CONF_THRESH,
         keywords: str = "",
+        *,
+        stop_event: threading.Event | None = None,
     ) -> list:
         """Counts objects and returns bounding boxes in x1,y1,x2,y2 format.
 
@@ -174,24 +258,29 @@ class ObjectCounter:
             exemplar_boxes: List of exemplar bounding boxes in normalized [xmin, ymin, xmax, ymax] format (optional).
             confidence_threshold: Confidence threshold for object detection (optional).
             keywords: Comma-separated keywords to filter detected objects (optional).
+            stop_event: Optional cooperative cancellation event.
 
         Returns:
             A list of detected bounding boxes in x1,y1,x2,y2 format.
         """
+        if (
+            is_stop_requested(stop_event)
+            or self.model is None
+            or self.transform is None
+        ):
+            return []
+
         if isinstance(image, str):
             image_pil = Image.open(image).convert("RGB")
         elif isinstance(image, Image.Image):
             image_pil = image.convert("RGB")
         else:
-            raise ValueError(
-                "image must be a file path (str) or a PIL Image object."
-            )
+            raise ValueError("image must be a file path (str) or a PIL Image object.")
 
         exemplar_prompts = {"image": None, "points": []}
         if exemplar_image:
             if isinstance(exemplar_image, str):
-                exemplar_prompts["image"] = Image.open(
-                    exemplar_image).convert("RGB")
+                exemplar_prompts["image"] = Image.open(exemplar_image).convert("RGB")
             elif isinstance(exemplar_image, Image.Image):
                 exemplar_prompts["image"] = exemplar_image.convert("RGB")
             else:
@@ -204,34 +293,44 @@ class ObjectCounter:
                     [box[0], box[1], 2.0, box[2], box[3], 3.0] for box in exemplar_boxes
                 ]
 
-        input_image, _ = self.transform(
-            image_pil, {"exemplars": torch.tensor([])})
+        if is_stop_requested(stop_event):
+            return []
+
+        input_image, _ = self.transform(image_pil, {"exemplars": torch.tensor([])})
         input_image = input_image.unsqueeze(0).to(self.device)
         exemplars_boxes_tensor = self._get_box_inputs(
-            exemplar_prompts.get("points", []))
+            exemplar_prompts.get("points", [])
+        )
 
         input_image_exemplars = None
         exemplars_tensor = []
         if exemplar_prompts.get("image") is not None:
             exemplar_image_pil = exemplar_prompts["image"]
             input_image_exemplars, exemplars_transformed = self.transform(
-                exemplar_image_pil, {
-                    "exemplars": torch.tensor(exemplars_boxes_tensor)}
+                exemplar_image_pil, {"exemplars": torch.tensor(exemplars_boxes_tensor)}
             )
-            input_image_exemplars = input_image_exemplars.unsqueeze(0).to(
-                self.device)
-            exemplars_tensor = [exemplars_transformed["exemplars"].to(
-                self.device)]
+            input_image_exemplars = input_image_exemplars.unsqueeze(0).to(self.device)
+            exemplars_tensor = [exemplars_transformed["exemplars"].to(self.device)]
 
-        with torch.no_grad():
-            model_output = self.model(
-                nested_tensor_from_tensor_list(input_image),
-                nested_tensor_from_tensor_list(
-                    input_image_exemplars) if input_image_exemplars is not None else None,
-                exemplars_tensor,
-                [torch.tensor([0]).to(self.device)] * len(input_image),
-                captions=[text_prompt + " ."] * len(input_image),
-            )
+        if is_stop_requested(stop_event):
+            return []
+
+        try:
+            with torch.no_grad(), torch_cancellable_forward(self.model, stop_event):
+                model_output = self.model(
+                    nested_tensor_from_tensor_list(input_image),
+                    nested_tensor_from_tensor_list(input_image_exemplars)
+                    if input_image_exemplars is not None
+                    else None,
+                    exemplars_tensor,
+                    [torch.tensor([0]).to(self.device)] * len(input_image),
+                    captions=[text_prompt + " ."] * len(input_image),
+                )
+        except InferenceCancelledError:
+            return []
+
+        if is_stop_requested(stop_event):
+            return []
 
         ind_to_filter = self._get_ind_to_filter(
             text_prompt, model_output["token"][0].word_ids, keywords
@@ -240,8 +339,7 @@ class ObjectCounter:
         boxes = model_output["pred_boxes"][0]
 
         if keywords.strip():
-            box_mask = (logits > confidence_threshold).sum(
-                dim=-1) == len(ind_to_filter)
+            box_mask = (logits > confidence_threshold).sum(dim=-1) == len(ind_to_filter)
         else:
             box_mask = logits.max(dim=-1).values > confidence_threshold
 
@@ -259,8 +357,7 @@ if __name__ == "__main__":
     config_path = "cfg_app.py"
 
     # Initialize the object counter
-    object_counter = ObjectCounter(
-        pretrain_model_path, config_path=config_path)
+    object_counter = ObjectCounter(pretrain_model_path, config_path=config_path)
 
     # Get bounding boxes using image path
     detected_boxes_path = object_counter.count_objects(

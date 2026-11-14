@@ -90,7 +90,11 @@ class GuiSetAiTextPromptTool(FunctionTool):
 
     @property
     def description(self) -> str:
-        return "Set the GUI AI text prompt used by GroundingDINO + SAM segmentation."
+        return (
+            "Set the GUI AI text prompt and optional controls used by GroundingDINO + SAM "
+            "segmentation (supports multi-class prompts like 'mouse, food' and label "
+            "aliases like 'black mouse=mouse_1')."
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:
@@ -99,6 +103,12 @@ class GuiSetAiTextPromptTool(FunctionTool):
             "properties": {
                 "text": {"type": "string", "minLength": 1},
                 "use_countgd": {"type": "boolean"},
+                "box_threshold": {"type": "number", "minimum": 0.05, "maximum": 0.95},
+                "output_mode": {
+                    "type": "string",
+                    "enum": ["polygon", "mask", "rectangle"],
+                },
+                "replace_existing": {"type": "boolean"},
             },
             "required": ["text"],
         }

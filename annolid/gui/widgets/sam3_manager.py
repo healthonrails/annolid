@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import inspect
 import os
 from pathlib import Path
+import threading
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -11,6 +13,7 @@ from qtpy import QtWidgets
 import yaml
 from annolid.segmentation.SAM.sam3.prompt_builder import normalize_text_prompt
 from annolid.utils.annotation_compat import shape_to_mask
+from annolid.utils.cancellation import InferenceCancelledError, is_stop_requested
 from annolid.utils.logger import logger
 
 
@@ -978,53 +981,129 @@ class Sam3Manager:
                 return self.sam3_session.run(stop_event=stop_event)
 
             _run_sam3_with_canvas_prompts.request_stop = self.sam3_session.request_stop
+            _run_sam3_with_canvas_prompts.allow_force_thread_terminate = False
 
             return _run_sam3_with_canvas_prompts
 
-        def _run_sam3_agent_first():
+        runner_stop_event = threading.Event()
+
+        class _CombinedStopEvent:
+            def __init__(self, primary, secondary) -> None:
+                self._primary = primary
+                self._secondary = secondary
+
+            def is_set(self) -> bool:
+                return is_stop_requested(self._primary) or is_stop_requested(
+                    self._secondary
+                )
+
+            def set(self) -> None:
+                self._primary.set()
+                if self._secondary is not None and hasattr(self._secondary, "set"):
+                    try:
+                        self._secondary.set()
+                    except Exception:
+                        pass
+
+        def _request_runner_stop() -> None:
+            runner_stop_event.set()
+            session = getattr(self, "sam3_session", None)
+            if session is not None:
+                stop_fn = getattr(session, "request_stop", None)
+                if callable(stop_fn):
+                    try:
+                        stop_fn()
+                    except Exception:
+                        logger.debug("SAM3 session request_stop failed.", exc_info=True)
+
+        def _run_sam3_agent_first(pred_worker=None, stop_event=None):
             """
             Prefer agent-seeded SAM3; fall back to standard SAM3 if agent fails.
             """
+            effective_stop = _CombinedStopEvent(runner_stop_event, stop_event)
+            if effective_stop.is_set() or (
+                pred_worker is not None
+                and callable(getattr(pred_worker, "is_stopped", None))
+                and pred_worker.is_stopped()
+            ):
+                return "Stopped by user."
+
+            sam3_stop_cls = getattr(
+                sam3_adapter, "Sam3StopRequested", InferenceCancelledError
+            )
+            if not isinstance(sam3_stop_cls, type) or not issubclass(
+                sam3_stop_cls, BaseException
+            ):
+                sam3_stop_cls = InferenceCancelledError
             if text_prompt:
                 try:
+                    agent_kwargs: Dict[str, Any] = {
+                        "video_path": self.window.video_file,
+                        "agent_prompt": text_prompt,
+                        "agent_det_thresh": agent_det_thresh,
+                        "window_size": agent_window_size,
+                        "stride": agent_stride,
+                        "output_dir": agent_output_dir,
+                        "checkpoint_path": sam3_checkpoint,
+                        "propagation_direction": propagation_direction,
+                        "device": device_override,
+                        "score_threshold_detection": score_threshold_detection,
+                        "new_det_thresh": new_det_thresh,
+                        "max_num_objects": max_num_objects,
+                        "multiplex_count": multiplex_count,
+                        "compile_model": compile_model,
+                        "offload_video_to_cpu": offload_video_to_cpu,
+                        "use_explicit_window_reseed": use_explicit_window_reseed,
+                        "boundary_mask_match_iou_threshold": boundary_mask_match_iou_threshold,
+                        "allow_private_state_mutation": allow_private_state_mutation,
+                        "reject_implausible_masks": reject_implausible_masks,
+                    }
+                    try:
+                        params = inspect.signature(
+                            sam3_adapter.process_video_with_agent
+                        ).parameters
+                        if "stop_event" in params or any(
+                            p.kind == inspect.Parameter.VAR_KEYWORD
+                            for p in params.values()
+                        ):
+                            agent_kwargs["stop_event"] = effective_stop
+                    except (TypeError, ValueError):
+                        pass
                     frames, masks = sam3_adapter.process_video_with_agent(
-                        video_path=self.window.video_file,
-                        agent_prompt=text_prompt,
-                        agent_det_thresh=agent_det_thresh,
-                        window_size=agent_window_size,
-                        stride=agent_stride,
-                        output_dir=agent_output_dir,
-                        checkpoint_path=sam3_checkpoint,
-                        propagation_direction=propagation_direction,
-                        device=device_override,
-                        score_threshold_detection=score_threshold_detection,
-                        new_det_thresh=new_det_thresh,
-                        max_num_objects=max_num_objects,
-                        multiplex_count=multiplex_count,
-                        compile_model=compile_model,
-                        offload_video_to_cpu=offload_video_to_cpu,
-                        use_explicit_window_reseed=use_explicit_window_reseed,
-                        boundary_mask_match_iou_threshold=boundary_mask_match_iou_threshold,
-                        allow_private_state_mutation=allow_private_state_mutation,
-                        reject_implausible_masks=reject_implausible_masks,
+                        **agent_kwargs
                     )
+                    if effective_stop.is_set():
+                        return "Stopped by user."
                     if masks <= 0:
                         raise RuntimeError(
                             "Agent mode returned zero masks; falling back to standard SAM3."
                         )
                     return f"SAM3 agent-seeded done#{masks}"
+                except (sam3_stop_cls, InferenceCancelledError):
+                    logger.info("SAM3 agent video run stopped by user.")
+                    return "Stopped by user."
                 except Exception as exc:
+                    if effective_stop.is_set():
+                        logger.info("SAM3 agent video run stopped by user.")
+                        return "Stopped by user."
                     logger.warning(
                         "SAM3 agent mode failed; falling back to standard tracking: %s",
                         exc,
                         exc_info=False,
                     )
 
+            if effective_stop.is_set():
+                return "Stopped by user."
             standard_runner = _build_standard_sam3_runner()
             if isinstance(standard_runner, Exception):
                 return standard_runner
             if standard_runner is None:
                 return RuntimeError("SAM3 init failed.")
-            return standard_runner()
+            return standard_runner(
+                pred_worker=pred_worker,
+                stop_event=effective_stop,
+            )
 
+        _run_sam3_agent_first.request_stop = _request_runner_stop
+        _run_sam3_agent_first.allow_force_thread_terminate = False
         return _run_sam3_agent_first

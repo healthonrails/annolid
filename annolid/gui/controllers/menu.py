@@ -909,7 +909,8 @@ class MenuController:
         w.shortcuts = w._config["shortcuts"]
 
         w.aiRectangle = AiRectangleWidget()
-        w.aiRectangle._aiRectanglePrompt.returnPressed.connect(w._grounding_sam)
+        w.aiRectangle.runRequested.connect(w._grounding_sam_interactive)
+        w.aiRectangle.stopRequested.connect(w._cancel_grounding_sam)
         w.recording_widget = RecordingWidget(lambda: w.canvas)
 
         w.patch_similarity_action = self._action_factory(

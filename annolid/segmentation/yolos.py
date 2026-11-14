@@ -629,6 +629,8 @@ class InferenceProcessor:
             return f"Stopped#{self.frame_count}"
         return f"Done#{self.frame_count}"
 
+    run_inference.allow_force_thread_terminate = False
+
     def _run_dino_kpseg_inference(
         self,
         source: str,

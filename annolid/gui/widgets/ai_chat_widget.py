@@ -6484,6 +6484,30 @@ class AIChatWidget(QtWidgets.QWidget):
         except Exception as exc:
             self.status_label.setText(f"Bot action failed: {exc}")
 
+    @QtCore.Slot(str)
+    def bot_configure_ai_text_prompt(self, payload_json: str) -> None:
+        host = self.host_window_widget or self.window()
+        widget = getattr(host, "aiRectangle", None)
+        if widget is None:
+            self.status_label.setText(
+                "Bot action failed: AI text prompt UI unavailable."
+            )
+            return
+        try:
+            options = json.loads(str(payload_json or "{}"))
+            if not isinstance(options, dict):
+                return
+            if "box_threshold" in options and hasattr(widget, "set_box_threshold"):
+                widget.set_box_threshold(float(options["box_threshold"]))
+            if "output_mode" in options and hasattr(widget, "set_output_mode"):
+                widget.set_output_mode(str(options["output_mode"]))
+            if "replace_existing" in options and hasattr(
+                widget, "set_replace_existing"
+            ):
+                widget.set_replace_existing(bool(options["replace_existing"]))
+        except Exception as exc:
+            self.status_label.setText(f"Bot action failed: {exc}")
+
     @QtCore.Slot()
     def bot_run_ai_text_segmentation(self) -> None:
         host = self.host_window_widget or self.window()

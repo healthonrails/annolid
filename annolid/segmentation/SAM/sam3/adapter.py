@@ -7,8 +7,9 @@ later add interactive prompts without changing call sites.
 from __future__ import annotations
 
 import gc
+import inspect
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -239,6 +240,7 @@ def process_video_with_agent(
     llm_provider: Optional[str] = None,
     llm_model: Optional[str] = None,
     llm_profile: Optional[str] = None,
+    stop_event: Optional[Any] = None,
 ) -> Tuple[int, int]:
     """
     Run SAM3 video propagation using SAM3 Agent to refine the first frame of
@@ -278,11 +280,21 @@ def process_video_with_agent(
         allow_private_state_mutation=allow_private_state_mutation,
         reject_implausible_masks=reject_implausible_masks,
     )
-    frames, masks = run_agent_seeded_sam3_video(
-        video_path=str(video_path),
-        agent_cfg=agent_cfg,
-        tracking_cfg=tracking_cfg,
-    )
+    run_kwargs: Dict[str, Any] = {
+        "video_path": str(video_path),
+        "agent_cfg": agent_cfg,
+        "tracking_cfg": tracking_cfg,
+    }
+    if stop_event is not None:
+        try:
+            params = inspect.signature(run_agent_seeded_sam3_video).parameters
+            if "stop_event" in params or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+            ):
+                run_kwargs["stop_event"] = stop_event
+        except (TypeError, ValueError):
+            pass
+    frames, masks = run_agent_seeded_sam3_video(**run_kwargs)
     logger.info(
         "SAM3 agent-seeded propagation finished: frames=%d, masks=%d",
         frames,

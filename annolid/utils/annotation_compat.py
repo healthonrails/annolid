@@ -52,7 +52,11 @@ def get_ai_models() -> list[Any]:
             self._decoder_path = Path(decoder_path)
             self._model = None
 
-        def _ensure_model(self):
+        def _ensure_model(self, *, stop_event=None):
+            if stop_event is not None and stop_event.is_set():
+                from annolid.utils.cancellation import InferenceCancelledError
+
+                raise InferenceCancelledError("AI model initialization cancelled.")
             if self._model is not None:
                 return
             if not self._encoder_path.exists() or not self._decoder_path.exists():
@@ -66,7 +70,10 @@ def get_ai_models() -> list[Any]:
                 )
 
                 self._model = SegmentAnythingModel(
-                    self.name, str(self._encoder_path), str(self._decoder_path)
+                    self.name,
+                    str(self._encoder_path),
+                    str(self._decoder_path),
+                    stop_event=stop_event,
                 )
             except (ModuleNotFoundError, ImportError) as exc:
                 # Keep draw-mode UX/testability when optional ONNX runtime is missing.
@@ -76,17 +83,45 @@ def get_ai_models() -> list[Any]:
                 else:
                     raise
 
-        def set_image(self, image: np.ndarray):
-            self._ensure_model()
+        def set_image(self, image: np.ndarray, *, stop_event=None):
+            self._ensure_model(stop_event=stop_event)
+            if stop_event is not None:
+                try:
+                    return self._model.set_image(image, stop_event=stop_event)
+                except TypeError:
+                    pass
             return self._model.set_image(image)
 
-        def predict_polygon_from_points(self, points, point_labels):
+        def predict_polygon_from_points(self, points, point_labels, *, stop_event=None):
             self._ensure_model()
+            if stop_event is not None:
+                try:
+                    return self._model.predict_polygon_from_points(
+                        points, point_labels, stop_event=stop_event
+                    )
+                except TypeError:
+                    pass
             return self._model.predict_polygon_from_points(points, point_labels)
 
-        def predict_mask_from_points(self, points, point_labels):
+        def predict_mask_from_points(self, points, point_labels, *, stop_event=None):
             self._ensure_model()
+            if stop_event is not None:
+                try:
+                    return self._model.predict_mask_from_points(
+                        points, point_labels, stop_event=stop_event
+                    )
+                except TypeError:
+                    pass
             return self._model.predict_mask_from_points(points, point_labels)
+
+        def close(self) -> None:
+            close_fn = getattr(self._model, "close", None)
+            if callable(close_fn):
+                try:
+                    close_fn()
+                except Exception:
+                    pass
+            self._model = None
 
     class _PointPromptFallbackModel:
         """Lightweight point-prompt model used when onnxruntime is unavailable."""
@@ -95,10 +130,21 @@ def get_ai_models() -> list[Any]:
             self.name = name
             self._image: np.ndarray | None = None
 
-        def set_image(self, image: np.ndarray):
+        def close(self) -> None:
+            self._image = None
+
+        def set_image(self, image: np.ndarray, *, stop_event=None):
+            if stop_event is not None and stop_event.is_set():
+                from annolid.utils.cancellation import InferenceCancelledError
+
+                raise InferenceCancelledError("Fallback SAM image setup cancelled.")
             self._image = np.asarray(image)
 
-        def predict_mask_from_points(self, points, point_labels):
+        def predict_mask_from_points(self, points, point_labels, *, stop_event=None):
+            if stop_event is not None and stop_event.is_set():
+                from annolid.utils.cancellation import InferenceCancelledError
+
+                raise InferenceCancelledError("Fallback SAM prediction cancelled.")
             if self._image is None:
                 raise RuntimeError("Image must be set before prediction.")
             height, width = self._image.shape[:2]
@@ -108,14 +154,36 @@ def get_ai_models() -> list[Any]:
 
             radius = max(2, int(round(min(height, width) * 0.08)))
             yy, xx = np.ogrid[:height, :width]
+            tl_point = None
+            br_point = None
             for (x, y), label in zip(points, point_labels):
+                lbl = int(label)
+                if lbl == 2 and tl_point is None:
+                    tl_point = (float(x), float(y))
+                    continue
+                if lbl == 3 and br_point is None:
+                    br_point = (float(x), float(y))
+                    continue
+                if lbl < 0:
+                    continue
                 px = int(round(float(x)))
                 py = int(round(float(y)))
                 disk = (xx - px) ** 2 + (yy - py) ** 2 <= radius * radius
-                if int(label) > 0:
+                if lbl == 1:
                     mask |= disk
-                else:
+                elif lbl == 0:
                     mask &= ~disk
+            if tl_point is not None and br_point is not None:
+                x0 = max(0.0, min(float(width), min(tl_point[0], br_point[0])))
+                x1 = max(0.0, min(float(width), max(tl_point[0], br_point[0])))
+                y0 = max(0.0, min(float(height), min(tl_point[1], br_point[1])))
+                y1 = max(0.0, min(float(height), max(tl_point[1], br_point[1])))
+                rx = max(1.0, (x1 - x0) * 0.5)
+                ry = max(1.0, (y1 - y0) * 0.5)
+                cx = (x0 + x1) * 0.5
+                cy = (y0 + y1) * 0.5
+                ellipse = ((xx - cx) / rx) ** 2 + ((yy - cy) / ry) ** 2 <= 1.0
+                mask |= ellipse
             return mask
 
         def predict_polygon_from_points(self, points, point_labels):
@@ -203,23 +271,44 @@ def img_pil_to_data(image_pil: Image.Image) -> bytes:
 
 
 def img_qt_to_arr(qimage: Any) -> np.ndarray:
+    if qimage is None or (hasattr(qimage, "isNull") and qimage.isNull()):
+        return np.zeros((0, 0, 3), dtype=np.uint8)
     try:
-        from qimage2ndarray import rgb_view
-
-        return np.asarray(rgb_view(qimage))
-    except Exception:
         from qtpy import QtGui
 
-        qt_format = getattr(QtGui.QImage, "Format_RGBA8888", None)
-        if qt_format is None:
-            qt_format = QtGui.QImage.Format_ARGB32
-        image = qimage.convertToFormat(qt_format)
-        width = image.width()
-        height = image.height()
-        ptr = image.bits()
-        ptr.setsize(image.sizeInBytes())
-        arr = np.frombuffer(ptr, np.uint8).reshape((height, width, 4))
-        return arr[..., :3]
+        rgb_format = getattr(QtGui.QImage, "Format_RGB888", None)
+        if rgb_format is not None and hasattr(qimage, "convertToFormat"):
+            image = qimage.convertToFormat(rgb_format)
+            width = int(image.width())
+            height = int(image.height())
+            if width <= 0 or height <= 0:
+                return np.zeros((0, 0, 3), dtype=np.uint8)
+            bpl = int(image.bytesPerLine())
+            total_bytes = (
+                int(image.sizeInBytes())
+                if hasattr(image, "sizeInBytes")
+                else int(image.byteCount())
+            )
+            ptr = image.constBits() if hasattr(image, "constBits") else image.bits()
+            if hasattr(ptr, "setsize"):
+                ptr.setsize(total_bytes)
+            view = np.ndarray(
+                shape=(height, width, 3),
+                dtype=np.uint8,
+                buffer=ptr,
+                strides=(bpl, 3, 1),
+            )
+            arr = np.array(view, dtype=np.uint8, copy=True, order="C")
+            _ = (image, qimage)
+            return arr
+    except Exception:
+        pass
+
+    from qimage2ndarray import rgb_view
+
+    arr = np.array(rgb_view(qimage), dtype=np.uint8, copy=True, order="C")
+    _ = qimage
+    return arr
 
 
 def _points_to_xy(points: Sequence[Sequence[float]]) -> list[tuple[float, float]]:

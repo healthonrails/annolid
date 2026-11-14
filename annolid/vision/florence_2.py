@@ -11,7 +11,10 @@ saved in LabelMe format or injected directly into the canvas.
 
 from __future__ import annotations
 
+import contextlib
+import inspect
 import os
+import threading
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, TYPE_CHECKING
 
@@ -23,8 +26,16 @@ except Exception:  # pragma: no cover - optional dependency
 from PIL import Image
 
 from annolid.annotation.keypoints import save_labels
+from annolid.annotation.polygon_constraints import resolve_polygon_shape_conflicts
 from annolid.gui.shape import Shape
+from annolid.utils.cancellation import (
+    InferenceCancelledError,
+    is_stop_requested,
+    torch_cancellable_forward,
+)
+from annolid.utils.devices import clear_device_cache
 from annolid.utils.logger import logger
+from annolid.utils.prompts import parse_text_prompt
 from annolid.data.videos import video_loader
 import numpy as np
 
@@ -132,10 +143,27 @@ def convert_to_mask_dict(
     return mask_dict
 
 
+def _accepts_stop_event(func: Any) -> bool:
+    try:
+        sig = inspect.signature(func)
+    except (TypeError, ValueError):
+        return False
+    params = sig.parameters
+    if "stop_event" in params:
+        return True
+    return any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
 def load_model_and_processor(
-    model_name: str, device: str, torch_dtype: torch.dtype
+    model_name: str,
+    device: str,
+    torch_dtype: torch.dtype,
+    *,
+    stop_event: Optional[threading.Event] = None,
 ) -> Tuple[AutoModelForCausalLM, AutoProcessor]:
     """Load the Florence-2 model and processor with safe defaults."""
+    if is_stop_requested(stop_event):
+        raise InferenceCancelledError("Florence-2 model loading cancelled.")
     if torch is None:
         raise ImportError(
             "Florence-2 requires PyTorch. Install torch to enable this feature."
@@ -166,13 +194,19 @@ def load_model_and_processor(
             model_name,
             **from_pretrained_kwargs,
         )
+    if is_stop_requested(stop_event):
+        raise InferenceCancelledError("Florence-2 model loading cancelled.")
     model = model.to(device).eval()
     # Some Florence checkpoints do not define `_supports_sdpa`, which recent
     # Transformers versions expect when deciding whether to use scaled-dot
     # product attention. Default it to False when missing.
     _ensure_sdpa_flag(model)
+    if is_stop_requested(stop_event):
+        raise InferenceCancelledError("Florence-2 model loading cancelled.")
 
     processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+    if is_stop_requested(stop_event):
+        raise InferenceCancelledError("Florence-2 model loading cancelled.")
     return model, processor
 
 
@@ -321,10 +355,14 @@ def florence2(
     task_prompt: str,
     image: Image.Image,
     text_input: Optional[str] = None,
+    *,
+    stop_event: Optional[threading.Event] = None,
 ) -> Dict[str, Any]:
     """
     Run Florence-2 for a single task prompt and image.
     """
+    if is_stop_requested(stop_event):
+        raise InferenceCancelledError("Florence-2 inference cancelled.")
     _ensure_sdpa_flag(model)
     prompt = f"{task_prompt}{text_input}" if text_input else task_prompt
     pil_image, np_image = _normalize_image_input(image)
@@ -342,30 +380,44 @@ def florence2(
             "Florence-2 processor returned no pixel values."
             " Ensure the image is valid and supported by the processor."
         )
+    if is_stop_requested(stop_event):
+        raise InferenceCancelledError("Florence-2 inference cancelled.")
 
-    try:
-        generated_ids = model.generate(
-            input_ids=inputs["input_ids"],
-            pixel_values=pixel_values,
-            max_new_tokens=1024,
-            early_stopping=False,
-            do_sample=False,
-            num_beams=3,
-        )
-    except AttributeError as exc:
-        logger.warning(
-            "Florence-2 generation hit AttributeError (%s); retrying with use_cache=False.",
-            exc,
-        )
-        generated_ids = model.generate(
-            input_ids=inputs["input_ids"],
-            pixel_values=pixel_values,
-            max_new_tokens=1024,
-            early_stopping=False,
-            do_sample=False,
-            num_beams=3,
-            use_cache=False,
-        )
+    infer_ctx = (
+        torch.inference_mode()
+        if torch is not None and hasattr(torch, "inference_mode")
+        else contextlib.nullcontext()
+    )
+    with infer_ctx, torch_cancellable_forward(model, stop_event):
+        try:
+            generated_ids = model.generate(
+                input_ids=inputs["input_ids"],
+                pixel_values=pixel_values,
+                max_new_tokens=1024,
+                early_stopping=False,
+                do_sample=False,
+                num_beams=3,
+            )
+        except AttributeError as exc:
+            if is_stop_requested(stop_event):
+                raise InferenceCancelledError(
+                    "Florence-2 inference cancelled."
+                ) from exc
+            logger.warning(
+                "Florence-2 generation hit AttributeError (%s); retrying with use_cache=False.",
+                exc,
+            )
+            generated_ids = model.generate(
+                input_ids=inputs["input_ids"],
+                pixel_values=pixel_values,
+                max_new_tokens=1024,
+                early_stopping=False,
+                do_sample=False,
+                num_beams=3,
+                use_cache=False,
+            )
+    if is_stop_requested(stop_event):
+        raise InferenceCancelledError("Florence-2 inference cancelled.")
     generated_text = processor.batch_decode(generated_ids, skip_special_tokens=False)[0]
     parsed_answer = processor.post_process_generation(
         generated_text,
@@ -420,6 +472,9 @@ def create_shapes_from_mask_dict(
                 current_shape.close()
             label_list.append(current_shape)
 
+    if len(label_list) > 1:
+        resolution = resolve_polygon_shape_conflicts(label_list)
+        return list(resolution.shapes)  # type: ignore[return-value]
     return label_list
 
 
@@ -470,24 +525,66 @@ class Florence2Predictor:
         self._processor: Optional[AutoProcessor] = None
         self._device: Optional[str] = None
         self._dtype: Optional[torch.dtype] = None
+        self._lock = threading.RLock()
 
-    def ensure_loaded(self) -> None:
-        if self._model is not None and self._processor is not None:
-            _ensure_sdpa_flag(self._model)
-            return
-        device, torch_dtype = get_device_and_dtype()
-        if self._requested_device:
-            device = self._requested_device
-        if self._requested_dtype:
-            torch_dtype = self._requested_dtype
+    def _state_lock(self) -> threading.RLock:
+        lock = getattr(self, "_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._lock = lock
+        return lock
 
-        logger.info("Loading Florence-2 model '%s' on %s", self.model_name, device)
-        self._model, self._processor = load_model_and_processor(
-            self.model_name, device, torch_dtype
-        )
-        _ensure_sdpa_flag(self._model)
-        self._device = device
-        self._dtype = torch_dtype
+    def ensure_loaded(
+        self,
+        *,
+        stop_event: Optional[threading.Event] = None,
+    ) -> None:
+        if is_stop_requested(stop_event):
+            raise InferenceCancelledError("Florence-2 model loading cancelled.")
+        with self._state_lock():
+            if is_stop_requested(stop_event):
+                raise InferenceCancelledError("Florence-2 model loading cancelled.")
+            if self._model is not None and self._processor is not None:
+                _ensure_sdpa_flag(self._model)
+                return
+            device, torch_dtype = get_device_and_dtype()
+            if self._requested_device:
+                device = self._requested_device
+            if self._requested_dtype:
+                torch_dtype = self._requested_dtype
+
+            logger.info("Loading Florence-2 model '%s' on %s", self.model_name, device)
+            if _accepts_stop_event(load_model_and_processor):
+                model, processor = load_model_and_processor(
+                    self.model_name,
+                    device,
+                    torch_dtype,
+                    stop_event=stop_event,
+                )
+            else:
+                model, processor = load_model_and_processor(
+                    self.model_name,
+                    device,
+                    torch_dtype,
+                )
+            if is_stop_requested(stop_event):
+                raise InferenceCancelledError("Florence-2 model loading cancelled.")
+            _ensure_sdpa_flag(model)
+            self._model = model
+            self._processor = processor
+            self._device = device
+            self._dtype = torch_dtype
+
+    def close(self) -> None:
+        """Release cached Florence-2 weights/processor and reclaim device memory."""
+        with self._state_lock():
+            had_model = self._model is not None or self._processor is not None
+            self._model = None
+            self._processor = None
+            self._device = None
+            self._dtype = None
+        if had_model:
+            clear_device_cache()
 
     @property
     def device(self) -> Optional[str]:
@@ -497,6 +594,28 @@ class Florence2Predictor:
     def dtype(self) -> Optional[torch.dtype]:
         return self._dtype
 
+    @staticmethod
+    def _invoke_florence2(
+        processor: AutoProcessor,
+        model: AutoModelForCausalLM,
+        task_prompt: str,
+        image: Any,
+        *,
+        text_input: Optional[str] = None,
+        stop_event: Optional[threading.Event] = None,
+    ) -> Dict[str, Any]:
+        if is_stop_requested(stop_event):
+            raise InferenceCancelledError("Florence-2 inference cancelled.")
+        kwargs: Dict[str, Any] = {}
+        if text_input is not None:
+            kwargs["text_input"] = text_input
+        if stop_event is not None and _accepts_stop_event(florence2):
+            kwargs["stop_event"] = stop_event
+        result = florence2(processor, model, task_prompt, image, **kwargs)
+        if is_stop_requested(stop_event):
+            raise InferenceCancelledError("Florence-2 inference cancelled.")
+        return result
+
     def predict(
         self,
         image: Any,
@@ -505,50 +624,113 @@ class Florence2Predictor:
         segmentation_task: Optional[str] = "<REFERRING_EXPRESSION_SEGMENTATION>",
         include_caption: bool = True,
         caption_task: str = "<MORE_DETAILED_CAPTION>",
+        stop_event: Optional[threading.Event] = None,
     ) -> Florence2Result:
         """
         Run Florence-2 on a PIL image and return segmentation/caption results.
         """
-        self.ensure_loaded()
-        assert self._model is not None and self._processor is not None
+        if is_stop_requested(stop_event):
+            raise InferenceCancelledError("Florence-2 inference cancelled.")
+        with self._state_lock():
+            if stop_event is not None and _accepts_stop_event(self.ensure_loaded):
+                self.ensure_loaded(stop_event=stop_event)
+            else:
+                self.ensure_loaded()
+            assert self._model is not None and self._processor is not None
 
-        raw_outputs: Dict[str, Any] = {}
-        caption: Optional[str] = None
-        mask_dict: Dict[str, FlorencePolygons] = {
-            "polygons": [],
-            "labels": [],
-        }
+            raw_outputs: Dict[str, Any] = {}
+            caption: Optional[str] = None
+            mask_dict: Dict[str, FlorencePolygons] = {
+                "polygons": [],
+                "labels": [],
+            }
 
-        if include_caption and caption_task:
-            caption_answer = florence2(
-                self._processor,
-                self._model,
-                caption_task,
-                image,
+            if include_caption and caption_task:
+                caption_answer = self._invoke_florence2(
+                    self._processor,
+                    self._model,
+                    caption_task,
+                    image,
+                    stop_event=stop_event,
+                )
+                raw_outputs["caption"] = caption_answer
+                caption = caption_answer.get(caption_task)
+
+            if segmentation_task:
+                if is_stop_requested(stop_event):
+                    raise InferenceCancelledError("Florence-2 inference cancelled.")
+                # Ensure SDPA guard remains in effect prior to generation
+                _ensure_sdpa_flag(self._model)
+                parsed = (
+                    parse_text_prompt(text_input)
+                    if segmentation_task == "<REFERRING_EXPRESSION_SEGMENTATION>"
+                    and text_input
+                    else None
+                )
+                if parsed is not None and len(parsed.phrases) > 1:
+                    per_phrase_outputs: Dict[str, Any] = {}
+                    for phrase in parsed.phrases:
+                        if is_stop_requested(stop_event):
+                            raise InferenceCancelledError(
+                                "Florence-2 inference cancelled."
+                            )
+                        phrase_answer = self._invoke_florence2(
+                            self._processor,
+                            self._model,
+                            segmentation_task,
+                            image,
+                            text_input=phrase.query,
+                            stop_event=stop_event,
+                        )
+                        per_phrase_outputs[phrase.query] = phrase_answer
+                        phrase_masks = convert_to_mask_dict(
+                            phrase_answer,
+                            text_prompt=segmentation_task,
+                            text_input=phrase.label,
+                        )
+                        # Override model's echoed query text with canonical alias label
+                        mapped_labels = [phrase.label] * len(phrase_masks["polygons"])
+                        mask_dict["polygons"].extend(phrase_masks["polygons"])
+                        mask_dict["labels"].extend(mapped_labels)
+                    raw_outputs["segmentation"] = per_phrase_outputs
+                else:
+                    effective_query = (
+                        parsed.phrases[0].query
+                        if parsed is not None and len(parsed.phrases) == 1
+                        else text_input
+                    )
+                    effective_label = (
+                        parsed.phrases[0].label
+                        if parsed is not None and len(parsed.phrases) == 1
+                        else text_input
+                    )
+                    has_explicit_alias = (
+                        parsed is not None
+                        and len(parsed.phrases) == 1
+                        and parsed.phrases[0].label != parsed.phrases[0].query
+                    )
+                    segmentation_answer = self._invoke_florence2(
+                        self._processor,
+                        self._model,
+                        segmentation_task,
+                        image,
+                        text_input=effective_query,
+                        stop_event=stop_event,
+                    )
+                    raw_outputs["segmentation"] = segmentation_answer
+                    mask_dict = convert_to_mask_dict(
+                        segmentation_answer,
+                        text_prompt=segmentation_task,
+                        text_input=effective_label,
+                    )
+                    if has_explicit_alias and effective_label:
+                        mask_dict["labels"] = [effective_label] * len(
+                            mask_dict["polygons"]
+                        )
+
+            return Florence2Result(
+                mask_dict=mask_dict, caption=caption, raw_outputs=raw_outputs
             )
-            raw_outputs["caption"] = caption_answer
-            caption = caption_answer.get(caption_task)
-
-        if segmentation_task:
-            # Ensure SDPA guard remains in effect prior to generation
-            _ensure_sdpa_flag(self._model)
-            segmentation_answer = florence2(
-                self._processor,
-                self._model,
-                segmentation_task,
-                image,
-                text_input=text_input,
-            )
-            raw_outputs["segmentation"] = segmentation_answer
-            mask_dict = convert_to_mask_dict(
-                segmentation_answer,
-                text_prompt=segmentation_task,
-                text_input=text_input,
-            )
-
-        return Florence2Result(
-            mask_dict=mask_dict, caption=caption, raw_outputs=raw_outputs
-        )
 
 
 def process_nth_frame_from_video(
@@ -560,6 +742,7 @@ def process_nth_frame_from_video(
     text_input: Optional[str],
     caption_task: Optional[str] = "<MORE_DETAILED_CAPTION>",
     description: str = "florence",
+    stop_event: Optional[threading.Event] = None,
 ) -> None:
     """
     Stream a video and process every n-th frame, saving Florence annotations.
@@ -569,6 +752,8 @@ def process_nth_frame_from_video(
     """
     if n <= 0:
         raise ValueError("Parameter 'n' must be a positive integer.")
+    if is_stop_requested(stop_event):
+        raise InferenceCancelledError("Florence-2 video processing cancelled.")
 
     video_reader = video_loader(video_path)
     if video_reader is None:
@@ -579,10 +764,18 @@ def process_nth_frame_from_video(
 
     processed_frames = 0
     skipped_frames = 0
+    predict_accepts_stop = _accepts_stop_event(getattr(predictor, "predict", None))
 
     total_frames = video_reader.total_frames()
     try:
         for frame_idx in range(0, total_frames, n):
+            if is_stop_requested(stop_event):
+                logger.info(
+                    "Florence-2 video processing cancelled after %s frame(s): path=%s",
+                    processed_frames,
+                    video_path,
+                )
+                raise InferenceCancelledError("Florence-2 video processing cancelled.")
             try:
                 frame_rgb = video_reader.load_frame(frame_idx)
             except KeyError as exc:
@@ -609,13 +802,19 @@ def process_nth_frame_from_video(
                 continue
 
             try:
-                result = predictor.predict(
-                    frame_rgb,
-                    text_input=text_input,
-                    segmentation_task=segmentation_task,
-                    include_caption=bool(caption_task),
-                    caption_task=caption_task or "<MORE_DETAILED_CAPTION>",
-                )
+                predict_kwargs: Dict[str, Any] = {
+                    "text_input": text_input,
+                    "segmentation_task": segmentation_task,
+                    "include_caption": bool(caption_task),
+                    "caption_task": caption_task or "<MORE_DETAILED_CAPTION>",
+                }
+                if stop_event is not None and predict_accepts_stop:
+                    predict_kwargs["stop_event"] = stop_event
+                result = predictor.predict(frame_rgb, **predict_kwargs)
+                if is_stop_requested(stop_event):
+                    raise InferenceCancelledError(
+                        "Florence-2 video processing cancelled."
+                    )
 
                 mask_dict = result.mask_dict or {"polygons": [], "labels": []}
                 filename = os.path.join(video_dir, f"{frame_idx:09}.json")
@@ -627,6 +826,13 @@ def process_nth_frame_from_video(
                     description=description,
                 )
                 processed_frames += 1
+            except InferenceCancelledError:
+                logger.info(
+                    "Florence-2 video processing cancelled after %s frame(s): path=%s",
+                    processed_frames,
+                    video_path,
+                )
+                raise
             except Exception as exc:
                 skipped_frames += 1
                 logger.error(

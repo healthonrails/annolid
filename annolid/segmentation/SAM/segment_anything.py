@@ -1,6 +1,7 @@
 """modified from https://github.com/wkentaro/labelme/blob/main/labelme/ai/models/segment_anything.py"""
 
 import collections
+import hashlib
 import inspect
 import threading
 
@@ -8,6 +9,11 @@ import imgviz
 import numpy as np
 import skimage.measure
 import cv2
+from annolid.utils.cancellation import (
+    InferenceCancelledError,
+    ObservableStopEvent,
+    onnx_cancellable_run,
+)
 from annolid.utils.logger import logger
 
 
@@ -30,63 +36,166 @@ def _require_onnxruntime():
 
 
 class SegmentAnythingModel:
-    def __init__(self, name, encoder_path, decoder_path):
+    def __init__(self, name, encoder_path, decoder_path, *, stop_event=None):
+        if stop_event is not None and stop_event.is_set():
+            raise InferenceCancelledError("SAM ONNX initialization cancelled.")
         self.name = name
 
         self._image_size = 1024
-
-        ort = _require_onnxruntime()
-        self._encoder_session = ort.InferenceSession(encoder_path)
-        self._decoder_session = ort.InferenceSession(decoder_path)
-
         self._lock = threading.Lock()
         self._image_embedding_cache = collections.OrderedDict()
 
         self._thread = None
+        self._encode_stop_event: ObservableStopEvent | None = None
         self._image_generation = 0
         self._image_embedding = None
+        self._image = None
+        self._encoder_session = None
+        self._decoder_session = None
 
-    def set_image(self, image: np.ndarray):
-        image = np.asarray(image).copy()
-        image_key = image.tobytes()
+        ort = _require_onnxruntime()
+        try:
+            self._encoder_session = ort.InferenceSession(encoder_path)
+            if stop_event is not None and stop_event.is_set():
+                raise InferenceCancelledError("SAM ONNX initialization cancelled.")
+            self._decoder_session = ort.InferenceSession(decoder_path)
+            if stop_event is not None and stop_event.is_set():
+                raise InferenceCancelledError("SAM ONNX initialization cancelled.")
+        except BaseException:
+            self.close()
+            raise
+
+    @staticmethod
+    def _compute_image_key(image: np.ndarray) -> tuple:
+        arr = np.ascontiguousarray(image)
+        digest = hashlib.blake2b(arr.view(np.uint8), digest_size=16).hexdigest()
+        return (arr.shape, str(arr.dtype), digest)
+
+    def close(self) -> None:
+        """Cancel any active image encoding thread and release ONNX sessions/caches."""
         with self._lock:
-            self._image_generation += 1
+            prev_stop = getattr(self, "_encode_stop_event", None)
+            if prev_stop is not None:
+                prev_stop.set()
+            thread = getattr(self, "_thread", None)
+            self._thread = None
+            self._encode_stop_event = None
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=1.0)
+        with self._lock:
+            cache = getattr(self, "_image_embedding_cache", None)
+            if cache is not None:
+                cache.clear()
+            self._image_embedding = None
+            self._image = None
+            self._encoder_session = None
+            self._decoder_session = None
+
+    def set_image(self, image: np.ndarray, *, stop_event=None):
+        if stop_event is not None and stop_event.is_set():
+            raise InferenceCancelledError("SAM image setup cancelled.")
+        image = np.asarray(image).copy()
+        image_key = self._compute_image_key(image)
+        with self._lock:
+            prev_stop = getattr(self, "_encode_stop_event", None)
+            if prev_stop is not None:
+                prev_stop.set()
+            self._image_generation = getattr(self, "_image_generation", 0) + 1
             generation = int(self._image_generation)
             self._image = image
             self._image_embedding = self._image_embedding_cache.get(image_key)
+            if self._image_embedding is not None:
+                self._encode_stop_event = None
+                self._thread = None
+                return
+            encode_stop = ObservableStopEvent()
+            self._encode_stop_event = encode_stop
 
-        if self._image_embedding is None:
-            self._thread = threading.Thread(
-                target=self._compute_and_cache_image_embedding,
-                args=(image, image_key, generation),
-                daemon=True,
-            )
-            self._thread.start()
-
-    def _compute_and_cache_image_embedding(self, image, image_key, generation):
-        logger.debug("Computing image embedding...")
-        image_embedding = _compute_image_embedding(
-            image_size=self._image_size,
-            encoder_session=self._encoder_session,
-            image=image,
+        self._thread = threading.Thread(
+            target=self._compute_and_cache_image_embedding,
+            args=(image, image_key, generation, encode_stop),
+            daemon=True,
         )
+        self._thread.start()
+
+    def _compute_and_cache_image_embedding(
+        self,
+        image,
+        image_key,
+        generation,
+        encode_stop=None,
+    ):
+        logger.debug("Computing image embedding...")
+        accepts_stop = False
+        try:
+            accepts_stop = (
+                "stop_event" in inspect.signature(_compute_image_embedding).parameters
+            )
+        except (TypeError, ValueError):
+            accepts_stop = False
+
+        try:
+            if accepts_stop:
+                image_embedding = _compute_image_embedding(
+                    image_size=self._image_size,
+                    encoder_session=self._encoder_session,
+                    image=image,
+                    stop_event=encode_stop,
+                )
+            else:
+                image_embedding = _compute_image_embedding(
+                    image_size=self._image_size,
+                    encoder_session=self._encoder_session,
+                    image=image,
+                )
+        except InferenceCancelledError:
+            logger.debug("Cancelled superseded or stopped SAM image embedding.")
+            return
+
         with self._lock:
             if len(self._image_embedding_cache) > 10:
-                self._image_embedding_cache.popitem(last=False)
+                oldest_key = next(iter(self._image_embedding_cache))
+                self._image_embedding_cache.pop(oldest_key, None)
             self._image_embedding_cache[image_key] = image_embedding
             if int(generation) == int(self._image_generation):
                 self._image_embedding = image_embedding
             logger.debug("Done computing image embedding.")
 
-    def _get_image_embedding(self):
-        if self._thread is not None:
-            self._thread.join()
-            self._thread = None
-        with self._lock:
-            return self._image_embedding
+    def _get_image_embedding(self, *, stop_event=None):
+        if stop_event is not None and stop_event.is_set():
+            raise InferenceCancelledError("SAM image embedding cancelled.")
 
-    def predict_polygon_from_points(self, points, point_labels):
-        image_embedding = self._get_image_embedding()
+        thread = getattr(self, "_thread", None)
+        if thread is not None:
+            unsub = None
+            encode_stop = getattr(self, "_encode_stop_event", None)
+            if stop_event is not None and encode_stop is not None:
+                add_listener = getattr(stop_event, "add_listener", None)
+                if callable(add_listener):
+                    unsub = add_listener(encode_stop.set)
+                elif stop_event.is_set():
+                    encode_stop.set()
+            try:
+                while thread.is_alive():
+                    thread.join(timeout=0.02)
+                    if stop_event is not None and stop_event.is_set():
+                        if encode_stop is not None:
+                            encode_stop.set()
+                        thread.join(timeout=0.5)
+                        raise InferenceCancelledError("SAM image embedding cancelled.")
+            finally:
+                if callable(unsub):
+                    unsub()
+            self._thread = None
+
+        with self._lock:
+            emb = self._image_embedding
+        if stop_event is not None and stop_event.is_set():
+            raise InferenceCancelledError("SAM image embedding cancelled.")
+        return emb
+
+    def predict_polygon_from_points(self, points, point_labels, *, stop_event=None):
+        image_embedding = self._get_image_embedding(stop_event=stop_event)
         polygon = _compute_polygon_from_points(
             image_size=self._image_size,
             decoder_session=self._decoder_session,
@@ -94,11 +203,12 @@ class SegmentAnythingModel:
             image_embedding=image_embedding,
             points=points,
             point_labels=point_labels,
+            stop_event=stop_event,
         )
         return polygon
 
-    def predict_mask_from_points(self, points, point_labels):
-        image_embedding = self._get_image_embedding()
+    def predict_mask_from_points(self, points, point_labels, *, stop_event=None):
+        image_embedding = self._get_image_embedding(stop_event=stop_event)
         mask = _compute_mask_from_points(
             image_size=self._image_size,
             decoder_session=self._decoder_session,
@@ -106,6 +216,7 @@ class SegmentAnythingModel:
             image_embedding=image_embedding,
             points=points,
             point_labels=point_labels,
+            stop_event=stop_event,
         )
         return mask
 
@@ -147,7 +258,9 @@ def postprocess_masks(mask, img_size, input_size, original_size):
     return mask
 
 
-def _compute_image_embedding(image_size, encoder_session, image):
+def _compute_image_embedding(image_size, encoder_session, image, *, stop_event=None):
+    if stop_event is not None and stop_event.is_set():
+        raise InferenceCancelledError("SAM image embedding cancelled.")
     image = imgviz.asrgb(image)
 
     scale, x = _resize_image(image_size, image)
@@ -164,10 +277,13 @@ def _compute_image_embedding(image_size, encoder_session, image):
     )
     x = x.transpose(2, 0, 1)[None, :, :, :]
     input_names = [input.name for input in encoder_session.get_inputs()]
-    if input_names[0] == "image":
-        output = encoder_session.run(output_names=None, input_feed={"image": x})
-    else:
-        output = encoder_session.run(output_names=None, input_feed={"x": x})
+    feed = {"image": x} if input_names[0] == "image" else {"x": x}
+    output = onnx_cancellable_run(
+        encoder_session,
+        None,
+        feed,
+        stop_event=stop_event,
+    )
     image_embedding = output[0]
 
     return image_embedding
@@ -180,8 +296,17 @@ def _get_contour_length(contour):
 
 
 def _compute_mask_from_points(
-    image_size, decoder_session, image, image_embedding, points, point_labels
+    image_size,
+    decoder_session,
+    image,
+    image_embedding,
+    points,
+    point_labels,
+    *,
+    stop_event=None,
 ):
+    if stop_event is not None and stop_event.is_set():
+        raise InferenceCancelledError("SAM mask decoding cancelled.")
     input_point = np.array(points, dtype=np.float32)
     input_label = np.array(point_labels, dtype=np.int32)
 
@@ -206,13 +331,15 @@ def _compute_mask_from_points(
     input_names = [input.name for input in decoder_session.get_inputs()]
     score_candidates = None
     if len(input_names) <= 3:
-        outputs = decoder_session.run(
+        outputs = onnx_cancellable_run(
+            decoder_session,
             None,
             {
                 "image_embeddings": image_embedding,
                 "point_coords": onnx_coord,
                 "point_labels": onnx_label,
             },
+            stop_event=stop_event,
         )
         scores, masks = outputs
         score_candidates = scores
@@ -230,7 +357,12 @@ def _compute_mask_from_points(
             "orig_im_size": np.array(image.shape[:2], dtype=np.float32),
         }
 
-        outputs = decoder_session.run(None, decoder_inputs)
+        outputs = onnx_cancellable_run(
+            decoder_session,
+            None,
+            decoder_inputs,
+            stop_event=stop_event,
+        )
         masks = outputs[0]
         if len(outputs) > 1:
             score_candidates = outputs[1]
@@ -297,8 +429,43 @@ def _select_best_mask_index(
     if labels.size != pts.shape[0]:
         labels = np.ones((pts.shape[0],), dtype=np.int32)
 
-    pos_idx = np.where(labels > 0)[0].tolist()
-    neg_idx = np.where(labels <= 0)[0].tolist()
+    pos_idx = np.where(labels == 1)[0].tolist()
+    neg_idx = np.where(labels == 0)[0].tolist()
+    tl_idx = np.where(labels == 2)[0].tolist()
+    br_idx = np.where(labels == 3)[0].tolist()
+
+    box_bounds: tuple[int, int, int, int] | None = None
+    if tl_idx and br_idx:
+        bx0 = max(
+            0,
+            min(
+                w,
+                int(round(min(float(pts[tl_idx[0], 0]), float(pts[br_idx[0], 0])))),
+            ),
+        )
+        by0 = max(
+            0,
+            min(
+                h,
+                int(round(min(float(pts[tl_idx[0], 1]), float(pts[br_idx[0], 1])))),
+            ),
+        )
+        bx1 = max(
+            0,
+            min(
+                w,
+                int(round(max(float(pts[tl_idx[0], 0]), float(pts[br_idx[0], 0])))),
+            ),
+        )
+        by1 = max(
+            0,
+            min(
+                h,
+                int(round(max(float(pts[tl_idx[0], 1]), float(pts[br_idx[0], 1])))),
+            ),
+        )
+        if bx1 > bx0 and by1 > by0:
+            box_bounds = (bx0, by0, bx1, by1)
 
     best_index = 0
     best_score = None
@@ -317,13 +484,29 @@ def _select_best_mask_index(
             y = int(round(float(pts[nidx, 1])))
             if 0 <= x < w and 0 <= y < h and bool(mask_bool[y, x]):
                 negative_hits += 1
-        coverage = float(mask_bool.sum()) / total_pixels
+        mask_pixels = float(mask_bool.sum())
+        coverage = mask_pixels / total_pixels
         model_score = (
             float(candidate_scores[idx]) if candidate_scores is not None else 0.0
         )
-        # Prefer masks that satisfy positive clicks, avoid negative clicks,
-        # avoid frame-wide masks, then use model quality as final tie-breaker.
-        rank = (positive_hits, -negative_hits, -coverage, model_score)
+        if box_bounds is not None:
+            bx0, by0, bx1, by1 = box_bounds
+            box_area = max(1.0, float((bx1 - bx0) * (by1 - by0)))
+            inside_pixels = float(mask_bool[by0:by1, bx0:bx1].sum())
+            union_pixels = max(1.0, mask_pixels + box_area - inside_pixels)
+            box_iou = inside_pixels / union_pixels
+            inside_precision = inside_pixels / max(1.0, mask_pixels)
+            well_contained = int(inside_pixels > 0.0 and inside_precision >= 0.70)
+            rank = (
+                positive_hits,
+                -negative_hits,
+                well_contained,
+                box_iou * 0.7 + model_score * 0.3,
+            )
+        else:
+            # Prefer masks that satisfy positive clicks, avoid negative clicks,
+            # avoid frame-wide masks, then use model quality as final tie-breaker.
+            rank = (positive_hits, -negative_hits, -coverage, model_score)
         if best_score is None or rank > best_score:
             best_index = idx
             best_score = rank
@@ -331,7 +514,14 @@ def _select_best_mask_index(
 
 
 def _compute_polygon_from_points(
-    image_size, decoder_session, image, image_embedding, points, point_labels
+    image_size,
+    decoder_session,
+    image,
+    image_embedding,
+    points,
+    point_labels,
+    *,
+    stop_event=None,
 ):
     from annolid.annotation.masks import mask_to_polygons
 
@@ -342,6 +532,7 @@ def _compute_polygon_from_points(
         image_embedding=image_embedding,
         points=points,
         point_labels=point_labels,
+        stop_event=stop_event,
     )
     polygons, has_holes = mask_to_polygons(mask)
     if len(polygons) == 0:
@@ -380,9 +571,9 @@ def _polygon_hit_counts(flat_polygon, points, point_labels) -> tuple[int, int]:
         inside_or_edge = cv2.pointPolygonTest(contour, (px, py), False) >= 0
         if not inside_or_edge:
             continue
-        if int(label) > 0:
+        if int(label) == 1:
             positive_hits += 1
-        else:
+        elif int(label) == 0:
             negative_hits += 1
     return positive_hits, negative_hits
 
@@ -390,6 +581,13 @@ def _polygon_hit_counts(flat_polygon, points, point_labels) -> tuple[int, int]:
 def _select_best_polygon(polygons, *, points, point_labels):
     best_polygon = None
     best_score = None
+    labels_arr = (
+        np.asarray(point_labels, dtype=np.int32).reshape(-1)
+        if point_labels is not None
+        else np.empty((0,), dtype=np.int32)
+    )
+    has_box_prompt = bool(np.any(labels_arr == 2) and np.any(labels_arr == 3))
+    has_pos_clicks = bool(np.any(labels_arr == 1))
     for candidate in list(polygons or []):
         flat = np.asarray(candidate, dtype=np.float32).flatten()
         if flat.size < 6:
@@ -398,9 +596,8 @@ def _select_best_polygon(polygons, *, points, point_labels):
         if area <= 0.0:
             continue
         positive_hits, negative_hits = _polygon_hit_counts(flat, points, point_labels)
-        # Prefer polygons that satisfy positive prompts, avoid negative prompts,
-        # then prefer smaller valid areas as a tie-breaker to avoid capturing bounding boxes.
-        score = (positive_hits, -negative_hits, -area)
+        area_term = area if (has_box_prompt and not has_pos_clicks) else -area
+        score = (positive_hits, -negative_hits, area_term)
         if best_score is None or score > best_score:
             best_polygon = flat
             best_score = score

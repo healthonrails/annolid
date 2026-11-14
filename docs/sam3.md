@@ -44,8 +44,9 @@ SAM3 runs in two main modes.
 2. Text-only mode:
 - Uses a text prompt (for example, `mouse`) and runs SAM3.1 windowed propagation.
 - Multiple phrases can be entered with commas, periods, semicolons, or new
-  lines. Annolid removes empty and duplicate phrases before sending the prompt
-  to SAM3.
+  lines. Annolid deduplicates phrases case-insensitively and strips optional
+  `query=label` / `query -> label` toolbar aliases down to their visual query
+  text before sending the prompt to SAM3.
 - This is the fallback when no usable geometric prompts (box/point/polygon) exist.
 
 ## Annolid Bot workflow for long videos

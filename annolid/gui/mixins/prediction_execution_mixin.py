@@ -21,6 +21,9 @@ from annolid.utils.image_adjustments import normalize_brightness_contrast_value
 from annolid.utils.logger import logger
 from annolid.utils.qt2cv import convert_cv_image_to_qt_image
 
+_PREDICTION_THREAD_STACK_SIZE = 8 * 1024 * 1024
+_ANCHORED_PREDICTION_WORKERS: set[tuple[QtCore.QThread, object]] = set()
+
 
 class PredictionExecutionMixin:
     """Prediction worker setup and completion handling."""
@@ -608,10 +611,13 @@ class PredictionExecutionMixin:
                         )
                         yoloe_text_prompt = False
                     else:
-                        text_prompt = self.aiRectangle._aiRectanglePrompt.text()
-                        class_names = [
-                            p.strip() for p in text_prompt.split(",") if p.strip()
-                        ]
+                        from annolid.utils.prompts import parse_text_prompt
+
+                        text_prompt = self._current_text_prompt() or ""
+                        parsed_prompt = parse_text_prompt(text_prompt)
+                        class_names = list(parsed_prompt.queries)
+                        if parsed_prompt.labels != parsed_prompt.queries:
+                            prompt_class_names = list(parsed_prompt.labels)
                         if class_names:
                             logger.info(
                                 "Extracted class names from text prompt: %s",
@@ -810,7 +816,8 @@ class PredictionExecutionMixin:
                 except RuntimeError:
                     pass
 
-            self.seg_pred_thread = QtCore.QThread(self)
+            self.seg_pred_thread = QtCore.QThread()
+            self.seg_pred_thread.setStackSize(_PREDICTION_THREAD_STACK_SIZE)
             has_occlusion = self.stepSizeWidget.occclusion_checkbox.isChecked()
             inference_step = 1
             inference_start_frame = max(0, int(self.frame_number or 0) + 1)
@@ -1123,6 +1130,8 @@ class PredictionExecutionMixin:
                 "background-color: red; color: white;"
             )
             self.stop_prediction_flag = True
+            anchor_pair = (self.seg_pred_thread, self.pred_worker)
+            _ANCHORED_PREDICTION_WORKERS.add(anchor_pair)
             self.pred_worker.moveToThread(self.seg_pred_thread)
             self.seg_pred_thread.started.connect(
                 self.pred_worker.run, QtCore.Qt.QueuedConnection
@@ -1146,12 +1155,20 @@ class PredictionExecutionMixin:
                 self.pred_worker.deleteLater, QtCore.Qt.QueuedConnection
             )
             self.seg_pred_thread.finished.connect(
+                lambda pair=anchor_pair: _ANCHORED_PREDICTION_WORKERS.discard(pair),
+                QtCore.Qt.QueuedConnection,
+            )
+            self.seg_pred_thread.finished.connect(
                 self._cleanup_prediction_worker, QtCore.Qt.QueuedConnection
             )
             self.seg_pred_thread.finished.connect(
                 self.seg_pred_thread.deleteLater, QtCore.Qt.QueuedConnection
             )
-            self.seg_pred_thread.start()
+            try:
+                self.seg_pred_thread.start()
+            except Exception:
+                _ANCHORED_PREDICTION_WORKERS.discard(anchor_pair)
+                raise
 
     def lost_tracking_instance(self, message):
         if message is None:

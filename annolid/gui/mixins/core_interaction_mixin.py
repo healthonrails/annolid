@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
+import time
 from typing import Optional
 
 from qtpy import QtCore, QtWidgets
 
 from annolid.features.dino_models import set_dino_model_on_runtime
+from annolid.gui.cursor_utils import set_widget_busy_cursor
 from annolid.gui.widgets.advanced_parameters_dialog import AdvancedParametersDialog
 from annolid.utils.logger import logger
 
@@ -88,35 +91,355 @@ class CoreInteractionMixin:
     def is_tracking_busy(self) -> bool:
         return self.tracking_controller.is_tracking_busy()
 
-    def _grounding_sam(self):
-        self.toggleDrawMode(False, createMode="grounding_sam")
-        prompt_text = self.aiRectangle._aiRectanglePrompt.text().lower()
+    def _show_prompt_status_message(self, message: str, timeout_ms: int = 5000) -> None:
+        try:
+            status_fn = getattr(self, "status", None)
+            if callable(status_fn):
+                status_fn(message, timeout_ms)
+                return
+            bar_fn = getattr(self, "statusBar", None)
+            if callable(bar_fn):
+                bar = bar_fn()
+                if bar is not None:
+                    bar.showMessage(message, timeout_ms)
+        except Exception:
+            pass
 
-        if len(prompt_text) < 1:
-            logger.info(f"Invalid text prompt '{prompt_text}'")
+    def _sync_ai_prompt_completions(self) -> None:
+        widget = getattr(self, "aiRectangle", None)
+        setter = getattr(widget, "set_completion_suggestions", None)
+        uniq_list = getattr(self, "uniqLabelList", None)
+        if not callable(setter) or uniq_list is None:
             return
+        try:
+            labels = []
+            for row in range(uniq_list.count()):
+                item = uniq_list.item(row)
+                if item is None:
+                    continue
+                val = item.data(QtCore.Qt.UserRole) or item.text()
+                if val:
+                    labels.append(str(val))
+            setter(labels)
+        except Exception:
+            pass
 
+    def _set_ai_rectangle_running(self, running: bool) -> None:
+        widget = getattr(self, "aiRectangle", None)
+        setter = getattr(widget, "set_running", None)
+        if callable(setter):
+            try:
+                setter(bool(running))
+            except Exception:
+                pass
+
+    def _read_ai_rectangle_options(self) -> tuple[bool, float | None, str | None, bool]:
+        widget = getattr(self, "aiRectangle", None)
         use_countgd = False
+        box_threshold = None
+        output_mode = None
+        replace_existing = False
+        try:
+            if widget is not None:
+                if hasattr(widget, "use_countgd") and callable(widget.use_countgd):
+                    use_countgd = bool(widget.use_countgd())
+                elif hasattr(widget, "_useCountGDCheckbox"):
+                    use_countgd = bool(widget._useCountGDCheckbox.isChecked())
+                if hasattr(widget, "box_threshold") and callable(widget.box_threshold):
+                    box_threshold = float(widget.box_threshold())
+                if hasattr(widget, "output_mode") and callable(widget.output_mode):
+                    output_mode = str(widget.output_mode())
+                if hasattr(widget, "replace_existing") and callable(
+                    widget.replace_existing
+                ):
+                    replace_existing = bool(widget.replace_existing())
+        except Exception:
+            pass
+        return use_countgd, box_threshold, output_mode, replace_existing
+
+    def _prepare_text_prompt_invocation(self) -> tuple[str | None, bool]:
+        """Validate prompt input and execute immediate `flags:` commands.
+
+        Returns `(raw_prompt, should_segment)`.
+        """
+        self.toggleDrawMode(False, createMode="grounding_sam")
+        raw_prompt = ""
         try:
             if hasattr(self, "aiRectangle") and hasattr(
-                self.aiRectangle, "_useCountGDCheckbox"
+                self.aiRectangle, "_aiRectanglePrompt"
             ):
-                use_countgd = self.aiRectangle._useCountGDCheckbox.isChecked()
+                raw_prompt = str(
+                    self.aiRectangle._aiRectanglePrompt.text() or ""
+                ).strip()
         except Exception:
-            use_countgd = False
+            raw_prompt = ""
 
-        if prompt_text.startswith("flags:"):
+        if len(raw_prompt) < 1:
+            logger.info("Empty text prompt; skipping segmentation.")
+            self._show_prompt_status_message(
+                self.tr(
+                    "Enter a text prompt (e.g., mouse, pup=baby) before running segmentation."
+                )
+            )
+            return None, False
+
+        self._sync_ai_prompt_completions()
+        recorder = getattr(getattr(self, "aiRectangle", None), "record_prompt", None)
+        if callable(recorder):
+            try:
+                recorder(raw_prompt)
+            except Exception:
+                pass
+
+        if raw_prompt.lower().startswith("flags:"):
+            flags_body = raw_prompt[len("flags:") :]
             flags = {
-                k.strip(): False
-                for k in prompt_text.replace("flags:", "").split(",")
-                if len(k.strip()) > 0
+                k.strip(): False for k in flags_body.split(",") if len(k.strip()) > 0
             }
-            if len(flags.keys()) > 0:
+            if len(flags) > 0:
                 self.flags_controller.apply_prompt_flags(flags)
+                self._show_prompt_status_message(
+                    self.tr("Applied %d frame flag(s).") % len(flags)
+                )
             else:
                 self.flags_controller.clear_flags()
-        else:
-            self.canvas.predictAiRectangle(prompt_text, use_countgd=use_countgd)
+                self._show_prompt_status_message(self.tr("Cleared frame flags."))
+            return raw_prompt, False
+
+        return raw_prompt, True
+
+    def _report_prompt_completion(
+        self,
+        raw_prompt: str,
+        *,
+        status_kind: str,
+        count: int,
+        elapsed: float,
+        box_threshold: float | None = None,
+        detail: str | None = None,
+    ) -> None:
+        canvas = getattr(self, "canvas", None)
+        still_running = bool(
+            callable(getattr(canvas, "is_text_prompt_running", None))
+            and canvas.is_text_prompt_running()
+        )
+        self._set_ai_rectangle_running(still_running)
+
+        if status_kind == "completed":
+            if count > 0:
+                self._show_prompt_status_message(
+                    self.tr("Segmented %d shape(s) for '%s' in %.2fs.")
+                    % (count, raw_prompt, elapsed)
+                )
+            elif detail:
+                self._show_prompt_status_message(
+                    self.tr("Text-prompt segmentation unavailable: %s") % detail,
+                    timeout_ms=8000,
+                )
+            else:
+                conf_hint = (
+                    f" (conf ≥ {box_threshold:.2f})"
+                    if box_threshold is not None
+                    else ""
+                )
+                self._show_prompt_status_message(
+                    self.tr(
+                        "No objects segmented for '%s'%s. Try lowering confidence or enabling CountGD."
+                    )
+                    % (raw_prompt, conf_hint)
+                )
+        elif status_kind == "cancelled":
+            if detail == "frame_changed":
+                self._show_prompt_status_message(
+                    self.tr(
+                        "Cancelled text-prompt segmentation because the active frame changed."
+                    )
+                )
+            elif detail not in {"superseded", "closing", "file_closed"}:
+                self._show_prompt_status_message(
+                    self.tr("Cancelled text-prompt segmentation for '%s'.") % raw_prompt
+                )
+        elif status_kind == "stale":
+            self._show_prompt_status_message(
+                self.tr(
+                    "Discarded stale text-prompt result for '%s' after frame change."
+                )
+                % raw_prompt
+            )
+        elif status_kind == "error":
+            err_text = str(detail or "Unknown error")
+            self._show_prompt_status_message(
+                self.tr("Text-prompt segmentation failed: %s") % err_text,
+                timeout_ms=8000,
+            )
+
+    def _grounding_sam(self):
+        """Run text-prompt segmentation synchronously (programmatic & bot contract)."""
+        raw_prompt, should_segment = self._prepare_text_prompt_invocation()
+        if not should_segment or raw_prompt is None:
+            return 0
+
+        use_countgd, box_threshold, output_mode, replace_existing = (
+            self._read_ai_rectangle_options()
+        )
+        canvas = getattr(self, "canvas", None)
+        canvas_widget = canvas if isinstance(canvas, QtWidgets.QWidget) else None
+
+        started = time.perf_counter()
+        set_widget_busy_cursor(canvas_widget, True)
+        try:
+            extra_kwargs = {}
+            if box_threshold is not None:
+                extra_kwargs["box_threshold"] = box_threshold
+            if output_mode is not None:
+                extra_kwargs["output_mode"] = output_mode
+            if replace_existing:
+                extra_kwargs["replace_existing"] = True
+            try:
+                created = self.canvas.predictAiRectangle(
+                    raw_prompt,
+                    use_countgd=use_countgd,
+                    **extra_kwargs,
+                )
+            except TypeError:
+                # Preserve compatibility with test doubles / custom Canvas subclasses
+                # that only accept legacy positional/use_countgd parameters.
+                created = self.canvas.predictAiRectangle(
+                    raw_prompt,
+                    use_countgd=use_countgd,
+                )
+        finally:
+            set_widget_busy_cursor(canvas_widget, False)
+
+        elapsed = time.perf_counter() - started
+        count = int(created) if isinstance(created, int) else 0
+        self._report_prompt_completion(
+            raw_prompt,
+            status_kind="completed",
+            count=count,
+            elapsed=elapsed,
+            box_threshold=box_threshold,
+        )
+        return count
+
+    def _grounding_sam_interactive(self) -> bool:
+        """Run toolbar text-prompt segmentation asynchronously off the Qt UI thread."""
+        raw_prompt, should_segment = self._prepare_text_prompt_invocation()
+        if not should_segment or raw_prompt is None:
+            return False
+
+        canvas = getattr(self, "canvas", None)
+        async_fn = getattr(canvas, "start_async_text_prompt", None)
+        if not callable(async_fn):
+            self._grounding_sam()
+            return True
+
+        pixmap = getattr(canvas, "pixmap", None)
+        if pixmap is None or pixmap.isNull():
+            self._show_prompt_status_message(
+                self.tr(
+                    "Load an image or video frame before running text-prompt segmentation."
+                )
+            )
+            return False
+
+        use_countgd, box_threshold, output_mode, replace_existing = (
+            self._read_ai_rectangle_options()
+        )
+        self._set_ai_rectangle_running(True)
+        self._show_prompt_status_message(
+            self.tr("Segmenting '%s'… (click Stop to cancel)") % raw_prompt,
+            timeout_ms=0,
+        )
+
+        launched = bool(
+            async_fn(
+                raw_prompt,
+                use_countgd=use_countgd,
+                box_threshold=box_threshold,
+                output_mode=output_mode,
+                replace_existing=replace_existing,
+                on_finished=lambda kind, cnt, elapsed, detail: (
+                    self._report_prompt_completion(
+                        raw_prompt,
+                        status_kind=kind,
+                        count=cnt,
+                        elapsed=elapsed,
+                        box_threshold=box_threshold,
+                        detail=detail,
+                    )
+                ),
+            )
+        )
+        if not launched:
+            self._set_ai_rectangle_running(False)
+        return launched
+
+    def _start_exemplar_countgd_async(
+        self, prompt: str, rectangle_shapes: list
+    ) -> bool:
+        """Run CountGD exemplar-box segmentation asynchronously from Canvas.finalise."""
+        canvas = getattr(self, "canvas", None)
+        async_fn = getattr(canvas, "start_async_text_prompt", None)
+        if not callable(async_fn):
+            return False
+
+        _use_countgd, box_threshold, output_mode, _replace_existing = (
+            self._read_ai_rectangle_options()
+        )
+        label_text = str(prompt or "object").strip() or "object"
+        self._set_ai_rectangle_running(True)
+        self._show_prompt_status_message(
+            self.tr("Counting & segmenting '%s'… (click Stop to cancel)") % label_text,
+            timeout_ms=0,
+        )
+        launched = bool(
+            async_fn(
+                label_text,
+                rectangle_shapes=rectangle_shapes,
+                is_polygon_output=(output_mode != "mask"),
+                use_countgd=True,
+                box_threshold=box_threshold,
+                output_mode=output_mode,
+                replace_existing=False,
+                on_finished=lambda kind, cnt, elapsed, detail: (
+                    self._report_prompt_completion(
+                        label_text,
+                        status_kind=kind,
+                        count=cnt,
+                        elapsed=elapsed,
+                        box_threshold=box_threshold,
+                        detail=detail,
+                    )
+                ),
+            )
+        )
+        if not launched:
+            self._set_ai_rectangle_running(False)
+        return launched
+
+    def _cancel_grounding_sam(self) -> bool:
+        """Cancel an active background text-prompt segmentation run."""
+        canvas = getattr(self, "canvas", None)
+        cancel_fn = getattr(canvas, "cancel_async_text_prompt", None)
+        cancelled = False
+        if callable(cancel_fn):
+            cancelled = bool(cancel_fn(wait_ms=0, reason="user_cancelled"))
+        self._set_ai_rectangle_running(False)
+        if cancelled:
+            self._show_prompt_status_message(
+                self.tr("Cancelled text-prompt segmentation.")
+            )
+        return cancelled
+
+    @staticmethod
+    def _is_reserved_toolbar_command(prompt: str) -> bool:
+        stripped = (prompt or "").strip()
+        if not stripped:
+            return False
+        if stripped.lower().startswith("flags:"):
+            return True
+        return bool(re.match(r"^every\s+\d+(?:\s+|$)", stripped, flags=re.IGNORECASE))
 
     def _current_text_prompt(self) -> Optional[str]:
         prompt = None
@@ -129,6 +452,8 @@ class CoreInteractionMixin:
                     prompt = widget.text().strip() or None
         except Exception:
             prompt = None
+        if prompt and self._is_reserved_toolbar_command(prompt):
+            return None
         return prompt
 
     def update_step_size(self, value):

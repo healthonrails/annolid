@@ -3317,16 +3317,29 @@ class StreamingChatTask(QRunnable):
         )
 
     def _tool_gui_set_ai_text_prompt(
-        self, text: str, use_countgd: bool = False
+        self,
+        text: str,
+        use_countgd: bool = False,
+        *,
+        box_threshold: Optional[float] = None,
+        output_mode: Optional[str] = None,
+        replace_existing: Optional[bool] = None,
     ) -> Dict[str, Any]:
         return gui_set_ai_text_prompt_tool(
             text,
             use_countgd=use_countgd,
+            box_threshold=box_threshold,
+            output_mode=output_mode,
+            replace_existing=replace_existing,
             invoke_set_ai_text_prompt=lambda prompt_text,
             flag: self._invoke_widget_slot(
                 "bot_set_ai_text_prompt",
                 QtCore.Q_ARG(str, prompt_text),
                 QtCore.Q_ARG(bool, flag),
+            ),
+            invoke_configure_ai_text_prompt=lambda options: self._invoke_widget_json_slot(
+                "bot_configure_ai_text_prompt",
+                options,
             ),
         )
 

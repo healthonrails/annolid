@@ -336,7 +336,9 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         self.frame_worker = QtCore.QThread()
         self.frame_loader = LoadFrameThread()
         self.seg_pred_thread = QtCore.QThread()
+        self.seg_pred_thread.setStackSize(8 * 1024 * 1024)
         self.seg_train_thread = QtCore.QThread()
+        self.seg_train_thread.setStackSize(8 * 1024 * 1024)
         weak_self = weakref.ref(self)
 
         def _cleanup_from_weakref(*_args) -> None:

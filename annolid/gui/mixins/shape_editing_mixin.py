@@ -367,12 +367,22 @@ class ShapeEditingMixin:
         editor = self._active_shape_editor()
         if self.canvas.createMode == "grounding_sam":
             self.labelList.clearSelection()
-            shapes = [
-                shape
-                for shape in self.canvas.shapes
-                if shape.description == "grounding_sam"
-            ]
-            shape = shapes.pop()
+            shape = (
+                self.canvas.shapes[-1]
+                if self.canvas.shapes
+                and getattr(self.canvas.shapes[-1], "description", None)
+                == "grounding_sam"
+                else None
+            )
+            if shape is None:
+                shapes = [
+                    candidate
+                    for candidate in self.canvas.shapes
+                    if candidate.description == "grounding_sam"
+                ]
+                if not shapes:
+                    return
+                shape = shapes[-1]
             self.addLabel(shape)
             self.actions.editMode.setEnabled(True)
             self.actions.undoLastPoint.setEnabled(False)

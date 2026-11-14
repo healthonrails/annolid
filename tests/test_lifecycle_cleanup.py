@@ -96,3 +96,33 @@ def test_cleanup_is_idempotent_for_tracking_shutdown() -> None:
     probe.clean_up()
     assert probe.tracking_data_controller.shutdown_calls == 1
     assert probe.release_audio_loader_calls == 1
+
+
+def test_cleanup_requests_cooperative_prediction_stop_before_waiting() -> None:
+    events: list[str] = []
+
+    class _OrderedPredThread:
+        def requestInterruption(self) -> None:
+            events.append("thread.requestInterruption")
+
+        def quit(self) -> None:
+            events.append("thread.quit")
+
+        def wait(self) -> None:
+            events.append("thread.wait")
+
+    class _OrderedPredWorker:
+        def request_stop(self) -> None:
+            events.append("worker.request_stop")
+
+    probe = _LifecycleProbe()
+    probe.seg_pred_thread = _OrderedPredThread()  # type: ignore[assignment]
+    probe.pred_worker = _OrderedPredWorker()  # type: ignore[attr-defined]
+    probe.clean_up()
+
+    assert events == [
+        "worker.request_stop",
+        "thread.requestInterruption",
+        "thread.quit",
+        "thread.wait",
+    ]

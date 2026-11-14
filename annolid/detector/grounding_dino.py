@@ -1,3 +1,5 @@
+from collections import OrderedDict
+import inspect
 import os
 import cv2
 import numpy as np
@@ -5,6 +7,18 @@ from typing import Dict
 from annolid.inference.onnx_model import ONNXBaseModel
 from annolid.gui.shape import Shape
 from annolid.annotation.keypoints import save_labels
+from annolid.utils.cancellation import (
+    InferenceCancelledError,
+    cancellable_download_file,
+    is_stop_requested,
+)
+from annolid.utils.prompts import (
+    DetectionBoxCandidate,
+    format_grounding_dino_caption,
+    match_predicted_phrase_to_label,
+    parse_text_prompt,
+    sanitize_and_nms_box_candidates,
+)
 
 
 class GroundingDINO:
@@ -25,41 +39,130 @@ class GroundingDINO:
     """
 
     def __init__(
-        self, model_abs_path=None, model_type="groundingdino_swinb_cogcoor"
+        self,
+        model_abs_path=None,
+        model_type="groundingdino_swinb_cogcoor",
+        *,
+        stop_event=None,
     ) -> None:
         """
         Initialize GroundingDINO model
         Args:
             model_abs_path (str): Absolute path to the model
             model_type (str): Type of the model
+            stop_event (threading.Event, optional): Cooperative cancellation event
         """
+        if is_stop_requested(stop_event):
+            raise InferenceCancelledError("GroundingDINO initialization cancelled.")
+
         self.remote_onnx_url = (
             "https://github.com/healthonrails/annolid/releases/download/v1.1.3/"
         )
         self.onnx_md5 = "b301409dadcd46c23271af8cf1ff364e"
+        self._text_cache_max_entries = 32
+        self._text_inputs_cache: OrderedDict[str, Dict[str, object]] = OrderedDict()
+        self.net = None
 
         if model_abs_path is None:
             current_directory = os.path.dirname(os.path.abspath(__file__))
             onnx_model_name = model_type + "_quant.onnx"
-            model_abs_path = os.path.join(current_directory, onnx_model_name)
-            if not os.path.exists(model_abs_path):
-                import gdown
+            preferred_path = os.path.join(current_directory, onnx_model_name)
+            model_abs_path = cancellable_download_file(
+                self.remote_onnx_url + onnx_model_name,
+                preferred_path,
+                md5=self.onnx_md5,
+                stop_event=stop_event,
+                cache_subdir="grounding_dino",
+            )
 
-                gdown.cached_download(
-                    self.remote_onnx_url + onnx_model_name,
-                    model_abs_path,
-                    md5=self.onnx_md5,
-                )
+        if is_stop_requested(stop_event):
+            raise InferenceCancelledError("GroundingDINO initialization cancelled.")
 
-        self.net = ONNXBaseModel(model_abs_path)
-        self.model_configs = self._get_configs(model_type)
-        self.net.max_text_len = self.model_configs["max_text_len"]
-        self.net.tokenizer = self._get_tokenizer(
-            self.model_configs["text_encoder_type"]
-        )
+        self.net = ONNXBaseModel(model_abs_path, stop_event=stop_event)
+        try:
+            if is_stop_requested(stop_event):
+                raise InferenceCancelledError("GroundingDINO initialization cancelled.")
+            self.model_configs = self._get_configs(model_type)
+            self.net.max_text_len = self.model_configs["max_text_len"]
+            self.net.tokenizer = self._get_tokenizer(
+                self.model_configs["text_encoder_type"]
+            )
+            if is_stop_requested(stop_event):
+                raise InferenceCancelledError("GroundingDINO initialization cancelled.")
+        except BaseException:
+            self.close()
+            raise
         self.box_threshold = 0.3
         self.text_threshold = 0.2
         self.target_size = (1200, 800)
+
+    def close(self) -> None:
+        """Release cached text features and underlying ONNX session reference."""
+        self._text_inputs_cache.clear()
+        net = getattr(self, "net", None)
+        close_fn = getattr(net, "close", None)
+        if callable(close_fn):
+            try:
+                close_fn()
+            except Exception:
+                pass
+        self.net = None
+
+    def _encode_caption_cached(self, captions: str) -> Dict[str, object]:
+        cached = self._text_inputs_cache.get(captions)
+        if cached is not None:
+            self._text_inputs_cache.move_to_end(captions)
+            return cached
+
+        tokenized_raw_results = self.net.tokenizer.encode(captions)
+        tokenized_batch = {
+            "input_ids": np.array([tokenized_raw_results.ids], dtype=np.int64),
+            "token_type_ids": np.array(
+                [tokenized_raw_results.type_ids], dtype=np.int64
+            ),
+            "attention_mask": np.array([tokenized_raw_results.attention_mask]),
+        }
+        special_tokens = [101, 102, 1012, 1029]
+        text_self_attention_masks, position_ids, _ = (
+            self._generate_masks_with_special_tokens_and_transfer_map(
+                tokenized_batch, special_tokens
+            )
+        )
+        if text_self_attention_masks.shape[1] > self.net.max_text_len:
+            text_self_attention_masks = text_self_attention_masks[
+                :, : self.net.max_text_len, : self.net.max_text_len
+            ]
+            position_ids = position_ids[:, : self.net.max_text_len]
+            tokenized_batch["input_ids"] = tokenized_batch["input_ids"][
+                :, : self.net.max_text_len
+            ]
+            tokenized_batch["attention_mask"] = tokenized_batch["attention_mask"][
+                :, : self.net.max_text_len
+            ]
+            tokenized_batch["token_type_ids"] = tokenized_batch["token_type_ids"][
+                :, : self.net.max_text_len
+            ]
+
+        entry: Dict[str, object] = {
+            "input_ids": np.array(tokenized_batch["input_ids"], dtype=np.int64),
+            "attention_mask": np.array(tokenized_batch["attention_mask"], dtype=bool),
+            "token_type_ids": np.array(
+                tokenized_batch["token_type_ids"], dtype=np.int64
+            ),
+            "position_ids": np.array(position_ids, dtype=np.int64),
+            "text_token_mask": np.array(text_self_attention_masks, dtype=bool),
+            "tokenized_1d": {
+                "input_ids": np.array(tokenized_raw_results.ids, dtype=np.int64),
+                "token_type_ids": np.array(
+                    tokenized_raw_results.type_ids, dtype=np.int64
+                ),
+                "attention_mask": np.array(tokenized_raw_results.attention_mask),
+            },
+        }
+        if len(self._text_inputs_cache) >= self._text_cache_max_entries:
+            self._text_inputs_cache.popitem(last=False)
+        self._text_inputs_cache[captions] = entry
+        return entry
 
     def preprocess(self, image, text_prompt):
         """
@@ -74,51 +177,34 @@ class GroundingDINO:
         """
         image = cv2.resize(image, self.target_size, interpolation=cv2.INTER_LINEAR)
         image = image.astype(np.float32) / 255.0
-        mean = np.array([0.485, 0.456, 0.406])
-        std = np.array([0.229, 0.224, 0.225])
+        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
         image = (image - mean) / std
         image = np.transpose(image, (2, 0, 1))
         image = np.expand_dims(image, 0).astype(np.float32)
 
-        captions = self._get_caption(str(text_prompt))
-        tokenized_raw_results = self.net.tokenizer.encode(captions)
-        tokenized = {
-            "input_ids": np.array([tokenized_raw_results.ids], dtype=np.int64),
-            "token_type_ids": np.array(
-                [tokenized_raw_results.type_ids], dtype=np.int64
-            ),
-            "attention_mask": np.array([tokenized_raw_results.attention_mask]),
-        }
-        special_tokens = [101, 102, 1012, 1029]
-        text_self_attention_masks, position_ids, _ = (
-            self._generate_masks_with_special_tokens_and_transfer_map(
-                tokenized, special_tokens
-            )
-        )
-        if text_self_attention_masks.shape[1] > self.net.max_text_len:
-            text_self_attention_masks = text_self_attention_masks[
-                :, : self.net.max_text_len, : self.net.max_text_len
-            ]
-            position_ids = position_ids[:, : self.net.max_text_len]
-            tokenized["input_ids"] = tokenized["input_ids"][:, : self.net.max_text_len]
-            tokenized["attention_mask"] = tokenized["attention_mask"][
-                :, : self.net.max_text_len
-            ]
-            tokenized["token_type_ids"] = tokenized["token_type_ids"][
-                :, : self.net.max_text_len
-            ]
-
+        captions = self._get_caption(str(text_prompt or ""))
+        encoded = self._encode_caption_cached(captions)
         inputs = {
             "img": image,
-            "input_ids": np.array(tokenized["input_ids"], dtype=np.int64),
-            "attention_mask": np.array(tokenized["attention_mask"], dtype=bool),
-            "token_type_ids": np.array(tokenized["token_type_ids"], dtype=np.int64),
-            "position_ids": np.array(position_ids, dtype=np.int64),
-            "text_token_mask": np.array(text_self_attention_masks, dtype=bool),
+            "input_ids": encoded["input_ids"],
+            "attention_mask": encoded["attention_mask"],
+            "token_type_ids": encoded["token_type_ids"],
+            "position_ids": encoded["position_ids"],
+            "text_token_mask": encoded["text_token_mask"],
         }
         return image, inputs, captions
 
-    def postprocess(self, outputs, caption, with_logits=True, token_spans=None):
+    def postprocess(
+        self,
+        outputs,
+        caption,
+        with_logits=True,
+        token_spans=None,
+        *,
+        box_threshold=None,
+        text_threshold=None,
+    ):
         """
         Postprocess model outputs.
 
@@ -136,30 +222,44 @@ class GroundingDINO:
         prediction_logits_ = np.squeeze(logits, 0)
         logits_filt = self.sigmoid(prediction_logits_)
         boxes_filt = np.squeeze(boxes, 0)
+        active_box_threshold = (
+            float(self.box_threshold) if box_threshold is None else float(box_threshold)
+        )
+        active_text_threshold = (
+            float(self.text_threshold)
+            if text_threshold is None
+            else float(text_threshold)
+        )
 
         if token_spans is None:
-            filt_mask = logits_filt.max(axis=1) > self.box_threshold
+            filt_mask = logits_filt.max(axis=1) > active_box_threshold
             logits_filt = logits_filt[filt_mask]
             boxes_filt = boxes_filt[filt_mask]
+            if len(logits_filt) == 0:
+                return boxes_filt, []
 
             tokenlizer = self.net.tokenizer
-            tokenized_raw_results = tokenlizer.encode(caption)
-            tokenized = {
-                "input_ids": np.array(tokenized_raw_results.ids, dtype=np.int64),
-                "token_type_ids": np.array(
-                    tokenized_raw_results.type_ids, dtype=np.int64
-                ),
-                "attention_mask": np.array(tokenized_raw_results.attention_mask),
-            }
+            cached_entry = self._text_inputs_cache.get(caption)
+            if cached_entry is not None and "tokenized_1d" in cached_entry:
+                tokenized = cached_entry["tokenized_1d"]
+            else:
+                tokenized_raw_results = tokenlizer.encode(caption)
+                tokenized = {
+                    "input_ids": np.array(tokenized_raw_results.ids, dtype=np.int64),
+                    "token_type_ids": np.array(
+                        tokenized_raw_results.type_ids, dtype=np.int64
+                    ),
+                    "attention_mask": np.array(tokenized_raw_results.attention_mask),
+                }
 
             pred_phrases = []
             for logit in logits_filt:
-                posmap = logit > self.text_threshold
+                posmap = logit.copy() > active_text_threshold
                 pred_phrase = self._get_phrases_from_posmap(
                     posmap, tokenized, tokenlizer
                 )
                 if with_logits:
-                    pred_phrases.append([pred_phrase, logit.max()])
+                    pred_phrases.append([pred_phrase, float(logit.max())])
                 else:
                     pred_phrases.append([pred_phrase, 1.0])
         else:
@@ -167,7 +267,83 @@ class GroundingDINO:
 
         return boxes_filt, pred_phrases
 
-    def predict_shapes(self, image, text_prompt=None):
+    def predict_detections(
+        self,
+        image,
+        text_prompt=None,
+        *,
+        box_threshold=None,
+        text_threshold=None,
+        nms_iou_threshold: float = 0.50,
+        stop_event=None,
+    ) -> list[DetectionBoxCandidate]:
+        """Predict NMS-filtered ``DetectionBoxCandidate`` objects with mapped labels."""
+        if image is None or is_stop_requested(stop_event):
+            return []
+        parsed_prompt = parse_text_prompt(text_prompt)
+        if parsed_prompt.is_empty and not str(text_prompt or "").strip():
+            return []
+
+        blob, inputs, caption = self.preprocess(image, text_prompt)
+        if not caption or is_stop_requested(stop_event):
+            return []
+
+        infer_fn = self.net.get_onnx_inference
+        accepts_stop = False
+        try:
+            accepts_stop = "stop_event" in inspect.signature(infer_fn).parameters
+        except (TypeError, ValueError):
+            accepts_stop = False
+
+        try:
+            if accepts_stop:
+                outputs = infer_fn(
+                    blob,
+                    input_data=inputs,
+                    extract=False,
+                    stop_event=stop_event,
+                )
+            else:
+                outputs = infer_fn(blob, input_data=inputs, extract=False)
+        except InferenceCancelledError:
+            return []
+
+        if is_stop_requested(stop_event):
+            return []
+        boxes_filt, pred_phrases = self.postprocess(
+            outputs,
+            caption,
+            box_threshold=box_threshold,
+            text_threshold=text_threshold,
+        )
+        if len(boxes_filt) == 0:
+            return []
+
+        img_h, img_w = image.shape[:2]
+        boxes = self._rescale_boxes(boxes_filt, img_h, img_w)
+        raw_candidates: list[DetectionBoxCandidate] = []
+        for box, label_info in zip(boxes, pred_phrases):
+            raw_phrase, raw_score = label_info
+            mapped_label = match_predicted_phrase_to_label(
+                raw_phrase,
+                parsed_prompt,
+                fallback_label=str(raw_phrase or "object"),
+            )
+            raw_candidates.append(
+                DetectionBoxCandidate(
+                    bbox=(float(box[0]), float(box[1]), float(box[2]), float(box[3])),
+                    label=mapped_label,
+                    score=float(raw_score),
+                    source="grounding_dino",
+                )
+            )
+        return sanitize_and_nms_box_candidates(
+            raw_candidates,
+            image_shape=(img_h, img_w),
+            same_label_iou_threshold=nms_iou_threshold,
+        )
+
+    def predict_shapes(self, image, text_prompt=None, *, box_threshold=None):
         """
         Predict shapes from image.
 
@@ -178,22 +354,18 @@ class GroundingDINO:
         Returns:
             shapes: List of predicted shapes
         """
-        if image is None:
-            return []
-
-        blob, inputs, caption = self.preprocess(image, text_prompt)
-        outputs = self.net.get_onnx_inference(blob, input_data=inputs, extract=False)
-        boxes_filt, pred_phrases = self.postprocess(outputs, caption)
-
+        candidates = self.predict_detections(
+            image,
+            text_prompt=text_prompt,
+            box_threshold=box_threshold,
+        )
         shapes = []
-        img_h, img_w, _ = image.shape
-        boxes = self._rescale_boxes(boxes_filt, img_h, img_w)
-        for box, label_info in zip(boxes, pred_phrases):
-            x1, y1, x2, y2 = box
-            label, _ = label_info
-            shape = Shape(label=str(label), shape_type="rectangle", flags={})
+        for cand in candidates:
+            x1, y1, x2, y2 = cand.bbox
+            shape = Shape(label=str(cand.label), shape_type="rectangle", flags={})
             shape.addPoint((x1, y1))
             shape.addPoint((x2, y2))
+            shape.other_data["score"] = str(cand.score)
             shapes.append(shape)
 
         return shapes
@@ -209,21 +381,8 @@ class GroundingDINO:
         Returns:
             bboxes: List of predicted bboxes
         """
-        if image is None:
-            return []
-
-        blob, inputs, caption = self.preprocess(image, text_prompt)
-        outputs = self.net.get_onnx_inference(blob, input_data=inputs, extract=False)
-        boxes_filt, pred_phrases = self.postprocess(outputs, caption)
-
-        bboxes = []
-        img_h, img_w, _ = image.shape
-        boxes = self._rescale_boxes(boxes_filt, img_h, img_w)
-        for box, label_info in zip(boxes, pred_phrases):
-            label, _ = label_info
-            bboxes.append((box, label))
-
-        return bboxes
+        candidates = self.predict_detections(image, text_prompt=text_prompt)
+        return [(np.asarray(cand.bbox, dtype=float), cand.label) for cand in candidates]
 
     @staticmethod
     def sigmoid(x):
@@ -241,25 +400,21 @@ class GroundingDINO:
     @staticmethod
     def _rescale_boxes(boxes, img_h, img_w):
         """
-        Rescale bounding boxes.
-
-        Args:
-            boxes: Bounding boxes
-            img_h: Image height
-            img_w: Image width
-
-        Returns:
-            converted_boxes: Rescaled bounding boxes
+        Rescale bounding boxes from normalized ``cxcywh`` to clamped pixel ``xyxy``.
         """
-        converted_boxes = []
-        for box in boxes:
-            # from 0..1 to 0..W, 0..H
-            converted_box = box * np.array([img_w, img_h, img_w, img_h])
-            # from xywh to xyxy
-            converted_box[:2] -= converted_box[2:] / 2
-            converted_box[2:] += converted_box[:2]
-            converted_boxes.append(converted_box)
-        return np.array(converted_boxes, dtype=float)
+        arr = np.asarray(boxes, dtype=float)
+        if arr.size == 0:
+            return np.empty((0, 4), dtype=float)
+        arr = arr.reshape(-1, 4).copy()
+        scale = np.array([float(img_w), float(img_h), float(img_w), float(img_h)])
+        arr *= scale
+        arr[:, :2] -= arr[:, 2:] / 2.0
+        arr[:, 2:] += arr[:, :2]
+        arr[:, 0] = np.clip(arr[:, 0], 0.0, float(img_w))
+        arr[:, 2] = np.clip(arr[:, 2], 0.0, float(img_w))
+        arr[:, 1] = np.clip(arr[:, 1], 0.0, float(img_h))
+        arr[:, 3] = np.clip(arr[:, 3], 0.0, float(img_h))
+        return arr
 
     @staticmethod
     def _get_configs(model_type):
@@ -369,19 +524,13 @@ class GroundingDINO:
     @staticmethod
     def _get_caption(text_prompt):
         """
-        Get processed caption from the text prompt.
+        Get processed GroundingDINO caption from the text prompt.
 
-        Args:
-            text_prompt (str): Text prompt
-
-        Returns:
-            caption (str): Processed caption
+        Multi-phrase prompts (separated by commas, semicolons, periods, or
+        newlines) are formatted as ``"phrase_1 . phrase_2 ."`` so each phrase
+        receives an isolated BERT self-attention mask.
         """
-        caption = text_prompt.lower()
-        caption = caption.strip()
-        if not caption.endswith("."):
-            caption = caption + "."
-        return caption
+        return format_grounding_dino_caption(text_prompt)
 
     @staticmethod
     def _get_tokenizer(text_encoder_type):
@@ -485,6 +634,8 @@ class GroundingDINO:
 
         cate_to_token_mask_list = [
             np.stack(cate_to_token_mask_listi, axis=0)
+            if cate_to_token_mask_listi
+            else np.zeros((0, num_token), dtype=bool)
             for cate_to_token_mask_listi in cate_to_token_mask_list
         ]
 

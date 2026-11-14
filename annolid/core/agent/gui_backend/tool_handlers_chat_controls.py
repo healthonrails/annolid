@@ -91,19 +91,58 @@ def set_ai_text_prompt_tool(
     *,
     use_countgd: bool,
     invoke_set_ai_text_prompt: Callable[[str, bool], bool],
+    box_threshold: float | None = None,
+    output_mode: str | None = None,
+    replace_existing: bool | None = None,
+    invoke_configure_ai_text_prompt: Callable[[Dict[str, object]], bool] | None = None,
 ) -> Dict[str, object]:
     prompt_text = str(text or "").strip()
     if not prompt_text:
         return {"ok": False, "error": "text is required"}
     flag = bool(use_countgd)
+
+    extra_options: Dict[str, object] = {}
+    if box_threshold is not None:
+        try:
+            threshold_val = float(box_threshold)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "box_threshold must be a number"}
+        if not (0.05 <= threshold_val <= 0.95):
+            return {
+                "ok": False,
+                "error": "box_threshold must be between 0.05 and 0.95",
+            }
+        extra_options["box_threshold"] = threshold_val
+
+    if output_mode is not None:
+        normalized_mode = str(output_mode or "").strip().lower()
+        if normalized_mode in {"box", "boxes", "bbox"}:
+            normalized_mode = "rectangle"
+        if normalized_mode not in {"polygon", "mask", "rectangle"}:
+            return {
+                "ok": False,
+                "error": "output_mode must be 'polygon', 'mask', or 'rectangle'",
+            }
+        extra_options["output_mode"] = normalized_mode
+
+    if replace_existing is not None:
+        extra_options["replace_existing"] = bool(replace_existing)
+
     if not invoke_set_ai_text_prompt(prompt_text, flag):
         return {"ok": False, "error": "Failed to queue AI prompt update"}
-    return {
+
+    if extra_options and invoke_configure_ai_text_prompt is not None:
+        if not invoke_configure_ai_text_prompt(extra_options):
+            return {"ok": False, "error": "Failed to queue AI prompt options update"}
+
+    result: Dict[str, object] = {
         "ok": True,
         "queued": True,
         "text": prompt_text,
         "use_countgd": flag,
     }
+    result.update(extra_options)
+    return result
 
 
 def run_ai_text_segmentation_tool(

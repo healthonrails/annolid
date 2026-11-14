@@ -144,6 +144,21 @@ class LifecycleMixin:
                 )
         quit_and_wait(self.frame_worker, "Thank you!")
         quit_and_wait(self.seg_train_thread, "See you next time!")
+        pred_worker = getattr(self, "pred_worker", None)
+        if pred_worker is not None:
+            stop_fn = getattr(pred_worker, "request_stop", None)
+            if callable(stop_fn):
+                try:
+                    stop_fn()
+                except Exception:
+                    pass
+        if getattr(self, "seg_pred_thread", None) is not None:
+            req_interrupt = getattr(self.seg_pred_thread, "requestInterruption", None)
+            if callable(req_interrupt):
+                try:
+                    req_interrupt()
+                except RuntimeError:
+                    pass
         quit_and_wait(self.seg_pred_thread, "Bye!")
         if hasattr(self, "yolo_training_manager") and self.yolo_training_manager:
             self.yolo_training_manager.cleanup()
