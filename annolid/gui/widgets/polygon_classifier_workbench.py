@@ -642,6 +642,7 @@ class PolygonClassifierWorkbench(QtWidgets.QDialog):
         self._append_log(f"{label} started.")
         worker = FlexibleWorker(task)
         thread = QtCore.QThread(self)
+        thread.setStackSize(8 * 1024 * 1024)
         worker.moveToThread(thread)
         self._threads.append((thread, worker))
 

@@ -271,6 +271,7 @@ class ImageEditingDockWidget(QtWidgets.QDockWidget):
 
         self._worker = FlexibleWorker(_run_backend, backend, request)
         self._thread = QtCore.QThread(self)
+        self._thread.setStackSize(8 * 1024 * 1024)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.finished_signal.connect(self._handle_finished)

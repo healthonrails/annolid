@@ -10,7 +10,11 @@ from typing import Any, Optional
 
 from openai import OpenAI
 
-from annolid.utils.cancellation import InferenceCancelledError, is_stop_requested
+from annolid.utils.cancellation import (
+    InferenceCancelledError,
+    is_stop_requested,
+    torch_cancellable_forward,
+)
 
 
 _SAM3_TOOL_SCHEMAS = [
@@ -306,26 +310,154 @@ def send_generate_request(
         _close_client()
 
 
+def build_hf_stopping_criteria(stop_event: Optional[Any]) -> Optional[Any]:
+    """Build a token-level ``StoppingCriteriaList`` wired to ``stop_event``.
+
+    Imports ``transformers`` lazily so GUI/CLI startup never depends on it.
+    Falls back to a callable criterion list when ``transformers`` is absent.
+    """
+    if stop_event is None:
+        return None
+    try:
+        from transformers import StoppingCriteria, StoppingCriteriaList
+
+        class _StopEventCriteria(StoppingCriteria):
+            def __call__(self, input_ids: Any, scores: Any, **kwargs: Any) -> bool:
+                _ = input_ids, scores, kwargs
+                return is_stop_requested(stop_event)
+
+        return StoppingCriteriaList([_StopEventCriteria()])
+    except Exception:
+
+        class _FallbackStopCriteria:
+            def __call__(self, input_ids: Any, scores: Any, **kwargs: Any) -> bool:
+                _ = input_ids, scores, kwargs
+                return is_stop_requested(stop_event)
+
+        return [_FallbackStopCriteria()]
+
+
+def _extract_pipeline_generated_text(outputs: Any) -> Optional[str]:
+    if outputs is None:
+        return None
+    if isinstance(outputs, str):
+        return outputs
+    if isinstance(outputs, list) and outputs:
+        first = outputs[0]
+        if isinstance(first, dict) and "generated_text" in first:
+            gen = first["generated_text"]
+            if isinstance(gen, str):
+                return gen
+            if isinstance(gen, list) and gen:
+                last_msg = gen[-1]
+                if isinstance(last_msg, dict):
+                    content = last_msg.get("content")
+                    if isinstance(content, str):
+                        return content
+                    if isinstance(content, list):
+                        parts = [
+                            str(item.get("text", ""))
+                            for item in content
+                            if isinstance(item, dict) and item.get("type") == "text"
+                        ]
+                        return "".join(parts) if parts else None
+        if isinstance(first, str):
+            return first
+    return None
+
+
+def send_local_pipeline_request(
+    pipe: Any,
+    messages: list[dict[str, Any]],
+    max_new_tokens: int = 4096,
+    *,
+    stop_event: Optional[Any] = None,
+    **generate_kwargs: Any,
+) -> Optional[str]:
+    """Run local HuggingFace ``transformers.pipeline`` VLM generation with token-level cancellation."""
+    if is_stop_requested(stop_event):
+        raise InferenceCancelledError("SAM3 agent local pipeline generation cancelled.")
+
+    stopping_criteria = build_hf_stopping_criteria(stop_event)
+    call_kwargs = dict(generate_kwargs)
+    call_kwargs.setdefault("max_new_tokens", max_new_tokens)
+    if stopping_criteria is not None:
+        existing = call_kwargs.get("stopping_criteria")
+        if existing is None:
+            call_kwargs["stopping_criteria"] = stopping_criteria
+        elif isinstance(existing, list):
+            call_kwargs["stopping_criteria"] = list(existing) + list(stopping_criteria)
+
+    model = getattr(pipe, "model", None)
+    try:
+        with torch_cancellable_forward(model, stop_event):
+            try:
+                outputs = pipe(messages, **call_kwargs)
+            except TypeError as exc:
+                if (
+                    "stopping_criteria" not in str(exc)
+                    or "stopping_criteria" not in call_kwargs
+                ):
+                    raise
+                fallback_kwargs = dict(call_kwargs)
+                fallback_kwargs.pop("stopping_criteria", None)
+                outputs = pipe(messages, **fallback_kwargs)
+    except InferenceCancelledError:
+        raise
+    except Exception as exc:
+        if is_stop_requested(stop_event):
+            raise InferenceCancelledError(
+                "SAM3 agent local pipeline generation cancelled."
+            ) from exc
+        print(f"Local pipeline inference failed: {exc}")
+        return None
+
+    if is_stop_requested(stop_event):
+        raise InferenceCancelledError("SAM3 agent local pipeline generation cancelled.")
+    return _extract_pipeline_generated_text(outputs)
+
+
+send_generate_request_orig = send_local_pipeline_request
+
+
 def send_direct_request(
     llm: Any,
     messages: list[dict[str, Any]],
-    sampling_params: Any,
+    sampling_params: Any = None,
+    *,
+    stop_event: Optional[Any] = None,
 ) -> Optional[str]:
     """
-    Run inference on a vLLM model instance directly without using a server.
+    Run inference on a vLLM model instance or local HF pipeline directly without using a server.
 
     Args:
-        llm: Initialized vLLM LLM instance (passed from external initialization)
+        llm: Initialized vLLM LLM instance or HuggingFace pipeline callable
         messages: List of message dicts with role and content (OpenAI format)
-        sampling_params: vLLM SamplingParams instance (initialized externally)
+        sampling_params: vLLM SamplingParams instance (optional for HF pipelines)
+        stop_event: Optional cooperative cancellation event
 
     Returns:
         str: Generated response text, or None if inference fails
     """
+    if is_stop_requested(stop_event):
+        raise InferenceCancelledError("SAM3 agent direct LLM inference cancelled.")
+    if not hasattr(llm, "chat") and callable(llm):
+        max_tokens = int(getattr(sampling_params, "max_tokens", 4096) or 4096)
+        return send_local_pipeline_request(
+            llm,
+            messages,
+            max_new_tokens=max_tokens,
+            stop_event=stop_event,
+        )
+
     try:
         # Process messages to handle images (convert to base64 if needed)
         processed_messages = []
         for message in messages:
+            if is_stop_requested(stop_event):
+                raise InferenceCancelledError(
+                    "SAM3 agent direct LLM inference cancelled."
+                )
             processed_message = message.copy()
             if message["role"] == "user" and "content" in message:
                 processed_content = []
@@ -365,6 +497,9 @@ def send_direct_request(
                 processed_message["content"] = processed_content
             processed_messages.append(processed_message)
 
+        if is_stop_requested(stop_event):
+            raise InferenceCancelledError("SAM3 agent direct LLM inference cancelled.")
+
         print("🔍 Running direct inference with vLLM...")
 
         # Run inference using vLLM's chat interface
@@ -372,6 +507,8 @@ def send_direct_request(
             messages=processed_messages,
             sampling_params=sampling_params,
         )
+        if is_stop_requested(stop_event):
+            raise InferenceCancelledError("SAM3 agent direct LLM inference cancelled.")
 
         # Extract the generated text from the first output
         if outputs and len(outputs) > 0:
@@ -381,6 +518,12 @@ def send_direct_request(
             print(f"Unexpected output format: {outputs}")
             return None
 
+    except InferenceCancelledError:
+        raise
     except Exception as e:
+        if is_stop_requested(stop_event):
+            raise InferenceCancelledError(
+                "SAM3 agent direct LLM inference cancelled."
+            ) from e
         print(f"Direct inference failed: {e}")
         return None

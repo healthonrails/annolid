@@ -550,6 +550,7 @@ class FrameSimilarityService(QtCore.QObject):
     def __init__(self, parent: Optional[QtCore.QObject] = None) -> None:
         super().__init__(parent)
         self._thread = QtCore.QThread(self)
+        self._thread.setStackSize(8 * 1024 * 1024)
         self._worker = _FrameSimilarityWorker()
         self._worker.moveToThread(self._thread)
         self._request_run.connect(self._worker.run)

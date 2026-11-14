@@ -28,6 +28,10 @@ from annolid.segmentation.videomt_onnx import (
     _require_onnxruntime,
 )
 from annolid.tracker.point_tracking_processor import BasePointTrackingProcessor
+from annolid.utils.cancellation import (
+    InferenceCancelledError,
+    onnx_cancellable_run,
+)
 from annolid.utils.logger import logger
 from annolid.utils.model_assets import (
     ensure_cached_model_asset,
@@ -436,7 +440,12 @@ class TapNextOnnxProcessor(BasePointTrackingProcessor):
             ),
         }
         output_names = [spec.name for spec in self._output_specs]
-        raw_outputs = session.run(output_names, feed)
+        raw_outputs = onnx_cancellable_run(
+            session,
+            output_names,
+            feed,
+            stop_event=self._resolve_stop_event(),
+        )
         return dict(zip(output_names, raw_outputs))
 
     def _extract_clip_tracks(
@@ -574,12 +583,16 @@ class TapNextOnnxProcessor(BasePointTrackingProcessor):
             if not frames:
                 break
 
-            tracks, visibility = self._run_query_batches(
-                session,
-                frames,
-                queries=self.queries,
-                chunk_start_frame=chunk_start,
-            )
+            try:
+                tracks, visibility = self._run_query_batches(
+                    session,
+                    frames,
+                    queries=self.queries,
+                    chunk_start_frame=chunk_start,
+                )
+            except InferenceCancelledError:
+                self._stop_triggered = True
+                break
             tracks_by_frame.extend(tracks)
             visibility_by_frame.extend(visibility)
             video_source.extend(frames)
@@ -654,12 +667,20 @@ class TapNextOnnxProcessor(BasePointTrackingProcessor):
                 break
 
             anchor_overlap = saved_until is not None and chunk_start == int(saved_until)
-            tracks, visibility = self._run_query_batches(
-                session,
-                frames,
-                queries=current_queries,
-                chunk_start_frame=chunk_start,
-            )
+            try:
+                tracks, visibility = self._run_query_batches(
+                    session,
+                    frames,
+                    queries=current_queries,
+                    chunk_start_frame=chunk_start,
+                )
+            except InferenceCancelledError:
+                self._stop_triggered = True
+                logger.info(
+                    "TAPNext cancelled mid-clip at frame %s",
+                    chunk_start,
+                )
+                break
             pred_tracks = torch.from_numpy(tracks[None, ...]).to(self.device)
             pred_visibility = torch.from_numpy(visibility[None, ...]).to(self.device)
             local_frame_indices = [

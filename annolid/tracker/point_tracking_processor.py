@@ -8,6 +8,7 @@ import numpy as np
 import torch
 
 from annolid.tracker.base import BasePointTracker
+from annolid.utils.cancellation import InferenceCancelledError
 from annolid.utils.logger import logger
 
 
@@ -59,6 +60,10 @@ class BasePointTrackingProcessor(BasePointTracker):
             start_frame,
             end_frame,
         )
+        if kwargs.get("stop_event") is not None:
+            self._stop_event = kwargs["stop_event"]
+        if kwargs.get("pred_worker") is not None and self.pred_worker is None:
+            self.pred_worker = kwargs["pred_worker"]
         self.start_frame = start_frame
         self.end_frame = end_frame
         self.queries = self.load_queries()
@@ -70,19 +75,25 @@ class BasePointTrackingProcessor(BasePointTracker):
             )
             return self._stop_message(start_frame)
 
-        if self.is_online:
-            return self._process_video_online(
-                grid_size=grid_size,
-                grid_query_frame=grid_query_frame,
-                need_visualize=need_visualize,
-            )
+        try:
+            if self.is_online:
+                return self._process_video_online(
+                    grid_size=grid_size,
+                    grid_query_frame=grid_query_frame,
+                    need_visualize=need_visualize,
+                )
 
-        pred_tracks, pred_visibility, video_source = self._process_video_bidirectional(
-            start_frame=start_frame,
-            end_frame=end_frame,
-            grid_size=grid_size,
-            grid_query_frame=grid_query_frame,
-        )
+            pred_tracks, pred_visibility, video_source = (
+                self._process_video_bidirectional(
+                    start_frame=start_frame,
+                    end_frame=end_frame,
+                    grid_size=grid_size,
+                    grid_query_frame=grid_query_frame,
+                )
+            )
+        except InferenceCancelledError:
+            self._stop_triggered = True
+            return self._stop_message(start_frame)
         if self._stop_triggered or pred_tracks is None:
             return self._stop_message(start_frame)
         return self._finalize_tracking(

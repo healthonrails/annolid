@@ -725,6 +725,7 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
 
         worker = FlexibleWorker(train_task)
         thread = QtCore.QThread(self)
+        thread.setStackSize(8 * 1024 * 1024)
         worker.moveToThread(thread)
         self._active_jobs.append((thread, worker))
 

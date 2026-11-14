@@ -11,6 +11,7 @@ import torch
 from annolid.annotation.keypoints import save_labels
 from annolid.data.videos import CV2Video
 from annolid.gui.shape import Shape
+from annolid.utils.cancellation import is_stop_requested
 from annolid.utils.files import (
     find_manual_labeled_json_files,
     get_frame_number_from_json,
@@ -38,6 +39,7 @@ class BasePointTracker(ABC):
         self.manual_json_path = Path(json_path) if json_path else None
         self._should_stop_callback = should_stop or (lambda: False)
         self.pred_worker = None
+        self._stop_event = kwargs.get("stop_event")
         self._stop_triggered = False
 
         self.video_loader = CV2Video(self.video_path)
@@ -94,10 +96,27 @@ class BasePointTracker(ABC):
     def request_stop(self) -> None:
         """Request a cooperative stop."""
         self._stop_triggered = True
+        stop_event = self._resolve_stop_event()
+        if stop_event is not None and callable(getattr(stop_event, "set", None)):
+            try:
+                stop_event.set()
+            except Exception:
+                pass
+
+    def _resolve_stop_event(self) -> Any:
+        stop_event = getattr(self, "_stop_event", None)
+        if stop_event is not None:
+            return stop_event
+        pred_worker = getattr(self, "pred_worker", None)
+        if pred_worker is not None:
+            return getattr(pred_worker, "stop_event", None)
+        return None
 
     def _should_stop(self) -> bool:
         """Check if processing should be terminated."""
         if self._stop_triggered:
+            return True
+        if is_stop_requested(self._resolve_stop_event()):
             return True
         if self._should_stop_callback():
             return True

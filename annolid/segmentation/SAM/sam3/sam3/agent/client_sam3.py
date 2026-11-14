@@ -10,20 +10,33 @@ from PIL import Image
 from sam3.model.box_ops import box_xyxy_to_xywh
 from sam3.perflib.masks_ops import rle_encode
 
+from annolid.utils.cancellation import (
+    InferenceCancelledError,
+    is_stop_requested,
+    torch_cancellable_forward,
+)
 from .helpers.mask_overlap_removal import remove_overlapping_masks
 from .render import visualize
 
 
-def sam3_inference(processor, image_path, text_prompt):
+def sam3_inference(processor, image_path, text_prompt, *, stop_event=None):
     """Run SAM 3 image inference with text prompts and format the outputs"""
+    if is_stop_requested(stop_event):
+        raise InferenceCancelledError("SAM3 agent image grounding cancelled.")
     image = Image.open(image_path)
     orig_img_w, orig_img_h = image.size
 
     # model inference
-    inference_state = processor.set_image(image)
-    inference_state = processor.set_text_prompt(
-        state=inference_state, prompt=text_prompt
-    )
+    model = getattr(processor, "model", None)
+    with torch_cancellable_forward(model, stop_event):
+        inference_state = processor.set_image(image)
+        if is_stop_requested(stop_event):
+            raise InferenceCancelledError("SAM3 agent image grounding cancelled.")
+        inference_state = processor.set_text_prompt(
+            state=inference_state, prompt=text_prompt
+        )
+    if is_stop_requested(stop_event):
+        raise InferenceCancelledError("SAM3 agent image grounding cancelled.")
 
     # format and assemble outputs
     pred_boxes_xyxy = torch.stack(
@@ -53,11 +66,15 @@ def call_sam_service(
     image_path: str,
     text_prompt: str,
     output_folder_path: str = "sam3_output",
+    *,
+    stop_event=None,
 ):
     """
     Loads an image, sends it with a text prompt to the service,
     saves the results, and renders the visualization.
     """
+    if is_stop_requested(stop_event):
+        raise InferenceCancelledError("SAM3 agent image grounding cancelled.")
     print(f"📞 Loading image '{image_path}' and sending with prompt '{text_prompt}'...")
 
     text_prompt_for_save_path = (
@@ -80,7 +97,19 @@ def call_sam_service(
 
     try:
         # Send the image and text prompt as a multipart/form-data request
-        serialized_response = sam3_inference(sam3_processor, image_path, text_prompt)
+        try:
+            serialized_response = sam3_inference(
+                sam3_processor,
+                image_path,
+                text_prompt,
+                stop_event=stop_event,
+            )
+        except TypeError as exc:
+            if "stop_event" not in str(exc):
+                raise
+            serialized_response = sam3_inference(
+                sam3_processor, image_path, text_prompt
+            )
 
         # 1. Prepare the response dictionary
         serialized_response = remove_overlapping_masks(serialized_response)
@@ -127,13 +156,21 @@ def call_sam_service(
             json.dump(serialized_response, f, indent=4)
         print(f"✅ Raw JSON response saved to '{output_json_path}'")
 
+        if is_stop_requested(stop_event):
+            raise InferenceCancelledError("SAM3 agent image grounding cancelled.")
         # 4. Render and save visualizations on the image and save it in the SAM3 output folder
         print("🔍 Rendering visualizations on the image ...")
         viz_image = visualize(serialized_response)
         os.makedirs(os.path.dirname(output_image_path), exist_ok=True)
         viz_image.save(output_image_path)
         print("✅ Saved visualization at:", output_image_path)
+    except InferenceCancelledError:
+        raise
     except Exception as e:
+        if is_stop_requested(stop_event):
+            raise InferenceCancelledError(
+                "SAM3 agent image grounding cancelled."
+            ) from e
         raise RuntimeError(
             f"SAM3 image grounding failed for prompt '{text_prompt}' on '{image_path}': {e}"
         ) from e

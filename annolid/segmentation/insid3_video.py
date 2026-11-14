@@ -30,6 +30,11 @@ from annolid.segmentation.crf_refinement import (
 )
 from annolid.tracking.annotation_adapter import AnnotationAdapter
 from annolid.tracking.domain import InstanceRegistry
+from annolid.utils.cancellation import (
+    InferenceCancelledError,
+    is_stop_requested,
+    torch_cancellable_forward,
+)
 from annolid.utils.logger import logger
 
 
@@ -682,6 +687,8 @@ class Insid3VideoProcessor:
         "save_video_with_color_mask",
         "is_cutie",
         "is_new_segment",
+        "pred_worker",
+        "stop_event",
     }
 
     def __init__(self, video_path: str, *args: Any, **kwargs: Any) -> None:
@@ -693,7 +700,8 @@ class Insid3VideoProcessor:
             kwargs.get("results_folder") or Path(video_path).with_suffix("")
         )
         self.results_folder.mkdir(parents=True, exist_ok=True)
-        self.pred_worker: Optional[Any] = None
+        self.pred_worker: Optional[Any] = kwargs.get("pred_worker")
+        self._stop_event: Optional[Any] = kwargs.get("stop_event")
         runtime = {
             key: value
             for key, value in kwargs.items()
@@ -782,6 +790,10 @@ class Insid3VideoProcessor:
 
     def process_video_frames(self, *args: Any, **kwargs: Any) -> str:
         _ = args
+        if kwargs.get("stop_event") is not None:
+            self._stop_event = kwargs["stop_event"]
+        if kwargs.get("pred_worker") is not None and self.pred_worker is None:
+            self.pred_worker = kwargs["pred_worker"]
         if self._should_stop():
             return "INSID3 video segmentation stopped by user."
 
@@ -801,56 +813,66 @@ class Insid3VideoProcessor:
         if not masks:
             return "No polygon seed masks found for INSID3 video segmentation."
 
-        seed_image = self._frame_image(seed_frame)
-        references = self.segmenter.build_references(seed_image, masks)
-        if not references:
-            return "No valid INSID3 reference masks after patch-grid downsampling."
+        stop_event = self._resolve_stop_event()
+        backbone = getattr(self.segmenter.extractor, "model", None)
+        try:
+            seed_image = self._frame_image(seed_frame)
+            with torch_cancellable_forward(backbone, stop_event):
+                references = self.segmenter.build_references(seed_image, masks)
+            if not references:
+                return "No valid INSID3 reference masks after patch-grid downsampling."
 
-        start_frame = max(0, int(kwargs.get("start_frame", seed_frame)))
-        end_arg = kwargs.get("end_frame", self.num_frames - 1)
-        end_frame = min(self.num_frames - 1, int(end_arg))
-        if end_frame < start_frame:
-            return "No frames selected for INSID3 video segmentation."
+            start_frame = max(0, int(kwargs.get("start_frame", seed_frame)))
+            end_arg = kwargs.get("end_frame", self.num_frames - 1)
+            end_frame = min(self.num_frames - 1, int(end_arg))
+            if end_frame < start_frame:
+                return "No frames selected for INSID3 video segmentation."
 
-        total = max(1, end_frame - start_frame + 1)
-        output_size = (
-            int(self.video_loader.get_height()),
-            int(self.video_loader.get_width()),
-        )
-        written = 0
-        prior_masks: Dict[str, np.ndarray] = {
-            label: np.asarray(mask, dtype=bool).copy() for label, mask in masks.items()
-        }
-        for offset, frame_number in enumerate(
-            range(start_frame, end_frame + 1), start=1
-        ):
-            if self._should_stop():
-                return "INSID3 video segmentation stopped by user."
-            frame_image = self._frame_image(frame_number)
-            masks_by_label = self.segmenter.segment(
-                frame_image,
-                references,
-                output_size=output_size,
-                priors=prior_masks,
+            total = max(1, end_frame - start_frame + 1)
+            output_size = (
+                int(self.video_loader.get_height()),
+                int(self.video_loader.get_width()),
             )
-            frame_registry = InstanceRegistry()
-            for label, mask in masks_by_label.items():
-                polygon = self._mask_to_polygon(mask)
-                if polygon:
-                    frame_registry.ensure_instance(label).set_mask(
-                        bitmap=mask,
-                        polygon=polygon,
+            written = 0
+            prior_masks: Dict[str, np.ndarray] = {
+                label: np.asarray(mask, dtype=bool).copy()
+                for label, mask in masks.items()
+            }
+            for offset, frame_number in enumerate(
+                range(start_frame, end_frame + 1), start=1
+            ):
+                if self._should_stop():
+                    return "INSID3 video segmentation stopped by user."
+                frame_image = self._frame_image(frame_number)
+                with torch_cancellable_forward(backbone, stop_event):
+                    masks_by_label = self.segmenter.segment(
+                        frame_image,
+                        references,
+                        output_size=output_size,
+                        priors=prior_masks,
                     )
-            adapter.write_annotation(
-                frame_number=frame_number,
-                registry=frame_registry,
-                output_dir=self.results_folder,
-            )
-            for label, mask in masks_by_label.items():
-                if np.asarray(mask).any():
-                    prior_masks[label] = np.asarray(mask, dtype=bool).copy()
-            written += 1
-            self._report_progress(offset, total)
+                if self._should_stop():
+                    return "INSID3 video segmentation stopped by user."
+                frame_registry = InstanceRegistry()
+                for label, mask in masks_by_label.items():
+                    polygon = self._mask_to_polygon(mask)
+                    if polygon:
+                        frame_registry.ensure_instance(label).set_mask(
+                            bitmap=mask,
+                            polygon=polygon,
+                        )
+                adapter.write_annotation(
+                    frame_number=frame_number,
+                    registry=frame_registry,
+                    output_dir=self.results_folder,
+                )
+                for label, mask in masks_by_label.items():
+                    if np.asarray(mask).any():
+                        prior_masks[label] = np.asarray(mask, dtype=bool).copy()
+                written += 1
+                self._report_progress(offset, total)
+        except InferenceCancelledError:
+            return "INSID3 video segmentation stopped by user."
 
         return f"INSID3 video segmentation completed for {written} frames."
 
@@ -901,7 +923,18 @@ class Insid3VideoProcessor:
         elif hasattr(self.pred_worker, "progress_signal"):
             self.pred_worker.progress_signal.emit(progress)
 
+    def _resolve_stop_event(self) -> Any:
+        stop_event = getattr(self, "_stop_event", None)
+        if stop_event is not None:
+            return stop_event
+        pred_worker = getattr(self, "pred_worker", None)
+        if pred_worker is not None:
+            return getattr(pred_worker, "stop_event", None)
+        return None
+
     def _should_stop(self) -> bool:
+        if is_stop_requested(self._resolve_stop_event()):
+            return True
         return bool(
             self.pred_worker is not None
             and hasattr(self.pred_worker, "is_stopped")

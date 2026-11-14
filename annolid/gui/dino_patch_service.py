@@ -215,6 +215,7 @@ class DinoPatchSimilarityService(QtCore.QObject):
             return False
 
         self._thread = QtCore.QThread()
+        self._thread.setStackSize(8 * 1024 * 1024)
         self._worker = _DinoPatchWorker(request)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
@@ -342,6 +343,7 @@ class DinoPCAMapService(QtCore.QObject):
             return False
 
         self._thread = QtCore.QThread()
+        self._thread.setStackSize(8 * 1024 * 1024)
         self._worker = _DinoPCAWorker(request)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)

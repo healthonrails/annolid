@@ -165,6 +165,7 @@ class DinoFrameSearchService(QtCore.QObject):
         super().__init__(parent)
         self._settings = getattr(parent, "settings", None)
         self._thread = QtCore.QThread(self)
+        self._thread.setStackSize(8 * 1024 * 1024)
         self._worker = _DinoFrameSearchWorker()
         self._worker.moveToThread(self._thread)
         self._request_search.connect(self._worker.search)

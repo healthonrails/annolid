@@ -1105,6 +1105,7 @@ class InferenceProgressPage(QtWidgets.QWizardPage):
         self._running = True
 
         self._worker_thread = QtCore.QThread(self)
+        self._worker_thread.setStackSize(8 * 1024 * 1024)
         self._worker = InferenceWorker(config)
         self._worker.moveToThread(self._worker_thread)
 

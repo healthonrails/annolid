@@ -334,6 +334,7 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         self.caption_widget = None
 
         self.frame_worker = QtCore.QThread()
+        self.frame_worker.setStackSize(8 * 1024 * 1024)
         self.frame_loader = LoadFrameThread()
         self.seg_pred_thread = QtCore.QThread()
         self.seg_pred_thread.setStackSize(8 * 1024 * 1024)

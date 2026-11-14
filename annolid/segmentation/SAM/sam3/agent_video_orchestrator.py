@@ -304,27 +304,51 @@ def _run_agent_on_frame(
     frame_path: Path,
     agent_cfg: AgentConfig,
     send_request=None,
+    *,
+    stop_event: Optional[Any] = None,
 ) -> Tuple[List[List[float]], List[float]]:
     """
     Run the SAM3 Agent on a single frame image and return filtered boxes/scores.
     """
     from .sam3.agent.agent_core import agent_inference
 
+    if is_stop_requested(stop_event):
+        raise Sam3StopRequested("Stopped by user.")
     if send_request is None:
-        send_request = _build_send_generate_request(agent_cfg)[0]
+        send_request = _build_send_generate_request(
+            agent_cfg,
+            stop_event=stop_event,
+        )[0]
 
     try:
-        _, outputs, _ = agent_inference(
-            img_path=str(frame_path),
-            initial_text_prompt=agent_cfg.prompt,
-            debug=agent_cfg.debug,
-            max_generations=agent_cfg.max_generations,
-            send_generate_request=send_request,
-            output_dir=agent_cfg.output_dir,
-        )
-    except (Sam3StopRequested, InferenceCancelledError):
+        try:
+            _, outputs, _ = agent_inference(
+                img_path=str(frame_path),
+                initial_text_prompt=agent_cfg.prompt,
+                debug=agent_cfg.debug,
+                max_generations=agent_cfg.max_generations,
+                send_generate_request=send_request,
+                output_dir=agent_cfg.output_dir,
+                stop_event=stop_event,
+            )
+        except TypeError as exc:
+            if "stop_event" not in str(exc):
+                raise
+            _, outputs, _ = agent_inference(
+                img_path=str(frame_path),
+                initial_text_prompt=agent_cfg.prompt,
+                debug=agent_cfg.debug,
+                max_generations=agent_cfg.max_generations,
+                send_generate_request=send_request,
+                output_dir=agent_cfg.output_dir,
+            )
+    except Sam3StopRequested:
         raise
+    except InferenceCancelledError as exc:
+        raise Sam3StopRequested("Stopped by user.") from exc
     except Exception as exc:
+        if is_stop_requested(stop_event):
+            raise Sam3StopRequested("Stopped by user.") from exc
         # Normalize assertion/missing tool responses into a clean RuntimeError for caller fallback.
         raise RuntimeError(
             f"Agent inference failed on {frame_path}: {exc} "
@@ -337,17 +361,35 @@ def _call_run_agent_on_frame(
     frame_path: Path,
     agent_cfg: AgentConfig,
     send_request,
+    *,
+    stop_event: Optional[Any] = None,
 ) -> Tuple[List[List[float]], List[float]]:
     try:
-        return _run_agent_on_frame(frame_path, agent_cfg, send_request)
-    except TypeError as exc:
-        message = str(exc)
-        if (
-            "positional arguments" not in message
-            and "positional argument" not in message
-        ):
-            raise
-        return _run_agent_on_frame(frame_path, agent_cfg)
+        try:
+            if stop_event is not None:
+                return _run_agent_on_frame(
+                    frame_path,
+                    agent_cfg,
+                    send_request,
+                    stop_event=stop_event,
+                )
+            return _run_agent_on_frame(frame_path, agent_cfg, send_request)
+        except TypeError as exc:
+            message = str(exc)
+            if "stop_event" in message:
+                try:
+                    return _run_agent_on_frame(frame_path, agent_cfg, send_request)
+                except TypeError as inner_exc:
+                    message = str(inner_exc)
+                    exc = inner_exc
+            if (
+                "positional arguments" not in message
+                and "positional argument" not in message
+            ):
+                raise exc
+            return _run_agent_on_frame(frame_path, agent_cfg)
+    except InferenceCancelledError as exc:
+        raise Sam3StopRequested("Stopped by user.") from exc
 
 
 def _build_send_generate_request(
@@ -482,6 +524,7 @@ def run_agent_seeded_sam3_video(
                     frame_path,
                     agent_cfg,
                     send_request,
+                    stop_event=stop_event,
                 )
                 if is_stop_requested(stop_event):
                     raise Sam3StopRequested("Stopped by user.")
@@ -600,6 +643,7 @@ def run_agent_seeded_sam3_video(
                                 refresh_path,
                                 agent_cfg,
                                 send_request,
+                                stop_event=stop_event,
                             )
                         finally:
                             _safe_unlink(refresh_path)

@@ -5,6 +5,10 @@ import numpy as np
 import torch
 
 from annolid.tracker.point_tracking_processor import BasePointTrackingProcessor
+from annolid.utils.cancellation import (
+    InferenceCancelledError,
+    torch_cancellable_forward,
+)
 from annolid.utils.logger import logger
 from typing import Optional, Callable, Any
 
@@ -179,8 +183,12 @@ class CoTrackerProcessor(BasePointTrackingProcessor):
         online: bool,
         **kwargs: Any,
     ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+        stop_event = self._resolve_stop_event()
         try:
-            output = model(video, **kwargs)
+            with torch_cancellable_forward(model, stop_event):
+                output = model(video, **kwargs)
+        except InferenceCancelledError:
+            raise
         except ValueError as exc:
             if kwargs.get("backward_tracking") and "too many values" in str(exc):
                 retry_kwargs = dict(kwargs)
@@ -189,7 +197,8 @@ class CoTrackerProcessor(BasePointTrackingProcessor):
                     "CoTracker backward tracking failed because the upstream "
                     "model returned extra outputs; retrying forward-only tracking."
                 )
-                output = model(video, **retry_kwargs)
+                with torch_cancellable_forward(model, stop_event):
+                    output = model(video, **retry_kwargs)
             else:
                 raise
         return self._normalize_model_output(output, online=online)
@@ -272,9 +281,13 @@ class CoTrackerProcessor(BasePointTrackingProcessor):
         # Phase 1: Process first window with bidirectional mode to get all early frames
         first_window_end = min(self.start_frame + min_window_size - 1, actual_end)
 
-        pred_tracks, pred_visibility = self._process_initial_window_bidirectional(
-            self.start_frame, first_window_end, grid_size, grid_query_frame
-        )
+        try:
+            pred_tracks, pred_visibility = self._process_initial_window_bidirectional(
+                self.start_frame, first_window_end, grid_size, grid_query_frame
+            )
+        except InferenceCancelledError:
+            self._stop_triggered = True
+            return self._stop_message(self.start_frame)
 
         if pred_tracks is None:
             return self._stop_message(self.start_frame)
@@ -294,7 +307,10 @@ class CoTrackerProcessor(BasePointTrackingProcessor):
             last_saved_frame,
         )
 
-        if self._should_stop() or last_saved_frame >= actual_end:
+        if self._should_stop():
+            self._stop_triggered = True
+            return self._stop_message(last_saved_frame)
+        if last_saved_frame >= actual_end:
             return f"Completed. Saved frames {self.start_frame}-{last_saved_frame}"
 
         # Phase 2: Continue with online mode for remaining frames
@@ -330,13 +346,18 @@ class CoTrackerProcessor(BasePointTrackingProcessor):
                 len(window_frames) >= min_window_size
                 and (i - last_saved_frame) % step_size == 0
             ):
-                pred_tracks, pred_visibility = self.process_step(
-                    window_frames,
-                    is_first_step,
-                    grid_size,
-                    grid_query_frame,
-                    chunk_start_frame=i - min_window_size + 1,
-                )
+                try:
+                    pred_tracks, pred_visibility = self.process_step(
+                        window_frames,
+                        is_first_step,
+                        grid_size,
+                        grid_query_frame,
+                        chunk_start_frame=i - min_window_size + 1,
+                    )
+                except InferenceCancelledError:
+                    self._stop_triggered = True
+                    logger.info("CoTracker cancelled mid-step at frame %s", i)
+                    break
 
                 if pred_tracks is not None:
                     num_local_frames = int(pred_tracks.shape[1])
@@ -358,17 +379,27 @@ class CoTrackerProcessor(BasePointTrackingProcessor):
             if len(window_frames) > min_window_size:
                 window_frames = window_frames[-min_window_size:]
 
-        # Final flush for remaining frames
-        if last_saved_frame < frame_idx and len(window_frames) > 0:
-            pred_tracks, pred_visibility = self.process_step(
-                window_frames,
-                is_first_step,
-                grid_size,
-                grid_query_frame,
-                chunk_start_frame=frame_idx
-                - min(len(window_frames), min_window_size)
-                + 1,
-            )
+        # Final flush for remaining frames when not stopped
+        if (
+            not self._stop_triggered
+            and not self._should_stop()
+            and last_saved_frame < frame_idx
+            and len(window_frames) > 0
+        ):
+            try:
+                pred_tracks, pred_visibility = self.process_step(
+                    window_frames,
+                    is_first_step,
+                    grid_size,
+                    grid_query_frame,
+                    chunk_start_frame=frame_idx
+                    - min(len(window_frames), min_window_size)
+                    + 1,
+                )
+            except InferenceCancelledError:
+                self._stop_triggered = True
+                pred_tracks = None
+                pred_visibility = None
             if pred_tracks is not None:
                 num_local_frames = int(pred_tracks.shape[1])
                 chunk_start_frame = max(
@@ -383,6 +414,10 @@ class CoTrackerProcessor(BasePointTrackingProcessor):
                         local_frame_indices=range(local_start, num_local_frames),
                     )
                     last_saved_frame = chunk_start_frame + num_local_frames - 1
+
+        if self._stop_triggered or self._should_stop():
+            self._stop_triggered = True
+            return self._stop_message(last_saved_frame)
 
         message = f"Completed. Saved frames {self.start_frame}-{last_saved_frame}"
         logger.info(message)
@@ -404,6 +439,8 @@ class CoTrackerProcessor(BasePointTrackingProcessor):
         # Use the offline model for bidirectional processing
         try:
             offline_model = self._load_hub_model("cotracker3_offline")
+        except InferenceCancelledError:
+            raise
         except Exception:
             # Fall back to using online model with is_first_step=True
             logger.warning(
@@ -464,18 +501,22 @@ class CoTrackerProcessor(BasePointTrackingProcessor):
             chunk_start_frame=start_frame,
             chunk_num_frames=video.shape[1],
         )
-        pred_tracks, pred_visibility = self._call_cotracker_model(
-            model,
-            video,
-            online=False,
-            grid_size=grid_size,
-            queries=queries,
-            backward_tracking=self._needs_backward_tracking(
-                queries,
-                grid_query_frame=grid_query_frame,
-            ),
-            segm_mask=self.mask,
-        )
+        try:
+            pred_tracks, pred_visibility = self._call_cotracker_model(
+                model,
+                video,
+                online=False,
+                grid_size=grid_size,
+                queries=queries,
+                backward_tracking=self._needs_backward_tracking(
+                    queries,
+                    grid_query_frame=grid_query_frame,
+                ),
+                segm_mask=self.mask,
+            )
+        except InferenceCancelledError:
+            self._stop_triggered = True
+            return None, None, None
         return pred_tracks, pred_visibility, video
 
 

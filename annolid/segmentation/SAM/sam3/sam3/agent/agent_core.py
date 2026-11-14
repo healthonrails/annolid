@@ -12,6 +12,7 @@ from typing import Callable, Optional
 import cv2
 from PIL import Image
 
+from annolid.utils.cancellation import InferenceCancelledError, is_stop_requested
 from .client_llm import send_generate_request
 from .render import visualize
 
@@ -74,7 +75,7 @@ def _get_default_sam3_processor():
     return _DEFAULT_SAM3_PROCESSOR
 
 
-def _build_default_call_sam_service() -> Callable[..., str]:
+def _build_default_call_sam_service(*, stop_event=None) -> Callable[..., str]:
     from .client_sam3 import call_sam_service as _call_sam_service
 
     def _bound_call_sam_service(
@@ -82,15 +83,66 @@ def _build_default_call_sam_service() -> Callable[..., str]:
         image_path: str,
         text_prompt: str,
         output_folder_path: str,
+        stop_event: Optional[object] = stop_event,
     ) -> str:
-        return _call_sam_service(
-            _get_default_sam3_processor(),
+        processor = _get_default_sam3_processor()
+        if stop_event is None:
+            return _call_sam_service(
+                processor,
+                image_path=image_path,
+                text_prompt=text_prompt,
+                output_folder_path=output_folder_path,
+            )
+        try:
+            return _call_sam_service(
+                processor,
+                image_path=image_path,
+                text_prompt=text_prompt,
+                output_folder_path=output_folder_path,
+                stop_event=stop_event,
+            )
+        except TypeError as exc:
+            if "stop_event" not in str(exc):
+                raise
+            return _call_sam_service(
+                processor,
+                image_path=image_path,
+                text_prompt=text_prompt,
+                output_folder_path=output_folder_path,
+            )
+
+    return _bound_call_sam_service
+
+
+def _invoke_call_sam_service(
+    call_sam_service: Callable[..., str],
+    *,
+    image_path: str,
+    text_prompt: str,
+    output_folder_path: str,
+    stop_event=None,
+) -> str:
+    if stop_event is None:
+        return call_sam_service(
             image_path=image_path,
             text_prompt=text_prompt,
             output_folder_path=output_folder_path,
         )
-
-    return _bound_call_sam_service
+    try:
+        return call_sam_service(
+            image_path=image_path,
+            text_prompt=text_prompt,
+            output_folder_path=output_folder_path,
+            stop_event=stop_event,
+        )
+    except TypeError as exc:
+        if "stop_event" not in str(exc):
+            raise
+        return call_sam_service(
+            image_path=image_path,
+            text_prompt=text_prompt,
+            output_folder_path=output_folder_path,
+        )
 
 
 def _request_agent_turn(send_generate_request, messages, *, retry_hint: str = ""):
@@ -226,6 +278,8 @@ def agent_inference(
     call_sam_service=None,
     max_generations: int = 100,
     output_dir: Optional[str] = None,
+    *,
+    stop_event=None,
 ):
     """
     Given a text prompt and an image, this tool will perform all aspects of agentic problem solving,
@@ -237,6 +291,8 @@ def agent_inference(
         debug: Whether to enable debug mode
         max_generations: Maximum number of send_generate_request calls allowed (default: 100)
     """
+    if is_stop_requested(stop_event):
+        raise InferenceCancelledError("SAM3 agent inference cancelled.")
     # setup dir
     temp_output_ctx = None
     if output_dir in (None, ""):
@@ -265,7 +321,7 @@ def agent_inference(
         generation_count = 0  # Counter for number of send_generate_request calls
 
         if call_sam_service is None:
-            call_sam_service = _build_default_call_sam_service()
+            call_sam_service = _build_default_call_sam_service(stop_event=stop_event)
 
         # debug setup
         debug_folder_path = None
@@ -285,17 +341,17 @@ def agent_inference(
 
         # Construct the initial message list
         messages = [
-        {"role": "system", "content": system_prompt},
-        {
-            "role": "user",
-            "content": [
-                {"type": "image", "image": img_path},
-                {
-                    "type": "text",
-                    "text": f"The above image is the raw input image. The initial user input query is: '{initial_text_prompt}'.",
-                },
-            ],
-        },
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": img_path},
+                    {
+                        "type": "text",
+                        "text": f"The above image is the raw input image. The initial user input query is: '{initial_text_prompt}'.",
+                    },
+                ],
+            },
         ]
         print(f"> Text prompt: {initial_text_prompt}")
         print(f"> Image path: {img_path}")
@@ -315,6 +371,8 @@ def agent_inference(
             f"\n>>> MLLM Response [start]\n{generated_text}\n<<< MLLM Response [end]\n"
         )
         while generated_text is not None:
+            if is_stop_requested(stop_event):
+                raise InferenceCancelledError("SAM3 agent inference cancelled.")
             save_debug_messages(messages, debug, debug_folder_path, debug_jsonl_path)
             assert "<tool>" in generated_text, (
                 f"Generated text does not contain <tool> tag: {generated_text}"
@@ -358,17 +416,21 @@ def agent_inference(
                     messages.append(
                         {
                             "role": "user",
-                            "content": [{"type": "text", "text": duplicate_prompt_message}],
+                            "content": [
+                                {"type": "text", "text": duplicate_prompt_message}
+                            ],
                         }
                     )
                 else:
                     # Add the text_prompt to the set of used prompts
                     USED_TEXT_PROMPTS.add(current_text_prompt)
                     LATEST_SAM3_TEXT_PROMPT = current_text_prompt
-                    PATH_TO_LATEST_OUTPUT_JSON = call_sam_service(
+                    PATH_TO_LATEST_OUTPUT_JSON = _invoke_call_sam_service(
+                        call_sam_service,
                         image_path=img_path,
                         text_prompt=current_text_prompt,
                         output_folder_path=sam_output_dir,
+                        stop_event=stop_event,
                     )
                     sam3_outputs = json.load(open(PATH_TO_LATEST_OUTPUT_JSON, "r"))
                     sam3_output_image_path = sam3_outputs["output_image_path"]
@@ -381,7 +443,9 @@ def agent_inference(
                         }
                     )
                     if num_masks == 0:
-                        print("❌ No masks generated by SAM3, reporting no mask to Qwen.")
+                        print(
+                            "❌ No masks generated by SAM3, reporting no mask to Qwen."
+                        )
                         sam3_output_text_message = f"The segment_phrase tool did not generate any masks for the text_prompt '{current_text_prompt}'. Now, please call the segment_phrase tool again with a different, perhaps more general, or more creative simple noun phrase text_prompt, while adhering to all the rules stated in the system prompt. Please be reminded that the original user query was '{initial_text_prompt}'."
                         messages.append(
                             {
@@ -402,7 +466,9 @@ def agent_inference(
                                 ],
                             }
                         )
-                    print("\n\n>>> sam3_output_text_message:\n", sam3_output_text_message)
+                    print(
+                        "\n\n>>> sam3_output_text_message:\n", sam3_output_text_message
+                    )
 
             elif tool_call["name"] == "examine_each_mask":
                 print("🔍 Calling examine_each_mask tool...")
@@ -431,14 +497,20 @@ def agent_inference(
 
                 # MLLM check the mask one by one
                 for i in range(num_masks):
+                    if is_stop_requested(stop_event):
+                        raise InferenceCancelledError("SAM3 agent inference cancelled.")
                     print(f"🔍 Checking mask {i + 1}/{num_masks}...")
-                    image_w_mask_i, image_w_zoomed_in_mask_i = visualize(current_outputs, i)
+                    image_w_mask_i, image_w_zoomed_in_mask_i = visualize(
+                        current_outputs, i
+                    )
 
                     image_w_zoomed_in_mask_i_path = os.path.join(
-                        sam_output_dir, rf"{LATEST_SAM3_TEXT_PROMPT}.png".replace("/", "_")
+                        sam_output_dir,
+                        rf"{LATEST_SAM3_TEXT_PROMPT}.png".replace("/", "_"),
                     ).replace(".png", f"_zoom_in_mask_{i + 1}.png")
                     image_w_mask_i_path = os.path.join(
-                        sam_output_dir, rf"{LATEST_SAM3_TEXT_PROMPT}.png".replace("/", "_")
+                        sam_output_dir,
+                        rf"{LATEST_SAM3_TEXT_PROMPT}.png".replace("/", "_"),
                     ).replace(".png", f"_selected_mask_{i + 1}.png")
                     image_w_zoomed_in_mask_i.save(image_w_zoomed_in_mask_i_path)
                     image_w_mask_i.save(image_w_mask_i_path)
@@ -448,7 +520,7 @@ def agent_inference(
                         {
                             "role": "user",
                             "content": [
-                                {"type": "text", "text": f"The raw input image: "},
+                                {"type": "text", "text": "The raw input image: "},
                                 {"type": "image", "image": img_path},
                                 {
                                     "type": "text",
@@ -456,14 +528,17 @@ def agent_inference(
                                 },
                                 {
                                     "type": "text",
-                                    "text": f"Image with the predicted segmentation mask rendered on it: ",
+                                    "text": "Image with the predicted segmentation mask rendered on it: ",
                                 },
                                 {"type": "image", "image": image_w_mask_i_path},
                                 {
                                     "type": "text",
-                                    "text": f"Image with the zoomed-in mask: ",
+                                    "text": "Image with the zoomed-in mask: ",
                                 },
-                                {"type": "image", "image": image_w_zoomed_in_mask_i_path},
+                                {
+                                    "type": "image",
+                                    "image": image_w_zoomed_in_mask_i_path,
+                                },
                             ],
                         },
                     ]
@@ -483,11 +558,11 @@ def agent_inference(
                         .strip()
                     )
                     if "Accept" in verdict:
-                        assert not "Reject" in verdict
+                        assert "Reject" not in verdict
                         print(f"Mask {i + 1} accepted, keeping it in the outputs.")
                         masks_to_keep.append(i)
                     elif "Reject" in verdict:
-                        assert not "Accept" in verdict
+                        assert "Accept" not in verdict
                         print(f"Mask {i + 1} rejected, removing it from the outputs.")
                     else:
                         raise ValueError(
@@ -498,11 +573,15 @@ def agent_inference(
                     "original_image_path": current_outputs["original_image_path"],
                     "orig_img_h": current_outputs["orig_img_h"],
                     "orig_img_w": current_outputs["orig_img_w"],
-                    "pred_boxes": [current_outputs["pred_boxes"][i] for i in masks_to_keep],
+                    "pred_boxes": [
+                        current_outputs["pred_boxes"][i] for i in masks_to_keep
+                    ],
                     "pred_scores": [
                         current_outputs["pred_scores"][i] for i in masks_to_keep
                     ],
-                    "pred_masks": [current_outputs["pred_masks"][i] for i in masks_to_keep],
+                    "pred_masks": [
+                        current_outputs["pred_masks"][i] for i in masks_to_keep
+                    ],
                 }
 
                 image_w_check_masks = visualize(updated_outputs)
@@ -562,7 +641,9 @@ def agent_inference(
                     PATH_TO_LATEST_OUTPUT_JSON = base_path.replace(
                         ".json", f"masks_{'_'.join(map(str, masks_to_keep))}.json"
                     )
-                json.dump(updated_outputs, open(PATH_TO_LATEST_OUTPUT_JSON, "w"), indent=4)
+                json.dump(
+                    updated_outputs, open(PATH_TO_LATEST_OUTPUT_JSON, "w"), indent=4
+                )
 
             elif tool_call["name"] == "select_masks_and_return":
                 print("🔍 Calling select_masks_and_return tool...")
@@ -573,7 +654,9 @@ def agent_inference(
 
                 # Keep only valid mask indices, remove duplicates, and preserve deterministic ascending order
                 available_masks = set(range(1, len(current_outputs["pred_masks"]) + 1))
-                masks_to_keep = sorted({i for i in masks_to_keep if i in available_masks})
+                masks_to_keep = sorted(
+                    {i for i in masks_to_keep if i in available_masks}
+                )
                 # Change this to a update message telling the model to try again along with information about errors made.
 
                 final_outputs = {

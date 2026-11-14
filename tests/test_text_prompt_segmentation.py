@@ -2689,3 +2689,346 @@ def test_sam2_propagation_stops_cooperatively_and_recording_widget_writes_bgr(
         assert written_frames[0][0, 0].tolist() == [30, 100, 220]
     finally:
         rec.close()
+
+
+def test_sam3_agent_local_pipeline_stopping_criteria_and_sam3_grounding_cancel(
+    tmp_path,
+) -> None:
+    import torch
+    from PIL import Image
+
+    from annolid.segmentation.SAM.sam3.agent_video_orchestrator import (
+        AgentConfig,
+        _run_agent_on_frame,
+    )
+    from annolid.segmentation.SAM.sam3.sam3.agent import client_llm, client_sam3
+    from annolid.segmentation.SAM.sam3.session import Sam3StopRequested
+    from annolid.utils.cancellation import InferenceCancelledError, ObservableStopEvent
+
+    # 1. Token-level StoppingCriteria aborts local HF pipeline generation on stop_event.
+    stop_ev = ObservableStopEvent()
+    criteria = client_llm.build_hf_stopping_criteria(stop_ev)
+    assert criteria is not None and len(criteria) == 1
+    assert criteria[0](None, None) is False
+
+    tokens_emitted = 0
+
+    class _FakePipe:
+        def __init__(self) -> None:
+            self.model = torch.nn.Sequential(
+                torch.nn.Linear(2, 2), torch.nn.Linear(2, 2)
+            )
+
+        def __call__(self, _messages, **kwargs):
+            nonlocal tokens_emitted
+            sc_list = kwargs.get("stopping_criteria")
+            assert sc_list is not None and len(sc_list) >= 1
+            for step in range(8):
+                tokens_emitted += 1
+                if step == 1:
+                    stop_ev.set()
+                if any(crit(None, None) for crit in sc_list):
+                    break
+            return [{"generated_text": [{"role": "assistant", "content": "partial"}]}]
+
+    fake_pipe = _FakePipe()
+    with pytest.raises(InferenceCancelledError):
+        client_llm.send_direct_request(
+            fake_pipe,
+            [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+            stop_event=stop_ev,
+        )
+    assert tokens_emitted == 2
+    assert all(len(m._forward_pre_hooks) == 0 for m in fake_pipe.model.modules())
+
+    # Normal uncancelled local pipeline call returns assistant text cleanly.
+    fresh_stop = ObservableStopEvent()
+    ok_text = client_llm.send_generate_request_orig(
+        lambda _msgs, **_kw: [
+            {"generated_text": [{"role": "assistant", "content": "<tool>{}</tool>"}]}
+        ],
+        [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+        stop_event=fresh_stop,
+    )
+    assert ok_text == "<tool>{}</tool>"
+
+    # 2. Local SAM3 grounding inside agent_inference aborts mid-backbone and raises
+    #    Sam3StopRequested rather than wrapping into RuntimeError.
+    img_path = tmp_path / "frame_000000000.png"
+    Image.fromarray(np.zeros((16, 16, 3), dtype=np.uint8)).save(img_path)
+
+    grounding_stop = ObservableStopEvent()
+    second_layer_ran = False
+
+    class _TriggerStopLayer(torch.nn.Module):
+        def forward(self, x):
+            grounding_stop.set()
+            return x
+
+    class _AfterStopLayer(torch.nn.Module):
+        def forward(self, x):
+            nonlocal second_layer_ran
+            second_layer_ran = True
+            return x
+
+    backbone = torch.nn.Sequential(_TriggerStopLayer(), _AfterStopLayer())
+
+    class _FakeSam3Processor:
+        def __init__(self) -> None:
+            self.model = backbone
+
+        def set_image(self, _img):
+            backbone(torch.zeros((1, 2), dtype=torch.float32))
+            return {}
+
+        def set_text_prompt(self, *, state, prompt):
+            _ = state, prompt
+            return {
+                "boxes": torch.zeros((0, 4)),
+                "masks": torch.zeros((0, 1, 4, 4)),
+                "scores": torch.zeros((0,)),
+            }
+
+    fake_proc = _FakeSam3Processor()
+    with pytest.raises(InferenceCancelledError):
+        client_sam3.call_sam_service(
+            fake_proc,
+            image_path=str(img_path),
+            text_prompt="mouse",
+            output_folder_path=str(tmp_path / "sam_out"),
+            stop_event=grounding_stop,
+        )
+    assert second_layer_ran is False
+    assert all(len(m._forward_pre_hooks) == 0 for m in backbone.modules())
+
+    # End-to-end _run_agent_on_frame translates mid-grounding InferenceCancelledError -> Sam3StopRequested.
+    orch_stop = ObservableStopEvent()
+
+    def _fake_send(_messages):
+        return '<tool>{"name": "segment_phrase", "parameters": {"text_prompt": "mouse"}}</tool>'
+
+    orig_default_proc = client_sam3
+    _ = orig_default_proc
+    from annolid.segmentation.SAM.sam3.sam3.agent import agent_core
+
+    prev_proc = agent_core._DEFAULT_SAM3_PROCESSOR
+
+    class _OrchCancelProc:
+        def __init__(self) -> None:
+            class _Step1(torch.nn.Module):
+                def forward(self, x):
+                    orch_stop.set()
+                    return x
+
+            self.model = torch.nn.Sequential(_Step1(), torch.nn.Identity())
+
+        def set_image(self, _img):
+            self.model(torch.zeros((1, 2), dtype=torch.float32))
+            return {}
+
+        def set_text_prompt(self, *, state, prompt):
+            return state
+
+    agent_core._DEFAULT_SAM3_PROCESSOR = _OrchCancelProc()
+    try:
+        with pytest.raises(Sam3StopRequested):
+            _run_agent_on_frame(
+                img_path,
+                AgentConfig(prompt="mouse", output_dir=str(tmp_path / "agent_dir")),
+                send_request=_fake_send,
+                stop_event=orch_stop,
+            )
+    finally:
+        agent_core._DEFAULT_SAM3_PROCESSOR = prev_proc
+
+
+def test_videomt_and_tapnext_onnx_abort_mid_clip_via_run_options_terminate(
+    tmp_path,
+) -> None:
+    import threading
+    import torch
+
+    from annolid.gui.workers import FlexibleWorker
+    from annolid.segmentation.videomt_onnx import VideoMTOnnxVideoProcessor
+    from annolid.tracker.tapnext_onnx.track import TapNextOnnxProcessor
+    from annolid.utils.cancellation import InferenceCancelledError
+
+    # 1. VideoMTOnnxVideoProcessor aborts in-flight session.run immediately via RunOptions.terminate.
+    entered_vmt = threading.Event()
+    terminated_vmt = threading.Event()
+
+    class _BlockingOrtSession:
+        def get_outputs(self):
+            return [
+                SimpleNamespace(name="pred_logits"),
+                SimpleNamespace(name="pred_masks"),
+            ]
+
+        def run(self, _out_names, _feed, run_options=None):
+            assert run_options is not None
+            entered_vmt.set()
+            for _ in range(200):
+                if getattr(run_options, "terminate", False):
+                    terminated_vmt.set()
+                    raise RuntimeError("Session::Run terminated by RunOptions")
+                threading.Event().wait(0.01)
+            return [
+                np.zeros((1, 4, 2), dtype=np.float32),
+                np.zeros((1, 4, 1, 8, 8), dtype=np.float32),
+            ]
+
+    vmt = VideoMTOnnxVideoProcessor.__new__(VideoMTOnnxVideoProcessor)
+    vmt._session = _BlockingOrtSession()
+    vmt._input_name = "pixel_values"
+    vmt._coreml_retry_done = False
+    vmt._providers = ["CPUExecutionProvider"]
+    vmt._stop_event = None
+    vmt.pred_worker = FlexibleWorker(lambda: None)
+
+    vmt_err: list[BaseException] = []
+
+    def _call_vmt() -> None:
+        try:
+            vmt._run_inference(np.zeros((1, 3, 8, 8), dtype=np.float32))
+        except BaseException as exc:
+            vmt_err.append(exc)
+
+    t1 = threading.Thread(target=_call_vmt)
+    t1.start()
+    assert entered_vmt.wait(timeout=2.0)
+    vmt.pred_worker.request_stop()
+    t1.join(timeout=2.0)
+    assert not t1.is_alive()
+    assert terminated_vmt.is_set()
+    assert len(vmt_err) == 1 and isinstance(vmt_err[0], InferenceCancelledError)
+
+    # 2. TapNextOnnxProcessor._process_video_online aborts mid-clip via RunOptions.terminate
+    #    and returns standardized partial stop message.
+    entered_tap = threading.Event()
+    terminated_tap = threading.Event()
+
+    class _TapOrtSession:
+        def run(self, _out_names, _feed, run_options=None):
+            assert run_options is not None
+            entered_tap.set()
+            for _ in range(200):
+                if getattr(run_options, "terminate", False):
+                    terminated_tap.set()
+                    raise RuntimeError("TAPNext RunOptions terminate")
+                threading.Event().wait(0.01)
+            raise AssertionError("Expected RunOptions.terminate cancellation")
+
+    tap = TapNextOnnxProcessor.__new__(TapNextOnnxProcessor)
+    tap._stop_triggered = False
+    tap._should_stop_callback = lambda: False
+    tap._stop_event = None
+    tap.pred_worker = FlexibleWorker(lambda: None)
+    tap._video_input = SimpleNamespace(name="video", shape=[1, 4, 8, 8, 3], rank=5)
+    tap._query_input = SimpleNamespace(name="query_points", shape=[1, 8, 3], rank=3)
+    tap._output_specs = [SimpleNamespace(name="tracks")]
+    tap._track_output = SimpleNamespace(name="tracks")
+    tap._visibility_output = None
+    tap._query_capacity = 8
+    tap._temporal_window = 4
+    tap._input_height = 8
+    tap._input_width = 8
+    tap.video_height = 8
+    tap.video_width = 8
+    tap.visibility_threshold = 0.0
+    tap.device = torch.device("cpu")
+    tap.start_frame = 0
+    tap.end_frame = 3
+    tap.queries = torch.tensor([[0.0, 2.0, 3.0]], dtype=torch.float32)
+    tap._ensure_model = lambda: _TapOrtSession()  # type: ignore[method-assign]
+    tap.video_loader = SimpleNamespace(
+        total_frames=lambda: 4,
+        load_frame=lambda _idx: np.zeros((8, 8, 3), dtype=np.uint8),
+    )
+
+    tap_result: list[str] = []
+    t2 = threading.Thread(
+        target=lambda: tap_result.append(tap._process_video_online(10, 0, False))
+    )
+    t2.start()
+    assert entered_tap.wait(timeout=2.0)
+    tap.pred_worker.request_stop()
+    t2.join(timeout=2.0)
+    assert not t2.is_alive()
+    assert terminated_tap.is_set()
+    assert tap_result == ["TapNextOnnxProcessor stopped by user#0"]
+
+
+def test_pytorch_video_and_point_trackers_abort_mid_module_forward(
+    tmp_path,
+) -> None:
+    import torch
+
+    from annolid.gui.workers import FlexibleWorker
+    from annolid.tracker.cotracker.track import CoTrackerProcessor
+
+    # CoTrackerProcessor aborts mid-forward via torch_cancellable_forward, cleans up hooks,
+    # skips final flush when stopped, and returns standardized stop message instead of "Completed".
+    worker = FlexibleWorker(lambda: None)
+    part_b_calls = 0
+
+    class _StepA(torch.nn.Module):
+        def forward(self, x):
+            return x
+
+    class _StepB(torch.nn.Module):
+        def forward(self, x):
+            nonlocal part_b_calls
+            part_b_calls += 1
+            return x
+
+    class _FakeCoTrackerModel(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.step = 2
+            self.part_a = _StepA()
+            self.part_b = _StepB()
+            self.calls = 0
+
+        def forward(self, video, **_kwargs):
+            self.calls += 1
+            h = self.part_a(video)
+            if self.calls >= 2:
+                worker.request_stop()
+            _ = self.part_b(h)
+            t = int(video.shape[1])
+            return (
+                torch.zeros((1, t, 1, 2), dtype=torch.float32),
+                torch.ones((1, t, 1), dtype=torch.bool),
+            )
+
+    fake_model = _FakeCoTrackerModel()
+    cot = CoTrackerProcessor.__new__(CoTrackerProcessor)
+    cot._stop_triggered = False
+    cot._should_stop_callback = lambda: False
+    cot._stop_event = None
+    cot.pred_worker = worker
+    cot.device = torch.device("cpu")
+    cot.start_frame = 0
+    cot.end_frame = 7
+    cot.queries = torch.tensor([[0.0, 4.0, 5.0]], dtype=torch.float32)
+    cot.point_labels = ["nose"]
+    cot._ensure_model = lambda: fake_model  # type: ignore[method-assign]
+    cot._load_hub_model = lambda _name: fake_model  # type: ignore[method-assign]
+    cot.video_loader = SimpleNamespace(
+        total_frames=lambda: 8,
+        get_frames_between=lambda s, e: np.zeros((e - s + 1, 8, 8, 3), dtype=np.uint8),
+        load_frame=lambda _idx: np.zeros((8, 8, 3), dtype=np.uint8),
+    )
+    saved_frames: list[int] = []
+    cot.save_frame_json = (  # type: ignore[method-assign]
+        lambda fn, _pts, _desc="": saved_frames.append(int(fn))
+    )
+
+    msg = cot._process_video_online(
+        grid_size=10, grid_query_frame=0, need_visualize=False
+    )
+    assert msg == "CoTrackerProcessor stopped by user#3"
+    assert saved_frames == [0, 1, 2, 3]
+    assert fake_model.calls == 2
+    assert part_b_calls == 1
+    assert all(len(m._forward_pre_hooks) == 0 for m in fake_model.modules())

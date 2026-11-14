@@ -3,6 +3,7 @@ from annolid.utils.cancellation import (
     InferenceCancelledError,
     cancellable_download_file,
     is_stop_requested,
+    torch_cancellable_forward,
 )
 from annolid.utils.devices import get_device
 from annolid.utils.annotation_store import AnnotationStore
@@ -58,16 +59,26 @@ class BaseSAMVideoProcessor:
         self.frame_shape = None
         self.ndjson_writer: Optional[DetectionsWriter] = None
 
+    def _resolve_stop_event(self):
+        stop_event = getattr(self, "_stop_event", None)
+        if stop_event is not None:
+            return stop_event
+        pred_worker = getattr(self, "_pred_worker", None)
+        if pred_worker is not None:
+            return getattr(pred_worker, "stop_event", None)
+        return None
+
     def request_stop(self) -> None:
         self._stop_requested = True
-        if self._stop_event is not None:
+        stop_event = self._resolve_stop_event()
+        if stop_event is not None:
             try:
-                self._stop_event.set()
+                stop_event.set()
             except Exception:
                 pass
 
     def _should_stop(self) -> bool:
-        if self._stop_requested or is_stop_requested(self._stop_event):
+        if self._stop_requested or is_stop_requested(self._resolve_stop_event()):
             return True
         if (
             self._pred_worker is not None
@@ -444,7 +455,7 @@ class SAM2VideoProcessor(BaseSAMVideoProcessor):
             cancellable_download_file(
                 sam2_checkpoint_url,
                 self.checkpoint_path,
-                stop_event=self._stop_event,
+                stop_event=self._resolve_stop_event(),
             )
         if self._should_stop():
             raise InferenceCancelledError("SAM2 initialization cancelled.")
@@ -621,29 +632,30 @@ class SAM2VideoProcessor(BaseSAMVideoProcessor):
         """
         if self._should_stop():
             return "Stopped by user."
-        inference_state = self.predictor.init_state(
-            video_path=self.video_path,
-            async_loading_frames=True,
-        )
-        self.predictor.reset_state(inference_state)
-        self.frame_shape = self.get_frame_shape()
-
-        for annotation in annotations:
-            if self._should_stop():
-                return "Stopped by user."
-            frame_idx = (
-                annotation["ann_frame_idx"]
-                if "ann_frame_idx" in annotation
-                else frame_idx
+        with torch_cancellable_forward(self.predictor, self._resolve_stop_event()):
+            inference_state = self.predictor.init_state(
+                video_path=self.video_path,
+                async_loading_frames=True,
             )
-            self.add_annotations(
-                inference_state,
-                frame_idx,
-                annotation.get("obj_id", 1),
-                [annotation],
-            )
+            self.predictor.reset_state(inference_state)
+            self.frame_shape = self.get_frame_shape()
 
-        self._propagate(inference_state)
+            for annotation in annotations:
+                if self._should_stop():
+                    return "Stopped by user."
+                frame_idx = (
+                    annotation["ann_frame_idx"]
+                    if "ann_frame_idx" in annotation
+                    else frame_idx
+                )
+                self.add_annotations(
+                    inference_state,
+                    frame_idx,
+                    annotation.get("obj_id", 1),
+                    [annotation],
+                )
+
+            self._propagate(inference_state)
 
 
 def load_annotations_from_video(video_path):
@@ -888,13 +900,15 @@ def _find_efficienttam_checkpoints_dir() -> Path:
     return Path.home() / ".cache" / "annolid" / "efficienttam" / "checkpoints"
 
 
-def _ensure_efficienttam_checkpoint(model_key: str) -> str:
+def _ensure_efficienttam_checkpoint(model_key: str, *, stop_event=None) -> str:
     """
     Ensure the requested EfficientTAM checkpoint is available locally.
 
     Downloads from Hugging Face (yunyangx/efficient-track-anything) into a
     persistent directory if missing and returns the resolved path.
     """
+    if is_stop_requested(stop_event):
+        raise InferenceCancelledError("EfficientTAM checkpoint download cancelled.")
     spec = EFFICIENTTAM_MODEL_SPECS.get(model_key)
     if not spec:
         raise ValueError(
@@ -1019,7 +1033,12 @@ class EfficientTAMVideoProcessor(BaseSAMVideoProcessor):
         )
 
         # Resolve (and download if needed) the checkpoint.
-        self.checkpoint_path = _ensure_efficienttam_checkpoint(self.model_key)
+        self.checkpoint_path = _ensure_efficienttam_checkpoint(
+            self.model_key,
+            stop_event=self._resolve_stop_event(),
+        )
+        if self._should_stop():
+            raise InferenceCancelledError("EfficientTAM initialization cancelled.")
         logger.info(
             "EfficientTAM model '%s' using config '%s' and checkpoint '%s'",
             self.model_key,
@@ -1137,31 +1156,32 @@ class EfficientTAMVideoProcessor(BaseSAMVideoProcessor):
         """
         if self._should_stop():
             return "Stopped by user."
-        inference_state = self.predictor.init_state(
-            # Use the original video file path so EfficientTAM can
-            # decode frames directly (via decord or OpenCV fallback).
-            video_path=self.video_path,
-            async_loading_frames=True,
-        )
-        self.predictor.reset_state(inference_state)
-        self.frame_shape = self.get_frame_shape()
-
-        for annotation in annotations:
-            if self._should_stop():
-                return "Stopped by user."
-            ann_frame_idx = (
-                annotation["ann_frame_idx"]
-                if "ann_frame_idx" in annotation
-                else frame_idx
+        with torch_cancellable_forward(self.predictor, self._resolve_stop_event()):
+            inference_state = self.predictor.init_state(
+                # Use the original video file path so EfficientTAM can
+                # decode frames directly (via decord or OpenCV fallback).
+                video_path=self.video_path,
+                async_loading_frames=True,
             )
-            self.add_annotations(
-                inference_state,
-                ann_frame_idx,
-                annotation.get("obj_id", 1),
-                [annotation],
-            )
+            self.predictor.reset_state(inference_state)
+            self.frame_shape = self.get_frame_shape()
 
-        self._propagate(inference_state)
+            for annotation in annotations:
+                if self._should_stop():
+                    return "Stopped by user."
+                ann_frame_idx = (
+                    annotation["ann_frame_idx"]
+                    if "ann_frame_idx" in annotation
+                    else frame_idx
+                )
+                self.add_annotations(
+                    inference_state,
+                    ann_frame_idx,
+                    annotation.get("obj_id", 1),
+                    [annotation],
+                )
+
+            self._propagate(inference_state)
 
 
 def process_video_efficienttam(

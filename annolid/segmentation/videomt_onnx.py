@@ -29,6 +29,11 @@ from annolid.annotation.masks import mask_to_polygons
 from annolid.core.media.video import CV2Video
 from annolid.gui.shape import Shape
 from annolid.utils.annotation_store import load_labelme_json
+from annolid.utils.cancellation import (
+    InferenceCancelledError,
+    is_stop_requested,
+    onnx_cancellable_run,
+)
 from annolid.utils.files import (
     find_manual_labeled_json_files,
     get_frame_number_from_json,
@@ -235,6 +240,7 @@ class VideoMTOnnxVideoProcessor:
         )
         self.results_folder.mkdir(parents=True, exist_ok=True)
         self.pred_worker = None
+        self._stop_event = kwargs.get("stop_event")
 
         self.mask_threshold = float(kwargs.get("videomt_mask_threshold", 0.5))
         self.logit_threshold = float(kwargs.get("videomt_logit_threshold", -2.0))
@@ -420,7 +426,18 @@ class VideoMTOnnxVideoProcessor:
                 return int(shape_t)
         return max(1, int(kwargs.get("videomt_window") or 8))
 
+    def _resolve_stop_event(self) -> Any:
+        stop_event = getattr(self, "_stop_event", None)
+        if stop_event is not None:
+            return stop_event
+        pred_worker = getattr(self, "pred_worker", None)
+        if pred_worker is not None:
+            return getattr(pred_worker, "stop_event", None)
+        return None
+
     def _should_stop(self) -> bool:
+        if is_stop_requested(self._resolve_stop_event()):
+            return True
         if self.pred_worker is None:
             return False
         return bool(getattr(self.pred_worker, "is_stopped", lambda: False)())
@@ -562,9 +579,21 @@ class VideoMTOnnxVideoProcessor:
         return logits, masks
 
     def _run_inference(self, input_tensor: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        stop_event = self._resolve_stop_event()
         try:
-            outputs = self._session.run(None, {self._input_name: input_tensor})
+            outputs = onnx_cancellable_run(
+                self._session,
+                None,
+                {self._input_name: input_tensor},
+                stop_event=stop_event,
+            )
+        except InferenceCancelledError:
+            raise
         except Exception as exc:
+            if self._should_stop():
+                raise InferenceCancelledError(
+                    "VideoMT ONNX inference cancelled."
+                ) from exc
             if self._should_retry_without_coreml(exc):
                 logger.warning(
                     "VideoMT ONNX CoreML runtime failure detected; retrying on CPU. Error: %s",
@@ -572,7 +601,12 @@ class VideoMTOnnxVideoProcessor:
                 )
                 self._coreml_retry_done = True
                 self._rebuild_cpu_only_session()
-                outputs = self._session.run(None, {self._input_name: input_tensor})
+                outputs = onnx_cancellable_run(
+                    self._session,
+                    None,
+                    {self._input_name: input_tensor},
+                    stop_event=stop_event,
+                )
             else:
                 raise
         output_names = [out.name for out in self._session.get_outputs()]
@@ -787,6 +821,8 @@ class VideoMTOnnxVideoProcessor:
                 self.input_height, self.input_width = int(h), int(w)
                 self.input_mode = "clip_4d_nhwc" if layout == "nhwc" else "clip_4d_nchw"
                 return logits, pred_masks
+            except InferenceCancelledError:
+                raise
             except Exception as exc:
                 last_exc = exc
                 if self._is_shape_related_error(exc) and not attempted_error_dims:
@@ -910,7 +946,10 @@ class VideoMTOnnxVideoProcessor:
         end_frame: int = -1,
         **kwargs: Any,
     ) -> str:
-        _ = kwargs
+        if kwargs.get("stop_event") is not None:
+            self._stop_event = kwargs["stop_event"]
+        if kwargs.get("pred_worker") is not None and self.pred_worker is None:
+            self.pred_worker = kwargs["pred_worker"]
         if self.num_frames <= 0:
             return "Video has no frames."
 
@@ -922,6 +961,9 @@ class VideoMTOnnxVideoProcessor:
         )
         if start > end:
             return f"Invalid frame range: start={start}, end={end}."
+
+        if self._should_stop():
+            return "VideoMT ONNX stopped by user. Saved 0 frames."
 
         seed_json = self._resolve_seed_json(start)
         seed_frame_idx = self._frame_index_from_json_path(seed_json)
@@ -935,39 +977,103 @@ class VideoMTOnnxVideoProcessor:
         query_map: dict[int, str] = {}
         saved = 0
 
-        if self.input_mode == "video_5d":
-            for chunk_start in range(start, end + 1, self.temporal_window):
-                if self._should_stop():
-                    return f"VideoMT ONNX stopped by user. Saved {saved} frames."
-                chunk_end = min(end, chunk_start + self.temporal_window - 1)
-                frame_indices = list(range(chunk_start, chunk_end + 1))
-                frames = [self.video_loader.load_frame(idx) for idx in frame_indices]
-                if len(frames) < self.temporal_window:
-                    pad = frames[-1]
-                    frames.extend([pad] * (self.temporal_window - len(frames)))
+        try:
+            if self.input_mode == "video_5d":
+                for chunk_start in range(start, end + 1, self.temporal_window):
+                    if self._should_stop():
+                        return f"VideoMT ONNX stopped by user. Saved {saved} frames."
+                    chunk_end = min(end, chunk_start + self.temporal_window - 1)
+                    frame_indices = list(range(chunk_start, chunk_end + 1))
+                    frames = [
+                        self.video_loader.load_frame(idx) for idx in frame_indices
+                    ]
+                    if len(frames) < self.temporal_window:
+                        pad = frames[-1]
+                        frames.extend([pad] * (self.temporal_window - len(frames)))
 
-                logits, pred_masks = self._run_5d_clip(frames)
-                scores = self._foreground_scores(logits)
-                binary_masks = self._binarize_masks(pred_masks)
-                if not query_map:
-                    seed_timestep = 0
-                    if seed_frame_idx in frame_indices:
-                        seed_timestep = frame_indices.index(seed_frame_idx)
-                    query_map = self._build_query_label_map(
-                        binary_masks, scores, seed_masks, seed_timestep=seed_timestep
-                    )
+                    logits, pred_masks = self._run_5d_clip(frames)
+                    scores = self._foreground_scores(logits)
+                    binary_masks = self._binarize_masks(pred_masks)
                     if not query_map:
-                        return (
-                            "VideoMT ONNX could not match model queries to seed instances. "
-                            "Try a clearer seed frame or adjust threshold settings."
+                        seed_timestep = 0
+                        if seed_frame_idx in frame_indices:
+                            seed_timestep = frame_indices.index(seed_frame_idx)
+                        query_map = self._build_query_label_map(
+                            binary_masks,
+                            scores,
+                            seed_masks,
+                            seed_timestep=seed_timestep,
                         )
+                        if not query_map:
+                            return (
+                                "VideoMT ONNX could not match model queries to seed instances. "
+                                "Try a clearer seed frame or adjust threshold settings."
+                            )
 
-                for local_idx, global_idx in enumerate(frame_indices):
+                    for local_idx, global_idx in enumerate(frame_indices):
+                        if self._should_skip_saving_frame(
+                            global_idx, start, seed_frame_idx
+                        ):
+                            continue
+                        masks_by_label: dict[str, np.ndarray] = {}
+                        for query_idx, label in query_map.items():
+                            if (
+                                query_idx >= binary_masks.shape[0]
+                                or local_idx >= binary_masks.shape[1]
+                            ):
+                                continue
+                            mask = binary_masks[query_idx, local_idx]
+                            if not np.any(mask):
+                                continue
+                            resized = self._mask_to_video_size(mask)
+                            if label in masks_by_label:
+                                masks_by_label[label] = np.logical_or(
+                                    masks_by_label[label], resized
+                                )
+                            else:
+                                masks_by_label[label] = resized
+                        if self._save_frame_masks(global_idx, masks_by_label):
+                            saved += 1
+            elif self.input_mode in {"clip_4d_nchw", "clip_4d_nhwc"}:
+                for global_idx in range(start, end + 1):
+                    if self._should_stop():
+                        return f"VideoMT ONNX stopped by user. Saved {saved} frames."
+                    raw_window, local_idx = _causal_window_indices(
+                        target_frame=global_idx, window_size=self.temporal_window
+                    )
+                    frame_indices = [
+                        int(np.clip(idx, 0, max(self.num_frames - 1, 0)))
+                        for idx in raw_window
+                    ]
+                    frames = [
+                        self.video_loader.load_frame(idx) for idx in frame_indices
+                    ]
+                    if self.input_mode == "clip_4d_nhwc":
+                        logits, pred_masks = self._run_4d_clip_nhwc(frames)
+                    else:
+                        logits, pred_masks = self._run_4d_clip_nchw(frames)
+                    scores = self._foreground_scores(logits)
+                    binary_masks = self._binarize_masks(pred_masks)
+                    if not query_map:
+                        seed_timestep = 0
+                        if seed_frame_idx in frame_indices:
+                            seed_timestep = frame_indices.index(seed_frame_idx)
+                        query_map = self._build_query_label_map(
+                            binary_masks,
+                            scores,
+                            seed_masks,
+                            seed_timestep=seed_timestep,
+                        )
+                        if not query_map:
+                            return (
+                                "VideoMT ONNX could not match model queries to seed instances. "
+                                "Try a clearer seed frame or adjust threshold settings."
+                            )
                     if self._should_skip_saving_frame(
                         global_idx, start, seed_frame_idx
                     ):
                         continue
-                    masks_by_label: dict[str, np.ndarray] = {}
+                    masks_by_label = {}
                     for query_idx, label in query_map.items():
                         if (
                             query_idx >= binary_masks.shape[0]
@@ -986,94 +1092,45 @@ class VideoMTOnnxVideoProcessor:
                             masks_by_label[label] = resized
                     if self._save_frame_masks(global_idx, masks_by_label):
                         saved += 1
-        elif self.input_mode in {"clip_4d_nchw", "clip_4d_nhwc"}:
-            for global_idx in range(start, end + 1):
-                if self._should_stop():
-                    return f"VideoMT ONNX stopped by user. Saved {saved} frames."
-                raw_window, local_idx = _causal_window_indices(
-                    target_frame=global_idx, window_size=self.temporal_window
-                )
-                frame_indices = [
-                    int(np.clip(idx, 0, max(self.num_frames - 1, 0)))
-                    for idx in raw_window
-                ]
-                frames = [self.video_loader.load_frame(idx) for idx in frame_indices]
-                if self.input_mode == "clip_4d_nhwc":
-                    logits, pred_masks = self._run_4d_clip_nhwc(frames)
-                else:
-                    logits, pred_masks = self._run_4d_clip_nchw(frames)
-                scores = self._foreground_scores(logits)
-                binary_masks = self._binarize_masks(pred_masks)
-                if not query_map:
-                    seed_timestep = 0
-                    if seed_frame_idx in frame_indices:
-                        seed_timestep = frame_indices.index(seed_frame_idx)
-                    query_map = self._build_query_label_map(
-                        binary_masks, scores, seed_masks, seed_timestep=seed_timestep
-                    )
+            else:
+                for frame_idx in range(start, end + 1):
+                    if self._should_stop():
+                        return f"VideoMT ONNX stopped by user. Saved {saved} frames."
+                    frame = self.video_loader.load_frame(frame_idx)
+                    logits, pred_masks = self._run_4d_frame(frame)
+                    scores = self._foreground_scores(logits)
+                    binary_masks = self._binarize_masks(pred_masks)
+                    if binary_masks.shape[1] < 1:
+                        continue
                     if not query_map:
-                        return (
-                            "VideoMT ONNX could not match model queries to seed instances. "
-                            "Try a clearer seed frame or adjust threshold settings."
+                        query_map = self._build_query_label_map(
+                            binary_masks, scores, seed_masks
                         )
-                if self._should_skip_saving_frame(global_idx, start, seed_frame_idx):
-                    continue
-                masks_by_label: dict[str, np.ndarray] = {}
-                for query_idx, label in query_map.items():
-                    if (
-                        query_idx >= binary_masks.shape[0]
-                        or local_idx >= binary_masks.shape[1]
-                    ):
+                        if not query_map:
+                            return (
+                                "VideoMT ONNX could not match model queries to seed instances. "
+                                "Try a clearer seed frame or adjust threshold settings."
+                            )
+                    if self._should_skip_saving_frame(frame_idx, start, seed_frame_idx):
                         continue
-                    mask = binary_masks[query_idx, local_idx]
-                    if not np.any(mask):
-                        continue
-                    resized = self._mask_to_video_size(mask)
-                    if label in masks_by_label:
-                        masks_by_label[label] = np.logical_or(
-                            masks_by_label[label], resized
-                        )
-                    else:
-                        masks_by_label[label] = resized
-                if self._save_frame_masks(global_idx, masks_by_label):
-                    saved += 1
-        else:
-            for frame_idx in range(start, end + 1):
-                if self._should_stop():
-                    return f"VideoMT ONNX stopped by user. Saved {saved} frames."
-                frame = self.video_loader.load_frame(frame_idx)
-                logits, pred_masks = self._run_4d_frame(frame)
-                scores = self._foreground_scores(logits)
-                binary_masks = self._binarize_masks(pred_masks)
-                if binary_masks.shape[1] < 1:
-                    continue
-                if not query_map:
-                    query_map = self._build_query_label_map(
-                        binary_masks, scores, seed_masks
-                    )
-                    if not query_map:
-                        return (
-                            "VideoMT ONNX could not match model queries to seed instances. "
-                            "Try a clearer seed frame or adjust threshold settings."
-                        )
-                if self._should_skip_saving_frame(frame_idx, start, seed_frame_idx):
-                    continue
-                masks_by_label: dict[str, np.ndarray] = {}
-                for query_idx, label in query_map.items():
-                    if query_idx >= binary_masks.shape[0]:
-                        continue
-                    mask = binary_masks[query_idx, 0]
-                    if not np.any(mask):
-                        continue
-                    resized = self._mask_to_video_size(mask)
-                    if label in masks_by_label:
-                        masks_by_label[label] = np.logical_or(
-                            masks_by_label[label], resized
-                        )
-                    else:
-                        masks_by_label[label] = resized
-                if self._save_frame_masks(frame_idx, masks_by_label):
-                    saved += 1
+                    masks_by_label = {}
+                    for query_idx, label in query_map.items():
+                        if query_idx >= binary_masks.shape[0]:
+                            continue
+                        mask = binary_masks[query_idx, 0]
+                        if not np.any(mask):
+                            continue
+                        resized = self._mask_to_video_size(mask)
+                        if label in masks_by_label:
+                            masks_by_label[label] = np.logical_or(
+                                masks_by_label[label], resized
+                            )
+                        else:
+                            masks_by_label[label] = resized
+                    if self._save_frame_masks(frame_idx, masks_by_label):
+                        saved += 1
+        except InferenceCancelledError:
+            return f"VideoMT ONNX stopped by user. Saved {saved} frames."
 
         return f"VideoMT ONNX completed. Saved predictions for {saved} frame(s)."
 

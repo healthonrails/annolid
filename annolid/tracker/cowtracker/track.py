@@ -14,6 +14,10 @@ import numpy as np
 import torch
 
 from annolid.tracker.point_tracking_processor import BasePointTrackingProcessor
+from annolid.utils.cancellation import (
+    InferenceCancelledError,
+    torch_cancellable_forward,
+)
 from annolid.utils.logger import logger
 
 if TYPE_CHECKING:
@@ -221,23 +225,30 @@ class CoWTrackerProcessor(BasePointTrackingProcessor):
                 start_frame + end,
             )
 
-            self._process_window(
-                model_inner,
-                win_inf,
-                images,
-                first_frame,
-                window_idx,
-                start,
-                end,
-                H,
-                W,
-                accumulated,
-            )
+            try:
+                self._process_window(
+                    model_inner,
+                    win_inf,
+                    images,
+                    first_frame,
+                    window_idx,
+                    start,
+                    end,
+                    H,
+                    W,
+                    accumulated,
+                )
+            except InferenceCancelledError:
+                self._stop_triggered = True
+                break
 
             # Incrementally save results for this window
             self._save_window_results(
                 accumulated, queries, N, window_idx, start, end, start_frame, win_inf
             )
+
+        if self._stop_triggered:
+            return None, None, None
 
         # Sample final outputs for compatibility with parent class
         return self._sample_final_outputs(
@@ -258,7 +269,10 @@ class CoWTrackerProcessor(BasePointTrackingProcessor):
         accumulated: dict,
     ):
         """Process a single window and merge into accumulated results."""
-        with torch.no_grad():
+        with (
+            torch.no_grad(),
+            torch_cancellable_forward(model_inner, self._resolve_stop_event()),
+        ):
             # Gather frames: first + memory + current window
             memory_indices = win_inf.select_memory_frames(window_idx, start)
             parts = [first_frame]
