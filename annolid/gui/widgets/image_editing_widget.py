@@ -10,6 +10,7 @@ import numpy as np
 from PIL import Image
 from qtpy import QtCore, QtWidgets
 
+from annolid.gui.qt_threads import configure_worker_thread_stack
 from annolid.gui.workers import FlexibleWorker
 from annolid.image_editing.errors import ImageEditingError
 from annolid.image_editing.factory import (
@@ -270,8 +271,7 @@ class ImageEditingDockWidget(QtWidgets.QDockWidget):
         self.editor_widget.status_label.setText("Running…")
 
         self._worker = FlexibleWorker(_run_backend, backend, request)
-        self._thread = QtCore.QThread(self)
-        self._thread.setStackSize(8 * 1024 * 1024)
+        self._thread = configure_worker_thread_stack(QtCore.QThread(self))
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.finished_signal.connect(self._handle_finished)

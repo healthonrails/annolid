@@ -18,6 +18,7 @@ import yaml
 from qtpy import QtCore, QtWidgets
 
 from annolid.datasets.labelme_collection import DEFAULT_LABEL_INDEX_DIRNAME
+from annolid.gui.qt_threads import configure_worker_thread_stack
 from annolid.gui.workers import FlexibleWorker
 from annolid.segmentation.dino_kpseg import defaults as dino_defaults
 from annolid.segmentation.dino_kpseg.format_utils import (
@@ -724,8 +725,7 @@ class DinoKPSEGTrainingManager(QtCore.QObject):
         self._show_start_notification()
 
         worker = FlexibleWorker(train_task)
-        thread = QtCore.QThread(self)
-        thread.setStackSize(8 * 1024 * 1024)
+        thread = configure_worker_thread_stack(QtCore.QThread(self))
         worker.moveToThread(thread)
         self._active_jobs.append((thread, worker))
 

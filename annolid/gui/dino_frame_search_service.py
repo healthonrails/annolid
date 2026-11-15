@@ -10,6 +10,7 @@ from PIL import Image
 from qtpy import QtCore
 
 from annolid.features import Dinov3Config, Dinov3FeatureExtractor
+from annolid.gui.qt_threads import configure_worker_thread_stack
 from annolid.infrastructure import AnnotationStore
 
 
@@ -164,8 +165,7 @@ class DinoFrameSearchService(QtCore.QObject):
     def __init__(self, parent: Optional[QtCore.QObject] = None) -> None:
         super().__init__(parent)
         self._settings = getattr(parent, "settings", None)
-        self._thread = QtCore.QThread(self)
-        self._thread.setStackSize(8 * 1024 * 1024)
+        self._thread = configure_worker_thread_stack(QtCore.QThread(self))
         self._worker = _DinoFrameSearchWorker()
         self._worker.moveToThread(self._thread)
         self._request_search.connect(self._worker.search)

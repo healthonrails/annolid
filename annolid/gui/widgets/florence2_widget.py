@@ -8,6 +8,7 @@ from PIL import Image
 from qtpy import QtCore, QtGui, QtWidgets
 
 from annolid.gui.cursor_utils import set_widget_busy_cursor
+from annolid.gui.qt_threads import configure_worker_thread_stack
 from annolid.gui.workers import FlexibleWorker
 from annolid.utils.cancellation import (
     InferenceCancelledError,
@@ -402,8 +403,7 @@ class Florence2DockWidget(QtWidgets.QDockWidget):
             video_path=video_path,
             stop_event=stop_event,
         )
-        thread = QtCore.QThread()
-        thread.setStackSize(8 * 1024 * 1024)
+        thread = configure_worker_thread_stack(QtCore.QThread())
         anchor_pair = (thread, worker)
         _ANCHORED_FLORENCE_WORKERS.add(anchor_pair)
         worker.moveToThread(thread)

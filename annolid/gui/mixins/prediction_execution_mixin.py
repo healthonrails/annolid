@@ -12,6 +12,10 @@ from qtpy import QtCore, QtWidgets
 
 from annolid.features.dino_models import resolve_dino_model_from_runtime
 from annolid.gui.models_registry import PATCH_SIMILARITY_DEFAULT_MODEL
+from annolid.gui.qt_threads import (
+    DEFAULT_WORKER_THREAD_STACK_SIZE,
+    configure_worker_thread_stack,
+)
 from annolid.gui.workers import FlexibleWorker
 from annolid.infrastructure import AnnotationStore
 from annolid.infrastructure.filesystem import (
@@ -21,7 +25,7 @@ from annolid.utils.image_adjustments import normalize_brightness_contrast_value
 from annolid.utils.logger import logger
 from annolid.utils.qt2cv import convert_cv_image_to_qt_image
 
-_PREDICTION_THREAD_STACK_SIZE = 8 * 1024 * 1024
+_PREDICTION_THREAD_STACK_SIZE = DEFAULT_WORKER_THREAD_STACK_SIZE
 _ANCHORED_PREDICTION_WORKERS: set[tuple[QtCore.QThread, object]] = set()
 
 
@@ -816,8 +820,9 @@ class PredictionExecutionMixin:
                 except RuntimeError:
                     pass
 
-            self.seg_pred_thread = QtCore.QThread()
-            self.seg_pred_thread.setStackSize(_PREDICTION_THREAD_STACK_SIZE)
+            self.seg_pred_thread = configure_worker_thread_stack(
+                QtCore.QThread(), _PREDICTION_THREAD_STACK_SIZE
+            )
             has_occlusion = self.stepSizeWidget.occclusion_checkbox.isChecked()
             inference_step = 1
             inference_start_frame = max(0, int(self.frame_number or 0) + 1)

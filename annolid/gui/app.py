@@ -28,6 +28,7 @@ from qtpy import QtCore
 from qtpy.QtCore import Signal
 from qtpy import QtWidgets
 from qtpy import QtGui
+from annolid.gui.qt_threads import configure_worker_thread_stack
 from annolid.gui.window_base import (
     AnnolidWindowBase,
 )
@@ -333,13 +334,10 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         self._suppress_audio_seek = False
         self.caption_widget = None
 
-        self.frame_worker = QtCore.QThread()
-        self.frame_worker.setStackSize(8 * 1024 * 1024)
+        self.frame_worker = configure_worker_thread_stack(QtCore.QThread())
         self.frame_loader = LoadFrameThread()
-        self.seg_pred_thread = QtCore.QThread()
-        self.seg_pred_thread.setStackSize(8 * 1024 * 1024)
-        self.seg_train_thread = QtCore.QThread()
-        self.seg_train_thread.setStackSize(8 * 1024 * 1024)
+        self.seg_pred_thread = configure_worker_thread_stack(QtCore.QThread())
+        self.seg_train_thread = configure_worker_thread_stack(QtCore.QThread())
         weak_self = weakref.ref(self)
 
         def _cleanup_from_weakref(*_args) -> None:

@@ -11,6 +11,7 @@ import cv2
 import numpy as np
 from qtpy import QtCore, QtWidgets
 
+from annolid.gui.qt_threads import configure_worker_thread_stack
 from annolid.gui.widgets.optical_flow_dialog import FlowOptionsDialog
 from annolid.gui.workers import FlexibleWorker
 from annolid.motion.flow_runner import process_video_flow, flow_to_color
@@ -385,8 +386,7 @@ class OpticalFlowTool(QtCore.QObject):
             QtCore.Qt.QueuedConnection,
         )
 
-        worker_thread = QtCore.QThread(w)
-        worker_thread.setStackSize(8 * 1024 * 1024)
+        worker_thread = configure_worker_thread_stack(QtCore.QThread(w))
         worker.moveToThread(worker_thread)
         worker.finished_signal.connect(worker_thread.quit, QtCore.Qt.QueuedConnection)
         worker_thread.finished.connect(worker.deleteLater)

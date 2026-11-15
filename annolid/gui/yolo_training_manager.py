@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import yaml
 from qtpy import QtCore, QtWidgets
 
+from annolid.gui.qt_threads import configure_worker_thread_stack
 from annolid.gui.workers import FlexibleWorker
 from annolid.datasets.coco import (
     build_coco_spec_from_dataset_path,
@@ -736,8 +737,7 @@ class YOLOTrainingManager(QtCore.QObject):
                 tb_logger.close()
 
         worker = FlexibleWorker(train_task)
-        thread = QtCore.QThread(self)
-        thread.setStackSize(8 * 1024 * 1024)
+        thread = configure_worker_thread_stack(QtCore.QThread(self))
         worker.moveToThread(thread)
         self._active_jobs.append((thread, worker, data_config_path))
 

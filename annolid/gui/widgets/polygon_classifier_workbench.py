@@ -7,6 +7,7 @@ from typing import Any, Callable, Optional
 
 from qtpy import QtCore, QtGui, QtWidgets
 
+from annolid.gui.qt_threads import configure_worker_thread_stack
 from annolid.gui.workers import FlexibleWorker
 from annolid.utils.runs import shared_runs_root
 
@@ -641,8 +642,7 @@ class PolygonClassifierWorkbench(QtWidgets.QDialog):
         self.status_label.setText(f"{label} running...")
         self._append_log(f"{label} started.")
         worker = FlexibleWorker(task)
-        thread = QtCore.QThread(self)
-        thread.setStackSize(8 * 1024 * 1024)
+        thread = configure_worker_thread_stack(QtCore.QThread(self))
         worker.moveToThread(thread)
         self._threads.append((thread, worker))
 

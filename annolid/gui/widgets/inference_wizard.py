@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional
 from qtpy import QtCore, QtWidgets
 from qtpy.QtCore import Qt, Signal
 
+from annolid.gui.qt_threads import configure_worker_thread_stack
 from annolid.utils.logger import logger
 
 
@@ -1104,8 +1105,7 @@ class InferenceProgressPage(QtWidgets.QWizardPage):
         self._cleanup_worker()
         self._running = True
 
-        self._worker_thread = QtCore.QThread(self)
-        self._worker_thread.setStackSize(8 * 1024 * 1024)
+        self._worker_thread = configure_worker_thread_stack(QtCore.QThread(self))
         self._worker = InferenceWorker(config)
         self._worker.moveToThread(self._worker_thread)
 

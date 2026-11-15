@@ -14,6 +14,7 @@ import numpy as np
 from qtpy import QtCore, QtGui, QtWidgets
 
 from annolid.depth import run_video_depth_anything as depth_run
+from annolid.gui.qt_threads import configure_worker_thread_stack
 from annolid.gui.workers import FlexibleWorker
 from annolid.gui.widgets.depth_settings_dialog import DepthSettingsDialog
 from annolid.utils.logger import logger
@@ -120,8 +121,7 @@ class DepthManager(QtCore.QObject):
             )
             worker.preview_signal.connect(self._handle_depth_preview)
 
-        worker_thread = QtCore.QThread(w)
-        worker_thread.setStackSize(8 * 1024 * 1024)
+        worker_thread = configure_worker_thread_stack(QtCore.QThread(w))
         worker.moveToThread(worker_thread)
         worker.finished_signal.connect(
             functools.partial(

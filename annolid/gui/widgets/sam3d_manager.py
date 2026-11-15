@@ -10,6 +10,7 @@ from typing import Optional
 
 from qtpy import QtCore, QtWidgets
 
+from annolid.gui.qt_threads import configure_worker_thread_stack
 from annolid.gui.workers import FlexibleWorker
 from annolid.gui.widgets.sam3d_settings_dialog import Sam3DSettingsDialog
 from annolid.three_d import sam3d_client
@@ -171,8 +172,7 @@ class Sam3DManager(QtCore.QObject):
             else sam3d_client.run_inprocess
         )
         worker = FlexibleWorker(runner, cfg, job)
-        worker_thread = QtCore.QThread(w)
-        worker_thread.setStackSize(8 * 1024 * 1024)
+        worker_thread = configure_worker_thread_stack(QtCore.QThread(w))
         worker.moveToThread(worker_thread)
         worker.finished_signal.connect(
             functools.partial(self._handle_sam3d_finished, worker_thread=worker_thread)

@@ -57,6 +57,10 @@ from annolid.gui.widgets.ai_polygon_helpers import (
     simplify_ai_polygon_points as _ai_simplify,
 )
 from annolid.gui.mixins.shared_polygon_edit_mixin import SharedPolygonEditMixin
+from annolid.gui.qt_threads import (
+    DEFAULT_WORKER_THREAD_STACK_SIZE,
+    configure_worker_thread_stack,
+)
 # TODO(unknown):
 # - [maybe] Find optimal epsilon value.
 
@@ -69,7 +73,7 @@ CURSOR_GRAB = QtCore.Qt.OpenHandCursor
 
 MOVE_SPEED = 5.0
 
-_PROMPT_WORKER_STACK_SIZE = 8 * 1024 * 1024
+_PROMPT_WORKER_STACK_SIZE = DEFAULT_WORKER_THREAD_STACK_SIZE
 _ANCHORED_QT_WORKERS_LOCK = threading.Lock()
 _ANCHORED_QT_WORKERS_SEQ = 0
 _ANCHORED_QT_WORKERS: dict[int, tuple[QtCore.QThread, FlexibleWorker]] = {}
@@ -2290,8 +2294,9 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
 
         _task_runner.allow_force_thread_terminate = False
 
-        thread = QtCore.QThread()
-        thread.setStackSize(_PROMPT_WORKER_STACK_SIZE)
+        thread = configure_worker_thread_stack(
+            QtCore.QThread(), _PROMPT_WORKER_STACK_SIZE
+        )
         worker = FlexibleWorker(_task_runner)
         worker.moveToThread(thread)
         anchor_id = _anchor_qt_worker(thread, worker)

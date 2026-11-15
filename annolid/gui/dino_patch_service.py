@@ -24,6 +24,7 @@ from annolid.features import (
     Dinov3PCAMapper,
 )
 from annolid.features.dinov3_patch_similarity import DinoPatchSimilarity
+from annolid.gui.qt_threads import configure_worker_thread_stack
 
 
 # ---------------------------------------------------------------------------
@@ -214,8 +215,7 @@ class DinoPatchSimilarityService(QtCore.QObject):
         if self.is_busy():
             return False
 
-        self._thread = QtCore.QThread()
-        self._thread.setStackSize(8 * 1024 * 1024)
+        self._thread = configure_worker_thread_stack(QtCore.QThread())
         self._worker = _DinoPatchWorker(request)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
@@ -342,8 +342,7 @@ class DinoPCAMapService(QtCore.QObject):
         if self.is_busy():
             return False
 
-        self._thread = QtCore.QThread()
-        self._thread.setStackSize(8 * 1024 * 1024)
+        self._thread = configure_worker_thread_stack(QtCore.QThread())
         self._worker = _DinoPCAWorker(request)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)

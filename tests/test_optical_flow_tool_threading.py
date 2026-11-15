@@ -5,6 +5,10 @@ from pathlib import Path
 from qtpy import QtCore
 
 import annolid.gui.widgets.optical_flow_tool as optical_flow_tool_mod
+from annolid.gui.qt_threads import (
+    DEFAULT_WORKER_THREAD_STACK_SIZE,
+    configure_worker_thread_stack,
+)
 from annolid.gui.widgets.optical_flow_tool import FlowRunSettings, OpticalFlowTool
 
 
@@ -110,6 +114,32 @@ def test_start_worker_uses_queued_connections(monkeypatch) -> None:
     assert worker.finished_signal.connections[1][0] == thread.quit
     assert worker.finished_signal.connections[1][1] == QtCore.Qt.QueuedConnection
     assert thread.started.connections[0][1] == QtCore.Qt.QueuedConnection
+
+
+def test_start_worker_configures_stack_size_when_supported(monkeypatch) -> None:
+    class _StackTrackingThread(_FakeThread):
+        def __init__(self, parent=None) -> None:
+            super().__init__(parent)
+            self.stack_size: int | None = None
+
+        def setStackSize(self, size: int) -> None:
+            self.stack_size = size
+
+    plain_double = _FakeThread()
+    assert configure_worker_thread_stack(plain_double) is plain_double
+
+    window = _FakeWindow()
+    tool = OpticalFlowTool(window)
+    monkeypatch.setattr(optical_flow_tool_mod, "FlexibleWorker", _FakeWorker)
+    monkeypatch.setattr(optical_flow_tool_mod.QtCore, "QThread", _StackTrackingThread)
+
+    settings = FlowRunSettings(
+        video_path="/tmp/input.mp4", ndjson_path="/tmp/out.ndjson"
+    )
+    tool._start_worker(settings)
+
+    assert tool._worker_thread is not None
+    assert tool._worker_thread.stack_size == DEFAULT_WORKER_THREAD_STACK_SIZE
 
 
 def test_on_worker_finished_avoids_waiting_on_self_thread(monkeypatch) -> None:

@@ -9,6 +9,7 @@ import numpy as np
 from qtpy import QtCore
 
 from annolid.core.media.video import CV2Video
+from annolid.gui.qt_threads import configure_worker_thread_stack
 from annolid.services.embedding_search import run_embedding_search
 
 
@@ -549,8 +550,7 @@ class FrameSimilarityService(QtCore.QObject):
 
     def __init__(self, parent: Optional[QtCore.QObject] = None) -> None:
         super().__init__(parent)
-        self._thread = QtCore.QThread(self)
-        self._thread.setStackSize(8 * 1024 * 1024)
+        self._thread = configure_worker_thread_stack(QtCore.QThread(self))
         self._worker = _FrameSimilarityWorker()
         self._worker.moveToThread(self._thread)
         self._request_run.connect(self._worker.run)
