@@ -19,6 +19,17 @@ def test_distribution_guard_rejects_model_artifact_suffixes() -> None:
     assert is_forbidden_member("annolid-1.0.0/annolid/models/model.onnx")
     assert is_forbidden_member("annolid/segmentation/SAM/vit_b.pth")
     assert is_forbidden_member("annolid/realtime/yolo11n.mlpackage/Manifest.json")
+    assert is_forbidden_member("annolid/tracker/features/checkpoint/ckpt.t7")
+    assert is_forbidden_member("annolid-1.6.10/annolid/project.annolid.json")
+    assert is_forbidden_member(
+        "annolid-1.6.10/annolid/segmentation/MEDIAR/train_tools/models/MEDIARFormer.py"
+    )
+    assert is_forbidden_member(
+        "annolid-1.6.10/annolid/segmentation/SAM/sam3/graphify-out/graph.json"
+    )
+    assert is_forbidden_member(
+        "annolid-1.6.10/annolid/segmentation/SAM/sam3/sam3_agent_out/trace.json"
+    )
 
 
 def test_distribution_guard_allows_normal_package_files() -> None:
@@ -89,15 +100,21 @@ def test_package_discovery_excludes_release_forbidden_source_trees() -> None:
     )
 
     forbidden_prefixes = (
+        "annolid.segmentation.MEDIAR",
         "annolid.segmentation.SAM.segment-anything-2.demo",
+        "annolid.segmentation.SAM.segment-anything-2.sav_dataset",
         "annolid.segmentation.SAM.segment-anything-2.training",
         "annolid.segmentation.cutie_vos.weights",
+        "annolid.tracker.features.checkpoint",
     )
 
     assert not any(
         package == prefix or package.startswith(f"{prefix}.")
         for package in packages
         for prefix in forbidden_prefixes
+    )
+    assert not any(
+        "graphify-out" in package or "sam3_agent_out" in package for package in packages
     )
 
 

@@ -14,6 +14,7 @@ class YOLOUltralyticsPlugin(ModelPluginBase):
     description = (
         "Ultralytics YOLO train/predict wrapper (training delegates to the 'yolo' CLI)."
     )
+    required_capabilities = ("yolo",)
     train_help_sections = (
         (
             "Required inputs",

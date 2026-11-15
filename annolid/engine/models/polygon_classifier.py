@@ -12,6 +12,7 @@ class PolygonClassifierPlugin(ModelPluginBase):
         "Polygon behavior classifier from Annolid tracking annotations "
         "(TCN or ConvNet)."
     )
+    required_capabilities = ("ml",)
     train_help_sections = (
         (
             "Required inputs",

@@ -8,11 +8,16 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Sequence
 
-from annolid.behavior.polygon_classifier_workflow import (
-    generate_polygon_train_test_csvs,
-    train_polygon_classifier,
-)
 from annolid.utils.runs import shared_runs_root
+
+try:
+    from annolid.behavior.polygon_classifier_workflow import (
+        generate_polygon_train_test_csvs,
+        train_polygon_classifier,
+    )
+except ImportError:
+    generate_polygon_train_test_csvs = None  # type: ignore[assignment]
+    train_polygon_classifier = None  # type: ignore[assignment]
 
 
 _TCN_DEFAULTS = {
@@ -184,7 +189,12 @@ def _resolve_training_csvs(args: argparse.Namespace) -> tuple[str, str, dict[str
     csv_output_dir = args.csv_output_dir
     if not csv_output_dir:
         csv_output_dir = Path(args.output_dir).expanduser() / "generated_csvs"
-    dataset = generate_polygon_train_test_csvs(
+    csv_generator = generate_polygon_train_test_csvs
+    if csv_generator is None:
+        from annolid.behavior.polygon_classifier_workflow import (
+            generate_polygon_train_test_csvs as csv_generator,
+        )
+    dataset = csv_generator(
         train_assignments=args.train_video,
         test_assignments=args.test_video,
         output_dir=csv_output_dir,
@@ -201,7 +211,12 @@ def run_train_command(args: argparse.Namespace) -> int:
         for name, value in defaults.items()
     }
     train_csv, test_csv, payload = _resolve_training_csvs(args)
-    outcome = train_polygon_classifier(
+    trainer = train_polygon_classifier
+    if trainer is None:
+        from annolid.behavior.polygon_classifier_workflow import (
+            train_polygon_classifier as trainer,
+        )
+    outcome = trainer(
         train_csv=train_csv,
         test_csv=test_csv,
         output_dir=args.output_dir,

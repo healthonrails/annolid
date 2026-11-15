@@ -75,6 +75,7 @@ class KeypointRCNNPlugin(ModelPluginBase):
         "Torchvision Keypoint R-CNN (ResNet-50 FPN) — animal body keypoint detection. "
         "No Detectron2 required."
     )
+    required_capabilities = ("ml",)
     train_help_sections = (
         (
             "Required inputs",

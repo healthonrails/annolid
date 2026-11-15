@@ -160,6 +160,10 @@ def ensure_tensorboard(
     if log_dir is None:
         log_dir = shared_runs_root()
 
+    from annolid.infrastructure.capabilities import ensure_capability
+
+    ensure_capability("training", reason="TensorBoard training dashboard")
+
     global _PRIMARY
     if _PRIMARY is not None:
         proc, url, existing_logdir = _PRIMARY
@@ -261,7 +265,15 @@ class VisualizationWindow(QtWidgets.QDialog):
         tensorboard_url: str = "http://localhost:6006",
     ) -> None:
         super().__init__(parent=parent)
-        from qtpy.QtWebEngineWidgets import QWebEngineView
+        self.process: Optional[subprocess.Popen] = None
+        from annolid.gui.runtime_installer import ensure_gui_capability
+
+        if not ensure_gui_capability(
+            parent,
+            "training",
+            feature_title=self.tr("TensorBoard Dashboard"),
+        ):
+            return
 
         self.setWindowTitle("Visualization Tensorboard")
         self.process, self.tensorboard_url = ensure_tensorboard(
@@ -271,6 +283,15 @@ class VisualizationWindow(QtWidgets.QDialog):
             else 6006,
             host="127.0.0.1",
         )
+        if not ensure_gui_capability(
+            parent,
+            "webengine",
+            feature_title=self.tr("Embedded TensorBoard Viewer"),
+        ):
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl(self.tensorboard_url))
+            return
+        from qtpy.QtWebEngineWidgets import QWebEngineView
+
         self.browser = QWebEngineView()
         self.browser.setUrl(QtCore.QUrl(self.tensorboard_url))
         vbox = QtWidgets.QVBoxLayout()

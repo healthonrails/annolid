@@ -5,28 +5,21 @@ import logging
 import os
 from pathlib import Path
 
-import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader, random_split
-from torch.utils.tensorboard import SummaryWriter
-
-from annolid.behavior.data_loading.datasets import BehaviorDataset
-from annolid.behavior.pipeline import (
-    BACKBONE_CHOICES,
-    DEFAULT_DINOV3_MODEL,
-    build_classifier,
-    build_transform,
-)
 from annolid.engine.registry import ModelPluginBase, register_model
 from annolid.utils.runs import allocate_run_dir, shared_runs_root
 
 logger = logging.getLogger(__name__)
+
+BACKBONE_CHOICES = ("clip", "resnet18", "dinov3")
+DEFAULT_DINOV3_MODEL = "facebook/dinov3-vits16-pretrain-lvd1689m"
 
 
 @register_model
 class BehaviorClassifierPlugin(ModelPluginBase):
     name = "behavior_classifier"
     description = "Video-folder behavior classifier (train/infer)."
+    required_capabilities = ("ml",)
+    train_required_capabilities = ("training",)
     train_help_sections = (
         (
             "Required inputs",
@@ -120,6 +113,13 @@ class BehaviorClassifierPlugin(ModelPluginBase):
         )
 
     def train(self, args: argparse.Namespace) -> int:
+        import torch
+        import torch.nn as nn
+        from torch.utils.data import DataLoader, random_split
+        from torch.utils.tensorboard import SummaryWriter
+
+        from annolid.behavior.data_loading.datasets import BehaviorDataset
+        from annolid.behavior.pipeline import build_classifier, build_transform
         from annolid.behavior.training.train import train_model
 
         logging.basicConfig(
@@ -212,8 +212,12 @@ class BehaviorClassifierPlugin(ModelPluginBase):
         )
 
     def predict(self, args: argparse.Namespace) -> int:
+        import torch
+        from torch.utils.data import DataLoader
+
+        from annolid.behavior.data_loading.datasets import BehaviorDataset
         from annolid.behavior.inference import predict as run_predict
-        from annolid.behavior.pipeline import load_classifier
+        from annolid.behavior.pipeline import build_transform, load_classifier
 
         logging.basicConfig(
             level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"

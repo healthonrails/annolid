@@ -153,6 +153,7 @@ def _resolve_train_settings(args: argparse.Namespace) -> Detectron2TrainSettings
 class MaskRCNNDetectron2Plugin(ModelPluginBase):
     name = "maskrcnn_detectron2"
     description = "Detectron2 Mask R-CNN train/predict wrapper."
+    required_capabilities = ("ml",)
     train_help_sections = (
         (
             "Required inputs",

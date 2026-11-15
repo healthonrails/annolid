@@ -443,6 +443,14 @@ class MenuController:
                 ),
             },
             {
+                "name": "open_runtime_manager",
+                "text": w.tr("&Runtime && Optional Packages…"),
+                "slot": w.open_runtime_manager_dialog,
+                "tip": w.tr(
+                    "Inspect and install optional ML, tracking, scientific, and WebEngine runtimes on demand"
+                ),
+            },
+            {
                 "name": "open_florence2",
                 "text": w.tr("Florence-&2 Assistant"),
                 "slot": w.openFlorence2,
@@ -1519,6 +1527,7 @@ class MenuController:
         settings_sections = [
             (
                 actions["advance_params"],
+                actions["open_runtime_manager"],
                 actions["project_schema"],
                 actions["pose_schema"],
                 actions["open_agent_workspace_onboarding"],
@@ -1672,6 +1681,7 @@ class MenuController:
                     actions["help_tutorials"],
                 ),
                 (
+                    actions["open_runtime_manager"],
                     actions["help_check_updates"],
                     actions["help_update_now"],
                 ),

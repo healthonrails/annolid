@@ -22,18 +22,16 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Operating System :: OS Independent",
 ]
 
 dependencies = [
-    # Avoid NumPy 2 ABI breakage with compiled deps.
+    # Core annotation, video IO, and lightweight GUI runtime contracts.
+    # Heavy ML, scientific, WebEngine, and cloud stacks live in optional tiers
+    # and can be installed upfront via extras or on demand when first used.
     'numpy>=1.24',
-    'numba>=0.60.0',
-    'scipy>=1.5.2',
-    'scikit-image>=0.20.0',
-    'scikit-learn>=1.7.2',
     'easydict>=1.9',
-    'gdown',
     'opencv-contrib-python>=4.1.2.30',
     'PyYAML>=5.3',
     'pandas>=1.1.3',
@@ -44,26 +42,58 @@ dependencies = [
     'imageio-ffmpeg>=0.4.2',
     'qimage2ndarray>=1.8',
     'qtpy>=2.4.0',
-    'h5py>=3.15.1',
     'psutil>=5.9.8',
     'tree-config>=0.6.0',
-    'Pillow>=9.3.0,<12.0',
+    'Pillow>=9.3.0',
     'chardet>=5.2.0,<6.0.0',
     'jsonschema>=4.20.0',
     'pycocotools>=2.0.2',
-    # Optional dependency: install SAM / SAM-HQ separately (see README.md).
 ]
 
 [project.optional-dependencies]
 gui = [
-    # Default GUI binding. Code routes Qt access through qtpy for compatibility.
-    "PySide6>=6.7.0",
+    # Lean Qt Widgets/Core/Gui/Svg runtime (~3x smaller than full PySide6).
+    # Embedded Chromium viewers use the optional `webengine` extra on demand.
+    "PySide6-Essentials>=6.7.0",
+]
+
+webengine = [
+    # Embedded Chromium viewers (PDF reader, Three.js 3D viewer, embedded web/TensorBoard).
+    "PySide6-Addons>=6.7.0",
+]
+
+onnx = [
+    # CPU ONNX Runtime for SAM / TapNext / VideoMT ONNX inference.
+    "onnxruntime>=1.23.2",
+]
+
+scientific = [
+    # Optional scientific/clustering/morphology algorithms (K-Means, PCA, skimage, SciPy).
+    "scipy>=1.5.2",
+    "scikit-learn>=1.7.2",
+    'scikit-image>=0.20.0; python_version < "3.15"',
+]
+
+model_downloads = [
+    # Optional Google Drive checkpoint download helper.
+    "gdown",
+]
+
+pdf = [
+    # Optional PDF document rendering and page import backend.
+    "pymupdf",
 ]
 
 test = [
     # Dependencies needed to import the full default test collection in CI.
     "pytest>=8.0.0",
     "flake8>=7.0.0",
+    "PySide6-Addons>=6.7.0",
+    "scipy>=1.5.2",
+    "scikit-learn>=1.7.2",
+    'scikit-image>=0.20.0; python_version < "3.15"',
+    'h5py>=3.15.1; python_version < "3.15"',
+    "gdown",
     "matplotlib>=3.7.0",
     "pyzmq>=25.1.2",
     "tensorboard>=2.3.0",
@@ -85,6 +115,7 @@ audio = [
     # Voice recording/playback and audio-feature extraction are optional.
     "sounddevice>=0.4.6",
     "librosa>=0.10.1",
+    "numba>=0.60.0",
 ]
 
 ai_chat = [
@@ -106,6 +137,8 @@ yolo = [
 
 ml = [
     # General ML/model runtime profile for inference, adapters, and model tooling.
+    "scipy>=1.5.2",
+    "scikit-learn>=1.7.2",
     "torch>=2.5.0",
     "torchvision>=0.20.0",
     "transformers>=4.45.1",
@@ -124,7 +157,7 @@ cutie = [
     "torchvision>=0.20.0",
     "omegaconf>=2.3.0",
     "hydra-core>=1.3.2",
-    "Pillow>=9.3.0,<12.0",
+    "Pillow>=9.3.0",
     "pycocotools>=2.0.2",
     "einops>=0.6.0",
 ]
@@ -132,11 +165,13 @@ cutie = [
 tracking = [
     # Common tracking workstation profile without cloud/bot integrations.
     "opencv-contrib-python>=4.1.2.30",
+    "scipy>=1.5.2",
+    "scikit-learn>=1.7.2",
     "torch>=2.5.0",
     "torchvision>=0.20.0",
     "omegaconf>=2.3.0",
     "hydra-core>=1.3.2",
-    "Pillow>=9.3.0,<12.0",
+    "Pillow>=9.3.0",
     "pycocotools>=2.0.2",
     "einops>=0.6.0",
     "onnxruntime>=1.23.2",
@@ -163,6 +198,7 @@ large_image = [
 ]
 
 sam3 = [
+    "scipy>=1.5.2",
     "torch>=2.5.0",
     "torchvision>=0.20.0",
     "iopath>=0.1.9",
@@ -182,6 +218,7 @@ text_to_speech = [
     "pymupdf",
     "sounddevice>=0.4.6",
     "librosa>=0.10.1",
+    "numba>=0.60.0",
 ]
 
 qwen3_embedding = [
@@ -200,7 +237,12 @@ cowtracker = [
 
 remote_video = [
     # Optional network/remote video decoding path.
-    'ffpyplayer>=4.5.0; python_version < "3.14"',
+    "ffpyplayer>=4.5.0",
+]
+
+sleap = [
+    # Optional SLEAP HDF5 (.slp / .h5) annotation import support.
+    "h5py>=3.15.1",
 ]
 
 annolid_bot = [
@@ -246,6 +288,12 @@ memory = [
 ]
 
 all = [
+    "PySide6-Addons>=6.7.0",
+    "scipy>=1.5.2",
+    "scikit-learn>=1.7.2",
+    'scikit-image>=0.20.0; python_version < "3.15"',
+    'h5py>=3.15.1; python_version < "3.15"',
+    "gdown",
     "matplotlib>=3.7.0",
     "opencv-contrib-python>=4.1.2.30",
     "torch>=2.5.0",
@@ -253,11 +301,12 @@ all = [
     "onnxruntime>=1.23.2",
     "omegaconf>=2.3.0",
     "hydra-core>=1.3.2",
-    "Pillow>=9.3.0,<12.0",
+    "Pillow>=9.3.0",
     "pycocotools>=2.0.2",
     "einops>=0.6.0",
     "sounddevice>=0.4.6",
     "librosa>=0.10.1",
+    "numba>=0.60.0",
     "openai>=1.40.0",
     "anthropic>=0.49.0",
     "tensorboard>=2.3.0",
@@ -317,18 +366,25 @@ exclude = [
     "docs*",
     "demo*",
     "tests*",
+    "*.graphify-out*",
+    "*.sam3_agent_out*",
     "annolid.depth.checkpoints*",
     "annolid.detector.countgd.checkpoints*",
     "annolid.motion.weights*",
     "annolid.realtime.models*",
     "annolid.realtime.runs*",
-    "annolid.segmentation.MEDIAR.weights*",
+    "annolid.segmentation.MEDIAR*",
     "annolid.segmentation.SAM.segment-anything-2.SAM_2.egg-info*",
+    "annolid.segmentation.SAM.segment-anything-2.assets*",
     "annolid.segmentation.SAM.segment-anything-2.checkpoints*",
     "annolid.segmentation.SAM.segment-anything-2.demo*",
     "annolid.segmentation.SAM.segment-anything-2.notebooks*",
+    "annolid.segmentation.SAM.segment-anything-2.sav_dataset*",
+    "annolid.segmentation.SAM.segment-anything-2.tools*",
     "annolid.segmentation.SAM.segment-anything-2.training*",
+    "annolid.segmentation.SAM.sam3.sam3.perflib.tests*",
     "annolid.segmentation.cutie_vos.weights*",
+    "annolid.tracker.features.checkpoint*",
 ]
 
 [tool.setuptools]
@@ -363,21 +419,31 @@ annolid = [
 
 [tool.setuptools.exclude-package-data]
 annolid = [
+    "project.annolid.json",
+    "**/project.annolid.json",
+    "**/graphify-out/**",
+    "**/sam3_agent_out/**",
     "depth/checkpoints/**",
     "detector/countgd/checkpoints/**",
+    "detector/countgd/models/GroundingDINO/ops.zip",
     "motion/weights/**",
     "realtime/models/**",
     "realtime/runs/**",
     "realtime/yolo11n*.mlpackage/**",
     "realtime/*openvino_model/**",
-    "segmentation/MEDIAR/weights/**",
+    "segmentation/MEDIAR/**",
     "segmentation/SAM/segment-anything-2/.github/**",
     "segmentation/SAM/segment-anything-2/SAM_2.egg-info/**",
+    "segmentation/SAM/segment-anything-2/assets/**",
     "segmentation/SAM/segment-anything-2/checkpoints/**",
     "segmentation/SAM/segment-anything-2/demo/**",
     "segmentation/SAM/segment-anything-2/notebooks/**",
+    "segmentation/SAM/segment-anything-2/sav_dataset/**",
+    "segmentation/SAM/segment-anything-2/tools/**",
     "segmentation/SAM/segment-anything-2/training/**",
+    "segmentation/SAM/sam3/sam3/perflib/tests/**",
     "segmentation/cutie_vos/weights/**",
+    "tracker/features/checkpoint/**",
 ]
 
 [tool.ruff]

@@ -115,6 +115,9 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         tracker_kwargs = {k: v for k, v in tracker_cfg.items() if k in tracker_fields}
         self.tracker_runtime_config = CutieDinoTrackerConfig(**tracker_kwargs)
         super(AnnolidWindow, self).__init__(config=self.config)
+        from annolid.gui.runtime_installer import register_gui_capability_handler
+
+        register_gui_capability_handler()
         self.status_message_requested.connect(self._show_status_message)
 
         # self.flag_dock.setVisible(True)

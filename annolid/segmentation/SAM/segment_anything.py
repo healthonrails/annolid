@@ -7,8 +7,12 @@ import threading
 
 import imgviz
 import numpy as np
-import skimage.measure
 import cv2
+
+try:
+    import skimage.morphology as _skimage_morphology
+except ImportError:
+    _skimage_morphology = None
 from annolid.utils.cancellation import (
     InferenceCancelledError,
     ObservableStopEvent,
@@ -21,10 +25,16 @@ def _require_onnxruntime():
     try:
         import onnxruntime  # type: ignore
     except ModuleNotFoundError as exc:
-        raise ModuleNotFoundError(
-            "Optional dependency 'onnxruntime' is required for ONNX SAM models. "
-            "Install it with: pip install onnxruntime"
-        ) from exc
+        try:
+            from annolid.infrastructure.capabilities import ensure_capability
+
+            ensure_capability("onnx", reason="SAM ONNX interactive segmentation")
+            import onnxruntime  # type: ignore
+        except Exception as install_exc:
+            raise ModuleNotFoundError(
+                "Optional dependency 'onnxruntime' is required for ONNX SAM models. "
+                f"Install it with: pip install 'annolid[onnx]' ({install_exc})"
+            ) from exc
     except ImportError as exc:
         raise ImportError(
             "Failed to import 'onnxruntime'. This usually indicates a broken install "
@@ -385,16 +395,27 @@ def _compute_mask_from_points(
     MIN_SIZE_RATIO = 0.02
     min_size = int(mask.sum() * MIN_SIZE_RATIO)
     if min_size > 0:
-        remove_small_objects_params = inspect.signature(
-            skimage.morphology.remove_small_objects
-        ).parameters
-        if "max_size" in remove_small_objects_params:
-            # New API removes components <= max_size.
-            skimage.morphology.remove_small_objects(
-                mask, max_size=max(min_size - 1, 0), out=mask
-            )
+        if _skimage_morphology is not None:
+            remove_small_objects_params = inspect.signature(
+                _skimage_morphology.remove_small_objects
+            ).parameters
+            if "max_size" in remove_small_objects_params:
+                # New API removes components <= max_size.
+                _skimage_morphology.remove_small_objects(
+                    mask, max_size=max(min_size - 1, 0), out=mask
+                )
+            else:
+                _skimage_morphology.remove_small_objects(
+                    mask, min_size=min_size, out=mask
+                )
         else:
-            skimage.morphology.remove_small_objects(mask, min_size=min_size, out=mask)
+            num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+                mask.astype(np.uint8), connectivity=4
+            )
+            if num_labels > 1:
+                keep = stats[:, cv2.CC_STAT_AREA] >= min_size
+                keep[0] = False
+                mask[:] = keep[labels]
 
     if 0:
         imgviz.io.imsave("mask.jpg", imgviz.label2rgb(mask, imgviz.rgb2gray(image)))

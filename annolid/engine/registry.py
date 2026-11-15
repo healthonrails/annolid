@@ -19,6 +19,9 @@ class ModelPluginBase(ABC):
 
     name: str
     description: str = ""
+    required_capabilities: tuple[str, ...] = ()
+    train_required_capabilities: tuple[str, ...] = ()
+    predict_required_capabilities: tuple[str, ...] = ()
     train_help_sections: tuple[tuple[str, tuple[str, ...]], ...] = ()
     predict_help_sections: tuple[tuple[str, tuple[str, ...]], ...] = ()
     train_examples: tuple[str, ...] = ()
@@ -44,6 +47,35 @@ class ModelPluginBase(ABC):
             return tuple(self.predict_help_sections)
         return ()
 
+    def get_required_capabilities(self, mode: str) -> tuple[str, ...]:
+        label = str(mode or "").strip().lower()
+        mode_caps = (
+            self.train_required_capabilities
+            if label == "train"
+            else self.predict_required_capabilities
+            if label == "predict"
+            else ()
+        )
+        seen: list[str] = []
+        for item in (*self.required_capabilities, *mode_caps):
+            key = str(item or "").strip()
+            if key and key not in seen:
+                seen.append(key)
+        return tuple(seen)
+
+    @classmethod
+    def declared_capabilities(cls) -> tuple[str, ...]:
+        seen: list[str] = []
+        for item in (
+            *cls.required_capabilities,
+            *cls.train_required_capabilities,
+            *cls.predict_required_capabilities,
+        ):
+            key = str(item or "").strip()
+            if key and key not in seen:
+                seen.append(key)
+        return tuple(seen)
+
     @classmethod
     def supports_train(cls) -> bool:
         return (
@@ -65,6 +97,7 @@ class ModelInfo:
     description: str
     supports_train: bool
     supports_predict: bool
+    required_capabilities: tuple[str, ...] = ()
 
 
 _REGISTRY: Dict[str, Type[ModelPluginBase]] = {}
@@ -159,12 +192,15 @@ def list_models(*, load_builtins: bool = True) -> List[ModelInfo]:
         load_entry_point_models()
     out: List[ModelInfo] = []
     for name, cls in sorted(_REGISTRY.items(), key=lambda kv: kv[0]):
+        declared_fn = getattr(cls, "declared_capabilities", None)
+        caps = tuple(declared_fn()) if callable(declared_fn) else ()
         out.append(
             ModelInfo(
                 name=name,
                 description=str(getattr(cls, "description", "") or ""),
                 supports_train=bool(cls.supports_train()),
                 supports_predict=bool(cls.supports_predict()),
+                required_capabilities=caps,
             )
         )
     return out

@@ -3,8 +3,66 @@ from __future__ import annotations
 from hashlib import sha256
 import hashlib
 from pathlib import Path
+import urllib.request
 
-import gdown
+
+def _is_google_drive_url(url: str) -> bool:
+    lowered = str(url or "").strip().lower()
+    return "drive.google.com" in lowered or "docs.google.com" in lowered
+
+
+def _http_chunked_download(url: str, target: Path) -> str:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    part_path = target.with_name(f"{target.name}.part")
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "Annolid-ModelAssets/1.0"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            with part_path.open("wb") as out_f:
+                while True:
+                    chunk = resp.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    out_f.write(chunk)
+        part_path.replace(target)
+    except Exception:
+        part_path.unlink(missing_ok=True)
+        raise
+    return str(target)
+
+
+class _StdlibGdownShim:
+    @staticmethod
+    def cached_download(
+        url: str,
+        path: str,
+        quiet: bool = True,
+        fuzzy: bool = True,
+        **_kwargs: object,
+    ) -> str:
+        global gdown
+        if _is_google_drive_url(url):
+            from annolid.infrastructure.capabilities import ensure_capability
+
+            ensure_capability(
+                "model_downloads",
+                reason="Google Drive model checkpoint download",
+            )
+            import gdown as real_gdown
+
+            gdown = real_gdown
+            return str(
+                real_gdown.cached_download(url, str(path), quiet=quiet, fuzzy=fuzzy)
+            )
+        return _http_chunked_download(url, Path(path))
+
+
+try:
+    import gdown
+except ImportError:
+    gdown = _StdlibGdownShim()  # type: ignore[assignment]
 
 
 def annolid_workspace_dir() -> Path:

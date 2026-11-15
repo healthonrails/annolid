@@ -200,6 +200,14 @@ class ImageEditPlugin(ModelPluginBase):
         )
 
     def predict(self, args: argparse.Namespace) -> int:
+        if str(args.backend).strip().lower() == "diffusers":
+            from annolid.infrastructure.capabilities import ensure_capability
+
+            ensure_capability(
+                "image_editing",
+                reason="annolid-run predict image-edit --backend diffusers",
+            )
+
         from PIL import Image
 
         from annolid.image_editing.errors import ImageEditingError

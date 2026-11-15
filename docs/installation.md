@@ -7,7 +7,7 @@ Annolid currently exposes two main commands after install:
 - `annolid`: launch the desktop GUI
 - `annolid-run`: run model and workflow plugins from the terminal
 
-Annolid requires Python 3.10 or newer and supports Python 3.10 through 3.14 for the default GUI/core workflow. In practice, Python 3.11 or 3.12 remains the safest default for new shared lab environments.
+Annolid requires Python 3.10 or newer and supports Python 3.10 through 3.15 for the default GUI/core workflow. In practice, Python 3.11 or 3.12 remains the safest default for new shared lab environments.
 
 ## Recommended Paths
 
@@ -33,9 +33,9 @@ The one-line installers also validate ONNX Runtime provider selection. On Linux 
 
 Named installer profiles keep common setups reproducible:
 
-- `minimal`: GUI/core annotation setup with the smallest optional footprint
-- `gui`: default GUI plus `ml,tracking,cutie`
-- `workstation`: GUI plus `tracking,sam3,training`
+- `minimal` / `gui` (default): lean desktop GUI and annotation shell (`PySide6-Essentials`); large optional ML, tracking, and embedded viewer packages install on demand when first used
+- `tracking`: GUI plus `ml,tracking,cutie` pre-installed upfront
+- `workstation`: GUI plus `ml,tracking,cutie,sam3,training,webengine,pdf`
 - `full`: GUI plus the `all` extra
 
 Example workstation install:
@@ -151,7 +151,12 @@ pip install -e ".[gui]"
 
 Useful extras currently defined in `pyproject.toml` include:
 
-- `gui`: Qt bindings for the desktop application
+- `gui`: lightweight Qt desktop bindings (`PySide6-Essentials`)
+- `webengine`: Qt WebEngine add-ons (`PySide6-Addons`) for embedded PDF.js, Three.js 3D, and web dashboards
+- `onnx`: ONNX Runtime for interactive SAM, TapNext, and VideoMT inference
+- `scientific`: `scipy`, `scikit-learn`, and `scikit-image` for clustering, PCA, and morphology
+- `pdf`: `pymupdf` for PDF rendering and page import
+- `model_downloads`: `gdown` helper for Google Drive hosted checkpoints
 - `ml`: general ML/model runtime dependencies such as PyTorch, Transformers, Hugging Face Hub, ONNX Runtime, Hydra/OmegaConf, and COCO tooling
 - `test`: dependencies needed to import and run the default test collection
 - `audio`: audio loading/playback helpers (`librosa`, `sounddevice`)
@@ -170,6 +175,7 @@ Useful extras currently defined in `pyproject.toml` include:
 - `mediapipe`: MediaPipe-based workflows
 - `cowtracker`: CowTracker backend dependency
 - `remote_video`: network/remote video decoding through `ffpyplayer`
+- `sleap`: SLEAP HDF5 (`.slp` / `.h5`) annotation import support (`h5py`)
 - `annolid_bot`: Annolid Bot integrations such as MCP, Playwright, WhatsApp bridge support, and Google Drive/Calendar dependencies
 - `bot`: Annolid Bot integrations plus memory dependencies
 - `memory`: vector database dependencies for fast Annolid Bot memory
@@ -182,10 +188,21 @@ pip install -e ".[gui,sam3,yolo,training,ai_chat]"
 ```
 
 Annolid's base package includes `pycocotools` so mask/RLE polygon paths are
-available in default installs. The one-line installer's default `gui` profile
-also installs the `ml`, `tracking`, and `cutie` extras so common model and
-tracking workflows are available immediately. Use `--profile minimal` /
-`-Profile minimal` only when you need the smallest GUI/core annotation setup.
+available in default installs. Both `pip install "annolid[gui]"` and the one-line
+installer's default `gui` profile keep the initial download small and fast. When
+you first launch an optional model, tracker, or embedded viewer in a writable
+Python environment, Annolid prompts with a non-blocking runtime installer (or
+installs on demand via `annolid-run`). You can also manage optional runtimes at
+any time from **Settings → Runtime & Optional Packages…** or from the CLI:
+
+```bash
+annolid-run runtime status
+annolid-run runtime profiles
+annolid-run runtime install tracking sam3
+```
+
+Use `--profile tracking` or `--profile workstation` when provisioning offline or
+shared lab machines that should download heavy model stacks upfront.
 
 SAM-related packages, hosted AI providers, realtime hardware, large-image
 backends, Bot integrations, audio helpers, image editing, and text-to-speech
@@ -217,13 +234,20 @@ If those native libraries are missing, Annolid falls back to `tifffile` when ava
 
 ### Note on `remote_video`
 
-`remote_video` is optional. Annolid's default install does not require `ffpyplayer`, which keeps Python 3.14 installs from failing when no compatible `ffpyplayer` wheel is available. Install it only if you use Annolid's network/remote video decoding path:
+`remote_video` is optional. Annolid's default install does not require `ffpyplayer`, which keeps Python 3.14+ installs from failing when no compatible `ffpyplayer` wheel is available. Install it only if you use Annolid's network/remote video decoding path:
 
 ```bash
 pip install -e ".[remote_video]"
 ```
 
-On Python 3.14, `ffpyplayer` may build from source and require native FFmpeg development headers such as `libpostproc`.
+On Python 3.14 and 3.15, `ffpyplayer` may build from source and require native FFmpeg development headers such as `libpostproc`.
+
+### Note on Python 3.15+ Wheel Coverage
+
+On Python 3.10 through 3.14, `h5py` and `scikit-image` are installed automatically in the base dependency set. On Python 3.15+, both packages are gated out of the base install (`python_version < "3.15"`) so `pip install "annolid[gui]"` does not fail attempting native `libhdf5` or Meson/C++ source builds before upstream `cp315` wheels are available:
+
+- Mask rendering, binary polygon rasterization, and shape skeletonization fall back automatically to OpenCV/SciPy when `scikit-image` is absent.
+- SLEAP `.slp` / `.h5` import raises an explicit install hint when `h5py` is absent; install `pip install "annolid[sleap]"` (or `pip install h5py` with HDF5 headers/wheels) if you need SLEAP HDF5 conversion on Python 3.15+.
 
 ## Verify the Install
 

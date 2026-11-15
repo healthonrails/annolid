@@ -75,6 +75,7 @@ _ROOT_COMMAND_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "Utilities",
         (
+            "runtime",
             "validate-agent-output",
             "validate-agent-tools",
             "citations-list",
@@ -324,6 +325,10 @@ def _collect_root_command_help(
             command_help[str(choice_action.dest)] = str(
                 choice_action.help or ""
             ).strip()
+    command_help.setdefault(
+        "runtime",
+        "Inspect and install optional on-demand runtime packages and profiles.",
+    )
     command_help.setdefault("memory", "Memory inspection and maintenance commands.")
     return command_help
 
@@ -337,6 +342,7 @@ def _format_root_help(parser: argparse.ArgumentParser) -> str:
         "",
         "Quick start:",
         "  annolid-run list-models",
+        "  annolid-run runtime status",
         "  annolid-run dinov3-models --list",
         "  annolid-run train <model> --help-model",
         "  annolid-run predict <model> --help-model",
@@ -385,6 +391,7 @@ def _cmd_list_models(_: argparse.Namespace) -> int:
             "name": m.name,
             "train": m.supports_train,
             "predict": m.supports_predict,
+            "capabilities": list(m.required_capabilities),
             "description": m.description,
         }
         for m in list_models(load_builtins=False)
@@ -1670,9 +1677,220 @@ def _cmd_update_rollback(args: argparse.Namespace) -> int:
     return exit_code
 
 
+def _cmd_runtime_cli(argv: list[str]) -> int:
+    from annolid.infrastructure.capabilities import (
+        CAPABILITIES,
+        INSTALL_PROFILES,
+        _build_smart_install_plan,
+        _missing_dependencies,
+        capability_status_dict,
+        check_capability,
+        detect_accelerator_summary,
+        install_capability_stream,
+        install_profile_stream,
+        list_capabilities,
+    )
+
+    parser = argparse.ArgumentParser(
+        prog="annolid-run runtime",
+        description=(
+            "Inspect and install optional Annolid runtime packages and profiles on demand."
+        ),
+        formatter_class=_AnnolidHelpFormatter,
+    )
+    sub = parser.add_subparsers(dest="runtime_cmd")
+
+    status_p = sub.add_parser(
+        "status",
+        help="Show accelerator info and installed/missing optional capabilities.",
+    )
+    status_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit structured JSON output.",
+    )
+
+    profiles_p = sub.add_parser(
+        "profiles",
+        help="List named install profiles (minimal, gui, tracking, workstation, full).",
+    )
+    profiles_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit structured JSON output.",
+    )
+
+    install_p = sub.add_parser(
+        "install",
+        help="Install one or more optional capabilities or a named profile.",
+    )
+    install_p.add_argument(
+        "targets",
+        nargs="*",
+        help="Capability or profile names (e.g. tracking sam3 webengine pdf).",
+    )
+    install_p.add_argument(
+        "--profile",
+        choices=tuple(sorted(INSTALL_PROFILES)),
+        default=None,
+        help="Named install profile to install.",
+    )
+    install_p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print resolved install commands without executing them.",
+    )
+
+    effective_argv = argv if argv else ["status"]
+    if effective_argv in (["-h"], ["--help"]):
+        parser.print_help()
+        return 0
+    args = parser.parse_args(effective_argv)
+    cmd = str(args.runtime_cmd or "status")
+
+    if cmd == "status":
+        env_info = detect_accelerator_summary()
+        statuses = [check_capability(name) for name in list_capabilities()]
+        if bool(args.json):
+            payload = {
+                "environment": env_info,
+                "capabilities": [capability_status_dict(st) for st in statuses],
+            }
+            print(json.dumps(payload, indent=2))
+            return 0
+        print(
+            f"Environment: Python {env_info['python_version']} "
+            f"({env_info['python_executable']}) | "
+            f"accelerator={env_info['accelerator']} | "
+            f"writable={env_info['writable']}"
+        )
+        print("")
+        print(f"{'CAPABILITY':<18} {'STATUS':<11} {'~MB':>5}  DESCRIPTION")
+        print("-" * 80)
+        for st in statuses:
+            state_label = "installed" if st.available else "missing"
+            print(
+                f"{st.name:<18} {state_label:<11} {st.approx_download_mb:>5}  {st.description}"
+            )
+        return 0
+
+    if cmd == "profiles":
+        rows = []
+        for pname, pmeta in INSTALL_PROFILES.items():
+            caps = [str(c) for c in pmeta.get("capabilities", ())]  # type: ignore[union-attr]
+            missing_caps = [c for c in caps if not check_capability(c).available]
+            rows.append(
+                {
+                    "profile": pname,
+                    "ready": len(missing_caps) == 0,
+                    "capabilities": caps,
+                    "missing_capabilities": missing_caps,
+                    "extras": list(pmeta.get("extras", ())),  # type: ignore[arg-type]
+                    "description": str(pmeta.get("description", "")),
+                }
+            )
+        if bool(args.json):
+            print(json.dumps(rows, indent=2))
+            return 0
+        print(f"{'PROFILE':<14} {'READY':<8} CAPABILITIES / DESCRIPTION")
+        print("-" * 80)
+        for row in rows:
+            ready_label = "yes" if row["ready"] else "no"
+            caps_str = (
+                ", ".join(row["capabilities"])
+                if row["capabilities"]
+                else "(core GUI only)"
+            )
+            print(f"{row['profile']:<14} {ready_label:<8} {caps_str}")
+            print(f"{'':<23} {row['description']}")
+        return 0
+
+    if cmd == "install":
+        requested_profiles: list[str] = []
+        requested_caps: list[str] = []
+        if args.profile:
+            requested_profiles.append(str(args.profile).strip().lower())
+        for raw_target in list(args.targets or ()):
+            for token in str(raw_target).split(","):
+                key = token.strip().lower()
+                if not key:
+                    continue
+                if key in CAPABILITIES:
+                    if key not in requested_caps:
+                        requested_caps.append(key)
+                elif key in INSTALL_PROFILES:
+                    if key not in requested_profiles:
+                        requested_profiles.append(key)
+                else:
+                    known_caps = ", ".join(list_capabilities())
+                    known_profiles = ", ".join(sorted(INSTALL_PROFILES))
+                    print(
+                        f"[annolid-run] Unknown capability or profile {key!r}.\n"
+                        f"  Capabilities: {known_caps}\n"
+                        f"  Profiles:     {known_profiles}",
+                        file=sys.stderr,
+                    )
+                    return 2
+        for pname in requested_profiles:
+            for cap in INSTALL_PROFILES[pname]["capabilities"]:  # type: ignore[index]
+                cap_key = str(cap)
+                if cap_key not in requested_caps:
+                    requested_caps.append(cap_key)
+        if not requested_caps and not requested_profiles:
+            install_p.print_help()
+            return 2
+
+        if bool(args.dry_run):
+            all_missing = []
+            seen_pkgs: set[str] = set()
+            for cap_key in requested_caps:
+                for dep in _missing_dependencies(CAPABILITIES[cap_key]):
+                    if dep.package_spec not in seen_pkgs:
+                        seen_pkgs.add(dep.package_spec)
+                        all_missing.append(dep)
+            if not all_missing:
+                print("All requested capabilities are already installed.")
+                return 0
+            _, steps = _build_smart_install_plan(tuple(all_missing))
+            for primary_cmd, _fallback in steps:
+                print(" ".join(primary_cmd))
+            return 0
+
+        def _echo(line: str) -> None:
+            sys.stdout.write(line if line.endswith("\n") else line + "\n")
+            sys.stdout.flush()
+
+        installed_specs: list[str] = []
+        if requested_profiles and not args.targets and len(requested_profiles) == 1:
+            specs = install_profile_stream(requested_profiles[0], on_output=_echo)
+            installed_specs.extend(specs)
+        else:
+            for cap_key in requested_caps:
+                specs = install_capability_stream(
+                    cap_key,
+                    auto_install=True,
+                    on_output=_echo,
+                )
+                for spec in specs:
+                    if spec not in installed_specs:
+                        installed_specs.append(spec)
+        if not installed_specs:
+            print("All requested runtime capabilities are already installed.")
+        else:
+            print(f"Installed {len(installed_specs)} package specification(s).")
+        return 0
+
+    parser.print_help()
+    return 2
+
+
 def _dispatch_operator_commands(argv: list[str]) -> Optional[int]:
     if not argv:
         return None
+
+    # annolid-run runtime ...
+    if argv[0] == "runtime":
+        return _cmd_runtime_cli(argv[1:])
 
     # annolid-run memory ...
     if argv[0] == "memory":
@@ -3728,6 +3946,15 @@ def _dispatch_model_subcommand(
             mode="train",
         )
         args = p.parse_args(list(resolved_argv))
+        get_caps = getattr(plugin, "get_required_capabilities", None)
+        if callable(get_caps):
+            from annolid.infrastructure.capabilities import ensure_capability
+
+            for cap_name in get_caps("train"):
+                ensure_capability(
+                    cap_name,
+                    reason=f"annolid-run train {model_name}",
+                )
         return int(plugin.train(args))
 
     if mode == "predict":
@@ -3750,6 +3977,15 @@ def _dispatch_model_subcommand(
             p.print_help()
             return 0
         args = p.parse_args(argv)
+        get_caps = getattr(plugin, "get_required_capabilities", None)
+        if callable(get_caps):
+            from annolid.infrastructure.capabilities import ensure_capability
+
+            for cap_name in get_caps("predict"):
+                ensure_capability(
+                    cap_name,
+                    reason=f"annolid-run predict {model_name}",
+                )
         return int(plugin.predict(args))
 
     raise SystemExit(f"Unknown mode: {mode}")

@@ -34,10 +34,19 @@ INSTANCE_TYPE_PREDICTED = 1
 
 
 def _require_h5py() -> Any:
+    global h5py
     if h5py is None:
-        raise ImportError(
-            "Missing optional dependency: h5py. Install with: pip install h5py"
-        )
+        try:
+            from annolid.infrastructure.capabilities import ensure_capability
+
+            ensure_capability("sleap", reason="SLEAP HDF5 (.slp/.h5) import")
+            import h5py as _h5py
+
+            h5py = _h5py
+        except Exception as exc:
+            raise ImportError(
+                "Missing optional dependency: h5py. Install with: pip install 'annolid[sleap]'"
+            ) from exc
     return h5py
 
 

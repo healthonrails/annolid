@@ -151,6 +151,10 @@ def ensure_pdf_manager(window):
     manager = getattr(window, "pdf_manager", None)
     if manager is not None:
         return manager
+    from annolid.gui.runtime_installer import ensure_gui_capability
+
+    parent = window if isinstance(window, QtWidgets.QWidget) else None
+    ensure_gui_capability(parent, "pdf", feature_title="PDF Reader & Page Import")
     from annolid.gui.widgets.pdf_manager import PdfManager
 
     manager = PdfManager(window, window._viewer_stack)
@@ -162,6 +166,18 @@ def ensure_web_manager(window):
     manager = getattr(window, "web_manager", None)
     if manager is not None:
         return manager
+    import importlib
+    import sys
+    from annolid.gui.runtime_installer import ensure_gui_capability
+
+    parent = window if isinstance(window, QtWidgets.QWidget) else None
+    installed = ensure_gui_capability(
+        parent, "webengine", feature_title="Embedded Web Viewer"
+    )
+    if installed and "annolid.gui.widgets.web_viewer" in sys.modules:
+        wv_mod = sys.modules["annolid.gui.widgets.web_viewer"]
+        if not getattr(wv_mod, "_WEBENGINE_AVAILABLE", False):
+            importlib.reload(wv_mod)
     from annolid.gui.widgets.web_manager import WebManager
 
     manager = WebManager(window, window._viewer_stack)
@@ -173,6 +189,18 @@ def ensure_threejs_manager(window):
     manager = getattr(window, "threejs_manager", None)
     if manager is not None:
         return manager
+    import importlib
+    import sys
+    from annolid.gui.runtime_installer import ensure_gui_capability
+
+    parent = window if isinstance(window, QtWidgets.QWidget) else None
+    installed = ensure_gui_capability(
+        parent, "webengine", feature_title="Three.js 3D Viewer"
+    )
+    if installed and "annolid.gui.widgets.threejs_viewer" in sys.modules:
+        tv_mod = sys.modules["annolid.gui.widgets.threejs_viewer"]
+        if not getattr(tv_mod, "_WEBENGINE_AVAILABLE", False):
+            importlib.reload(tv_mod)
     from annolid.gui.widgets.threejs_manager import ThreeJsManager
 
     manager = ThreeJsManager(window, window._viewer_stack)

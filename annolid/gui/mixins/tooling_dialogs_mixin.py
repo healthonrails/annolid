@@ -100,6 +100,12 @@ class ToolingDialogsMixin:
         dlg = LogManagerDialog(parent=self)
         dlg.exec_()
 
+    def open_runtime_manager_dialog(self) -> None:
+        from annolid.gui.widgets.runtime_manager_dialog import RuntimeManagerDialog
+
+        dlg = RuntimeManagerDialog(parent=self)
+        dlg.exec_()
+
     def _set_active_view(self, mode: str = "canvas") -> None:
         logger.debug("Switching active view to: %s", mode)
         # Toggle main toolbar visibility.

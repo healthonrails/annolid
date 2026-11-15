@@ -159,7 +159,9 @@ def main() -> None:
     parser.add_argument("--install-dir", type=Path, required=True)
     parser.add_argument("--venv-path", type=Path, required=True)
     parser.add_argument(
-        "--profile", choices=("minimal", "gui", "workstation", "full"), required=True
+        "--profile",
+        choices=("minimal", "gui", "tracking", "workstation", "full"),
+        required=True,
     )
     parser.add_argument("--extras", default="")
     parser.add_argument("--no-gpu", action="store_true")

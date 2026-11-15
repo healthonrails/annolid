@@ -10,8 +10,8 @@
 # Options:
 #   --install-dir DIR   Directory to install annolid (default: ./annolid)
 #   --venv-dir DIR      Directory for virtual environment (default: .venv inside install-dir)
-#   --profile PROFILE   Install profile: minimal,gui,workstation,full (default: gui)
-#   --extras EXTRAS     Comma-separated optional extras: audio,ai_chat,training,ml,tracking,yolo,cutie,realtime,large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot,bot,memory,all (GUI extras are always included)
+#   --profile PROFILE   Install profile: minimal,gui,tracking,workstation,full (default: gui)
+#   --extras EXTRAS     Comma-separated optional extras: webengine,onnx,scientific,pdf,model_downloads,sleap,audio,ai_chat,training,ml,tracking,yolo,cutie,realtime,large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot,bot,memory,all (GUI extras are always included)
 #   --no-gpu            Skip GPU/CUDA detection
 #   --use-conda         Use conda instead of venv (requires conda/mamba)
 #   --no-interactive    Skip all prompts and use defaults
@@ -41,6 +41,7 @@ INSTALL_REPORT_PATH=""
 SAM_HQ_STATUS="not_requested"
 FAILED_OPTIONAL_STEPS=""
 PYTORCH_CUDA_INDEX_URL="https://download.pytorch.org/whl/cu124"
+PYTORCH_CPU_INDEX_URL="https://download.pytorch.org/whl/cpu"
 ONNXRUNTIME_CUDA12_EXTRA_INDEX_URL="https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/"
 
 # Colors for output
@@ -104,8 +105,8 @@ Usage:
 Options:
   --install-dir DIR   Directory to install annolid (default: ./annolid)
   --venv-dir DIR      Directory for virtual environment (default: .venv inside install-dir)
-  --profile PROFILE   Install profile: minimal,gui,workstation,full (default: gui)
-  --extras EXTRAS     Comma-separated optional extras: audio,ai_chat,training,ml,tracking,yolo,cutie,realtime,large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot,bot,memory,all
+  --profile PROFILE   Install profile: minimal,gui,tracking,workstation,full (default: gui)
+  --extras EXTRAS     Comma-separated optional extras: webengine,onnx,scientific,pdf,model_downloads,sleap,audio,ai_chat,training,ml,tracking,yolo,cutie,realtime,large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot,bot,memory,all
   --no-gpu            Skip GPU/CUDA detection and install CPU ONNX Runtime
   --use-conda         Use conda instead of venv (requires conda/mamba)
   --no-interactive    Skip prompts and use defaults
@@ -319,7 +320,7 @@ check_git() {
 check_python() {
     print_step "Checking Python installation..."
 
-    PREFERRED_VERSIONS=("3.11" "3.12" "3.13" "3.14" "3.10")
+    PREFERRED_VERSIONS=("3.11" "3.12" "3.13" "3.14" "3.15" "3.10")
     PYTHON_CMD=""
     PYTHON_VERSION=""
 
@@ -341,10 +342,10 @@ check_python() {
         for cmd in "python3" "python"; do
             if command -v "$cmd" &> /dev/null; then
                 PYTHON_VERSION=$($cmd -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)
-                PYTHON_MAJOR=$($cmd -c 'import sys; print(sys.version_info.major)')
-                PYTHON_MINOR=$($cmd -c 'import sys; print(sys.version_info.minor)')
+                PYTHON_MAJOR=$($cmd -c 'import sys; print(sys.version_info.major)' 2>/dev/null)
+                PYTHON_MINOR=$($cmd -c 'import sys; print(sys.version_info.minor)' 2>/dev/null)
 
-                if [[ "$PYTHON_MAJOR" -ge 3 && "$PYTHON_MINOR" -ge 10 ]]; then
+                if [[ -n "$PYTHON_MAJOR" && -n "$PYTHON_MINOR" ]] && { [[ "$PYTHON_MAJOR" -gt 3 ]] || [[ "$PYTHON_MAJOR" -eq 3 && "$PYTHON_MINOR" -ge 10 ]]; }; then
                     PYTHON_CMD="$cmd"
                     echo "  Found: $PYTHON_CMD (version $PYTHON_VERSION)"
                     break
@@ -354,6 +355,17 @@ check_python() {
     fi
 
     if [[ -z "$PYTHON_CMD" ]]; then
+        if [[ "$USE_CONDA" == true ]]; then
+            print_info "System Python $PYTHON_MIN_VERSION+ not found; Conda will provision Python 3.11."
+            return
+        elif [[ "$USE_UV" == true ]]; then
+            print_info "System Python $PYTHON_MIN_VERSION+ not found; uv will provision Python 3.11."
+            PYTHON_VERSION="3.11"
+            USE_UV_PYTHON=true
+            print_success "Will use uv to create venv with Python 3.11"
+            return
+        fi
+
         print_error "Python $PYTHON_MIN_VERSION or higher not found."
         echo ""
         echo "Installation instructions:"
@@ -375,11 +387,11 @@ check_python() {
         exit 1
     fi
 
-    if [[ "$PYTHON_MAJOR" -eq 3 && "$PYTHON_MINOR" -eq 14 ]]; then
-        print_info "Python 3.14 detected. Annolid supports the default GUI/core install on Python 3.14."
+    if [[ "$PYTHON_MAJOR" -eq 3 && ( "$PYTHON_MINOR" -eq 14 || "$PYTHON_MINOR" -eq 15 ) ]]; then
+        print_info "Python $PYTHON_VERSION detected. Annolid supports the default GUI/core install on Python $PYTHON_VERSION."
         print_info "Remote network video decoding still needs the optional remote_video extra and native FFmpeg development libraries."
-    elif [[ "$PYTHON_MAJOR" -gt 3 || ( "$PYTHON_MAJOR" -eq 3 && "$PYTHON_MINOR" -ge 15 ) ]]; then
-        print_warning "Python $PYTHON_VERSION detected. Annolid is not yet validated on Python 3.15+."
+    elif [[ "$PYTHON_MAJOR" -gt 3 || ( "$PYTHON_MAJOR" -eq 3 && "$PYTHON_MINOR" -ge 16 ) ]]; then
+        print_warning "Python $PYTHON_VERSION detected. Annolid is not yet validated on Python 3.16+."
         echo ""
         echo "  Recommended: Install Python 3.11 or 3.12 for best compatibility."
         if [[ "$OS_TYPE" == "macos" ]]; then
@@ -663,17 +675,20 @@ profile_extras() {
             echo ""
             ;;
         gui)
+            echo ""
+            ;;
+        tracking)
             echo "ml,tracking,cutie"
             ;;
         workstation)
-            echo "tracking,sam3,training"
+            echo "ml,tracking,cutie,sam3,training,webengine,pdf"
             ;;
         full)
             echo "all"
             ;;
         *)
             print_error "Unknown install profile: $PROFILE"
-            echo "  Supported profiles: minimal, gui, workstation, full"
+            echo "  Supported profiles: minimal, gui, tracking, workstation, full"
             exit 1
             ;;
     esac
@@ -827,16 +842,6 @@ install_annolid() {
     echo "  Upgrading pip..."
     $PIP_CMD install --upgrade pip
 
-    if [[ "$HAS_NVIDIA_GPU" == true ]]; then
-        echo "  Installing CUDA-enabled PyTorch..."
-        if $PIP_CMD install --index-url "$PYTORCH_CUDA_INDEX_URL" torch torchvision; then
-            print_success "CUDA-enabled PyTorch installed"
-        else
-            print_warning "CUDA-enabled PyTorch install failed. Falling back to default PyTorch build."
-            $PIP_CMD install torch torchvision
-        fi
-    fi
-
     # GUI dependencies are always installed so `annolid` can launch immediately.
     PROFILE_EXTRAS="$(profile_extras)"
     NORMALIZED_EXTRAS="$(merge_extras "$PROFILE_EXTRAS" "$EXTRAS")"
@@ -844,6 +849,25 @@ install_annolid() {
     INSTALL_TARGET="-e .[${INSTALL_EXTRAS}]"
     echo "  Profile: $PROFILE"
     echo "  Including extras: $INSTALL_EXTRAS"
+
+    if needs_pytorch_runtime; then
+        if [[ "$HAS_NVIDIA_GPU" == true && "$NO_GPU" == false ]]; then
+            echo "  Installing CUDA-enabled PyTorch..."
+            if $PIP_CMD install --index-url "$PYTORCH_CUDA_INDEX_URL" torch torchvision; then
+                print_success "CUDA-enabled PyTorch installed"
+            else
+                print_warning "CUDA-enabled PyTorch install failed. Falling back to default PyTorch build."
+                $PIP_CMD install torch torchvision
+            fi
+        elif [[ "$OS_TYPE" == "linux" ]]; then
+            echo "  Installing lightweight CPU PyTorch wheel for non-GPU Linux..."
+            if ! $PIP_CMD install --index-url "$PYTORCH_CPU_INDEX_URL" torch torchvision; then
+                $PIP_CMD install torch torchvision
+            fi
+        fi
+    else
+        print_info "Skipping upfront PyTorch download for lean profile ($PROFILE); ML runtimes install on demand when first used."
+    fi
 
     echo "  Installing annolid (this may take a few minutes)..."
     $PIP_CMD install $INSTALL_TARGET
@@ -863,7 +887,11 @@ install_annolid() {
         print_info "Skipping optional SAM-HQ install. Add --extras sam3 when needed."
     fi
 
-    install_onnx_runtime
+    if needs_onnx_runtime; then
+        install_onnx_runtime
+    else
+        print_info "Skipping upfront ONNX Runtime install for lean profile ($PROFILE); ONNX installs on demand when first used."
+    fi
 
     print_success "Annolid installed"
 }
@@ -872,6 +900,17 @@ extra_selected() {
     local needle="$1"
     local selected=",${INSTALL_EXTRAS},"
     [[ "$selected" == *",${needle},"* ]]
+}
+
+needs_pytorch_runtime() {
+    extra_selected "ml" || extra_selected "tracking" || extra_selected "cutie" || \
+        extra_selected "sam3" || extra_selected "yolo" || extra_selected "image_editing" || \
+        extra_selected "qwen3_embedding" || extra_selected "all"
+}
+
+needs_onnx_runtime() {
+    extra_selected "onnx" || extra_selected "onnx_gpu" || extra_selected "ml" || \
+        extra_selected "tracking" || extra_selected "all"
 }
 
 # =============================================================================
@@ -918,24 +957,30 @@ validate_installation() {
     fi
 
     echo "  Checking ONNX Runtime providers..."
-    python -c "import onnxruntime as ort; providers = ort.get_available_providers(); print(f'  ONNX providers: {providers}')"
+    if needs_onnx_runtime; then
+        python -c "import onnxruntime as ort; providers = ort.get_available_providers(); print(f'  ONNX providers: {providers}')"
 
-    if [[ "$HAS_NVIDIA_GPU" == true && "$HAS_CUDA12" == true && "$NO_GPU" == false ]]; then
-        echo "  Verifying CUDAExecutionProvider..."
-        if python -c "import onnxruntime as ort; providers = set(ort.get_available_providers()); assert 'CUDAExecutionProvider' in providers, f'Missing CUDAExecutionProvider. Providers={providers}'"; then
-            print_success "CUDAExecutionProvider available"
-        else
-            print_error "CUDAExecutionProvider is missing despite CUDA 12.x detection."
-            echo "  Repair command:"
-            echo "    $PIP_CMD install --upgrade --force-reinstall onnxruntime-gpu --extra-index-url $ONNXRUNTIME_CUDA12_EXTRA_INDEX_URL"
-            exit 1
+        if [[ "$HAS_NVIDIA_GPU" == true && "$HAS_CUDA12" == true && "$NO_GPU" == false ]]; then
+            echo "  Verifying CUDAExecutionProvider..."
+            if python -c "import onnxruntime as ort; providers = set(ort.get_available_providers()); assert 'CUDAExecutionProvider' in providers, f'Missing CUDAExecutionProvider. Providers={providers}'"; then
+                print_success "CUDAExecutionProvider available"
+            else
+                print_error "CUDAExecutionProvider is missing despite CUDA 12.x detection."
+                echo "  Repair command:"
+                echo "    $PIP_CMD install --upgrade --force-reinstall onnxruntime-gpu --extra-index-url $ONNXRUNTIME_CUDA12_EXTRA_INDEX_URL"
+                exit 1
+            fi
+        elif [[ "$IS_APPLE_SILICON" == true && "$NO_GPU" == false ]]; then
+            if python -c "import onnxruntime as ort; raise SystemExit(0 if 'CoreMLExecutionProvider' in set(ort.get_available_providers()) else 1)"; then
+                print_success "CoreMLExecutionProvider available"
+            else
+                print_warning "CoreMLExecutionProvider is not available; ONNX models will use CPUExecutionProvider."
+            fi
         fi
-    elif [[ "$IS_APPLE_SILICON" == true && "$NO_GPU" == false ]]; then
-        if python -c "import onnxruntime as ort; raise SystemExit(0 if 'CoreMLExecutionProvider' in set(ort.get_available_providers()) else 1)"; then
-            print_success "CoreMLExecutionProvider available"
-        else
-            print_warning "CoreMLExecutionProvider is not available; ONNX models will use CPUExecutionProvider."
-        fi
+    elif python -c "import onnxruntime as ort; providers = ort.get_available_providers(); print(f'  ONNX providers: {providers}')" 2>/dev/null; then
+        :
+    else
+        print_info "ONNX Runtime not installed; optional ONNX features will install on first use."
     fi
 
     print_success "Installation validated"

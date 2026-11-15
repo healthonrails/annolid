@@ -4,19 +4,21 @@ This document defines Annolid's install tiers, optional runtime contract, frozen
 
 ## Install Tiers
 
-Annolid keeps the default one-line installer useful for common tracking/model workflows while preserving a `minimal` profile for smaller GUI-only setup.
+Annolid keeps core and desktop GUI installs small and fast to start, while installing large optional model/viewer stacks on demand (or upfront via named profiles).
 
 | Tier | Command | Contract |
 |---|---|---|
 | Core | `pip install annolid` | Import-safe core package for non-GUI workflows and library use. Includes `pycocotools` so mask/RLE polygon paths are available by default. |
-| GUI | `pip install "annolid[gui]"` | Desktop annotation GUI binding. The one-line installer's default `gui` profile also installs `ml`, `tracking`, and `cutie`. |
+| GUI | `pip install "annolid[gui]"` | Lean desktop annotation GUI (`PySide6-Essentials`). Embedded WebEngine/3D/PDF viewers and ML stacks install on demand when opened. |
+| WebEngine | `pip install "annolid[webengine]"` | `PySide6-Addons` for embedded PDF.js, Three.js 3D, and embedded web dashboards (ABI-matched to the installed `PySide6-Essentials` version). |
+| ONNX | `pip install "annolid[onnx]"` | ONNX Runtime for interactive SAM, TapNext, and VideoMT inference. |
 | ML | `pip install "annolid[ml]"` | General model runtime tier: PyTorch, TorchVision, Transformers, Hugging Face Hub, ONNX Runtime, Hydra/OmegaConf, COCO tooling, and shared model helpers. |
 | Tracking | `pip install "annolid[tracking]"` | Maintained tracking workstation tier with PyTorch, ONNX Runtime, Cutie-style config dependencies, YOLO matching helpers, and related image/model utilities. |
 | Training | `pip install "annolid[training]"` | Training dashboard support such as TensorBoard. |
 | Bot | `pip install "annolid[bot]"` | Annolid Bot providers, channel integrations, MCP/browser automation helpers, and memory dependencies. |
 | Full | `pip install "annolid[all]"` | Convenience tier for fully provisioned lab machines where install size is less important than breadth. |
 
-Feature-specific extras such as `cutie`, `sam3`, `yolo`, `large_image`, `remote_video`, `audio`, `text_to_speech`, `image_editing`, `ai_chat`, and `realtime` remain available for narrower installs.
+Feature-specific extras such as `scientific`, `pdf`, `model_downloads`, `sleap`, `cutie`, `sam3`, `yolo`, `large_image`, `remote_video`, `audio`, `text_to_speech`, `image_editing`, `ai_chat`, and `realtime` remain available for narrower installs.
 
 ## One-Line Installer Profiles
 
@@ -25,11 +27,12 @@ The macOS/Linux and Windows one-line installers expose stable profiles:
 | Profile | Extras |
 |---|---|
 | `minimal` | `gui` only |
-| `gui` | `gui,ml,tracking,cutie` |
-| `workstation` | `gui,tracking,sam3,training` |
+| `gui` | `gui` only (default; optional runtimes install on demand) |
+| `tracking` | `gui,ml,tracking,cutie` |
+| `workstation` | `gui,ml,tracking,cutie,sam3,training,webengine,pdf` |
 | `full` | `gui,all` |
 
-The default profile is `gui`. SAM-HQ is attempted only when a SAM-related extra such as `sam`, `sam3`, `segment_anything`, or `all` is selected. This keeps default installs independent of optional GitHub source installs.
+The default profile is `gui`. PyTorch and ONNX Runtime are installed upfront only when an ML/ONNX extra or profile (`tracking`, `workstation`, `full`) is selected; SAM-HQ is attempted only when a SAM-related extra such as `sam`, `sam3`, `segment_anything`, or `all` is selected. This keeps default installs small, fast, and independent of multi-gigabyte model downloads until needed.
 
 Each successful installer run writes `annolid-install-report.json` in the install directory. The report includes the selected profile, resolved extras, Python version, OS, architecture, package manager, GPU decision, ONNX Runtime providers, SAM-HQ status, and failed optional steps.
 

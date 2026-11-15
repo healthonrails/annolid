@@ -2,7 +2,14 @@ from __future__ import annotations
 
 from typing import Tuple
 
-import torch
+
+def _torch_module():
+    try:
+        import torch
+
+        return torch
+    except ImportError:
+        return None
 
 
 def parse_layers(value: str) -> Tuple[int, ...]:
@@ -19,6 +26,9 @@ def parse_layers(value: str) -> Tuple[int, ...]:
 
 
 def default_device() -> str:
+    torch = _torch_module()
+    if torch is None:
+        return "cpu"
     if torch.cuda.is_available():
         return "cuda"
     if torch.backends.mps.is_available():
@@ -45,9 +55,10 @@ def normalize_device(device: str | None) -> str:
         return default_device()
 
     if lowered.isdigit():
-        if torch.cuda.is_available():
+        torch = _torch_module()
+        if torch is not None and torch.cuda.is_available():
             return f"cuda:{int(lowered)}"
-        if torch.backends.mps.is_available():
+        if torch is not None and torch.backends.mps.is_available():
             return "mps"
         return "cpu"
 

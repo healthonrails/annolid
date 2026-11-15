@@ -9,15 +9,15 @@
 # Options:
 #   -InstallDir DIR      Directory to install annolid (default: .\annolid)
 #   -VenvDir DIR         Directory for virtual environment (default: .venv)
-#   -Profile PROFILE     Install profile: minimal, gui, workstation, full (default: gui)
-#   -Extras EXTRAS       Comma-separated extras: audio,ai_chat,training,ml,tracking,yolo,cutie,realtime,large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot,bot,memory,all (GUI extras are always included)
+#   -Profile PROFILE     Install profile: minimal, gui, tracking, workstation, full (default: gui)
+#   -Extras EXTRAS       Comma-separated extras: webengine,onnx,scientific,pdf,model_downloads,sleap,audio,ai_chat,training,ml,tracking,yolo,cutie,realtime,large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot,bot,memory,all (GUI extras are always included)
 #   -NoGpu               Skip GPU/CUDA detection
 #   -NoInteractive       Skip all prompts and use defaults
 
 param(
     [string]$InstallDir = "",
     [string]$VenvDir = ".venv",
-    [ValidateSet("minimal", "gui", "workstation", "full")]
+    [ValidateSet("minimal", "gui", "tracking", "workstation", "full")]
     [string]$Profile = "gui",
     [string]$Extras = "",
     [switch]$NoGpu,
@@ -95,8 +95,8 @@ Usage:
 Options:
   -InstallDir DIR      Directory to install Annolid (default: .\annolid)
   -VenvDir DIR         Directory for virtual environment (default: .venv)
-  -Profile PROFILE     Install profile: minimal, gui, workstation, full (default: gui)
-  -Extras EXTRAS       Comma-separated extras: audio,ai_chat,training,ml,tracking,yolo,cutie,realtime,large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot,bot,memory,all
+  -Profile PROFILE     Install profile: minimal, gui, tracking, workstation, full (default: gui)
+  -Extras EXTRAS       Comma-separated extras: webengine,onnx,scientific,pdf,model_downloads,sleap,audio,ai_chat,training,ml,tracking,yolo,cutie,realtime,large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot,bot,memory,all
   -NoGpu               Skip GPU/CUDA detection and install CPU ONNX Runtime
   -NoInteractive       Skip prompts and use defaults
   -Help                Show this help message
@@ -149,19 +149,20 @@ function Test-Python {
         @{ Command = "py"; Args = @("-3.12"); Version = "3.12" },
         @{ Command = "py"; Args = @("-3.13"); Version = "3.13" },
         @{ Command = "py"; Args = @("-3.14"); Version = "3.14" },
+        @{ Command = "py"; Args = @("-3.15"); Version = "3.15" },
         @{ Command = "py"; Args = @("-3.10"); Version = "3.10" },
         @{ Command = "python3.11"; Args = @(); Version = "3.11" },
         @{ Command = "python3.12"; Args = @(); Version = "3.12" },
         @{ Command = "python3.13"; Args = @(); Version = "3.13" },
         @{ Command = "python3.14"; Args = @(); Version = "3.14" },
-        @{ Command = "python3.10"; Args = @(); Version = "3.10" },
-        @{ Command = "python"; Args = @(); Version = "" }
+        @{ Command = "python3.15"; Args = @(); Version = "3.15" },
+        @{ Command = "python3.10"; Args = @(); Version = "3.10" }
     )
 
     foreach ($candidate in $preferredCandidates) {
         try {
             $actualVer = & $candidate.Command @($candidate.Args) -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null
-            if (([string]::IsNullOrEmpty($candidate.Version)) -or $actualVer -eq $candidate.Version) {
+            if (-not [string]::IsNullOrWhiteSpace($actualVer) -and $actualVer -eq $candidate.Version) {
                 $script:PythonCmd = $candidate.Command
                 $script:PythonArgs = @($candidate.Args)
                 $script:PythonVersion = $actualVer
@@ -187,7 +188,7 @@ function Test-Python {
                 if ($version -match "Python (\d+)\.(\d+)") {
                     $major = [int]$Matches[1]
                     $minor = [int]$Matches[2]
-                    if ($major -ge 3 -and $minor -ge 10) {
+                    if ($major -gt 3 -or ($major -eq 3 -and $minor -ge 10)) {
                         $script:PythonCmd = $candidate.Command
                         $script:PythonArgs = @($candidate.Args)
                         $script:PythonVersion = "$major.$minor"
@@ -200,6 +201,15 @@ function Test-Python {
     }
 
     if (-not $script:PythonCmd) {
+        if ($script:UseUv) {
+            $script:UseUvPython = $true
+            $script:UvPythonVersion = "3.12"
+            $script:PythonVersion = $script:UvPythonVersion
+            Write-Info "System Python $PythonMinVersion+ not found; will create the environment with uv-managed Python $script:UvPythonVersion"
+            Write-Success "Python version OK"
+            return $null
+        }
+
         Write-Error-Msg "Python $PythonMinVersion or higher not found."
         Write-Host ""
         Write-Host "  Download from: https://www.python.org/downloads/"
@@ -212,13 +222,21 @@ function Test-Python {
         $major = [int]$Matches[1]
         $minor = [int]$Matches[2]
 
-        if ($major -gt 3 -or ($major -eq 3 -and $minor -ge 15)) {
-            Write-Warning-Msg "Python $script:PythonVersion detected. Annolid is not yet validated on Python 3.15+."
-            if ($script:UseUv) {
+        if ($major -lt 3 -or ($major -eq 3 -and $minor -lt 10)) {
+            Write-Error-Msg "Python $PythonMinVersion or higher is required. Found: $script:PythonVersion"
+            exit 1
+        }
+
+        if ($major -eq 3 -and ($minor -eq 14 -or $minor -eq 15)) {
+            Write-Info "Python $script:PythonVersion detected. Annolid supports the default GUI/core install on Python $script:PythonVersion."
+            Write-Info "Remote network video decoding still needs the optional remote_video extra and native FFmpeg development libraries."
+        } elseif ($major -gt 3 -or ($major -eq 3 -and $minor -ge 16)) {
+            Write-Warning-Msg "Python $script:PythonVersion detected. Annolid is not yet validated on Python 3.16+."
+            if ($script:UseUv -and (Prompt-YesNo "  Use uv to install with Python 3.12?" $true)) {
                 $script:UseUvPython = $true
                 $script:UvPythonVersion = "3.12"
                 Write-Info "Will create the environment with uv-managed Python $script:UvPythonVersion"
-            } else {
+            } elseif (-not (Prompt-YesNo "  Continue with Python $script:PythonVersion anyway? (may fail)" $false)) {
                 Write-Error-Msg "uv is required to provision a compatible Python version automatically."
                 Write-Host "  Please install Python 3.12 manually, or install uv and rerun."
                 exit 1
@@ -460,12 +478,13 @@ function Get-ProfileExtras {
 
     switch ($ProfileName) {
         "minimal" { return @() }
-        "gui" { return @("ml", "tracking", "cutie") }
-        "workstation" { return @("tracking", "sam3", "training") }
+        "gui" { return @() }
+        "tracking" { return @("ml", "tracking", "cutie") }
+        "workstation" { return @("ml", "tracking", "cutie", "sam3", "training", "webengine", "pdf") }
         "full" { return @("all") }
         default {
             Write-Error-Msg "Unknown install profile: $ProfileName"
-            Write-Host "  Supported profiles: minimal, gui, workstation, full"
+            Write-Host "  Supported profiles: minimal, gui, tracking, workstation, full"
             exit 1
         }
     }
@@ -546,6 +565,8 @@ function New-Venv {
     if ($script:UseUv) {
         if ($script:UseUvPython -and $script:UvPythonVersion) {
             & $script:UvCmd venv $script:VenvPath --python $script:UvPythonVersion
+        } elseif (-not [string]::IsNullOrWhiteSpace($script:PythonVersion)) {
+            & $script:UvCmd venv $script:VenvPath --python $script:PythonVersion
         } else {
             & $script:UvCmd venv $script:VenvPath
         }
@@ -575,25 +596,6 @@ function Install-Annolid {
         & pip install --upgrade msvc-runtime
     }
 
-    if ($script:HasNvidiaGpu) {
-        Write-Host "  Installing CUDA-enabled PyTorch..."
-        try {
-            if ($script:UseUv) {
-                & $script:UvCmd pip install --index-url $script:PytorchCudaIndexUrl torch torchvision
-            } else {
-                & pip install --index-url $script:PytorchCudaIndexUrl torch torchvision
-            }
-            Write-Success "CUDA-enabled PyTorch installed"
-        } catch {
-            Write-Warning-Msg "CUDA-enabled PyTorch install failed. Falling back to default PyTorch build."
-            if ($script:UseUv) {
-                & $script:UvCmd pip install torch torchvision
-            } else {
-                & pip install torch torchvision
-            }
-        }
-    }
-
     # GUI dependencies are always installed so `annolid` can launch immediately.
     $profileExtras = Get-ProfileExtras $Profile
     $installExtras = Merge-Extras (@("gui") + $profileExtras + @($Extras))
@@ -602,6 +604,29 @@ function Install-Annolid {
     $installTarget = ".[$extrasCsv]"
     Write-Host "  Profile: $Profile"
     Write-Host "  Including extras: $extrasCsv"
+
+    if (Test-PytorchRequested $installExtras) {
+        if ($script:HasNvidiaGpu -and -not $NoGpu) {
+            Write-Host "  Installing CUDA-enabled PyTorch..."
+            try {
+                if ($script:UseUv) {
+                    & $script:UvCmd pip install --index-url $script:PytorchCudaIndexUrl torch torchvision
+                } else {
+                    & pip install --index-url $script:PytorchCudaIndexUrl torch torchvision
+                }
+                Write-Success "CUDA-enabled PyTorch installed"
+            } catch {
+                Write-Warning-Msg "CUDA-enabled PyTorch install failed. Falling back to default PyTorch build."
+                if ($script:UseUv) {
+                    & $script:UvCmd pip install torch torchvision
+                } else {
+                    & pip install torch torchvision
+                }
+            }
+        }
+    } else {
+        Write-Info "Skipping upfront PyTorch download for lean profile ($Profile); ML runtimes install on demand when first used."
+    }
 
     Write-Host "  Installing annolid (this may take a few minutes)..."
     if ($script:UseUv) {
@@ -632,7 +657,11 @@ function Install-Annolid {
         Write-Info "Skipping optional SAM-HQ install. Add -Extras sam3 when needed."
     }
 
-    Install-OnnxRuntime
+    if (Test-OnnxRequested $installExtras) {
+        Install-OnnxRuntime
+    } else {
+        Write-Info "Skipping upfront ONNX Runtime install for lean profile ($Profile); ONNX installs on demand when first used."
+    }
 
     Write-Success "Annolid installed"
 }
@@ -652,10 +681,26 @@ function Test-ExtraSelected {
     return $false
 }
 
+function Test-PytorchRequested {
+    param([string[]]$SelectedExtras)
+    return Test-ExtraSelected $SelectedExtras @(
+        "ml", "tracking", "cutie", "sam3", "yolo", "image_editing", "qwen3_embedding", "all"
+    )
+}
+
+function Test-OnnxRequested {
+    param([string[]]$SelectedExtras)
+    return Test-ExtraSelected $SelectedExtras @("onnx", "onnx_gpu", "ml", "tracking", "all")
+}
+
 # =============================================================================
 # Repair ONNX Runtime (Windows DLL dependencies)
 # =============================================================================
 function Repair-OnnxRuntime {
+    if (-not (Test-OnnxRequested $script:InstallExtras)) {
+        Write-Info "Skipping ONNX Runtime repair check; ONNX Runtime is not requested in this profile."
+        return
+    }
     Write-Step "Checking ONNX Runtime import..."
 
     . $script:ActivateCmd
@@ -752,18 +797,29 @@ function Test-Installation {
     }
 
     Write-Host "  Checking ONNX Runtime providers..."
-    & python -c "import os; os.environ.setdefault('KMP_DUPLICATE_LIB_OK','TRUE'); import onnxruntime as ort; providers = ort.get_available_providers(); print(f'  ONNX providers: {providers}')"
+    if (Test-OnnxRequested $script:InstallExtras) {
+        & python -c "import os; os.environ.setdefault('KMP_DUPLICATE_LIB_OK','TRUE'); import onnxruntime as ort; providers = ort.get_available_providers(); print(f'  ONNX providers: {providers}')"
 
-    if ($script:HasNvidiaGpu -and $script:HasCuda12 -and -not $NoGpu) {
-        Write-Host "  Verifying CUDAExecutionProvider..."
+        if ($script:HasNvidiaGpu -and $script:HasCuda12 -and -not $NoGpu) {
+            Write-Host "  Verifying CUDAExecutionProvider..."
+            try {
+                & python -c "import os; os.environ.setdefault('KMP_DUPLICATE_LIB_OK','TRUE'); import onnxruntime as ort; providers = set(ort.get_available_providers()); assert 'CUDAExecutionProvider' in providers, f'Missing CUDAExecutionProvider. Providers={providers}'"
+                Write-Success "CUDAExecutionProvider available"
+            } catch {
+                Write-Error-Msg "CUDAExecutionProvider is missing despite CUDA 12.x detection."
+                Write-Host "  Run this in the venv and retry:"
+                Write-Host "    uv pip install onnxruntime-gpu --extra-index-url $script:OnnxRuntimeCuda12ExtraIndexUrl"
+                exit 1
+            }
+        }
+    } else {
         try {
-            & python -c "import os; os.environ.setdefault('KMP_DUPLICATE_LIB_OK','TRUE'); import onnxruntime as ort; providers = set(ort.get_available_providers()); assert 'CUDAExecutionProvider' in providers, f'Missing CUDAExecutionProvider. Providers={providers}'"
-            Write-Success "CUDAExecutionProvider available"
+            & python -c "import os; os.environ.setdefault('KMP_DUPLICATE_LIB_OK','TRUE'); import onnxruntime as ort; providers = ort.get_available_providers(); print(f'  ONNX providers: {providers}')" 2>$null
+            if ($LASTEXITCODE -ne 0) {
+                Write-Info "ONNX Runtime not installed; optional ONNX features will install on first use."
+            }
         } catch {
-            Write-Error-Msg "CUDAExecutionProvider is missing despite CUDA 12.x detection."
-            Write-Host "  Run this in the venv and retry:"
-            Write-Host "    uv pip install onnxruntime-gpu --extra-index-url $script:OnnxRuntimeCuda12ExtraIndexUrl"
-            exit 1
+            Write-Info "ONNX Runtime not installed; optional ONNX features will install on first use."
         }
     }
 

@@ -62,6 +62,7 @@ class TCNBehaviorPlugin(ModelPluginBase):
     description = (
         "Frame-level TCN behavior classifier for pose or feature CSV time series."
     )
+    required_capabilities = ("ml",)
     train_help_sections = (
         ("Required inputs", ("--config",)),
         ("Outputs and run location", ("--output-dir", "--checkpoint-name")),

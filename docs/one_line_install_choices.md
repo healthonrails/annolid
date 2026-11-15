@@ -22,10 +22,9 @@ What the installer does:
 
 - Clones Annolid.
 - Creates an isolated environment (`.venv` by default).
-- Installs dependencies and Annolid.
-- Detects GPU and installs CUDA-enabled PyTorch when appropriate.
-- Installs and validates ONNX Runtime providers.
-- Prompts for optional extras and launch.
+- Installs the lean GUI and core annotation shell (`gui` profile by default).
+- When ML/ONNX extras or profiles (`tracking`, `workstation`, `full`) are selected, detects GPU and installs accelerator-matched PyTorch and ONNX Runtime providers.
+- Prompts for optional extras and launch (unless `--no-interactive` / `-NoInteractive` is passed).
 
 ## Quick decision table
 
@@ -48,7 +47,7 @@ Choose the flag set that matches your goal.
 
 - `--install-dir DIR`
 - `--venv-dir DIR`
-- `--profile minimal|gui|workstation|full`
+- `--profile minimal|gui|tracking|workstation|full`
 - `--extras EXTRAS`
 - `--no-gpu`
 - `--use-conda`
@@ -77,7 +76,7 @@ curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.s
 
 - `-InstallDir DIR`
 - `-VenvDir DIR`
-- `-Profile minimal|gui|workstation|full`
+- `-Profile minimal|gui|tracking|workstation|full`
 - `-Extras EXTRAS`
 - `-NoGpu`
 - `-NoInteractive`
@@ -104,23 +103,29 @@ Examples:
 
 ## Optional extras (`--extras` / `-Extras`)
 
-`gui` is the default one-line installer profile. It installs GUI support plus the `ml`, `tracking`, and `cutie` extras so common model and tracking workflows are available immediately.
+`gui` is the default one-line installer profile. It installs the lean desktop GUI shell (`PySide6-Essentials`) and core annotation tools first so you are up and running quickly, and Annolid installs heavy ML/tracking/viewer runtimes on demand when you first open those features.
 
 Named profiles provide stable defaults for common machines:
 
 | Profile | Installed optional extras | Use this for |
 | --- | --- | --- |
-| `minimal` | none beyond the required GUI extra | Fastest GUI/core annotation setup when model runtimes should be avoided. |
-| `gui` | `ml,tracking,cutie` | Default profile; same behavior as omitting `--profile` / `-Profile`. |
-| `workstation` | `tracking,sam3,training` | Maintained research workstations that need common tracking runtimes, promptable segmentation, and training dashboards. |
+| `minimal` / `gui` | none beyond the required `gui` extra | Default fast install; optional ML, tracking, and viewer runtimes install on first use. |
+| `tracking` | `ml,tracking,cutie` | Pre-warms PyTorch, ONNX Runtime, DINOv3, YOLO, and Cutie tracking runtimes upfront. |
+| `workstation` | `ml,tracking,cutie,sam3,training,webengine,pdf` | Maintained research workstations that want tracking, SAM3 segmentation, TensorBoard dashboards, and embedded WebEngine/PDF viewers pre-installed. |
 | `full` | `all` | Fully provisioned lab machines where dependency size is less important than breadth. |
 
 Explicit extras are merged with the selected profile. For example,
-`--profile workstation --extras ai_chat,text_to_speech` installs
-`gui,tracking,sam3,training,ai_chat,text_to_speech`.
+`--profile tracking --extras ai_chat,text_to_speech` installs
+`gui,ml,tracking,cutie,ai_chat,text_to_speech`.
 
 Current supported extras:
 
+- `webengine`
+- `onnx`
+- `scientific`
+- `pdf`
+- `model_downloads`
+- `sleap`
 - `audio`
 - `ai_chat`
 - `ml`
@@ -153,7 +158,7 @@ Current supported extras:
 | `cutie` | Cutie video object segmentation tracking runtime | You run Cutie tracking on minimal installs and want the required Python packages installed up front. Minimal/default installs can still auto-install missing Cutie packages on first use. |
 | `realtime` | serial/ZMQ realtime hardware integrations | You use Bpod, realtime streams, or ZMQ control paths. |
 | `large_image` | TIFF/OME-TIFF metadata and optional region-streaming backends | You want large TIFF, BigTIFF, OME-TIFF, or virtual-slide style viewing without forcing those native libraries into every install. Leave it out for the default GUI install. |
-| `remote_video` | network/remote video decoding through `ffpyplayer` | You receive frames from Annolid's remote video player path. Leave it out for normal local video files and Python 3.14 default installs. |
+| `remote_video` | network/remote video decoding through `ffpyplayer` | You receive frames from Annolid's remote video player path. Leave it out for normal local video files and Python 3.14+ default installs. |
 | `sam3` | the SAM3-related segmentation workflow/features in Annolid | You want stronger promptable segmentation on difficult frames and plan to use SAM3 tools in the GUI/CLI pipeline. The installer also attempts the optional SAM-HQ dependency for this profile. |
 | `image_editing` | diffusion-based image editing/generation dependencies | You are preparing augmented training images (inpainting/background edits) as part of annotation or data curation. |
 | `text_to_speech` | built-in narration/read-aloud features | You want captions/notes read aloud during review, accessibility workflows, or hands-free labeling sessions. |
@@ -190,7 +195,7 @@ If those runtimes are not available, Annolid will still open the file and will f
 
 ### `remote_video` runtime note
 
-The `remote_video` extra installs `ffpyplayer`. On Python 3.14, `ffpyplayer` may need to build from source and require native FFmpeg development headers such as `libpostproc`. The default installer leaves this extra out so core GUI and local video workflows can install cleanly on Python 3.14.
+The `remote_video` extra installs `ffpyplayer`. On Python 3.14 and 3.15, `ffpyplayer` may need to build from source and require native FFmpeg development headers such as `libpostproc`. The default installer leaves this extra out so core GUI and local video workflows can install cleanly on Python 3.14+.
 
 ### SAM-HQ runtime note
 

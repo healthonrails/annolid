@@ -30,6 +30,8 @@ def _parse_weight_list(text: Optional[str], *, n: int) -> tuple[float, ...]:
 class DinoKPSEGPlugin(ModelPluginBase):
     name = "dino_kpseg"
     description = "DINOv3 feature + small conv head for keypoint mask segmentation."
+    required_capabilities = ("ml",)
+    train_required_capabilities = ("training",)
     train_help_sections = (
         (
             "Required inputs",

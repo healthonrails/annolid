@@ -110,6 +110,7 @@ def _load_visual_prompts_from_labelme(path: Path) -> Tuple[Dict[str, Any], List[
 class YOLOLabelMePlugin(ModelPluginBase):
     name = "yolo_labelme"
     description = "Run Ultralytics YOLO/YOLOE inference and export LabelMe JSON (supports YOLOE text + visual prompts)."
+    required_capabilities = ("yolo",)
     predict_help_sections = (
         (
             "Required inputs",

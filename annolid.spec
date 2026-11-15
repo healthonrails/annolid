@@ -16,10 +16,51 @@ ROOT = Path(SPECPATH)
 #   the matching pip extra/package in their normal Python environment.
 
 QT_BINDING_EXCLUDES = [
-    # Annolid's GUI extra installs PySide6; keep alternate bindings out.
+    # Annolid's GUI extra installs PySide6-Essentials; keep alternate bindings
+    # and unused heavyweight Qt submodules out of frozen desktop bundles.
     "PyQt5",
     "PyQt6",
     "PySide2",
+]
+
+QT_UNUSED_MODULE_EXCLUDES = [
+    "PySide6.Qt3DAnimation",
+    "PySide6.Qt3DCore",
+    "PySide6.Qt3DExtras",
+    "PySide6.Qt3DInput",
+    "PySide6.Qt3DLogic",
+    "PySide6.Qt3DRender",
+    "PySide6.QtBluetooth",
+    "PySide6.QtCharts",
+    "PySide6.QtDataVisualization",
+    "PySide6.QtDesigner",
+    "PySide6.QtGraphs",
+    "PySide6.QtHelp",
+    "PySide6.QtMultimedia",
+    "PySide6.QtMultimediaWidgets",
+    "PySide6.QtNfc",
+    "PySide6.QtPdf",
+    "PySide6.QtPdfWidgets",
+    "PySide6.QtPositioning",
+    "PySide6.QtQml",
+    "PySide6.QtQuick",
+    "PySide6.QtQuick3D",
+    "PySide6.QtQuickControls2",
+    "PySide6.QtQuickWidgets",
+    "PySide6.QtRemoteObjects",
+    "PySide6.QtScxml",
+    "PySide6.QtSensors",
+    "PySide6.QtSerialBus",
+    "PySide6.QtSerialPort",
+    "PySide6.QtSpatialAudio",
+    "PySide6.QtSql",
+    "PySide6.QtTest",
+    "PySide6.QtTextToSpeech",
+    "PySide6.QtWebChannel",
+    "PySide6.QtWebEngineCore",
+    "PySide6.QtWebEngineQuick",
+    "PySide6.QtWebEngineWidgets",
+    "PySide6.QtWebSockets",
 ]
 
 ML_RUNTIME_EXCLUDES = [
@@ -84,8 +125,11 @@ OPTIONAL_MODEL_STACK_EXCLUDES = [
 ]
 
 OPTIONAL_SERVICE_EXCLUDES = [
-    # Agent/cloud/channel dependencies are installed only when those features are used.
+    # Agent/cloud/channel and dev/download dependencies are installed on demand.
+    "IPython",
     "anthropic",
+    "bs4",
+    "gdown",
     "google",
     "googleapiclient",
     "google_auth_oauthlib",
@@ -94,14 +138,17 @@ OPTIONAL_SERVICE_EXCLUDES = [
     "openai",
     "playwright",
     "pyarrow",
+    "pytest",
     "qrcode",
     "scrapling",
     "tantivy",
+    "tkinter",
 ]
 
 EXCLUDED_MODULES = sorted(
     set(
         QT_BINDING_EXCLUDES
+        + QT_UNUSED_MODULE_EXCLUDES
         + ML_RUNTIME_EXCLUDES
         + OPTIONAL_MODEL_STACK_EXCLUDES
         + OPTIONAL_SERVICE_EXCLUDES
@@ -145,6 +192,7 @@ EXCLUDED_SUFFIXES = {
     ".pth",
     ".pt",
     ".safetensors",
+    ".t7",
     ".tflite",
     ".weights",
 }

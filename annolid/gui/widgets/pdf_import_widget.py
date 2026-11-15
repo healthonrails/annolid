@@ -50,15 +50,26 @@ class PdfImportWidget(QtWidgets.QWidget):
         try:
             import fitz  # type: ignore[import]
         except ImportError:
-            QtWidgets.QMessageBox.critical(
-                window,
-                window.tr("PyMuPDF Required"),
-                window.tr(
-                    "PyMuPDF (pymupdf) is required to open PDF files.\n"
-                    "Install it with 'pip install pymupdf' and try again."
-                ),
-            )
-            return False
+            from annolid.gui.runtime_installer import ensure_gui_capability
+
+            parent = window if isinstance(window, QtWidgets.QWidget) else None
+            if ensure_gui_capability(parent, "pdf", feature_title="Open PDF"):
+                try:
+                    import fitz  # type: ignore[import]
+                except ImportError:
+                    fitz = None
+            else:
+                return False
+            if fitz is None:
+                QtWidgets.QMessageBox.critical(
+                    window,
+                    window.tr("PyMuPDF Required"),
+                    window.tr(
+                        "PyMuPDF (pymupdf) is required to open PDF files.\n"
+                        "Install it with 'pip install \"annolid[pdf]\"' and try again."
+                    ),
+                )
+                return False
 
         pdf_path = Path(pdf_text).expanduser()
         if not pdf_path.exists() or not pdf_path.is_file():

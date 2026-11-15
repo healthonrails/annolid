@@ -29,6 +29,7 @@ FORBIDDEN_SUFFIXES = {
     ".pth",
     ".pt",
     ".safetensors",
+    ".t7",
     ".tflite",
     ".weights",
 }
@@ -37,24 +38,33 @@ FORBIDDEN_NAMES = {
     ".cache",
     "__pycache__",
     "checkpoints",
+    "graphify-out",
     "mlpackage",
+    "sam3_agent_out",
     "weights",
 }
 
 FORBIDDEN_FRAGMENTS = {
     "annolid/depth/checkpoints",
     "annolid/detector/countgd/checkpoints",
+    "annolid/detector/countgd/models/GroundingDINO/ops.zip",
+    "annolid/project.annolid.json",
     "annolid/realtime/models",
     "annolid/realtime/runs",
     "annolid/realtime/yolo11n",
-    "annolid/segmentation/MEDIAR/weights",
+    "annolid/segmentation/MEDIAR",
+    "annolid/segmentation/SAM/sam3/sam3/perflib/tests",
     "annolid/segmentation/SAM/segment-anything-2/.github",
     "annolid/segmentation/SAM/segment-anything-2/SAM_2.egg-info",
+    "annolid/segmentation/SAM/segment-anything-2/assets",
     "annolid/segmentation/SAM/segment-anything-2/checkpoints",
     "annolid/segmentation/SAM/segment-anything-2/demo",
     "annolid/segmentation/SAM/segment-anything-2/notebooks",
+    "annolid/segmentation/SAM/segment-anything-2/sav_dataset",
+    "annolid/segmentation/SAM/segment-anything-2/tools",
     "annolid/segmentation/SAM/segment-anything-2/training",
     "annolid/segmentation/cutie_vos/weights",
+    "annolid/tracker/features/checkpoint",
     "openvino_model",
 }
 

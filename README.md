@@ -49,7 +49,7 @@ Model backends and integrations have different dependency and hardware requireme
 
 ## Quick Start
 
-The one-line installer sets up a source checkout and an isolated environment. Its default `gui` profile includes the GUI, machine-learning runtime, and common tracking dependencies (`ml,tracking,cutie`).
+The one-line installer sets up a source checkout and an isolated environment. Its default `gui` profile installs a small, fast desktop GUI and annotation shell (`PySide6-Essentials`), and automatically installs large optional runtimes (PyTorch, ONNX Runtime, Cutie, SAM3, YOLO, embedded 3D/web viewers) on demand when you first use them.
 
 ### macOS / Linux
 
@@ -89,35 +89,42 @@ The [Getting Started guide](docs/getting_started.md) walks through a first sessi
 
 ## Installation Options
 
-Annolid requires **Python 3.10 or newer**; the default GUI/core workflow supports Python 3.10–3.14. Python 3.11 or 3.12 is a practical starting point for shared lab environments. Optional model backends may have additional requirements.
+Annolid requires **Python 3.10 or newer**; the default GUI/core workflow supports Python 3.10–3.15. Python 3.11 or 3.12 is a practical starting point for shared lab environments. Optional model backends may have additional requirements.
 
 ### Choose an installer profile
 
 | Profile | Included extras beyond the GUI |
 | --- | --- |
-| `minimal` | Core annotation setup without optional model runtimes |
-| `gui` (default) | `ml,tracking,cutie` |
-| `workstation` | `tracking,sam3,training` |
+| `gui` (default) / `minimal` | Lean desktop GUI & annotation shell; heavy ML/tracking/viewer runtimes install on demand |
+| `tracking` | `ml,tracking,cutie` (pre-warms PyTorch, ONNX, DINOv3, YOLO, and Cutie upfront) |
+| `workstation` | `ml,tracking,cutie,sam3,training,webengine,pdf` |
 | `full` | `all` |
 
-For example, on macOS or Linux:
+For example, to pre-warm tracking and workstation tools upfront on macOS or Linux:
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh | bash -s -- --profile workstation
+```
+
+You can also inspect or pre-install optional runtimes anytime from the GUI (**Settings → Runtime & Optional Packages…**) or the CLI:
+
+```bash
+annolid-run runtime status
+annolid-run runtime install tracking sam3
 ```
 
 See [One-Line Installer Choices](docs/one_line_install_choices.md) for Windows profile selection, CPU/GPU options, custom paths, and non-interactive installation.
 
 ### Install into an existing Python environment
 
-Activate your environment first, then install the GUI:
+Activate your environment first, then install the lean GUI shell:
 
 ```bash
 python -m pip install "annolid[gui]"
 annolid
 ```
 
-The package extra `[gui]` installs the Qt binding; it is smaller than the one-line installer's default `gui` profile. To include the same model extras explicitly:
+`annolid[gui]` uses `PySide6-Essentials` so you are up and running quickly, and installs optional runtimes when you open a model, tracker, or embedded viewer. To pre-install common tracking runtimes upfront:
 
 ```bash
 python -m pip install "annolid[gui,ml,tracking,cutie]"
