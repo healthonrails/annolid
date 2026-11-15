@@ -646,6 +646,12 @@ def _cmd_segment_body_parts(args: argparse.Namespace) -> int:
             boundary_refine=not bool(getattr(args, "no_boundary_refine", False)),
             crf_refine=bool(getattr(args, "crf_refine", False)),
             polygon_epsilon=float(getattr(args, "polygon_epsilon", 1.0)),
+            split_merged_parent_masks=not bool(
+                getattr(args, "no_split_merged_parents", False)
+            ),
+            recover_missing_merged_instances=not bool(
+                getattr(args, "no_recover_merged_instances", False)
+            ),
             qualify_label_with_instance=bool(getattr(args, "qualify_labels", False)),
             persist_json=bool(getattr(args, "persist_json", False)),
             device=getattr(args, "device", None),
@@ -3288,6 +3294,16 @@ def _build_root_parser() -> argparse.ArgumentParser:
         type=float,
         default=1.0,
         help="Douglas-Peucker contour approximation epsilon in pixels.",
+    )
+    seg_parts_p.add_argument(
+        "--no-split-merged-parents",
+        action="store_true",
+        help="Disable automatic geodesic splitting of bloated merged parent masks during close-contact occlusion.",
+    )
+    seg_parts_p.add_argument(
+        "--no-recover-merged-instances",
+        action="store_true",
+        help="When splitting a merged parent mask, do not emit the missing partner's parent polygon and parts.",
     )
     seg_parts_p.add_argument(
         "--qualify-labels",

@@ -561,9 +561,25 @@ def _evaluate_frame_body_part_issues(
             score=_shape_score(bp_shape),
         )
         parent_obs = parent_by_name.get(parent_name) if parent_name else None
-        if (
-            parent_obs is not None
-            and _ShapelyPolygon is not None
+        if parent_obs is None:
+            found_issues.append(
+                TrackQCIssue(
+                    severity="warning",
+                    code="body_part_missing_parent",
+                    message=(
+                        f"Body part '{part_name}' references missing parent instance "
+                        f"'{parent_name or 'unknown'}' on frame {frame_num}."
+                    ),
+                    frame_start=frame_num,
+                    frame_end=frame_num,
+                    anchor_frame=frame_num,
+                    instances=((parent_name,) if parent_name else (part_name,)),
+                    score=5.0,
+                    metrics={"part_area_px": float(area)},
+                )
+            )
+        elif (
+            _ShapelyPolygon is not None
             and len(poly) >= 3
             and len(parent_obs.polygon) >= 3
         ):

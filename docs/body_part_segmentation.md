@@ -5,9 +5,9 @@ Instance Body Part Segmentation decomposes already-tracked whole-animal polygons
 Unlike full-frame segmentation trackers—which operate on the entire image and treat every polygon as a competing top-level track—Instance Body Part Segmentation operates strictly inside each tracked parent instance's padded bounding-box ROI and enforces hierarchical containment:
 
 - **Zero cross-animal bleed**: pixels outside a parent animal's mask are hard-masked out, even during close social contact or huddling.
+- **Merged-parent occlusion recovery**: when two huddling animals temporarily collapse into a single bloated parent mask (or carry distinct multi-animal keypoints inside one blob), edge-weighted geodesic + Lab + area-balanced splitting decomposes the parent blob and freezes EMA prototype drift.
 - **Disjoint intra-instance partition**: sibling body parts inside the same parent instance never overlap.
-- **180° turn invariance**: every instance crop is projected into a pose-normalized canonical body frame `(u, v, thickness)` disambiguated by keypoints, temporal continuity, or seeded appearance prototypes.
-- **Curled-posture topology**: keypoint-guided mode computes edge-weighted geodesic distances strictly through foreground pixels so a tail curled next to the nose cannot jump across an air gap.
+- **360° circular & coiled posture invariance**: every instance crop is projected into a pose-normalized canonical body frame `(u, v, thickness)` combining continuous 2D directional dipoles (keypoints, prototype activations, temporal pose, and intrinsic appearance contrast for `aspect_ratio < 1.15` circular postures) with an **intrinsic masked geodesic spine** (`tortuosity > 1.18`) for C-shaped, U-shaped, and coiled animals.
 
 ---
 
@@ -17,12 +17,12 @@ Unlike full-frame segmentation trackers—which operate on the entire image and 
 
 | Mode | Inputs Required | Best For |
 | --- | --- | --- |
-| `auto` (default) | Tracked instance polygons (+ optional seed parts or keypoints) | Automatically selects `seeded` when manual body-part polygons exist, `keypoint_guided` when 2+ keypoints exist inside the instance, or `unsupervised` otherwise. |
+| `auto` (default) | Tracked instance polygons (+ optional seed parts or keypoints) | Automatically selects `seeded` when manual body-part polygons exist, `keypoint_guided` when keypoints exist inside the instance, or `unsupervised` otherwise. |
 | `seeded` | Manual body-part polygons drawn inside at least one instance on 1+ seed frames | Custom anatomical regions (`snout`, `ear`, `head`, `torso`, `tail`), partial-part labeling (e.g. `head` only), and multi-animal sharing from a single seeded animal. |
 | `keypoint_guided` | Tracked whole-instance polygons + keypoints (from DINO-KPSEG, YOLO-Pose, TAPNext, CoWTracker, or manual points) | Converting sparse landmarks and optional `PoseSchema` skeleton bones into dense anatomical part masks without manual part polygons. |
-| `unsupervised` | Tracked whole-instance polygons only | Fast axial/morphological decomposition (`anterior`/`posterior` for 2 parts; `head`/`torso`/`tail` for 3 parts) with zero part or keypoint supervision. |
+| `unsupervised` | Tracked whole-instance polygons only | Fast axial/morphological decomposition (`anterior`/`posterior` for 2 parts; `head`/`torso`/`tail` for 3 parts) across elongated, circular, and curled postures with zero part or keypoint supervision. |
 
-### Feature Backends (`--feature-backend`)
+### Feature Backends (`--backbone`)
 
 | Backend | Dependencies | Throughput & Tradeoffs |
 | --- | --- | --- |
@@ -37,7 +37,7 @@ Unlike full-frame segmentation trackers—which operate on the entire image and 
 1. **Track whole animals first** (for example with `Cutie`, `SAM3`, or `YOLO`) so your video's results folder contains tracked whole-instance polygons (`mouse_1`, `mouse_2`, ...).
 2. *(Optional, for `seeded` mode)* On one or more seed frames:
    - Draw body-part polygons (such as `head`, `torso`, `tail`) inside an animal's polygon and save the frame.
-   - If your animals share appearance/morphology, seeding **one** animal is sufficient—prototypes are automatically shared across unseeded instances when `share_prototypes_across_instances` is enabled (the default).
+   - If your animals share appearance/morphology, seeding **one** animal is sufficient—prototypes are automatically shared across unseeded instances when `share_seed_across_instances` is enabled (the default).
    - If your seeded parts cover less than 75% of the parent mask (for example, labeling only `head`), the remaining body is automatically tracked as an internal unassigned background region and omitted from output shapes so `head` never expands to fill the whole body.
 3. In the top toolbar model selector, choose **`Instance Body Part Segmentation`**.
 4. Click **Predict** to run body-part segmentation across the video frame range.
@@ -50,40 +50,38 @@ Run body-part segmentation from the terminal with `annolid-run segment-body-part
 
 ```bash
 # Auto mode with fast CPU crop features and tracking CSV export
-annolid-run segment-body-parts \
-  --video /path/to/social_assay.mp4 \
+annolid-run segment-body-parts /path/to/social_assay.mp4 \
   --mode auto \
-  --feature-backend fast \
+  --backbone fast \
   --export-csv
 
 # Keypoint-guided mode with fine limb/wing granularity and a PoseSchema YAML/JSON
-annolid-run segment-body-parts \
-  --video /path/to/fly_courtship.mp4 \
-  --results-dir /path/to/fly_courtship \
+annolid-run segment-body-parts /path/to/fly_courtship.mp4 \
+  --annotations /path/to/fly_courtship \
   --mode keypoint_guided \
   --keypoint-granularity fine \
   --pose-schema /path/to/pose_schema.yaml \
   --export-csv
 
 # Seeded mode with hybrid DINOv3 + Lab/gradient features and JSON report
-annolid-run segment-body-parts \
-  --video /path/to/session.mp4 \
+annolid-run segment-body-parts /path/to/session.mp4 \
   --mode seeded \
-  --feature-backend hybrid \
-  --model-name facebook/dinov3-vits16-pretrain-lvd1689m \
-  --qualify-label \
-  --output-report /path/to/session/body_part_report.json
+  --backbone hybrid \
+  --dino-model facebook/dinov3-vits16-pretrain-lvd1689m \
+  --qualify-labels \
+  --out /path/to/session/body_part_report.json
 ```
 
 Key CLI flags:
 
 - `--mode {auto,seeded,keypoint_guided,unsupervised}`: Segmentation strategy (default: `auto`).
-- `--feature-backend {fast,dino,hybrid}`: Per-crop feature extractor (default: `fast`).
-- `--crop-size INT`: Working resolution of the longest ROI side per instance (default: `160`).
-- `--num-parts INT` / `--part-names a,b,c`: Part count and names for `unsupervised` mode (default: `3` -> `head,torso,tail`).
+- `--backbone {fast,dino,hybrid}`: Per-crop feature extractor (default: `fast`).
+- `--crop-size INT`: Working resolution of the longest ROI side per instance (default: `224`).
+- `--num-parts INT` / `--parts a,b,c`: Part count and names for `unsupervised` mode (default: `3` -> `head,torso,tail`).
 - `--keypoint-granularity {coarse,fine,per_keypoint}`: Automatic lexical grouping of keypoint names when no explicit `--keypoint-part-map` is supplied (default: `coarse`).
-- `--full-partition` / `--partial-parts`: Force full-instance partitioning or preserve unseeded body regions.
-- `--qualify-label`: Write shape `label` as `<instance>:<part>` (e.g. `mouse_1:head`) instead of bare `<part>` with `group_id` + `parent_instance` metadata.
+- `--partition-full-instance` / `--partial-parts`: Force full-instance partitioning or preserve unseeded body regions.
+- `--no-split-merged-parents` / `--no-recover-merged-instances`: Opt out of automatic geodesic splitting or missing-partner recovery when huddling animals merge into one bloated parent mask.
+- `--qualify-labels`: Write shape `label` as `<instance>:<part>` (e.g. `mouse_1:head`) instead of bare `<part>` with `group_id` + `parent_instance` metadata.
 - `--export-csv`: Export `<results_dir>_tracking.csv` after segmentation completes.
 
 ---
@@ -93,21 +91,21 @@ Key CLI flags:
 ```python
 from annolid.segmentation import (
     BodyPartSegmentationConfig,
-    InstanceBodyPartSegmenter,
     InstanceBodyPartVideoProcessor,
 )
 
 config = BodyPartSegmentationConfig(
     mode="auto",
     feature_backend="fast",
-    crop_size=160,
-    guided_filter_radius=3,
+    crop_size=224,
+    guided_radius=4,
+    split_merged_parent_masks=True,
 )
 
 processor = InstanceBodyPartVideoProcessor(
     "/path/to/video.mp4",
     results_folder="/path/to/video",
-    config=config,
+    body_part_config=config,
 )
 summary_message = processor.process_video_frames(start_frame=0)
 processor.cleanup()
@@ -124,6 +122,7 @@ To protect LabelMe compatibility, Qt flag editors, and whole-animal post-process
 
 1. **Boolean-only `flags`**:
    - `shape["flags"]` stores `{"is_body_part": true}` (strictly `bool`, preventing non-boolean Qt checkbox errors).
+   - Recovered parent polygons from split huddling blobs carry `{"recovered_merged_parent": true}`.
 2. **Hierarchical linkage on shape root / `other_data`**:
    - `semantic_type`: `"body_part"`
    - `parent_instance` & `instance_label`: parent animal identity (e.g. `"mouse_1"`)
@@ -135,6 +134,7 @@ To protect LabelMe compatibility, Qt flag editors, and whole-animal post-process
    - **`AnnotationAdapter` (`annolid.tracking`)**: Attaches body parts to `InstanceState.body_parts` rather than creating extra top-level animals, and round-trips them cleanly on save.
    - **Tracking CSV (`labelme2csv`)**: Exports whole animals under `<instance>` (e.g. `mouse_1`) and child body parts under `<instance>:<part>` (e.g. `mouse_1:head`) so trajectories, areas, and centroids are queryable without colliding with whole-animal rows.
    - **Track QC (`annolid-run track-qc`)**: Excludes child body parts from whole-animal count and overlap false positives, while running dedicated intra-instance checks:
-     - `body_part_outside_instance` (warning when >5% of a body part polygon spills outside its parent instance polygon),
-     - `body_part_overlap` (warning when sibling parts of the same parent overlap with IoU > 0.10).
+     - `body_part_outside_instance` (warning when >15% of a body-part polygon spills outside its parent instance polygon),
+     - `body_part_overlap` (warning when sibling parts of the same parent overlap with IoU >= 0.10),
+     - `body_part_missing_parent` (warning when a body-part polygon references a `parent_instance` that is absent on that frame).
    - **Identity Repair & Governor (`temporal_identity_repair`, `identity_governor`)**: Ignores child body-part shapes when computing whole-animal trajectories and swap repairs.

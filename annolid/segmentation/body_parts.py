@@ -76,6 +76,11 @@ class BodyPartSegmentationConfig:
     crf_band_px: int = 8
     crf_iterations: int = 6
     polygon_epsilon: float = 1.0
+    split_merged_parent_masks: bool = True
+    recover_missing_merged_instances: bool = True
+    merged_area_ratio_threshold: float = 1.50
+    merged_max_gap_frames: int = 5
+    anomalous_area_ema_freeze_ratio: float = 1.45
     qualify_label_with_instance: bool = False
     persist_json: bool = False
     device: Optional[str] = None
@@ -115,6 +120,13 @@ class BodyPartSegmentationConfig:
         self.min_part_area_px = max(1, int(self.min_part_area_px))
         self.max_part_area_growth = max(1.05, float(self.max_part_area_growth))
         self.polygon_epsilon = max(0.0, float(self.polygon_epsilon))
+        self.merged_area_ratio_threshold = max(
+            1.15, float(self.merged_area_ratio_threshold)
+        )
+        self.merged_max_gap_frames = max(1, int(self.merged_max_gap_frames))
+        self.anomalous_area_ema_freeze_ratio = max(
+            1.10, float(self.anomalous_area_ema_freeze_ratio)
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,6 +143,8 @@ class BodyFramePose:
     u_map: np.ndarray
     v_map: np.ndarray
     thickness_map: np.ndarray
+    tortuosity: float = 1.0
+    anterior_xy: Tuple[float, float] = (0.0, 0.0)
 
 
 @dataclass(slots=True)
@@ -193,6 +207,18 @@ class _TemporalInstanceState:
     work_probs: np.ndarray  # (K, work_h, work_w)
     u_grid: np.ndarray
     v_grid: np.ndarray
+
+
+@dataclass(slots=True)
+class _FullFrameInstanceTrack:
+    centroid_x: float
+    centroid_y: float
+    vel_x: float
+    vel_y: float
+    ema_area: float
+    mean_lab: np.ndarray  # (3,) float32
+    last_group_id: Optional[int | str]
+    frames_missing: int = 0
 
 
 def _l2_normalize_channels(arr: np.ndarray, eps: float = 1e-6) -> np.ndarray:
@@ -277,6 +303,53 @@ def _prepare_instance_crop(
     )
 
 
+def _estimate_intrinsic_appearance_dipole(
+    fg_feats: np.ndarray,
+    dx: np.ndarray,
+    dy: np.ndarray,
+    fg_thickness: np.ndarray,
+) -> Tuple[float, float]:
+    """Deterministic, rotation-covariant 2D appearance/morphology dipole for circular masks."""
+    num_fg = int(dx.size)
+    if num_fg < 6:
+        return 0.0, 0.0
+    centered = fg_feats - fg_feats.mean(axis=1, keepdims=True)
+    q = centered.std(axis=1).astype(np.float32)
+    if float(np.linalg.norm(q)) > 1e-6:
+        q = _l2_normalize_vec(q)
+        for _ in range(5):
+            scores = q @ centered
+            q_next = centered @ scores
+            if float(np.linalg.norm(q_next)) <= 1e-6:
+                break
+            q = _l2_normalize_vec(q_next)
+        scores = q @ centered
+        score_span = float(scores.max() - scores.min())
+        if score_span > 1e-5:
+            pos_pole = scores >= float(np.percentile(scores, 70))
+            neg_pole = scores <= float(np.percentile(scores, 30))
+            if np.any(pos_pole) and np.any(neg_pole):
+                # Rotation-invariant polarity functional over pixel feature energy + thickness.
+                feat_energy = (
+                    np.linalg.norm(centered, axis=0)
+                    + 0.35 * fg_thickness
+                    - 0.25 * fg_feats[0]
+                )
+                if float(feat_energy[pos_pole].mean()) < float(
+                    feat_energy[neg_pole].mean()
+                ):
+                    pos_pole, neg_pole = neg_pole, pos_pole
+                vx = float(dx[pos_pole].mean() - dx[neg_pole].mean())
+                vy = float(dy[pos_pole].mean() - dy[neg_pole].mean())
+                if math.hypot(vx, vy) > 1e-4:
+                    return vx, vy
+
+    # Pure morphological fallback when interior appearance is completely uniform.
+    vx_t = float(np.mean(dx * fg_thickness))
+    vy_t = float(np.mean(dy * fg_thickness))
+    return vx_t, vy_t
+
+
 def estimate_body_frame_pose(
     work_mask: np.ndarray,
     *,
@@ -286,7 +359,12 @@ def estimate_body_frame_pose(
     features: Optional[np.ndarray] = None,
     prototypes: Optional[Sequence[BodyPartPrototype]] = None,
 ) -> BodyFramePose:
-    """Compute an oriented, polarity-disambiguated canonical 2D pose for ``work_mask``."""
+    """Compute an oriented, polarity-disambiguated canonical 2D pose for ``work_mask``.
+
+    Handles elongated, circular (``aspect_ratio < 1.15``), and curved/coiled
+    (C-shape, U-shape) postures deterministically via continuous 2D directional
+    cue blending and intrinsic masked geodesic spine coordinates.
+    """
     mask_bool = np.asarray(work_mask, dtype=bool)
     wh, ww = mask_bool.shape
     ys, xs = np.nonzero(mask_bool)
@@ -303,6 +381,8 @@ def estimate_body_frame_pose(
             u_map=zeros,
             v_map=zeros,
             thickness_map=zeros,
+            tortuosity=1.0,
+            anterior_xy=(0.5 * ww, 0.5 * wh),
         )
 
     xs_f = xs.astype(np.float32)
@@ -322,23 +402,17 @@ def estimate_body_frame_pose(
     aspect_ratio = math.sqrt(lam1 / max(lam2, 1e-6))
 
     if disc < 1e-4 and prev_pose is not None:
-        ax_x, ax_y = prev_pose.axial_vec
+        pca_x, pca_y = prev_pose.axial_vec
     elif abs(cxy) > 1e-6 or cxx >= cyy:
         vx = lam1 - cyy
         vy = cxy
         norm = math.hypot(vx, vy)
-        if norm <= 1e-6:
-            ax_x, ax_y = 1.0, 0.0
-        else:
-            ax_x, ax_y = vx / norm, vy / norm
+        pca_x, pca_y = (1.0, 0.0) if norm <= 1e-6 else (vx / norm, vy / norm)
     else:
         vx = cxy
         vy = lam1 - cxx
         norm = math.hypot(vx, vy)
-        if norm <= 1e-6:
-            ax_x, ax_y = 0.0, 1.0
-        else:
-            ax_x, ax_y = vx / norm, vy / norm
+        pca_x, pca_y = (0.0, 1.0) if norm <= 1e-6 else (vx / norm, vy / norm)
 
     axial_scale = max(3.0, 2.0 * math.sqrt(lam1))
     lateral_scale = max(3.0, 2.0 * math.sqrt(lam2))
@@ -350,22 +424,13 @@ def estimate_body_frame_pose(
         if max_edt > 1e-6
         else np.zeros((wh, ww), dtype=np.float32)
     )
+    fg_t = thickness_map[mask_bool]
 
-    grid_y, grid_x = np.meshgrid(
-        np.arange(wh, dtype=np.float32),
-        np.arange(ww, dtype=np.float32),
-        indexing="ij",
-    )
-    rel_x = grid_x - mx
-    rel_y = grid_y - my
-    raw_u = (rel_x * ax_x + rel_y * ax_y) / axial_scale
-    raw_v = (rel_x * (-ax_y) + rel_y * ax_x) / lateral_scale
-
-    # Disambiguate +1 vs -1 anterior-posterior polarity.
-    kp_polarity_score = 0.0
+    # 1. Continuous 2D directional cues (prevents isotropic PCA angle jitter on circular postures).
+    ant_pts: List[Tuple[float, float, float]] = []
+    post_pts: List[Tuple[float, float, float]] = []
+    kp_vx, kp_vy = 0.0, 0.0
     if keypoints_work:
-        ant_pts: List[Tuple[float, float, float]] = []
-        post_pts: List[Tuple[float, float, float]] = []
         kp_map = keypoint_part_map or {}
         for kp_name, (kx, ky) in keypoints_work.items():
             pol = keypoint_axial_polarity(kp_name)
@@ -392,7 +457,7 @@ def estimate_body_frame_pose(
             ay_post = sum(py * w for _px, py, w in post_pts) / sum(
                 w for _, _, w in post_pts
             )
-            kp_polarity_score = (ax_ant - ax_post) * ax_x + (ay_ant - ay_post) * ax_y
+            kp_vx, kp_vy = ax_ant - ax_post, ay_ant - ay_post
         elif ant_pts:
             ax_ant = sum(px * w for px, _py, w in ant_pts) / sum(
                 w for _, _, w in ant_pts
@@ -400,7 +465,7 @@ def estimate_body_frame_pose(
             ay_ant = sum(py * w for _px, py, w in ant_pts) / sum(
                 w for _, _, w in ant_pts
             )
-            kp_polarity_score = (ax_ant - mx) * ax_x + (ay_ant - my) * ax_y
+            kp_vx, kp_vy = ax_ant - mx, ay_ant - my
         elif post_pts:
             ax_post = sum(px * w for px, _py, w in post_pts) / sum(
                 w for _, _, w in post_pts
@@ -408,22 +473,87 @@ def estimate_body_frame_pose(
             ay_post = sum(py * w for _px, py, w in post_pts) / sum(
                 w for _, _, w in post_pts
             )
-            kp_polarity_score = (mx - ax_post) * ax_x + (my - ay_post) * ax_y
+            kp_vx, kp_vy = mx - ax_post, my - ay_post
 
-    sign = 1.0
-    if abs(kp_polarity_score) > 1e-3:
-        sign = 1.0 if kp_polarity_score >= 0.0 else -1.0
+    kp_norm = math.hypot(kp_vx, kp_vy)
+
+    proto_vx, proto_vy = 0.0, 0.0
+    fg_feats: Optional[np.ndarray] = (
+        features[:, mask_bool] if features is not None else None
+    )
+    if fg_feats is not None and prototypes:
+        for proto in prototypes:
+            if proto.is_unassigned or abs(proto.mean_u) < 0.12:
+                continue
+            seed_sim = np.max(proto.seed_prototypes @ fg_feats, axis=0)
+            work_sim = proto.working_prototype @ fg_feats
+            sim = 0.72 * seed_sim + 0.28 * work_sim
+            p55 = float(np.percentile(sim, 55))
+            weights = np.maximum(0.0, sim - p55) ** 3
+            w_sum = float(weights.sum())
+            if w_sum <= 1e-6:
+                weights = np.clip(sim, 0.0, 1.0) ** 3
+                w_sum = float(weights.sum())
+            if w_sum <= 1e-6:
+                continue
+            est_dx = float(np.sum(weights * dx) / w_sum)
+            est_dy = float(np.sum(weights * dy) / w_sum)
+            proto_vx += proto.mean_u * proto.seed_area_ratio * est_dx
+            proto_vy += proto.mean_u * proto.seed_area_ratio * est_dy
+
+    proto_norm = math.hypot(proto_vx, proto_vy)
+    w_shape = float(np.clip((aspect_ratio - 1.08) / 0.30, 0.0, 1.0)) ** 2
+
+    dir_x, dir_y = 0.0, 0.0
+    if kp_norm > 0.5:
+        dir_x, dir_y = kp_vx / kp_norm, kp_vy / kp_norm
+    elif proto_norm > 0.08 or prev_pose is not None:
+        if proto_norm > 0.08:
+            dir_x += proto_vx / proto_norm
+            dir_y += proto_vy / proto_norm
+        if prev_pose is not None:
+            prev_w = 0.40 if proto_norm > 0.08 else 1.0
+            dir_x += prev_w * prev_pose.axial_vec[0]
+            dir_y += prev_w * prev_pose.axial_vec[1]
+    elif w_shape < 0.75 and fg_feats is not None:
+        intr_vx, intr_vy = _estimate_intrinsic_appearance_dipole(fg_feats, dx, dy, fg_t)
+        intr_norm = math.hypot(intr_vx, intr_vy)
+        if intr_norm > 1e-4:
+            dir_x, dir_y = intr_vx / intr_norm, intr_vy / intr_norm
+
+    dir_norm = math.hypot(dir_x, dir_y)
+    if dir_norm > 1e-5:
+        dir_x /= dir_norm
+        dir_y /= dir_norm
+        if pca_x * dir_x + pca_y * dir_y < 0.0:
+            pca_x, pca_y = -pca_x, -pca_y
+        bx = w_shape * pca_x + (1.0 - w_shape) * dir_x
+        by = w_shape * pca_y + (1.0 - w_shape) * dir_y
+        bnorm = math.hypot(bx, by)
+        ax_x, ax_y = (dir_x, dir_y) if bnorm <= 1e-6 else (bx / bnorm, by / bnorm)
     else:
-        # Bidirectional hypothesis check using seeded prototypes + thickness + temporal prior.
+        ax_x, ax_y = pca_x, pca_y
+
+    grid_y, grid_x = np.meshgrid(
+        np.arange(wh, dtype=np.float32),
+        np.arange(ww, dtype=np.float32),
+        indexing="ij",
+    )
+    rel_x = grid_x - mx
+    rel_y = grid_y - my
+    raw_u = (rel_x * ax_x + rel_y * ax_y) / axial_scale
+    raw_v = (rel_x * (-ax_y) + rel_y * ax_x) / lateral_scale
+
+    # Secondary bidirectional refinement on elongated shapes when keypoints are absent.
+    sign = 1.0
+    if kp_norm <= 0.5:
         score_pos = 0.0
         score_neg = 0.0
         if prev_pose is not None:
             cos_prev = ax_x * prev_pose.axial_vec[0] + ax_y * prev_pose.axial_vec[1]
             score_pos += 0.30 * cos_prev
             score_neg -= 0.30 * cos_prev
-
-        if features is not None and prototypes:
-            fg_feats = features[:, mask_bool]  # (C, N)
+        if fg_feats is not None and prototypes:
             fg_u = raw_u[mask_bool]
             fg_v = raw_v[mask_bool]
             for proto in prototypes:
@@ -431,7 +561,7 @@ def estimate_body_frame_pose(
                     abs(proto.mean_u) < 0.15 and abs(proto.mean_v) < 0.15
                 ):
                     continue
-                sim = np.max(proto.seed_prototypes @ fg_feats, axis=0)  # (N,)
+                sim = np.max(proto.seed_prototypes @ fg_feats, axis=0)
                 weights = np.clip(sim, 0.0, 1.0) ** 2
                 w_sum = float(weights.sum())
                 if w_sum <= 1e-6:
@@ -446,10 +576,8 @@ def estimate_body_frame_pose(
                     (-est_u - proto.mean_u) ** 2 / max(proto.std_u**2, 0.08)
                     + 0.5 * (-est_v - proto.mean_v) ** 2 / max(proto.std_v**2, 0.08)
                 ) * proto.seed_area_ratio
-        elif prev_pose is None:
-            # Mild morphological asymmetry tie-breaker: anterior head/thorax thicker than tail taper.
+        elif prev_pose is None and dir_norm <= 1e-5:
             fg_u = raw_u[mask_bool]
-            fg_t = thickness_map[mask_bool]
             asym = float(np.mean(np.sign(fg_u) * fg_t))
             score_pos += 0.15 * asym
             score_neg -= 0.15 * asym
@@ -460,8 +588,149 @@ def estimate_body_frame_pose(
     ax_y *= sign
     lat_x = -ax_y
     lat_y = ax_x
-    u_map = (sign * raw_u).astype(np.float32)
+    u_lin = (sign * raw_u).astype(np.float32)
     v_map = (sign * raw_v).astype(np.float32)
+    u_map = u_lin
+    tortuosity = 1.0
+    anterior_xy = (
+        float(mx + 0.45 * axial_scale * ax_x),
+        float(my + 0.45 * axial_scale * ax_y),
+    )
+
+    # 2. Intrinsic curved geodesic spine coordinate for C-shaped / U-shaped / coiled postures.
+    cy_i = int(np.clip(round(my), 0, wh - 1))
+    cx_i = int(np.clip(round(mx), 0, ww - 1))
+    if xs.size >= 16 and (
+        not mask_bool[cy_i, cx_i] or float(thickness_map[cy_i, cx_i]) < 0.42
+    ):
+        num_cc, cc_labels, cc_stats, _ = cv2.connectedComponentsWithStats(
+            mask_bool.astype(np.uint8), connectivity=8
+        )
+        if num_cc > 1:
+            largest_cc = 1 + int(np.argmax(cc_stats[1:, cv2.CC_STAT_AREA]))
+            main_comp = cc_labels == largest_cc
+        else:
+            main_comp = mask_bool
+        c_ys, c_xs = np.nonzero(main_comp)
+        if c_xs.size >= 12:
+            s0_idx = int(np.argmax((c_xs - mx) ** 2 + (c_ys - my) ** 2))
+            seed0 = np.zeros((wh, ww), dtype=bool)
+            seed0[c_ys[s0_idx], c_xs[s0_idx]] = True
+            d0 = compute_masked_geodesic_distances([seed0], main_comp, edge_weight=0.0)[
+                0
+            ]
+            fin0 = np.isfinite(d0)
+            if np.any(fin0):
+                fy0, fx0 = np.nonzero(fin0)
+                e1_i = int(np.argmax(d0[fin0]))
+                e1_y, e1_x = int(fy0[e1_i]), int(fx0[e1_i])
+                seed1 = np.zeros((wh, ww), dtype=bool)
+                seed1[e1_y, e1_x] = True
+                d1 = compute_masked_geodesic_distances(
+                    [seed1], main_comp, edge_weight=0.0
+                )[0]
+                fin1 = np.isfinite(d1)
+                if np.any(fin1):
+                    fy1, fx1 = np.nonzero(fin1)
+                    e2_i = int(np.argmax(d1[fin1]))
+                    e2_y, e2_x = int(fy1[e2_i]), int(fx1[e2_i])
+                    d_geo = float(d1[e2_y, e2_x])
+                    d_euc = math.hypot(float(e1_x - e2_x), float(e1_y - e2_y))
+                    tortuosity = float(d_geo / max(1.0, d_euc))
+                    if tortuosity > 1.18 and d_geo > 6.0:
+                        seed2 = np.zeros((wh, ww), dtype=bool)
+                        seed2[e2_y, e2_x] = True
+                        d2 = compute_masked_geodesic_distances(
+                            [seed2], main_comp, edge_weight=0.0
+                        )[0]
+                        both_fin = np.isfinite(d1) & np.isfinite(d2)
+                        raw_u_geo = np.zeros((wh, ww), dtype=np.float32)
+                        raw_u_geo[both_fin] = (
+                            0.90
+                            * (d2[both_fin] - d1[both_fin])
+                            / np.maximum(d1[both_fin] + d2[both_fin], 1e-4)
+                        )
+                        # Assign any minor disconnected islands by nearest main_comp pixel.
+                        extra_fg = mask_bool & ~both_fin
+                        if np.any(extra_fg) and np.any(both_fin):
+                            by_s, bx_s = np.nonzero(both_fin)
+                            ey_s, ex_s = np.nonzero(extra_fg)
+                            for ey_v, ex_v in zip(ey_s, ex_s):
+                                near_i = int(
+                                    np.argmin((bx_s - ex_v) ** 2 + (by_s - ey_v) ** 2)
+                                )
+                                raw_u_geo[ey_v, ex_v] = raw_u_geo[
+                                    by_s[near_i], bx_s[near_i]
+                                ]
+
+                        # Disambiguate whether E1 (+0.9) or E2 (-0.9) is the anterior head pole.
+                        geo_pos_score = 0.0
+                        geo_neg_score = 0.0
+                        if ant_pts or post_pts:
+                            for px, py, w in ant_pts:
+                                py_i = int(np.clip(round(py), 0, wh - 1))
+                                px_i = int(np.clip(round(px), 0, ww - 1))
+                                u_val = float(raw_u_geo[py_i, px_i])
+                                geo_pos_score += 3.0 * w * u_val
+                                geo_neg_score -= 3.0 * w * u_val
+                            for px, py, w in post_pts:
+                                py_i = int(np.clip(round(py), 0, wh - 1))
+                                px_i = int(np.clip(round(px), 0, ww - 1))
+                                u_val = float(raw_u_geo[py_i, px_i])
+                                geo_pos_score -= 3.0 * w * u_val
+                                geo_neg_score += 3.0 * w * u_val
+                        else:
+                            if fg_feats is not None and prototypes:
+                                fg_ug = raw_u_geo[mask_bool]
+                                for proto in prototypes:
+                                    if proto.is_unassigned or abs(proto.mean_u) < 0.15:
+                                        continue
+                                    sim = np.max(
+                                        proto.seed_prototypes @ fg_feats, axis=0
+                                    )
+                                    weights = np.clip(sim, 0.0, 1.0) ** 2
+                                    w_sum = float(weights.sum())
+                                    if w_sum > 1e-6:
+                                        est_ug = float(np.sum(weights * fg_ug) / w_sum)
+                                        geo_pos_score -= (
+                                            (est_ug - proto.mean_u) ** 2
+                                            / max(proto.std_u**2, 0.08)
+                                            * proto.seed_area_ratio
+                                        )
+                                        geo_neg_score -= (
+                                            (-est_ug - proto.mean_u) ** 2
+                                            / max(proto.std_u**2, 0.08)
+                                            * proto.seed_area_ratio
+                                        )
+                            if prev_pose is not None:
+                                ph_x, ph_y = prev_pose.anterior_xy
+                                d_e1 = math.hypot(e1_x - ph_x, e1_y - ph_y)
+                                d_e2 = math.hypot(e2_x - ph_x, e2_y - ph_y)
+                                scale_d = max(4.0, d_geo * 0.5)
+                                geo_pos_score -= 0.45 * (d_e1 / scale_d)
+                                geo_neg_score -= 0.45 * (d_e2 / scale_d)
+                            if abs(geo_pos_score - geo_neg_score) < 1e-4:
+                                pos_tip = main_comp & (raw_u_geo >= 0.35)
+                                neg_tip = main_comp & (raw_u_geo <= -0.35)
+                                if np.any(pos_tip) and np.any(neg_tip):
+                                    t_diff = float(
+                                        thickness_map[pos_tip].mean()
+                                        - thickness_map[neg_tip].mean()
+                                    )
+                                    geo_pos_score += 0.25 * t_diff
+                                    geo_neg_score -= 0.25 * t_diff
+
+                        geo_sign = 1.0 if geo_pos_score >= geo_neg_score else -1.0
+                        alpha_geo = float(np.clip((tortuosity - 1.18) / 0.22, 0.0, 1.0))
+                        u_map = (
+                            (1.0 - alpha_geo) * u_lin
+                            + alpha_geo * (geo_sign * raw_u_geo)
+                        ).astype(np.float32)
+                        anterior_xy = (
+                            (float(e1_x), float(e1_y))
+                            if geo_sign > 0.0
+                            else (float(e2_x), float(e2_y))
+                        )
 
     return BodyFramePose(
         centroid_x=mx,
@@ -474,6 +743,8 @@ def estimate_body_frame_pose(
         u_map=u_map,
         v_map=v_map,
         thickness_map=thickness_map,
+        tortuosity=float(tortuosity),
+        anterior_xy=anterior_xy,
     )
 
 
@@ -819,6 +1090,8 @@ class InstanceBodyPartSegmenter:
         self._shared_prototypes: List[BodyPartPrototype] = []
         self._unsupervised_prototypes: Dict[str, List[BodyPartPrototype]] = {}
         self._temporal_states: Dict[str, _TemporalInstanceState] = {}
+        self._full_frame_tracks: Dict[str, _FullFrameInstanceTrack] = {}
+        self.last_frame_diagnostics: Dict[str, Any] = {}
 
     @property
     def extractor(self) -> Optional[Any]:
@@ -862,6 +1135,8 @@ class InstanceBodyPartSegmenter:
     def reset_temporal_state(self) -> None:
         """Clear frame-to-frame temporal priors while retaining fitted seed prototypes."""
         self._temporal_states.clear()
+        self._full_frame_tracks.clear()
+        self.last_frame_diagnostics = {}
 
     def _extract_crop_features(self, crop: _InstanceCrop) -> np.ndarray:
         wh, ww = crop.work_mask.shape
@@ -1032,16 +1307,6 @@ class InstanceBodyPartSegmenter:
                 (keypoints_by_instance or {}).get(inst_label), crop
             )
             feats = self._extract_crop_features(crop)
-            pose = estimate_body_frame_pose(
-                crop.work_mask,
-                keypoints_work=kps_work,
-                keypoint_part_map=self.config.keypoint_part_map,
-                prev_pose=(
-                    self._temporal_states[inst_label].pose
-                    if inst_label in self._temporal_states
-                    else None
-                ),
-            )
 
             # Convert part masks to work-crop resolution and enforce mutual exclusion.
             ordered_names = list(part_map.keys())
@@ -1074,6 +1339,28 @@ class InstanceBodyPartSegmenter:
                 crop_part_masks.append(wp)
 
             exclusive_parts = make_instance_masks_exclusive(crop_part_masks)
+
+            # Supplement pose keypoints with manual seed part centroids when they carry
+            # unambiguous anatomical polarity (e.g. "head", "snout", "tail") so circular
+            # or coiled seed frames orient u > 0 directly toward the anterior seed!
+            pose_kps = dict(kps_work)
+            if not pose_kps:
+                for pname, wp in zip(ordered_names, exclusive_parts):
+                    if np.any(wp) and abs(keypoint_axial_polarity(pname)) > 0.0:
+                        py_s, px_s = np.nonzero(wp)
+                        pose_kps[pname] = (float(px_s.mean()), float(py_s.mean()))
+
+            pose = estimate_body_frame_pose(
+                crop.work_mask,
+                keypoints_work=pose_kps,
+                keypoint_part_map=self.config.keypoint_part_map,
+                prev_pose=(
+                    self._temporal_states[inst_label].pose
+                    if inst_label in self._temporal_states
+                    else None
+                ),
+                features=feats,
+            )
             inst_protos: List[BodyPartPrototype] = []
             union_seeded = np.zeros_like(crop.work_mask, dtype=bool)
             for pname, wp in zip(ordered_names, exclusive_parts):
@@ -1228,9 +1515,39 @@ class InstanceBodyPartSegmenter:
         if tuple(part_labels) != prev_state.part_labels:
             return None
 
-        # Warp previous probabilities into current canonical (u, v) coordinates via affine map!
-        # In previous crop: x_prev = mx_p + ax_p * (u * L_ax_p) + lat_p * (v * L_lat_p).
         p_pose = prev_state.pose
+        K = len(part_labels)
+        wh, ww = work_mask.shape
+        warped = np.zeros((K, wh, ww), dtype=np.float32)
+
+        # On curved/coiled postures (C-turn, U-turn), project via intrinsic 1D geodesic u profile
+        # so temporal probability mass bends smoothly along the spine instead of clipping outside.
+        if pose.tortuosity > 1.20 or p_pose.tortuosity > 1.20:
+            prev_fg = np.sum(prev_state.work_probs, axis=0) > 1e-4
+            if not np.any(prev_fg):
+                return None
+            prev_u = prev_state.u_grid[prev_fg]
+            bins = np.linspace(-0.95, 0.95, 17)
+            centers = 0.5 * (bins[:-1] + bins[1:])
+            cur_u_fg = pose.u_map[work_mask]
+            for k in range(K):
+                p_vals = prev_state.work_probs[k][prev_fg]
+                prof = np.zeros(len(centers), dtype=np.float32)
+                valid_b = np.zeros(len(centers), dtype=bool)
+                for b_idx in range(len(centers)):
+                    in_bin = (prev_u >= bins[b_idx]) & (prev_u <= bins[b_idx + 1])
+                    if np.any(in_bin):
+                        prof[b_idx] = float(p_vals[in_bin].mean())
+                        valid_b[b_idx] = True
+                if not np.any(valid_b):
+                    continue
+                interp_fg = np.interp(cur_u_fg, centers[valid_b], prof[valid_b]).astype(
+                    np.float32
+                )
+                warped[k][work_mask] = interp_fg
+            return warped
+
+        # Warp previous probabilities into current canonical (u, v) coordinates via affine map!
         u_cur = pose.u_map
         v_cur = pose.v_map
         map_x = (
@@ -1244,9 +1561,6 @@ class InstanceBodyPartSegmenter:
             + p_pose.lateral_vec[1] * (v_cur * p_pose.lateral_scale)
         ).astype(np.float32)
 
-        K = len(part_labels)
-        wh, ww = work_mask.shape
-        warped = np.zeros((K, wh, ww), dtype=np.float32)
         for k in range(K):
             warped[k] = cv2.remap(
                 prev_state.work_probs[k],
@@ -1869,6 +2183,227 @@ class InstanceBodyPartSegmenter:
             )
         return polygons_out
 
+    @staticmethod
+    def _mask_to_largest_polygon(
+        mask: np.ndarray,
+        *,
+        epsilon: float = 1.0,
+    ) -> List[Tuple[float, float]]:
+        contours, _ = cv2.findContours(
+            np.asarray(mask, dtype=np.uint8),
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE,
+        )
+        if not contours:
+            return []
+        largest = max(contours, key=cv2.contourArea)
+        if epsilon > 0.0:
+            approx = cv2.approxPolyDP(largest, float(epsilon), True)
+        else:
+            approx = largest
+        pts = approx.reshape(-1, 2)
+        if len(pts) < 3:
+            pts = largest.reshape(-1, 2)
+        if len(pts) < 3:
+            return []
+        return [(float(x), float(y)) for x, y in pts]
+
+    def _split_merged_parent_blob(
+        self,
+        frame_rgb: np.ndarray,
+        merged_mask: np.ndarray,
+        members: Sequence[str],
+        *,
+        keypoints_by_instance: Optional[
+            Mapping[str, Mapping[str, Tuple[float, float]]]
+        ] = None,
+    ) -> Optional[Dict[str, np.ndarray]]:
+        """Partition a merged multi-animal parent mask via edge-weighted geodesics + area balance."""
+        if len(members) < 2:
+            return None
+        bbox = tight_mask_bbox(merged_mask)
+        if bbox is None:
+            return None
+        H, W = merged_mask.shape
+        x0, y0, x1, y1 = bbox
+        pad = max(4, int(round(0.08 * max(x1 - x0, y1 - y0))))
+        cx0 = max(0, x0 - pad)
+        cy0 = max(0, y0 - pad)
+        cx1 = min(W, x1 + pad)
+        cy1 = min(H, y1 + pad)
+        crop_rgb = np.asarray(frame_rgb[cy0:cy1, cx0:cx1], dtype=np.uint8)
+        crop_mask = np.asarray(merged_mask[cy0:cy1, cx0:cx1], dtype=bool)
+        ch, cw = crop_mask.shape
+        fg_ys, fg_xs = np.nonzero(crop_mask)
+        total_fg = int(fg_xs.size)
+        if total_fg < 2 * max(8, self.config.min_part_area_px):
+            return None
+
+        edt = cv2.distanceTransform(crop_mask.astype(np.uint8), cv2.DIST_L2, 5)
+        crop_lab = cv2.cvtColor(crop_rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
+
+        # Build interior anchor points / seed masks for each merged animal.
+        anchor_pts: List[Tuple[float, float]] = []
+        seed_masks: List[np.ndarray] = []
+        target_areas: List[float] = []
+        for lbl in members:
+            trk = self._full_frame_tracks.get(lbl)
+            target_areas.append(
+                float(trk.ema_area)
+                if trk is not None and trk.ema_area > 8.0
+                else float(total_fg) / float(len(members))
+            )
+            kps = (keypoints_by_instance or {}).get(lbl) or {}
+            in_crop_kps = [
+                (float(kx - cx0), float(ky - cy0))
+                for kx, ky in kps.values()
+                if 0 <= int(round(ky - cy0)) < ch
+                and 0 <= int(round(kx - cx0)) < cw
+                and crop_mask[int(round(ky - cy0)), int(round(kx - cx0))]
+            ]
+            sm = np.zeros((ch, cw), dtype=bool)
+            if in_crop_kps:
+                for kx_c, ky_c in in_crop_kps:
+                    cv2.circle(
+                        sm.view(np.uint8),
+                        (int(round(kx_c)), int(round(ky_c))),
+                        2,
+                        1,
+                        -1,
+                    )
+                sm &= crop_mask
+                ax_m = float(np.mean([p[0] for p in in_crop_kps]))
+                ay_m = float(np.mean([p[1] for p in in_crop_kps]))
+                anchor_pts.append((ax_m, ay_m))
+            elif trk is not None:
+                pred_x = float(trk.centroid_x + trk.vel_x - cx0)
+                pred_y = float(trk.centroid_y + trk.vel_y - cy0)
+                d2 = (fg_xs - pred_x) ** 2 + (fg_ys - pred_y) ** 2
+                # Prefer interior medial pixels near the motion-predicted centroid.
+                score_anchor = -np.sqrt(d2) + 0.35 * edt[fg_ys, fg_xs]
+                best_i = int(np.argmax(score_anchor))
+                bx, by = int(fg_xs[best_i]), int(fg_ys[best_i])
+                cv2.circle(sm.view(np.uint8), (bx, by), 2, 1, -1)
+                sm &= crop_mask
+                anchor_pts.append((float(bx), float(by)))
+            else:
+                anchor_pts.append((float(fg_xs.mean()), float(fg_ys.mean())))
+            seed_masks.append(sm)
+
+        # If any seeds are empty or nearly coincident (e.g. head-on overlap), separate them
+        # deterministically along the blob's principal axis aligned with track positions/appearance.
+        min_pair_dist = min(
+            (
+                math.hypot(
+                    anchor_pts[i][0] - anchor_pts[j][0],
+                    anchor_pts[i][1] - anchor_pts[j][1],
+                )
+                for i in range(len(members))
+                for j in range(i + 1, len(members))
+            ),
+            default=0.0,
+        )
+        if min_pair_dist < 5.0 or any(not np.any(sm) for sm in seed_masks):
+            mx_c, my_c = float(fg_xs.mean()), float(fg_ys.mean())
+            dx_c = fg_xs.astype(np.float32) - mx_c
+            dy_c = fg_ys.astype(np.float32) - my_c
+            cxx = float(np.mean(dx_c * dx_c))
+            cyy = float(np.mean(dy_c * dy_c))
+            cxy = float(np.mean(dx_c * dy_c))
+            disc = math.sqrt(max(0.0, (cxx - cyy) ** 2 + 4.0 * cxy * cxy))
+            lam1 = max(1.0, 0.5 * (cxx + cyy + disc))
+            vx, vy = (
+                (lam1 - cyy, cxy)
+                if (abs(cxy) > 1e-6 or cxx >= cyy)
+                else (cxy, lam1 - cxx)
+            )
+            vn = max(1e-6, math.hypot(vx, vy))
+            vx, vy = vx / vn, vy / vn
+            proj = dx_c * vx + dy_c * vy
+            quant_targets = np.linspace(-0.55, 0.55, len(members)) * float(
+                np.percentile(np.abs(proj), 90)
+            )
+            # Order members along (vx, vy) according to their prior motion-predicted projection!
+            member_proj = []
+            for idx_m, lbl in enumerate(members):
+                trk = self._full_frame_tracks.get(lbl)
+                if trk is not None:
+                    px_m = float(trk.centroid_x + trk.vel_x - cx0) - mx_c
+                    py_m = float(trk.centroid_y + trk.vel_y - cy0) - my_c
+                    p_val = px_m * vx + py_m * vy
+                else:
+                    p_val = (anchor_pts[idx_m][0] - mx_c) * vx + (
+                        anchor_pts[idx_m][1] - my_c
+                    ) * vy
+                member_proj.append((p_val, idx_m))
+            member_proj.sort(key=lambda item: item[0])
+            seed_masks = [np.zeros((ch, cw), dtype=bool) for _ in members]
+            for rank_i, (_pval, m_idx) in enumerate(member_proj):
+                target_p = quant_targets[rank_i]
+                best_fg = int(
+                    np.argmax(-np.abs(proj - target_p) + 0.25 * edt[fg_ys, fg_xs])
+                )
+                sx, sy = int(fg_xs[best_fg]), int(fg_ys[best_fg])
+                cv2.circle(seed_masks[m_idx].view(np.uint8), (sx, sy), 2, 1, -1)
+                seed_masks[m_idx] &= crop_mask
+
+        edge_map = _compute_crop_edge_strength(crop_rgb, crop_mask)
+        geo_dists = compute_masked_geodesic_distances(
+            seed_masks,
+            crop_mask,
+            edge_strength=edge_map,
+            edge_weight=max(4.5, self.config.geodesic_edge_weight),
+        )
+        scale_len = max(6.0, 0.35 * math.sqrt(float(total_fg)))
+        M = len(members)
+        base_scores = np.full((M, ch, cw), -1e6, dtype=np.float32)
+        for m_idx, lbl in enumerate(members):
+            d_slice = geo_dists[m_idx]
+            finite = np.isfinite(d_slice)
+            s_geo = np.where(finite, -d_slice / scale_len, -8.0)
+            trk = self._full_frame_tracks.get(lbl)
+            if trk is not None:
+                lab_diff = np.linalg.norm(
+                    crop_lab - trk.mean_lab[None, None, :], axis=-1
+                )
+                s_app = -0.04 * lab_diff
+            else:
+                s_app = 0.0
+            base_scores[m_idx] = (s_geo + s_app).astype(np.float32)
+            base_scores[m_idx, ~crop_mask] = -1e6
+
+        # Calibrate additive area-balance biases so neither animal swallows the entire blob.
+        sum_targets = max(1.0, float(sum(target_areas)))
+        target_shares = [t / sum_targets for t in target_areas]
+        biases = np.zeros(M, dtype=np.float32)
+        for _ in range(5):
+            adj = base_scores + biases[:, None, None]
+            winners = np.argmax(adj, axis=0)
+            for m_idx in range(M):
+                cur_share = float(
+                    np.count_nonzero(crop_mask & (winners == m_idx))
+                ) / float(total_fg)
+                err = target_shares[m_idx] - cur_share
+                biases[m_idx] += float(np.clip(1.25 * err, -0.45, 0.45))
+            biases -= float(biases.mean())
+
+        final_winners = np.argmax(base_scores + biases[:, None, None], axis=0)
+        min_req = max(8, self.config.min_part_area_px)
+        out_masks: Dict[str, np.ndarray] = {}
+        for m_idx, lbl in enumerate(members):
+            sub_crop = crop_mask & (final_winners == m_idx)
+            sub_crop = self._clean_part_components(
+                sub_crop,
+                np.exp(np.clip(base_scores[m_idx], -10.0, 10.0)),
+                min_area_px=min_req,
+            )
+            if int(np.count_nonzero(sub_crop)) < min_req:
+                return None
+            full_m = np.zeros((H, W), dtype=bool)
+            full_m[cy0:cy1, cx0:cx1] = sub_crop
+            out_masks[lbl] = full_m
+        return out_masks
+
     def segment_instance(
         self,
         frame_rgb: np.ndarray,
@@ -1879,6 +2414,7 @@ class InstanceBodyPartSegmenter:
         skeleton_edges: Optional[Sequence[Tuple[str, str]]] = None,
         parent_polygon: Optional[Sequence[Tuple[float, float]]] = None,
         group_id: Optional[int | str] = None,
+        freeze_ema: bool = False,
     ) -> Dict[str, PartPrediction]:
         """Segment body parts strictly inside a single tracked ``instance_mask``."""
         crop = _prepare_instance_crop(
@@ -1898,9 +2434,17 @@ class InstanceBodyPartSegmenter:
         feats = self._extract_crop_features(crop)
         active_mode = self._resolve_mode_for_instance(instance_label, kps_work)
 
-        candidate_protos = self._instance_prototypes.get(instance_label) or (
-            self._shared_prototypes if self.config.share_seed_across_instances else None
-        )
+        if active_mode == "seeded":
+            candidate_protos = self._instance_prototypes.get(instance_label) or (
+                self._shared_prototypes
+                if self.config.share_seed_across_instances
+                else None
+            )
+        elif active_mode == "unsupervised":
+            candidate_protos = self._unsupervised_prototypes.get(instance_label)
+        else:
+            candidate_protos = None
+
         prev_pose = (
             self._temporal_states[instance_label].pose
             if instance_label in self._temporal_states
@@ -1911,8 +2455,8 @@ class InstanceBodyPartSegmenter:
             keypoints_work=kps_work,
             keypoint_part_map=self.config.keypoint_part_map,
             prev_pose=prev_pose,
-            features=feats if active_mode == "seeded" else None,
-            prototypes=candidate_protos if active_mode == "seeded" else None,
+            features=feats,
+            prototypes=candidate_protos,
         )
 
         used_protos: Optional[List[BodyPartPrototype]] = None
@@ -1938,7 +2482,7 @@ class InstanceBodyPartSegmenter:
         if not part_labels or work_probs.shape[0] == 0:
             return {}
 
-        # Update temporal state and EMA working prototypes (when high confidence).
+        # Update temporal state and EMA working prototypes (when high confidence and non-anomalous).
         self._temporal_states[instance_label] = _TemporalInstanceState(
             pose=pose,
             part_labels=tuple(part_labels),
@@ -1946,7 +2490,7 @@ class InstanceBodyPartSegmenter:
             u_grid=pose.u_map,
             v_grid=pose.v_map,
         )
-        if used_protos and self.config.ema_alpha > 0.0:
+        if not freeze_ema and used_protos and self.config.ema_alpha > 0.0:
             work_winners = np.argmax(work_probs, axis=0)
             for idx, proto in enumerate(used_protos):
                 pm_w = crop.work_mask & (work_winners == idx)
@@ -2024,16 +2568,174 @@ class InstanceBodyPartSegmenter:
         skeleton_edges: Optional[Sequence[Tuple[str, str]]] = None,
         parent_polygons: Optional[Mapping[str, Sequence[Tuple[float, float]]]] = None,
         group_ids: Optional[Mapping[str, Optional[int | str]]] = None,
+        allow_merge_split: bool = True,
     ) -> Dict[str, Dict[str, PartPrediction]]:
         """Segment body parts inside every tracked instance on ``frame_rgb``."""
+        self.last_frame_diagnostics = {
+            "split_sources": [],
+            "recovered_parent_instances": [],
+            "anomalous_area_instances": [],
+            "resolved_parent_polygons": {},
+            "resolved_group_ids": {},
+        }
         if not instance_masks:
+            for trk in self._full_frame_tracks.values():
+                trk.frames_missing += 1
             return {}
+
         ordered_labels = list(instance_masks.keys())
-        exclusive_parents = make_instance_masks_exclusive(
-            [instance_masks[lbl] for lbl in ordered_labels]
-        )
+        raw_masks = [
+            np.asarray(instance_masks[lbl], dtype=bool) for lbl in ordered_labels
+        ]
+        exclusive_parents = make_instance_masks_exclusive(raw_masks)
+
+        active_masks: Dict[str, np.ndarray] = {}
+        active_polys: Dict[str, List[Tuple[float, float]]] = {}
+        active_gids: Dict[str, Optional[int | str]] = dict(group_ids or {})
+        for lbl, raw_m, excl_m in zip(ordered_labels, raw_masks, exclusive_parents):
+            if not np.any(excl_m):
+                continue
+            active_masks[lbl] = excl_m
+            orig_poly = list((parent_polygons or {}).get(lbl) or [])
+            # Recompute exterior parent polygon whenever overlap carving modified the mask.
+            if (
+                int(np.count_nonzero(excl_m)) < int(np.count_nonzero(raw_m))
+                or not orig_poly
+            ):
+                active_polys[lbl] = self._mask_to_largest_polygon(
+                    excl_m, epsilon=self.config.polygon_epsilon
+                )
+            else:
+                active_polys[lbl] = [(float(x), float(y)) for x, y in orig_poly]
+
+        ema_frozen: set[str] = set()
+        split_sources: List[str] = []
+        recovered_instances: List[str] = []
+
+        # Detect and split merged multi-animal parent masks during close-contact occlusion.
+        if self.config.split_merged_parent_masks and allow_merge_split and active_masks:
+            missing_tracks = {
+                lbl: trk
+                for lbl, trk in self._full_frame_tracks.items()
+                if lbl not in active_masks
+                and trk.frames_missing < self.config.merged_max_gap_frames
+            }
+            claimed_missing: set[str] = set()
+            for lbl_a in list(active_masks.keys()):
+                mask_a = active_masks[lbl_a]
+                area_a = int(np.count_nonzero(mask_a))
+                H_m, W_m = mask_a.shape
+                partners: List[str] = []
+
+                # Trigger 1: Unobserved instance has keypoints directly inside mask_a while lbl_a also has keypoints.
+                kps_map = keypoints_by_instance or {}
+                kps_a_in = [
+                    (kx, ky)
+                    for kx, ky in (kps_map.get(lbl_a) or {}).values()
+                    if 0 <= int(round(ky)) < H_m
+                    and 0 <= int(round(kx)) < W_m
+                    and mask_a[int(round(ky)), int(round(kx))]
+                ]
+                if kps_a_in:
+                    for cand_lbl, cand_kps in kps_map.items():
+                        if (
+                            cand_lbl == lbl_a
+                            or cand_lbl in active_masks
+                            or cand_lbl in claimed_missing
+                        ):
+                            continue
+                        if any(
+                            0 <= int(round(ky)) < H_m
+                            and 0 <= int(round(kx)) < W_m
+                            and mask_a[int(round(ky)), int(round(kx))]
+                            for kx, ky in (cand_kps or {}).values()
+                        ):
+                            partners.append(cand_lbl)
+
+                # Trigger 2: Area surge on lbl_a coinciding with a recently tracked missing neighbor.
+                trk_a = self._full_frame_tracks.get(lbl_a)
+                if (
+                    trk_a is not None
+                    and area_a
+                    >= self.config.merged_area_ratio_threshold
+                    * max(16.0, trk_a.ema_area)
+                ):
+                    ys_a, xs_a = np.nonzero(mask_a)
+                    for lbl_b, trk_b in missing_tracks.items():
+                        if lbl_b in claimed_missing or lbl_b in partners:
+                            continue
+                        px_b = trk_b.centroid_x + trk_b.vel_x
+                        py_b = trk_b.centroid_y + trk_b.vel_y
+                        px_i = int(np.clip(round(px_b), 0, W_m - 1))
+                        py_i = int(np.clip(round(py_b), 0, H_m - 1))
+                        if mask_a[py_i, px_i]:
+                            dist_b = 0.0
+                        else:
+                            dist_b = float(
+                                np.sqrt(np.min((xs_a - px_b) ** 2 + (ys_a - py_b) ** 2))
+                            )
+                        reach_b = 0.65 * math.sqrt(max(16.0, trk_b.ema_area))
+                        if dist_b <= reach_b and area_a >= 0.70 * (
+                            trk_a.ema_area + trk_b.ema_area
+                        ):
+                            partners.append(lbl_b)
+
+                if not partners:
+                    continue
+
+                split_res = self._split_merged_parent_blob(
+                    frame_rgb,
+                    mask_a,
+                    [lbl_a, *partners],
+                    keypoints_by_instance=keypoints_by_instance,
+                )
+                if split_res is None:
+                    ema_frozen.add(lbl_a)
+                    continue
+
+                active_masks[lbl_a] = split_res[lbl_a]
+                active_polys[lbl_a] = self._mask_to_largest_polygon(
+                    split_res[lbl_a], epsilon=self.config.polygon_epsilon
+                )
+                ema_frozen.add(lbl_a)
+                split_sources.append(lbl_a)
+                for lbl_b in partners:
+                    claimed_missing.add(lbl_b)
+                    if self.config.recover_missing_merged_instances:
+                        active_masks[lbl_b] = split_res[lbl_b]
+                        active_polys[lbl_b] = self._mask_to_largest_polygon(
+                            split_res[lbl_b], epsilon=self.config.polygon_epsilon
+                        )
+                        if (
+                            lbl_b not in active_gids
+                            and lbl_b in self._full_frame_tracks
+                        ):
+                            active_gids[lbl_b] = self._full_frame_tracks[
+                                lbl_b
+                            ].last_group_id
+                        ema_frozen.add(lbl_b)
+                        recovered_instances.append(lbl_b)
+
+        # Anomalous parent area guardrail: freeze prototype EMA on abrupt unsplit jumps/occlusions.
+        anomalous_instances: List[str] = []
+        for lbl, msk in active_masks.items():
+            trk = self._full_frame_tracks.get(lbl)
+            if trk is None or trk.ema_area <= 8.0:
+                continue
+            ratio = float(np.count_nonzero(msk)) / float(trk.ema_area)
+            min_ratio = 1.0 / max(
+                1.1, self.config.anomalous_area_ema_freeze_ratio * 1.55
+            )
+            if (
+                ratio >= self.config.anomalous_area_ema_freeze_ratio
+                or ratio <= min_ratio
+            ):
+                ema_frozen.add(lbl)
+                if lbl not in split_sources and lbl not in recovered_instances:
+                    anomalous_instances.append(lbl)
+
         results: Dict[str, Dict[str, PartPrediction]] = {}
-        for lbl, excl_mask in zip(ordered_labels, exclusive_parents):
+        for lbl, excl_mask in active_masks.items():
             if not np.any(excl_mask):
                 continue
             results[lbl] = self.segment_instance(
@@ -2042,9 +2744,75 @@ class InstanceBodyPartSegmenter:
                 excl_mask,
                 keypoints=(keypoints_by_instance or {}).get(lbl),
                 skeleton_edges=skeleton_edges,
-                parent_polygon=(parent_polygons or {}).get(lbl),
-                group_id=(group_ids or {}).get(lbl),
+                parent_polygon=active_polys.get(lbl),
+                group_id=active_gids.get(lbl),
+                freeze_ema=(lbl in ema_frozen),
             )
+
+        # Update full-frame geometry & Lab appearance history for subsequent frames.
+        for lbl, trk in list(self._full_frame_tracks.items()):
+            if lbl not in active_masks:
+                trk.frames_missing += 1
+
+        for lbl, msk in active_masks.items():
+            ys_i, xs_i = np.nonzero(msk)
+            if xs_i.size == 0:
+                continue
+            cx_cur = float(xs_i.mean())
+            cy_cur = float(ys_i.mean())
+            area_cur = float(xs_i.size)
+            bbox_i = tight_mask_bbox(msk)
+            if bbox_i is not None:
+                bx0, by0, bx1, by1 = bbox_i
+                sub_lab = cv2.cvtColor(
+                    np.asarray(frame_rgb[by0:by1, bx0:bx1], dtype=np.uint8),
+                    cv2.COLOR_RGB2LAB,
+                ).astype(np.float32)
+                mean_lab = sub_lab[msk[by0:by1, bx0:bx1]].mean(axis=0)
+            else:
+                mean_lab = np.array([128.0, 128.0, 128.0], dtype=np.float32)
+
+            prev_trk = self._full_frame_tracks.get(lbl)
+            if prev_trk is None:
+                self._full_frame_tracks[lbl] = _FullFrameInstanceTrack(
+                    centroid_x=cx_cur,
+                    centroid_y=cy_cur,
+                    vel_x=0.0,
+                    vel_y=0.0,
+                    ema_area=area_cur,
+                    mean_lab=mean_lab.astype(np.float32),
+                    last_group_id=active_gids.get(lbl),
+                    frames_missing=0,
+                )
+            else:
+                step_dt = max(1, prev_trk.frames_missing + 1)
+                inst_vx = (cx_cur - prev_trk.centroid_x) / float(step_dt)
+                inst_vy = (cy_cur - prev_trk.centroid_y) / float(step_dt)
+                vel_blend = 0.25 if lbl in ema_frozen else 0.55
+                prev_trk.vel_x = (
+                    1.0 - vel_blend
+                ) * prev_trk.vel_x + vel_blend * inst_vx
+                prev_trk.vel_y = (
+                    1.0 - vel_blend
+                ) * prev_trk.vel_y + vel_blend * inst_vy
+                prev_trk.centroid_x = cx_cur
+                prev_trk.centroid_y = cy_cur
+                if lbl not in ema_frozen:
+                    prev_trk.ema_area = 0.80 * prev_trk.ema_area + 0.20 * area_cur
+                    prev_trk.mean_lab = (
+                        0.85 * prev_trk.mean_lab + 0.15 * mean_lab
+                    ).astype(np.float32)
+                if active_gids.get(lbl) is not None:
+                    prev_trk.last_group_id = active_gids.get(lbl)
+                prev_trk.frames_missing = 0
+
+        self.last_frame_diagnostics = {
+            "split_sources": split_sources,
+            "recovered_parent_instances": recovered_instances,
+            "anomalous_area_instances": anomalous_instances,
+            "resolved_parent_polygons": active_polys,
+            "resolved_group_ids": active_gids,
+        }
         return results
 
 
@@ -2470,6 +3238,12 @@ class InstanceBodyPartVideoProcessor:
                         "epsilon_for_polygon", runtime.get("polygon_epsilon", 1.0)
                     )
                 ),
+                split_merged_parent_masks=_runtime_bool(
+                    runtime.get("split_merged_parent_masks", True), default=True
+                ),
+                recover_missing_merged_instances=_runtime_bool(
+                    runtime.get("recover_missing_merged_instances", True), default=True
+                ),
                 qualify_label_with_instance=_runtime_bool(
                     runtime.get("qualify_label_with_instance", False)
                 ),
@@ -2695,6 +3469,9 @@ class InstanceBodyPartVideoProcessor:
         frames_processed = 0
         instances_segmented = 0
         parts_emitted = 0
+        merged_parent_splits = 0
+        recovered_parent_instances = 0
+        anomalous_parent_frames = 0
         part_counts: Dict[str, int] = defaultdict(int)
         modes_used: set[str] = set()
 
@@ -2728,13 +3505,6 @@ class InstanceBodyPartVideoProcessor:
             if backbone is None and self.config.feature_backend in {"dino", "hybrid"}:
                 backbone = getattr(self.segmenter.extractor, "model", None)
 
-            for inst_lbl in p_masks:
-                modes_used.add(
-                    self.segmenter._resolve_mode_for_instance(
-                        inst_lbl, kps_by_inst.get(inst_lbl)
-                    )
-                )
-
             with torch_cancellable_forward(backbone, stop_event):
                 preds_by_inst = self.segmenter.segment_frame(
                     frame_rgb,
@@ -2743,9 +3513,29 @@ class InstanceBodyPartVideoProcessor:
                     skeleton_edges=self.skeleton_edges,
                     parent_polygons=p_polys,
                     group_ids=p_gids,
+                    allow_merge_split=not has_png,
                 )
             if self._should_stop():
                 return "Body-part segmentation stopped by user."
+
+            diag = self.segmenter.last_frame_diagnostics
+            split_sources_set = set(diag.get("split_sources") or ())
+            rec_parents_list = list(diag.get("recovered_parent_instances") or ())
+            resolved_polys = diag.get("resolved_parent_polygons") or {}
+            resolved_gids = diag.get("resolved_group_ids") or {}
+            if split_sources_set:
+                merged_parent_splits += len(split_sources_set)
+            if rec_parents_list:
+                recovered_parent_instances += len(rec_parents_list)
+            if diag.get("anomalous_area_instances"):
+                anomalous_parent_frames += 1
+
+            for inst_lbl in preds_by_inst:
+                modes_used.add(
+                    self.segmenter._resolve_mode_for_instance(
+                        inst_lbl, kps_by_inst.get(inst_lbl)
+                    )
+                )
 
             # Merge predicted body-part shapes while preserving non-body-part shapes & manual seeds!
             existing_shapes = payload.get("shapes") or []
@@ -2798,7 +3588,55 @@ class InstanceBodyPartVideoProcessor:
                         )
                         kept_shapes.append(promoted)
                         continue
-                kept_shapes.append(dict(shape))
+
+                shape_copy = dict(shape)
+                if (
+                    not has_png
+                    and split_sources_set
+                    and not is_zone_shape_payload(shape_copy)
+                    and str(shape_copy.get("shape_type") or "polygon").lower()
+                    == "polygon"
+                ):
+                    s_inst = str(
+                        shape_copy.get("instance_label")
+                        or shape_copy.get("label")
+                        or ""
+                    ).strip()
+                    matched_split = s_inst if s_inst in split_sources_set else None
+                    if matched_split is None and shape_copy.get("group_id") is not None:
+                        s_gid = str(shape_copy.get("group_id")).strip()
+                        matched_split = next(
+                            (
+                                src
+                                for src in split_sources_set
+                                if p_gids.get(src) is not None
+                                and str(p_gids.get(src)).strip() == s_gid
+                            ),
+                            None,
+                        )
+                    if matched_split is not None and resolved_polys.get(matched_split):
+                        shape_copy["points"] = [
+                            [float(x), float(y)]
+                            for x, y in resolved_polys[matched_split]
+                        ]
+                kept_shapes.append(shape_copy)
+
+            if not has_png and rec_parents_list:
+                for rec_lbl in rec_parents_list:
+                    rec_poly = resolved_polys.get(rec_lbl)
+                    if not rec_poly or len(rec_poly) < 3:
+                        continue
+                    kept_shapes.append(
+                        {
+                            "label": rec_lbl,
+                            "instance_label": rec_lbl,
+                            "group_id": resolved_gids.get(rec_lbl),
+                            "shape_type": "polygon",
+                            "points": [[float(x), float(y)] for x, y in rec_poly],
+                            "flags": {"recovered_merged_parent": True},
+                            "description": "RecoveredMergedParent",
+                        }
+                    )
 
             # Build set of (parent, part) already covered by preserved manual seed shapes on this frame.
             manual_covered = {
@@ -2853,6 +3691,9 @@ class InstanceBodyPartVideoProcessor:
             "seed_frames_fitted": seed_frames_fitted,
             "instances_segmented": instances_segmented,
             "parts_emitted": parts_emitted,
+            "merged_parent_splits": merged_parent_splits,
+            "recovered_parent_instances": recovered_parent_instances,
+            "anomalous_parent_frames": anomalous_parent_frames,
             "part_counts": dict(sorted(part_counts.items())),
             "modes_used": sorted(modes_used),
         }

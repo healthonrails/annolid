@@ -697,3 +697,300 @@ def test_registry_and_gui_wiring_for_body_part_segmentation():
         "patch_model_name": selected_model,
         "dinov3_model_name": selected_model,
     }
+
+
+def _draw_circular_animal(
+    height: int = 128,
+    width: int = 128,
+    center: tuple[int, int] = (64, 64),
+    radius: int = 24,
+    heading_deg: float = 0.0,
+) -> tuple[np.ndarray, np.ndarray, dict[str, np.ndarray]]:
+    """Draw a perfect aspect-ratio 1.00 circular animal rotated at ``heading_deg``."""
+    frame = np.full((height, width, 3), 232, dtype=np.uint8)
+    yy, xx = np.meshgrid(np.arange(height), np.arange(width), indexing="ij")
+    dx = xx - center[0]
+    dy = yy - center[1]
+    inst_mask = (dx * dx + dy * dy) <= (radius * radius)
+
+    rad = np.deg2rad(heading_deg)
+    proj = (dx * np.cos(rad) + dy * np.sin(rad)) / float(radius)
+
+    head_gt = inst_mask & (proj >= 0.30)
+    tail_gt = inst_mask & (proj <= -0.30)
+    torso_gt = inst_mask & ~head_gt & ~tail_gt
+
+    # Distinct anatomical coat colors: dark snout/head cap, warm brown torso, pale tail-base.
+    frame[torso_gt] = (145, 102, 68)
+    frame[head_gt] = (32, 34, 42)
+    frame[tail_gt] = (218, 198, 178)
+    return frame, inst_mask, {"head": head_gt, "torso": torso_gt, "tail": tail_gt}
+
+
+def test_unseeded_circular_posture_tracks_arbitrary_90_and_180_rotations():
+    f0, m0, gt0 = _draw_circular_animal(heading_deg=0.0)
+    f90, m90, gt90 = _draw_circular_animal(heading_deg=90.0)
+    f180, m180, gt180 = _draw_circular_animal(heading_deg=180.0)
+
+    seg = InstanceBodyPartSegmenter(
+        BodyPartSegmentationConfig(
+            mode="unsupervised",
+            num_parts=3,
+            feature_backend="fast",
+        )
+    )
+    p0 = seg.segment_frame(f0, {"mouse_1": m0})["mouse_1"]
+    p90 = seg.segment_frame(f90, {"mouse_1": m90})["mouse_1"]
+    p180 = seg.segment_frame(f180, {"mouse_1": m180})["mouse_1"]
+
+    # Determine which end label ("head" vs "tail") anchored the dark anterior pole on cold-start f0,
+    # then verify it rotates by +90 deg on f90 and +180 deg on f180 despite aspect_ratio == 1.00!
+    head_mask_0 = p0["head"].to_full_mask(*m0.shape)
+    ant_label = (
+        "head"
+        if np.count_nonzero(head_mask_0 & gt0["head"])
+        >= np.count_nonzero(head_mask_0 & gt0["tail"])
+        else "tail"
+    )
+    for preds, gt in ((p0, gt0), (p90, gt90), (p180, gt180)):
+        pred_ant = preds[ant_label].to_full_mask(*m0.shape)
+        iou = np.count_nonzero(pred_ant & gt["head"]) / max(
+            1, np.count_nonzero(pred_ant | gt["head"])
+        )
+        assert iou > 0.55
+
+
+def test_unseeded_curled_u_shape_uses_intrinsic_geodesic_spine_without_keypoints():
+    from annolid.segmentation.body_parts import estimate_body_frame_pose
+
+    H, W = 96, 96
+    frame = np.full((H, W, 3), 236, dtype=np.uint8)
+    mask = np.zeros((H, W), dtype=bool)
+    # U-turn body: top head arm (thick, dark), left spine bend (brown), bottom tail arm (thin, pale).
+    mask[18:30, 22:76] = True  # thicker top arm (12 px)
+    mask[18:72, 22:34] = True  # left spine bend (12 px)
+    mask[64:72, 22:76] = True  # thinner bottom tail arm (8 px)
+
+    top_head = np.zeros((H, W), dtype=bool)
+    top_head[18:30, 46:76] = True
+    bot_tail = np.zeros((H, W), dtype=bool)
+    bot_tail[64:72, 46:76] = True
+    bend_torso = mask & ~top_head & ~bot_tail
+
+    frame[bend_torso] = (142, 98, 66)
+    frame[top_head] = (34, 36, 44)
+    frame[bot_tail] = (216, 196, 176)
+
+    pose = estimate_body_frame_pose(mask)
+    assert pose.tortuosity > 1.35
+
+    seg = InstanceBodyPartSegmenter(
+        BodyPartSegmentationConfig(
+            mode="unsupervised",
+            num_parts=3,
+            feature_backend="fast",
+        )
+    )
+    preds = seg.segment_frame(frame, {"mouse_1": mask})["mouse_1"]
+    assert set(preds.keys()) == {"head", "torso", "tail"}
+
+    head_m = preds["head"].to_full_mask(H, W)
+    tail_m = preds["tail"].to_full_mask(H, W)
+    # Head must concentrate on the thicker top arm and NOT jump across the air gap onto the bottom arm!
+    assert np.count_nonzero(head_m & top_head) > 4 * np.count_nonzero(head_m & bot_tail)
+    assert np.count_nonzero(tail_m & bot_tail) > 4 * np.count_nonzero(tail_m & top_head)
+
+
+def test_merged_parent_mask_splits_huddling_animals_and_recovers_missing_partner(
+    tmp_path: Path,
+):
+    video_path = tmp_path / "huddle.mp4"
+    result_dir = tmp_path / "huddle"
+    result_dir.mkdir(parents=True, exist_ok=True)
+
+    H, W = 140, 180
+    writer = cv2.VideoWriter(
+        str(video_path),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        10.0,
+        (W, H),
+    )
+    assert writer.isOpened()
+
+    # Frames 0 & 1: mouse_1 (upper) and mouse_2 (lower) approach;
+    # Frame 2: they touch/huddle and upstream tracker emits ONE merged mouse_1 polygon (mouse_2 dropped!);
+    # Frame 3: they separate again.
+    centers = [
+        ((88, 42), (88, 98)),
+        ((88, 48), (88, 92)),
+        ((88, 56), (88, 82)),  # touching/overlapping vertical contact!
+        ((88, 46), (88, 94)),
+    ]
+    for f_idx, (c_a, c_b) in enumerate(centers):
+        f_a, m_a, _pa, _ka = _draw_synthetic_animal(
+            height=H, width=W, center=c_a, facing_right=True
+        )
+        f_b, m_b, _pb, _kb = _draw_synthetic_animal(
+            height=H, width=W, center=c_b, facing_right=False
+        )
+        # Make mouse_2 coat slightly lighter tan for realistic inter-animal boundary contrast.
+        f_b_adj = np.clip(f_b.astype(np.int32) + 28, 0, 255).astype(np.uint8)
+        canvas = np.full((H, W, 3), 236, dtype=np.uint8)
+        canvas[m_a] = f_a[m_a]
+        canvas[m_b] = f_b_adj[m_b]
+        writer.write(cv2.cvtColor(canvas, cv2.COLOR_RGB2BGR))
+
+        if f_idx == 2:
+            merged = m_a | m_b
+            # Bridge any tiny 1-2 px gap between the two huddling silhouettes so it is one connected blob.
+            merged = (
+                cv2.morphologyEx(
+                    merged.astype(np.uint8),
+                    cv2.MORPH_CLOSE,
+                    np.ones((9, 9), dtype=np.uint8),
+                )
+                > 0
+            )
+            shapes = [
+                {
+                    "label": "mouse_1",
+                    "group_id": 1,
+                    "shape_type": "polygon",
+                    "points": _mask_to_poly_pts(merged),
+                    "flags": {},
+                }
+            ]
+        else:
+            shapes = [
+                {
+                    "label": "mouse_1",
+                    "group_id": 1,
+                    "shape_type": "polygon",
+                    "points": _mask_to_poly_pts(m_a),
+                    "flags": {},
+                },
+                {
+                    "label": "mouse_2",
+                    "group_id": 2,
+                    "shape_type": "polygon",
+                    "points": _mask_to_poly_pts(m_b),
+                    "flags": {},
+                },
+            ]
+
+        frame_json = result_dir / f"huddle_{f_idx:09d}.json"
+        frame_json.write_text(
+            json.dumps(
+                {
+                    "version": "5.0.1",
+                    "imagePath": f"huddle_{f_idx:09d}.png",
+                    "imageData": None,
+                    "imageHeight": H,
+                    "imageWidth": W,
+                    "shapes": shapes,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    writer.release()
+
+    proc = InstanceBodyPartVideoProcessor(
+        str(video_path),
+        results_folder=str(result_dir),
+        body_part_config=BodyPartSegmentationConfig(
+            mode="unsupervised",
+            num_parts=3,
+            feature_backend="fast",
+            split_merged_parent_masks=True,
+            recover_missing_merged_instances=True,
+        ),
+    )
+    proc.process_video_frames()
+    summary = dict(proc.last_summary)
+    proc.cleanup()
+
+    assert summary["merged_parent_splits"] == 1
+    assert summary["recovered_parent_instances"] == 1
+
+    f2_saved = json.loads((result_dir / "huddle_000000002.json").read_text("utf-8"))
+    whole_animals_f2 = [
+        s for s in f2_saved["shapes"] if not is_body_part_shape_payload(s)
+    ]
+    assert {s["label"] for s in whole_animals_f2} == {"mouse_1", "mouse_2"}
+    rec_m2 = next(s for s in whole_animals_f2 if s["label"] == "mouse_2")
+    assert rec_m2["flags"] == {"recovered_merged_parent": True}
+
+    qc = evaluate_track_qc(result_dir, expected_instances=2)
+    assert len(qc.instances) == 2
+    assert not any(
+        issue.code
+        in {
+            "count_mismatch",
+            "spatial_overlap",
+            "body_part_outside_instance",
+            "body_part_missing_parent",
+        }
+        for issue in qc.issues
+    )
+
+
+def test_anomalous_parent_area_freezes_ema_and_qc_flags_missing_parent(tmp_path: Path):
+    from annolid.utils.body_part_shapes import build_body_part_shape_dict
+
+    f0, m0, parts0, _ = _draw_synthetic_animal(center=(80, 64), facing_right=True)
+    seg = InstanceBodyPartSegmenter(
+        BodyPartSegmentationConfig(
+            mode="seeded",
+            feature_backend="fast",
+            ema_alpha=0.35,
+            ema_min_confidence=0.1,
+        )
+    )
+    seg.fit_seed_frame(f0, {"mouse_1": m0}, {"mouse_1": parts0})
+    seg.segment_frame(f0, {"mouse_1": m0})
+    proto_before = seg._instance_prototypes["mouse_1"][0].working_prototype.copy()
+
+    # Simulate an unsplit 2.2x shadow/bedding bloat on a single-animal track with altered RGB.
+    bloated = (
+        cv2.dilate(m0.astype(np.uint8), np.ones((19, 19), dtype=np.uint8), iterations=1)
+        > 0
+    )
+    corrupted_rgb = np.clip(255 - f0, 0, 255).astype(np.uint8)
+    seg.segment_frame(corrupted_rgb, {"mouse_1": bloated})
+    assert "mouse_1" in seg.last_frame_diagnostics["anomalous_area_instances"]
+    proto_after = seg._instance_prototypes["mouse_1"][0].working_prototype
+    np.testing.assert_allclose(proto_before, proto_after, atol=1e-6)
+
+    # Verify TrackQC flags an orphan body part whose parent instance is missing on that frame.
+    orphan_dir = tmp_path / "orphan_qc"
+    orphan_dir.mkdir(parents=True, exist_ok=True)
+    orphan_json = orphan_dir / "orphan_000000000.json"
+    orphan_json.write_text(
+        json.dumps(
+            {
+                "version": "5.0.1",
+                "imagePath": "orphan_000000000.png",
+                "imageData": None,
+                "imageHeight": 128,
+                "imageWidth": 160,
+                "shapes": [
+                    {
+                        "label": "mouse_1",
+                        "shape_type": "polygon",
+                        "points": _mask_to_poly_pts(m0),
+                        "flags": {},
+                    },
+                    build_body_part_shape_dict(
+                        points=[[10.0, 10.0], [24.0, 10.0], [24.0, 24.0], [10.0, 24.0]],
+                        parent_instance="ghost_mouse",
+                        part_label="head",
+                    ),
+                ],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    qc = evaluate_track_qc(orphan_dir, expected_instances=1)
+    assert any(issue.code == "body_part_missing_parent" for issue in qc.issues)
