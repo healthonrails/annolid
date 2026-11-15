@@ -128,7 +128,12 @@ class PredictionExecutionMixin:
         model_weight: str | None,
     ) -> dict[str, str]:
         """Return DINO model kwargs for generic DINO-backed video processors."""
-        if not self._is_insid3_model(str(model_name or ""), str(model_weight or "")):
+        m_name = str(model_name or "")
+        m_weight = str(model_weight or "")
+        if not (
+            self._is_insid3_model(m_name, m_weight)
+            or self._is_body_part_seg_model(m_name, m_weight)
+        ):
             return {}
         selected_dino_model = resolve_dino_model_from_runtime(
             self.tracker_runtime_config,
@@ -760,6 +765,13 @@ class PredictionExecutionMixin:
                     processor_kwargs.update(self._cutie_brightness_contrast_kwargs())
                 if self._is_tapnext_model(model_name, model_weight):
                     processor_kwargs["tapnext_model_path"] = model_weight
+                if self._is_body_part_seg_model(model_name, model_weight):
+                    pose_schema = getattr(self, "_pose_schema", None)
+                    raw_edges = getattr(pose_schema, "skeleton", None) or ()
+                    if raw_edges:
+                        processor_kwargs["skeleton_edges"] = tuple(
+                            (str(a), str(b)) for a, b in raw_edges
+                        )
                 dino_model_kwargs = self._dino_model_kwargs_for_tracking_processor(
                     model_name,
                     model_weight,
@@ -914,6 +926,10 @@ class PredictionExecutionMixin:
                                 int(manual_seed_first),
                             )
                         )
+                    elif self._is_body_part_seg_model(model_name, model_weight):
+                        # Second-pass intra-instance body-part segmentation runs across
+                        # already-tracked frames starting from frame 0 unless forced.
+                        inference_start_frame = 0
                     elif manual_seed_max >= 0:
                         inference_start_frame = max(
                             int(inference_start_frame), int(manual_seed_max) + 1
@@ -1049,6 +1065,19 @@ class PredictionExecutionMixin:
                     start_frame=int(inference_start_frame),
                     end_frame=end_frame,
                     step=1,
+                    pred_worker=None,
+                )
+                self.video_processor.set_pred_worker(self.pred_worker)
+                self.pred_worker._kwargs["pred_worker"] = self.pred_worker
+                watch_start_frame = int(inference_start_frame)
+            elif self._is_body_part_seg_model(model_name, model_weight):
+                end_frame = self.num_frames - 1
+                self._prediction_target_end_frame = int(end_frame)
+                self.pred_worker = FlexibleWorker(
+                    task_function=self.video_processor.process_video_frames,
+                    start_frame=int(inference_start_frame),
+                    end_frame=end_frame,
+                    step=max(1, int(self.step_size)),
                     pred_worker=None,
                 )
                 self.video_processor.set_pred_worker(self.pred_worker)

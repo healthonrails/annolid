@@ -96,12 +96,27 @@ class KeypointState:
             self.quality = float(quality)
 
 
+@dataclass(slots=True)
+class BodyPartState:
+    """Represents a segmented anatomical body part inside a parent InstanceState."""
+
+    part_label: str
+    instance_label: str
+    polygon: MaskPolygon
+    mask_bitmap: Optional[np.ndarray] = None
+    confidence: float = 1.0
+    area_ratio: Optional[float] = None
+    group_id: Optional[int | str] = None
+    storage_label_override: Optional[str] = None
+
+
 @dataclass
 class InstanceState:
-    """Encapsulates keypoints and mask information for a labeled instance."""
+    """Encapsulates keypoints, mask, and optional intra-instance body parts."""
 
     label: str
     keypoints: Dict[str, KeypointState] = field(default_factory=dict)
+    body_parts: Dict[str, BodyPartState] = field(default_factory=dict)
     mask_bitmap: Optional[np.ndarray] = None
     polygon: Optional[MaskPolygon] = None
     last_updated_frame: Optional[int] = None
@@ -114,6 +129,9 @@ class InstanceState:
     def upsert_keypoints(self, keypoints: Sequence[KeypointState]) -> None:
         for kp in keypoints:
             self.upsert_keypoint(kp)
+
+    def upsert_body_part(self, body_part: BodyPartState) -> None:
+        self.body_parts[body_part.part_label] = body_part
 
     def set_mask(
         self, *, bitmap: Optional[np.ndarray], polygon: Optional[MaskPolygon]

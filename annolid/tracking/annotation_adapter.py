@@ -18,11 +18,19 @@ from annolid.annotation.keypoint_visibility import (
 from annolid.annotation.keypoints import save_labels
 from annolid.gui.shape import Shape
 from annolid.tracking.domain import (
+    BodyPartState,
     KEYPOINT_DELIMITER,
     MASK_SUFFIX,
     combine_labels,
     InstanceRegistry,
     KeypointState,
+)
+from annolid.utils.body_part_shapes import (
+    build_body_part_flags,
+    build_body_part_metadata,
+    extract_body_part_label,
+    extract_body_part_parent_instance,
+    is_body_part_shape_payload,
 )
 from annolid.tracking.overlap_assignment import (
     OverlappingPointCandidate,
@@ -154,11 +162,16 @@ class AnnotationAdapter:
         # (e.g., two "mouse" polygons with group_id=0 and group_id=1) are disambiguated
         # rather than overwriting each other in InstanceRegistry.
         polygon_base_counts: Counter[str] = Counter()
+        pending_body_parts: List[Dict[str, object]] = []
         for shape in shapes:
             if is_zone_shape_payload(shape):
                 continue
             shape_type = str(shape.get("shape_type", "")).strip() or "point"
             if shape_type != "polygon":
+                continue
+            if is_body_part_shape_payload(shape):
+                if shape.get("points"):
+                    pending_body_parts.append(shape)
                 continue
             raw_label = str(shape.get("label", "")).strip()
             base_instance = self._parse_mask_label(raw_label, shape)
@@ -170,7 +183,7 @@ class AnnotationAdapter:
         group_candidates: Dict[str, List[str]] = defaultdict(list)
         duplicate_ordinals: Counter[str] = Counter()
         for shape in shapes:
-            if is_zone_shape_payload(shape):
+            if is_zone_shape_payload(shape) or is_body_part_shape_payload(shape):
                 continue
             label = str(shape.get("label", "")).strip()
             shape_type = str(shape.get("shape_type", "")).strip() or "point"
@@ -227,6 +240,76 @@ class AnnotationAdapter:
                     group_instances[group_key] = instance_label
                 elif group_instances[group_key] != instance_label:
                     group_instances[group_key] = None
+
+        # Attach intra-instance body-part polygons to their parent InstanceState.
+        for bp_shape in pending_body_parts:
+            bp_points = [
+                (float(pt[0]), float(pt[1]))
+                for pt in bp_shape.get("points", [])  # type: ignore[index,union-attr]
+            ]
+            bp_poly = self._sanitize_polygon(bp_points)
+            if not bp_poly:
+                continue
+            parent_hint = extract_body_part_parent_instance(bp_shape)
+            part_label = extract_body_part_label(bp_shape) or "part"
+            bp_group_id = self._normalize_group_id_value(bp_shape.get("group_id"))
+            bp_group_key = self._group_id_key(bp_shape)
+
+            resolved_parent: Optional[str] = None
+            if parent_hint and parent_hint in registry.instances:
+                resolved_parent = parent_hint
+            elif bp_group_key is not None and group_instances.get(bp_group_key):
+                resolved_parent = group_instances[bp_group_key]
+            elif polygon_masks:
+                bp_bitmap = self.mask_bitmap_from_polygon(bp_poly)
+                best_overlap = 0
+                for cand_inst, cand_mask in polygon_masks:
+                    overlap = int(np.count_nonzero(bp_bitmap & cand_mask))
+                    if overlap > best_overlap:
+                        best_overlap = overlap
+                        resolved_parent = cand_inst
+            if not resolved_parent:
+                resolved_parent = parent_hint or (
+                    next(iter(registry.instances))
+                    if len(registry.instances) == 1
+                    else "instance"
+                )
+
+            bp_conf, _bp_qual = self._extract_confidence_and_quality(bp_shape)
+            raw_area_ratio = bp_shape.get("area_ratio")
+            if raw_area_ratio is None and isinstance(bp_shape.get("flags"), Mapping):
+                raw_area_ratio = bp_shape["flags"].get("area_ratio")  # type: ignore[index]
+            area_ratio_val: Optional[float] = None
+            if raw_area_ratio is not None and not isinstance(raw_area_ratio, bool):
+                try:
+                    ar = float(raw_area_ratio)  # type: ignore[arg-type]
+                    if math.isfinite(ar):
+                        area_ratio_val = ar
+                except (TypeError, ValueError):
+                    area_ratio_val = None
+
+            raw_bp_label = str(bp_shape.get("label", "")).strip()
+            parent_state = registry.ensure_instance(resolved_parent)
+            parent_state.upsert_body_part(
+                BodyPartState(
+                    part_label=part_label,
+                    instance_label=resolved_parent,
+                    polygon=bp_poly,
+                    mask_bitmap=None,
+                    confidence=bp_conf,
+                    area_ratio=area_ratio_val,
+                    group_id=(
+                        bp_group_id
+                        if bp_group_id is not None
+                        else parent_state.group_id
+                    ),
+                    storage_label_override=(
+                        raw_bp_label
+                        if raw_bp_label and raw_bp_label != part_label
+                        else None
+                    ),
+                )
+            )
 
         known_polygon_instances = list(registry.instances.keys())
         assigned_for_overlap: Dict[str, List[Tuple[str, float, float]]] = defaultdict(
@@ -511,6 +594,36 @@ class AnnotationAdapter:
                     for x, y in self._sanitize_polygon(instance.polygon)
                 ]
                 shapes.append(mask_shape)
+
+            for body_part in instance.body_parts.values():
+                if not body_part.polygon:
+                    continue
+                part_shape_label = (
+                    body_part.storage_label_override or body_part.part_label
+                )
+                part_gid = (
+                    body_part.group_id
+                    if body_part.group_id is not None
+                    else instance.group_id
+                )
+                part_shape = Shape(
+                    label=part_shape_label,
+                    shape_type="polygon",
+                    group_id=part_gid,
+                    flags=build_body_part_flags(),
+                    description="InstanceBodyPartSeg",
+                )
+                part_shape.other_data = build_body_part_metadata(
+                    parent_instance=instance.label,
+                    part_label=body_part.part_label,
+                    confidence=body_part.confidence,
+                    area_ratio=body_part.area_ratio,
+                )
+                part_shape.points = [
+                    [float(x), float(y)]
+                    for x, y in self._sanitize_polygon(body_part.polygon)
+                ]
+                shapes.append(part_shape)
 
         save_labels(
             filename=json_path,

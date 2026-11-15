@@ -54,6 +54,11 @@ from annolid.utils.annotation_store import (
     load_labelme_json,
 )
 from annolid.utils.atomic_io import atomic_write_json, atomic_write_text
+from annolid.utils.body_part_shapes import (
+    extract_body_part_label,
+    extract_body_part_parent_instance,
+    is_body_part_shape_payload,
+)
 from annolid.utils.zone_shapes import is_zone_shape_payload
 
 __all__ = [
@@ -83,6 +88,8 @@ _RECOMMENDED_ACTION_BY_CODE = {
     "identity_swap_suspect": "verify_identity_or_swap",
     "duplicate_instance": "deduplicate_or_relabel_instance",
     "ambiguous_keypoint_ownership": "assign_keypoint_group_or_instance",
+    "body_part_outside_instance": "clamp_or_resegment_body_part",
+    "body_part_overlap": "resolve_sibling_body_part_overlap",
     "spatial_overlap": "inspect_close_contact_masks",
     "anatomical_edge_outlier": "check_keypoint_outlier",
     "velocity_spike": "verify_jump_or_id_switch",
@@ -501,6 +508,127 @@ def _parse_keypoint_identity(
     return None
 
 
+def _evaluate_frame_body_part_issues(
+    frame_num: int,
+    frame_obs: Sequence[_InstanceObservation],
+    frame_group_instances: Mapping[str, Optional[str]],
+    body_part_shapes: Sequence[Mapping[str, Any]],
+) -> List[TrackQCIssue]:
+    if not body_part_shapes:
+        return []
+    found_issues: List[TrackQCIssue] = []
+    parent_by_name: Dict[str, _InstanceObservation] = {}
+    for obs in frame_obs:
+        if (
+            obs.instance not in parent_by_name
+            or obs.area > parent_by_name[obs.instance].area
+        ):
+            parent_by_name[obs.instance] = obs
+
+    siblings_by_parent: Dict[str, List[Tuple[str, _InstanceObservation]]] = defaultdict(
+        list
+    )
+    for bp_shape in body_part_shapes:
+        geom = _extract_shape_geometry(bp_shape)
+        if geom is None:
+            continue
+        centroid, area, bbox, poly = geom
+        if area <= 0.0:
+            continue
+        parent_name = extract_body_part_parent_instance(bp_shape)
+        part_name = extract_body_part_label(bp_shape) or "part"
+        if not parent_name:
+            gid_val = bp_shape.get("group_id")
+            gid_int = _safe_int(gid_val)
+            gid_key = (
+                str(gid_int)
+                if gid_int is not None
+                else (
+                    str(gid_val).strip()
+                    if gid_val is not None and not isinstance(gid_val, bool)
+                    else ""
+                )
+            )
+            if gid_key and frame_group_instances.get(gid_key):
+                parent_name = str(frame_group_instances[gid_key])
+        bp_obs = _InstanceObservation(
+            frame=frame_num,
+            instance=f"{parent_name}:{part_name}" if parent_name else part_name,
+            centroid=centroid,
+            area=area,
+            bbox=bbox,
+            polygon=poly,
+            score=_shape_score(bp_shape),
+        )
+        parent_obs = parent_by_name.get(parent_name) if parent_name else None
+        if (
+            parent_obs is not None
+            and _ShapelyPolygon is not None
+            and len(poly) >= 3
+            and len(parent_obs.polygon) >= 3
+        ):
+            try:
+                p_part = _ShapelyPolygon(poly)
+                p_parent = _ShapelyPolygon(parent_obs.polygon)
+                if not p_part.is_valid:
+                    p_part = p_part.buffer(0)
+                if not p_parent.is_valid:
+                    p_parent = p_parent.buffer(0)
+                if p_part.area > 0.0:
+                    outside_ratio = max(
+                        0.0, float(p_part.difference(p_parent).area / p_part.area)
+                    )
+                    if outside_ratio > 0.15:
+                        found_issues.append(
+                            TrackQCIssue(
+                                severity="warning",
+                                code="body_part_outside_instance",
+                                message=(
+                                    f"Body part '{part_name}' extends outside parent "
+                                    f"'{parent_name}' ({outside_ratio * 100:.1f}% outside) on frame {frame_num}."
+                                ),
+                                frame_start=frame_num,
+                                frame_end=frame_num,
+                                anchor_frame=frame_num,
+                                instances=(parent_name,),
+                                score=4.5 + 3.0 * outside_ratio,
+                                metrics={"outside_area_ratio": outside_ratio},
+                            )
+                        )
+            except Exception:
+                pass
+        siblings_by_parent[parent_name or "__unscoped__"].append((part_name, bp_obs))
+
+    for parent_key, siblings in siblings_by_parent.items():
+        if len(siblings) < 2:
+            continue
+        for (part_a, obs_a), (part_b, obs_b) in combinations(siblings, 2):
+            iou = _observation_iou(obs_a, obs_b)
+            if iou >= 0.10:
+                inst_tuple = (
+                    (parent_key,)
+                    if parent_key != "__unscoped__"
+                    else tuple(sorted((part_a, part_b)))
+                )
+                found_issues.append(
+                    TrackQCIssue(
+                        severity="warning",
+                        code="body_part_overlap",
+                        message=(
+                            f"Sibling body parts '{part_a}' and '{part_b}' overlap "
+                            f"(IoU={iou:.2f}) inside '{parent_key}' on frame {frame_num}."
+                        ),
+                        frame_start=frame_num,
+                        frame_end=frame_num,
+                        anchor_frame=frame_num,
+                        instances=inst_tuple,
+                        score=4.0 + 3.0 * iou,
+                        metrics={"iou": float(iou)},
+                    )
+                )
+    return found_issues
+
+
 def _load_labelme_dir_observations(
     annotation_dir: Path,
     *,
@@ -510,6 +638,7 @@ def _load_labelme_dir_observations(
     Dict[int, Dict[str, Dict[str, Tuple[float, float]]]],
     List[int],
     Dict[int, List[Dict[str, Any]]],
+    List[TrackQCIssue],
 ]:
     json_names = {
         name for name in os.listdir(annotation_dir) if name.lower().endswith(".json")
@@ -526,6 +655,7 @@ def _load_labelme_dir_observations(
         defaultdict(lambda: defaultdict(dict))
     )
     ambiguous_by_frame: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+    body_part_issues: List[TrackQCIssue] = []
     seen_frames: List[int] = []
     deferred_overlaps: List[
         Tuple[
@@ -558,6 +688,7 @@ def _load_labelme_dir_observations(
 
         frame_group_instances: Dict[str, Optional[str]] = {}
         point_shapes: List[Mapping[str, Any]] = []
+        body_part_shapes: List[Mapping[str, Any]] = []
         frame_obs: List[_InstanceObservation] = []
 
         for shape in shapes:
@@ -566,6 +697,9 @@ def _load_labelme_dir_observations(
             shape_type = str(shape.get("shape_type") or "").strip().lower()
             if shape_type == "point":
                 point_shapes.append(shape)
+                continue
+            if is_body_part_shape_payload(shape):
+                body_part_shapes.append(shape)
                 continue
 
             geom = _extract_shape_geometry(shape)
@@ -608,6 +742,16 @@ def _load_labelme_dir_observations(
             )
             observations.append(obs)
             frame_obs.append(obs)
+
+        if body_part_shapes:
+            body_part_issues.extend(
+                _evaluate_frame_body_part_issues(
+                    frame_num,
+                    frame_obs,
+                    frame_group_instances,
+                    body_part_shapes,
+                )
+            )
 
         if not point_shapes:
             continue
@@ -884,6 +1028,7 @@ def _load_labelme_dir_observations(
         keypoints_by_frame,
         sorted(set(seen_frames)),
         dict(ambiguous_by_frame),
+        body_part_issues,
     )
 
 
@@ -1010,6 +1155,29 @@ def _load_tracking_csv_observations(
                     recovery_note="",
                 )
             )
+
+        # When bbox columns exist and real non-degenerate animal boxes/polygons are present,
+        # zero-area point rows (x1 == x2 and y1 == y2 from labelme2csv point shapes) are
+        # keypoints/landmarks rather than whole-animal instances even without a PoseSchema.
+        if x1_col is not None and any(obs.bbox is not None for obs in observations):
+            observations = [
+                obs
+                for obs in observations
+                if not (obs.bbox is None and obs.area <= 0.0)
+            ]
+
+        # Exclude hierarchical child rows ("<parent>:<part>") from top-level instance
+        # counts and overlap checks when their parent instance is tracked in the same CSV.
+        base_instances = {
+            obs.instance for obs in observations if ":" not in obs.instance
+        }
+        if base_instances:
+            observations = [
+                obs
+                for obs in observations
+                if ":" not in obs.instance
+                or obs.instance.split(":", 1)[0].strip() not in base_instances
+            ]
 
     return observations, keypoints_by_frame, sorted(set(seen_frames))
 
@@ -1238,6 +1406,7 @@ def evaluate_track_qc(
     )
 
     ambiguous_by_frame: Dict[int, List[Dict[str, Any]]] = {}
+    extra_issues: List[TrackQCIssue] = []
     if resolved.is_dir():
         source_kind = "labelme_dir"
         (
@@ -1245,6 +1414,7 @@ def evaluate_track_qc(
             keypoints_by_frame,
             seen_frames,
             ambiguous_by_frame,
+            extra_issues,
         ) = _load_labelme_dir_observations(
             resolved,
             pose_schema=effective_pose_schema,
@@ -1294,7 +1464,7 @@ def evaluate_track_qc(
         else len(known_instances)
     )
 
-    issues: List[TrackQCIssue] = []
+    issues: List[TrackQCIssue] = list(extra_issues)
     for frame in sorted(ambiguous_by_frame):
         ambig_items = ambiguous_by_frame[frame]
         if not ambig_items:

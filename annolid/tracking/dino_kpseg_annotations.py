@@ -22,7 +22,9 @@ from annolid.tracking.overlap_assignment import (
     resolve_overlapping_point_instances,
 )
 from annolid.utils.annotation_store import load_labelme_json
+from annolid.utils.body_part_shapes import is_body_part_shape_payload
 from annolid.utils.logger import logger
+from annolid.utils.zone_shapes import is_zone_shape_payload
 
 
 @dataclass(frozen=True)
@@ -155,6 +157,8 @@ class DinoKPSEGAnnotationParser:
         used_gids: set[int] = set()
         for shape in shapes:
             if not isinstance(shape, dict):
+                continue
+            if is_zone_shape_payload(shape) or is_body_part_shape_payload(shape):
                 continue
             shape_type = str(shape.get("shape_type", "")).strip() or "point"
             if shape_type != "polygon":

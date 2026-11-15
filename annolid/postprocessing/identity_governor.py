@@ -13,6 +13,8 @@ from annolid.postprocessing.zone_schema import (
     zone_shape_covers_point,
     zone_shape_distance_to_point,
 )
+from annolid.utils.body_part_shapes import is_body_part_shape_payload
+from annolid.utils.zone_shapes import is_zone_shape_payload
 
 
 def _normalize_text(value: Any) -> str:
@@ -414,6 +416,8 @@ class IdentityGovernor:
             frame_rows: list[_Observation] = []
             for shape_index, shape in enumerate(shapes):
                 if not isinstance(shape, Mapping):
+                    continue
+                if is_zone_shape_payload(shape) or is_body_part_shape_payload(shape):
                     continue
                 track_id = _shape_track_id(shape)
                 if not track_id:

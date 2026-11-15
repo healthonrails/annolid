@@ -7,6 +7,8 @@ import numpy as np
 
 from annolid.gui.shape import Shape
 from annolid.utils.annotation_store import AnnotationStore, load_labelme_json
+from annolid.utils.body_part_shapes import is_body_part_shape_payload
+from annolid.utils.zone_shapes import is_zone_shape_payload
 
 
 def clean_instance_label(value: object) -> str:
@@ -119,6 +121,8 @@ def instance_masks_from_shapes(
 
     polygon_like: List[Dict[str, object]] = []
     for shape in shapes:
+        if is_zone_shape_payload(shape) or is_body_part_shape_payload(shape):
+            continue
         shape_type = str(shape.get("shape_type") or "").strip().lower()
         if shape_type in ("polygon", "rectangle", "circle"):
             polygon_like.append(shape)

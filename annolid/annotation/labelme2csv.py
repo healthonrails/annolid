@@ -15,6 +15,12 @@ from annolid.postprocessing.zone_schema import (
     load_zone_shapes,
     zone_shape_covers_point,
 )
+from annolid.utils.body_part_shapes import (
+    extract_body_part_label,
+    extract_body_part_parent_instance,
+    format_body_part_csv_instance_name,
+    is_body_part_shape_payload,
+)
 from annolid.utils.zone_shapes import is_zone_shape_payload
 from annolid.utils.annotation_store import (
     AnnotationStore,
@@ -296,6 +302,14 @@ def convert_json_to_csv(
         return 0
 
     def _shape_instance_name(shape, *, shape_type: str):
+        if is_body_part_shape_payload(shape):
+            parent = extract_body_part_parent_instance(shape)
+            part = extract_body_part_label(shape)
+            if not parent:
+                group_id = shape.get("group_id")
+                if group_id not in (None, ""):
+                    parent = str(group_id).strip()
+            return format_body_part_csv_instance_name(parent, part)
         label = shape.get("label")
         instance_label = shape.get("instance_label") or shape.get("instance_name")
         label_text = label.strip() if isinstance(label, str) and label.strip() else ""

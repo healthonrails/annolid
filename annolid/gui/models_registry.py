@@ -36,6 +36,11 @@ MODEL_REGISTRY = [
         "downloads/videomt_yt_2019_vit_small_52.8.onnx",
     ),
     ModelConfig("INSID3 Video (DINOv3)", "insid3_video", "INSID3_VIDEO_DINOV3"),
+    ModelConfig(
+        "Instance Body Part Segmentation",
+        "body_part_seg",
+        "INSTANCE_BODY_PART_SEG",
+    ),
     ModelConfig("sam2_hiera_s", "sam2_hiera_s", "sam2_hiera_s.pt"),
     ModelConfig("sam2_hiera_l", "sam2_hiera_l", "sam2_hiera_l.pt"),
     ModelConfig("SAM3", "sam3", "sam3"),

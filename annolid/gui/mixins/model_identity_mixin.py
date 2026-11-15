@@ -124,6 +124,11 @@ class ModelIdentityMixin:
         return "insid3" in key
 
     @staticmethod
+    def _is_body_part_seg_model(identifier: str, weight: str) -> bool:
+        key = f"{identifier or ''} {weight or ''}".lower()
+        return ("body_part" in key) or ("body-part" in key)
+
+    @staticmethod
     def _is_yolo_model(identifier: str, weight: str) -> bool:
         identifier = identifier.lower()
         weight = weight.lower()
@@ -141,6 +146,8 @@ class ModelIdentityMixin:
             "mediapipe",
             "maskrcnn",
             "videomt",
+            "insid3",
+            "body_part",
         )
         if any(keyword in identifier for keyword in non_yolo_keywords):
             return False

@@ -12,6 +12,8 @@ from annolid.postprocessing.identity_governor import (
     IdentityCorrection,
     IdentityGovernorResult,
 )
+from annolid.utils.body_part_shapes import is_body_part_shape_payload
+from annolid.utils.zone_shapes import is_zone_shape_payload
 
 
 _TRACK_ID_KEYS = ("track_id", "tracking_id", "instance_id", "group_id")
@@ -301,6 +303,8 @@ def _has_cutie_recovery_note(shape: Mapping[str, Any]) -> bool:
 
 
 def _is_temporal_track_shape(shape: Mapping[str, Any]) -> bool:
+    if is_zone_shape_payload(shape) or is_body_part_shape_payload(shape):
+        return False
     if _shape_centroid(shape) is None:
         return False
     if not _shape_track_id(shape):

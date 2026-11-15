@@ -12,6 +12,10 @@ from shapely.geometry import GeometryCollection, LineString, MultiPolygon, Polyg
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import nearest_points
 
+from annolid.utils.body_part_shapes import (
+    extract_body_part_parent_instance,
+    is_body_part_shape_payload,
+)
 from annolid.utils.mask_geometry import tight_mask_bbox
 
 
@@ -201,26 +205,33 @@ def _open_polygon_interiors(
     return resolved
 
 
+def _parent_keys_for_shape(shape: object) -> tuple[str, str]:
+    label = str(getattr(shape, "label", "") or "").strip()
+    flags = getattr(shape, "flags", None)
+    other = getattr(shape, "other_data", None)
+    inst = str(getattr(shape, "instance_label", "") or "").strip()
+    if not inst and isinstance(flags, dict):
+        inst = str(flags.get("instance_label") or "").strip()
+    if not inst and isinstance(other, dict):
+        inst = str(other.get("instance_label") or "").strip()
+    gid = getattr(shape, "group_id", None)
+    gid_key = "" if gid is None or isinstance(gid, bool) else str(gid).strip()
+    return (inst or label), gid_key
+
+
 def resolve_polygon_shape_conflicts(
     shapes: Sequence[object],
     priorities: Sequence[float] | None = None,
     *,
     clearance_px: float = DEFAULT_POLYGON_CLEARANCE_PX,
 ) -> PolygonConflictResolution:
-    """Make generated polygon shapes geometrically disjoint.
+    """Make generated polygon shapes geometrically disjoint while respecting parent-part hierarchy.
 
     Shapes are processed from highest to lowest priority, with stable input order
-    breaking ties. Each polygon owns its accepted geometry; later polygons are
-    clipped against that geometry plus a sub-pixel clearance. This resolves both
-    area overlap and shared edges or vertices using a deterministic set operation,
-    rather than perturbing individual coordinates.
-
-    Non-polygon shapes pass through unchanged. Invalid polygons are normalized;
-    malformed, degenerate, or fully occluded polygons are omitted and their
-    original indices are reported. When a difference creates multiple components,
-    only the largest is retained. Any interior ring is opened to the exterior with
-    a narrow channel because the current LabelMe shape contract stores one simple
-    ring per instance.
+    breaking ties. Whole-instance polygons compete with peer whole-instance
+    polygons, whereas intra-instance body-part polygons (``is_body_part=True``)
+    are clipped inside their parent instance polygon (when present in the batch)
+    and compete only with sibling body-part polygons of the same parent.
     """
 
     clearance = float(clearance_px)
@@ -229,18 +240,26 @@ def resolve_polygon_shape_conflicts(
 
     shape_list = list(shapes)
     normalized_priorities = _normalize_priorities(len(shape_list), priorities)
-    priority_order = sorted(
-        range(len(shape_list)),
+    is_part_flags = [is_body_part_shape_payload(shape) for shape in shape_list]
+
+    parent_order = sorted(
+        (idx for idx in range(len(shape_list)) if not is_part_flags[idx]),
+        key=lambda index: (-normalized_priorities[index], index),
+    )
+    part_order = sorted(
+        (idx for idx in range(len(shape_list)) if is_part_flags[idx]),
         key=lambda index: (-normalized_priorities[index], index),
     )
 
     accepted_by_index: dict[int, object] = {}
     accepted_polygons: list[tuple[Polygon, tuple[float, float, float, float]]] = []
+    parent_by_name: dict[str, Polygon] = {}
+    parent_by_gid: dict[str, Polygon] = {}
     neighbor_margin = max(clearance * 8.0, 1.0)
     adjusted: list[int] = []
     dropped: list[int] = []
 
-    for index in priority_order:
+    for index in parent_order:
         shape = shape_list[index]
         polygon, is_polygon, needs_replacement = _polygon_from_shape(shape)
         if polygon is None:
@@ -300,6 +319,102 @@ def resolve_polygon_shape_conflicts(
 
         accepted_by_index[index] = shape
         accepted_polygons.append((resolved, resolved.bounds))
+        pname, pgid = _parent_keys_for_shape(shape)
+        if pname and pname not in parent_by_name:
+            parent_by_name[pname] = resolved
+        if pgid and pgid not in parent_by_gid:
+            parent_by_gid[pgid] = resolved
+
+    if part_order:
+        sibling_accepted: dict[
+            str, list[tuple[Polygon, tuple[float, float, float, float]]]
+        ] = {}
+        for index in part_order:
+            shape = shape_list[index]
+            polygon, is_polygon, needs_replacement = _polygon_from_shape(shape)
+            if polygon is None:
+                if is_polygon:
+                    dropped.append(index)
+                else:
+                    accepted_by_index[index] = shape
+                continue
+
+            resolved = polygon
+            parent_hint = extract_body_part_parent_instance(shape)
+            gid = getattr(shape, "group_id", None)
+            gid_key = "" if gid is None or isinstance(gid, bool) else str(gid).strip()
+            parent_poly = (
+                parent_by_name.get(parent_hint)
+                if parent_hint
+                else (parent_by_gid.get(gid_key) if gid_key else None)
+            )
+            if parent_poly is None and gid_key:
+                parent_poly = parent_by_gid.get(gid_key)
+
+            scope_key = parent_hint or (f"gid:{gid_key}" if gid_key else "__parts__")
+            if parent_poly is not None and not parent_poly.covers(resolved):
+                clipped = _largest_polygon(
+                    make_valid(resolved.intersection(parent_poly))
+                )
+                if clipped is None:
+                    dropped.append(index)
+                    continue
+                resolved = clipped
+                needs_replacement = True
+
+            if resolved.interiors:
+                resolved = _open_polygon_interiors(resolved, clearance)
+                needs_replacement = True
+                if resolved is None:
+                    dropped.append(index)
+                    continue
+
+            scope_polys = sibling_accepted.setdefault(scope_key, [])
+            if scope_polys:
+                rx0, ry0, rx1, ry1 = resolved.bounds
+                has_collision = any(
+                    ax0 <= rx1
+                    and ax1 >= rx0
+                    and ay0 <= ry1
+                    and ay1 >= ry0
+                    and not resolved.disjoint(acc_poly)
+                    for acc_poly, (ax0, ay0, ax1, ay1) in scope_polys
+                )
+                if has_collision:
+                    nearby_claimed = [
+                        acc_poly
+                        for acc_poly, (ax0, ay0, ax1, ay1) in scope_polys
+                        if ax0 <= rx1 + neighbor_margin
+                        and ax1 >= rx0 - neighbor_margin
+                        and ay0 <= ry1 + neighbor_margin
+                        and ay1 >= ry0 - neighbor_margin
+                    ]
+                    local_claimed = (
+                        nearby_claimed[0]
+                        if len(nearby_claimed) == 1
+                        else unary_union(nearby_claimed)
+                    )
+                    exclusion = local_claimed.buffer(
+                        clearance,
+                        quad_segs=1,
+                        join_style="mitre",
+                    )
+                    resolved = _largest_polygon(
+                        make_valid(resolved.difference(exclusion))
+                    )
+                    if resolved is not None and resolved.interiors:
+                        resolved = _open_polygon_interiors(resolved, clearance)
+                    if resolved is None:
+                        dropped.append(index)
+                        continue
+                    needs_replacement = True
+
+            if needs_replacement:
+                _replace_shape_points(shape, resolved)
+                adjusted.append(index)
+
+            accepted_by_index[index] = shape
+            scope_polys.append((resolved, resolved.bounds))
 
     return PolygonConflictResolution(
         shapes=tuple(

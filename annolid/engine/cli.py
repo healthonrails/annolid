@@ -16,7 +16,7 @@ class _AnnolidHelpFormatter(
 
 _ROOT_COMMAND_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Models", ("list-models", "dinov3-models", "train", "predict")),
-    ("Tracking", ("track-qc", "repair-tracks")),
+    ("Tracking", ("track-qc", "repair-tracks", "segment-body-parts")),
     (
         "Behavior",
         (
@@ -102,7 +102,7 @@ def _root_help_epilog() -> str:
         "  annolid-run help train\n\n"
         "Common areas:\n"
         "  Models: train, predict, list-models, dinov3-models\n"
-        "  Tracking: track-qc, repair-tracks\n"
+        "  Tracking: track-qc, repair-tracks, segment-body-parts\n"
         "  Behavior: time-budget, behavior-qc, behavior-irr, behavior-cohort\n"
         "  Agent: agent, agent-behavior, agent-status, agent-capabilities, agent-security-*, agent-cron-*\n"
         "  Data: collect-labels, index-to-yolo, import-deeplabcut-training-data\n"
@@ -603,6 +603,59 @@ def _cmd_repair_tracks(args: argparse.Namespace) -> int:
             max_match_distance=float(getattr(args, "max_match_distance", 80.0)),
             policy_path=getattr(args, "policy", None),
             zone_file=getattr(args, "zones", None),
+        )
+    )
+
+
+def _cmd_segment_body_parts(args: argparse.Namespace) -> int:
+    from annolid.services.body_part_segmentation import run_body_part_segmentation_cli
+
+    part_full_arg: Optional[bool] = None
+    if bool(getattr(args, "partition_full_instance", False)):
+        part_full_arg = True
+    elif bool(getattr(args, "partial_parts", False)):
+        part_full_arg = False
+
+    return int(
+        run_body_part_segmentation_cli(
+            video_path=args.video_path,
+            annotation_dir=getattr(args, "annotation_dir", None),
+            mode=str(getattr(args, "mode", "auto") or "auto"),
+            feature_backend=str(getattr(args, "backbone", "fast") or "fast"),
+            model_name=str(
+                getattr(
+                    args,
+                    "dino_model",
+                    "facebook/dinov3-vits16-pretrain-lvd1689m",
+                )
+            ),
+            crop_size=int(getattr(args, "crop_size", 224)),
+            crop_padding_ratio=float(getattr(args, "crop_padding", 0.12)),
+            num_parts=int(getattr(args, "num_parts", 3)),
+            part_names=getattr(args, "parts", None),
+            keypoint_granularity=str(
+                getattr(args, "keypoint_granularity", "coarse") or "coarse"
+            ),
+            keypoint_part_map=getattr(args, "keypoint_part_map", None),
+            partition_full_instance=part_full_arg,
+            share_seed_across_instances=not bool(
+                getattr(args, "no_share_seeds", False)
+            ),
+            max_part_area_growth=float(getattr(args, "max_area_growth", 2.5)),
+            min_part_area_px=int(getattr(args, "min_part_area", 6)),
+            boundary_refine=not bool(getattr(args, "no_boundary_refine", False)),
+            crf_refine=bool(getattr(args, "crf_refine", False)),
+            polygon_epsilon=float(getattr(args, "polygon_epsilon", 1.0)),
+            qualify_label_with_instance=bool(getattr(args, "qualify_labels", False)),
+            persist_json=bool(getattr(args, "persist_json", False)),
+            device=getattr(args, "device", None),
+            pose_schema_path=getattr(args, "pose_schema", None),
+            start_frame=int(getattr(args, "start_frame", 0)),
+            end_frame=getattr(args, "end_frame", None),
+            step=int(getattr(args, "step", 1)),
+            export_csv=bool(getattr(args, "export_csv", False)),
+            json_stdout=bool(getattr(args, "json", False)),
+            out_json=getattr(args, "out", None),
         )
     )
 
@@ -3120,6 +3173,171 @@ def _build_root_parser() -> argparse.ArgumentParser:
         help="Print structured JSON summary to stdout.",
     )
     repair_tracks_p.set_defaults(_handler=_cmd_repair_tracks)
+
+    seg_parts_p = sub.add_parser(
+        "segment-body-parts",
+        help="Segment anatomical body parts strictly inside tracked whole-animal instances.",
+    )
+    seg_parts_p.add_argument(
+        "video_path",
+        help="Path to the source video file.",
+    )
+    seg_parts_p.add_argument(
+        "--annotations",
+        "--result-dir",
+        dest="annotation_dir",
+        default=None,
+        help="Tracked LabelMe JSON / AnnotationStore folder (defaults to <video_stem>/).",
+    )
+    seg_parts_p.add_argument(
+        "--mode",
+        choices=("auto", "seeded", "keypoint_guided", "unsupervised"),
+        default="auto",
+        help="Segmentation strategy: manual part seeds, tracked keypoints, unsupervised K-parts, or auto.",
+    )
+    seg_parts_p.add_argument(
+        "--backbone",
+        choices=("fast", "dino", "hybrid"),
+        default="fast",
+        help="Crop feature backend: lightweight Lab+gradient ('fast'), DINO patch features ('dino'), or fused ('hybrid').",
+    )
+    seg_parts_p.add_argument(
+        "--dino-model",
+        default="facebook/dinov3-vits16-pretrain-lvd1689m",
+        help="DINO feature model ID or alias when --backbone is 'dino' or 'hybrid'.",
+    )
+    seg_parts_p.add_argument(
+        "--crop-size",
+        type=int,
+        default=224,
+        help="Maximum working side (px) for tight per-instance ROI crops (default: 224).",
+    )
+    seg_parts_p.add_argument(
+        "--crop-padding",
+        type=float,
+        default=0.12,
+        help="Fractional bounding-box context padding around each tracked instance mask.",
+    )
+    seg_parts_p.add_argument(
+        "--num-parts",
+        type=int,
+        default=3,
+        help="Number of intra-instance body parts in unsupervised mode (default: 3 -> head, torso, tail).",
+    )
+    seg_parts_p.add_argument(
+        "--parts",
+        default=None,
+        help="Optional comma-separated body-part names for unsupervised mode (e.g. 'head,torso,tail').",
+    )
+    seg_parts_p.add_argument(
+        "--keypoint-granularity",
+        choices=("coarse", "fine", "per_keypoint"),
+        default="coarse",
+        help="Landmark-to-part grouping granularity in keypoint_guided mode.",
+    )
+    seg_parts_p.add_argument(
+        "--keypoint-part-map",
+        default=None,
+        help="Optional JSON object or 'kp=part,kp2=part2' overrides for keypoint_guided mode.",
+    )
+    seg_parts_p.add_argument(
+        "--pose-schema",
+        default=None,
+        help="Optional PoseSchema YAML/JSON path providing intra-part skeleton edges.",
+    )
+    part_group = seg_parts_p.add_mutually_exclusive_group()
+    part_group.add_argument(
+        "--partition-full-instance",
+        action="store_true",
+        help="Force every pixel of each parent instance mask to be assigned to a body part.",
+    )
+    part_group.add_argument(
+        "--partial-parts",
+        action="store_true",
+        help="Allow unseeded remainder pixels inside the parent instance mask to stay unassigned.",
+    )
+    seg_parts_p.add_argument(
+        "--no-share-seeds",
+        action="store_true",
+        help="Do not share seeded body-part prototypes onto unseeded animal instances.",
+    )
+    seg_parts_p.add_argument(
+        "--max-area-growth",
+        type=float,
+        default=2.5,
+        help="Maximum part area-ratio growth factor relative to seed area ratio.",
+    )
+    seg_parts_p.add_argument(
+        "--min-part-area",
+        type=int,
+        default=6,
+        help="Minimum connected-component area in pixels for emitted body parts.",
+    )
+    seg_parts_p.add_argument(
+        "--no-boundary-refine",
+        action="store_true",
+        help="Disable crop-local edge-preserving guided probability filtering.",
+    )
+    seg_parts_p.add_argument(
+        "--crf-refine",
+        action="store_true",
+        help="Enable additional crop-local CRF / bilateral mask boundary refinement.",
+    )
+    seg_parts_p.add_argument(
+        "--polygon-epsilon",
+        type=float,
+        default=1.0,
+        help="Douglas-Peucker contour approximation epsilon in pixels.",
+    )
+    seg_parts_p.add_argument(
+        "--qualify-labels",
+        action="store_true",
+        help="Write polygon shape labels as '<instance>:<part>' in addition to part metadata.",
+    )
+    seg_parts_p.add_argument(
+        "--persist-json",
+        action="store_true",
+        help="Write full per-frame LabelMe JSON files alongside AnnotationStore records.",
+    )
+    seg_parts_p.add_argument(
+        "--device",
+        default=None,
+        help="Optional Torch compute device override (e.g. 'cpu', 'cuda', 'mps').",
+    )
+    seg_parts_p.add_argument(
+        "--start-frame",
+        type=int,
+        default=0,
+        help="First frame index to segment (default: 0).",
+    )
+    seg_parts_p.add_argument(
+        "--end-frame",
+        type=int,
+        default=None,
+        help="Inclusive last frame index to segment (defaults to end of tracked video).",
+    )
+    seg_parts_p.add_argument(
+        "--step",
+        type=int,
+        default=1,
+        help="Frame stride (default: 1).",
+    )
+    seg_parts_p.add_argument(
+        "--export-csv",
+        action="store_true",
+        help="Regenerate <result_dir>_tracking.csv including hierarchical '<instance>:<part>' rows.",
+    )
+    seg_parts_p.add_argument(
+        "--out",
+        default=None,
+        help="Optional JSON path to write the segmentation summary report.",
+    )
+    seg_parts_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Print structured JSON summary report to stdout.",
+    )
+    seg_parts_p.set_defaults(_handler=_cmd_segment_body_parts)
 
     collect_p = sub.add_parser(
         "collect-labels",
