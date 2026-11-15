@@ -19,6 +19,10 @@ from qtpy.QtWidgets import (
     QVBoxLayout,
 )
 
+from annolid.features.dino_models import (
+    check_dino_model_runtime_support,
+    supports_matryoshka_truncation,
+)
 from annolid.tracking.configuration import CutieDinoTrackerConfig
 from annolid.gui.widgets.dino_training_ui_shared import (
     configure_dino_model_combo,
@@ -457,6 +461,11 @@ class AdvancedParametersDialog(QDialog):
         self.dino_model_combo.setToolTip(
             "Choose a DINO, EmbeddingGemma 2, SigLIP 2, or on-device MobileNet backbone, or paste a Hugging Face model id."
         )
+        self.dino_model_status_label = QLabel("")
+        self.dino_model_status_label.setWordWrap(True)
+        self.dino_model_status_label.setStyleSheet(
+            "color: palette(window-text); font-size: 11px;"
+        )
 
         self.embedding_matryoshka_dim_combo = QComboBox()
         self.embedding_matryoshka_dim_combo.addItem("Full (model default)", None)
@@ -678,13 +687,14 @@ class AdvancedParametersDialog(QDialog):
                 "Choose a tuned preset (e.g. rodents at 30fps with occlusions) or keep custom values.",
             ),
         )
-        tracker_form.addRow(
-            "DINO feature model",
-            self._wrap_with_hint(
-                self.dino_model_combo,
-                "Supports DINOv3/v2, Google EmbeddingGemma 2, SigLIP 2, and fast on-device MobileNetV4/V3 pyramids.",
-            ),
+        dino_model_wrapper = self._wrap_with_hint(
+            self.dino_model_combo,
+            "Supports DINOv3/v2, Google EmbeddingGemma 2, SigLIP 2, and fast on-device MobileNetV4/V3 pyramids.",
         )
+        dino_model_layout = dino_model_wrapper.layout()
+        if dino_model_layout is not None:
+            dino_model_layout.addWidget(self.dino_model_status_label)
+        tracker_form.addRow("DINO feature model", dino_model_wrapper)
         tracker_form.addRow(
             "Embedding Matryoshka dim",
             self._wrap_with_hint(
@@ -966,7 +976,37 @@ class AdvancedParametersDialog(QDialog):
         tracker_layout.addStretch(1)
 
         self.tracker_preset_combo.currentTextChanged.connect(self._apply_tracker_preset)
+        self.dino_model_combo.currentIndexChanged.connect(
+            self._update_dino_model_runtime_status
+        )
+        if self.dino_model_combo.isEditable():
+            self.dino_model_combo.editTextChanged.connect(
+                self._update_dino_model_runtime_status
+            )
+        self._update_dino_model_runtime_status()
         return tab
+
+    def _update_dino_model_runtime_status(self, *_args) -> None:
+        selected_model = selected_dino_model_identifier(self.dino_model_combo)
+        supported, message = check_dino_model_runtime_support(selected_model)
+        self.dino_model_status_label.setText(message)
+        if supported:
+            self.dino_model_status_label.setStyleSheet(
+                "color: palette(window-text); font-size: 11px;"
+            )
+        else:
+            self.dino_model_status_label.setStyleSheet(
+                "color: #b45309; font-size: 11px; font-weight: 500;"
+            )
+        if supports_matryoshka_truncation(selected_model):
+            self.embedding_matryoshka_dim_combo.setToolTip(
+                "Native Matryoshka prefix truncation (768/512/256/128) supported by this model."
+            )
+        else:
+            self.embedding_matryoshka_dim_combo.setToolTip(
+                "Selected backbone is non-Matryoshka; tracker keeps full channels by default "
+                "(or uses deterministic orthonormal compression when strict MRL is disabled)."
+            )
 
     def _apply_tracker_preset(self, preset: str) -> None:
         if preset == self._CUSTOM_TRACKER_PRESET:
@@ -975,6 +1015,18 @@ class AdvancedParametersDialog(QDialog):
             cfg = CutieDinoTrackerConfig.from_preset(str(preset))
         except ValueError:
             return
+        self.region_descriptor_radius_spinbox.setValue(
+            int(cfg.region_descriptor_radius)
+        )
+        self.region_descriptor_sigma_spinbox.setValue(
+            float(cfg.region_descriptor_sigma)
+        )
+        self.region_subpatch_sampling_checkbox.setChecked(
+            bool(cfg.region_subpatch_sampling)
+        )
+        self.pixel_region_refine_checkbox.setChecked(
+            bool(cfg.pixel_region_refine_enabled)
+        )
         self.keypoint_refine_radius_spinbox.setValue(int(cfg.keypoint_refine_radius))
         self.keypoint_refine_sigma_spinbox.setValue(float(cfg.keypoint_refine_sigma))
         self.keypoint_refine_temperature_spinbox.setValue(

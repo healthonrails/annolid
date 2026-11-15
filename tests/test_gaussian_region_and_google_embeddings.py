@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import math
+from pathlib import Path
 from types import SimpleNamespace
 from typing import List, Optional, Tuple
 
@@ -18,6 +21,7 @@ from annolid.features import (
     GoogleVisionFeatureExtractor,
 )
 from annolid.features import dino_models
+from annolid.features.google_vision_extractor import apply_matryoshka_truncation
 from annolid.tracking.configuration import CutieDinoTrackerConfig
 from annolid.tracking.dino_keypoint_tracker import DinoKeypointTracker
 from annolid.tracking.dino_keypoint_types import RefineRegion, SupportProbe
@@ -26,6 +30,7 @@ from annolid.tracking.gaussian_region import (
     extract_gaussian_pixel_template,
     gaussian_smooth_feature_grid,
     match_gaussian_pixel_template,
+    match_gaussian_pixel_template_oriented,
     pixel_to_continuous_patch,
     refine_patch_region_gaussian,
     sample_subpatch_gaussian_descriptor,
@@ -136,6 +141,7 @@ def _render_textured_landmark(
     *,
     gain: float = 1.0,
     bias: float = 0.0,
+    angle_rad: float = 0.0,
 ) -> np.ndarray:
     h, w = size_hw
     yy, xx = np.meshgrid(
@@ -143,8 +149,12 @@ def _render_textured_landmark(
         np.arange(w, dtype=np.float32),
         indexing="ij",
     )
-    dx = xx - float(center_xy[0])
-    dy = yy - float(center_xy[1])
+    raw_dx = xx - float(center_xy[0])
+    raw_dy = yy - float(center_xy[1])
+    cos_a = float(math.cos(angle_rad))
+    sin_a = float(math.sin(angle_rad))
+    dx = raw_dx * cos_a + raw_dy * sin_a
+    dy = -raw_dx * sin_a + raw_dy * cos_a
     # Asymmetric multi-frequency Gabor-like landmark within [0, 255] dynamic range
     # so affine lighting changes (gain * I + bias) do not saturate uint8 to 255.
     envelope = np.exp(-0.5 * (dx * dx + dy * dy) / (3.2**2))
@@ -740,3 +750,499 @@ def test_advanced_parameters_dialog_roundtrips_gaussian_region_and_matryoshka() 
     assert settings["region_descriptor_radius"] == 1
     assert settings["region_subpatch_sampling"] is True
     assert settings["pixel_region_refine_enabled"] is True
+
+
+def test_multi_angle_gaussian_pixel_template_recovers_large_in_plane_rotations() -> (
+    None
+):
+    seed_gray = _render_textured_landmark((72, 72), (32.0, 32.0), angle_rad=0.0)
+    tpl_multi = extract_gaussian_pixel_template(
+        seed_gray,
+        (32.0, 32.0),
+        window_px=13,
+        sigma_px=3.2,
+        num_orientations=12,
+    )
+    tpl_single = extract_gaussian_pixel_template(
+        seed_gray,
+        (32.0, 32.0),
+        window_px=13,
+        sigma_px=3.2,
+        num_orientations=1,
+    )
+    assert tpl_multi is not None
+    assert tpl_single is not None
+    assert len(tpl_multi.angles_rad) == 12
+
+    true_xy = (34.3, 30.65)
+    for deg in (90.0, 135.0, -150.0, 180.0):
+        theta = math.radians(deg)
+        rot_gray = _render_textured_landmark(
+            (72, 72),
+            true_xy,
+            gain=1.18,
+            bias=18.0,
+            angle_rad=theta,
+        )
+        match = match_gaussian_pixel_template_oriented(
+            rot_gray,
+            tpl_multi,
+            center_xy=(32.0, 32.0),
+            search_radius_px=5,
+        )
+        assert match is not None
+        est_x, est_y, zncc, est_angle = match
+        assert zncc > 0.85
+        assert abs(est_x - true_xy[0]) < 0.25
+        assert abs(est_y - true_xy[1]) < 0.25
+        ang_err = abs((est_angle - theta + math.pi) % (2.0 * math.pi) - math.pi)
+        assert ang_err < math.radians(15.0)
+
+        if deg == 135.0:
+            single_match = match_gaussian_pixel_template(
+                rot_gray,
+                tpl_single,
+                center_xy=(32.0, 32.0),
+                search_radius_px=5,
+            )
+            single_zncc = 0.0 if single_match is None else single_match[2]
+            assert zncc > single_zncc + 0.15
+            if single_match is not None:
+                single_err = math.hypot(
+                    single_match[0] - true_xy[0], single_match[1] - true_xy[1]
+                )
+                multi_err = math.hypot(est_x - true_xy[0], est_y - true_xy[1])
+                assert multi_err < single_err
+
+
+def _render_two_landmark_frame(
+    size_hw: Tuple[int, int],
+    nose_xy: Tuple[float, float],
+    tail_xy: Tuple[float, float],
+    angle_rad: float,
+) -> np.ndarray:
+    h, w = size_hw
+    yy, xx = np.meshgrid(
+        np.arange(h, dtype=np.float32),
+        np.arange(w, dtype=np.float32),
+        indexing="ij",
+    )
+    cos_a = float(math.cos(angle_rad))
+    sin_a = float(math.sin(angle_rad))
+
+    def _spot(cx: float, cy: float, freq_x: float, freq_y: float) -> np.ndarray:
+        rx = xx - cx
+        ry = yy - cy
+        dx = rx * cos_a + ry * sin_a
+        dy = -rx * sin_a + ry * cos_a
+        env = np.exp(-0.5 * (dx * dx + dy * dy) / (3.1**2))
+        return 62.0 * env * np.cos(freq_x * dx + freq_y * dy) + 34.0 * np.exp(
+            -0.5 * ((dx - 1.1) ** 2 + (dy + 0.7) ** 2) / (1.7**2)
+        )
+
+    canvas = (
+        78.0
+        + _spot(float(nose_xy[0]), float(nose_xy[1]), 0.7, 0.3)
+        + _spot(float(tail_xy[0]), float(tail_xy[1]), 0.35, -0.65)
+    )
+    return np.clip(canvas, 0.0, 255.0).astype(np.uint8)
+
+
+def test_tracker_constellation_procrustes_rotation_and_partial_correction(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "annolid.tracking.dino_keypoint_tracker.Dinov3FeatureExtractor",
+        _QueuedExtractor,
+    )
+    cfg = CutieDinoTrackerConfig(
+        pixel_refine_enabled=False,
+        pixel_region_refine_enabled=True,
+        pixel_region_window=13,
+        pixel_region_sigma=3.1,
+        pixel_region_search_radius_px=6,
+        pixel_region_weight=1.0,
+        pixel_region_min_zncc=0.5,
+        pixel_region_num_orientations=12,
+        keypoint_cluster_refine=False,
+        keypoint_refine_radius=0,
+        dinov3_positional_debias=False,
+        dinov3_backward_consistency=False,
+        structural_consistency_weight=0.0,
+        motion_prior_penalty_weight=0.0,
+    )
+    tracker = DinoKeypointTracker(
+        model_name="dummy",
+        runtime_config=cfg,
+        search_radius=6,
+        min_similarity=0.0,
+    )
+
+    # 96x96 image -> 6x6 grid of 16px patches (patch centers at 8, 24, 40, 56, 72, 88).
+    def _grid_with_two_peaks(
+        rc_nose: Tuple[int, int], rc_tail: Tuple[int, int]
+    ) -> torch.Tensor:
+        f = torch.zeros((4, 6, 6), dtype=torch.float32)
+        f[:, rc_nose[0], rc_nose[1]] = torch.tensor([1.0, 0.0, 0.0, 0.0])
+        f[:, rc_tail[0], rc_tail[1]] = torch.tensor([0.0, 1.0, 0.0, 0.0])
+        return f
+
+    # Seed at angle 0: nose=(38.0, 42.0) [rc=(2,2)], tail=(70.0, 42.0) [rc=(2,4)].
+    seed_nose = (38.0, 42.0)
+    seed_tail = (70.0, 42.0)
+
+    # Frame 1 rotated +120 deg in image coords (tail - nose = (-16.0, +27.7)):
+    # nose near patch (1, 3) -> center (56, 24); true=(59.4, 26.8)
+    # tail near patch (3, 2) -> center (40, 56); true=(43.4, 54.5)
+    theta_1 = math.radians(120.0)
+    f1_nose = (59.4, 26.8)
+    f1_tail = (43.4, 54.5)
+
+    # Frame 2 rotated +150 deg in image coords (tail - nose = (-27.7, +16.0)):
+    # nose near patch (2, 4) -> center (72, 40); true=(69.4, 37.2)
+    # tail near patch (3, 2) -> center (40, 56); true=(41.7, 53.2)
+    theta_2 = math.radians(150.0)
+    f2_nose = (69.4, 37.2)
+    f2_tail = (41.7, 53.2)
+
+    tracker.extractor.set_queue(
+        [
+            _grid_with_two_peaks((2, 2), (2, 4)),
+            _grid_with_two_peaks((1, 3), (3, 2)),
+            _grid_with_two_peaks((2, 4), (3, 2)),
+        ]
+    )
+
+    g0 = _render_two_landmark_frame((96, 96), seed_nose, seed_tail, 0.0)
+    g1 = _render_two_landmark_frame((96, 96), f1_nose, f1_tail, theta_1)
+    g2 = _render_two_landmark_frame((96, 96), f2_nose, f2_tail, theta_2)
+
+    reg = InstanceRegistry()
+    reg.register_keypoint(
+        KeypointState(
+            key="mousenose",
+            instance_label="mouse",
+            label="nose",
+            x=seed_nose[0],
+            y=seed_nose[1],
+        )
+    )
+    reg.register_keypoint(
+        KeypointState(
+            key="mousetail",
+            instance_label="mouse",
+            label="tail",
+            x=seed_tail[0],
+            y=seed_tail[1],
+        )
+    )
+    tracker.start(Image.fromarray(np.stack([g0] * 3, axis=-1)), reg, {})
+
+    out1 = {
+        item["id"]: item
+        for item in tracker.update(Image.fromarray(np.stack([g1] * 3, axis=-1)), {})
+    }
+    assert abs(float(out1["mousenose"]["x"]) - f1_nose[0]) < 0.45
+    assert abs(float(out1["mousenose"]["y"]) - f1_nose[1]) < 0.45
+    assert abs(float(out1["mousetail"]["x"]) - f1_tail[0]) < 0.45
+    assert abs(float(out1["mousetail"]["y"]) - f1_tail[1]) < 0.45
+
+    # Apply a partial manual correction to ONLY nose while the animal is rotated ~120 deg.
+    tracker.apply_external_corrections(
+        {"mousenose": (f1_nose[0] + 0.05, f1_nose[1] - 0.05)},
+        clear_cache=False,
+    )
+    nose_heading = tracker.tracks["mousenose"].template_heading_rad
+    # Constellation vector (32, 0) -> (-15.95, 27.75) has heading ~ +120 deg (~2.09 rad).
+    assert abs(nose_heading - theta_1) < math.radians(10.0)
+    assert tracker.tracks["mousetail"].template_heading_rad == pytest.approx(0.0)
+
+    out2 = {
+        item["id"]: item
+        for item in tracker.update(Image.fromarray(np.stack([g2] * 3, axis=-1)), {})
+    }
+    assert abs(float(out2["mousenose"]["x"]) - f2_nose[0]) < 0.45
+    assert abs(float(out2["mousenose"]["y"]) - f2_nose[1]) < 0.45
+    assert abs(float(out2["mousetail"]["x"]) - f2_tail[0]) < 0.45
+    assert abs(float(out2["mousetail"]["y"]) - f2_tail[1]) < 0.45
+
+
+def test_strict_mrl_guard_and_non_mrl_orthonormal_compression(monkeypatch) -> None:
+    assert dino_models.supports_matryoshka_truncation("embeddinggemma-2") is True
+    assert dino_models.supports_matryoshka_truncation("google/embeddinggemma-2") is True
+    assert dino_models.supports_matryoshka_truncation("dinov3_vits16") is False
+    assert dino_models.supports_matryoshka_truncation("siglip2") is False
+    assert dino_models.supports_matryoshka_truncation("mobilenetv4") is False
+
+    # Two multi-stage descriptors identical in early channels and orthogonal in late channels.
+    v_a = torch.tensor([1.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0], dtype=torch.float32)
+    v_b = torch.tensor([1.0, 0.0, 0.0, 0.0, 0.0, 4.0, 0.0, 0.0], dtype=torch.float32)
+    naive_a = apply_matryoshka_truncation(v_a, 4, channel_dim=0, mrl_native=True)
+    naive_b = apply_matryoshka_truncation(v_b, 4, channel_dim=0, mrl_native=True)
+    # Prefix slicing drops channels 4..7 completely -> identical vectors!
+    assert float(torch.dot(naive_a, naive_b).item()) == pytest.approx(1.0, abs=1e-6)
+
+    ortho_a = apply_matryoshka_truncation(v_a, 4, channel_dim=0, mrl_native=False)
+    ortho_b = apply_matryoshka_truncation(v_b, 4, channel_dim=0, mrl_native=False)
+    ortho_a_repeat = apply_matryoshka_truncation(
+        v_a, 4, channel_dim=0, mrl_native=False
+    )
+    assert torch.allclose(ortho_a, ortho_a_repeat, atol=1e-7)
+    assert float(ortho_a.norm().item()) == pytest.approx(1.0, abs=1e-6)
+    # Orthonormal projection retains signal from trailing stages -> clearly distinct!
+    assert float(torch.dot(ortho_a, ortho_b).item()) < 0.85
+
+    recorded_cfgs: List[Dinov3Config] = []
+
+    class _RecordingExtractor(_QueuedExtractor):
+        def __init__(self, cfg: Dinov3Config) -> None:
+            super().__init__(cfg)
+            recorded_cfgs.append(cfg)
+
+    monkeypatch.setattr(
+        "annolid.tracking.dino_keypoint_tracker.Dinov3FeatureExtractor",
+        _RecordingExtractor,
+    )
+
+    # 1) Strict MRL (default True) ignores leftover embedding_matryoshka_dim on non-MRL model.
+    DinoKeypointTracker(
+        model_name="facebook/dinov2-base",
+        runtime_config=CutieDinoTrackerConfig(embedding_matryoshka_dim=128),
+    )
+    assert recorded_cfgs[-1].matryoshka_dim is None
+
+    # 2) Strict MRL honors embedding_matryoshka_dim on EmbeddingGemma 2.
+    DinoKeypointTracker(
+        model_name="google/embeddinggemma-2",
+        runtime_config=CutieDinoTrackerConfig(embedding_matryoshka_dim=128),
+    )
+    assert recorded_cfgs[-1].matryoshka_dim == 128
+
+    # 3) Explicit opt-in (strict_mrl=False) forwards matryoshka_dim on non-MRL model.
+    DinoKeypointTracker(
+        model_name="facebook/dinov2-base",
+        runtime_config=CutieDinoTrackerConfig(
+            embedding_matryoshka_dim=128,
+            embedding_matryoshka_strict_mrl=False,
+        ),
+    )
+    assert recorded_cfgs[-1].matryoshka_dim == 128
+
+
+def test_embeddinggemma2_projector_alignment_and_direct_safetensors_vision_fallback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    # Part A: Verify 1152 -> 768 multimodal projection happens BEFORE blending & MRL slicing,
+    # and get_image_features receives 2D pixel_position_ids when supported.
+    captured: dict[str, object] = {}
+
+    class _Tower1152(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.config = SimpleNamespace(
+                patch_size=16,
+                pooling_kernel_size=3,
+                num_hidden_layers=1,
+                use_cls_token=False,
+                hidden_size=1152,
+            )
+            self.proj = nn.Conv2d(3, 1152, kernel_size=16, stride=16, bias=False)
+
+        def forward(
+            self,
+            pixel_values: torch.Tensor,
+            pixel_position_ids: Optional[torch.Tensor] = None,
+            output_hidden_states: bool = False,
+        ):
+            feat_map = self.proj(pixel_values)
+            unpooled = feat_map.flatten(2).transpose(1, 2)
+            pooled = (
+                nn.functional.avg_pool2d(feat_map, kernel_size=3, stride=3)
+                .flatten(2)
+                .transpose(1, 2)
+            )
+            hs = (unpooled, unpooled) if output_hidden_states else None
+            return SimpleNamespace(last_hidden_state=pooled, hidden_states=hs)
+
+    class _FullModelWithProjector(nn.Module):
+        def __init__(self, config) -> None:
+            super().__init__()
+            self.config = config
+            self.vision_tower = _Tower1152()
+            self.embed_vision = nn.Linear(1152, 768, bias=False)
+            with torch.no_grad():
+                self.embed_vision.weight.zero_()
+                # Map trailing vision channel 1151 -> MRL channel 0 so naive pre-projection
+                # truncation [:256] would completely miss it!
+                self.embed_vision.weight[0, 1151] = 1.0
+
+        def get_image_features(
+            self,
+            pixel_values: torch.Tensor,
+            pixel_position_ids: Optional[torch.Tensor] = None,
+        ) -> torch.Tensor:
+            captured["gif_pos_ids_shape"] = (
+                tuple(pixel_position_ids.shape)
+                if pixel_position_ids is not None
+                else None
+            )
+            out = self.vision_tower(pixel_values, pixel_position_ids=pixel_position_ids)
+            return self.embed_vision(out.last_hidden_state.mean(dim=1))
+
+    import transformers
+
+    with monkeypatch.context() as mp:
+        mp.setattr(
+            transformers.AutoConfig,
+            "from_pretrained",
+            lambda *_a, **_kw: SimpleNamespace(
+                audio_config=None,
+                vision_config=SimpleNamespace(
+                    patch_size=16,
+                    pooling_kernel_size=3,
+                    num_hidden_layers=1,
+                    use_cls_token=False,
+                    hidden_size=1152,
+                ),
+            ),
+        )
+        mp.setattr(
+            transformers.AutoImageProcessor,
+            "from_pretrained",
+            lambda *_a, **_kw: SimpleNamespace(
+                image_mean=(0.5, 0.5, 0.5), image_std=(0.5, 0.5, 0.5)
+            ),
+        )
+        mp.setattr(
+            transformers.AutoModel,
+            "from_pretrained",
+            lambda _repo, config=None, **_kw: _FullModelWithProjector(config),
+        )
+
+        ext = Dinov3FeatureExtractor(
+            Dinov3Config(
+                model_name="google/embeddinggemma-2",
+                short_side=48,
+                device="cpu",
+                matryoshka_dim=256,
+            )
+        )
+        with torch.no_grad():
+            ext.model.proj.weight.zero_()
+            ext.model.proj.weight[1151] = 1.0
+
+        ones_img = np.full((48, 48, 3), 255, dtype=np.uint8)
+        dense = ext.extract(ones_img, return_layer="last", normalize=True)
+        assert tuple(dense.shape) == (256, 3, 3)
+        # Channel 1151 in vision_tower was projected to MRL channel 0 before [:256] slice!
+        assert torch.allclose(dense[0], torch.ones((3, 3)), atol=1e-5)
+
+        crops = ext.embed_keypoint_regions(
+            ones_img, [(24.0, 24.0), (16.0, 16.0)], crop_size_px=48, matryoshka_dim=128
+        )
+        assert tuple(crops.shape) == (2, 128)
+        assert captured["gif_pos_ids_shape"] == (2, 9, 2)
+
+    # Part B: Unpatched transformers offline safetensors fallback when top-level
+    # "embedding_gemma2" is unrecognized by AutoConfig, while nested vision_config is valid.
+    from safetensors.torch import save_file
+    from transformers import SiglipVisionConfig, SiglipVisionModel
+
+    ckpt_dir = tmp_path / "local_multimodal_ckpt"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    vis_cfg = SiglipVisionConfig(
+        hidden_size=32,
+        intermediate_size=64,
+        num_hidden_layers=1,
+        num_attention_heads=4,
+        image_size=32,
+        patch_size=16,
+    )
+    ref_tower = SiglipVisionModel(vis_cfg)
+    ref_proj = nn.Linear(32, 24, bias=False)
+    nn.init.orthogonal_(ref_proj.weight)
+
+    tensors: dict[str, torch.Tensor] = {
+        f"vision_tower.{k}": v.contiguous() for k, v in ref_tower.state_dict().items()
+    }
+    tensors["embed_vision.weight"] = ref_proj.weight.detach().contiguous()
+    # Include unused modality weights to verify selective loading ignores them cleanly.
+    tensors["audio_tower.dummy_weight"] = torch.randn((8, 8))
+    tensors["language_model.dummy_weight"] = torch.randn((8, 8))
+    save_file(tensors, str(ckpt_dir / "model.safetensors"))
+
+    vis_dict = vis_cfg.to_dict()
+    vis_dict["model_type"] = "siglip_vision_model"
+    (ckpt_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "embedding_gemma2",
+                "embedding_dim": 24,
+                "vision_config": vis_dict,
+                "audio_config": {"model_type": "gemma4_audio", "hidden_size": 1024},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    ok, status_msg = dino_models.check_dino_model_runtime_support(str(ckpt_dir))
+    assert ok is True
+    assert "Ready" in status_msg
+
+    direct_ext = Dinov3FeatureExtractor(
+        Dinov3Config(
+            model_name=str(ckpt_dir),
+            short_side=32,
+            device="cpu",
+            matryoshka_dim=16,
+        )
+    )
+    assert isinstance(direct_ext, GoogleVisionFeatureExtractor)
+    assert direct_ext.backend_kind == "embeddinggemma"
+    assert direct_ext._vision_projector is not None
+
+    rgb_small = np.random.default_rng(9).integers(
+        0, 255, size=(32, 48, 3), dtype=np.uint8
+    )
+    grid_out = direct_ext.extract(rgb_small, return_layer="last", normalize=True)
+    assert tuple(grid_out.shape) == (16, 2, 3)
+    crop_out = direct_ext.embed_keypoint_regions(
+        rgb_small, [(16.0, 16.0)], crop_size_px=32, matryoshka_dim=12
+    )
+    assert tuple(crop_out.shape) == (1, 12)
+
+
+def test_advanced_parameters_dialog_preset_sync_and_runtime_status_label() -> None:
+    QtWidgets = pytest.importorskip("qtpy.QtWidgets")
+    from annolid.gui.widgets.advanced_parameters_dialog import AdvancedParametersDialog
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    assert app is not None
+
+    cfg = CutieDinoTrackerConfig(
+        patch_model_name="torchvision/mobilenet_v3_small",
+        region_descriptor_radius=0,
+        region_descriptor_sigma=1.5,
+        region_subpatch_sampling=False,
+        pixel_region_refine_enabled=False,
+    )
+    dialog = AdvancedParametersDialog(tracker_config=cfg)
+    assert "Ready" in dialog.dino_model_status_label.text()
+    assert dialog.region_descriptor_radius_spinbox.value() == 0
+    assert dialog.region_subpatch_sampling_checkbox.isChecked() is False
+    assert dialog.pixel_region_refine_checkbox.isChecked() is False
+
+    # Switching preset must synchronize Gaussian region & pixel template controls.
+    dialog.tracker_preset_combo.setCurrentText("fly_70fps_keypoints")
+    assert dialog.region_descriptor_radius_spinbox.value() == 1
+    assert dialog.region_descriptor_sigma_spinbox.value() == pytest.approx(0.7)
+    assert dialog.region_subpatch_sampling_checkbox.isChecked() is True
+    assert dialog.pixel_region_refine_checkbox.isChecked() is True
+
+    # Switching model updates runtime readiness status text immediately.
+    dialog.dino_model_combo.setEditText("google/embeddinggemma-2")
+    _, expected_msg = dino_models.check_dino_model_runtime_support(
+        "google/embeddinggemma-2"
+    )
+    assert dialog.dino_model_status_label.text() == expected_msg

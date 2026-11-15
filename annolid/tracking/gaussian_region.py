@@ -39,6 +39,7 @@ __all__ = [
     "gaussian_kernel_2d",
     "gaussian_smooth_feature_grid",
     "match_gaussian_pixel_template",
+    "match_gaussian_pixel_template_oriented",
     "pixel_to_continuous_patch",
     "refine_patch_region_gaussian",
     "sample_subpatch_gaussian_descriptor",
@@ -47,7 +48,7 @@ __all__ = [
 
 @dataclass(frozen=True)
 class GaussianPixelTemplate:
-    """Zero-weighted-mean, unit-weighted-norm pixel/gradient region anchor."""
+    """Zero-weighted-mean, unit-weighted-norm multi-orientation pixel/gradient anchor."""
 
     radius_px: int
     sigma_px: float
@@ -55,6 +56,7 @@ class GaussianPixelTemplate:
     norm_intensity_kernel: torch.Tensor
     norm_grad_kernel: Optional[torch.Tensor] = None
     min_std: float = 1.5
+    angles_rad: Tuple[float, ...] = (0.0,)
 
 
 def gaussian_kernel_1d(
@@ -294,6 +296,39 @@ def _sobel_gradient_xy_interior(patch_padded: np.ndarray) -> np.ndarray:
     return np.stack([gx, gy], axis=0).astype(np.float32, copy=False)
 
 
+def _sample_rotated_padded_patch(
+    source_patch: np.ndarray,
+    padded_size: int,
+    angle_rad: float,
+) -> np.ndarray:
+    """Sample a ``(padded_size, padded_size)`` patch rotated by ``angle_rad``."""
+    src_h, src_w = source_patch.shape
+    src_cx = 0.5 * float(src_w - 1)
+    src_cy = 0.5 * float(src_h - 1)
+    half = 0.5 * float(padded_size - 1)
+    if abs(angle_rad) <= 1e-7:
+        r0 = int(round(src_cy - half))
+        c0 = int(round(src_cx - half))
+        return source_patch[r0 : r0 + padded_size, c0 : c0 + padded_size].copy()
+
+    coords = np.arange(padded_size, dtype=np.float32) - half
+    v_grid, u_grid = np.meshgrid(coords, coords, indexing="ij")
+    cos_a = float(math.cos(angle_rad))
+    sin_a = float(math.sin(angle_rad))
+    # Material point (u, v) in seed frame rotated by +angle_rad lands at (u', v') in
+    # current frame => T_theta(u', v') = I0(x0 + u' cos(theta) + v' sin(theta),
+    #                                      y0 - u' sin(theta) + v' cos(theta)).
+    map_x = (src_cx + u_grid * cos_a + v_grid * sin_a).astype(np.float32)
+    map_y = (src_cy - u_grid * sin_a + v_grid * cos_a).astype(np.float32)
+    return cv2.remap(
+        source_patch,
+        map_x,
+        map_y,
+        interpolation=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REPLICATE,
+    )
+
+
 def extract_gaussian_pixel_template(
     gray: Optional[np.ndarray],
     xy: Tuple[float, float],
@@ -301,11 +336,13 @@ def extract_gaussian_pixel_template(
     window_px: int = 11,
     sigma_px: float = 3.0,
     min_std: float = 1.5,
+    num_orientations: int = 12,
 ) -> Optional[GaussianPixelTemplate]:
-    """Extract a Gaussian-weighted zero-mean unit-norm pixel/gradient anchor template.
+    """Extract a Gaussian-weighted zero-mean unit-norm pixel/gradient anchor bank.
 
     Returns ``None`` on uniform/blank patches so synthetic uniform frames are
-    untouched while textured anatomical landmarks get a drift-free pixel anchor.
+    untouched while textured anatomical landmarks get a drift-free, rotation-
+    tolerant pixel anchor bank across ``num_orientations`` angles in ``[0, 2*pi)``.
     """
     if gray is None or gray.ndim != 2:
         return None
@@ -314,37 +351,69 @@ def extract_gaussian_pixel_template(
         win += 1
     radius = win // 2
     sigma = max(0.75, float(sigma_px))
+    k_orient = max(1, min(36, int(num_orientations)))
 
-    padded_patch = _extract_subpixel_patch_with_border(gray, xy, (win + 2, win + 2))
-    if padded_patch is None:
+    padded_size = win + 2
+    if k_orient == 1:
+        source_patch = _extract_subpixel_patch_with_border(
+            gray, xy, (padded_size, padded_size)
+        )
+        angles = (0.0,)
+    else:
+        diag_half = int(math.ceil(math.hypot(radius + 1, radius + 1))) + 2
+        src_side = 2 * diag_half + 1
+        source_patch = _extract_subpixel_patch_with_border(
+            gray, xy, (src_side, src_side)
+        )
+        angles = tuple(
+            float(idx) * (2.0 * math.pi / float(k_orient)) for idx in range(k_orient)
+        )
+    if source_patch is None:
         return None
 
-    intensity = torch.from_numpy(padded_patch[1:-1, 1:-1].copy())
     weights_2d = gaussian_kernel_2d(radius, sigma, dtype=torch.float32)
+    min_grad_threshold = max(1.0, 0.5 * float(min_std))
 
-    mean_i = float((weights_2d * intensity).sum().item())
-    centered_i = intensity - mean_i
-    norm_i = float(torch.sqrt((weights_2d * centered_i * centered_i).sum()).item())
-    if not math.isfinite(norm_i) or norm_i < float(min_std):
-        return None
+    intensity_kernels: list[torch.Tensor] = []
+    grad_kernels: list[torch.Tensor] = []
+    has_any_grad = False
 
-    norm_intensity_kernel = ((weights_2d * centered_i) / norm_i).view(1, 1, win, win)
+    for idx, angle_rad in enumerate(angles):
+        rot_padded = _sample_rotated_padded_patch(source_patch, padded_size, angle_rad)
+        intensity = torch.from_numpy(rot_padded[1:-1, 1:-1].copy())
+        mean_i = float((weights_2d * intensity).sum().item())
+        centered_i = intensity - mean_i
+        norm_i = float(torch.sqrt((weights_2d * centered_i * centered_i).sum()).item())
+        if idx == 0 and (not math.isfinite(norm_i) or norm_i < float(min_std)):
+            return None
+        safe_norm_i = max(norm_i, 1e-6)
+        intensity_kernels.append(
+            ((weights_2d * centered_i) / safe_norm_i).view(1, win, win)
+        )
 
-    grad_xy_t = torch.from_numpy(_sobel_gradient_xy_interior(padded_patch))
-    norm_g = float(
-        torch.sqrt((weights_2d.unsqueeze(0) * grad_xy_t * grad_xy_t).sum()).item()
-    )
-    norm_grad_kernel: Optional[torch.Tensor] = None
-    if math.isfinite(norm_g) and norm_g >= max(1.0, 0.5 * float(min_std)):
-        norm_grad_kernel = ((weights_2d.unsqueeze(0) * grad_xy_t) / norm_g).unsqueeze(0)
+        grad_xy_t = torch.from_numpy(_sobel_gradient_xy_interior(rot_padded))
+        norm_g = float(
+            torch.sqrt((weights_2d.unsqueeze(0) * grad_xy_t * grad_xy_t).sum()).item()
+        )
+        if math.isfinite(norm_g) and norm_g >= min_grad_threshold:
+            has_any_grad = True
+            grad_kernels.append((weights_2d.unsqueeze(0) * grad_xy_t) / norm_g)
+        else:
+            grad_kernels.append(torch.zeros((2, win, win), dtype=torch.float32))
+
+    stacked_intensity = torch.stack(intensity_kernels, dim=0)  # [K, 1, win, win]
+    stacked_grad = (
+        torch.stack(grad_kernels, dim=0) if has_any_grad else None
+    )  # [K, 2, win, win]
 
     return GaussianPixelTemplate(
         radius_px=radius,
         sigma_px=sigma,
         weights=weights_2d.view(1, 1, win, win),
-        norm_intensity_kernel=norm_intensity_kernel,
-        norm_grad_kernel=norm_grad_kernel,
+        norm_intensity_kernel=stacked_intensity,
+        norm_grad_kernel=stacked_grad,
         min_std=float(min_std),
+        angles_rad=angles,
     )
 
 
@@ -354,7 +423,7 @@ def _weighted_zncc_surface(
     weights_4d: torch.Tensor,
     min_std: float,
 ) -> torch.Tensor:
-    """Vectorized Gaussian-weighted ZNCC surface over all shifts in ``roi_4d``."""
+    """Vectorized Gaussian-weighted ZNCC surface ``[K, H_s, W_s]`` over ``roi_4d``."""
     numerator = F.conv2d(roi_4d, norm_template_kernel)
     local_mean = F.conv2d(roi_4d, weights_4d)
     local_mean_sq = F.conv2d(roi_4d * roi_4d, weights_4d)
@@ -363,7 +432,7 @@ def _weighted_zncc_surface(
     denom = torch.sqrt(local_var.clamp_min(1e-8))
     zncc = (numerator / denom).clamp(-1.0, 1.0)
     zncc = torch.where(local_var >= min_var, zncc, torch.zeros_like(zncc))
-    return zncc.squeeze(0).squeeze(0)
+    return zncc.squeeze(0)
 
 
 def _weighted_directional_grad_surface(
@@ -372,7 +441,7 @@ def _weighted_directional_grad_surface(
     weights_4d: torch.Tensor,
     min_grad_norm: float,
 ) -> torch.Tensor:
-    """Vectorized Gaussian-weighted cosine similarity on signed ``(gx, gy)``."""
+    """Vectorized Gaussian-weighted cosine similarity ``[K, H_s, W_s]`` on ``(gx, gy)``."""
     numerator = F.conv2d(grad_xy_roi_4d, norm_grad_kernel)
     grad_sq = (grad_xy_roi_4d * grad_xy_roi_4d).sum(dim=1, keepdim=True)
     local_energy = F.conv2d(grad_sq, weights_4d).clamp_min(0.0)
@@ -382,21 +451,28 @@ def _weighted_directional_grad_surface(
     cos_sim = torch.where(
         local_energy >= min_energy, cos_sim, torch.zeros_like(cos_sim)
     )
-    return cos_sim.squeeze(0).squeeze(0)
+    return cos_sim.squeeze(0)
 
 
-def match_gaussian_pixel_template(
+def _wrap_angle_rad(angle: float) -> float:
+    """Wrap angle in radians to ``(-pi, pi]``."""
+    wrapped = (float(angle) + math.pi) % (2.0 * math.pi) - math.pi
+    return float(wrapped)
+
+
+def match_gaussian_pixel_template_oriented(
     gray: Optional[np.ndarray],
     template: Optional[GaussianPixelTemplate],
     *,
     center_xy: Tuple[float, float],
     search_radius_px: int = 4,
     spatial_prior_sigma_px: Optional[float] = None,
-) -> Optional[Tuple[float, float, float]]:
-    """Locate ``template`` around ``center_xy`` with sub-pixel parabolic refinement.
+    preferred_angle_rad: Optional[float] = None,
+    angle_prior_penalty: float = 0.04,
+) -> Optional[Tuple[float, float, float, float]]:
+    """Locate ``template`` across position + orientation with 2D Hessian refinement.
 
-    Returns ``(refined_x, refined_y, peak_zncc)`` or ``None`` when no valid
-    textured response exists in the search window.
+    Returns ``(refined_x, refined_y, peak_zncc, matched_angle_rad)`` or ``None``.
     """
     if gray is None or template is None:
         return None
@@ -430,10 +506,13 @@ def match_gaussian_pixel_template(
         )
         zncc_surface = 0.70 * zncc_surface + 0.30 * zncc_grad
 
-    surf_np = zncc_surface.numpy()
-    if surf_np.size == 0 or not np.isfinite(surf_np).any():
+    if zncc_surface.ndim == 2:
+        zncc_surface = zncc_surface.unsqueeze(0)
+    surf_all = zncc_surface.numpy()  # [K, side, side]
+    if surf_all.size == 0 or not np.isfinite(surf_all).any():
         return None
 
+    num_k, side, _ = surf_all.shape
     prior_sigma = (
         float(spatial_prior_sigma_px)
         if spatial_prior_sigma_px is not None
@@ -444,16 +523,51 @@ def match_gaussian_pixel_template(
     spatial_prior = np.exp(
         -0.5 * (dx_grid * dx_grid + dy_grid * dy_grid) / (prior_sigma * prior_sigma)
     )
-    # Soft spatial tie-breaker keeps periodic textures anchored near the coarse prior.
-    guided_surface = surf_np - 0.06 * (1.0 - spatial_prior)
+    guided_all = surf_all - 0.06 * (1.0 - spatial_prior)[None, :, :]
 
-    flat_idx = int(np.argmax(guided_surface))
-    side = 2 * search_r + 1
-    best_r = flat_idx // side
-    best_c = flat_idx % side
-    raw_peak_zncc = float(surf_np[best_r, best_c])
+    angles = template.angles_rad or (0.0,)
+    if (
+        num_k > 1
+        and preferred_angle_rad is not None
+        and math.isfinite(float(preferred_angle_rad))
+        and float(angle_prior_penalty) > 0.0
+    ):
+        ang_arr = np.asarray(angles[:num_k], dtype=np.float32)
+        ang_pen = float(angle_prior_penalty) * (
+            1.0 - np.cos(ang_arr - float(preferred_angle_rad))
+        )
+        guided_all = guided_all - ang_pen[:, None, None]
+
+    flat_idx = int(np.argmax(guided_all))
+    spatial_area = side * side
+    best_k = flat_idx // spatial_area
+    rem = flat_idx % spatial_area
+    best_r = rem // side
+    best_c = rem % side
+    raw_peak_zncc = float(surf_all[best_k, best_r, best_c])
     if not math.isfinite(raw_peak_zncc) or raw_peak_zncc <= 0.0:
         return None
+
+    matched_angle = float(angles[best_k]) if best_k < len(angles) else 0.0
+    surf_np = surf_all[best_k]
+
+    # Sub-angle circular parabolic interpolation blends bracketing orientation
+    # surfaces before solving the 2D spatial Hessian.
+    if num_k >= 3:
+        km = (best_k - 1) % num_k
+        kp = (best_k + 1) % num_k
+        ak_m = float(surf_all[km, best_r, best_c])
+        ak_0 = raw_peak_zncc
+        ak_p = float(surf_all[kp, best_r, best_c])
+        denom_k = ak_m - 2.0 * ak_0 + ak_p
+        if denom_k < -1e-5:
+            delta_k = float(np.clip(0.5 * (ak_m - ak_p) / denom_k, -0.5, 0.5))
+            step_rad = 2.0 * math.pi / float(num_k)
+            matched_angle = _wrap_angle_rad(matched_angle + delta_k * step_rad)
+            alpha_k = abs(delta_k)
+            adj_k = kp if delta_k >= 0.0 else km
+            surf_np = (1.0 - alpha_k) * surf_all[best_k] + alpha_k * surf_all[adj_k]
+            raw_peak_zncc = max(raw_peak_zncc, float(surf_np[best_r, best_c]))
 
     sub_dc = 0.0
     sub_dr = 0.0
@@ -505,7 +619,36 @@ def match_gaussian_pixel_template(
     h, w = gray.shape
     refined_x = float(np.clip(float(center_xy[0]) + dx, 0.0, max(0.0, float(w - 1))))
     refined_y = float(np.clip(float(center_xy[1]) + dy, 0.0, max(0.0, float(h - 1))))
-    return (refined_x, refined_y, raw_peak_zncc)
+    return (refined_x, refined_y, raw_peak_zncc, _wrap_angle_rad(matched_angle))
+
+
+def match_gaussian_pixel_template(
+    gray: Optional[np.ndarray],
+    template: Optional[GaussianPixelTemplate],
+    *,
+    center_xy: Tuple[float, float],
+    search_radius_px: int = 4,
+    spatial_prior_sigma_px: Optional[float] = None,
+    preferred_angle_rad: Optional[float] = None,
+    angle_prior_penalty: float = 0.04,
+) -> Optional[Tuple[float, float, float]]:
+    """Locate ``template`` around ``center_xy`` with sub-pixel 2D Hessian refinement.
+
+    Returns ``(refined_x, refined_y, peak_zncc)`` or ``None`` when no valid
+    textured response exists in the search window.
+    """
+    oriented = match_gaussian_pixel_template_oriented(
+        gray,
+        template,
+        center_xy=center_xy,
+        search_radius_px=search_radius_px,
+        spatial_prior_sigma_px=spatial_prior_sigma_px,
+        preferred_angle_rad=preferred_angle_rad,
+        angle_prior_penalty=angle_prior_penalty,
+    )
+    if oriented is None:
+        return None
+    return (oriented[0], oriented[1], oriented[2])
 
 
 def refine_patch_region_gaussian(

@@ -16,7 +16,9 @@ Supports:
 
 from __future__ import annotations
 
+import functools
 import inspect
+import json
 import logging
 import math
 import os
@@ -29,7 +31,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from PIL import Image
 
-from annolid.features.dino_models import resolve_dino_model_id
+from annolid.features.dino_models import (
+    resolve_dino_model_id,
+    supports_matryoshka_truncation,
+)
 from annolid.features.dinov3_extractor import (
     IMAGENET_MEAN,
     IMAGENET_STD,
@@ -43,22 +48,60 @@ SIGLIP_MEAN = (0.5, 0.5, 0.5)
 SIGLIP_STD = (0.5, 0.5, 0.5)
 
 
+@functools.lru_cache(maxsize=32)
+def _deterministic_orthonormal_projection(in_dim: int, out_dim: int) -> torch.Tensor:
+    """Build a reproducible row-orthonormal ``[out_dim, in_dim]`` projection matrix.
+
+    Used when dimensionality compression is explicitly requested on non-MRL
+    backbones (e.g. DINOv3, SigLIP 2, or multi-stage CNN pyramids) so every
+    input channel and multi-scale stage contributes uniformly across frames
+    instead of discarding trailing channels via naive prefix slicing.
+    """
+    gen = torch.Generator(device="cpu")
+    gen.manual_seed(int(in_dim) * 10007 + int(out_dim) * 31 + 17)
+    gaussian = torch.randn(
+        (int(in_dim), int(out_dim)), generator=gen, dtype=torch.float32
+    )
+    q, r = torch.linalg.qr(gaussian, mode="reduced")
+    diag = torch.diagonal(r, 0)
+    signs = torch.where(diag >= 0.0, torch.ones_like(diag), -torch.ones_like(diag))
+    q = q * signs.unsqueeze(0)
+    return q.transpose(0, 1).contiguous()
+
+
 def apply_matryoshka_truncation(
     features: torch.Tensor,
     matryoshka_dim: Optional[int],
     *,
     channel_dim: int = 0,
     normalize: bool = True,
+    mrl_native: bool = True,
 ) -> torch.Tensor:
-    """Apply Matryoshka prefix channel truncation and optional L2 renormalization."""
+    """Apply channel compression and optional L2 renormalization.
+
+    When ``mrl_native=True`` (for Matryoshka-trained models such as
+    ``google/embeddinggemma-2``), slices the nested prefix ``[:matryoshka_dim]``.
+    When ``mrl_native=False``, projects via a cached deterministic row-orthonormal
+    basis so all channels and multi-scale pyramid stages remain represented.
+    """
     if matryoshka_dim is not None:
         target_dim = int(matryoshka_dim)
         if target_dim <= 0:
             raise ValueError(f"matryoshka_dim must be positive, got {matryoshka_dim!r}")
-        current_dim = int(features.shape[channel_dim])
+        ndim = features.ndim
+        norm_dim = channel_dim if channel_dim >= 0 else ndim + channel_dim
+        current_dim = int(features.shape[norm_dim])
         if target_dim < current_dim:
-            indices = torch.arange(target_dim, device=features.device)
-            features = torch.index_select(features, dim=channel_dim, index=indices)
+            if mrl_native:
+                indices = torch.arange(target_dim, device=features.device)
+                features = torch.index_select(features, dim=norm_dim, index=indices)
+            else:
+                proj = _deterministic_orthonormal_projection(
+                    current_dim, target_dim
+                ).to(device=features.device, dtype=torch.float32)
+                moved = torch.movedim(features.float(), norm_dim, -1)
+                projected = torch.matmul(moved, proj.transpose(0, 1))
+                features = torch.movedim(projected, -1, norm_dim)
     if normalize:
         features = F.normalize(features.float(), dim=channel_dim, eps=1e-12)
     return features
@@ -97,6 +140,10 @@ class GoogleVisionFeatureExtractor(Dinov3FeatureExtractor):
 
         self.device = self._select_device(self.cfg.device)
         self.backend_kind = self._detect_backend_kind(self.model_id)
+        self._is_mrl_model = bool(
+            self.backend_kind == "embeddinggemma"
+            or supports_matryoshka_truncation(self.model_id)
+        )
         self._model_dtype = self._select_inference_dtype(self.device, self.backend_kind)
         self._pooling_kernel_size = 1
         self._snap_multiple = max(1, int(self.cfg.patch_size))
@@ -104,6 +151,7 @@ class GoogleVisionFeatureExtractor(Dinov3FeatureExtractor):
         self._accepts_interpolate_pos_encoding = False
         self._accepts_output_hidden_states = False
         self._full_model: Optional[nn.Module] = None
+        self._vision_projector: Optional[nn.Module] = None
 
         logger.info(
             "Initializing GoogleVisionFeatureExtractor (%s) for '%s' on %s (dtype=%s)",
@@ -116,6 +164,9 @@ class GoogleVisionFeatureExtractor(Dinov3FeatureExtractor):
         self.processor, self.model = self._load_model()
         self.model.to(device=self.device, dtype=self._model_dtype)
         self.model.eval()
+        if self._vision_projector is not None:
+            self._vision_projector.to(device=self.device, dtype=self._model_dtype)
+            self._vision_projector.eval()
         if self._full_model is not None and self._full_model is not self.model:
             self._full_model.to(device=self.device, dtype=self._model_dtype)
             self._full_model.eval()
@@ -149,7 +200,8 @@ class GoogleVisionFeatureExtractor(Dinov3FeatureExtractor):
     def _detect_backend_kind(
         model_id: str,
     ) -> Literal["embeddinggemma", "siglip", "timm", "torchvision"]:
-        lowered = str(model_id or "").strip().lower()
+        raw_text = str(model_id or "").strip()
+        lowered = raw_text.lower()
         if "embeddinggemma" in lowered or "embedding_gemma" in lowered:
             return "embeddinggemma"
         if "siglip" in lowered:
@@ -158,6 +210,21 @@ class GoogleVisionFeatureExtractor(Dinov3FeatureExtractor):
             return "torchvision"
         if lowered.startswith("timm/") or "mobilenet" in lowered:
             return "timm"
+        try:
+            cfg_path = Path(raw_text).expanduser() / "config.json"
+            if cfg_path.is_file():
+                raw_cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+                top_mt = str(raw_cfg.get("model_type", "") or "").lower()
+                if (
+                    "embedding_gemma" in top_mt
+                    or "embeddinggemma" in top_mt
+                    or "gemma4" in top_mt
+                ):
+                    return "embeddinggemma"
+                if "siglip" in top_mt:
+                    return "siglip"
+        except Exception:
+            pass
         return "siglip"
 
     @staticmethod
@@ -207,6 +274,190 @@ class GoogleVisionFeatureExtractor(Dinov3FeatureExtractor):
                 continue
         return None
 
+    @staticmethod
+    def _discover_vision_projector(
+        root_model: Optional[nn.Module],
+    ) -> Optional[nn.Module]:
+        if root_model is None:
+            return None
+        for attr in ("embed_vision", "vision_projection", "multi_modal_projector"):
+            candidate = getattr(root_model, attr, None)
+            if isinstance(candidate, nn.Module):
+                return candidate
+        return None
+
+    def _resolve_cached_checkpoint_dir(self) -> Optional[Path]:
+        direct = Path(str(self.model_id)).expanduser()
+        if direct.is_dir() and (direct / "config.json").is_file():
+            return direct
+        try:
+            from huggingface_hub import snapshot_download
+
+            snap = snapshot_download(
+                repo_id=self.model_id,
+                cache_dir=str(self.cache_dir) if self.cache_dir else None,
+                local_files_only=True,
+                allow_patterns=[
+                    "config.json",
+                    "preprocessor_config.json",
+                    "processor_config.json",
+                    "*.safetensors",
+                    "*.safetensors.index.json",
+                ],
+            )
+            snap_path = Path(snap)
+            if (snap_path / "config.json").is_file():
+                return snap_path
+        except Exception:
+            return None
+        return None
+
+    def _try_load_embeddinggemma_vision_from_checkpoint(
+        self,
+    ) -> Optional[Tuple[Any, nn.Module]]:
+        """Load ``vision_tower`` directly from safetensors when supported by ``CONFIG_MAPPING``.
+
+        Bypasses an unrecognized top-level ``embedding_gemma2`` wrapper when the
+        nested ``vision_config`` architecture (e.g. ``gemma4_vision`` or
+        ``siglip_vision_model``) is registered in ``transformers.CONFIG_MAPPING``,
+        while avoiding instantiating the 270M text and 300M audio towers.
+        """
+        ckpt_dir = self._resolve_cached_checkpoint_dir()
+        if ckpt_dir is None:
+            return None
+
+        try:
+            import transformers
+            from safetensors import safe_open
+            from transformers import AutoModel
+
+            raw_cfg = json.loads((ckpt_dir / "config.json").read_text(encoding="utf-8"))
+        except Exception:
+            return None
+
+        vision_dict = raw_cfg.get("vision_config")
+        if not isinstance(vision_dict, dict):
+            return None
+        vision_model_type = str(vision_dict.get("model_type", "")).strip()
+        cfg_mapping = getattr(transformers, "CONFIG_MAPPING", None)
+        if (
+            not vision_model_type
+            or cfg_mapping is None
+            or vision_model_type not in cfg_mapping
+        ):
+            return None
+
+        shard_paths: list[Path] = []
+        single_st = ckpt_dir / "model.safetensors"
+        index_st = ckpt_dir / "model.safetensors.index.json"
+        if single_st.is_file():
+            shard_paths.append(single_st)
+        elif index_st.is_file():
+            try:
+                idx_data = json.loads(index_st.read_text(encoding="utf-8"))
+                weight_map = idx_data.get("weight_map", {}) or {}
+                needed_files = sorted(
+                    {
+                        fname
+                        for key, fname in weight_map.items()
+                        if key.startswith(
+                            (
+                                "vision_tower.",
+                                "vision_model.",
+                                "embed_vision.",
+                                "vision_projection.",
+                                "multi_modal_projector.",
+                            )
+                        )
+                    }
+                )
+                for fname in needed_files:
+                    candidate = ckpt_dir / str(fname)
+                    if candidate.is_file():
+                        shard_paths.append(candidate)
+            except Exception:
+                return None
+        if not shard_paths:
+            return None
+
+        vision_state: dict[str, torch.Tensor] = {}
+        proj_state: dict[str, torch.Tensor] = {}
+        for shard in shard_paths:
+            with safe_open(str(shard), framework="pt", device="cpu") as reader:
+                for key in reader.keys():
+                    if key.startswith("vision_tower."):
+                        vision_state[key[len("vision_tower.") :]] = reader.get_tensor(
+                            key
+                        )
+                    elif key.startswith("vision_model."):
+                        vision_state[key[len("vision_model.") :]] = reader.get_tensor(
+                            key
+                        )
+                    elif key.startswith(
+                        (
+                            "embed_vision.",
+                            "vision_projection.",
+                            "multi_modal_projector.",
+                        )
+                    ):
+                        _, suffix = key.split(".", 1)
+                        proj_state[suffix] = reader.get_tensor(key)
+
+        if not vision_state:
+            return None
+
+        try:
+            cfg_cls = cfg_mapping[vision_model_type]
+            vision_cfg_obj = cfg_cls.from_dict(vision_dict)
+            vision_tower = AutoModel.from_config(vision_cfg_obj)
+            missing, unexpected = vision_tower.load_state_dict(
+                vision_state, strict=False
+            )
+            if len(missing) > max(4, len(vision_state) // 5):
+                logger.warning(
+                    "Aborting direct safetensors vision load for '%s' due to %d missing keys (unexpected=%d).",
+                    self.model_id,
+                    len(missing),
+                    len(unexpected),
+                )
+                return None
+        except Exception:
+            return None
+
+        if "weight" in proj_state and proj_state["weight"].ndim == 2:
+            out_f, in_f = proj_state["weight"].shape
+            has_bias = "bias" in proj_state
+            proj_layer = nn.Linear(in_f, out_f, bias=has_bias)
+            proj_layer.load_state_dict(
+                {k: v for k, v in proj_state.items() if k in ("weight", "bias")},
+                strict=False,
+            )
+            self._vision_projector = proj_layer
+
+        proc_mean = SIGLIP_MEAN
+        proc_std = SIGLIP_STD
+        for proc_file in ("preprocessor_config.json", "processor_config.json"):
+            p_path = ckpt_dir / proc_file
+            if p_path.is_file():
+                try:
+                    p_json = json.loads(p_path.read_text(encoding="utf-8"))
+                    if "image_processor" in p_json and isinstance(
+                        p_json["image_processor"], dict
+                    ):
+                        p_json = p_json["image_processor"]
+                    proc_mean = tuple(p_json.get("image_mean", proc_mean))
+                    proc_std = tuple(p_json.get("image_std", proc_std))
+                    break
+                except Exception:
+                    continue
+
+        processor = type(
+            "_SafetensorsVisionNorm",
+            (),
+            {"image_mean": proc_mean, "image_std": proc_std},
+        )()
+        return processor, vision_tower
+
     def _load_embeddinggemma_model(self) -> Tuple[Any, nn.Module]:
         try:
             from transformers import AutoConfig, AutoModel
@@ -232,6 +483,9 @@ class GoogleVisionFeatureExtractor(Dinov3FeatureExtractor):
                 last_exc = exc
 
         if config is None:
+            direct_loaded = self._try_load_embeddinggemma_vision_from_checkpoint()
+            if direct_loaded is not None:
+                return direct_loaded
             msg = str(last_exc or "")
             if any(
                 token in msg.lower()
@@ -288,12 +542,16 @@ class GoogleVisionFeatureExtractor(Dinov3FeatureExtractor):
                 break
 
         if model is None:
+            direct_loaded = self._try_load_embeddinggemma_vision_from_checkpoint()
+            if direct_loaded is not None:
+                return direct_loaded
             raise RuntimeError(
                 f"Failed to load EmbeddingGemma 2 checkpoint '{self.model_id}': {last_exc}. "
                 "Ensure 'transformers>=5.19' is installed and the checkpoint is cached or reachable."
             ) from last_exc
 
         self._full_model = model
+        self._vision_projector = self._discover_vision_projector(model)
         vision_tower = (
             getattr(model, "vision_tower", None)
             or getattr(model, "vision_model", None)
@@ -498,12 +756,29 @@ class GoogleVisionFeatureExtractor(Dinov3FeatureExtractor):
         coords = torch.stack([grid_c.reshape(-1), grid_r.reshape(-1)], dim=-1)
         return coords.unsqueeze(0)
 
+    def _project_tokens_if_compatible(self, tokens: torch.Tensor) -> torch.Tensor:
+        """Apply multimodal vision projection head when the last dimension matches."""
+        proj = self._vision_projector
+        if proj is None or tokens.ndim not in (2, 3):
+            return tokens
+        in_features = getattr(proj, "in_features", None)
+        if in_features is not None and int(in_features) != int(tokens.shape[-1]):
+            return tokens
+        try:
+            projected = proj(tokens.to(device=self.device, dtype=self._model_dtype))
+            if isinstance(projected, torch.Tensor) and projected.ndim == tokens.ndim:
+                return projected
+        except Exception:
+            return tokens
+        return tokens
+
     def _tokens_or_map_to_grid(
         self,
         tensor: torch.Tensor,
         spatial_hw: Tuple[int, int],
         *,
         normalize: bool,
+        apply_truncation: bool = True,
     ) -> torch.Tensor:
         """Convert 3D token sequence or 4D feature map to ``[D, H_g, W_g]`` on CPU."""
         tensor = tensor.detach().float()
@@ -537,9 +812,10 @@ class GoogleVisionFeatureExtractor(Dinov3FeatureExtractor):
             grid_3d = grid.squeeze(0).to("cpu")
             return apply_matryoshka_truncation(
                 grid_3d,
-                self.cfg.matryoshka_dim,
+                self.cfg.matryoshka_dim if apply_truncation else None,
                 channel_dim=0,
                 normalize=normalize,
+                mrl_native=self._is_mrl_model,
             )
 
         if tensor.ndim != 3 or tensor.shape[0] != 1:
@@ -593,9 +869,10 @@ class GoogleVisionFeatureExtractor(Dinov3FeatureExtractor):
         grid_3d = grid.squeeze(0).to("cpu")
         return apply_matryoshka_truncation(
             grid_3d,
-            self.cfg.matryoshka_dim,
+            self.cfg.matryoshka_dim if apply_truncation else None,
             channel_dim=0,
             normalize=normalize,
+            mrl_native=self._is_mrl_model,
         )
 
     def _extract_cnn_pyramid(
@@ -628,6 +905,7 @@ class GoogleVisionFeatureExtractor(Dinov3FeatureExtractor):
             self.cfg.matryoshka_dim,
             channel_dim=0,
             normalize=normalize,
+            mrl_native=self._is_mrl_model,
         )
         if return_layer == "all":
             return fused.unsqueeze(0)
@@ -692,6 +970,12 @@ class GoogleVisionFeatureExtractor(Dinov3FeatureExtractor):
         if last_hidden is None and isinstance(outputs, (tuple, list)) and outputs:
             last_hidden = outputs[0]
 
+        projected_last_hidden = (
+            self._project_tokens_if_compatible(last_hidden)
+            if (self.backend_kind == "embeddinggemma" and last_hidden is not None)
+            else last_hidden
+        )
+
         selected_grids: list[torch.Tensor] = []
         if hidden_states is not None and len(hidden_states) >= 2:
             num_layers = len(hidden_states) - 1
@@ -702,46 +986,52 @@ class GoogleVisionFeatureExtractor(Dinov3FeatureExtractor):
                 )
                 resolved_idx = max(0, min(num_layers - 1, int(resolved_idx)))
                 layer_tokens = hidden_states[resolved_idx + 1]
-                grid = self._tokens_or_map_to_grid(
+                if self.backend_kind == "embeddinggemma":
+                    layer_tokens = self._project_tokens_if_compatible(layer_tokens)
+                grid_full = self._tokens_or_map_to_grid(
                     layer_tokens,
                     spatial_hw=spatial_hw,
-                    normalize=normalize,
+                    normalize=False,
+                    apply_truncation=False,
                 )
-                # When EmbeddingGemma 2 pools last_hidden_state spatially (e.g. 3x3)
-                # at the same channel width, blend the fine unpooled token grid with
-                # the upsampled pooled semantic representation.
+                # Project and blend fine unpooled tokens with pooled soft tokens in full
+                # MRL embedding space BEFORE applying Matryoshka prefix truncation.
                 if (
                     self.backend_kind == "embeddinggemma"
                     and self._pooling_kernel_size > 1
-                    and last_hidden is not None
+                    and projected_last_hidden is not None
                     and resolved_idx == num_layers - 1
-                    and last_hidden.shape[-1] == layer_tokens.shape[-1]
+                    and projected_last_hidden.shape[-1] == layer_tokens.shape[-1]
                 ):
                     try:
                         pooled_grid = self._tokens_or_map_to_grid(
-                            last_hidden,
+                            projected_last_hidden,
                             spatial_hw=spatial_hw,
                             normalize=True,
+                            apply_truncation=False,
                         )
-                        if pooled_grid.shape == grid.shape:
-                            blended = (
-                                0.65 * F.normalize(grid, dim=0, eps=1e-12)
+                        if pooled_grid.shape == grid_full.shape:
+                            grid_full = (
+                                0.65 * F.normalize(grid_full, dim=0, eps=1e-12)
                                 + 0.35 * pooled_grid
-                            )
-                            grid = (
-                                F.normalize(blended, dim=0, eps=1e-12)
-                                if normalize
-                                else blended
                             )
                     except ValueError:
                         pass
+                grid = apply_matryoshka_truncation(
+                    grid_full,
+                    self.cfg.matryoshka_dim,
+                    channel_dim=0,
+                    normalize=normalize,
+                    mrl_native=self._is_mrl_model,
+                )
                 selected_grids.append(grid)
-        elif last_hidden is not None:
+        elif projected_last_hidden is not None:
             selected_grids.append(
                 self._tokens_or_map_to_grid(
-                    last_hidden,
+                    projected_last_hidden,
                     spatial_hw=spatial_hw,
                     normalize=normalize,
+                    apply_truncation=True,
                 )
             )
         else:
@@ -854,7 +1144,23 @@ class GoogleVisionFeatureExtractor(Dinov3FeatureExtractor):
             else None
         )
         if callable(get_image_features):
-            feat_out = get_image_features(pixel_values=batch)
+            img_feat_kwargs: dict[str, Any] = {"pixel_values": batch}
+            try:
+                gif_sig = inspect.signature(get_image_features)
+                if "pixel_position_ids" in gif_sig.parameters:
+                    gh = max(1, target_crop // self.patch_size)
+                    gw = max(1, target_crop // self.patch_size)
+                    img_feat_kwargs["pixel_position_ids"] = (
+                        self._build_pixel_position_ids(gh, gw, batch.device).expand(
+                            num_pts, -1, -1
+                        )
+                    )
+            except (TypeError, ValueError):
+                pass
+            try:
+                feat_out = get_image_features(**img_feat_kwargs)
+            except TypeError:
+                feat_out = get_image_features(pixel_values=batch)
             if isinstance(feat_out, torch.Tensor):
                 pooled = feat_out
             else:
@@ -871,6 +1177,7 @@ class GoogleVisionFeatureExtractor(Dinov3FeatureExtractor):
                 effective_dim,
                 channel_dim=1,
                 normalize=True,
+                mrl_native=self._is_mrl_model,
             )
 
         if self.backend_kind in ("timm", "torchvision"):
@@ -894,6 +1201,7 @@ class GoogleVisionFeatureExtractor(Dinov3FeatureExtractor):
                 effective_dim,
                 channel_dim=1,
                 normalize=True,
+                mrl_native=self._is_mrl_model,
             )
 
         # Fallback: run vision tower per-crop or batched and Gaussian-pool spatial tokens.
@@ -910,11 +1218,14 @@ class GoogleVisionFeatureExtractor(Dinov3FeatureExtractor):
         outputs = self.model(**forward_kwargs)
         pooler = getattr(outputs, "pooler_output", None)
         if isinstance(pooler, torch.Tensor) and pooler.ndim == 2:
+            if self.backend_kind == "embeddinggemma":
+                pooler = self._project_tokens_if_compatible(pooler)
             return apply_matryoshka_truncation(
                 pooler.detach().float().to("cpu"),
                 effective_dim,
                 channel_dim=1,
                 normalize=True,
+                mrl_native=self._is_mrl_model,
             )
         tokens = getattr(outputs, "last_hidden_state", None)
         if tokens is None and isinstance(outputs, (tuple, list)):
@@ -923,6 +1234,8 @@ class GoogleVisionFeatureExtractor(Dinov3FeatureExtractor):
             raise RuntimeError(
                 f"Model '{self.model_id}' did not produce embeddings for keypoint crops."
             )
+        if self.backend_kind == "embeddinggemma":
+            tokens = self._project_tokens_if_compatible(tokens)
         tokens_f = tokens.detach().float()
         if tokens_f.shape[1] > 1 and self._num_special_tokens > 0:
             tokens_f = tokens_f[:, self._num_special_tokens :, :]
@@ -944,4 +1257,5 @@ class GoogleVisionFeatureExtractor(Dinov3FeatureExtractor):
             effective_dim,
             channel_dim=1,
             normalize=True,
+            mrl_native=self._is_mrl_model,
         )

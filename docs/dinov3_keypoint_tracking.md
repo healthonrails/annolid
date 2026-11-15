@@ -88,17 +88,21 @@ The implementation separates the feature backbone from the tracker logic:
 - `annolid/features/dinov3_extractor.py` and
   `annolid/features/google_vision_extractor.py` load the selected Hugging Face,
   `timm`, or `torchvision` backbone, select CPU, CUDA, or MPS, snap image sizes
-  to patch/stride multiples, handle modality-selective loading and Matryoshka
+  to patch/stride multiples, handle modality-selective loading (including direct
+  `safetensors` vision-tower loading when a cached checkpoint's nested
+  `vision_config.model_type` is registered in `transformers`), project
+  multimodal vision tokens into the aligned embedding space before Matryoshka
   channel truncation (`embedding_matryoshka_dim`), and return normalized dense
   patch grids (plus optional Gaussian-vignetted crop embeddings via
   `embed_keypoint_regions`).
 - `annolid/tracking/gaussian_region.py`, `annolid/tracking/dino_keypoint_types.py`,
   `annolid/tracking/overlap_assignment.py`, and
   `annolid/tracking/video_seed_utils.py` define mask-aware Gaussian region
-  descriptors, sub-patch continuous Gaussian sampling, drift-free Gaussian
-  pixel-region ZNCC template refinement, tracker state structures,
-  overlapping-polygon point disambiguation, and shared seed/resume frame
-  orchestration across keypoint processors.
+  descriptors, sub-patch continuous Gaussian sampling, drift-free
+  rotation-tolerant Gaussian pixel-region ZNCC template banks with 2D Hessian
+  sub-pixel refinement, tracker state structures, overlapping-polygon point
+  disambiguation, and shared seed/resume frame orchestration across keypoint
+  processors.
 - `annolid/tracking/dino_keypoint_tracker.py` turns those patch grids into
   stateful point tracks.
 
@@ -232,7 +236,13 @@ Key settings:
 
 - **DINO feature model** and **Embedding Matryoshka dim**: select the frozen
   feature backbone and optional prefix truncation (`768`, `512`, `256`, `128`)
-  for Matryoshka-trained models such as `google/embeddinggemma-2`.
+  for Matryoshka-trained models such as `google/embeddinggemma-2` (the dialog
+  displays live runtime readiness via `check_dino_model_runtime_support`).
+  When switching to a non-Matryoshka backbone (`DINOv3`, `SigLIP 2`,
+  `MobileNet`), `embedding_matryoshka_strict_mrl=True` (default) safely keeps
+  the full descriptor channels; programmatic callers that explicitly set
+  `embedding_matryoshka_strict_mrl=False` get deterministic row-orthonormal
+  compression so all channels and multi-scale CNN stages remain represented.
 - **Gaussian region radius / sigma** and **Sub-patch continuous Gaussian sampling**:
   aggregate a mask-aware Gaussian patch neighborhood (`region_descriptor_radius`,
   `region_descriptor_sigma`, `region_descriptor_blend`,
@@ -240,11 +250,13 @@ Key settings:
   sub-patch coordinates (`region_subpatch_sampling`) instead of snapping to
   integer patch cells.
 - **Drift-free Gaussian pixel template refinement**: anchors a zero-mean,
-  unit-weighted-norm Gaussian intensity + gradient ZNCC template around manual
-  seed points (`pixel_region_refine_enabled`, `pixel_region_window`,
-  `pixel_region_sigma`, `pixel_region_search_radius_px`, `pixel_region_weight`)
-  so small frame-to-frame optical-flow errors do not accumulate over long
-  segments.
+  unit-weighted-norm multi-orientation Gaussian intensity + signed-Sobel ZNCC
+  template bank around manual seed points (`pixel_region_refine_enabled`,
+  `pixel_region_window`, `pixel_region_sigma`, `pixel_region_search_radius_px`,
+  `pixel_region_weight`, `pixel_region_num_orientations=12`) guided by 2D
+  Procrustes constellation rotation and 2D Hessian sub-pixel peak fitting so
+  small frame-to-frame optical-flow errors do not accumulate even across large
+  in-plane animal turns.
 - **Clamp keypoints to instance mask** and **Mask snap radius**: keep points
   inside the selected instance when masks are available.
 - **Search tighten**, **Velocity gain**, **Flow gain**, and **Min/Max radius**:

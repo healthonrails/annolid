@@ -59,6 +59,9 @@ class KeypointTrack:
     support_probes: List[SupportProbe] = field(default_factory=list)
     body_coords: Optional[Tuple[float, float, float]] = None
     pixel_template: Optional[Any] = None
+    seed_position: Optional[Tuple[float, float]] = None
+    template_heading_rad: float = 0.0
+    last_template_angle_rad: float = 0.0
 
 
 @dataclass

@@ -411,14 +411,18 @@ class Dinov3FeatureExtractor:
         grid = tokens.transpose(1, 2).reshape(1, dim, grid_h, grid_w).to("cpu")
         grid = grid.squeeze(0)
         if self.cfg.matryoshka_dim is not None:
-            target_dim = int(self.cfg.matryoshka_dim)
-            if target_dim <= 0:
-                raise ValueError(
-                    f"matryoshka_dim must be positive, got {self.cfg.matryoshka_dim!r}"
-                )
-            if target_dim < dim:
-                grid = grid[:target_dim]
-                dim = target_dim
+            from annolid.features.dino_models import supports_matryoshka_truncation
+            from annolid.features.google_vision_extractor import (
+                apply_matryoshka_truncation,
+            )
+
+            return apply_matryoshka_truncation(
+                grid,
+                self.cfg.matryoshka_dim,
+                channel_dim=0,
+                normalize=normalize,
+                mrl_native=supports_matryoshka_truncation(self.cfg.model_name),
+            )
         if normalize:
             flat = grid.view(dim, -1)
             flat = F.normalize(flat, dim=0)

@@ -251,7 +251,9 @@ class CutieDinoTrackerConfig:
     pixel_region_search_radius_px: int = 4
     pixel_region_weight: float = 0.35
     pixel_region_min_zncc: float = 0.45
+    pixel_region_num_orientations: int = 12
     embedding_matryoshka_dim: Optional[int] = None
+    embedding_matryoshka_strict_mrl: bool = True
     kpseg_apply_mode: str = "never"  # never|auto|always
     kpseg_min_reliable_frames: int = 5
     kpseg_reliable_ratio: float = 0.6
@@ -408,9 +410,15 @@ class CutieDinoTrackerConfig:
         self.pixel_region_min_zncc = float(
             min(0.99, max(0.0, float(self.pixel_region_min_zncc)))
         )
+        self.pixel_region_num_orientations = max(
+            1, min(36, int(self.pixel_region_num_orientations))
+        )
         if self.embedding_matryoshka_dim is not None:
             mdim = int(self.embedding_matryoshka_dim)
             self.embedding_matryoshka_dim = mdim if mdim > 0 else None
+        self.embedding_matryoshka_strict_mrl = bool(
+            self.embedding_matryoshka_strict_mrl
+        )
         mode = str(self.kpseg_apply_mode or "never").strip().lower()
         if mode not in ("never", "auto", "always"):
             mode = "never"

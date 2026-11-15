@@ -21,6 +21,7 @@ from annolid.features.dino_models import (
     resolve_dino_model_from_runtime,
     resolve_dino_model_id,
     set_dino_model_on_runtime,
+    supports_matryoshka_truncation,
 )
 from annolid.features.dinov3_feature_grid import (
     apply_channel_debias_basis,
@@ -48,7 +49,7 @@ from annolid.tracking.gaussian_region import (
     GaussianPixelTemplate,
     extract_gaussian_pixel_template,
     gaussian_smooth_feature_grid,
-    match_gaussian_pixel_template,
+    match_gaussian_pixel_template_oriented,
     pixel_to_continuous_patch,
     refine_patch_region_gaussian,
     sample_subpatch_gaussian_descriptor,
@@ -108,14 +109,30 @@ class DinoKeypointTracker:
     ) -> None:
         self.runtime_config = runtime_config or CutieDinoTrackerConfig()
         model_name = self._resolve_model_name(model_name, self.runtime_config)
+        requested_mdim = getattr(self.runtime_config, "embedding_matryoshka_dim", None)
+        strict_mrl = bool(
+            getattr(self.runtime_config, "embedding_matryoshka_strict_mrl", True)
+        )
+        if (
+            requested_mdim is not None
+            and strict_mrl
+            and not supports_matryoshka_truncation(model_name)
+        ):
+            logger.info(
+                "Ignoring embedding_matryoshka_dim=%s for non-Matryoshka model '%s' "
+                "(set embedding_matryoshka_strict_mrl=False to force orthonormal compression).",
+                requested_mdim,
+                model_name,
+            )
+            effective_mdim = None
+        else:
+            effective_mdim = requested_mdim
         cfg = Dinov3Config(
             model_name=model_name,
             short_side=short_side,
             device=device,
             layers=(-2, -1),
-            matryoshka_dim=getattr(
-                self.runtime_config, "embedding_matryoshka_dim", None
-            ),
+            matryoshka_dim=effective_mdim,
         )
         self.extractor = Dinov3FeatureExtractor(cfg)
         self.search_radius = max(1, int(search_radius))
@@ -297,6 +314,10 @@ class DinoKeypointTracker:
         pixel_region_sigma = float(
             getattr(self.runtime_config, "pixel_region_sigma", 3.0)
         )
+        pixel_region_num_orientations = max(
+            1,
+            int(getattr(self.runtime_config, "pixel_region_num_orientations", 12)),
+        )
 
         self.prev_scale = (scale_x, scale_y)
         self.tracks.clear()
@@ -345,6 +366,7 @@ class DinoKeypointTracker:
                         (float(keypoint.x), float(keypoint.y)),
                         window_px=pixel_region_window,
                         sigma_px=pixel_region_sigma,
+                        num_orientations=pixel_region_num_orientations,
                     )
                     if pixel_template is not None:
                         self._manual_pixel_templates[keypoint.key] = pixel_template
@@ -364,6 +386,9 @@ class DinoKeypointTracker:
                     manual_codebook=self._manual_anchor_codebooks.get(keypoint.key),
                     last_position=(float(keypoint.x), float(keypoint.y)),
                     pixel_template=pixel_template,
+                    seed_position=(float(keypoint.x), float(keypoint.y)),
+                    template_heading_rad=0.0,
+                    last_template_angle_rad=0.0,
                 )
 
                 track.appearance_codebook = self._collect_appearance_codebook(
@@ -921,6 +946,13 @@ class DinoKeypointTracker:
                 refine_regions[track.key] = refine_region
 
         assignments = self._resolve_assignments(track_candidates)
+        instance_rotations = (
+            self._estimate_instance_constellation_rotations(
+                assignments, effective_min_similarity
+            )
+            if use_pixel_region
+            else {}
+        )
 
         for track in self.tracks.values():
             base_x, base_y = base_positions.get(track.key, (0.0, 0.0))
@@ -985,6 +1017,10 @@ class DinoKeypointTracker:
                             frame_gray=frame_gray,
                             template=track.pixel_template,
                             current_xy=(x, y),
+                            track=track,
+                            instance_angle_rad=instance_rotations.get(
+                                track.instance_label
+                            ),
                         )
                     )
                     x, y = tpl_x, tpl_y
@@ -1224,6 +1260,7 @@ class DinoKeypointTracker:
         )
         alpha = float(max(0.0, min(1.0, alpha)))
 
+        refreshed_template_tracks: List[KeypointTrack] = []
         for track_key, coord in corrections.items():
             track = self.tracks.get(track_key)
             if track is None:
@@ -1248,6 +1285,7 @@ class DinoKeypointTracker:
                 grid_hw=grid_hw,
                 patch_mask=patch_mask,
             )
+            refreshed_tpl: Optional[GaussianPixelTemplate] = None
             if (
                 bool(getattr(self.runtime_config, "pixel_region_refine_enabled", False))
                 and self.prev_gray is not None
@@ -1261,9 +1299,17 @@ class DinoKeypointTracker:
                     sigma_px=float(
                         getattr(self.runtime_config, "pixel_region_sigma", 3.0)
                     ),
+                    num_orientations=max(
+                        1,
+                        int(
+                            getattr(
+                                self.runtime_config,
+                                "pixel_region_num_orientations",
+                                12,
+                            )
+                        ),
+                    ),
                 )
-                if refreshed_tpl is not None:
-                    track.pixel_template = refreshed_tpl
             if alpha >= 1.0:
                 blended = new_desc
             else:
@@ -1274,7 +1320,24 @@ class DinoKeypointTracker:
             track.velocity = (0.0, 0.0)
             track.misses = 0
             track.quality = max(track.quality, 0.0)
+            if refreshed_tpl is not None:
+                track.pixel_template = refreshed_tpl
+                self._manual_pixel_templates[track_key] = refreshed_tpl
+                track.last_template_angle_rad = 0.0
+                refreshed_template_tracks.append(track)
             self._update_appearance_codebook(track, new_desc)
+
+        if refreshed_template_tracks:
+            # Record instance constellation heading AFTER all corrections in this
+            # batch have updated last_position so multi-point corrections are coherent.
+            headings_by_inst: Dict[str, float] = {}
+            for trk in refreshed_template_tracks:
+                if trk.instance_label not in headings_by_inst:
+                    inst_rot = self._procrustes_rotation_for_instance(
+                        trk.instance_label
+                    )
+                    headings_by_inst[trk.instance_label] = float(inst_rot or 0.0)
+                trk.template_heading_rad = headings_by_inst[trk.instance_label]
 
         if clear_cache:
             self._last_norm_feats = None
@@ -1768,12 +1831,74 @@ class DinoKeypointTracker:
         refined_y = (1.0 - alpha) * dino_y + alpha * flow_y
         return float(refined_x), float(refined_y), float(confidence)
 
+    @staticmethod
+    def _compute_procrustes_angle(
+        pairs: List[Tuple[Tuple[float, float], Tuple[float, float]]],
+    ) -> Optional[float]:
+        """Compute 2D rigid constellation rotation ``angle_rad`` from seed -> current."""
+        if len(pairs) < 2:
+            return None
+        s_pts = np.asarray([p[0] for p in pairs], dtype=np.float64)
+        c_pts = np.asarray([p[1] for p in pairs], dtype=np.float64)
+        u = s_pts - s_pts.mean(axis=0, keepdims=True)
+        v = c_pts - c_pts.mean(axis=0, keepdims=True)
+        if float(np.sum(u * u)) < 4.0 or float(np.sum(v * v)) < 4.0:
+            return None
+        cross = float(np.sum(u[:, 0] * v[:, 1] - u[:, 1] * v[:, 0]))
+        dot = float(np.sum(u[:, 0] * v[:, 0] + u[:, 1] * v[:, 1]))
+        if abs(cross) < 1e-9 and abs(dot) < 1e-9:
+            return None
+        return float(math.atan2(cross, dot))
+
+    def _procrustes_rotation_for_instance(self, instance_label: str) -> Optional[float]:
+        pairs: List[Tuple[Tuple[float, float], Tuple[float, float]]] = []
+        for trk in self.tracks.values():
+            if (
+                trk.instance_label == instance_label
+                and trk.seed_position is not None
+                and trk.misses == 0
+            ):
+                pairs.append((trk.seed_position, trk.last_position))
+        return self._compute_procrustes_angle(pairs)
+
+    def _estimate_instance_constellation_rotations(
+        self,
+        assignments: Dict[str, Candidate],
+        min_similarity: float,
+    ) -> Dict[str, float]:
+        """Estimate per-instance 2D body rotation relative to seed constellation."""
+        by_instance: Dict[
+            str, List[Tuple[Tuple[float, float], Tuple[float, float]]]
+        ] = {}
+        for trk in self.tracks.values():
+            if trk.seed_position is None:
+                continue
+            cand = assignments.get(trk.key)
+            if cand is not None and float(cand.similarity) >= float(min_similarity):
+                cur_xy = cand.xy
+            elif trk.misses == 0:
+                cur_xy = trk.last_position
+            else:
+                continue
+            by_instance.setdefault(trk.instance_label, []).append(
+                (trk.seed_position, cur_xy)
+            )
+
+        rotations: Dict[str, float] = {}
+        for inst_label, pairs in by_instance.items():
+            angle = self._compute_procrustes_angle(pairs)
+            if angle is not None:
+                rotations[inst_label] = angle
+        return rotations
+
     def _apply_pixel_region_template_refinement(
         self,
         *,
         frame_gray: np.ndarray,
         template: GaussianPixelTemplate,
         current_xy: Tuple[float, float],
+        track: Optional[KeypointTrack] = None,
+        instance_angle_rad: Optional[float] = None,
     ) -> Tuple[float, float, float]:
         weight = float(
             np.clip(getattr(self.runtime_config, "pixel_region_weight", 0.35), 0.0, 1.0)
@@ -1788,17 +1913,31 @@ class DinoKeypointTracker:
                 getattr(self.runtime_config, "pixel_region_min_zncc", 0.45), 0.0, 0.99
             )
         )
-        match = match_gaussian_pixel_template(
+        preferred_angle: Optional[float] = None
+        angle_penalty = 0.04
+        if instance_angle_rad is not None and track is not None:
+            preferred_angle = float(instance_angle_rad) - float(
+                track.template_heading_rad
+            )
+        elif track is not None:
+            preferred_angle = float(track.last_template_angle_rad)
+            angle_penalty = 0.025
+
+        match = match_gaussian_pixel_template_oriented(
             frame_gray,
             template,
             center_xy=current_xy,
             search_radius_px=search_r,
+            preferred_angle_rad=preferred_angle,
+            angle_prior_penalty=angle_penalty,
         )
         if match is None:
             return float(current_xy[0]), float(current_xy[1]), 0.0
-        zncc_x, zncc_y, peak_zncc = match
+        zncc_x, zncc_y, peak_zncc, matched_angle = match
         if peak_zncc < min_zncc:
             return float(current_xy[0]), float(current_xy[1]), 0.0
+        if track is not None:
+            track.last_template_angle_rad = float(matched_angle)
         conf = float(
             np.clip((peak_zncc - min_zncc) / max(1e-6, 1.0 - min_zncc), 0.0, 1.0)
         )

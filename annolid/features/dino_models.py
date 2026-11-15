@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import importlib.util
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Tuple
 
 
 DEFAULT_DINOV3_MODEL_ID = "facebook/dinov3-vits16-pretrain-lvd1689m"
@@ -21,6 +22,8 @@ class DinoModelInfo:
     gated: bool = False
     aliases: tuple[str, ...] = ()
     note: str = ""
+    supports_matryoshka: bool = False
+    matryoshka_dims: tuple[int, ...] = ()
 
 
 DINO_FEATURE_MODEL_CATALOG: tuple[DinoModelInfo, ...] = (
@@ -95,11 +98,14 @@ DINO_FEATURE_MODEL_CATALOG: tuple[DinoModelInfo, ...] = (
         "Google EmbeddingGemma 2 (open, Matryoshka)",
         "google/embeddinggemma-2",
         "embeddinggemma",
+        gated=True,
         aliases=("embeddinggemma-2", "embeddinggemma2", "embedding_gemma_2"),
         note=(
             "Lightweight 170M vision tower (768d with 512/256/128 Matryoshka dims); "
             "selective tower loading in bfloat16/float32."
         ),
+        supports_matryoshka=True,
+        matryoshka_dims=(128, 256, 512, 768),
     ),
     DinoModelInfo(
         "Google SigLIP 2 Base/16 (open)",
@@ -211,19 +217,169 @@ def set_dino_model_on_runtime(runtime: object, model_name: object) -> str:
     return selected_model
 
 
+def _inspect_local_checkpoint_config(path_str: str) -> Tuple[str, str, bool]:
+    """Return ``(top_model_type, vision_model_type, has_safetensors)`` for local dirs."""
+    if not path_str:
+        return ("", "", False)
+    try:
+        candidate = Path(path_str).expanduser()
+        cfg_path = candidate / "config.json"
+        if not candidate.is_dir() or not cfg_path.is_file():
+            return ("", "", False)
+        import json
+
+        raw = json.loads(cfg_path.read_text(encoding="utf-8"))
+        top_mt = str(raw.get("model_type", "") or "").strip().lower()
+        vis_cfg = raw.get("vision_config")
+        vis_mt = (
+            str(vis_cfg.get("model_type", "") or "").strip().lower()
+            if isinstance(vis_cfg, dict)
+            else ""
+        )
+        has_st = (candidate / "model.safetensors").is_file() or (
+            candidate / "model.safetensors.index.json"
+        ).is_file()
+        return (top_mt, vis_mt, has_st)
+    except Exception:
+        return ("", "", False)
+
+
 def is_google_vision_model(value: object) -> bool:
     """Return True when the model id/alias targets Google or on-device vision backbones."""
-    resolved = resolve_dino_model_id(value, default="").strip().lower()
+    resolved = resolve_dino_model_id(value, default="").strip()
+    lowered = resolved.lower()
+    if not lowered:
+        return False
+    if (
+        "embeddinggemma" in lowered
+        or "embedding_gemma" in lowered
+        or "siglip" in lowered
+        or "mobilenet" in lowered
+        or lowered.startswith("timm/")
+        or lowered.startswith("torchvision/")
+    ):
+        return True
+    top_mt, vis_mt, _ = _inspect_local_checkpoint_config(resolved)
+    combined = f"{top_mt} {vis_mt}"
+    return any(
+        tok in combined
+        for tok in ("embedding_gemma", "embeddinggemma", "gemma4", "siglip")
+    )
+
+
+def supports_matryoshka_truncation(value: object) -> bool:
+    """Return True when the model is natively trained with Matryoshka nested prefixes."""
+    resolved = resolve_dino_model_id(value, default="").strip()
     if not resolved:
         return False
-    return (
-        "embeddinggemma" in resolved
-        or "embedding_gemma" in resolved
-        or "siglip" in resolved
-        or "mobilenet" in resolved
-        or resolved.startswith("timm/")
-        or resolved.startswith("torchvision/")
+    lowered = resolved.lower()
+    for item in DINO_FEATURE_MODEL_CATALOG:
+        if item.model_id.lower() == lowered:
+            return bool(item.supports_matryoshka)
+    if "embeddinggemma" in lowered or "embedding_gemma" in lowered:
+        return True
+    top_mt, _, _ = _inspect_local_checkpoint_config(resolved)
+    return "embedding_gemma" in top_mt or "embeddinggemma" in top_mt
+
+
+def _parse_major_minor_version(version_str: str) -> Tuple[int, int]:
+    parts = str(version_str or "").split(".")
+    nums: list[int] = []
+    for part in parts[:2]:
+        digits = "".join(ch for ch in part if ch.isdigit())
+        nums.append(int(digits) if digits else 0)
+    while len(nums) < 2:
+        nums.append(0)
+    return (nums[0], nums[1])
+
+
+def check_dino_model_runtime_support(value: object) -> Tuple[bool, str]:
+    """Probe whether current Python packages satisfy ``value``'s backbone runtime."""
+    resolved = resolve_dino_model_id(value, default="").strip()
+    lowered = resolved.lower()
+    if not lowered:
+        return (False, "No feature backbone model specified.")
+
+    if lowered.startswith("torchvision/") or "mobilenet_v3" in lowered:
+        if importlib.util.find_spec("torchvision") is None:
+            return (
+                False,
+                f"'{resolved}' requires 'torchvision' (pip install torchvision).",
+            )
+        return (True, f"Ready ({resolved} via torchvision).")
+
+    if lowered.startswith("timm/") or "mobilenet" in lowered:
+        if importlib.util.find_spec("timm") is None:
+            return (
+                False,
+                f"'{resolved}' requires 'timm>=1.0.0' (pip install 'timm>=1.0.0').",
+            )
+        return (True, f"Ready ({resolved} via timm).")
+
+    if "radio" in lowered:
+        if importlib.util.find_spec("open_clip") is None:
+            return (
+                False,
+                f"'{resolved}' requires 'open-clip-torch' (pip install open-clip-torch).",
+            )
+        return (True, f"Ready ({resolved} via open_clip).")
+
+    if importlib.util.find_spec("transformers") is None:
+        return (
+            False,
+            f"'{resolved}' requires 'transformers' (pip install -U transformers).",
+        )
+
+    import transformers
+
+    tf_ver = str(getattr(transformers, "__version__", "0.0.0"))
+    major, minor = _parse_major_minor_version(tf_ver)
+    cfg_mapping = getattr(transformers, "CONFIG_MAPPING", None)
+
+    top_mt, vis_mt, has_st = _inspect_local_checkpoint_config(resolved)
+    is_eg2 = (
+        "embeddinggemma" in lowered
+        or "embedding_gemma" in lowered
+        or "embedding_gemma" in top_mt
+        or "embeddinggemma" in top_mt
     )
+    if is_eg2:
+        has_native_arch = (
+            cfg_mapping is not None
+            and (
+                "embedding_gemma2" in cfg_mapping
+                or "gemma4_vision" in cfg_mapping
+                or "gemma4" in cfg_mapping
+            )
+        ) or (major, minor) >= (5, 19)
+        if has_native_arch:
+            return (
+                True,
+                f"Ready ({resolved} supported by transformers {tf_ver}).",
+            )
+        if has_st and vis_mt and cfg_mapping is not None and vis_mt in cfg_mapping:
+            return (
+                True,
+                f"Ready ({resolved} vision tower '{vis_mt}' via safetensors).",
+            )
+        return (
+            False,
+            f"'{resolved}' requires 'transformers>=5.19' for EmbeddingGemma 2 / Gemma 4 "
+            f"vision architecture (installed: transformers {tf_ver}). "
+            "Upgrade with: pip install -U 'transformers>=5.19'",
+        )
+
+    if (
+        "siglip2" in lowered
+        and (major, minor) < (4, 49)
+        and (cfg_mapping is None or "siglip2" not in cfg_mapping)
+    ):
+        return (
+            False,
+            f"'{resolved}' requires 'transformers>=4.49' (installed: {tf_ver}).",
+        )
+
+    return (True, f"Ready ({resolved} via transformers {tf_ver}).")
 
 
 def get_dino_cache_dir(cache_dir: Optional[str | Path] = None) -> Optional[Path]:
