@@ -260,6 +260,7 @@ class CutieDinoTrackerConfig:
     tracking_smoother_one_euro_beta: float = 0.0
     tracking_smoother_kalman_process_noise: float = 1e-2
     tracking_smoother_kalman_measurement_noise: float = 1e-1
+    ambiguous_point_policy: str = "withhold"  # withhold|error|polygon_order
     progress_hook: Optional[ProgressHook] = None
     error_hook: Optional[ErrorHook] = None
     analytics_hook: Optional[Callable[[dict], None]] = None
@@ -465,6 +466,10 @@ class CutieDinoTrackerConfig:
         self.tracking_smoother_kalman_measurement_noise = max(
             1e-8, float(self.tracking_smoother_kalman_measurement_noise)
         )
+        ambig_policy = str(self.ambiguous_point_policy or "withhold").strip().lower()
+        if ambig_policy not in ("withhold", "error", "polygon_order"):
+            ambig_policy = "withhold"
+        self.ambiguous_point_policy = ambig_policy
 
     def _apply_preset_defaults(self, preset: str) -> None:
         preset_values = TRACKER_PRESETS.get(preset)

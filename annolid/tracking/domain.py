@@ -51,6 +51,7 @@ class KeypointState:
     misses: int = 0
     quality: float = 1.0
     storage_label_override: Optional[str] = None
+    group_id: Optional[int | str] = None
 
     def to_tracker_payload(self) -> KeypointPayload:
         """Convert to the payload expected by the Dino tracker."""
@@ -104,6 +105,8 @@ class InstanceState:
     mask_bitmap: Optional[np.ndarray] = None
     polygon: Optional[MaskPolygon] = None
     last_updated_frame: Optional[int] = None
+    group_id: Optional[int | str] = None
+    mask_label_override: Optional[str] = None
 
     def upsert_keypoint(self, keypoint: KeypointState) -> None:
         self.keypoints[keypoint.key] = keypoint

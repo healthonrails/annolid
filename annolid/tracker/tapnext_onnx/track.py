@@ -636,6 +636,7 @@ class TapNextOnnxProcessor(BasePointTrackingProcessor):
         saved_until: int | None = None
         total_to_process = max(1, actual_end - int(self.start_frame) + 1)
         current_queries = self.queries.detach().clone()
+        original_seed_queries = self.queries.detach().cpu().numpy()
 
         query_times = current_queries[:, 0].detach().cpu().numpy()
         finite_query_times = query_times[np.isfinite(query_times)]
@@ -697,16 +698,20 @@ class TapNextOnnxProcessor(BasePointTrackingProcessor):
                 description="TAPNext ONNX",
             )
             saved_until = chunk_start + len(frames) - 1
+            next_queries_np = np.column_stack(
+                [
+                    np.full((tracks.shape[1],), float(saved_until), dtype=np.float32),
+                    tracks[-1, :, 0].astype(np.float32),
+                    tracks[-1, :, 1].astype(np.float32),
+                ]
+            )
+            future_mask = original_seed_queries[:, 0] > float(saved_until)
+            if np.any(future_mask):
+                next_queries_np[future_mask] = original_seed_queries[
+                    future_mask
+                ].astype(np.float32)
             current_queries = torch.as_tensor(
-                np.column_stack(
-                    [
-                        np.full(
-                            (tracks.shape[1],), float(saved_until), dtype=np.float32
-                        ),
-                        tracks[-1, :, 0].astype(np.float32),
-                        tracks[-1, :, 1].astype(np.float32),
-                    ]
-                ),
+                next_queries_np,
                 dtype=torch.float32,
                 device=self.device,
             )

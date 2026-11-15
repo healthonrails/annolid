@@ -39,20 +39,40 @@ The tracker starts from saved LabelMe-compatible Annolid annotations:
 - `point` shapes become named keypoints to track;
 - `polygon` or mask shapes are optional but recommended because they constrain
   ambiguous points to the instance;
-- a plain point without instance metadata is associated with the single polygon
-  that contains it, while explicit `instance_label` metadata always wins;
-- later manually corrected frames can be used as new seed frames when you rerun
-  tracking.
+- a plain point without instance metadata is associated via matching `group_id`
+  first and otherwise with the single polygon that contains it, while explicit
+  `instance_label` metadata always wins;
+- occluded keypoint visibility (`kp_visibility` / `kp_visible`) is preserved
+  across reads and writes;
+- later manually corrected frames act as new seed anchors, and restarting
+  tracking after an already-tracked segment automatically resumes state from the
+  latest persisted frame while keeping manual appearance anchors.
 
 For multi-animal videos, avoid repeated plain point labels such as `nose` with
-no instance context. Annolid preserves `instance_label` and `display_label`
-metadata when those flags are present, and uses them to keep output labels
-reviewable. Same-named points with distinct instance metadata remain separate
-when saving predictions or rerunning tracking. In scripted LabelMe JSON, set
-those flags explicitly for each point;
-in the GUI, check the saved frame before a long run to confirm the point belongs
-to the intended animal. Points inside overlapping polygons, or outside every
-polygon, remain unassociated unless their instance metadata is explicit.
+no instance or `group_id` context. Annolid disambiguates same-class polygons
+with distinct `group_id` values (for example two `mouse` polygons with
+`group_id` `0` and `1`) while preserving their saved polygon labels and
+`group_id`s across round-trips, alongside `instance_label` and `display_label`
+flags. Same-named points with distinct instance or `group_id` metadata remain
+separate when saving predictions or rerunning tracking. In scripted LabelMe
+JSON, set `group_id` or `instance_label`/`display_label` explicitly for each
+point; in the GUI, check the saved frame before a long run to confirm the point
+belongs to the intended animal. In the GUI, placing a point inside overlapping
+polygons automatically binds it to the selected polygon, the only containing
+polygon still missing that landmark, or the polygon chosen in the owner prompt.
+When plain points fall inside overlapping or concentric polygons on disk,
+Annolid resolves ownership deterministically via instance prefixes, landmark
+uniqueness, anchored pose clusters / non-overlapping mask cores, temporal
+continuity from prior or neighboring frames, and nested concentric scale /
+interior-depth geometry when one polygon is strictly nested inside a larger
+one. If a single isolated frame still has identical or nearly equal overlapping
+polygons with no instance or temporal cue, the GUI offers to jump directly to
+that frame before starting tracking, `annolid-run track-qc <result_dir> --strict`
+flags `ambiguous_keypoint_ownership` (exit code `2`), and programmatic callers
+can configure `CutieDinoTrackerConfig(ambiguous_point_policy=...)` (`"withhold"`
+by default, `"error"` to raise `AmbiguousKeypointError` immediately, or
+`"polygon_order"` for deterministic declaration-order tie-breaking on legacy
+exports).
 
 Keep display labels stable across frames and animals. Labels such as `nose`,
 `leftear`, `rightear`, `tail_base`, `fore_top`, or `abdomen_bot` should mean the
@@ -68,6 +88,11 @@ logic:
 - `annolid/features/dinov3_extractor.py` loads the selected Hugging Face model,
   selects CPU, CUDA, or MPS, snaps image sizes to ViT patch multiples, removes
   special tokens, and returns normalized patch grids.
+- `annolid/tracking/dino_keypoint_types.py`,
+  `annolid/tracking/overlap_assignment.py`, and
+  `annolid/tracking/video_seed_utils.py` define the tracker state structures,
+  overlapping-polygon point disambiguation, and shared seed/resume frame
+  orchestration across keypoint processors.
 - `annolid/tracking/dino_keypoint_tracker.py` turns those patch grids into
   stateful point tracks.
 
@@ -204,6 +229,25 @@ Key settings:
 - **Pixel refinement**: the tracker presets configure Lucas-Kanade sub-patch
   correction; programmatic callers can tune its blend weight, window size,
   error threshold, and max jump through the `pixel_refine_*` runtime fields.
+- **Symmetry pairing**: active `PoseSchema` symmetry pairs (including inferred
+  left/right landmark pairs such as `left_forepaw` / `right_forepaw`) are
+  automatically registered per animal instance to discourage left/right swaps.
+- **Multi-animal assignment and kinematic constraints**: programmatic callers
+  can enable `tracking_enable=True` to activate Hungarian global candidate
+  assignment (`tracking_matcher_algorithm="hungarian"`), per-frame velocity
+  gating (`tracking_constraint_max_velocity_px`), skeletal limb-stretch bounds
+  (`tracking_enforce_skeletal_constraints`,
+  `tracking_constraint_limb_std_multiplier`), instance centroid/pose/size
+  penalties, and occlusion template reset
+  (`tracking_instance_dropout_timeout_frames`).
+- **Trajectory post-smoothing**: programmatic callers can enable optional
+  confidence-gated `one_euro`, `ema`, or innovation-gated `kalman`
+  post-smoothing via `tracking_smoother_enable`, `tracking_smoother_mode`, and
+  the `tracking_smoother_*` runtime fields.
+- **Ambiguous point policy**: programmatic callers can set
+  `ambiguous_point_policy` on `CutieDinoTrackerConfig` (`"withhold"` default,
+  `"error"` fail-fast `AmbiguousKeypointError`, or `"polygon_order"`
+  declaration-order tie-breaking).
 
 ## Outputs And Review Contract
 

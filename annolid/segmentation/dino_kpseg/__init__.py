@@ -14,6 +14,10 @@ _EXPORTS = {
         "annolid.segmentation.dino_kpseg.predictor",
         "DinoKPSEGPredictor",
     ),
+    "TemporalFusionConfig": (
+        "annolid.segmentation.dino_kpseg.predictor",
+        "TemporalFusionConfig",
+    ),
     "DinoKPSEGInstanceCrop": (
         "annolid.segmentation.dino_kpseg.inference_utils",
         "DinoKPSEGInstanceCrop",

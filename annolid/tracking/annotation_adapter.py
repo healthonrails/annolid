@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
+import math
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
+from annolid.annotation.keypoint_visibility import (
+    KeypointVisibility,
+    set_visibility_flags,
+    visibility_from_labelme_shape,
+)
 from annolid.annotation.keypoints import save_labels
 from annolid.gui.shape import Shape
 from annolid.tracking.domain import (
@@ -17,12 +24,22 @@ from annolid.tracking.domain import (
     InstanceRegistry,
     KeypointState,
 )
+from annolid.tracking.overlap_assignment import (
+    OverlappingPointCandidate,
+    apply_ambiguous_point_policy,
+    containing_instances_for_point,
+    find_neighbor_frame_paths,
+    match_instance_prefix,
+    normalize_ambiguous_point_policy,
+    resolve_overlapping_point_instances,
+)
 from annolid.utils.annotation_store import load_labelme_json
 from annolid.utils.files import (
     find_manual_seed_json_files,
     get_frame_number_from_json,
 )
 from annolid.utils.logger import logger
+from annolid.utils.zone_shapes import is_zone_shape_payload
 
 
 DEFAULT_KEYPOINT_LABEL = "centroid"
@@ -37,6 +54,15 @@ class AnnotationAdapter:
     description: str = "Cutie+DINO"
     persist_json: bool = True
     mask_description: str = "Cutie"
+    ambiguous_point_policy: str = "withhold"
+    last_ambiguous_points: List[Dict[str, object]] = field(
+        default_factory=list, init=False, repr=False
+    )
+
+    def __post_init__(self) -> None:
+        self.ambiguous_point_policy = normalize_ambiguous_point_policy(
+            self.ambiguous_point_policy, strict=True
+        )
 
     def load_initial_state(self, annotation_dir: Path) -> Tuple[int, InstanceRegistry]:
         json_files = find_manual_seed_json_files(str(annotation_dir))
@@ -63,75 +89,358 @@ class AnnotationAdapter:
         registry = self.read_annotation(latest_json)
         return frame_number, registry
 
-    def read_annotation(self, json_path: Path) -> InstanceRegistry:
+    @staticmethod
+    def _extract_prior_keypoints_for_instances(
+        source_registry: InstanceRegistry,
+        target_registry: InstanceRegistry,
+    ) -> Dict[str, List[Tuple[str, float, float]]]:
+        prior_by_group: Dict[str, Optional[str]] = {}
+        for src_label, src_inst in source_registry.instances.items():
+            if src_inst.group_id is None:
+                continue
+            gkey = str(src_inst.group_id).strip()
+            if not gkey:
+                continue
+            if gkey not in prior_by_group:
+                prior_by_group[gkey] = src_label
+            elif prior_by_group[gkey] != src_label:
+                prior_by_group[gkey] = None
+
+        extracted: Dict[str, List[Tuple[str, float, float]]] = {}
+        for dst_label, dst_inst in target_registry.instances.items():
+            src_inst = source_registry.instances.get(dst_label)
+            if src_inst is None and dst_inst.group_id is not None:
+                mapped = prior_by_group.get(str(dst_inst.group_id).strip())
+                if mapped:
+                    src_inst = source_registry.instances.get(mapped)
+            if src_inst is None or not src_inst.keypoints:
+                continue
+            vis_pts = [
+                (kp.label, float(kp.x), float(kp.y))
+                for kp in src_inst.keypoints.values()
+                if kp.visible and math.isfinite(kp.x) and math.isfinite(kp.y)
+            ]
+            if not vis_pts:
+                vis_pts = [
+                    (kp.label, float(kp.x), float(kp.y))
+                    for kp in src_inst.keypoints.values()
+                    if math.isfinite(kp.x) and math.isfinite(kp.y)
+                ]
+            if vis_pts:
+                extracted[dst_label] = vis_pts
+        return extracted
+
+    def read_annotation(
+        self,
+        json_path: Path,
+        *,
+        prior_registry: Optional[InstanceRegistry] = None,
+        ambiguous_point_policy: Optional[str] = None,
+        _allow_neighbor_lookup: bool = True,
+    ) -> InstanceRegistry:
+        effective_policy = (
+            "withhold"
+            if not _allow_neighbor_lookup
+            else normalize_ambiguous_point_policy(
+                ambiguous_point_policy or self.ambiguous_point_policy,
+                strict=True,
+            )
+        )
         payload = load_labelme_json(json_path)
         shapes: Sequence[Dict[str, object]] = payload.get("shapes", [])  # type: ignore[assignment]
         registry = InstanceRegistry()
 
+        # Pre-count polygon base labels so multi-animal scenes sharing a class label
+        # (e.g., two "mouse" polygons with group_id=0 and group_id=1) are disambiguated
+        # rather than overwriting each other in InstanceRegistry.
+        polygon_base_counts: Counter[str] = Counter()
+        for shape in shapes:
+            if is_zone_shape_payload(shape):
+                continue
+            shape_type = str(shape.get("shape_type", "")).strip() or "point"
+            if shape_type != "polygon":
+                continue
+            raw_label = str(shape.get("label", "")).strip()
+            base_instance = self._parse_mask_label(raw_label, shape)
+            if base_instance and shape.get("points"):
+                polygon_base_counts[base_instance] += 1
+
         polygon_masks: List[Tuple[str, np.ndarray]] = []
         group_instances: Dict[str, Optional[str]] = {}
+        group_candidates: Dict[str, List[str]] = defaultdict(list)
+        duplicate_ordinals: Counter[str] = Counter()
         for shape in shapes:
+            if is_zone_shape_payload(shape):
+                continue
             label = str(shape.get("label", "")).strip()
             shape_type = str(shape.get("shape_type", "")).strip() or "point"
             if shape_type != "polygon":
                 continue
-            instance_label = self._parse_mask_label(label, shape)
-            if not instance_label:
+            base_instance = self._parse_mask_label(label, shape)
+            if not base_instance:
                 continue
             polygon_points = [
-                (float(pt[0]), float(pt[1])) for pt in shape.get("points", [])
+                (float(pt[0]), float(pt[1]))
+                for pt in shape.get("points", [])  # type: ignore[index,union-attr]
             ]
             if not polygon_points:
                 continue
+
+            raw_group_id = self._normalize_group_id_value(shape.get("group_id"))
+            group_key = self._group_id_key(shape)
+
+            instance_label = base_instance
+            mask_label_override: Optional[str] = None
+            if polygon_base_counts[base_instance] > 1 and not self._flag_instance_label(
+                shape
+            ):
+                suffix = group_key
+                if suffix is None or f"{base_instance}_{suffix}" in registry.instances:
+                    ordinal = duplicate_ordinals[base_instance]
+                    while f"{base_instance}_{ordinal}" in registry.instances:
+                        ordinal += 1
+                    duplicate_ordinals[base_instance] = ordinal + 1
+                    suffix = str(ordinal)
+                instance_label = f"{base_instance}_{suffix}"
+                mask_label_override = label or base_instance
+
             polygon = self._sanitize_polygon(polygon_points)
-            registry.ensure_instance(instance_label).set_mask(
+            instance_state = registry.ensure_instance(instance_label)
+            instance_state.set_mask(
                 bitmap=None,
                 polygon=polygon,
             )
+            if raw_group_id is not None and instance_state.group_id is None:
+                instance_state.group_id = raw_group_id
+            if not mask_label_override and label and label != instance_label:
+                mask_label_override = label
+            if mask_label_override:
+                instance_state.mask_label_override = mask_label_override
+
             polygon_masks.append(
                 (instance_label, self.mask_bitmap_from_polygon(polygon))
             )
-            group_key = self._group_id_key(shape)
             if group_key is not None:
+                if instance_label not in group_candidates[group_key]:
+                    group_candidates[group_key].append(instance_label)
                 if group_key not in group_instances:
                     group_instances[group_key] = instance_label
                 elif group_instances[group_key] != instance_label:
                     group_instances[group_key] = None
 
+        known_polygon_instances = list(registry.instances.keys())
+        assigned_for_overlap: Dict[str, List[Tuple[str, float, float]]] = defaultdict(
+            list
+        )
+        overlap_candidates: List[OverlappingPointCandidate] = []
+        parsed_points: List[
+            Tuple[
+                int,
+                str,
+                Dict[str, object],
+                float,
+                float,
+                str,
+                str,
+                Optional[int | str],
+                Optional[str],
+                List[str],
+            ]
+        ] = []
+
         for shape in shapes:
+            if is_zone_shape_payload(shape):
+                continue
             label = str(shape.get("label", "")).strip()
             shape_type = str(shape.get("shape_type", "")).strip() or "point"
             if shape_type != "point":
                 continue
-            point = (shape.get("points") or [[None, None]])[0]
+            point = (shape.get("points") or [[None, None]])[0]  # type: ignore[index]
             if point[0] is None or point[1] is None:
                 continue
             x, y = float(point[0]), float(point[1])
+            if not (math.isfinite(x) and math.isfinite(y)):
+                continue
 
             instance_label, keypoint_label = self._split_keypoint_label(label, shape)
-            if not self._has_explicit_keypoint_instance(label, shape):
-                group_key = self._group_id_key(shape)
-                inferred_instance = (
-                    group_instances.get(group_key) if group_key is not None else None
-                )
-                if inferred_instance is None:
-                    inferred_instance = self._instance_containing_point(
-                        x,
-                        y,
-                        polygon_masks,
-                    )
-                if inferred_instance:
-                    instance_label = inferred_instance
-                elif polygon_masks:
-                    logger.warning(
-                        "Keypoint '%s' in %s is not associated with a unique "
-                        "polygon; tracking it without mask constraints. Add "
-                        "instance_label metadata or a matching group_id.",
-                        label or keypoint_label,
-                        json_path,
-                    )
+            raw_group_id = self._normalize_group_id_value(shape.get("group_id"))
+            resolved_instance: Optional[str] = None
+            containing: List[str] = []
 
-            key = self._build_key(instance_label, keypoint_label)
+            if self._has_explicit_keypoint_instance(label, shape):
+                resolved_instance = instance_label
+            elif known_polygon_instances:
+                prefixed = match_instance_prefix(label, known_polygon_instances)
+                if prefixed is not None:
+                    resolved_instance, remainder = prefixed
+                    keypoint_label = self._flag_display_label(shape) or remainder
+
+            if resolved_instance is None:
+                group_key = self._group_id_key(shape)
+                if group_key is not None and group_instances.get(group_key):
+                    resolved_instance = group_instances[group_key]
+                else:
+                    containing = containing_instances_for_point(x, y, polygon_masks)
+                    if group_key is not None and group_candidates.get(group_key):
+                        narrowed = [
+                            inst
+                            for inst in containing
+                            if inst in group_candidates[group_key]
+                        ]
+                        if narrowed:
+                            containing = narrowed
+                    if len(containing) == 1:
+                        resolved_instance = containing[0]
+
+            rec_idx = len(parsed_points)
+            if resolved_instance is not None:
+                assigned_for_overlap[resolved_instance].append((keypoint_label, x, y))
+            elif len(containing) >= 2:
+                overlap_candidates.append(
+                    OverlappingPointCandidate(
+                        index=rec_idx,
+                        keypoint_label=keypoint_label,
+                        x=x,
+                        y=y,
+                        containing_instances=tuple(containing),
+                    )
+                )
+
+            parsed_points.append(
+                (
+                    rec_idx,
+                    label,
+                    shape,
+                    x,
+                    y,
+                    instance_label,
+                    keypoint_label,
+                    raw_group_id,
+                    resolved_instance,
+                    containing,
+                )
+            )
+
+        prior_kps: Optional[Dict[str, List[Tuple[str, float, float]]]] = None
+        if prior_registry is not None and overlap_candidates:
+            prior_kps = self._extract_prior_keypoints_for_instances(
+                prior_registry, registry
+            )
+
+        resolved_overlaps = resolve_overlapping_point_instances(
+            polygon_masks=polygon_masks,
+            assigned_keypoints=assigned_for_overlap,
+            candidates=overlap_candidates,
+            prior_keypoints=prior_kps,
+        )
+
+        if (
+            len(resolved_overlaps) < len(overlap_candidates)
+            and prior_registry is None
+            and _allow_neighbor_lookup
+        ):
+            for _, neighbor_path in find_neighbor_frame_paths(
+                json_path, max_neighbors=2
+            ):
+                try:
+                    neighbor_reg = self.read_annotation(
+                        neighbor_path, _allow_neighbor_lookup=False
+                    )
+                except Exception:
+                    continue
+                neighbor_prior = self._extract_prior_keypoints_for_instances(
+                    neighbor_reg, registry
+                )
+                if not neighbor_prior:
+                    continue
+                candidate_resolution = resolve_overlapping_point_instances(
+                    polygon_masks=polygon_masks,
+                    assigned_keypoints=assigned_for_overlap,
+                    candidates=overlap_candidates,
+                    prior_keypoints=neighbor_prior,
+                )
+                if len(candidate_resolution) > len(resolved_overlaps):
+                    resolved_overlaps = candidate_resolution
+                    if len(resolved_overlaps) == len(overlap_candidates):
+                        break
+
+        if overlap_candidates and effective_policy != "withhold":
+            try:
+                resolved_overlaps = apply_ambiguous_point_policy(
+                    policy=effective_policy,
+                    candidates=overlap_candidates,
+                    resolved=resolved_overlaps,
+                    assigned_keypoints=assigned_for_overlap,
+                    source_path=json_path,
+                )
+            except Exception as exc:
+                if _allow_neighbor_lookup and hasattr(exc, "ambiguous_points"):
+                    self.last_ambiguous_points = [
+                        dict(item) for item in getattr(exc, "ambiguous_points", ())
+                    ]
+                raise
+
+        ambiguous_records: List[Dict[str, object]] = []
+
+        for (
+            rec_idx,
+            label,
+            shape,
+            x,
+            y,
+            fallback_instance,
+            keypoint_label,
+            raw_group_id,
+            resolved_instance,
+            containing,
+        ) in parsed_points:
+            final_instance = resolved_instance or resolved_overlaps.get(rec_idx)
+            if final_instance:
+                instance_label = final_instance
+            else:
+                instance_label = fallback_instance
+                if polygon_masks:
+                    if len(containing) >= 2:
+                        ambiguous_records.append(
+                            {
+                                "label": label or keypoint_label,
+                                "keypoint_label": keypoint_label,
+                                "x": float(x),
+                                "y": float(y),
+                                "containing_instances": list(containing),
+                                "json_path": str(json_path),
+                            }
+                        )
+                        logger.warning(
+                            "Keypoint '%s' at (%.1f, %.1f) in %s lies inside "
+                            "ambiguous overlapping polygons %s; tracking it "
+                            "without mask constraints. Add instance_label "
+                            "metadata or a matching group_id.",
+                            label or keypoint_label,
+                            x,
+                            y,
+                            json_path,
+                            containing,
+                        )
+                    else:
+                        logger.warning(
+                            "Keypoint '%s' in %s is not associated with a unique "
+                            "polygon; tracking it without mask constraints. Add "
+                            "instance_label metadata or a matching group_id.",
+                            label or keypoint_label,
+                            json_path,
+                        )
+
+            if raw_group_id is None and instance_label in registry.instances:
+                raw_group_id = registry.instances[instance_label].group_id
+
+            kp_vis = visibility_from_labelme_shape(shape)
+            is_visible = bool(shape.get("visible", True)) and (
+                kp_vis is None or int(kp_vis) == int(KeypointVisibility.VISIBLE)
+            )
+            confidence, quality = self._extract_confidence_and_quality(shape)
+
+            key = self._build_unique_key(instance_label, keypoint_label, registry)
             registry.register_keypoint(
                 KeypointState(
                     key=key,
@@ -139,10 +448,15 @@ class AnnotationAdapter:
                     label=keypoint_label,
                     x=x,
                     y=y,
-                    visible=bool(shape.get("visible", True)),
+                    visible=is_visible,
+                    confidence=confidence,
+                    quality=quality,
                     storage_label_override=label or None,
+                    group_id=raw_group_id,
                 )
             )
+        if _allow_neighbor_lookup:
+            self.last_ambiguous_points = ambiguous_records
         return registry
 
     def write_annotation(
@@ -153,19 +467,28 @@ class AnnotationAdapter:
         shapes: List[Shape] = []
         for instance in registry:
             for keypoint in instance.keypoints.values():
+                kp_flags: Dict[str, object] = {
+                    "instance_label": instance.label,
+                    "display_label": keypoint.label,
+                    "quality": round(float(keypoint.quality), 4),
+                    "velocity": [
+                        round(float(keypoint.velocity_x), 4),
+                        round(float(keypoint.velocity_y), 4),
+                    ],
+                    "misses": int(keypoint.misses),
+                }
+                if not keypoint.visible:
+                    set_visibility_flags(kp_flags, int(KeypointVisibility.OCCLUDED))
+                resolved_gid = (
+                    keypoint.group_id
+                    if keypoint.group_id is not None
+                    else instance.group_id
+                )
                 shape = Shape(
                     label=keypoint.storage_label,
                     shape_type="point",
-                    flags={
-                        "instance_label": instance.label,
-                        "display_label": keypoint.label,
-                        "quality": round(float(keypoint.quality), 4),
-                        "velocity": [
-                            round(float(keypoint.velocity_x), 4),
-                            round(float(keypoint.velocity_y), 4),
-                        ],
-                        "misses": int(keypoint.misses),
-                    },
+                    group_id=resolved_gid,
+                    flags=kp_flags,
                     description=self.description,
                     visible=keypoint.visible,
                 )
@@ -173,9 +496,13 @@ class AnnotationAdapter:
                 shapes.append(shape)
 
             if instance.polygon:
+                mask_label = instance.mask_label_override or self._mask_label(
+                    instance.label
+                )
                 mask_shape = Shape(
-                    label=self._mask_label(instance.label),
+                    label=mask_label,
                     shape_type="polygon",
+                    group_id=instance.group_id,
                     flags={"instance_label": instance.label},
                     description=self.mask_description,
                 )
@@ -225,17 +552,65 @@ class AnnotationAdapter:
         return bool(self._flag_instance_label(shape))
 
     @staticmethod
-    def _group_id_key(shape: Dict[str, object]) -> Optional[str]:
-        value = shape.get("group_id")
+    def _normalize_group_id_value(value: object) -> Optional[int | str]:
         if value is None or isinstance(value, bool):
             return None
+        if isinstance(value, int):
+            return int(value)
         if isinstance(value, float):
             if not np.isfinite(value):
                 return None
-            if value.is_integer():
-                value = int(value)
+            return int(value) if value.is_integer() else float(value)
         text = str(value).strip()
+        if not text:
+            return None
+        sign = -1 if text.startswith("-") else 1
+        digits = text[1:] if text[:1] in ("+", "-") else text
+        if digits.isdigit():
+            return int(sign * int(digits))
+        return text
+
+    @classmethod
+    def _group_id_key(cls, shape: Dict[str, object]) -> Optional[str]:
+        normalized = cls._normalize_group_id_value(shape.get("group_id"))
+        if normalized is None:
+            return None
+        text = str(normalized).strip()
         return text or None
+
+    @staticmethod
+    def _extract_confidence_and_quality(
+        shape: Mapping[str, object],
+    ) -> Tuple[float, float]:
+        def _find_numeric(keys: Sequence[str]) -> Optional[float]:
+            for key in keys:
+                val = shape.get(key)
+                if val is not None and not isinstance(val, bool):
+                    try:
+                        num = float(val)  # type: ignore[arg-type]
+                        if math.isfinite(num):
+                            return float(np.clip(num, 0.0, 1.0))
+                    except (TypeError, ValueError):
+                        pass
+            for container_key in ("flags", "other_data", "otherData"):
+                container = shape.get(container_key)
+                if isinstance(container, Mapping):
+                    for key in keys:
+                        val = container.get(key)
+                        if val is not None and not isinstance(val, bool):
+                            try:
+                                num = float(val)
+                                if math.isfinite(num):
+                                    return float(np.clip(num, 0.0, 1.0))
+                            except (TypeError, ValueError):
+                                pass
+            return None
+
+        quality = _find_numeric(("quality",))
+        confidence = _find_numeric(("score", "confidence", "kp_score", "quality"))
+        resolved_conf = 1.0 if confidence is None else confidence
+        resolved_qual = resolved_conf if quality is None else quality
+        return resolved_conf, resolved_qual
 
     def _instance_containing_point(
         self,
@@ -273,6 +648,33 @@ class AnnotationAdapter:
         clean_instance = instance_label or "instance"
         clean_keypoint = keypoint_label or DEFAULT_KEYPOINT_LABEL
         return combine_labels(clean_instance, clean_keypoint)
+
+    def _build_unique_key(
+        self,
+        instance_label: str,
+        keypoint_label: str,
+        registry: InstanceRegistry,
+    ) -> str:
+        primary = self._build_key(instance_label, keypoint_label)
+        existing = registry.get_keypoint(primary)
+        if existing is None or (
+            existing.instance_label == instance_label
+            and existing.label == keypoint_label
+        ):
+            return primary
+        clean_instance = instance_label or "instance"
+        clean_keypoint = keypoint_label or DEFAULT_KEYPOINT_LABEL
+        disambiguated = f"{clean_instance}::{clean_keypoint}"
+        suffix = 2
+        while True:
+            holder = registry.get_keypoint(disambiguated)
+            if holder is None or (
+                holder.instance_label == instance_label
+                and holder.label == keypoint_label
+            ):
+                return disambiguated
+            disambiguated = f"{clean_instance}::{clean_keypoint}#{suffix}"
+            suffix += 1
 
     def _flag_instance_label(self, shape: Dict[str, object]) -> str:
         value = shape.get("instance_label")

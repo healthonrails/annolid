@@ -35,8 +35,19 @@ try:
 except Exception:  # pragma: no cover - optional geometry acceleration
     _ShapelyPolygon = None  # type: ignore[assignment]
 
+from annolid.annotation.keypoint_visibility import (
+    KeypointVisibility,
+    visibility_from_labelme_shape,
+)
 from annolid.annotation.pose_schema import PoseSchema
 from annolid.core.behavior.spec import ProjectSchema
+from annolid.tracking.overlap_assignment import (
+    OverlappingPointCandidate,
+    build_local_polygon_raster,
+    containing_instances_for_point,
+    match_instance_prefix,
+    resolve_overlapping_point_instances,
+)
 from annolid.utils.annotation_store import (
     AnnotationStore,
     AnnotationStoreError,
@@ -71,6 +82,7 @@ _RECOVERY_NOTE_TOKENS = (
 _RECOMMENDED_ACTION_BY_CODE = {
     "identity_swap_suspect": "verify_identity_or_swap",
     "duplicate_instance": "deduplicate_or_relabel_instance",
+    "ambiguous_keypoint_ownership": "assign_keypoint_group_or_instance",
     "spatial_overlap": "inspect_close_contact_masks",
     "anatomical_edge_outlier": "check_keypoint_outlier",
     "velocity_spike": "verify_jump_or_id_switch",
@@ -375,14 +387,15 @@ def _extract_shape_geometry(
 
 
 def _shape_score(shape: Mapping[str, Any]) -> Optional[float]:
-    for key in ("score", "confidence", "class_score"):
+    score_keys = ("score", "confidence", "class_score", "kp_score", "quality")
+    for key in score_keys:
         val = _safe_float(shape.get(key))
         if val is not None:
             return val
     for container_key in ("other_data", "otherData", "flags"):
         container = shape.get(container_key)
         if isinstance(container, Mapping):
-            for key in ("score", "confidence", "class_score"):
+            for key in score_keys:
                 val = _safe_float(container.get(key))
                 if val is not None:
                     return val
@@ -496,6 +509,7 @@ def _load_labelme_dir_observations(
     List[_InstanceObservation],
     Dict[int, Dict[str, Dict[str, Tuple[float, float]]]],
     List[int],
+    Dict[int, List[Dict[str, Any]]],
 ]:
     json_names = {
         name for name in os.listdir(annotation_dir) if name.lower().endswith(".json")
@@ -511,7 +525,20 @@ def _load_labelme_dir_observations(
     keypoints_by_frame: Dict[int, Dict[str, Dict[str, Tuple[float, float]]]] = (
         defaultdict(lambda: defaultdict(dict))
     )
+    ambiguous_by_frame: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
     seen_frames: List[int] = []
+    deferred_overlaps: List[
+        Tuple[
+            int,
+            List[Tuple[str, Any]],
+            Dict[str, List[Tuple[str, float, float]]],
+            List[OverlappingPointCandidate],
+            Dict[int, Tuple[str, float, float]],
+            float,
+            float,
+            float,
+        ]
+    ] = []
 
     for name in sorted(json_names):
         frame_num = _frame_number_from_filename(name)
@@ -529,50 +556,16 @@ def _load_labelme_dir_observations(
             continue
         seen_frames.append(frame_num)
 
+        frame_group_instances: Dict[str, Optional[str]] = {}
+        point_shapes: List[Mapping[str, Any]] = []
+        frame_obs: List[_InstanceObservation] = []
+
         for shape in shapes:
             if not isinstance(shape, Mapping) or is_zone_shape_payload(shape):
                 continue
             shape_type = str(shape.get("shape_type") or "").strip().lower()
             if shape_type == "point":
-                pts = shape.get("points")
-                if not isinstance(pts, list) or not pts:
-                    continue
-                first = pts[0]
-                if not isinstance(first, (list, tuple)) or len(first) < 2:
-                    continue
-                px, py = _safe_float(first[0]), _safe_float(first[1])
-                if px is None or py is None:
-                    continue
-                explicit_inst = ""
-                explicit_kpt = str(shape.get("display_label") or "").strip()
-                for key in ("instance_label", "instance_name"):
-                    if str(shape.get(key) or "").strip():
-                        explicit_inst = str(shape.get(key)).strip()
-                        break
-                for container_key in ("flags", "other_data", "otherData"):
-                    container = shape.get(container_key)
-                    if isinstance(container, Mapping):
-                        if not explicit_inst:
-                            explicit_inst = str(
-                                container.get("instance_label")
-                                or container.get("instance_name")
-                                or ""
-                            ).strip()
-                        if not explicit_kpt:
-                            explicit_kpt = str(
-                                container.get("display_label")
-                                or container.get("keypoint_label")
-                                or ""
-                            ).strip()
-                parsed_kp = _parse_keypoint_identity(
-                    str(shape.get("label") or ""),
-                    explicit_instance=explicit_inst,
-                    explicit_keypoint=explicit_kpt,
-                    pose_schema=pose_schema,
-                )
-                if parsed_kp is not None:
-                    kp_inst, kp_name = parsed_kp
-                    keypoints_by_frame[frame_num][kp_inst][kp_name] = (px, py)
+                point_shapes.append(shape)
                 continue
 
             geom = _extract_shape_geometry(shape)
@@ -581,21 +574,317 @@ def _load_labelme_dir_observations(
             instance = _resolve_instance_label(shape)
             if not instance:
                 continue
-            centroid, area, bbox, poly = geom
-            observations.append(
-                _InstanceObservation(
-                    frame=frame_num,
-                    instance=instance,
-                    centroid=centroid,
-                    area=area,
-                    bbox=bbox,
-                    polygon=poly,
-                    score=_shape_score(shape),
-                    recovery_note=_shape_recovery_note(shape),
+            gid_val = (
+                shape.get("group_id")
+                if shape.get("group_id") is not None
+                else shape.get("track_id")
+            )
+            gid_int = _safe_int(gid_val)
+            gid_key = (
+                str(gid_int)
+                if gid_int is not None
+                else (
+                    str(gid_val).strip()
+                    if gid_val is not None and not isinstance(gid_val, bool)
+                    else ""
                 )
             )
+            if gid_key:
+                if gid_key not in frame_group_instances:
+                    frame_group_instances[gid_key] = instance
+                elif frame_group_instances[gid_key] != instance:
+                    frame_group_instances[gid_key] = None
 
-    return observations, keypoints_by_frame, sorted(set(seen_frames))
+            centroid, area, bbox, poly = geom
+            obs = _InstanceObservation(
+                frame=frame_num,
+                instance=instance,
+                centroid=centroid,
+                area=area,
+                bbox=bbox,
+                polygon=poly,
+                score=_shape_score(shape),
+                recovery_note=_shape_recovery_note(shape),
+            )
+            observations.append(obs)
+            frame_obs.append(obs)
+
+        if not point_shapes:
+            continue
+
+        frame_instance_names = list(dict.fromkeys(o.instance for o in frame_obs))
+        img_h = _safe_int(payload.get("imageHeight")) or 0
+        img_w = _safe_int(payload.get("imageWidth")) or 0
+        frame_hw = (img_h, img_w) if img_h > 0 and img_w > 0 else None
+
+        extracted_points: List[Tuple[Mapping[str, Any], float, float]] = []
+        for shape in point_shapes:
+            if shape.get("visible") is False:
+                continue
+            kp_vis = visibility_from_labelme_shape(shape)
+            if kp_vis is not None and int(kp_vis) != int(KeypointVisibility.VISIBLE):
+                continue
+            pts = shape.get("points")
+            if not isinstance(pts, list) or not pts:
+                continue
+            first = pts[0]
+            if not isinstance(first, (list, tuple)) or len(first) < 2:
+                continue
+            px, py = _safe_float(first[0]), _safe_float(first[1])
+            if px is None or py is None:
+                continue
+            extracted_points.append((shape, px, py))
+
+        if not extracted_points:
+            continue
+
+        obs_inst_counts: Dict[str, int] = defaultdict(int)
+        for obs in frame_obs:
+            obs_inst_counts[obs.instance] += 1
+        obs_inst_seen: Dict[str, int] = defaultdict(int)
+        obs_kp_keys: List[str] = []
+        used_kp_keys = set(frame_instance_names)
+        for obs in frame_obs:
+            if obs_inst_counts[obs.instance] <= 1:
+                obs_kp_keys.append(obs.instance)
+            else:
+                suffix = obs_inst_seen[obs.instance]
+                obs_inst_seen[obs.instance] += 1
+                cand_key = f"{obs.instance}_{suffix}"
+                while cand_key in used_kp_keys:
+                    suffix += 1
+                    cand_key = f"{obs.instance}_{suffix}"
+                used_kp_keys.add(cand_key)
+                obs_kp_keys.append(cand_key)
+
+        poly_specs: List[Tuple[str, Sequence[Tuple[float, float]]]] = []
+        if len(frame_obs) >= 2:
+            for kp_key, obs in zip(obs_kp_keys, frame_obs):
+                if len(obs.polygon) >= 3:
+                    poly_specs.append((kp_key, obs.polygon))
+                elif obs.bbox is not None:
+                    rx = max(1.0, 0.5 * (obs.bbox[2] - obs.bbox[0]))
+                    ry = max(1.0, 0.5 * (obs.bbox[3] - obs.bbox[1]))
+                    circle_poly = [
+                        (
+                            obs.centroid[0] + rx * math.cos(2.0 * math.pi * k / 24.0),
+                            obs.centroid[1] + ry * math.sin(2.0 * math.pi * k / 24.0),
+                        )
+                        for k in range(24)
+                    ]
+                    poly_specs.append((kp_key, circle_poly))
+
+        raster_masks, off_x, off_y, r_scale = (
+            build_local_polygon_raster(
+                poly_specs,
+                [(px, py) for _s, px, py in extracted_points],
+                image_hw=frame_hw,
+            )
+            if poly_specs
+            else ([], 0.0, 0.0, 1.0)
+        )
+        assigned_scaled: Dict[str, List[Tuple[str, float, float]]] = defaultdict(list)
+        overlap_candidates: List[OverlappingPointCandidate] = []
+        orig_by_cand: Dict[int, Tuple[str, float, float]] = {}
+
+        for shape, px, py in extracted_points:
+            raw_label = str(shape.get("label") or "")
+            explicit_inst = ""
+            explicit_kpt = str(shape.get("display_label") or "").strip()
+            for key in ("instance_label", "instance_name"):
+                if str(shape.get(key) or "").strip():
+                    explicit_inst = str(shape.get(key)).strip()
+                    break
+            for container_key in ("flags", "other_data", "otherData"):
+                container = shape.get(container_key)
+                if isinstance(container, Mapping):
+                    if not explicit_inst:
+                        explicit_inst = str(
+                            container.get("instance_label")
+                            or container.get("instance_name")
+                            or ""
+                        ).strip()
+                    if not explicit_kpt:
+                        explicit_kpt = str(
+                            container.get("display_label")
+                            or container.get("keypoint_label")
+                            or ""
+                        ).strip()
+            if not explicit_inst:
+                gid_val = shape.get("group_id")
+                gid_int = _safe_int(gid_val)
+                gid_key = (
+                    str(gid_int)
+                    if gid_int is not None
+                    else (
+                        str(gid_val).strip()
+                        if gid_val is not None and not isinstance(gid_val, bool)
+                        else ""
+                    )
+                )
+                if gid_key:
+                    mapped_inst = frame_group_instances.get(gid_key)
+                    explicit_inst = mapped_inst if mapped_inst else f"group_{gid_key}"
+
+            if not explicit_inst and frame_instance_names:
+                prefixed = match_instance_prefix(raw_label, frame_instance_names)
+                if prefixed is not None:
+                    explicit_inst, remainder = prefixed
+                    if not explicit_kpt:
+                        explicit_kpt = remainder
+
+            parsed_kp = _parse_keypoint_identity(
+                raw_label,
+                explicit_instance=explicit_inst,
+                explicit_keypoint=explicit_kpt,
+                pose_schema=pose_schema,
+            )
+            if parsed_kp is None and pose_schema is None:
+                fallback_kpt = (explicit_kpt or raw_label).strip()
+                if fallback_kpt:
+                    if explicit_inst:
+                        parsed_kp = (explicit_inst, fallback_kpt)
+                    elif frame_obs:
+                        parsed_kp = ("__single__", fallback_kpt)
+
+            if parsed_kp is None:
+                continue
+
+            kp_inst, kp_name = parsed_kp
+            sx = (px - off_x) * r_scale
+            sy = (py - off_y) * r_scale
+
+            if kp_inst != "__single__" or not frame_obs:
+                keypoints_by_frame[frame_num][kp_inst][kp_name] = (px, py)
+                if kp_inst != "__single__":
+                    assigned_scaled[kp_inst].append((kp_name, sx, sy))
+                continue
+
+            if len(frame_obs) == 1:
+                only_inst = obs_kp_keys[0]
+                keypoints_by_frame[frame_num][only_inst][kp_name] = (px, py)
+                continue
+
+            containing = (
+                containing_instances_for_point(sx, sy, raster_masks)
+                if raster_masks
+                else []
+            )
+            if len(containing) == 1:
+                chosen_inst = containing[0]
+                keypoints_by_frame[frame_num][chosen_inst][kp_name] = (px, py)
+                assigned_scaled[chosen_inst].append((kp_name, sx, sy))
+            elif len(containing) == 0:
+                nearest_idx = min(
+                    range(len(frame_obs)),
+                    key=lambda idx_o: math.hypot(
+                        px - frame_obs[idx_o].centroid[0],
+                        py - frame_obs[idx_o].centroid[1],
+                    ),
+                )
+                chosen_inst = obs_kp_keys[nearest_idx]
+                keypoints_by_frame[frame_num][chosen_inst][kp_name] = (px, py)
+                assigned_scaled[chosen_inst].append((kp_name, sx, sy))
+            else:
+                cand_idx = len(overlap_candidates)
+                overlap_candidates.append(
+                    OverlappingPointCandidate(
+                        index=cand_idx,
+                        keypoint_label=kp_name,
+                        x=sx,
+                        y=sy,
+                        containing_instances=tuple(containing),
+                    )
+                )
+                orig_by_cand[cand_idx] = (kp_name, px, py)
+
+        if overlap_candidates:
+            resolved_static = resolve_overlapping_point_instances(
+                polygon_masks=raster_masks,
+                assigned_keypoints=assigned_scaled,
+                candidates=overlap_candidates,
+            )
+            for idx, chosen_inst in resolved_static.items():
+                kp_name, px, py = orig_by_cand[idx]
+                keypoints_by_frame[frame_num][chosen_inst][kp_name] = (px, py)
+            if len(resolved_static) < len(overlap_candidates):
+                deferred_overlaps.append(
+                    (
+                        frame_num,
+                        raster_masks,
+                        assigned_scaled,
+                        overlap_candidates,
+                        orig_by_cand,
+                        off_x,
+                        off_y,
+                        r_scale,
+                    )
+                )
+
+    for (
+        frame_num,
+        raster_masks,
+        assigned_scaled,
+        overlap_candidates,
+        orig_by_cand,
+        off_x,
+        off_y,
+        r_scale,
+    ) in deferred_overlaps:
+        best_resolved = resolve_overlapping_point_instances(
+            polygon_masks=raster_masks,
+            assigned_keypoints=assigned_scaled,
+            candidates=overlap_candidates,
+        )
+        other_frames = sorted(
+            (f for f in keypoints_by_frame if f != frame_num and keypoints_by_frame[f]),
+            key=lambda f: (abs(f - frame_num), 0 if f < frame_num else 1, f),
+        )
+        for neighbor_f in other_frames[:2]:
+            prior_scaled: Dict[str, List[Tuple[str, float, float]]] = {}
+            for inst_name, kp_map in keypoints_by_frame[neighbor_f].items():
+                pts_scaled = [
+                    (k_lbl, (kx - off_x) * r_scale, (ky - off_y) * r_scale)
+                    for k_lbl, (kx, ky) in kp_map.items()
+                ]
+                if pts_scaled:
+                    prior_scaled[inst_name] = pts_scaled
+            if not prior_scaled:
+                continue
+            cand_resolved = resolve_overlapping_point_instances(
+                polygon_masks=raster_masks,
+                assigned_keypoints=assigned_scaled,
+                candidates=overlap_candidates,
+                prior_keypoints=prior_scaled,
+            )
+            if len(cand_resolved) > len(best_resolved):
+                best_resolved = cand_resolved
+                if len(best_resolved) == len(overlap_candidates):
+                    break
+
+        for cand in overlap_candidates:
+            kp_name, px, py = orig_by_cand[cand.index]
+            if cand.index in best_resolved:
+                keypoints_by_frame[frame_num][best_resolved[cand.index]][kp_name] = (
+                    px,
+                    py,
+                )
+            else:
+                ambiguous_by_frame[frame_num].append(
+                    {
+                        "keypoint_label": kp_name,
+                        "x": float(px),
+                        "y": float(py),
+                        "containing_instances": list(cand.containing_instances),
+                    }
+                )
+
+    return (
+        observations,
+        keypoints_by_frame,
+        sorted(set(seen_frames)),
+        dict(ambiguous_by_frame),
+    )
 
 
 def _resolve_csv_column(
@@ -948,9 +1237,15 @@ def evaluate_track_qc(
         project_schema=project_schema,
     )
 
+    ambiguous_by_frame: Dict[int, List[Dict[str, Any]]] = {}
     if resolved.is_dir():
         source_kind = "labelme_dir"
-        observations, keypoints_by_frame, seen_frames = _load_labelme_dir_observations(
+        (
+            observations,
+            keypoints_by_frame,
+            seen_frames,
+            ambiguous_by_frame,
+        ) = _load_labelme_dir_observations(
             resolved,
             pose_schema=effective_pose_schema,
         )
@@ -967,6 +1262,7 @@ def evaluate_track_qc(
         set(seen_frames)
         | {obs.frame for obs in observations}
         | set(keypoints_by_frame.keys())
+        | set(ambiguous_by_frame.keys())
     )
     if not all_frames:
         return TrackQCReport(
@@ -999,6 +1295,42 @@ def evaluate_track_qc(
     )
 
     issues: List[TrackQCIssue] = []
+    for frame in sorted(ambiguous_by_frame):
+        ambig_items = ambiguous_by_frame[frame]
+        if not ambig_items:
+            continue
+        involved_insts = tuple(
+            sorted(
+                {
+                    str(inst)
+                    for item in ambig_items
+                    for inst in item.get("containing_instances", ())
+                    if str(inst)
+                }
+            )
+        )
+        labels_preview = ", ".join(
+            str(item.get("keypoint_label") or "?") for item in ambig_items[:4]
+        )
+        if len(ambig_items) > 4:
+            labels_preview += f", ... (+{len(ambig_items) - 4} more)"
+        issues.append(
+            TrackQCIssue(
+                severity="warning",
+                code="ambiguous_keypoint_ownership",
+                message=(
+                    f"{len(ambig_items)} unassociated keypoint(s) ({labels_preview}) "
+                    f"fall inside ambiguous overlapping polygons on frame {frame}."
+                ),
+                frame_start=frame,
+                frame_end=frame,
+                anchor_frame=frame,
+                instances=involved_insts,
+                score=5.5 + 0.5 * min(6.0, float(len(ambig_items) - 1)),
+                metrics={"ambiguous_keypoints": float(len(ambig_items))},
+            )
+        )
+
     duplicate_frames_by_inst: Counter[str] = Counter()
     canonical_by_inst: Dict[str, List[_InstanceObservation]] = defaultdict(list)
 

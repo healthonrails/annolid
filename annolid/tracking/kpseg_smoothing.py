@@ -72,6 +72,8 @@ class KeypointSmoother:
         one_euro_d_cutoff: float = 1.0,
         kalman_process_noise: float = 1e-2,
         kalman_measurement_noise: float = 1e-1,
+        kalman_gate_sigma: float = 0.0,
+        max_jump_px: float = 0.0,
     ) -> None:
         self.mode = str(mode or "none").strip().lower()
         self.fps = max(1e-3, float(fps))
@@ -82,6 +84,8 @@ class KeypointSmoother:
         self.one_euro_d_cutoff = float(max(1e-6, one_euro_d_cutoff))
         self.kalman_process_noise = float(max(1e-8, kalman_process_noise))
         self.kalman_measurement_noise = float(max(1e-8, kalman_measurement_noise))
+        self.kalman_gate_sigma = float(max(0.0, kalman_gate_sigma))
+        self.max_jump_px = float(max(0.0, max_jump_px))
 
         self._ema_state: Dict[str, Tuple[float, float]] = {}
         self._one_euro_state: Dict[str, Tuple[_OneEuroFilter, _OneEuroFilter]] = {}
@@ -125,6 +129,25 @@ class KeypointSmoother:
         self._kalman_state[key] = state
         return state
 
+    @staticmethod
+    def _clamp_jump(
+        target: Tuple[float, float],
+        reference: Optional[Tuple[float, float]],
+        max_jump_px: float,
+    ) -> Tuple[float, float]:
+        if reference is None or max_jump_px <= 0.0:
+            return (float(target[0]), float(target[1]))
+        dx = float(target[0]) - float(reference[0])
+        dy = float(target[1]) - float(reference[1])
+        dist = math.hypot(dx, dy)
+        if dist <= max_jump_px or dist <= 1e-9:
+            return (float(target[0]), float(target[1]))
+        scale = float(max_jump_px) / dist
+        return (
+            float(reference[0]) + dx * scale,
+            float(reference[1]) + dy * scale,
+        )
+
     def _kalman_predict(self, state: _KalmanState) -> Tuple[float, float]:
         dt = 1.0 / max(1e-3, self.fps)
         f = np.array(
@@ -149,7 +172,14 @@ class KeypointSmoother:
         r = self.kalman_measurement_noise * np.eye(2, dtype=np.float32)
         y = z - (h @ state.state)
         s = h @ state.cov @ h.T + r
-        k = state.cov @ h.T @ np.linalg.inv(s)
+        s_inv = np.linalg.inv(s)
+        if self.kalman_gate_sigma > 0.0:
+            mahal_sq = float(y.T @ s_inv @ y)
+            if math.isfinite(mahal_sq) and mahal_sq > (
+                self.kalman_gate_sigma * self.kalman_gate_sigma
+            ):
+                return float(state.state[0]), float(state.state[1])
+        k = state.cov @ h.T @ s_inv
         state.state = state.state + (k @ y)
         i = np.eye(4, dtype=np.float32)
         state.cov = (i - k @ h) @ state.cov
@@ -163,46 +193,61 @@ class KeypointSmoother:
         score: float,
         mask_ok: bool,
     ) -> Tuple[float, float]:
+        raw_x, raw_y = float(coord[0]), float(coord[1])
+        finite_coord = math.isfinite(raw_x) and math.isfinite(raw_y)
         mode = self.mode
         if mode in ("none", ""):
-            return (float(coord[0]), float(coord[1]))
+            return (raw_x, raw_y)
 
-        gated = bool(mask_ok) and float(score) >= float(self.min_score)
+        finite_score = float(score) if math.isfinite(float(score)) else 0.0
+        gated = finite_coord and bool(mask_ok) and finite_score >= float(self.min_score)
 
         if mode == "ema":
             prev = self._ema_state.get(key)
             if not gated:
                 if prev is not None:
                     return (float(prev[0]), float(prev[1]))
-                return (float(coord[0]), float(coord[1]))
+                return (raw_x, raw_y) if finite_coord else (0.0, 0.0)
+            clamped = self._clamp_jump((raw_x, raw_y), prev, self.max_jump_px)
             if prev is None:
-                new = (float(coord[0]), float(coord[1]))
+                new = clamped
             else:
                 alpha = self.ema_alpha
                 new = (
-                    alpha * float(coord[0]) + (1.0 - alpha) * float(prev[0]),
-                    alpha * float(coord[1]) + (1.0 - alpha) * float(prev[1]),
+                    alpha * float(clamped[0]) + (1.0 - alpha) * float(prev[0]),
+                    alpha * float(clamped[1]) + (1.0 - alpha) * float(prev[1]),
                 )
             self._ema_state[key] = new
             return new
 
         if mode == "one_euro":
-            fx, fy = self._ensure_one_euro(key)
+            prev = self._ema_state.get(key)
             if not gated:
-                prev = self._ema_state.get(key)
                 if prev is not None:
                     return (float(prev[0]), float(prev[1]))
-                return (float(coord[0]), float(coord[1]))
-            x = fx.update(float(coord[0]))
-            y = fy.update(float(coord[1]))
+                return (raw_x, raw_y) if finite_coord else (0.0, 0.0)
+            fx, fy = self._ensure_one_euro(key)
+            clamped = self._clamp_jump((raw_x, raw_y), prev, self.max_jump_px)
+            x = fx.update(float(clamped[0]))
+            y = fy.update(float(clamped[1]))
             self._ema_state[key] = (float(x), float(y))
             return (float(x), float(y))
 
         if mode == "kalman":
-            state = self._ensure_kalman(key, coord)
+            state = self._kalman_state.get(key)
+            if state is None:
+                if not gated:
+                    return (raw_x, raw_y) if finite_coord else (0.0, 0.0)
+                self._ensure_kalman(key, (raw_x, raw_y))
+                return (raw_x, raw_y)
+            prev_xy = (float(state.state[0]), float(state.state[1]))
             pred_x, pred_y = self._kalman_predict(state)
             if not gated:
-                return (float(pred_x), float(pred_y))
-            return self._kalman_update(state, coord)
+                return self._clamp_jump((pred_x, pred_y), prev_xy, self.max_jump_px)
+            clamped_meas = self._clamp_jump(
+                (raw_x, raw_y), (pred_x, pred_y), self.max_jump_px
+            )
+            updated = self._kalman_update(state, clamped_meas)
+            return self._clamp_jump(updated, prev_xy, self.max_jump_px)
 
-        return (float(coord[0]), float(coord[1]))
+        return (raw_x, raw_y)

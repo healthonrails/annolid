@@ -131,17 +131,29 @@ def merge_shapes(new_shapes_list, existing_shapes_list):
         # Same-named landmarks can belong to different animals even without
         # group_id. Read both current metadata and legacy per-shape flags.
         instance_label = shape_data.get("instance_label")
-        if not instance_label:
-            flags = shape_data.get("flags")
-            if isinstance(flags, dict):
+        query_index = shape_data.get("query_index")
+        flags = shape_data.get("flags")
+        if isinstance(flags, dict):
+            if not instance_label:
                 instance_label = flags.get("instance_label")
-        return (
+            if query_index is None:
+                query_index = flags.get("query_index")
+        other_data = shape_data.get("other_data") or shape_data.get("otherData")
+        if query_index is None and isinstance(other_data, dict):
+            query_index = other_data.get("query_index")
+        base_identity = (
             str(shape_data.get("label", "")),
             shape_data.get("group_id"),
             str(shape_data.get("shape_type", "")),
             _shape_source(shape_data),
             str(instance_label).strip() if instance_label else "",
         )
+        if query_index is not None and not isinstance(query_index, bool):
+            try:
+                return (*base_identity, int(query_index))
+            except (TypeError, ValueError):
+                return (*base_identity, str(query_index))
+        return base_identity
 
     merged_shapes_dict = {
         _shape_identity(shape_data): shape_data for shape_data in existing_shapes_list

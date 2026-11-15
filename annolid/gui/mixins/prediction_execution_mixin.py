@@ -19,6 +19,8 @@ from annolid.gui.qt_threads import (
 from annolid.gui.workers import FlexibleWorker
 from annolid.infrastructure import AnnotationStore
 from annolid.infrastructure.filesystem import (
+    find_manual_labeled_json_files,
+    get_frame_number_from_json,
     should_start_predictions_from_frame0,
 )
 from annolid.utils.image_adjustments import normalize_brightness_contrast_value
@@ -477,6 +479,7 @@ class PredictionExecutionMixin:
                     )
                     return
                 fresh_tracker_config = copy.deepcopy(self.tracker_runtime_config)
+                self._apply_pose_schema_to_tracker_config(fresh_tracker_config)
                 try:
                     self.video_processor = DinoKPSEGVideoProcessor(
                         video_path=self.video_file,
@@ -515,6 +518,7 @@ class PredictionExecutionMixin:
                 )
 
                 fresh_tracker_config = copy.deepcopy(self.tracker_runtime_config)
+                self._apply_pose_schema_to_tracker_config(fresh_tracker_config)
                 dino_model = str(
                     resolve_dino_model_from_runtime(
                         fresh_tracker_config,
@@ -744,6 +748,13 @@ class PredictionExecutionMixin:
                     results_folder=str(self.video_results_folder)
                     if self.video_results_folder
                     else None,
+                    persist_json=bool(
+                        getattr(
+                            getattr(self, "tracker_runtime_config", None),
+                            "persist_labelme_json",
+                            False,
+                        )
+                    ),
                 )
                 if self._is_cutie_tracking_model(model_name):
                     processor_kwargs.update(self._cutie_brightness_contrast_kwargs())
@@ -969,6 +980,17 @@ class PredictionExecutionMixin:
                         except Exception:
                             pass
                         return
+
+            if not self._confirm_or_jump_on_ambiguous_keypoint_seeds(
+                model_name, model_weight
+            ):
+                if isinstance(getattr(self, "seg_pred_thread", None), QtCore.QThread):
+                    try:
+                        self.seg_pred_thread.deleteLater()
+                    except RuntimeError:
+                        pass
+                    self.seg_pred_thread = None
+                return
 
             if self.step_size < 0:
                 end_frame = self.num_frames + self.step_size
@@ -1424,3 +1446,162 @@ class PredictionExecutionMixin:
         self.stepSizeWidget.predict_button.setStyleSheet(
             "background-color: green; color: white;"
         )
+
+    def _apply_pose_schema_to_tracker_config(self, tracker_config: object) -> None:
+        """Propagate loaded PoseSchema symmetry pairs into runtime tracker config."""
+        pose_schema = getattr(self, "_pose_schema", None)
+        if pose_schema is None or tracker_config is None:
+            return
+        raw_pairs = list(getattr(pose_schema, "symmetry_pairs", None) or [])
+        keypoints = list(getattr(pose_schema, "keypoints", None) or [])
+        if not raw_pairs and keypoints and hasattr(pose_schema, "infer_symmetry_pairs"):
+            raw_pairs = list(pose_schema.infer_symmetry_pairs(keypoints))
+        if not raw_pairs:
+            return
+
+        merged_pairs: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+
+        def _add(left: str, right: str) -> None:
+            l_clean = str(left or "").strip()
+            r_clean = str(right or "").strip()
+            if not l_clean or not r_clean or l_clean == r_clean:
+                return
+            key = (l_clean.lower(), r_clean.lower())
+            rev = (r_clean.lower(), l_clean.lower())
+            if key in seen or rev in seen:
+                return
+            seen.add(key)
+            merged_pairs.append((l_clean, r_clean))
+
+        for left, right in raw_pairs:
+            _add(left, right)
+        instances = list(getattr(pose_schema, "instances", None) or [])
+        if instances and hasattr(pose_schema, "instance_prefix"):
+            for inst in instances:
+                prefix = pose_schema.instance_prefix(inst)
+                if prefix:
+                    for left, right in raw_pairs:
+                        _add(f"{prefix}{left}", f"{prefix}{right}")
+        for left, right in getattr(tracker_config, "symmetry_pairs", ()) or ():
+            _add(left, right)
+
+        tracker_config.symmetry_pairs = tuple(merged_pairs)
+        normalize = getattr(tracker_config, "normalize", None)
+        if callable(normalize):
+            normalize()
+
+    def _find_first_ambiguous_keypoint_seed(
+        self,
+        results_dir: Path,
+    ) -> tuple[int, list[dict[str, object]]] | None:
+        """Return ``(frame_number, ambiguous_points)`` for the first unresolved manual seed."""
+        if not results_dir.exists() or not results_dir.is_dir():
+            return None
+        manual_names = find_manual_labeled_json_files(str(results_dir))
+        if not manual_names:
+            return None
+
+        processor = getattr(self, "video_processor", None)
+        height = int(getattr(processor, "video_height", 0) or 0)
+        width = int(getattr(processor, "video_width", 0) or 0)
+        if height <= 0 or width <= 0:
+            height = 1080
+            width = 1920
+
+        from annolid.tracking.annotation_adapter import AnnotationAdapter
+
+        seed_items: list[tuple[int, Path]] = []
+        for name in manual_names:
+            try:
+                frame_idx = int(get_frame_number_from_json(name))
+            except Exception:
+                continue
+            seed_items.append((frame_idx, results_dir / name))
+        seed_items.sort(key=lambda item: item[0])
+
+        for frame_idx, json_path in seed_items:
+            try:
+                payload = json.loads(json_path.read_text(encoding="utf-8"))
+                img_h = int(payload.get("imageHeight") or height)
+                img_w = int(payload.get("imageWidth") or width)
+            except Exception:
+                img_h, img_w = height, width
+            adapter = AnnotationAdapter(
+                image_height=max(1, img_h),
+                image_width=max(1, img_w),
+                persist_json=False,
+            )
+            try:
+                adapter.read_annotation(json_path)
+            except Exception:
+                continue
+            if adapter.last_ambiguous_points:
+                return frame_idx, list(adapter.last_ambiguous_points)
+        return None
+
+    def _confirm_or_jump_on_ambiguous_keypoint_seeds(
+        self,
+        model_name: str,
+        model_weight: str,
+    ) -> bool:
+        """Offer to jump to any manual seed frame with unresolved overlapping keypoints."""
+        try:
+            if not getattr(self, "video_results_folder", None):
+                return True
+            if not (
+                self._is_dino_kpseg_tracker_model(model_name, model_weight)
+                or self._is_dino_keypoint_model(model_name, model_weight)
+            ):
+                return True
+            found = self._find_first_ambiguous_keypoint_seed(
+                Path(self.video_results_folder)
+            )
+            if found is None:
+                return True
+            ambig_frame, ambig_points = found
+            point_labels = ", ".join(
+                sorted(
+                    {
+                        str(item.get("label") or item.get("keypoint_label") or "point")
+                        for item in ambig_points
+                    }
+                )
+            )
+            poly_instances = ", ".join(
+                sorted(
+                    {
+                        str(inst)
+                        for item in ambig_points
+                        for inst in (item.get("containing_instances") or [])
+                    }
+                )
+            )
+            answer = QtWidgets.QMessageBox.question(
+                self,
+                self.tr("Ambiguous Overlapping Keypoints"),
+                self.tr(
+                    "Manual seed frame {frame} contains keypoint(s) ({labels}) inside "
+                    "overlapping polygons ({instances}) without a matching group_id or "
+                    "instance_label.\n\n"
+                    "Jump to frame {frame} now to assign their polygon owner before tracking?"
+                ).format(
+                    frame=int(ambig_frame),
+                    labels=point_labels,
+                    instances=poly_instances,
+                ),
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.Yes,
+            )
+            if answer == QtWidgets.QMessageBox.Yes:
+                try:
+                    self._show_frame_on_canvas(int(ambig_frame))
+                except Exception:
+                    pass
+                return False
+            return True
+        except Exception:
+            logger.debug(
+                "Pre-flight overlapping keypoint seed check skipped.", exc_info=True
+            )
+            return True

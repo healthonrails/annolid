@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 import json
 import math
@@ -20,6 +21,14 @@ from annolid.annotation.keypoint_visibility import (
 )
 from annolid.features import Dinov3Config, Dinov3FeatureExtractor
 from annolid.segmentation.dino_kpseg.keypoints import infer_flip_idx_from_names
+from annolid.tracking.overlap_assignment import (
+    OverlappingPointCandidate,
+    build_local_polygon_raster,
+    containing_instances_for_point,
+    find_neighbor_frame_paths,
+    match_instance_prefix,
+    resolve_overlapping_point_instances,
+)
 from annolid.utils.logger import logger
 
 
@@ -233,71 +242,325 @@ def _safe_float_pair(points: object) -> Optional[Tuple[float, float]]:
         return None
 
 
-def _labelme_keypoint_instances_dict_from_payload(
+def _extract_labelme_pose_payload(
     payload: Dict[str, object],
     *,
     keypoint_names: List[str],
     kpt_dims: int,
     image_hw: Tuple[int, int],
-) -> Dict[int, np.ndarray]:
-    """Extract per-instance keypoint arrays from a LabelMe payload.
-
-    - Keypoints are `shape_type == "point"`.
-    - Instance association uses `group_id` (defaulting to 0 when missing).
-    - Output is always `[K,3]` with YOLO/COCO visibility in the last column.
-    """
+    label_path: Optional[Path] = None,
+    _allow_neighbor_lookup: bool = True,
+) -> Tuple[
+    Dict[int, np.ndarray],
+    Dict[int, List[Tuple[float, float]]],
+    List[Dict[str, object]],
+]:
     height, width = int(image_hw[0]), int(image_hw[1])
     if width <= 0 or height <= 0:
-        return {}
+        return {}, {}, []
 
     shapes = payload.get("shapes")
     if not isinstance(shapes, list):
-        return {}
+        return {}, {}, []
 
     name_to_idx = {str(n): int(i) for i, n in enumerate(keypoint_names)}
+    name_to_idx_lower = {
+        str(n).strip().lower(): (str(n), int(i)) for i, n in enumerate(keypoint_names)
+    }
+
+    poly_by_gid: Dict[int, List[Tuple[float, float]]] = {}
+    poly_label_by_gid: Dict[int, str] = {}
+    label_counts: Counter[str] = Counter()
+    used_gids: set[int] = set()
+
+    def _next_gid() -> int:
+        cand = max(used_gids) + 1 if used_gids else 0
+        while cand in used_gids:
+            cand += 1
+        return cand
+
+    for shape in shapes:
+        if not isinstance(shape, dict):
+            continue
+        if shape.get("shape_type") != "polygon":
+            continue
+        pts = shape.get("points")
+        if not isinstance(pts, list) or len(pts) < 3:
+            continue
+        flat: List[Tuple[float, float]] = []
+        for pt in pts:
+            if not isinstance(pt, (list, tuple)) or len(pt) < 2:
+                continue
+            try:
+                px_f, py_f = float(pt[0]), float(pt[1])
+                if math.isfinite(px_f) and math.isfinite(py_f):
+                    flat.append((px_f, py_f))
+            except Exception:
+                continue
+        if len(flat) < 3:
+            continue
+
+        gid: Optional[int] = None
+        gid_raw = shape.get("group_id")
+        if gid_raw is not None and not isinstance(gid_raw, bool):
+            try:
+                gid_cand = int(gid_raw)
+                if gid_cand not in used_gids:
+                    gid = gid_cand
+            except Exception:
+                gid = None
+        if gid is None:
+            gid = _next_gid()
+        used_gids.add(int(gid))
+        poly_by_gid[int(gid)] = flat
+
+        flags = shape.get("flags") if isinstance(shape.get("flags"), dict) else {}
+        raw_poly_lbl = str(
+            shape.get("instance_label")
+            or flags.get("instance_label")
+            or shape.get("label")
+            or ""
+        ).strip()
+        poly_label_by_gid[int(gid)] = raw_poly_lbl
+        if raw_poly_lbl:
+            label_counts[raw_poly_lbl.lower()] += 1
+
+    unique_label_to_gid: Dict[str, int] = {
+        lbl: int(gid)
+        for gid, lbl in poly_label_by_gid.items()
+        if lbl and label_counts[lbl.lower()] == 1
+    }
+
+    raster_masks: List[Tuple[str, np.ndarray]] = []
+    off_x, off_y, r_scale = 0.0, 0.0, 1.0
+    if poly_by_gid:
+        raster_masks, off_x, off_y, r_scale = build_local_polygon_raster(
+            [(str(gid), pts) for gid, pts in poly_by_gid.items()],
+            image_hw=(height, width),
+        )
+
     instances: Dict[int, np.ndarray] = {}
+    assigned_scaled: Dict[str, List[Tuple[str, float, float]]] = defaultdict(list)
+    overlap_candidates: List[OverlappingPointCandidate] = []
+    deferred_records: List[Tuple[int, int, float, float, int]] = []
+    ambiguous_points: List[Dict[str, object]] = []
+
+    def _write_kp(gid: int, kp_idx: int, x_px: float, y_px: float, vis: int) -> None:
+        x_norm = float(np.clip(x_px / max(1.0, float(width)), 0.0, 1.0))
+        y_norm = float(np.clip(y_px / max(1.0, float(height)), 0.0, 1.0))
+        inst = instances.get(gid)
+        if inst is None:
+            inst = np.zeros((len(keypoint_names), 3), dtype=np.float32)
+            instances[gid] = inst
+        if inst[kp_idx, 2] <= 0 or float(vis) > float(inst[kp_idx, 2]):
+            inst[kp_idx, 0] = x_norm
+            inst[kp_idx, 1] = y_norm
+            inst[kp_idx, 2] = float(vis)
 
     for shape in shapes:
         if not isinstance(shape, dict):
             continue
         if shape.get("shape_type") != "point":
             continue
-        label = str(shape.get("label") or "").strip()
-        if not label or label not in name_to_idx:
+        raw_label = str(shape.get("label") or "").strip()
+        flags = shape.get("flags") if isinstance(shape.get("flags"), dict) else {}
+        disp_label = str(
+            shape.get("display_label") or flags.get("display_label") or ""
+        ).strip()
+        flag_inst = str(
+            shape.get("instance_label") or flags.get("instance_label") or ""
+        ).strip()
+
+        matched_prefix_gid: Optional[int] = None
+        canon_name: Optional[str] = None
+        kp_idx: Optional[int] = None
+
+        if disp_label and disp_label in name_to_idx:
+            canon_name = disp_label
+            kp_idx = name_to_idx[disp_label]
+        elif disp_label and disp_label.lower() in name_to_idx_lower:
+            canon_name, kp_idx = name_to_idx_lower[disp_label.lower()]
+        elif raw_label in name_to_idx:
+            canon_name = raw_label
+            kp_idx = name_to_idx[raw_label]
+        elif unique_label_to_gid and raw_label:
+            prefixed = match_instance_prefix(raw_label, unique_label_to_gid.keys())
+            if prefixed is not None:
+                matched_inst, remainder = prefixed
+                if remainder in name_to_idx:
+                    canon_name = remainder
+                    kp_idx = name_to_idx[remainder]
+                    matched_prefix_gid = int(unique_label_to_gid[matched_inst])
+                elif remainder.lower() in name_to_idx_lower:
+                    canon_name, kp_idx = name_to_idx_lower[remainder.lower()]
+                    matched_prefix_gid = int(unique_label_to_gid[matched_inst])
+
+        if canon_name is None or kp_idx is None:
             continue
+
         xy = _safe_float_pair(shape.get("points"))
         if xy is None:
             continue
         x_px, y_px = xy
-        x_norm = x_px / max(1.0, float(width))
-        y_norm = y_px / max(1.0, float(height))
-        x_norm = float(np.clip(x_norm, 0.0, 1.0))
-        y_norm = float(np.clip(y_norm, 0.0, 1.0))
 
-        try:
-            gid_raw = shape.get("group_id")
-            gid = int(gid_raw) if gid_raw is not None else 0
-        except Exception:
-            gid = 0
-
-        inst = instances.get(gid)
-        if inst is None:
-            inst = np.zeros((len(keypoint_names), 3), dtype=np.float32)
-            instances[gid] = inst
-
-        idx = int(name_to_idx[label])
         v = visibility_from_labelme_shape(shape)
         if kpt_dims >= 3:
             vis = int(v) if v is not None else int(KeypointVisibility.VISIBLE)
         else:
             vis = int(KeypointVisibility.VISIBLE)
 
-        # Prefer the most-visible annotation when duplicates exist.
-        if inst[idx, 2] <= 0 or float(vis) > float(inst[idx, 2]):
-            inst[idx, 0] = float(x_norm)
-            inst[idx, 1] = float(y_norm)
-            inst[idx, 2] = float(vis)
+        resolved_gid: Optional[int] = None
+        gid_raw = shape.get("group_id")
+        if gid_raw is not None and not isinstance(gid_raw, bool):
+            try:
+                resolved_gid = int(gid_raw)
+            except Exception:
+                resolved_gid = None
 
+        if resolved_gid is None and flag_inst:
+            for u_lbl, u_gid in unique_label_to_gid.items():
+                if u_lbl.lower() == flag_inst.lower():
+                    resolved_gid = int(u_gid)
+                    break
+            if resolved_gid is None and flag_inst.isdigit():
+                cand_gid = int(flag_inst)
+                if cand_gid in poly_by_gid:
+                    resolved_gid = cand_gid
+
+        if resolved_gid is None and matched_prefix_gid is not None:
+            resolved_gid = matched_prefix_gid
+
+        sx = (x_px - off_x) * r_scale
+        sy = (y_px - off_y) * r_scale
+
+        if resolved_gid is None:
+            if not poly_by_gid:
+                resolved_gid = 0
+            elif len(poly_by_gid) == 1:
+                resolved_gid = next(iter(poly_by_gid.keys()))
+            else:
+                containing = containing_instances_for_point(sx, sy, raster_masks)
+                if len(containing) == 1:
+                    resolved_gid = int(containing[0])
+                elif len(containing) == 0:
+                    resolved_gid = min(
+                        poly_by_gid.keys(),
+                        key=lambda g: math.hypot(
+                            x_px
+                            - sum(p[0] for p in poly_by_gid[g]) / len(poly_by_gid[g]),
+                            y_px
+                            - sum(p[1] for p in poly_by_gid[g]) / len(poly_by_gid[g]),
+                        ),
+                    )
+                else:
+                    rec_idx = len(overlap_candidates)
+                    overlap_candidates.append(
+                        OverlappingPointCandidate(
+                            index=rec_idx,
+                            keypoint_label=canon_name,
+                            x=sx,
+                            y=sy,
+                            containing_instances=tuple(containing),
+                        )
+                    )
+                    deferred_records.append((rec_idx, int(kp_idx), x_px, y_px, vis))
+                    continue
+
+        _write_kp(int(resolved_gid), int(kp_idx), x_px, y_px, vis)
+        if poly_by_gid and int(resolved_gid) in poly_by_gid:
+            assigned_scaled[str(int(resolved_gid))].append((canon_name, sx, sy))
+
+    if overlap_candidates:
+        resolved_overlaps = resolve_overlapping_point_instances(
+            polygon_masks=raster_masks,
+            assigned_keypoints=assigned_scaled,
+            candidates=overlap_candidates,
+        )
+        if (
+            len(resolved_overlaps) < len(overlap_candidates)
+            and label_path is not None
+            and _allow_neighbor_lookup
+        ):
+            from annolid.utils.annotation_store import load_labelme_json
+
+            for _nf, neighbor_path in find_neighbor_frame_paths(
+                Path(label_path), max_neighbors=2
+            ):
+                try:
+                    n_payload = load_labelme_json(neighbor_path)
+                except Exception:
+                    continue
+                if not isinstance(n_payload, dict):
+                    continue
+                n_insts, _n_polys, _ = _extract_labelme_pose_payload(
+                    n_payload,
+                    keypoint_names=keypoint_names,
+                    kpt_dims=kpt_dims,
+                    image_hw=(height, width),
+                    label_path=neighbor_path,
+                    _allow_neighbor_lookup=False,
+                )
+                prior_scaled: Dict[str, List[Tuple[str, float, float]]] = {}
+                for n_gid, arr in n_insts.items():
+                    if str(int(n_gid)) not in {str(int(g)) for g in poly_by_gid.keys()}:
+                        continue
+                    pts_list: List[Tuple[str, float, float]] = []
+                    for k_i, k_name in enumerate(keypoint_names):
+                        if arr[k_i, 2] > 0:
+                            kx = float(arr[k_i, 0]) * float(width)
+                            ky = float(arr[k_i, 1]) * float(height)
+                            pts_list.append(
+                                (k_name, (kx - off_x) * r_scale, (ky - off_y) * r_scale)
+                            )
+                    if pts_list:
+                        prior_scaled[str(int(n_gid))] = pts_list
+                if not prior_scaled:
+                    continue
+                cand_res = resolve_overlapping_point_instances(
+                    polygon_masks=raster_masks,
+                    assigned_keypoints=assigned_scaled,
+                    candidates=overlap_candidates,
+                    prior_keypoints=prior_scaled,
+                )
+                if len(cand_res) > len(resolved_overlaps):
+                    resolved_overlaps = cand_res
+                    if len(resolved_overlaps) == len(overlap_candidates):
+                        break
+
+        cand_by_idx = {c.index: c for c in overlap_candidates}
+        for rec_idx, kp_idx_val, x_px, y_px, vis in deferred_records:
+            if rec_idx in resolved_overlaps:
+                _write_kp(int(resolved_overlaps[rec_idx]), kp_idx_val, x_px, y_px, vis)
+            else:
+                cand_obj = cand_by_idx[rec_idx]
+                ambiguous_points.append(
+                    {
+                        "keypoint_label": cand_obj.keypoint_label,
+                        "x": float(x_px),
+                        "y": float(y_px),
+                        "containing_instances": list(cand_obj.containing_instances),
+                    }
+                )
+
+    return instances, poly_by_gid, ambiguous_points
+
+
+def _labelme_keypoint_instances_dict_from_payload(
+    payload: Dict[str, object],
+    *,
+    keypoint_names: List[str],
+    kpt_dims: int,
+    image_hw: Tuple[int, int],
+    label_path: Optional[Path] = None,
+) -> Dict[int, np.ndarray]:
+    """Extract per-instance keypoint arrays from a LabelMe payload."""
+    instances, _polys, _ambig = _extract_labelme_pose_payload(
+        payload,
+        keypoint_names=keypoint_names,
+        kpt_dims=kpt_dims,
+        image_hw=image_hw,
+        label_path=label_path,
+    )
     return instances
 
 
@@ -307,12 +570,14 @@ def _labelme_keypoint_instances_from_payload(
     keypoint_names: List[str],
     kpt_dims: int,
     image_hw: Tuple[int, int],
+    label_path: Optional[Path] = None,
 ) -> List[np.ndarray]:
     instances = _labelme_keypoint_instances_dict_from_payload(
         payload,
         keypoint_names=keypoint_names,
         kpt_dims=kpt_dims,
         image_hw=image_hw,
+        label_path=label_path,
     )
     return [arr for _, arr in sorted(instances.items(), key=lambda kv: kv[0])]
 
@@ -323,12 +588,14 @@ def _labelme_keypoint_instances_with_group_ids_from_payload(
     keypoint_names: List[str],
     kpt_dims: int,
     image_hw: Tuple[int, int],
+    label_path: Optional[Path] = None,
 ) -> List[Tuple[int, np.ndarray]]:
     instances = _labelme_keypoint_instances_dict_from_payload(
         payload,
         keypoint_names=keypoint_names,
         kpt_dims=kpt_dims,
         image_hw=image_hw,
+        label_path=label_path,
     )
     return [(gid, arr) for gid, arr in sorted(instances.items(), key=lambda kv: kv[0])]
 
@@ -399,12 +666,23 @@ def summarize_labelme_pose_labels(
                 except Exception:
                     image_hw = (0, 0)
 
-        inst = _labelme_keypoint_instances_from_payload(
+        inst_dict, _poly_map, ambig_pts = _extract_labelme_pose_payload(
             payload,
             keypoint_names=list(keypoint_names),
             kpt_dims=int(kpt_dims),
             image_hw=image_hw,
+            label_path=Path(json_path),
         )
+        if ambig_pts:
+            invalid_shapes += len(ambig_pts)
+            if len(issues) < int(max_issues):
+                labels_txt = ", ".join(
+                    str(item.get("keypoint_label") or "?") for item in ambig_pts[:3]
+                )
+                issues.append(
+                    f"Ambiguous overlapping keypoint(s) ({labels_txt}) in: {json_path}"
+                )
+        inst = [arr for _, arr in sorted(inst_dict.items(), key=lambda kv: kv[0])]
         if not inst:
             shapes = payload.get("shapes")
             if isinstance(shapes, list):
@@ -1847,6 +2125,7 @@ class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
             keypoint_names=list(self.keypoint_names or []),
             kpt_dims=int(self.kpt_dims),
             image_hw=image_hw,
+            label_path=Path(label_path),
         )
 
     def _load_pose_instances_with_bbox(
@@ -1898,42 +2177,19 @@ class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
                 except Exception:
                     image_hw = (0, 0)
 
-        kpt_instances = _labelme_keypoint_instances_with_group_ids_from_payload(
+        instances_map, poly_by_gid, _ambig = _extract_labelme_pose_payload(
             payload,
             keypoint_names=list(self.keypoint_names or []),
             kpt_dims=int(self.kpt_dims),
             image_hw=image_hw,
+            label_path=Path(label_path),
         )
-        if not kpt_instances:
+        if not instances_map:
             return []
-
-        shapes = payload.get("shapes")
-        poly_by_gid: Dict[int, List[Tuple[float, float]]] = {}
-        if isinstance(shapes, list):
-            for shape in shapes:
-                if not isinstance(shape, dict):
-                    continue
-                if shape.get("shape_type") != "polygon":
-                    continue
-                pts = shape.get("points")
-                if not isinstance(pts, list) or len(pts) < 3:
-                    continue
-                flat: List[Tuple[float, float]] = []
-                for pt in pts:
-                    if not isinstance(pt, (list, tuple)) or len(pt) < 2:
-                        continue
-                    try:
-                        flat.append((float(pt[0]), float(pt[1])))
-                    except Exception:
-                        continue
-                if len(flat) < 3:
-                    continue
-                try:
-                    gid_raw = shape.get("group_id")
-                    gid = int(gid_raw) if gid_raw is not None else 0
-                except Exception:
-                    gid = 0
-                poly_by_gid.setdefault(gid, []).extend(flat)
+        kpt_instances = [
+            (gid, arr)
+            for gid, arr in sorted(instances_map.items(), key=lambda kv: kv[0])
+        ]
 
         height, width = int(image_hw[0]), int(image_hw[1])
         out: List[Tuple[np.ndarray, np.ndarray]] = []
@@ -2224,6 +2480,7 @@ class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
                                 keypoint_names=list(self.keypoint_names or []),
                                 kpt_dims=int(self.kpt_dims),
                                 image_hw=(int(height), int(width)),
+                                label_path=Path(label_path),
                             )
                         )
 

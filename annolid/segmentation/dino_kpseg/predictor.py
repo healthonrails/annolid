@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -31,6 +31,92 @@ class DinoKPSEGPrediction:
     masks_patch: Optional[np.ndarray]
     resized_hw: Tuple[int, int]
     patch_size: int
+
+
+@dataclass(frozen=True)
+class TemporalFusionConfig:
+    """Confidence-gated coordinate temporal fusion configuration for DinoKPSEG."""
+
+    enable: bool = False
+    alpha: float = 0.25
+    low_conf_threshold: float = 0.35
+    max_instances: int = 256
+
+    @classmethod
+    def coerce(cls, config: Optional[object]) -> "TemporalFusionConfig":
+        if config is None:
+            return cls()
+        if isinstance(config, cls):
+            enable = bool(config.enable)
+            raw_alpha = float(config.alpha)
+            raw_thr = float(config.low_conf_threshold)
+            raw_max = int(config.max_instances)
+        elif isinstance(config, bool):
+            return cls(enable=bool(config))
+        elif isinstance(config, Mapping):
+            enable = bool(
+                config.get(
+                    "enable",
+                    config.get("kpseg_temporal_fusion_enable", False),
+                )
+            )
+            raw_alpha = float(
+                config.get(
+                    "alpha",
+                    config.get("kpseg_temporal_fusion_alpha", 0.25),
+                )
+            )
+            raw_thr = float(
+                config.get(
+                    "low_conf_threshold",
+                    config.get("kpseg_temporal_fusion_low_conf_threshold", 0.35),
+                )
+            )
+            raw_max = int(
+                config.get(
+                    "max_instances",
+                    config.get("kpseg_temporal_fusion_max_instances", 256),
+                )
+            )
+        else:
+            enable = bool(
+                getattr(
+                    config,
+                    "enable",
+                    getattr(config, "kpseg_temporal_fusion_enable", False),
+                )
+            )
+            raw_alpha = float(
+                getattr(
+                    config,
+                    "alpha",
+                    getattr(config, "kpseg_temporal_fusion_alpha", 0.25),
+                )
+            )
+            raw_thr = float(
+                getattr(
+                    config,
+                    "low_conf_threshold",
+                    getattr(config, "kpseg_temporal_fusion_low_conf_threshold", 0.35),
+                )
+            )
+            raw_max = int(
+                getattr(
+                    config,
+                    "max_instances",
+                    getattr(config, "kpseg_temporal_fusion_max_instances", 256),
+                )
+            )
+
+        alpha = min(0.95, max(0.0, raw_alpha if math.isfinite(raw_alpha) else 0.25))
+        low_conf = min(1.0, max(0.0, raw_thr if math.isfinite(raw_thr) else 0.35))
+        max_inst = max(1, int(raw_max))
+        return cls(
+            enable=enable,
+            alpha=float(alpha),
+            low_conf_threshold=float(low_conf),
+            max_instances=int(max_inst),
+        )
 
 
 @dataclass
@@ -120,10 +206,10 @@ class DinoKPSEGPredictor:
         )
 
         self._track_state = _KeypointTrackStateStore()
+        self._temporal_fusion = TemporalFusionConfig()
         self._max_track_instances = 256
         if temporal_fusion is not None:
-            # Backward compatibility: temporal fusion is retired and ignored.
-            _ = temporal_fusion
+            self.set_temporal_fusion_config(temporal_fusion)
 
         device_norm = normalize_device(device)
         self.device = torch.device(device_norm)
@@ -345,8 +431,96 @@ class DinoKPSEGPredictor:
         self._track_state.reset()
 
     def set_temporal_fusion_config(self, config: Optional[object]) -> None:
-        """Backward-compatible no-op: temporal fusion was removed."""
-        _ = config
+        """Configure confidence-gated coordinate temporal fusion and instance cap."""
+        coerced = TemporalFusionConfig.coerce(config)
+        self._temporal_fusion = coerced
+        self._max_track_instances = int(coerced.max_instances)
+        self._track_state.prune_to_max_instances(
+            max_instances=int(self._max_track_instances)
+        )
+
+    def _apply_temporal_coordinate_fusion(
+        self,
+        keypoints_xy: List[Tuple[float, float]],
+        curr_scores: Sequence[float],
+        prev_xy: Optional[Sequence[Tuple[float, float]]],
+        prev_scores: Optional[Sequence[float]],
+        *,
+        frame_shape: Tuple[int, int],
+        mask: Optional[np.ndarray] = None,
+    ) -> Tuple[List[Tuple[float, float]], List[float]]:
+        fusion_cfg = getattr(self, "_temporal_fusion", None)
+        state_scores = [float(s) for s in curr_scores]
+        if (
+            fusion_cfg is None
+            or not bool(fusion_cfg.enable)
+            or prev_xy is None
+            or len(prev_xy) != len(keypoints_xy)
+            or float(fusion_cfg.alpha) <= 0.0
+            or float(fusion_cfg.low_conf_threshold) <= 0.0
+        ):
+            return keypoints_xy, state_scores
+
+        h0, w0 = int(frame_shape[0]), int(frame_shape[1])
+        mask_u8: Optional[np.ndarray] = None
+        if mask is not None:
+            try:
+                mask_u8 = self._mask_to_uint8(mask, frame_shape=frame_shape)
+            except Exception:
+                mask_u8 = None
+
+        def _in_mask(x: float, y: float) -> bool:
+            if mask_u8 is None:
+                return True
+            xi = int(math.floor(float(x)))
+            yi = int(math.floor(float(y)))
+            return (
+                0 <= yi < int(mask_u8.shape[0])
+                and 0 <= xi < int(mask_u8.shape[1])
+                and int(mask_u8[yi, xi]) > 0
+            )
+
+        alpha = float(fusion_cfg.alpha)
+        low_thr = float(fusion_cfg.low_conf_threshold)
+        fused_xy = list(keypoints_xy)
+        for idx, ((curr_x, curr_y), raw_score) in enumerate(
+            zip(keypoints_xy, state_scores)
+        ):
+            score = float(raw_score) if math.isfinite(raw_score) else 0.0
+            if score >= low_thr:
+                continue
+            prev_x, prev_y = prev_xy[idx]
+            if not (
+                math.isfinite(curr_x)
+                and math.isfinite(curr_y)
+                and math.isfinite(prev_x)
+                and math.isfinite(prev_y)
+            ):
+                continue
+            p_score = (
+                float(prev_scores[idx])
+                if prev_scores is not None and idx < len(prev_scores)
+                else 1.0
+            )
+            if not math.isfinite(p_score) or p_score <= 1e-6:
+                continue
+            deficit = 1.0 - max(0.0, score) / low_thr
+            w_prev = min(0.95, max(0.0, alpha * deficit))
+            cand_x, cand_y = self._clip_xy_to_frame(
+                (1.0 - w_prev) * float(curr_x) + w_prev * float(prev_x),
+                (1.0 - w_prev) * float(curr_y) + w_prev * float(prev_y),
+                frame_h=h0,
+                frame_w=w0,
+            )
+            if (
+                mask_u8 is not None
+                and _in_mask(curr_x, curr_y)
+                and not _in_mask(cand_x, cand_y)
+            ):
+                continue
+            fused_xy[idx] = (float(cand_x), float(cand_y))
+            state_scores[idx] = max(score, p_score * (1.0 - alpha))
+        return fused_xy, state_scores
 
     @staticmethod
     def _local_peaks_2d(
@@ -645,10 +819,19 @@ class DinoKPSEGPredictor:
                 cfg=stabilize_cfg,
             )
 
+        keypoints_xy, state_scores = self._apply_temporal_coordinate_fusion(
+            keypoints_xy,
+            [float(s) for s in scores],
+            prev_xy,
+            prev_scores,
+            frame_shape=(h0, w0),
+            mask=mask,
+        )
+
         self._track_state.set(
             instance_id=instance_id,
             keypoints_xy=keypoints_xy,
-            keypoint_scores=[float(s) for s in scores],
+            keypoint_scores=state_scores,
         )
         self._track_state.prune_to_max_instances(
             max_instances=int(self._max_track_instances)

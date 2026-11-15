@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import math
 
+from annolid.annotation.keypoint_visibility import (
+    KeypointVisibility,
+    set_visibility_flags,
+)
 from annolid.annotation.keypoints import save_labels
 from annolid.data.videos import CV2Video
 from annolid.gui.shape import Shape
-from annolid.segmentation.dino_kpseg import DinoKPSEGPredictor
+from annolid.segmentation.dino_kpseg import DinoKPSEGPredictor, TemporalFusionConfig
 from annolid.segmentation.dino_kpseg.inference_utils import (
     build_instance_crops,
     mask_bbox,
@@ -33,6 +37,15 @@ from annolid.tracking.dino_kpseg_annotations import (
 from annolid.tracking.domain import InstanceRegistry, KeypointState
 from annolid.tracking.dino_keypoint_tracker import DinoKeypointTracker
 from annolid.tracking.kpseg_smoothing import KeypointSmoother
+from annolid.tracking.video_seed_utils import (
+    apply_mask_results_to_registry,
+    collect_manual_annotation_frames,
+    find_latest_tracked_frame_before,
+    is_processor_stop_requested,
+    mask_lookup_from_registry,
+    normalize_tracking_frame_range,
+    report_processor_progress,
+)
 from annolid.utils.files import (
     find_manual_labeled_json_files,
     get_frame_number_from_json,
@@ -83,9 +96,13 @@ class DinoKPSEGVideoProcessor:
         )
         self.video_result_folder.mkdir(parents=True, exist_ok=True)
 
-        self.config = runtime_config or CutieDinoTrackerConfig()
+        self.config = (
+            replace(runtime_config)
+            if runtime_config is not None
+            else CutieDinoTrackerConfig()
+        )
         # This processor is the "Cutie + DinoKPSEG" pipeline: ensure Cutie is on and
-        # keypoints are produced for each tracked polygon.
+        # keypoints are produced for each tracked polygon without mutating caller config.
         self.config.use_cutie_tracking = True
         if (
             str(getattr(self.config, "kpseg_apply_mode", "never") or "never")
@@ -105,17 +122,35 @@ class DinoKPSEGVideoProcessor:
             image_height=self.video_height,
             image_width=self.video_width,
             persist_json=self.config.persist_labelme_json,
+            ambiguous_point_policy=str(
+                getattr(self.config, "ambiguous_point_policy", "withhold") or "withhold"
+            ),
         )
         self.mask_manager = CutieMaskManager(
             Path(self.video_path),
             adapter=self.adapter,
             config=self.config,
         )
+        temporal_cfg = TemporalFusionConfig(
+            enable=bool(self.config.kpseg_temporal_fusion_enable),
+            alpha=float(self.config.kpseg_temporal_fusion_alpha),
+            low_conf_threshold=float(
+                self.config.kpseg_temporal_fusion_low_conf_threshold
+            ),
+            max_instances=int(self.config.kpseg_temporal_fusion_max_instances),
+        )
         try:
-            self.predictor = DinoKPSEGPredictor(kpseg_weights, device=device)
+            self.predictor = DinoKPSEGPredictor(
+                kpseg_weights,
+                device=device,
+                temporal_fusion=temporal_cfg,
+            )
         except TypeError:
             # Backward compatibility for monkeypatched predictor doubles.
             self.predictor = DinoKPSEGPredictor(kpseg_weights, device=device)
+            set_fusion = getattr(self.predictor, "set_temporal_fusion_config", None)
+            if callable(set_fusion):
+                set_fusion(temporal_cfg)
         self.keypoint_names = list(self.predictor.keypoint_names or [])
         tracker_name = (
             tracker_model_name
@@ -262,17 +297,13 @@ class DinoKPSEGVideoProcessor:
         step: int,
     ) -> str:
         manual_seed = self._resolve_initial_seed(start_frame=start_frame)
-        start_frame = (
-            manual_seed.frame_number
-            if start_frame is None
-            else max(manual_seed.frame_number, int(start_frame))
+        start_frame, end_frame, step = normalize_tracking_frame_range(
+            initial_frame=manual_seed.frame_number,
+            start_frame=start_frame,
+            end_frame=end_frame,
+            step=step,
+            total_frames=self.total_frames,
         )
-        if end_frame is None or int(end_frame) < 0:
-            end_frame = self.total_frames - 1
-        end_frame = min(int(end_frame), self.total_frames - 1)
-        if start_frame >= end_frame:
-            end_frame = min(self.total_frames - 1, start_frame + 1)
-        step = max(1, abs(int(step)))
 
         manual_frames = self._manual_annotation_frames(
             start_frame=start_frame,
@@ -295,6 +326,10 @@ class DinoKPSEGVideoProcessor:
         self._kpseg_smoother.reset()
 
         seed_frame_rgb = self.video_loader.load_frame(manual_seed.frame_number)
+        if seed_frame_rgb is None:
+            raise RuntimeError(
+                "Unable to load the initial seed frame for DinoKPSEG tracking."
+            )
         if self._should_stop():
             logger.info("DinoKPSEG tracking stopped before predictor initialization.")
             return "Cutie + DinoKPSEG tracking stopped early."
@@ -343,41 +378,58 @@ class DinoKPSEGVideoProcessor:
 
             manual_path = manual_frames.get(frame_number)
             if manual_path is not None:
-                resume = self._resume_from_manual_annotation(frame_number, manual_path)
                 manual_frames.pop(frame_number, None)
-                if resume is not None:
-                    registry = resume.registry
-                    self._instance_display_labels.update(resume.display_labels)
-                    frame_rgb = self.video_loader.load_frame(frame_number)
-                    if self._should_stop():
-                        stopped_early = True
-                        break
-                    if self.mask_manager.enabled:
-                        self.mask_manager.prime(frame_number, frame_rgb, registry)
-                    mask_lookup = self._mask_lookup_from_registry(registry)
-                    has_seed_keypoints = any(
-                        bool(points)
-                        for points in (resume.keypoints_by_instance or {}).values()
+                frame_rgb = self.video_loader.load_frame(frame_number)
+                if frame_rgb is None:
+                    logger.warning(
+                        "Manual resume skipped for frame %s: frame unavailable",
+                        frame_number,
                     )
-                    self._keypoint_tracker_started = False
-                    if has_seed_keypoints:
-                        tracker = self._ensure_keypoint_tracker()
-                        tracker.reset_state()
-                        tracker.start(
-                            Image.fromarray(frame_rgb),
-                            registry,
-                            mask_lookup,
+                    remove_seeded_frame(seeded_frames, frame_number)
+                else:
+                    resume = self._resume_from_manual_annotation(
+                        frame_number, manual_path, prior_registry=registry
+                    )
+                    if resume is not None:
+                        registry = resume.registry
+                        self._instance_display_labels.update(resume.display_labels)
+                        if self._should_stop():
+                            stopped_early = True
+                            break
+                        if self.mask_manager.enabled:
+                            self.mask_manager.prime(frame_number, frame_rgb, registry)
+                        mask_lookup = self._mask_lookup_from_registry(registry)
+                        has_seed_keypoints = any(
+                            bool(points)
+                            for points in (resume.keypoints_by_instance or {}).values()
                         )
-                        self._keypoint_tracker_started = True
-                    self._seed_predictor_from_manual(
-                        frame_rgb, registry, resume.keypoints_by_instance
-                    )
-                    processed += 1
-                    self._report_progress(processed, total_steps)
-                    continue
-                # Invalid manual seed file: process this frame normally and
-                # remove it from seeded boundaries for skip decisions.
-                remove_seeded_frame(seeded_frames, frame_number)
+                        self._keypoint_tracker_started = False
+                        if has_seed_keypoints:
+                            tracker = self._ensure_keypoint_tracker()
+                            tracker.reset_state()
+                            tracker.start(
+                                Image.fromarray(frame_rgb),
+                                registry,
+                                mask_lookup,
+                            )
+                            self._keypoint_tracker_started = True
+                        self._seed_predictor_from_manual(
+                            frame_rgb, registry, resume.keypoints_by_instance
+                        )
+                        processed += 1
+                        self._report_progress(processed, total_steps)
+                        if self.config.analytics_hook:
+                            self.config.analytics_hook(
+                                {
+                                    "frame": frame_number,
+                                    "keypoints": len(registry.keypoint_payload()),
+                                    "masks": len(mask_lookup),
+                                }
+                            )
+                        continue
+                    # Invalid manual seed file: process this frame normally and
+                    # remove it from seeded boundaries for skip decisions.
+                    remove_seeded_frame(seeded_frames, frame_number)
 
             if should_skip_finished_frame_between_adjacent_seeded_frames(
                 frame_number=frame_number,
@@ -390,6 +442,10 @@ class DinoKPSEGVideoProcessor:
                 continue
 
             frame_rgb = self.video_loader.load_frame(frame_number)
+            if frame_rgb is None:
+                logger.warning("Skipping missing frame %s", frame_number)
+                continue
+
             mask_results = self.mask_manager.update_masks(
                 frame_number, frame_rgb, registry
             )
@@ -422,6 +478,14 @@ class DinoKPSEGVideoProcessor:
 
             processed += 1
             self._report_progress(processed, total_steps)
+            if self.config.analytics_hook:
+                self.config.analytics_hook(
+                    {
+                        "frame": frame_number,
+                        "keypoints": len(registry.keypoint_payload()),
+                        "masks": len(mask_lookup),
+                    }
+                )
 
         message = "Cutie + DinoKPSEG tracking completed."
         if stopped_early:
@@ -430,18 +494,18 @@ class DinoKPSEGVideoProcessor:
         return message
 
     def _report_progress(self, processed: int, total: int) -> None:
-        if total <= 0:
-            return
-        progress = int(min(100, max(0, (processed / total) * 100)))
-        if self.pred_worker is not None:
-            self.pred_worker.report_progress(progress)
-        if self.config.progress_hook:
-            self.config.progress_hook(processed, total)
+        report_processor_progress(
+            processed=processed,
+            total=total,
+            pred_worker=self.pred_worker,
+            progress_hook=self.config.progress_hook,
+        )
 
     def _should_stop(self) -> bool:
-        if self._stop_requested:
-            return True
-        return bool(self.pred_worker and self.pred_worker.is_stopped())
+        return is_processor_stop_requested(
+            stop_requested=self._stop_requested,
+            pred_worker=self.pred_worker,
+        )
 
     def _manual_annotation_frames(
         self,
@@ -449,18 +513,11 @@ class DinoKPSEGVideoProcessor:
         start_frame: int,
         end_frame: int,
     ) -> Dict[int, Path]:
-        manual_files = find_manual_labeled_json_files(str(self.video_result_folder))
-        mapping: Dict[int, Path] = {}
-        for filename in manual_files:
-            path = self.video_result_folder / filename
-            try:
-                frame = get_frame_number_from_json(filename)
-            except Exception:
-                continue
-            if frame < int(start_frame) or frame > int(end_frame):
-                continue
-            mapping[int(frame)] = path
-        return mapping
+        return collect_manual_annotation_frames(
+            self.video_result_folder,
+            start_frame=start_frame,
+            end_frame=end_frame,
+        )
 
     def _filter_valid_manual_frames(
         self, manual_frames: Dict[int, Path]
@@ -497,15 +554,26 @@ class DinoKPSEGVideoProcessor:
 
         try:
             resolved = self.annotation_parser.read_manual_annotation(
-                requested, requested_path
+                requested,
+                requested_path,
+                prior_registry=(
+                    manual_seed.registry
+                    if int(requested) != int(manual_seed.frame_number)
+                    else None
+                ),
             )
-            logger.info(
-                "Using requested seed frame %s for DinoKPSEG tracking.", requested
-            )
-            return resolved
+            if (
+                resolved.registry.instances_with_masks()
+                or resolved.registry.keypoint_payload()
+            ):
+                logger.info(
+                    "Using requested seed frame %s for DinoKPSEG tracking.", requested
+                )
+                return resolved
         except Exception:
             pass
 
+        base_seed = manual_seed
         available_frames: List[int] = []
         for filename in find_manual_labeled_json_files(str(self.video_result_folder)):
             try:
@@ -521,24 +589,46 @@ class DinoKPSEGVideoProcessor:
                     / f"{self.video_result_folder.name}_{int(candidate):09d}.json"
                 )
                 try:
-                    resolved = self.annotation_parser.read_manual_annotation(
+                    base_seed = self.annotation_parser.read_manual_annotation(
                         int(candidate), candidate_path
                     )
-                    logger.info(
-                        "Requested seed frame %s unavailable; using nearest annotated frame %s.",
-                        requested,
-                        int(candidate),
-                    )
-                    return resolved
                 except Exception:
                     pass
 
-        logger.info(
-            "Requested seed frame %s unavailable; using latest available frame %s.",
-            requested,
-            int(manual_seed.frame_number),
+        tracked_candidate = find_latest_tracked_frame_before(
+            self.video_result_folder,
+            target_frame=requested,
+            min_frame=int(base_seed.frame_number),
         )
-        return manual_seed
+        if tracked_candidate is not None:
+            tracked_frame, tracked_path = tracked_candidate
+            try:
+                tracked_seed = self.annotation_parser.read_manual_annotation(
+                    int(tracked_frame),
+                    tracked_path,
+                    prior_registry=base_seed.registry,
+                )
+                if tracked_seed.registry.instances_with_masks():
+                    logger.info(
+                        "Resuming DinoKPSEG tracking from persisted frame %s before requested frame %s.",
+                        tracked_frame,
+                        requested,
+                    )
+                    return tracked_seed
+            except Exception:
+                logger.debug(
+                    "Failed to parse persisted DinoKPSEG frame %s; falling back to manual seed %s.",
+                    tracked_path,
+                    base_seed.frame_number,
+                    exc_info=True,
+                )
+
+        logger.info(
+            "Requested seed frame %s unavailable; using nearest manual frame %s.",
+            requested,
+            int(base_seed.frame_number),
+        )
+        return base_seed
 
     def _load_initial_state(self, annotation_dir: Path) -> ManualAnnotation:
         json_files = find_manual_labeled_json_files(str(annotation_dir))
@@ -568,6 +658,8 @@ class DinoKPSEGVideoProcessor:
         self,
         frame_number: int,
         manual_path: Path,
+        *,
+        prior_registry: Optional[InstanceRegistry] = None,
     ) -> Optional[ManualAnnotation]:
         previous_masks: Dict[str, MaskResult] = {}
         last_results = getattr(self.mask_manager, "_last_results", None)
@@ -586,7 +678,9 @@ class DinoKPSEGVideoProcessor:
 
         try:
             manual = self.annotation_parser.read_manual_annotation(
-                frame_number, manual_path
+                frame_number,
+                manual_path,
+                prior_registry=prior_registry,
             )
         except Exception as exc:
             logger.warning(
@@ -646,27 +740,13 @@ class DinoKPSEGVideoProcessor:
         registry: InstanceRegistry,
         mask_results: Dict[str, MaskResult],
     ) -> None:
-        for instance in registry:
-            result = mask_results.get(instance.label)
-            if not result:
-                continue
-            instance.set_mask(
-                bitmap=result.mask_bitmap,
-                polygon=result.polygon,
-            )
+        apply_mask_results_to_registry(registry, mask_results)
 
     def _mask_lookup_from_registry(
         self,
         registry: InstanceRegistry,
     ) -> Dict[str, np.ndarray]:
-        lookup: Dict[str, np.ndarray] = {}
-        for instance in registry:
-            mask = instance.mask_bitmap
-            if mask is None and instance.polygon is not None:
-                mask = self.adapter.mask_bitmap_from_polygon(instance.polygon)
-            if mask is not None:
-                lookup[instance.label] = mask.astype(bool)
-        return lookup
+        return mask_lookup_from_registry(registry, self.adapter)
 
     def _seed_predictor_from_manual(
         self,
@@ -1219,13 +1299,22 @@ class DinoKPSEGVideoProcessor:
                 shapes.append(mask_shape)
 
             for keypoint in instance.keypoints.values():
+                point_flags: Dict[str, object] = {
+                    "score": float(keypoint.confidence),
+                    "instance_id": group_id,
+                }
+                set_visibility_flags(
+                    point_flags,
+                    int(
+                        KeypointVisibility.VISIBLE
+                        if keypoint.visible
+                        else KeypointVisibility.OCCLUDED
+                    ),
+                )
                 point_shape = Shape(
                     label=str(keypoint.label),
                     shape_type="point",
-                    flags={
-                        "score": float(keypoint.confidence),
-                        "instance_id": group_id,
-                    },
+                    flags=point_flags,
                     group_id=group_id,
                     description="dinokpseg",
                     visible=bool(keypoint.visible),

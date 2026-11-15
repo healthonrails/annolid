@@ -1,25 +1,44 @@
 from __future__ import annotations
 
-import json
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+import json
+import math
 from pathlib import Path
-from typing import Any, Callable, Optional, Iterable
+from typing import Any, Callable, Iterable, Mapping, Optional
 
 import numpy as np
 import torch
 
+from annolid.annotation.keypoint_visibility import (
+    KeypointVisibility,
+    set_visibility_flags,
+    visibility_from_labelme_shape,
+)
 from annolid.annotation.keypoints import save_labels
 from annolid.data.videos import CV2Video
 from annolid.gui.shape import Shape
+from annolid.utils.annotation_compat import shape_to_mask
+from annolid.utils.annotation_store import AnnotationStoreError, load_labelme_json
 from annolid.utils.cancellation import is_stop_requested
 from annolid.utils.files import (
     find_manual_labeled_json_files,
     get_frame_number_from_json,
 )
 from annolid.utils.logger import logger
-from annolid.utils.zone_shapes import is_zone_shape_payload
 from annolid.utils.shapes import sample_grid_in_polygon
-from annolid.utils.annotation_compat import shape_to_mask
+from annolid.utils.zone_shapes import is_zone_shape_payload
+
+
+@dataclass(frozen=True)
+class PointQuerySpec:
+    """Metadata preserved for each point query across point-tracking backends."""
+
+    label: str
+    group_id: Optional[int | str] = None
+    instance_label: str = ""
+    display_label: str = ""
+    query_index: Optional[int] = None
 
 
 class BasePointTracker(ABC):
@@ -43,8 +62,12 @@ class BasePointTracker(ABC):
         self._stop_triggered = False
 
         self.video_loader = CV2Video(self.video_path)
-        self.video_result_folder = Path(video_path).with_suffix("")
+        custom_folder = kwargs.get("results_folder") or kwargs.get("result_folder")
+        self.video_result_folder = (
+            Path(custom_folder) if custom_folder else Path(video_path).with_suffix("")
+        )
         self.video_result_folder.mkdir(exist_ok=True, parents=True)
+        self.persist_json = bool(kwargs.get("persist_json", False))
 
         first_frame = self.video_loader.get_first_frame()
         if first_frame is None:
@@ -53,6 +76,7 @@ class BasePointTracker(ABC):
 
         self.device = self._select_device()
         self.point_labels: list[str] = []
+        self.point_specs: list[PointQuerySpec] = []
         self.start_frame = 0
         self.end_frame = 0
         self.mask = None
@@ -127,23 +151,76 @@ class BasePointTracker(ABC):
             return True
         return False
 
+    def _ensure_point_specs_list(self) -> list[PointQuerySpec]:
+        specs = getattr(self, "point_specs", None)
+        if specs is None:
+            specs = []
+            self.point_specs = specs
+        return specs
+
+    def _frame_seed_priority(
+        self, frame_number: int, is_explicit: bool
+    ) -> tuple[int, int, int]:
+        """Rank candidate seed frames so the closest relevant manual seed wins on duplicates."""
+        start = int(getattr(self, "start_frame", 0) or 0)
+        end = int(
+            getattr(self, "end_frame", -1)
+            if getattr(self, "end_frame", -1) is not None
+            else -1
+        )
+        in_window = frame_number >= start and (end < 0 or frame_number <= end)
+        at_or_before_start = frame_number <= start
+        if in_window:
+            bucket = 0
+            distance = abs(frame_number - start)
+        elif at_or_before_start:
+            bucket = 1
+            distance = start - frame_number
+        else:
+            bucket = 2
+            distance = frame_number - (end if end >= 0 else start)
+        return (0 if is_explicit else 1, bucket, distance)
+
+    @staticmethod
+    def _load_annotation_payload(json_path: Path) -> dict[str, Any]:
+        try:
+            payload = load_labelme_json(json_path)
+            if isinstance(payload, dict):
+                return payload
+        except (
+            AnnotationStoreError,
+            FileNotFoundError,
+            ValueError,
+            json.JSONDecodeError,
+        ):
+            pass
+        with open(json_path, "r", encoding="utf-8") as file:
+            data = json.load(file)
+        return data if isinstance(data, dict) else {}
+
     def load_queries(self) -> torch.Tensor:
-        """Gather point prompts from labeled JSON files."""
+        """Gather point prompts from labeled JSON files and AnnotationStore records."""
         self.point_labels = []
+        self.point_specs = []
         self.mask = None
         self.mask_label = None
 
-        discovered = []
+        explicit_resolved = (
+            self.manual_json_path.resolve()
+            if self.manual_json_path and self.manual_json_path.exists()
+            else None
+        )
+        discovered: list[Path] = []
         if self.manual_json_path and self.manual_json_path.exists():
             discovered.append(self.manual_json_path)
 
-        for filename in find_manual_labeled_json_files(self.video_result_folder):
+        for filename in find_manual_labeled_json_files(str(self.video_result_folder)):
             candidate = self.video_result_folder / filename
             if candidate.exists():
                 discovered.append(candidate)
 
-        unique_files = []
-        seen = set()
+        unique_files: list[Path] = []
+        seen: set[Path] = set()
         for path in sorted(discovered):
             resolved = path.resolve()
             if resolved not in seen:
@@ -155,13 +232,55 @@ class BasePointTracker(ABC):
                 f"No manually labeled frames found for {self.__class__.__name__}."
             )
 
-        queries = []
-        for json_path in unique_files:
-            with open(json_path, "r") as file:
-                data = json.load(file)
+        # Rank manual files so if the same named keypoint appears in multiple manual
+        # frames, we keep the seed closest to the active tracking range rather than
+        # emitting duplicate tracks for the same landmark.
+        ranked_files = sorted(
+            unique_files,
+            key=lambda p: (
+                *self._frame_seed_priority(
+                    get_frame_number_from_json(p.name),
+                    explicit_resolved is not None and p.resolve() == explicit_resolved,
+                ),
+                get_frame_number_from_json(p.name),
+            ),
+        )
 
+        selected_entries: list[tuple[int, list[float], PointQuerySpec]] = []
+        seen_identities: set[tuple[str, Optional[int | str], str, Optional[int]]] = (
+            set()
+        )
+
+        for json_path in ranked_files:
+            data = self._load_annotation_payload(json_path)
             frame_number = get_frame_number_from_json(json_path.name)
-            queries.extend(self._process_shapes(data.get("shapes", []), frame_number))
+
+            prev_count = len(self.point_specs)
+            frame_queries = self._process_shapes(data.get("shapes", []), frame_number)
+            frame_specs = self.point_specs[prev_count:]
+            # Roll back provisional append so we can filter duplicate identities cleanly.
+            del self.point_specs[prev_count:]
+            del self.point_labels[prev_count:]
+
+            for q, spec in zip(frame_queries, frame_specs):
+                identity = (
+                    spec.label,
+                    spec.group_id,
+                    spec.instance_label,
+                    spec.query_index,
+                )
+                if identity in seen_identities:
+                    continue
+                seen_identities.add(identity)
+                selected_entries.append((frame_number, q, spec))
+
+        # Preserve deterministic chronological order of selected queries.
+        selected_entries.sort(key=lambda item: item[0])
+        queries: list[list[float]] = []
+        for _, q, spec in selected_entries:
+            self.point_labels.append(spec.label)
+            self.point_specs.append(spec)
+            queries.append(q)
 
         if not queries:
             raise RuntimeError(
@@ -170,18 +289,67 @@ class BasePointTracker(ABC):
 
         return torch.as_tensor(queries, dtype=torch.float32, device=self.device)
 
+    @staticmethod
+    def _extract_shape_metadata(
+        shape: Mapping[str, Any],
+    ) -> tuple[Optional[int | str], str, str]:
+        raw_gid = shape.get("group_id")
+        group_id: Optional[int | str] = None
+        if raw_gid is not None and not isinstance(raw_gid, bool):
+            if isinstance(raw_gid, int):
+                group_id = int(raw_gid)
+            elif isinstance(raw_gid, float) and math.isfinite(raw_gid):
+                group_id = int(raw_gid) if raw_gid.is_integer() else raw_gid
+            else:
+                text = str(raw_gid).strip()
+                if text:
+                    group_id = int(text) if text.lstrip("+-").isdigit() else text
+
+        instance_label = str(shape.get("instance_label") or "").strip()
+        display_label = str(shape.get("display_label") or "").strip()
+        for key in ("flags", "other_data", "otherData"):
+            container = shape.get(key)
+            if isinstance(container, Mapping):
+                if not instance_label:
+                    instance_label = str(container.get("instance_label") or "").strip()
+                if not display_label:
+                    display_label = str(container.get("display_label") or "").strip()
+        return group_id, instance_label, display_label
+
     def _process_shapes(
         self, shapes: list[dict], frame_number: int
     ) -> list[list[float]]:
-        processed_queries = []
+        processed_queries: list[list[float]] = []
         for shape in shapes:
             if is_zone_shape_payload(shape):
                 continue
-            label = shape.get("label")
+            label = str(shape.get("label") or "")
             shape_type = str(shape.get("shape_type") or "").strip().lower()
+            group_id, instance_label, display_label = self._extract_shape_metadata(
+                shape
+            )
             if shape_type == "point" and shape.get("points"):
+                kp_vis = visibility_from_labelme_shape(shape)
+                if kp_vis == int(KeypointVisibility.MISSING):
+                    continue
+                pt = shape["points"][0]
+                if (
+                    pt is None
+                    or len(pt) < 2
+                    or pt[0] is None
+                    or pt[1] is None
+                    or not (math.isfinite(float(pt[0])) and math.isfinite(float(pt[1])))
+                ):
+                    continue
                 processed_queries.append(
-                    self._process_point(shape["points"][0], frame_number, label)
+                    self._process_point(
+                        pt,
+                        frame_number,
+                        label,
+                        group_id=group_id,
+                        instance_label=instance_label,
+                        display_label=display_label,
+                    )
                 )
             elif shape_type == "polygon" and shape.get("points"):
                 description = str(shape.get("description") or "").lower()
@@ -191,20 +359,48 @@ class BasePointTracker(ABC):
                 if not polygon_prompt_enabled:
                     continue
                 processed_queries.extend(
-                    self._process_polygon(shape.get("points", []), frame_number, label)
+                    self._process_polygon(
+                        shape.get("points", []),
+                        frame_number,
+                        label,
+                        group_id=group_id,
+                        instance_label=instance_label,
+                    )
                 )
         return processed_queries
 
     def _process_point(
-        self, point: list[float], frame_number: int, label: str
+        self,
+        point: list[float],
+        frame_number: int,
+        label: str,
+        *,
+        group_id: Optional[int | str] = None,
+        instance_label: str = "",
+        display_label: str = "",
     ) -> list[float]:
         self.point_labels.append(label)
-        return [frame_number] + list(point)
+        self._ensure_point_specs_list().append(
+            PointQuerySpec(
+                label=str(label or ""),
+                group_id=group_id,
+                instance_label=instance_label,
+                display_label=display_label,
+                query_index=None,
+            )
+        )
+        return [float(frame_number), float(point[0]), float(point[1])]
 
     def _process_polygon(
-        self, points: list[list[float]], frame_number: int, label: str
+        self,
+        points: list[list[float]],
+        frame_number: int,
+        label: str,
+        *,
+        group_id: Optional[int | str] = None,
+        instance_label: str = "",
     ) -> list[list[float]]:
-        queries = []
+        queries: list[list[float]] = []
         if not points:
             return queries
         if self.mask is None:
@@ -227,10 +423,34 @@ class BasePointTracker(ABC):
             centroid = pts.mean(axis=0)
             points_in_polygon = np.asarray([centroid], dtype=np.float32)
 
-        for point in points_in_polygon:
+        specs = self._ensure_point_specs_list()
+        for idx, point in enumerate(points_in_polygon):
             self.point_labels.append(label)
-            queries.append([frame_number] + list(point))
+            specs.append(
+                PointQuerySpec(
+                    label=str(label or ""),
+                    group_id=group_id,
+                    instance_label=instance_label,
+                    display_label="",
+                    query_index=int(idx),
+                )
+            )
+            queries.append([float(frame_number), float(point[0]), float(point[1])])
         return queries
+
+    def _resolved_specs_for_save(self, count: int) -> list[PointQuerySpec]:
+        specs = getattr(self, "point_specs", None)
+        if isinstance(specs, list) and len(specs) == count:
+            return specs
+        labels = list(getattr(self, "point_labels", []) or [])
+        resolved: list[PointQuerySpec] = []
+        for idx in range(min(count, len(labels))):
+            lbl = str(labels[idx] or "")
+            # Disambiguate repeated bare labels when point_specs wasn't populated
+            # (e.g., direct point_labels setup in tests).
+            q_idx = idx if labels.count(labels[idx]) > 1 else None
+            resolved.append(PointQuerySpec(label=lbl, query_index=q_idx))
+        return resolved
 
     def save_frame_json(
         self,
@@ -238,20 +458,43 @@ class BasePointTracker(ABC):
         points: list[tuple[np.ndarray, bool]],
         description: str = "",
     ):
-        """Save tracked points for a single frame to JSON."""
+        """Save tracked points for a single frame to AnnotationStore / JSON."""
         json_file_path = self.video_result_folder / (
             self.video_result_folder.name + f"_{frame_number:0>{9}}.json"
         )
-        label_list = []
-        for label, (coord, visible) in zip(self.point_labels, points):
+        specs = self._resolved_specs_for_save(len(points))
+        label_list: list[Shape] = []
+        for spec, (coord, visible) in zip(specs, points):
+            coord_arr = np.asarray(coord, dtype=np.float32).reshape(-1)
+            if coord_arr.size < 2 or not (
+                math.isfinite(float(coord_arr[0]))
+                and math.isfinite(float(coord_arr[1]))
+            ):
+                continue
+            flags: dict[str, Any] = {}
+            if spec.instance_label:
+                flags["instance_label"] = spec.instance_label
+            if spec.display_label:
+                flags["display_label"] = spec.display_label
+            if spec.query_index is not None:
+                flags["query_index"] = int(spec.query_index)
+            set_visibility_flags(
+                flags,
+                int(
+                    KeypointVisibility.VISIBLE
+                    if visible
+                    else KeypointVisibility.OCCLUDED
+                ),
+            )
             cur_shape = Shape(
-                label=label,
-                flags={},
+                label=spec.label,
+                group_id=spec.group_id,
+                flags=flags,
                 description=description or self.__class__.__name__,
                 shape_type="point",
-                visible=visible,
+                visible=bool(visible),
             )
-            cur_shape.points = [coord.tolist()]
+            cur_shape.points = [[float(coord_arr[0]), float(coord_arr[1])]]
             label_list.append(cur_shape)
 
         save_labels(
@@ -260,7 +503,7 @@ class BasePointTracker(ABC):
             label_list=label_list,
             width=self.video_width,
             height=self.video_height,
-            persist_json=False,
+            persist_json=bool(getattr(self, "persist_json", False)),
         )
 
     def extract_frame_points(

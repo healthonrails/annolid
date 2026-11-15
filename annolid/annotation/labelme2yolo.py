@@ -27,6 +27,11 @@ from annolid.annotation.keypoint_visibility import (
     visibility_from_labelme_shape,
 )
 from annolid.core.behavior.spec import DEFAULT_SCHEMA_FILENAME, load_behavior_spec
+from annolid.tracking.overlap_assignment import (
+    OverlappingPointCandidate,
+    build_local_polygon_raster,
+    resolve_overlapping_point_instances,
+)
 
 _SPLIT_NAME_PATTERN = re.compile(
     r"^(train(?:ing)?|val|valid(?:ation)?|test)(?:[_-].+)?$",
@@ -987,19 +992,16 @@ class Labelme2YOLO:
             if region is not None:
                 regions.append(region)
 
-        def best_region_for_point(
+        def inside_regions_for_point(
             x: float, y: float, candidate_keys: Optional[Set[str]] = None
-        ) -> Optional[str]:
+        ) -> List[Labelme2YOLO._PoseRegion]:
             if not regions:
-                return None
+                return []
             candidates = [
                 r
                 for r in regions
                 if candidate_keys is None or r.instance_key in candidate_keys
             ]
-            if not candidates:
-                return None
-
             inside: List[Labelme2YOLO._PoseRegion] = []
             for region in candidates:
                 if (
@@ -1014,7 +1016,38 @@ class Labelme2YOLO:
                     continue
                 if region.polygon and self._point_in_polygon(x, y, region.polygon):
                     inside.append(region)
+            return inside
+
+        def best_region_for_point(
+            x: float,
+            y: float,
+            candidate_keys: Optional[Set[str]] = None,
+            *,
+            prefer_missing_keypoint: Optional[str] = None,
+        ) -> Optional[str]:
+            if not regions:
+                return None
+            candidates = [
+                r
+                for r in regions
+                if candidate_keys is None or r.instance_key in candidate_keys
+            ]
+            if not candidates:
+                return None
+
+            inside = inside_regions_for_point(x, y, candidate_keys)
             pool = inside or candidates
+            if prefer_missing_keypoint:
+                unowned = [
+                    r
+                    for r in pool
+                    if prefer_missing_keypoint
+                    not in (
+                        instances.get(r.instance_key, {}).get("keypoints") or {}  # type: ignore[union-attr]
+                    )
+                ]
+                if unowned:
+                    pool = unowned
             # Prefer smallest containing region; fall back to nearest centroid.
             pool = sorted(
                 pool,
@@ -1025,9 +1058,42 @@ class Labelme2YOLO:
             )
             return pool[0].instance_key if pool else None
 
+        def commit_point_to_instance(
+            shape: Dict[str, object], x: float, y: float, instance_key: str
+        ) -> str:
+            entry = instances.setdefault(
+                instance_key,
+                {
+                    "class_label": instance_key.split("#", 1)[0].split("@", 1)[0],
+                    "instance_label": instance_key.split("#", 1)[0].split("@", 1)[0],
+                    "bounds": None,
+                    "keypoints": {},
+                },
+            )
+            entry["bounds"] = self._extend_bounds(entry["bounds"], x, y)
+
+            instance_label = self._clean_label(entry.get("instance_label")) or ""
+            keypoint_label = self._resolve_keypoint_label(shape, instance_label)
+            if not keypoint_label:
+                keypoint_label = f"kp_{len(entry['keypoints'])}"
+            visibility = self._derive_visibility(shape)
+            if visibility is None:
+                visibility = int(KeypointVisibility.VISIBLE)
+            entry["keypoints"][keypoint_label] = {
+                "x": float(x),
+                "y": float(y),
+                "visible": bool(int(visibility) == int(KeypointVisibility.VISIBLE)),
+                "visibility": int(visibility),
+            }
+            return keypoint_label
+
         candidate_instance_labels = (
             set(label_instance_keys.keys()) | set(polygon_labels) | schema_instances
         )
+        deferred_overlap_points: List[
+            Tuple[Dict[str, object], float, float, str, List[str]]
+        ] = []
+
         for shape in shapes:
             shape_type = (shape.get("shape_type") or "polygon").lower()
             if shape_type != "point":
@@ -1035,7 +1101,7 @@ class Labelme2YOLO:
             points = shape.get("points") or []
             if not points:
                 continue
-            x, y = points[0][:2]
+            x, y = float(points[0][0]), float(points[0][1])
 
             group_id = self._normalize_group_id(shape.get("group_id"))
             instance_key: Optional[str] = None
@@ -1051,14 +1117,32 @@ class Labelme2YOLO:
                 flagged_instance = self._clean_label(shape.get("instance_label"))
             if instance_key is None and flagged_instance:
                 keys = label_instance_keys.get(flagged_instance) or []
-                candidate_keys = set(keys) if keys else None
-                instance_key = best_region_for_point(float(x), float(y), candidate_keys)
-                if instance_key is None and keys:
+                if len(keys) == 1:
                     instance_key = keys[0]
+                else:
+                    candidate_keys = set(keys) if keys else None
+                    inside = inside_regions_for_point(x, y, candidate_keys)
+                    if len(inside) >= 2:
+                        provisional_kp = self._resolve_keypoint_label(
+                            shape, flagged_instance
+                        ) or self._clean_label(shape.get("label"))
+                        deferred_overlap_points.append(
+                            (
+                                shape,
+                                x,
+                                y,
+                                provisional_kp,
+                                [r.instance_key for r in inside],
+                            )
+                        )
+                        continue
+                    instance_key = best_region_for_point(x, y, candidate_keys)
+                    if instance_key is None and keys:
+                        instance_key = keys[0]
 
+            hinted_instance = ""
             if instance_key is None:
                 label = self._clean_label(shape.get("label"))
-                hinted_instance = ""
                 for inst in sorted(candidate_instance_labels, key=len, reverse=True):
                     if label.lower().startswith(inst.lower()):
                         suffix = label[len(inst) :]
@@ -1067,8 +1151,33 @@ class Labelme2YOLO:
                             break
                 candidate_keys = None
                 if hinted_instance and hinted_instance in label_instance_keys:
-                    candidate_keys = set(label_instance_keys[hinted_instance])
-                instance_key = best_region_for_point(float(x), float(y), candidate_keys)
+                    if len(label_instance_keys[hinted_instance]) == 1:
+                        instance_key = label_instance_keys[hinted_instance][0]
+                    else:
+                        candidate_keys = set(label_instance_keys[hinted_instance])
+                if instance_key is None and regions:
+                    inside = inside_regions_for_point(x, y, candidate_keys)
+                    if len(inside) >= 2:
+                        sample_inst = (
+                            hinted_instance
+                            or inside[0].instance_label
+                            or self._clean_label(default_instance_label)
+                            or ""
+                        )
+                        provisional_kp = (
+                            self._resolve_keypoint_label(shape, sample_inst) or label
+                        )
+                        deferred_overlap_points.append(
+                            (
+                                shape,
+                                x,
+                                y,
+                                provisional_kp,
+                                [r.instance_key for r in inside],
+                            )
+                        )
+                        continue
+                    instance_key = best_region_for_point(x, y, candidate_keys)
 
             if instance_key is None and group_id is not None:
                 inferred_label = (
@@ -1096,30 +1205,71 @@ class Labelme2YOLO:
             if instance_key is None:
                 continue
 
-            entry = instances.setdefault(
-                instance_key,
-                {
-                    "class_label": instance_key.split("#", 1)[0].split("@", 1)[0],
-                    "instance_label": instance_key.split("#", 1)[0].split("@", 1)[0],
-                    "bounds": None,
-                    "keypoints": {},
-                },
-            )
-            entry["bounds"] = self._extend_bounds(entry["bounds"], x, y)
+            commit_point_to_instance(shape, x, y, instance_key)
 
-            instance_label = self._clean_label(entry.get("instance_label")) or ""
-            keypoint_label = self._resolve_keypoint_label(shape, instance_label)
-            if not keypoint_label:
-                keypoint_label = f"kp_{len(entry['keypoints'])}"
-            visibility = self._derive_visibility(shape)
-            if visibility is None:
-                visibility = int(KeypointVisibility.VISIBLE)
-            entry["keypoints"][keypoint_label] = {
-                "x": float(x),
-                "y": float(y),
-                "visible": bool(int(visibility) == int(KeypointVisibility.VISIBLE)),
-                "visibility": int(visibility),
-            }
+        if deferred_overlap_points and regions:
+            poly_specs: List[Tuple[str, Sequence[Tuple[float, float]]]] = []
+            for r in regions:
+                if r.polygon:
+                    poly_specs.append((r.instance_key, r.polygon))
+                elif r.center and r.radius is not None:
+                    circle_poly = [
+                        (
+                            r.center[0] + r.radius * math.cos(2.0 * math.pi * k / 24.0),
+                            r.center[1] + r.radius * math.sin(2.0 * math.pi * k / 24.0),
+                        )
+                        for k in range(24)
+                    ]
+                    poly_specs.append((r.instance_key, circle_poly))
+            raster_masks, off_x, off_y, r_scale = build_local_polygon_raster(
+                poly_specs,
+                [(px, py) for _s, px, py, _kp, _c in deferred_overlap_points],
+            )
+            assigned_scaled: Dict[str, List[Tuple[str, float, float]]] = defaultdict(
+                list
+            )
+            for inst_key, data in instances.items():
+                kp_map = data.get("keypoints")
+                if isinstance(kp_map, dict):
+                    for kp_lbl, kp_info in kp_map.items():
+                        if isinstance(kp_info, dict):
+                            assigned_scaled[inst_key].append(
+                                (
+                                    str(kp_lbl),
+                                    (float(kp_info["x"]) - off_x) * r_scale,
+                                    (float(kp_info["y"]) - off_y) * r_scale,
+                                )
+                            )
+            candidates_for_solver = [
+                OverlappingPointCandidate(
+                    index=idx,
+                    keypoint_label=prov_kp,
+                    x=(px - off_x) * r_scale,
+                    y=(py - off_y) * r_scale,
+                    containing_instances=tuple(containing_keys),
+                )
+                for idx, (_s, px, py, prov_kp, containing_keys) in enumerate(
+                    deferred_overlap_points
+                )
+            ]
+            resolved_map = resolve_overlapping_point_instances(
+                polygon_masks=raster_masks,
+                assigned_keypoints=assigned_scaled,
+                candidates=candidates_for_solver,
+            )
+            for idx, (shape, px, py, prov_kp, containing_keys) in enumerate(
+                deferred_overlap_points
+            ):
+                chosen_key = resolved_map.get(idx)
+                if chosen_key is None:
+                    chosen_key = best_region_for_point(
+                        px,
+                        py,
+                        set(containing_keys),
+                        prefer_missing_keypoint=prov_kp,
+                    )
+                if chosen_key is not None:
+                    commit_point_to_instance(shape, px, py, chosen_key)
 
         schema_multi = bool(schema_instances) and len(schema_instances) > 1
         if (

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import inspect
 import math
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -13,6 +13,7 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 
+from annolid.annotation.pose_schema import PoseSchema
 from annolid.data.videos import CV2Video
 from annolid.features import Dinov3Config, Dinov3FeatureExtractor
 from annolid.features.dino_models import (
@@ -31,11 +32,32 @@ from annolid.features.dinov3_feature_grid import (
 from annolid.tracking.annotation_adapter import AnnotationAdapter
 from annolid.tracking.configuration import CutieDinoTrackerConfig
 from annolid.tracking.cutie_mask_manager import CutieMaskManager, MaskResult
+from annolid.tracking.dino_keypoint_types import (
+    BodyPrior,
+    Candidate,
+    FrameMotionEstimate,
+    KeypointTrack,
+    MotionPrior,
+    PixelFlowEstimate,
+    PixelRefineOptions,
+    RefineRegion,
+    SupportProbe,
+)
 from annolid.tracking.domain import InstanceRegistry
 from annolid.tracking.frame_skip import (
     build_seeded_frame_index,
     remove_seeded_frame,
     should_skip_finished_frame_between_adjacent_seeded_frames,
+)
+from annolid.tracking.kpseg_smoothing import KeypointSmoother
+from annolid.tracking.video_seed_utils import (
+    apply_mask_results_to_registry,
+    collect_manual_annotation_frames,
+    find_latest_tracked_frame_before,
+    is_processor_stop_requested,
+    mask_lookup_from_registry,
+    normalize_tracking_frame_range,
+    report_processor_progress,
 )
 from annolid.utils.files import (
     find_manual_labeled_json_files,
@@ -43,163 +65,19 @@ from annolid.utils.files import (
 )
 from annolid.utils.logger import logger
 
-
-@dataclass
-class KeypointTrack:
-    """Internal state for a single tracked keypoint."""
-
-    key: str
-    storage_label: str
-    instance_label: str
-    display_label: str
-    patch_rc: Tuple[int, int]
-    descriptor: torch.Tensor
-    reference_descriptor: torch.Tensor
-    context_descriptor: Optional[torch.Tensor] = None
-    manual_codebook: Optional[torch.Tensor] = None
-    velocity: Tuple[float, float] = (0.0, 0.0)
-    misses: int = 0
-    struct_refs: Dict[str, float] = field(default_factory=dict)
-    last_position: Tuple[float, float] = (0.0, 0.0)
-    quality: float = 1.0
-    appearance_codebook: Optional[torch.Tensor] = None
-    baseline_similarity: float = 1.0
-    symmetry_partner: Optional[str] = None
-    symmetry_axis: Optional[Tuple[float, float]] = None
-    symmetry_midpoint: Optional[Tuple[float, float]] = None
-    symmetry_sign: float = 0.0
-    support_probes: List["SupportProbe"] = field(default_factory=list)
-    body_coords: Optional[Tuple[float, float, float]] = None
-
-
-@dataclass
-class SupportProbe:
-    offset_rc: Tuple[int, int]
-    descriptor: torch.Tensor
-    weight: float
-    in_mask: bool = False
-
-
-@dataclass
-class Candidate:
-    rc: Tuple[int, int]
-    xy: Tuple[float, float]
-    score: float
-    similarity: float
-    descriptor: torch.Tensor
-
-
-@dataclass
-class RefineRegion:
-    logits: np.ndarray
-    r_min: int
-    c_min: int
-    valid_mask: Optional[np.ndarray] = None
-
-
-@dataclass
-class MotionPrior:
-    predicted_xy: Tuple[float, float]
-    predicted_rc: Tuple[int, int]
-    base_xy: Tuple[float, float]
-    flow_vec: Optional[Tuple[float, float]]
-    flow_speed: float
-    velocity_speed: float
-    radius: int
-    radius_px: float
-    confidence: float
-
-
-@dataclass
-class PixelFlowEstimate:
-    xy: Tuple[float, float]
-    error: float
-
-
-@dataclass(frozen=True)
-class FrameMotionEstimate:
-    """Current-frame point estimate and the observed displacement behind it."""
-
-    predicted_xy: Tuple[float, float]
-    flow_vec: Optional[Tuple[float, float]]
-    pixel_flow: Optional[PixelFlowEstimate]
-
-
-@dataclass(frozen=True)
-class PixelRefineOptions:
-    enabled: bool
-    weight: float
-    window: int
-    max_error: float
-    max_jump_px: float
-
-    @classmethod
-    def from_runtime(
-        cls, runtime_config: CutieDinoTrackerConfig
-    ) -> "PixelRefineOptions":
-        window = max(3, int(getattr(runtime_config, "pixel_refine_window", 15)))
-        if window % 2 == 0:
-            window += 1
-        return cls(
-            enabled=bool(getattr(runtime_config, "pixel_refine_enabled", True)),
-            weight=float(
-                np.clip(
-                    getattr(runtime_config, "pixel_refine_weight", 0.85),
-                    0.0,
-                    1.0,
-                )
-            ),
-            window=int(window),
-            max_error=max(
-                0.0, float(getattr(runtime_config, "pixel_refine_max_error", 18.0))
-            ),
-            max_jump_px=max(
-                0.0,
-                float(getattr(runtime_config, "pixel_refine_max_jump_px", 24.0)),
-            ),
-        )
-
-    def error_confidence(self, error: float) -> float:
-        """Map LK error to confidence; a zero limit disables error gating."""
-        error = float(error)
-        if not math.isfinite(error):
-            return 0.0
-        if self.max_error <= 0.0:
-            return 1.0
-        return float(np.clip(1.0 - (max(0.0, error) / self.max_error), 0.0, 1.0))
-
-
-@dataclass
-class BodyPrior:
-    centroid_rc: Tuple[float, float]
-    axis_rc: Tuple[float, float]
-    perp_rc: Tuple[float, float]
-    sigma_axis: float
-    sigma_perp: float
-    thickness_map: np.ndarray
-    sigma_thickness: float
-
-    def coords(self, rc: Tuple[float, float]) -> Tuple[float, float]:
-        dr = float(rc[0] - self.centroid_rc[0])
-        dc = float(rc[1] - self.centroid_rc[1])
-        t = dr * float(self.axis_rc[0]) + dc * float(self.axis_rc[1])
-        p = dr * float(self.perp_rc[0]) + dc * float(self.perp_rc[1])
-        return (t, p)
-
-    def signature(self, rc: Tuple[float, float]) -> Tuple[float, float, float]:
-        t, p = self.coords(rc)
-        rr = int(round(float(rc[0])))
-        cc = int(round(float(rc[1])))
-        if (
-            rr < 0
-            or cc < 0
-            or rr >= int(self.thickness_map.shape[0])
-            or cc >= int(self.thickness_map.shape[1])
-        ):
-            thickness = 0.0
-        else:
-            thickness = float(self.thickness_map[rr, cc])
-        return (t, p, thickness)
+__all__ = [
+    "BodyPrior",
+    "Candidate",
+    "DinoKeypointTracker",
+    "DinoKeypointVideoProcessor",
+    "FrameMotionEstimate",
+    "KeypointTrack",
+    "MotionPrior",
+    "PixelFlowEstimate",
+    "PixelRefineOptions",
+    "RefineRegion",
+    "SupportProbe",
+]
 
 
 class DinoKeypointTracker:
@@ -263,6 +141,7 @@ class DinoKeypointTracker:
         self._roi_box: Tuple[int, int, int, int] = (0, 0, 0, 0)
         self._roi_size: Tuple[int, int] = (0, 0)
         self._instance_body_axes: Dict[str, Tuple[float, float]] = {}
+        self._instance_ref_span: Dict[str, float] = {}
         self._manual_anchor_codebooks: Dict[str, torch.Tensor] = {}
         self._part_shared_descriptors: Dict[str, torch.Tensor] = {}
         self._part_shared_counts: Dict[str, int] = {}
@@ -342,6 +221,7 @@ class DinoKeypointTracker:
         self._roi_box = (0, 0, 0, 0)
         self._roi_size = (0, 0)
         self._instance_body_axes = {}
+        self._instance_ref_span = {}
         if not preserve_manual_anchors:
             self._manual_anchor_codebooks = {}
         self._part_shared_descriptors = {}
@@ -459,6 +339,7 @@ class DinoKeypointTracker:
         self.prev_gray = cv2.cvtColor(frame_array, cv2.COLOR_RGB2GRAY)
         self._initialize_structural_refs(registry)
         self._initialize_symmetry_refs(registry)
+        self._initialize_instance_spans(registry, mask_lookup)
 
     def update(
         self,
@@ -582,6 +463,28 @@ class DinoKeypointTracker:
             bool(getattr(self.runtime_config, "keypoint_cluster_refine", False))
             and int(getattr(self.runtime_config, "keypoint_cluster_refine_radius", 0))
             > 0
+        )
+        tracking_enabled = bool(getattr(self.runtime_config, "tracking_enable", False))
+        instance_context: Dict[str, Dict[str, object]] = (
+            self._prepare_multi_animal_instance_context(
+                previous_positions, active_masks
+            )
+            if tracking_enabled
+            else {}
+        )
+        effective_min_similarity = (
+            max(
+                self.min_similarity,
+                float(
+                    getattr(
+                        self.runtime_config,
+                        "tracking_instance_match_min_similarity",
+                        0.0,
+                    )
+                ),
+            )
+            if tracking_enabled
+            else self.min_similarity
         )
 
         track_candidates: Dict[str, List[Candidate]] = {}
@@ -832,6 +735,10 @@ class DinoKeypointTracker:
                         previous_feats=prev_matching_feats,
                         previous_rc=(prev_r, prev_c),
                     )
+                if tracking_enabled and not self._is_fresh_start:
+                    candidate_score -= self._multi_animal_instance_penalty(
+                        track, candidate_xy, instance_context
+                    )
                 candidate_list.append(
                     Candidate(
                         rc=(r, c),
@@ -859,6 +766,12 @@ class DinoKeypointTracker:
                     valid_mask=valid_mask,
                 )
 
+            if tracking_enabled and not self._is_fresh_start and candidate_list:
+                candidate_list = self._filter_candidates_by_tracking_constraints(
+                    track,
+                    candidate_list,
+                    previous_positions,
+                )
             candidate_list.sort(key=lambda c: c.score, reverse=True)
             track_candidates[track.key] = candidate_list[: self.max_candidates]
             if refine_region is not None:
@@ -876,12 +789,11 @@ class DinoKeypointTracker:
             assignment_prior = motion_priors.get(track.key)
 
             quality = float(assignment.similarity) if assignment else -1.0
-            if assignment is None or quality < self.min_similarity:
+            if assignment is None or quality < effective_min_similarity:
                 track.misses += 1
                 visible = False
                 x, y = base_x, base_y
-                if track.misses > self.max_misses:
-                    track.velocity = (0.0, 0.0)
+                self._handle_track_miss_limits(track, tracking_enabled=tracking_enabled)
             else:
                 x, y = assignment.xy
                 refine_confidence = 0.0
@@ -943,8 +855,8 @@ class DinoKeypointTracker:
                 if candidate_visible:
                     similarity_conf = float(
                         np.clip(
-                            (quality - self.min_similarity)
-                            / max(1e-6, 1.0 - self.min_similarity),
+                            (quality - effective_min_similarity)
+                            / max(1e-6, 1.0 - effective_min_similarity),
                             0.0,
                             1.0,
                         )
@@ -955,6 +867,17 @@ class DinoKeypointTracker:
                         prior=assignment_prior,
                         similarity_confidence=similarity_conf,
                     )
+                    if (
+                        candidate_visible
+                        and tracking_enabled
+                        and not self._is_fresh_start
+                    ):
+                        candidate_visible = self._satisfies_tracking_constraints(
+                            track,
+                            candidate_xy=(x, y),
+                            previous_positions=previous_positions,
+                            instance_context=instance_context,
+                        )
                     if candidate_visible:
                         candidate_rc = self._pixel_to_patch(
                             x,
@@ -982,6 +905,9 @@ class DinoKeypointTracker:
                         visible = False
                         x, y = track.last_position
                         quality = 0.0
+                        self._handle_track_miss_limits(
+                            track, tracking_enabled=tracking_enabled
+                        )
                 else:
                     track.misses = 0
                     visible = True
@@ -2056,42 +1982,88 @@ class DinoKeypointTracker:
                 track.struct_refs = struct_refs
 
     def _initialize_symmetry_refs(self, registry: InstanceRegistry) -> None:
-        pairs = getattr(self.runtime_config, "symmetry_pairs", ())
-        if not pairs:
+        pairs = getattr(self.runtime_config, "symmetry_pairs", ()) or ()
+        symmetry_penalty = float(
+            getattr(self.runtime_config, "symmetry_penalty", 0.0) or 0.0
+        )
+        if not pairs and symmetry_penalty <= 0.0:
             return
+        lower_pairs = {
+            (str(left).strip().lower(), str(right).strip().lower())
+            for left, right in pairs
+            if str(left).strip() and str(right).strip()
+        }
+        allow_inferred_lr = bool(
+            (not lower_pairs and symmetry_penalty > 0.0)
+            or ("left", "right") in lower_pairs
+            or ("right", "left") in lower_pairs
+            or ("l", "r") in lower_pairs
+            or ("r", "l") in lower_pairs
+        )
+
+        def _bind_pair(left_track: KeypointTrack, right_track: KeypointTrack) -> None:
+            if (
+                left_track.key == right_track.key
+                or left_track.symmetry_partner is not None
+                or right_track.symmetry_partner is not None
+            ):
+                return
+            left_pos = left_track.last_position
+            right_pos = right_track.last_position
+            axis = (
+                left_pos[0] - right_pos[0],
+                left_pos[1] - right_pos[1],
+            )
+            norm = math.hypot(axis[0], axis[1])
+            if norm <= 1e-6:
+                return
+            axis_unit = (axis[0] / norm, axis[1] / norm)
+            midpoint = (
+                (left_pos[0] + right_pos[0]) / 2.0,
+                (left_pos[1] + right_pos[1]) / 2.0,
+            )
+            left_track.symmetry_axis = axis_unit
+            left_track.symmetry_midpoint = midpoint
+            left_track.symmetry_sign = 1.0
+            left_track.symmetry_partner = right_track.key
+            right_track.symmetry_axis = axis_unit
+            right_track.symmetry_midpoint = midpoint
+            right_track.symmetry_sign = -1.0
+            right_track.symmetry_partner = left_track.key
+
         for instance in registry:
             label_to_track: Dict[str, KeypointTrack] = {}
+            lower_to_track: Dict[str, KeypointTrack] = {}
             for kp in instance.keypoints.values():
                 track = self.tracks.get(kp.key)
                 if track:
                     label_to_track[kp.label] = track
+                    lower_to_track.setdefault(kp.label.lower(), track)
+
             for left_label, right_label in pairs:
-                left_track = label_to_track.get(left_label)
-                right_track = label_to_track.get(right_label)
+                left_track = label_to_track.get(left_label) or lower_to_track.get(
+                    str(left_label).strip().lower()
+                )
+                right_track = label_to_track.get(right_label) or lower_to_track.get(
+                    str(right_label).strip().lower()
+                )
                 if not left_track or not right_track:
                     continue
-                left_pos = left_track.last_position
-                right_pos = right_track.last_position
-                axis = (
-                    left_pos[0] - right_pos[0],
-                    left_pos[1] - right_pos[1],
-                )
-                norm = math.hypot(axis[0], axis[1])
-                if norm <= 1e-6:
-                    continue
-                axis_unit = (axis[0] / norm, axis[1] / norm)
-                midpoint = (
-                    (left_pos[0] + right_pos[0]) / 2.0,
-                    (left_pos[1] + right_pos[1]) / 2.0,
-                )
-                left_track.symmetry_axis = axis_unit
-                left_track.symmetry_midpoint = midpoint
-                left_track.symmetry_sign = 1.0
-                left_track.symmetry_partner = right_track.key
-                right_track.symmetry_axis = axis_unit
-                right_track.symmetry_midpoint = midpoint
-                right_track.symmetry_sign = -1.0
-                right_track.symmetry_partner = left_track.key
+                _bind_pair(left_track, right_track)
+
+            if allow_inferred_lr and len(label_to_track) >= 2:
+                unpaired_labels = [
+                    lbl
+                    for lbl, trk in label_to_track.items()
+                    if trk.symmetry_partner is None
+                ]
+                for left_label, right_label in PoseSchema.infer_symmetry_pairs(
+                    unpaired_labels
+                ):
+                    left_track = label_to_track.get(left_label)
+                    right_track = label_to_track.get(right_label)
+                    if left_track and right_track:
+                        _bind_pair(left_track, right_track)
 
     def _structural_penalty(
         self,
@@ -2675,9 +2647,321 @@ class DinoKeypointTracker:
         preselect = max(preselect, min_candidates, self.max_candidates)
         return min(region_size, preselect)
 
+    def _initialize_instance_spans(
+        self,
+        registry: InstanceRegistry,
+        mask_lookup: Optional[Dict[str, np.ndarray]],
+    ) -> None:
+        self._instance_ref_span = {}
+        masks = mask_lookup or {}
+        for instance in registry:
+            mask = masks.get(instance.label)
+            if mask is not None and np.any(mask):
+                area = float(np.count_nonzero(mask))
+                if area > 0.0:
+                    self._instance_ref_span[instance.label] = math.sqrt(area)
+                    continue
+            pts = [
+                (float(kp.x), float(kp.y))
+                for kp in instance.keypoints.values()
+                if kp.visible and math.isfinite(kp.x) and math.isfinite(kp.y)
+            ]
+            if len(pts) >= 2:
+                cx = sum(p[0] for p in pts) / len(pts)
+                cy = sum(p[1] for p in pts) / len(pts)
+                rms = math.sqrt(
+                    sum((p[0] - cx) ** 2 + (p[1] - cy) ** 2 for p in pts) / len(pts)
+                )
+                if rms > 1e-3:
+                    self._instance_ref_span[instance.label] = rms
+
+    def _prepare_multi_animal_instance_context(
+        self,
+        previous_positions: Dict[str, Tuple[float, float]],
+        active_masks: Dict[str, Optional[np.ndarray]],
+    ) -> Dict[str, Dict[str, object]]:
+        tracks_by_inst: Dict[str, List[KeypointTrack]] = {}
+        for trk in self.tracks.values():
+            tracks_by_inst.setdefault(trk.instance_label, []).append(trk)
+
+        context: Dict[str, Dict[str, object]] = {}
+        for inst_label, inst_tracks in tracks_by_inst.items():
+            reliable_tracks = [t for t in inst_tracks if t.misses == 0] or inst_tracks
+            prev_pts = [
+                previous_positions.get(t.key, t.last_position) for t in reliable_tracks
+            ]
+            prev_cx = sum(p[0] for p in prev_pts) / max(1, len(prev_pts))
+            prev_cy = sum(p[1] for p in prev_pts) / max(1, len(prev_pts))
+
+            pred_pts = [
+                (
+                    previous_positions.get(t.key, t.last_position)[0] + t.velocity[0],
+                    previous_positions.get(t.key, t.last_position)[1] + t.velocity[1],
+                )
+                for t in reliable_tracks
+            ]
+            pred_cx = sum(p[0] for p in pred_pts) / max(1, len(pred_pts))
+            pred_cy = sum(p[1] for p in pred_pts) / max(1, len(pred_pts))
+
+            mask = active_masks.get(inst_label)
+            target_centroid = (pred_cx, pred_cy)
+            size_ratio_dev = 0.0
+            has_mask = False
+            if mask is not None and np.any(mask):
+                ys, xs = np.nonzero(mask)
+                target_centroid = (float(xs.mean()), float(ys.mean()))
+                has_mask = True
+                ref_span = self._instance_ref_span.get(inst_label, 0.0)
+                if ref_span > 1e-3:
+                    cur_span = math.sqrt(float(xs.size))
+                    size_ratio_dev = abs(cur_span - ref_span) / ref_span
+
+            offsets: Dict[str, Tuple[float, float]] = {}
+            offsets_norm: Dict[str, float] = {}
+            for trk in inst_tracks:
+                px, py = previous_positions.get(trk.key, trk.last_position)
+                dx = float(px - prev_cx)
+                dy = float(py - prev_cy)
+                offsets[trk.key] = (dx, dy)
+                offsets_norm[trk.key] = math.hypot(dx, dy)
+
+            context[inst_label] = {
+                "target_centroid": target_centroid,
+                "offsets": offsets,
+                "offsets_norm": offsets_norm,
+                "num_tracks": len(inst_tracks),
+                "has_mask": has_mask,
+                "size_ratio_dev": size_ratio_dev,
+            }
+        return context
+
+    def _multi_animal_instance_penalty(
+        self,
+        track: KeypointTrack,
+        candidate_xy: Tuple[float, float],
+        instance_context: Dict[str, Dict[str, object]],
+    ) -> float:
+        ctx = instance_context.get(track.instance_label)
+        if not ctx:
+            return 0.0
+        scale_px = max(
+            1.0,
+            float(
+                getattr(
+                    self.runtime_config, "tracking_instance_match_distance_px", 150.0
+                )
+            ),
+        )
+        centroid_w = max(
+            0.0, float(getattr(self.runtime_config, "tracking_centroid_weight", 0.0))
+        )
+        pose_w = max(
+            0.0, float(getattr(self.runtime_config, "tracking_pose_weight", 0.0))
+        )
+        size_w = max(
+            0.0, float(getattr(self.runtime_config, "tracking_size_weight", 0.0))
+        )
+
+        target_cx, target_cy = ctx["target_centroid"]  # type: ignore[misc]
+        offsets: Dict[str, Tuple[float, float]] = ctx["offsets"]  # type: ignore[assignment]
+        expected_dx, expected_dy = offsets.get(track.key, (0.0, 0.0))
+        num_tracks = int(ctx.get("num_tracks", 1))  # type: ignore[arg-type]
+        has_mask = bool(ctx.get("has_mask", False))
+
+        cand_dx = float(candidate_xy[0] - target_cx)
+        cand_dy = float(candidate_xy[1] - target_cy)
+        centroid_excess = max(
+            0.0, math.hypot(cand_dx, cand_dy) - math.hypot(expected_dx, expected_dy)
+        )
+        penalty = 0.1 * centroid_w * min(2.0, centroid_excess / scale_px)
+
+        if has_mask or num_tracks >= 2:
+            pose_err = math.hypot(cand_dx - expected_dx, cand_dy - expected_dy)
+            penalty += 0.1 * pose_w * min(2.0, pose_err / scale_px)
+
+        size_dev = float(ctx.get("size_ratio_dev", 0.0))  # type: ignore[arg-type]
+        if size_dev > 0.0 and size_w > 0.0:
+            penalty += 0.05 * size_w * min(2.0, size_dev)
+
+        relief = 1.0 / (1.0 + 0.5 * max(0, int(track.misses)))
+        return penalty * relief
+
+    def _skeletal_stretch_ratio(
+        self,
+        track: KeypointTrack,
+        candidate_xy: Tuple[float, float],
+        previous_positions: Dict[str, Tuple[float, float]],
+    ) -> Optional[float]:
+        if not track.struct_refs:
+            return None
+        total = 0.0
+        count = 0
+        for other_key, ref_distance in track.struct_refs.items():
+            if ref_distance <= 1e-6:
+                continue
+            other_track = self.tracks.get(other_key)
+            if other_track is not None and other_track.misses > 0:
+                continue
+            other_pos = previous_positions.get(other_key)
+            if other_pos is None:
+                continue
+            current_distance = math.hypot(
+                candidate_xy[0] - other_pos[0],
+                candidate_xy[1] - other_pos[1],
+            )
+            total += abs(current_distance - ref_distance) / ref_distance
+            count += 1
+        if count == 0:
+            return None
+        return total / count
+
+    def _filter_candidates_by_tracking_constraints(
+        self,
+        track: KeypointTrack,
+        candidates: List[Candidate],
+        previous_positions: Dict[str, Tuple[float, float]],
+    ) -> List[Candidate]:
+        max_vel = max(
+            1.0,
+            float(
+                getattr(
+                    self.runtime_config, "tracking_constraint_max_velocity_px", 200.0
+                )
+            ),
+        )
+        allowed_step = max_vel * max(1, int(track.misses) + 1)
+        enforce_skel = bool(
+            getattr(self.runtime_config, "tracking_enforce_skeletal_constraints", True)
+        ) and bool(track.struct_refs)
+        max_rel_dev = 0.25 * max(
+            1.0,
+            float(
+                getattr(
+                    self.runtime_config, "tracking_constraint_limb_std_multiplier", 3.0
+                )
+            ),
+        )
+
+        valid: List[Candidate] = []
+        last_x, last_y = track.last_position
+        for cand in candidates:
+            step = math.hypot(cand.xy[0] - last_x, cand.xy[1] - last_y)
+            if step > allowed_step:
+                continue
+            if enforce_skel:
+                stretch = self._skeletal_stretch_ratio(
+                    track, cand.xy, previous_positions
+                )
+                if stretch is not None and stretch > max_rel_dev:
+                    continue
+            valid.append(cand)
+        return valid if valid else candidates
+
+    def _satisfies_tracking_constraints(
+        self,
+        track: KeypointTrack,
+        *,
+        candidate_xy: Tuple[float, float],
+        previous_positions: Dict[str, Tuple[float, float]],
+        instance_context: Dict[str, Dict[str, object]],
+    ) -> bool:
+        max_vel = max(
+            1.0,
+            float(
+                getattr(
+                    self.runtime_config, "tracking_constraint_max_velocity_px", 200.0
+                )
+            ),
+        )
+        allowed_step = max_vel * max(1, int(track.misses) + 1)
+        step_dist = math.hypot(
+            candidate_xy[0] - track.last_position[0],
+            candidate_xy[1] - track.last_position[1],
+        )
+        if step_dist > allowed_step:
+            return False
+
+        ctx = instance_context.get(track.instance_label)
+        if ctx and (bool(ctx.get("has_mask")) or int(ctx.get("num_tracks", 1)) >= 2):  # type: ignore[arg-type]
+            target_cx, target_cy = ctx["target_centroid"]  # type: ignore[misc]
+            offsets_norm: Dict[str, float] = ctx["offsets_norm"]  # type: ignore[assignment]
+            match_dist = max(
+                1.0,
+                float(
+                    getattr(
+                        self.runtime_config,
+                        "tracking_instance_match_distance_px",
+                        150.0,
+                    )
+                ),
+            )
+            allowed_inst = max(match_dist, offsets_norm.get(track.key, 0.0) * 1.5) * (
+                1.0 + 0.25 * max(0, int(track.misses))
+            )
+            if (
+                math.hypot(candidate_xy[0] - target_cx, candidate_xy[1] - target_cy)
+                > allowed_inst
+            ):
+                return False
+
+        if bool(
+            getattr(self.runtime_config, "tracking_enforce_skeletal_constraints", True)
+        ) and bool(track.struct_refs):
+            max_rel_dev = 0.25 * max(
+                1.0,
+                float(
+                    getattr(
+                        self.runtime_config,
+                        "tracking_constraint_limb_std_multiplier",
+                        3.0,
+                    )
+                ),
+            )
+            stretch = self._skeletal_stretch_ratio(
+                track, candidate_xy, previous_positions
+            )
+            if stretch is not None and stretch > max_rel_dev:
+                return False
+
+        return True
+
+    def _handle_track_miss_limits(
+        self,
+        track: KeypointTrack,
+        *,
+        tracking_enabled: bool,
+    ) -> None:
+        if track.misses > self.max_misses:
+            track.velocity = (0.0, 0.0)
+        if tracking_enabled:
+            dropout_timeout = max(
+                1,
+                int(
+                    getattr(
+                        self.runtime_config,
+                        "tracking_instance_dropout_timeout_frames",
+                        30,
+                    )
+                ),
+            )
+            if track.misses >= dropout_timeout:
+                track.velocity = (0.0, 0.0)
+                track.descriptor = track.reference_descriptor.detach().clone()
+
     def _resolve_assignments(
         self, track_candidates: Dict[str, List[Candidate]]
     ) -> Dict[str, Optional[Candidate]]:
+        if (
+            bool(getattr(self.runtime_config, "tracking_enable", False))
+            and str(
+                getattr(self.runtime_config, "tracking_matcher_algorithm", "greedy")
+            )
+            .strip()
+            .lower()
+            == "hungarian"
+        ):
+            return self._resolve_assignments_hungarian(track_candidates)
+
         candidate_pool = {
             key: list(candidates) for key, candidates in track_candidates.items()
         }
@@ -2718,9 +3002,104 @@ class DinoKeypointTracker:
             assign(track_key)
         return assignments
 
+    def _resolve_assignments_hungarian(
+        self, track_candidates: Dict[str, List[Candidate]]
+    ) -> Dict[str, Optional[Candidate]]:
+        track_keys = list(track_candidates.keys())
+        if not track_keys:
+            return {}
+
+        rc_index: Dict[Tuple[int, int], int] = {}
+        by_track_rc: List[Dict[int, Candidate]] = []
+        min_score = 0.0
+        max_score = 0.0
+        has_any = False
+        for key in track_keys:
+            mapping: Dict[int, Candidate] = {}
+            for cand in track_candidates.get(key, []):
+                if not math.isfinite(cand.score):
+                    continue
+                col = rc_index.setdefault(cand.rc, len(rc_index))
+                prev = mapping.get(col)
+                if prev is None or cand.score > prev.score:
+                    mapping[col] = cand
+                if not has_any:
+                    min_score = max_score = float(cand.score)
+                    has_any = True
+                else:
+                    min_score = min(min_score, float(cand.score))
+                    max_score = max(max_score, float(cand.score))
+            by_track_rc.append(mapping)
+
+        if not has_any:
+            return {key: None for key in track_keys}
+
+        num_tracks = len(track_keys)
+        num_cells = len(rc_index)
+        span = max(1.0, max_score - min_score)
+        unassigned_cost = -min_score + span * float(num_tracks + 2)
+        disallowed_cost = unassigned_cost + span * float(num_tracks + 10) * 100.0
+
+        cost = np.full(
+            (num_tracks, num_cells + num_tracks), disallowed_cost, dtype=np.float64
+        )
+        for row_idx, mapping in enumerate(by_track_rc):
+            for col_idx, cand in mapping.items():
+                cost[row_idx, col_idx] = -float(cand.score)
+            cost[row_idx, num_cells + row_idx] = unassigned_cost
+
+        try:
+            from scipy.optimize import linear_sum_assignment
+
+            row_ind, col_ind = linear_sum_assignment(cost)
+            assignments: Dict[str, Optional[Candidate]] = {
+                key: None for key in track_keys
+            }
+            for r_idx, c_idx in zip(row_ind.tolist(), col_ind.tolist()):
+                if c_idx < num_cells:
+                    cand = by_track_rc[r_idx].get(c_idx)
+                    if cand is not None:
+                        assignments[track_keys[r_idx]] = cand
+            return assignments
+        except ImportError:
+            # Exact minimum-cost assignment fallback when SciPy is unavailable.
+            best_total = float("inf")
+            best_choice: List[Optional[Candidate]] = [None] * num_tracks
+            used_cols: Set[int] = set()
+            current_choice: List[Optional[Candidate]] = [None] * num_tracks
+
+            def _search(row_idx: int, running_cost: float) -> None:
+                nonlocal best_total, best_choice
+                if running_cost >= best_total:
+                    return
+                if row_idx == num_tracks:
+                    best_total = running_cost
+                    best_choice = list(current_choice)
+                    return
+                for col_idx, cand in sorted(
+                    by_track_rc[row_idx].items(),
+                    key=lambda item: item[1].score,
+                    reverse=True,
+                ):
+                    if col_idx in used_cols:
+                        continue
+                    used_cols.add(col_idx)
+                    current_choice[row_idx] = cand
+                    _search(row_idx + 1, running_cost - float(cand.score))
+                    current_choice[row_idx] = None
+                    used_cols.remove(col_idx)
+                current_choice[row_idx] = None
+                _search(row_idx + 1, running_cost + unassigned_cost)
+
+            _search(0, 0.0)
+            return {track_keys[idx]: best_choice[idx] for idx in range(num_tracks)}
+
     def _update_symmetry_midpoints(self) -> None:
         pairs = getattr(self.runtime_config, "symmetry_pairs", ())
-        if not pairs:
+        symmetry_penalty = float(
+            getattr(self.runtime_config, "symmetry_penalty", 0.0) or 0.0
+        )
+        if not pairs and symmetry_penalty <= 0.0:
             return
         processed: Set[str] = set()
         for track in self.tracks.values():
@@ -2936,6 +3315,9 @@ class DinoKeypointVideoProcessor:
             image_height=self.video_height,
             image_width=self.video_width,
             persist_json=self.config.persist_labelme_json,
+            ambiguous_point_policy=str(
+                getattr(self.config, "ambiguous_point_policy", "withhold") or "withhold"
+            ),
         )
         self.mask_manager = CutieMaskManager(
             Path(self.video_path),
@@ -2948,6 +3330,61 @@ class DinoKeypointVideoProcessor:
             device=device,
             runtime_config=self.config,
         )
+        fps = None
+        get_fps = getattr(self.video_loader, "get_fps", None)
+        if callable(get_fps):
+            try:
+                fps = float(get_fps())
+            except Exception:
+                fps = None
+        cfg_smoother_fps = getattr(self.config, "tracking_smoother_fps", None)
+        if cfg_smoother_fps is not None:
+            fps = float(cfg_smoother_fps)
+        if not fps or not math.isfinite(fps) or fps <= 0.0:
+            fps = 30.0
+        self._smoother: Optional[KeypointSmoother] = None
+        if bool(getattr(self.config, "tracking_smoother_enable", False)):
+            self._smoother = KeypointSmoother(
+                mode=str(
+                    getattr(self.config, "tracking_smoother_mode", "one_euro")
+                    or "one_euro"
+                ),
+                fps=float(fps),
+                ema_alpha=float(
+                    getattr(self.config, "tracking_smoother_ema_alpha", 0.7)
+                ),
+                min_score=float(
+                    getattr(self.config, "tracking_smoother_min_conf", 0.25)
+                ),
+                one_euro_min_cutoff=float(
+                    getattr(self.config, "tracking_smoother_one_euro_min_cutoff", 1.0)
+                ),
+                one_euro_beta=float(
+                    getattr(self.config, "tracking_smoother_one_euro_beta", 0.0)
+                ),
+                kalman_process_noise=float(
+                    getattr(
+                        self.config,
+                        "tracking_smoother_kalman_process_noise",
+                        getattr(self.config, "tracking_smoother_process_noise", 1e-2),
+                    )
+                ),
+                kalman_measurement_noise=float(
+                    getattr(
+                        self.config,
+                        "tracking_smoother_kalman_measurement_noise",
+                        getattr(
+                            self.config, "tracking_smoother_measurement_noise", 1e-1
+                        ),
+                    )
+                ),
+                kalman_gate_sigma=float(
+                    getattr(self.config, "tracking_smoother_gate_sigma", 4.5)
+                ),
+                max_jump_px=float(
+                    getattr(self.config, "tracking_smoother_max_jump_px", 0.0)
+                ),
+            )
         self.pred_worker = None
         self._stop_requested = False
 
@@ -2964,6 +3401,74 @@ class DinoKeypointVideoProcessor:
     def allows_force_terminate(self) -> bool:
         """DINO/Transformers/MPS work is not safe to kill with QThread.terminate()."""
         return False
+
+    def _reset_tracker_state(self, *, preserve_manual_anchors: bool = False) -> None:
+        reset_state = getattr(self.tracker, "reset_state", None)
+        if not callable(reset_state):
+            return
+        if preserve_manual_anchors:
+            try:
+                accepts_manual_anchors = (
+                    "preserve_manual_anchors"
+                    in inspect.signature(reset_state).parameters
+                )
+            except (TypeError, ValueError):
+                accepts_manual_anchors = False
+            if accepts_manual_anchors:
+                reset_state(preserve_manual_anchors=True)
+                return
+        reset_state()
+
+    def _seed_smoother_from_registry(self, registry: InstanceRegistry) -> None:
+        if self._smoother is None:
+            return
+        self._smoother.reset()
+        for instance in registry:
+            for kp in instance.keypoints.values():
+                if kp.visible:
+                    self._smoother.smooth(
+                        kp.key,
+                        (float(kp.x), float(kp.y)),
+                        score=1.0,
+                        mask_ok=True,
+                    )
+
+    def _apply_smoother_to_results(
+        self,
+        tracker_results: List[Dict[str, object]],
+        mask_lookup: Dict[str, np.ndarray],
+        registry: InstanceRegistry,
+    ) -> None:
+        if self._smoother is None or not tracker_results:
+            return
+        for item in tracker_results:
+            key = str(item.get("id", ""))
+            if not key:
+                continue
+            kp_state = registry.get_keypoint(key)
+            raw_x = float(item.get("x", kp_state.x if kp_state else 0.0))  # type: ignore[arg-type]
+            raw_y = float(item.get("y", kp_state.y if kp_state else 0.0))  # type: ignore[arg-type]
+            visible = bool(item.get("visible", True))
+            confidence = float(item.get("confidence", item.get("quality", 1.0)))  # type: ignore[arg-type]
+            mask_ok = visible
+            if mask_ok and kp_state is not None:
+                inst_mask = mask_lookup.get(kp_state.instance_label)
+                if inst_mask is not None and bool(self.config.mask_enforce_position):
+                    px = int(round(raw_x))
+                    py = int(round(raw_y))
+                    mask_ok = (
+                        0 <= py < int(inst_mask.shape[0])
+                        and 0 <= px < int(inst_mask.shape[1])
+                        and bool(inst_mask[py, px])
+                    )
+            sx, sy = self._smoother.smooth(
+                key,
+                (raw_x, raw_y),
+                score=(confidence if visible else 0.0),
+                mask_ok=mask_ok,
+            )
+            item["x"] = float(sx)
+            item["y"] = float(sy)
 
     def process_video(
         self,
@@ -2994,18 +3499,22 @@ class DinoKeypointVideoProcessor:
         end_frame: Optional[int],
         step: int,
     ) -> str:
-        initial_frame, registry = self._resolve_initial_state(start_frame=start_frame)
-        start_frame = (
-            initial_frame if start_frame is None else max(initial_frame, start_frame)
+        (
+            initial_frame,
+            registry,
+            is_tracked_resume,
+            anchor_seed,
+        ) = self._resolve_initial_state_with_resume(start_frame=start_frame)
+        start_frame, end_frame, step = normalize_tracking_frame_range(
+            initial_frame=initial_frame,
+            start_frame=start_frame,
+            end_frame=end_frame,
+            step=step,
+            total_frames=self.total_frames,
         )
-        if end_frame is None or end_frame < 0:
-            end_frame = self.total_frames - 1
-        end_frame = min(end_frame, self.total_frames - 1)
-        if start_frame >= end_frame:
-            end_frame = min(self.total_frames - 1, start_frame + 1)
-        step = max(1, abs(step))
 
-        manual_frames = self._manual_annotation_frames(
+        manual_frames = collect_manual_annotation_frames(
+            self.video_result_folder,
             start_frame=start_frame,
             end_frame=end_frame,
         )
@@ -3015,7 +3524,22 @@ class DinoKeypointVideoProcessor:
         finished_frame_cache: Dict[int, bool] = {}
 
         self.mask_manager.reset_state()
-        self.tracker.reset_state()
+        self._reset_tracker_state(preserve_manual_anchors=False)
+
+        # When resuming from an intermediate tracked frame (e.g., frame 59 before
+        # predicting frame 60+), seed long-term manual anchor codebooks from the
+        # originating manual frame first so appearance anchoring stays grounded.
+        if is_tracked_resume and anchor_seed is not None:
+            anchor_frame, anchor_registry = anchor_seed
+            anchor_array = self.video_loader.load_frame(anchor_frame)
+            if anchor_array is not None and anchor_registry.keypoint_payload():
+                anchor_masks = self._mask_lookup_from_registry(anchor_registry)
+                self.tracker.start(
+                    Image.fromarray(anchor_array),
+                    anchor_registry,
+                    anchor_masks,
+                )
+                self._reset_tracker_state(preserve_manual_anchors=True)
 
         initial_frame_array = self.video_loader.load_frame(initial_frame)
         if initial_frame_array is None:
@@ -3035,14 +3559,16 @@ class DinoKeypointVideoProcessor:
             registry,
             initial_mask_lookup,
         )
+        self._seed_smoother_from_registry(registry)
         if self._should_stop():
             logger.info("DINO tracking stopped after tracker initialization.")
             return "Cutie + DINO tracking stopped early."
-        self.adapter.write_annotation(
-            frame_number=initial_frame,
-            registry=registry,
-            output_dir=self.video_result_folder,
-        )
+        if not is_tracked_resume:
+            self.adapter.write_annotation(
+                frame_number=initial_frame,
+                registry=registry,
+                output_dir=self.video_result_folder,
+            )
 
         frame_numbers = list(range(start_frame, end_frame + 1, step))
         frames_to_process = [frame for frame in frame_numbers if frame != initial_frame]
@@ -3062,10 +3588,12 @@ class DinoKeypointVideoProcessor:
                 resume_result = self._resume_from_manual_annotation(
                     frame_number,
                     manual_path,
+                    prior_registry=registry,
                 )
                 manual_frames.pop(frame_number, None)
                 if resume_result is not None:
                     registry, manual_mask_lookup = resume_result
+                    self._seed_smoother_from_registry(registry)
                     processed += 1
                     self._report_progress(processed, total_steps)
                     if self.config.analytics_hook:
@@ -3112,6 +3640,7 @@ class DinoKeypointVideoProcessor:
                 stopped_early = True
                 break
             if tracker_results:
+                self._apply_smoother_to_results(tracker_results, mask_lookup, registry)
                 registry.apply_tracker_results(
                     tracker_results, frame_number=frame_number
                 )
@@ -3143,16 +3672,31 @@ class DinoKeypointVideoProcessor:
         *,
         start_frame: Optional[int],
     ) -> Tuple[int, InstanceRegistry]:
+        seed_frame, registry, _, _ = self._resolve_initial_state_with_resume(
+            start_frame=start_frame
+        )
+        return seed_frame, registry
+
+    def _resolve_initial_state_with_resume(
+        self,
+        *,
+        start_frame: Optional[int],
+    ) -> Tuple[
+        int,
+        InstanceRegistry,
+        bool,
+        Optional[Tuple[int, InstanceRegistry]],
+    ]:
         initial_frame, registry = self.adapter.load_initial_state(
             self.video_result_folder
         )
         if start_frame is None:
-            return int(initial_frame), registry
+            return int(initial_frame), registry, False, None
 
         try:
             requested = int(start_frame)
         except Exception:
-            return int(initial_frame), registry
+            return int(initial_frame), registry, False, None
         requested = max(0, min(int(requested), int(self.total_frames) - 1))
 
         requested_path = (
@@ -3160,15 +3704,27 @@ class DinoKeypointVideoProcessor:
             / f"{self.video_result_folder.name}_{requested:09d}.json"
         )
         try:
-            requested_registry = self.adapter.read_annotation(requested_path)
-            logger.info(
-                "Using requested seed frame %s for keypoint tracking.", requested
+            requested_registry = self.adapter.read_annotation(
+                requested_path,
+                prior_registry=(
+                    registry if int(requested) != int(initial_frame) else None
+                ),
             )
-            return int(requested), requested_registry
+            if (
+                requested_registry.keypoint_payload()
+                or requested_registry.instances_with_masks()
+            ):
+                logger.info(
+                    "Using requested seed frame %s for keypoint tracking.", requested
+                )
+                return int(requested), requested_registry, False, None
         except Exception:
             pass
 
-        # Fall back to the nearest annotated frame at or before the requested frame.
+        base_frame = int(initial_frame)
+        base_registry = registry
+
+        # Fall back to the nearest manual annotated frame at or before requested.
         available_frames: List[int] = []
         for filename in find_manual_labeled_json_files(str(self.video_result_folder)):
             try:
@@ -3185,21 +3741,56 @@ class DinoKeypointVideoProcessor:
                 )
                 try:
                     candidate_registry = self.adapter.read_annotation(candidate_path)
-                    logger.info(
-                        "Requested seed frame %s unavailable; using nearest annotated frame %s.",
-                        requested,
-                        int(candidate),
-                    )
-                    return int(candidate), candidate_registry
+                    base_frame = int(candidate)
+                    base_registry = candidate_registry
                 except Exception:
                     pass
 
-        logger.info(
-            "Requested seed frame %s unavailable; using latest available frame %s.",
-            requested,
-            int(initial_frame),
+        # If resuming further down the video (requested > base_frame + 1), prefer the
+        # latest persisted tracked frame right before `requested` so Cutie memory and
+        # optical flow do not teleport across dozens of already-tracked frames.
+        tracked_candidate = find_latest_tracked_frame_before(
+            self.video_result_folder,
+            target_frame=requested,
+            min_frame=base_frame,
         )
-        return int(initial_frame), registry
+        if tracked_candidate is not None:
+            tracked_frame, tracked_path = tracked_candidate
+            try:
+                tracked_registry = self.adapter.read_annotation(
+                    tracked_path,
+                    prior_registry=base_registry,
+                )
+                if (
+                    tracked_registry.keypoint_payload()
+                    or tracked_registry.instances_with_masks()
+                ):
+                    logger.info(
+                        "Resuming keypoint tracking from persisted frame %s before requested frame %s (manual anchor %s).",
+                        tracked_frame,
+                        requested,
+                        base_frame,
+                    )
+                    return (
+                        int(tracked_frame),
+                        tracked_registry,
+                        True,
+                        (base_frame, base_registry),
+                    )
+            except Exception:
+                logger.debug(
+                    "Failed to read persisted frame %s; falling back to manual seed %s.",
+                    tracked_path,
+                    base_frame,
+                    exc_info=True,
+                )
+
+        logger.info(
+            "Requested seed frame %s unavailable; using nearest manual frame %s.",
+            requested,
+            int(base_frame),
+        )
+        return int(base_frame), base_registry, False, None
 
     def _manual_annotation_frames(
         self,
@@ -3207,21 +3798,11 @@ class DinoKeypointVideoProcessor:
         start_frame: int,
         end_frame: int,
     ) -> Dict[int, Path]:
-        manual_files = find_manual_labeled_json_files(str(self.video_result_folder))
-        mapping: Dict[int, Path] = {}
-        for filename in manual_files:
-            try:
-                frame_idx = get_frame_number_from_json(filename)
-            except (ValueError, IndexError):  # pragma: no cover - defensive
-                logger.warning(
-                    "Skipping manual annotation with unexpected name: %s",
-                    filename,
-                )
-                continue
-            if frame_idx < start_frame or frame_idx > end_frame:
-                continue
-            mapping[frame_idx] = self.video_result_folder / filename
-        return mapping
+        return collect_manual_annotation_frames(
+            self.video_result_folder,
+            start_frame=start_frame,
+            end_frame=end_frame,
+        )
 
     def _filter_valid_manual_frames(
         self, manual_frames: Dict[int, Path]
@@ -3245,6 +3826,8 @@ class DinoKeypointVideoProcessor:
         self,
         frame_number: int,
         manual_path: Path,
+        *,
+        prior_registry: Optional[InstanceRegistry] = None,
     ) -> Optional[Tuple[InstanceRegistry, Dict[str, np.ndarray]]]:
         previous_masks: Dict[str, MaskResult] = {}
         last_results = getattr(self.mask_manager, "_last_results", None)
@@ -3262,7 +3845,10 @@ class DinoKeypointVideoProcessor:
                 )
 
         try:
-            registry = self.adapter.read_annotation(manual_path)
+            registry = self.adapter.read_annotation(
+                manual_path,
+                prior_registry=prior_registry,
+            )
         except Exception as exc:
             logger.warning(
                 "Manual resume skipped for frame %s: failed to read %s (%s)",
@@ -3307,21 +3893,7 @@ class DinoKeypointVideoProcessor:
             instance.last_updated_frame = frame_number
 
         self.mask_manager.reset_state()
-        reset_state = getattr(self.tracker, "reset_state", None)
-        if callable(reset_state):
-            try:
-                import inspect
-
-                accepts_manual_anchors = (
-                    "preserve_manual_anchors"
-                    in inspect.signature(reset_state).parameters
-                )
-            except (TypeError, ValueError):
-                accepts_manual_anchors = False
-            if accepts_manual_anchors:
-                reset_state(preserve_manual_anchors=True)
-            else:
-                reset_state()
+        self._reset_tracker_state(preserve_manual_anchors=True)
 
         mask_lookup = self._mask_lookup_from_registry(registry)
         if self.mask_manager.enabled:
@@ -3340,37 +3912,23 @@ class DinoKeypointVideoProcessor:
         registry: InstanceRegistry,
         mask_results: Dict[str, MaskResult],
     ) -> None:
-        for instance in registry:
-            result = mask_results.get(instance.label)
-            if not result:
-                continue
-            instance.set_mask(
-                bitmap=result.mask_bitmap,
-                polygon=result.polygon,
-            )
+        apply_mask_results_to_registry(registry, mask_results)
 
     def _mask_lookup_from_registry(
         self, registry: InstanceRegistry
     ) -> Dict[str, np.ndarray]:
-        lookup: Dict[str, np.ndarray] = {}
-        for instance in registry:
-            mask = instance.mask_bitmap
-            if mask is None and instance.polygon is not None:
-                mask = self.adapter.mask_bitmap_from_polygon(instance.polygon)
-            if mask is not None:
-                lookup[instance.label] = mask.astype(bool)
-        return lookup
+        return mask_lookup_from_registry(registry, self.adapter)
 
     def _report_progress(self, processed: int, total: int) -> None:
-        if total <= 0:
-            return
-        progress = int(min(100, max(0, (processed / total) * 100)))
-        if self.pred_worker is not None:
-            self.pred_worker.report_progress(progress)
-        if self.config.progress_hook:
-            self.config.progress_hook(processed, total)
+        report_processor_progress(
+            processed=processed,
+            total=total,
+            pred_worker=self.pred_worker,
+            progress_hook=self.config.progress_hook,
+        )
 
     def _should_stop(self) -> bool:
-        if self._stop_requested:
-            return True
-        return bool(self.pred_worker and self.pred_worker.is_stopped())
+        return is_processor_stop_requested(
+            stop_requested=self._stop_requested,
+            pred_worker=self.pred_worker,
+        )
