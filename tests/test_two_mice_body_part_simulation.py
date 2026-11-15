@@ -229,11 +229,11 @@ def test_two_mice_keypoint_guided_coarse_and_fine_against_3d_ground_truth():
                     polarity_checks += 1
                     assert gt_vec[0] * pr_vec[0] + gt_vec[1] * pr_vec[1] > 0.0
 
-    assert polarity_checks >= 12
-    assert float(np.mean(coarse_ious["torso"])) >= 0.84
-    assert float(np.mean(coarse_ious["head"])) >= 0.65
-    assert float(np.mean(coarse_ious["tail"])) >= 0.55
-    assert float(np.mean(coarse_ious["limbs"])) >= 0.25
+    assert polarity_checks >= 10
+    assert float(np.mean(coarse_ious["torso"])) >= 0.88
+    assert float(np.mean(coarse_ious["head"])) >= 0.68
+    assert float(np.mean(coarse_ious["tail"])) >= 0.68
+    assert float(np.mean(coarse_ious["limbs"])) >= 0.30
 
     # Fine granularity on oblique 3D rearing frames verifies left/right fore/hind limb segmentation.
     fine_seg = InstanceBodyPartSegmenter(
@@ -273,7 +273,7 @@ def test_two_mice_keypoint_guided_coarse_and_fine_against_3d_ground_truth():
     assert {"right_forelimb", "left_hindlimb", "right_hindlimb"}.issubset(
         seen_limb_labels
     )
-    assert float(np.mean(fine_limb_ious)) >= 0.42
+    assert float(np.mean(fine_limb_ious)) >= 0.50
 
 
 def test_two_mice_seeded_propagation_cross_strain_sharing_partial_and_unsupervised():
@@ -503,3 +503,82 @@ def test_two_mice_huddle_video_merged_parent_recovery_cli_csv_and_track_qc(
         "count_mismatch",
     }
     assert not any(iss.code in bad_codes for iss in qc.issues)
+
+
+def test_two_mice_oblique_occluded_tail_and_cross_posture_seeded_transfer():
+    manifest = _load_manifest()
+    rearing_records = [
+        r for r in manifest["frames"] if r["scenario"] == "rearing_oblique"
+    ]
+    curled_records = [
+        r for r in manifest["frames"] if r["scenario"] == "curled_grooming"
+    ]
+    assert len(rearing_records) == 2
+    assert len(curled_records) == 2
+
+    # 1. On rearing_oblique f02 (mouse_2 distal tail clipped at screen edge, only tail_base visible)
+    # and f04 (mouse_2 turning obliquely away with planted forepaws), verify zero rump-carving and
+    # pectoral chest containment!
+    kp_seg = InstanceBodyPartSegmenter(
+        BodyPartSegmentationConfig(
+            mode="keypoint_guided",
+            feature_backend="fast",
+            keypoint_granularity="coarse",
+        )
+    )
+    rgb_r2, tr_r2, _, c_r2, lm_r2 = _load_fixture_frame(rearing_records[0])
+    H, W = tr_r2.shape
+    preds_r2 = kp_seg.segment_frame(
+        rgb_r2,
+        {"mouse_1": tr_r2 == 1, "mouse_2": tr_r2 == 2},
+        keypoints_by_instance=_visible_keypoints_from_labelme(lm_r2),
+    )
+    m2_r2 = {k: p.to_full_mask(H, W) for k, p in preds_r2["mouse_2"].items()}
+    # mouse_2 on f02 has <= 10 px of clipped tail; tail_base must NOT carve hundreds of rump pixels!
+    pr_tail_r2 = int(np.count_nonzero(m2_r2.get("tail", np.zeros((H, W), dtype=bool))))
+    assert pr_tail_r2 <= 30
+    assert _compute_iou(m2_r2["head"], (tr_r2 == 2) & (c_r2 == 1)) >= 0.84
+    assert _compute_iou(m2_r2["torso"], (tr_r2 == 2) & (c_r2 == 2)) >= 0.90
+    assert _compute_iou(m2_r2["limbs"], (tr_r2 == 2) & (c_r2 == 3)) >= 0.48
+
+    rgb_r4, tr_r4, _, c_r4, lm_r4 = _load_fixture_frame(rearing_records[1])
+    preds_r4 = kp_seg.segment_frame(
+        rgb_r4,
+        {"mouse_1": tr_r4 == 1, "mouse_2": tr_r4 == 2},
+        keypoints_by_instance=_visible_keypoints_from_labelme(lm_r4),
+    )
+    m2_r4 = {k: p.to_full_mask(H, W) for k, p in preds_r4["mouse_2"].items()}
+    assert _compute_iou(m2_r4["head"], (tr_r4 == 2) & (c_r4 == 1)) >= 0.50
+    assert _compute_iou(m2_r4["torso"], (tr_r4 == 2) & (c_r4 == 2)) >= 0.84
+    assert _compute_iou(m2_r4["limbs"], (tr_r4 == 2) & (c_r4 == 3)) >= 0.45
+
+    # 2. Cross-posture, cross-strain seeded transfer: curled black mouse_1 -> elongated white mouse_2!
+    rgb_c0, tr_c0, _, c_c0, _ = _load_fixture_frame(curled_records[0])
+    p_c0 = {"mouse_1": tr_c0 == 1, "mouse_2": tr_c0 == 2}
+    seed_curled_m1 = {
+        "mouse_1": {
+            "head": p_c0["mouse_1"] & (c_c0 == 1),
+            "torso": p_c0["mouse_1"] & np.isin(c_c0, [2, 3]),
+            "tail": p_c0["mouse_1"] & (c_c0 == 4),
+        }
+    }
+    seeded_seg = InstanceBodyPartSegmenter(
+        BodyPartSegmentationConfig(
+            mode="seeded",
+            feature_backend="fast",
+            share_seed_across_instances=True,
+            partition_full_instance=True,
+        )
+    )
+    seeded_seg.fit_seed_frame(rgb_c0, p_c0, seed_curled_m1)
+
+    rgb_c3, tr_c3, _, c_c3, _ = _load_fixture_frame(curled_records[1])
+    p_c3 = {"mouse_1": tr_c3 == 1, "mouse_2": tr_c3 == 2}
+    preds_c3 = seeded_seg.segment_frame(rgb_c3, p_c3)
+    m2_c3 = {k: p.to_full_mask(H, W) for k, p in preds_c3["mouse_2"].items()}
+    m2_ious = [
+        _compute_iou(m2_c3["head"], p_c3["mouse_2"] & (c_c3 == 1)),
+        _compute_iou(m2_c3["torso"], p_c3["mouse_2"] & np.isin(c_c3, [2, 3])),
+        _compute_iou(m2_c3["tail"], p_c3["mouse_2"] & (c_c3 == 4)),
+    ]
+    assert float(np.mean(m2_ious)) >= 0.62

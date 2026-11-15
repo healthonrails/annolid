@@ -170,6 +170,7 @@ class BodyPartPrototype:
     coat_l_mean: float = 128.0
     inherited_cross_instance: bool = False
     working_adapted: bool = False
+    seed_aspect_ratio: float = 1.8
 
 
 @dataclass(slots=True)
@@ -556,9 +557,12 @@ def estimate_body_frame_pose(
                 proto, fg_feats, work_l_mean=work_l_mean
             )
             raw_sim = 0.72 * seed_sim + 0.28 * work_sim
-            # Penalize thin-appendage prototypes from matching thick head/trunk rims across strains.
-            over_t = np.maximum(0.0, fg_sec_t - (proto.mean_thickness + 0.16))
-            t_pen = (0.65 if is_cross else 0.20) * (over_t / 0.20) ** 2
+            # Penalize thin-appendage prototypes (e.g. tail/paws) from matching thick head/trunk rims across strains.
+            if proto.mean_thickness < 0.16 and proto.seed_area_ratio < 0.15:
+                over_t = np.maximum(0.0, fg_sec_t - (proto.mean_thickness + 0.16))
+                t_pen = (0.65 if is_cross else 0.20) * (over_t / 0.20) ** 2
+            else:
+                t_pen = 0.0
             proto_sims.append((proto, raw_sim - t_pen, is_cross))
 
         n_fg = int(fg_feats.shape[1])
@@ -652,8 +656,13 @@ def estimate_body_frame_pose(
         score_neg = 0.0
         if prev_pose is not None:
             cos_prev = ax_x * prev_pose.axial_vec[0] + ax_y * prev_pose.axial_vec[1]
-            score_pos += 0.30 * cos_prev
-            score_neg -= 0.30 * cos_prev
+            prev_w = (
+                0.65
+                if (prototypes and any(p.inherited_cross_instance for p in prototypes))
+                else 0.32
+            )
+            score_pos += prev_w * cos_prev
+            score_neg -= prev_w * cos_prev
         if fg_feats is not None and proto_sims:
             fg_u = raw_u[mask_bool]
             fg_v = raw_v[mask_bool]
@@ -717,30 +726,75 @@ def estimate_body_frame_pose(
                     )
                     * part_w
                 )
-            # Distal-pole thickness taper alignment (species-agnostic: matches sign of prototype pole taper).
+            # Distal-pole thickness taper alignment when prototypes include a thin distal appendage (e.g. tail).
+            real_t = [p.mean_thickness for p, _, _ in proto_sims if not p.is_unassigned]
             proto_ant = [
                 p.mean_thickness
                 for p, _, _ in proto_sims
-                if not p.is_unassigned and p.mean_u >= 0.25
+                if not p.is_unassigned and p.mean_u >= 0.20
             ]
             proto_post = [
                 p.mean_thickness
                 for p, _, _ in proto_sims
-                if not p.is_unassigned and p.mean_u <= -0.35
+                if not p.is_unassigned and p.mean_u <= -0.25
             ]
-            if proto_ant and proto_post:
-                expected_diff = float(np.mean(proto_ant) - np.mean(proto_post))
-                if abs(expected_diff) > 0.10 and fg_u.size >= 12:
-                    pos_pole = fg_u >= float(np.percentile(fg_u, 82))
-                    neg_pole = fg_u <= float(np.percentile(fg_u, 18))
-                    if np.any(pos_pole) and np.any(neg_pole):
-                        obs_diff = float(
-                            fg_sec_t[pos_pole].mean() - fg_sec_t[neg_pole].mean()
-                        )
-                        taper_w = 1.85 if any_cross_albedo else 0.85
-                        pole_align = float(np.sign(expected_diff)) * obs_diff
-                        score_pos += taper_w * pole_align
-                        score_neg -= taper_w * pole_align
+            has_thin_appendage = bool(real_t) and min(real_t) < 0.16
+            if proto_ant and fg_u.size >= 12:
+                pos_pole = fg_u >= float(np.percentile(fg_u, 82))
+                neg_pole = fg_u <= float(np.percentile(fg_u, 18))
+                if np.any(pos_pole) and np.any(neg_pole):
+                    pos_t = float(fg_sec_t[pos_pole].mean())
+                    neg_t = float(fg_sec_t[neg_pole].mean())
+                    obs_diff = pos_t - neg_t
+                    r_tip = max(2, int(round(0.045 * min(wh, ww))))
+                    fg_tip_map = cv2.dilate(
+                        thickness_map,
+                        cv2.getStructuringElement(
+                            cv2.MORPH_ELLIPSE, (2 * r_tip + 1, 2 * r_tip + 1)
+                        ),
+                    )[mask_bool]
+                    pos_tip = fg_u >= float(np.percentile(fg_u, 94))
+                    neg_tip = fg_u <= float(np.percentile(fg_u, 6))
+                    tip_pos_t = (
+                        float(fg_tip_map[pos_tip].mean()) if np.any(pos_tip) else pos_t
+                    )
+                    tip_neg_t = (
+                        float(fg_tip_map[neg_tip].mean()) if np.any(neg_tip) else neg_t
+                    )
+                    tip_diff = tip_pos_t - tip_neg_t
+                    if proto_post and (has_thin_appendage or not any_cross_albedo):
+                        expected_diff = float(np.mean(proto_ant) - np.mean(proto_post))
+                        if abs(expected_diff) > 0.10:
+                            if has_thin_appendage and min(pos_t, neg_t) >= 0.34:
+                                # Target's 18% quantile is dominated by a fat rump because the tail is
+                                # short/clipped; rely on extreme 6% tip taper if a stub exists, else skip.
+                                if (
+                                    min(tip_pos_t, tip_neg_t) < 0.26
+                                    and abs(tip_diff) > 0.08
+                                ):
+                                    pole_align = (
+                                        float(np.sign(expected_diff)) * tip_diff
+                                    )
+                                    score_pos += 1.85 * pole_align
+                                    score_neg -= 1.85 * pole_align
+                            else:
+                                taper_w = (
+                                    1.85
+                                    if (any_cross_albedo and has_thin_appendage)
+                                    else 0.65
+                                )
+                                pole_align = float(np.sign(expected_diff)) * obs_diff
+                                score_pos += taper_w * pole_align
+                                score_neg -= taper_w * pole_align
+                    elif (
+                        any_cross_albedo
+                        and min(pos_t, neg_t) < 0.22
+                        and abs(obs_diff) > 0.28
+                        and float(np.mean(proto_ant)) >= 0.28
+                    ):
+                        # Target exhibits a thin protruding tail (<0.22) even when seed tail was occluded.
+                        score_pos += 1.25 * obs_diff
+                        score_neg -= 1.25 * obs_diff
         elif prev_pose is None and dir_norm <= 1e-5:
             fg_u = raw_u[mask_bool]
             asym = float(np.mean(np.sign(fg_u) * fg_t))
@@ -1443,6 +1497,7 @@ class InstanceBodyPartSegmenter:
             coat_l_mean=float(coat_l_mean),
             inherited_cross_instance=False,
             working_adapted=True,
+            seed_aspect_ratio=float(pose.aspect_ratio),
         )
 
     def fit_seed_frame(
@@ -1636,6 +1691,9 @@ class InstanceBodyPartSegmenter:
                         coat_l_mean=float(np.mean([p.coat_l_mean for p in plist])),
                         inherited_cross_instance=True,
                         working_adapted=False,
+                        seed_aspect_ratio=float(
+                            np.mean([p.seed_aspect_ratio for p in plist])
+                        ),
                     )
                 )
             self._shared_prototypes = self._merge_prototype_lists(
@@ -1677,6 +1735,8 @@ class InstanceBodyPartSegmenter:
                 inherited_cross_instance=prev.inherited_cross_instance
                 and inc.inherited_cross_instance,
                 working_adapted=prev.working_adapted or inc.working_adapted,
+                seed_aspect_ratio=0.5
+                * (prev.seed_aspect_ratio + inc.seed_aspect_ratio),
             )
         return list(by_name.values())
 
@@ -1803,6 +1863,7 @@ class InstanceBodyPartSegmenter:
                     coat_l_mean=p.coat_l_mean,
                     inherited_cross_instance=True,
                     working_adapted=False,
+                    seed_aspect_ratio=p.seed_aspect_ratio,
                 )
                 for p in self._shared_prototypes
             ]
@@ -1815,6 +1876,21 @@ class InstanceBodyPartSegmenter:
         part_labels = [p.part_label for p in protos]
         flat_feats = feats.reshape(feats.shape[0], -1)  # (C, H*W)
         work_l_mean = _foreground_lab_l_mean(crop.work_rgb, crop.work_mask)
+        has_thin_proto = any(
+            not p.is_unassigned and p.mean_thickness < 0.16 for p in protos
+        )
+        fg_u_vals = pose.u_map[crop.work_mask]
+        target_has_thin_tail = False
+        if not has_thin_proto and fg_u_vals.size >= 16:
+            raw_t_s = pose.thickness_map[crop.work_mask]
+            neg_pole_s = fg_u_vals <= float(np.percentile(fg_u_vals, 18))
+            pos_pole_s = fg_u_vals >= float(np.percentile(fg_u_vals, 82))
+            if np.any(neg_pole_s) and np.any(pos_pole_s):
+                target_has_thin_tail = (
+                    float(raw_t_s[neg_pole_s].mean()) < 0.20
+                    and float(raw_t_s[pos_pole_s].mean() - raw_t_s[neg_pole_s].mean())
+                    > 0.14
+                )
 
         logits = np.zeros((K, wh, ww), dtype=np.float32)
         for idx, proto in enumerate(protos):
@@ -1828,12 +1904,30 @@ class InstanceBodyPartSegmenter:
             else:
                 app_score = 0.72 * seed_sim + 0.28 * work_sim
 
-            du = (pose.u_map - proto.mean_u) / max(proto.std_u, 0.14)
+            eff_mean_u = proto.mean_u
+            eff_std_u = proto.std_u
+            ar_ratio = pose.aspect_ratio / max(1.0, proto.seed_aspect_ratio)
+            if target_has_thin_tail:
+                ar_ratio = max(ar_ratio, 1.85)
+            if (
+                not proto.is_unassigned
+                and ar_ratio > 1.25
+                and proto.mean_u > 0.15
+                and infer_part_from_keypoint_name(
+                    proto.part_label, granularity="coarse"
+                )
+                == "head"
+            ):
+                stretch = min(2.2, ar_ratio)
+                eff_mean_u = 1.0 - (1.0 - proto.mean_u) / stretch
+                eff_std_u = max(0.16, proto.std_u / stretch)
+
+            du = (pose.u_map - eff_mean_u) / max(eff_std_u, 0.14)
             dv = (pose.v_map - proto.mean_v) / max(proto.std_v, 0.18)
             dt = (pose.thickness_map - proto.mean_thickness) / max(
                 proto.std_thickness, 0.15
             )
-            thick_w = 0.65 if is_cross else 0.35
+            thick_w = (0.65 if is_cross else 0.35) if has_thin_proto else 0.12
             canon_score = -0.5 * (du * du + 0.75 * dv * dv + thick_w * dt * dt)
             # Mildly relax canonical spatial penalty for catch-all unassigned remainder.
             canon_mult = 0.35 if proto.is_unassigned else (1.35 if is_cross else 1.0)
@@ -1943,12 +2037,30 @@ class InstanceBodyPartSegmenter:
         has_head = "head" in grouped_raw
 
         radius = max(1, int(round(0.04 * max(wh, ww))))
-        sec_r = max(3, int(round(0.14 * min(wh, ww))))
+        sec_r = max(2, int(round(0.10 * min(wh, ww))))
         local_width = cv2.dilate(
             pose.thickness_map,
             cv2.getStructuringElement(
                 cv2.MORPH_ELLIPSE, (2 * sec_r + 1, 2 * sec_r + 1)
             ),
+        )
+        limb_r = max(2, int(round(0.055 * min(wh, ww))))
+        limb_width = cv2.dilate(
+            pose.thickness_map,
+            cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE, (2 * limb_r + 1, 2 * limb_r + 1)
+            ),
+        )
+        r_open = max(2, int(round(0.065 * min(wh, ww))))
+        opened_body = (
+            cv2.morphologyEx(
+                crop.work_mask.astype(np.uint8),
+                cv2.MORPH_OPEN,
+                cv2.getStructuringElement(
+                    cv2.MORPH_ELLIPSE, (2 * r_open + 1, 2 * r_open + 1)
+                ),
+            )
+            > 0
         )
         fg_ys_all, fg_xs_all = np.nonzero(crop.work_mask)
         torso_raw_pts = [(kx, ky) for _n, kx, ky, _r in grouped_raw.get("torso", [])]
@@ -1965,6 +2077,25 @@ class InstanceBodyPartSegmenter:
             trunk_t_est = float(np.mean(t_samples))
         else:
             trunk_t_est = 0.75
+        has_thick_core = bool(np.any(opened_body)) and trunk_t_est >= 0.42
+        thin_protrusion = crop.work_mask & ~opened_body
+
+        head_raw_pts = [(kx, ky) for _n, kx, ky, _r in grouped_raw.get("head", [])]
+        neck_raw_pts = [
+            (kx, ky)
+            for _n, kx, ky, r in grouped_raw.get("torso", [])
+            if r == "head_torso"
+        ]
+        if head_raw_pts and neck_raw_pts:
+            cran_depth = max(
+                2.0 * float(radius),
+                max(
+                    min(math.hypot(hx - nx, hy - ny) for nx, ny in neck_raw_pts)
+                    for hx, hy in head_raw_pts
+                ),
+            )
+        else:
+            cran_depth = max(4.0 * float(radius), 0.22 * float(max(wh, ww)))
 
         # Adjust inter-part junction hinges (e.g. tail_base, neck) inward toward their part's
         # interior shaft/landmarks when neighboring regions are also present, preventing Voronoi
@@ -1972,6 +2103,13 @@ class InstanceBodyPartSegmenter:
         effective_kp_xy: Dict[str, Tuple[float, float]] = {
             kp_name: (kx, ky) for kp_name, (kx, ky) in kps_work.items()
         }
+        non_tail_other_pts = [
+            (kx, ky)
+            for pname_o, entries_o in grouped_raw.items()
+            if pname_o not in {"tail", "torso"}
+            for _n, kx, ky, _r in entries_o
+        ]
+        cervical_plane: Optional[Tuple[float, float, float, float, float]] = None
         grouped_pts: Dict[str, List[Tuple[float, float]]] = {}
         for pname, entries in grouped_raw.items():
             pts_out: List[Tuple[float, float]] = []
@@ -1998,8 +2136,8 @@ class InstanceBodyPartSegmenter:
                             )
                             effective_kp_xy[kp_name] = (nx, ny)
                 else:
-                    thin_cut = min(0.40, trunk_t_est - 0.20)
-                    fg_t_all = local_width[fg_ys_all, fg_xs_all]
+                    fg_thin_prot = thin_protrusion[fg_ys_all, fg_xs_all]
+                    max_perp = max(3.0, 0.075 * float(min(wh, ww)))
                     for kp_name, kx, ky, r in entries:
                         if r == "torso_tail" and torso_raw_pts:
                             tx, ty = min(
@@ -2011,14 +2149,30 @@ class InstanceBodyPartSegmenter:
                             if v_len > 1.0:
                                 ux, uy = vx / v_len, vy / v_len
                                 proj = (fg_xs_all - kx) * ux + (fg_ys_all - ky) * uy
-                                dist_b = np.hypot(fg_xs_all - kx, fg_ys_all - ky)
-                                cand = (
-                                    (proj >= 1.5)
-                                    & (dist_b <= 0.45 * max(wh, ww))
-                                    & (fg_t_all <= thin_cut)
+                                perp = np.abs(
+                                    -(fg_xs_all - kx) * uy + (fg_ys_all - ky) * ux
                                 )
+                                cand = (
+                                    (proj >= 1.0)
+                                    & (proj <= 0.40 * max(wh, ww))
+                                    & (perp <= np.maximum(max_perp, 0.70 * proj))
+                                    & fg_thin_prot
+                                )
+                                if non_tail_other_pts and np.any(cand):
+                                    d_tb = np.hypot(fg_xs_all - kx, fg_ys_all - ky)
+                                    min_d_other = np.min(
+                                        np.stack(
+                                            [
+                                                np.hypot(fg_xs_all - ox, fg_ys_all - oy)
+                                                for ox, oy in non_tail_other_pts
+                                            ],
+                                            axis=0,
+                                        ),
+                                        axis=0,
+                                    )
+                                    cand &= d_tb < (min_d_other - 1.5)
                                 cand_idx = np.flatnonzero(cand)
-                                if cand_idx.size >= 2:
+                                if cand_idx.size >= 1:
                                     order = cand_idx[np.argsort(proj[cand_idx])]
                                     i0 = int(order[int(0.35 * (order.size - 1))])
                                     i1 = int(order[int(0.80 * (order.size - 1))])
@@ -2035,25 +2189,92 @@ class InstanceBodyPartSegmenter:
                                     if p_dist != p_prox:
                                         pts_out.append(p_dist)
                                     continue
-                        pts_out.append((kx, ky))
+                            if has_thick_core:
+                                # Distal tail is occluded/off-screen and no thin caudal stub protrudes.
+                                continue
+                        if not has_thick_core:
+                            pts_out.append((kx, ky))
             elif pname == "torso" and has_head:
                 trunk_core = [
                     (kx, ky) for _n, kx, ky, r in entries if r != "head_torso"
                 ]
                 for kp_name, kx, ky, r in entries:
                     if r == "head_torso" and trunk_core:
-                        nx, ny = min(
+                        cx_t = sum(p[0] for p in trunk_core) / len(trunk_core)
+                        cy_t = sum(p[1] for p in trunk_core) / len(trunk_core)
+                        d_ct = math.hypot(cx_t - kx, cy_t - ky)
+                        nx_near, ny_near = min(
                             trunk_core,
                             key=lambda p: (p[0] - kx) ** 2 + (p[1] - ky) ** 2,
                         )
-                        sx, sy = 0.62 * kx + 0.38 * nx, 0.62 * ky + 0.38 * ny
+                        d_near = math.hypot(nx_near - kx, ny_near - ky)
+                        if d_ct > 1e-3:
+                            u_nt_x = (cx_t - kx) / d_ct
+                            u_nt_y = (cy_t - ky) / d_ct
+                            if head_raw_pts:
+                                cran_axial = max(
+                                    -(hx - kx) * u_nt_x - (hy - ky) * u_nt_y
+                                    for hx, hy in head_raw_pts
+                                )
+                                if cran_axial > 0.0:
+                                    cran_depth = max(2.0 * float(radius), cran_axial)
+                            d_ref = d_near if d_near > 0.25 * d_ct else 0.55 * d_ct
+                            shift_len = min(0.38 * d_ref, 0.38 * cran_depth)
+                            sx = kx + u_nt_x * shift_len
+                            sy = ky + u_nt_y * shift_len
+                            if head_raw_pts:
+                                h_mx = sum(p[0] for p in head_raw_pts) / len(
+                                    head_raw_pts
+                                )
+                                h_my = sum(p[1] for p in head_raw_pts) / len(
+                                    head_raw_pts
+                                )
+                                if (h_mx - kx) * u_nt_x + (
+                                    h_my - ky
+                                ) * u_nt_y <= 0.15 * d_ct:
+                                    cervical_plane = (sx, sy, u_nt_x, u_nt_y, d_ct)
+                        else:
+                            sx, sy = kx, ky
                         effective_kp_xy[kp_name] = (sx, sy)
                         pts_out.append((sx, sy))
                     else:
                         pts_out.append((kx, ky))
+                forelimb_pts = [
+                    (fx, fy)
+                    for kp_name, (fx, fy) in kps_work.items()
+                    if "forelimb"
+                    in infer_part_from_keypoint_name(kp_name, granularity="fine")
+                ]
+                if forelimb_pts and pts_out:
+                    base_torso_pts = list(pts_out)
+                    for fx, fy in forelimb_pts:
+                        if head_raw_pts and (
+                            min(math.hypot(fx - hx, fy - hy) for hx, hy in head_raw_pts)
+                            < 0.65 * cran_depth
+                        ):
+                            continue
+                        ax_t, ay_t = min(
+                            base_torso_pts,
+                            key=lambda p: (p[0] - fx) ** 2 + (p[1] - fy) ** 2,
+                        )
+                        sh_x = 0.42 * fx + 0.58 * ax_t
+                        sh_y = 0.42 * fy + 0.58 * ay_t
+                        sh_xi = int(np.clip(round(sh_x), 0, ww - 1))
+                        sh_yi = int(np.clip(round(sh_y), 0, wh - 1))
+                        if (
+                            crop.work_mask[sh_yi, sh_xi]
+                            and float(pose.thickness_map[sh_yi, sh_xi]) >= 0.34
+                        ):
+                            pts_out.append((sh_x, sh_y))
             else:
                 pts_out = [(kx, ky) for _n, kx, ky, _r in entries]
             grouped_pts[pname] = pts_out
+
+        part_labels = [p for p in part_labels if grouped_pts.get(p)]
+        if not part_labels:
+            return [], np.zeros((0, wh, ww), dtype=np.float32)
+        has_torso = "torso" in part_labels
+        has_head = "head" in part_labels
 
         seed_masks: List[np.ndarray] = []
         for pname in part_labels:
@@ -2114,6 +2335,11 @@ class InstanceBodyPartSegmenter:
                 float(local_width[torso_sm].mean()) if np.any(torso_sm) else 0.75
             )
 
+        grid_yy: Optional[np.ndarray] = None
+        grid_xx: Optional[np.ndarray] = None
+        if has_head and has_torso and neck_raw_pts:
+            grid_yy, grid_xx = np.indices((wh, ww), dtype=np.float32)
+
         for idx, sm in enumerate(seed_masks):
             pname = part_labels[idx]
             p_low = pname.lower()
@@ -2145,22 +2371,62 @@ class InstanceBodyPartSegmenter:
             if np.any(sm):
                 loc_proto = _l2_normalize_vec(feats[:, sm].mean(axis=1))
                 app_sim = (loc_proto @ flat_feats).reshape(wh, ww)
-                part_seed_t = float(local_width[sm].mean())
+                part_seed_t_raw = float(pose.thickness_map[sm].mean())
             else:
                 app_sim = np.zeros((wh, ww), dtype=np.float32)
-                part_seed_t = 0.25
+                part_seed_t_raw = 0.20
 
             score = 2.4 * geo_score + 0.85 * self.config.appearance_weight * app_sim
-            if (
-                has_torso
-                and (is_tail or is_limb)
-                and (trunk_seed_t - part_seed_t) > 0.18
-            ):
-                t_cap = min(0.44, part_seed_t + 0.14)
-                excess_t = np.maximum(0.0, local_width - t_cap)
+            if has_torso and is_limb and (trunk_seed_t - part_seed_t_raw) > 0.14:
+                t_cap = min(0.35, part_seed_t_raw + 0.14)
+                excess_t = np.maximum(0.0, limb_width - t_cap)
                 score = (
-                    score - 4.5 * (trunk_seed_t - part_seed_t) * (excess_t / 0.18) ** 2
+                    score
+                    - 4.4 * (trunk_seed_t - part_seed_t_raw) * (excess_t / 0.15) ** 2
                 )
+            elif has_torso and is_tail and (trunk_seed_t - part_seed_t_raw) > 0.16:
+                t_cap = min(0.36, part_seed_t_raw + 0.15)
+                excess_t = np.maximum(0.0, limb_width - t_cap)
+                score = (
+                    score
+                    - 4.5 * (trunk_seed_t - part_seed_t_raw) * (excess_t / 0.16) ** 2
+                )
+            elif (
+                pname == "head"
+                and grid_xx is not None
+                and grid_yy is not None
+                and grouped_pts.get("head")
+            ):
+                r_head = max(3.0 * float(radius), 1.30 * cran_depth)
+                min_d_head = np.min(
+                    np.stack(
+                        [
+                            np.hypot(grid_xx - hx, grid_yy - hy)
+                            for hx, hy in grouped_pts["head"]
+                        ],
+                        axis=0,
+                    ),
+                    axis=0,
+                )
+                over_d = np.maximum(0.0, min_d_head - r_head)
+                thick_gate = np.clip((local_width - 0.32) / 0.16, 0.0, 1.0)
+                score = (
+                    score - 3.2 * thick_gate * (over_d / max(4.0, 0.30 * r_head)) ** 2
+                )
+                if cervical_plane is not None:
+                    sx_c, sy_c, ux_c, uy_c, d_ns_c = cervical_plane
+                    max_head_caudal = max(
+                        0.0,
+                        max(
+                            (hx - sx_c) * ux_c + (hy - sy_c) * uy_c
+                            for hx, hy in grouped_pts["head"]
+                        ),
+                    )
+                    caudal_past = (grid_xx - sx_c) * ux_c + (grid_yy - sy_c) * uy_c
+                    caudal_over = np.maximum(
+                        0.0, caudal_past - (max_head_caudal + 0.04 * d_ns_c)
+                    )
+                    score = score - 4.0 * (caudal_over / max(2.5, 0.16 * d_ns_c)) ** 2
             logits[idx] = score
 
         temp_prior = self._project_temporal_prior(

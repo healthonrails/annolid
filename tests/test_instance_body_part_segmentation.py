@@ -1018,3 +1018,115 @@ def test_anomalous_parent_area_freezes_ema_and_qc_flags_missing_parent(tmp_path:
     )
     qc = evaluate_track_qc(orphan_dir, expected_instances=1)
     assert any(issue.code == "body_part_missing_parent" for issue in qc.issues)
+
+
+def test_keypoint_guided_oblique_occluded_nose_and_hidden_tail_do_not_bleed():
+    """Rear-oblique foreshortened head (ears only, spine_1 arched near neck) and hidden tail must not bleed."""
+    H, W = 160, 160
+    frame = np.full((H, W, 3), 232, dtype=np.uint8)
+    mask = np.zeros((H, W), dtype=bool)
+
+    # Plump oblique body centered at (80, 92) + foreshortened cranial cap at top (80, 44), no protruding tail.
+    body_canvas = np.zeros((H, W), dtype=np.uint8)
+    cv2.ellipse(body_canvas, (80, 92), (34, 42), 0, 0, 360, 1, -1)
+    cv2.ellipse(body_canvas, (80, 46), (18, 13), 0, 0, 360, 1, -1)
+    # Two small planted hindpaws at bottom-left and bottom-right.
+    cv2.ellipse(body_canvas, (52, 128), (6, 4), -20, 0, 360, 1, -1)
+    cv2.ellipse(body_canvas, (108, 128), (6, 4), 20, 0, 360, 1, -1)
+    mask = body_canvas > 0
+
+    head_gt = mask & (np.indices((H, W))[0] <= 56)
+    frame[mask] = (238, 235, 232)
+    frame[head_gt] = (232, 224, 222)
+
+    # Simulate 3/4-rear oblique keypoints: nose & tail_mid/tail_tip are occluded (omitted),
+    # left/right ears span laterally, and arched thoracic spine_1 projects 2 px above neck!
+    kps = {
+        "mouse_2": {
+            "left_ear": (65.0, 42.0),
+            "right_ear": (95.0, 43.0),
+            "neck": (80.0, 55.0),
+            "spine_1": (80.0, 53.0),
+            "spine_2": (80.0, 82.0),
+            "tail_base": (80.0, 126.0),
+            "left_hindpaw": (50.0, 129.0),
+            "right_hindpaw": (110.0, 129.0),
+        }
+    }
+    seg = InstanceBodyPartSegmenter(
+        BodyPartSegmentationConfig(
+            mode="keypoint_guided",
+            feature_backend="fast",
+            keypoint_granularity="coarse",
+        )
+    )
+    preds = seg.segment_frame(frame, {"mouse_2": mask}, keypoints_by_instance=kps)[
+        "mouse_2"
+    ]
+
+    # 1. Hidden distal tail on a fat rump must NOT hallucinate a rump chunk from tail_base or hindpaws.
+    assert "tail" not in preds
+    # 2. Foreshortened rear-view head must stay on the cranial cap rather than spilling across the shoulders.
+    assert "head" in preds and "torso" in preds
+    assert preds["head"].area_ratio < 0.24
+    head_pred = preds["head"].to_full_mask(H, W)
+    head_iou = np.count_nonzero(head_pred & head_gt) / max(
+        1, np.count_nonzero(head_pred | head_gt)
+    )
+    assert head_iou >= 0.55
+
+
+def test_seeded_cross_posture_foreshortened_crouch_to_elongated_profile():
+    """Crouched head-on dark seed (aspect ~1.2, hidden tail) transfers cleanly to elongated white profile."""
+    H, W = 140, 220
+    frame = np.full((H, W, 3), 220, dtype=np.uint8)
+
+    # mouse_1 (left): foreshortened head-on crouch (aspect ratio ~1.18), dark coat, tail occluded behind body.
+    c1 = np.zeros((H, W), dtype=np.uint8)
+    cv2.ellipse(c1, (52, 74), (24, 21), 0, 0, 360, 1, -1)
+    cv2.ellipse(c1, (64, 68), (17, 16), 0, 0, 360, 1, -1)
+    m1 = c1 > 0
+    yy, xx = np.indices((H, W))
+    m1_head = m1 & (xx >= 54)
+    m1_torso = m1 & ~m1_head
+    frame[m1_torso] = (44, 42, 46)
+    frame[m1_head] = (28, 27, 31)
+
+    # mouse_2 (right): elongated horizontal profile facing left (aspect ratio ~2.7), white coat.
+    c2 = np.zeros((H, W), dtype=np.uint8)
+    cv2.ellipse(c2, (162, 74), (36, 17), 0, 0, 360, 1, -1)
+    cv2.ellipse(c2, (122, 72), (16, 11), 0, 0, 360, 1, -1)
+    m2 = c2 > 0
+    m2_head_gt = m2 & (xx <= 132)
+    m2_torso_gt = m2 & ~m2_head_gt
+    frame[m2_torso_gt] = (242, 240, 238)
+    frame[m2_head_gt] = (232, 218, 216)
+
+    seg = InstanceBodyPartSegmenter(
+        BodyPartSegmentationConfig(
+            mode="seeded",
+            feature_backend="fast",
+            share_seed_across_instances=True,
+            partition_full_instance=True,
+        )
+    )
+    seg.fit_seed_frame(
+        frame,
+        {"mouse_1": m1, "mouse_2": m2},
+        {"mouse_1": {"head": m1_head, "torso": m1_torso}},
+    )
+    preds = seg.segment_frame(frame, {"mouse_1": m1, "mouse_2": m2})
+    m2_preds = preds["mouse_2"]
+    assert set(m2_preds.keys()) == {"head", "torso"}
+    assert 0.10 <= m2_preds["head"].area_ratio <= 0.36
+
+    m2_head_pr = m2_preds["head"].to_full_mask(H, W)
+    m2_torso_pr = m2_preds["torso"].to_full_mask(H, W)
+    head_iou = np.count_nonzero(m2_head_pr & m2_head_gt) / max(
+        1, np.count_nonzero(m2_head_pr | m2_head_gt)
+    )
+    torso_iou = np.count_nonzero(m2_torso_pr & m2_torso_gt) / max(
+        1, np.count_nonzero(m2_torso_pr | m2_torso_gt)
+    )
+    assert head_iou >= 0.52
+    assert torso_iou >= 0.78
