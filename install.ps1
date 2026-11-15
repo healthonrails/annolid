@@ -4,13 +4,15 @@
 #   irm https://raw.githubusercontent.com/healthonrails/annolid/main/install.ps1 | iex
 #
 # Usage (with options):
-#   .\install.ps1 [-InstallDir DIR] [-VenvDir DIR] [-Profile PROFILE] [-Extras EXTRAS] [-NoGpu] [-NoInteractive]
+#   .\install.ps1 [-InstallDir DIR] [-VenvDir DIR] [-Profile PROFILE] [-Extras EXTRAS] [-Wheelhouse DIR] [-Offline] [-NoGpu] [-NoInteractive]
 #
 # Options:
 #   -InstallDir DIR      Directory to install annolid (default: .\annolid)
 #   -VenvDir DIR         Directory for virtual environment (default: .venv)
 #   -Profile PROFILE     Install profile: minimal, gui, tracking, workstation, full (default: gui)
 #   -Extras EXTRAS       Comma-separated extras: webengine,onnx,scientific,pdf,model_downloads,sleap,audio,ai_chat,training,ml,tracking,yolo,cutie,realtime,large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot,bot,memory,all (GUI extras are always included)
+#   -Wheelhouse DIR      Local wheelhouse directory containing .whl packages for offline/cached installs
+#   -Offline             Disable network access (--no-index, skip git pull/uv download); requires -Wheelhouse
 #   -NoGpu               Skip GPU/CUDA detection
 #   -NoInteractive       Skip all prompts and use defaults
 
@@ -20,6 +22,8 @@ param(
     [ValidateSet("minimal", "gui", "tracking", "workstation", "full")]
     [string]$Profile = "gui",
     [string]$Extras = "",
+    [string]$Wheelhouse = $(if ($env:ANNOLID_WHEELHOUSE) { $env:ANNOLID_WHEELHOUSE } else { "" }),
+    [switch]$Offline,
     [switch]$NoGpu,
     [switch]$NoInteractive,
     [switch]$Help
@@ -28,6 +32,8 @@ param(
 $ErrorActionPreference = "Stop"
 $PythonMinVersion = [version]"3.10"
 $AnnolidRepo = "https://github.com/healthonrails/annolid.git"
+$script:OfflineActive = [bool]$Offline -or (@("1", "true", "yes", "on") -contains ([string]$env:ANNOLID_OFFLINE).Trim().ToLowerInvariant())
+$script:WheelhouseDir = $null
 $script:UseUvPython = $false
 $script:UvPythonVersion = $null
 $script:HasNvidiaGpu = $false
@@ -90,18 +96,46 @@ Annolid one-line installer for Windows PowerShell
 
 Usage:
   irm https://raw.githubusercontent.com/healthonrails/annolid/main/install.ps1 | iex
-  .\install.ps1 [-InstallDir DIR] [-VenvDir DIR] [-Profile PROFILE] [-Extras EXTRAS] [-NoGpu] [-NoInteractive]
+  .\install.ps1 [-InstallDir DIR] [-VenvDir DIR] [-Profile PROFILE] [-Extras EXTRAS] [-Wheelhouse DIR] [-Offline] [-NoGpu] [-NoInteractive]
 
 Options:
   -InstallDir DIR      Directory to install Annolid (default: .\annolid)
   -VenvDir DIR         Directory for virtual environment (default: .venv)
   -Profile PROFILE     Install profile: minimal, gui, tracking, workstation, full (default: gui)
   -Extras EXTRAS       Comma-separated extras: webengine,onnx,scientific,pdf,model_downloads,sleap,audio,ai_chat,training,ml,tracking,yolo,cutie,realtime,large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot,bot,memory,all
+  -Wheelhouse DIR      Local wheelhouse directory containing .whl packages for offline/cached installs
+  -Offline             Disable network access (--no-index, skip git pull/uv download); requires -Wheelhouse
   -NoGpu               Skip GPU/CUDA detection and install CPU ONNX Runtime
   -NoInteractive       Skip prompts and use defaults
   -Help                Show this help message
 "@ | Write-Host
     exit 0
+}
+
+function Initialize-OfflineConfig {
+    if (-not [string]::IsNullOrWhiteSpace($Wheelhouse)) {
+        $resolvedWh = [System.IO.Path]::GetFullPath($Wheelhouse)
+        if (-not (Test-Path -LiteralPath $resolvedWh -PathType Container)) {
+            Write-Error-Msg "Wheelhouse directory does not exist: $resolvedWh"
+            exit 1
+        }
+        $script:WheelhouseDir = $resolvedWh
+    }
+    if ($script:OfflineActive -and -not $script:WheelhouseDir) {
+        Write-Error-Msg "-Offline (or ANNOLID_OFFLINE=1) requires -Wheelhouse DIR (or ANNOLID_WHEELHOUSE)."
+        exit 1
+    }
+}
+
+function Get-PipIndexArgs {
+    $argsList = @()
+    if ($script:OfflineActive) {
+        $argsList += "--no-index"
+    }
+    if ($script:WheelhouseDir) {
+        $argsList += @("--find-links", $script:WheelhouseDir)
+    }
+    return @($argsList)
 }
 
 # =============================================================================
@@ -114,6 +148,10 @@ function Test-Git {
         $null = Get-Command git -ErrorAction Stop
         Write-Success "Git found"
     } catch {
+        if ($script:OfflineActive) {
+            Write-Info "Offline mode active and Git not found; expecting an existing local Annolid checkout."
+            return
+        }
         Write-Warning-Msg "Git not found. Attempting automatic installation via Winget..."
 
         try {
@@ -259,6 +297,10 @@ function Test-FFmpeg {
         Write-Host "  $ffmpegVersion"
         Write-Success "FFmpeg found"
     } catch {
+        if ($script:OfflineActive) {
+            Write-Warning-Msg "FFmpeg not found (offline mode: skipping Winget download)."
+            return
+        }
         Write-Warning-Msg "FFmpeg not found. Attempting automatic installation via Winget..."
 
         try {
@@ -346,16 +388,24 @@ function Install-OnnxRuntime {
     Write-Step "Installing ONNX Runtime..."
 
     . $script:ActivateCmd
+    $pipIndexArgs = Get-PipIndexArgs
 
     if ($script:HasNvidiaGpu -and $script:HasCuda12 -and -not $NoGpu) {
-        Write-Host "  Installing onnxruntime-gpu from CUDA 12 feed..."
+        Write-Host "  Installing onnxruntime-gpu..."
         try {
-            if ($script:UseUv) {
-                Uninstall-PythonPackages @("onnxruntime-gpu", "onnxruntime-directml")
-                & $script:UvCmd pip install --upgrade --force-reinstall onnxruntime-gpu --extra-index-url $script:OnnxRuntimeCuda12ExtraIndexUrl
+            Uninstall-PythonPackages @("onnxruntime-gpu", "onnxruntime-directml")
+            if ($script:OfflineActive) {
+                if ($script:UseUv) {
+                    & $script:UvCmd pip install @pipIndexArgs --upgrade --force-reinstall onnxruntime-gpu
+                } else {
+                    & pip install @pipIndexArgs --upgrade --force-reinstall onnxruntime-gpu
+                }
             } else {
-                Uninstall-PythonPackages @("onnxruntime-gpu", "onnxruntime-directml")
-                & pip install --upgrade --force-reinstall onnxruntime-gpu --extra-index-url $script:OnnxRuntimeCuda12ExtraIndexUrl
+                if ($script:UseUv) {
+                    & $script:UvCmd pip install @pipIndexArgs --upgrade --force-reinstall onnxruntime-gpu --extra-index-url $script:OnnxRuntimeCuda12ExtraIndexUrl
+                } else {
+                    & pip install @pipIndexArgs --upgrade --force-reinstall onnxruntime-gpu --extra-index-url $script:OnnxRuntimeCuda12ExtraIndexUrl
+                }
             }
             Write-Success "onnxruntime-gpu (CUDA 12.x) installed"
             return
@@ -366,12 +416,11 @@ function Install-OnnxRuntime {
         Write-Info "Skipping onnxruntime-gpu because a CUDA 12-compatible NVIDIA driver was not detected."
     }
 
+    Uninstall-PythonPackages @("onnxruntime-gpu", "onnxruntime-directml")
     if ($script:UseUv) {
-        Uninstall-PythonPackages @("onnxruntime-gpu", "onnxruntime-directml")
-        & $script:UvCmd pip install --upgrade --force-reinstall onnxruntime
+        & $script:UvCmd pip install @pipIndexArgs --upgrade --force-reinstall onnxruntime
     } else {
-        Uninstall-PythonPackages @("onnxruntime-gpu", "onnxruntime-directml")
-        & pip install --upgrade --force-reinstall onnxruntime
+        & pip install @pipIndexArgs --upgrade --force-reinstall onnxruntime
     }
     Write-Success "onnxruntime (CPU) installed"
 }
@@ -390,6 +439,11 @@ function Test-Uv {
     } catch { }
 
     if (-not $script:UvCmd) {
+        if ($script:OfflineActive) {
+            Write-Info "Offline mode active and uv not found; using system Python venv + pip."
+            $script:UseUv = $false
+            return
+        }
         Write-Warning-Msg "uv not found. Installing via official installer..."
 
         try {
@@ -520,19 +574,28 @@ function Clone-Repo {
     $script:InstallDir = [System.IO.Path]::GetFullPath($InstallDir)
 
     if (Test-Path -LiteralPath $InstallDir) {
-        if (!(Test-Path -LiteralPath "$InstallDir\.git") -or
-            !(Test-Path -LiteralPath "$InstallDir\annolid\__init__.py") -or
+        if (!(Test-Path -LiteralPath "$InstallDir\annolid\__init__.py") -or
             !(Test-Path -LiteralPath "$InstallDir\pyproject.toml")) {
             throw "Directory is not an Annolid checkout. Choose a new -InstallDir."
         }
         Set-Location -LiteralPath $InstallDir
-        $changes = & git status --porcelain --untracked-files=no
-        if ($LASTEXITCODE -ne 0) { throw "Could not inspect checkout state." }
-        if ($changes) { throw "Local tracked changes found. Commit or stash them before updating." }
-        Write-Info "Updating the existing checkout (fast-forward only)..."
-        & git pull --ff-only --recurse-submodules
-        if ($LASTEXITCODE -ne 0) { throw "Update failed. Resolve the Git error above and rerun; the environment has not been changed." }
+        if ($script:OfflineActive) {
+            Write-Info "Offline mode active: using existing local Annolid checkout at $((Get-Location).Path) without git pull."
+        } else {
+            if (!(Test-Path -LiteralPath "$InstallDir\.git")) {
+                throw "Directory is not a Git checkout. Choose a new -InstallDir or pass -Offline with -Wheelhouse."
+            }
+            $changes = & git status --porcelain --untracked-files=no
+            if ($LASTEXITCODE -ne 0) { throw "Could not inspect checkout state." }
+            if ($changes) { throw "Local tracked changes found. Commit or stash them before updating." }
+            Write-Info "Updating the existing checkout (fast-forward only)..."
+            & git pull --ff-only --recurse-submodules
+            if ($LASTEXITCODE -ne 0) { throw "Update failed. Resolve the Git error above and rerun; the environment has not been changed." }
+        }
     } else {
+        if ($script:OfflineActive) {
+            throw "Offline mode requires an existing Annolid source directory at $InstallDir (-InstallDir)."
+        }
         & git clone --recurse-submodules $AnnolidRepo $InstallDir
         if ($LASTEXITCODE -ne 0) { throw "Clone failed. Check the network and destination path." }
         Set-Location -LiteralPath $InstallDir
@@ -586,14 +649,25 @@ function Install-Annolid {
     Write-Step "Installing Annolid..."
 
     . $script:ActivateCmd
+    $pipIndexArgs = Get-PipIndexArgs
 
-    Write-Host "  Upgrading pip..."
-    if ($script:UseUv) {
-        & $script:UvCmd pip install --upgrade pip
-        & $script:UvCmd pip install --upgrade msvc-runtime
+    if ($script:OfflineActive) {
+        if ($script:WheelhouseDir -and (Get-ChildItem -LiteralPath $script:WheelhouseDir -Filter "pip-*.whl" -ErrorAction SilentlyContinue)) {
+            Write-Host "  Upgrading pip from offline wheelhouse..."
+            if ($script:UseUv) { & $script:UvCmd pip install @pipIndexArgs --upgrade pip } else { & pip install @pipIndexArgs --upgrade pip }
+        }
+        if ($script:WheelhouseDir -and (Get-ChildItem -LiteralPath $script:WheelhouseDir -Filter "msvc_runtime-*.whl" -ErrorAction SilentlyContinue)) {
+            if ($script:UseUv) { & $script:UvCmd pip install @pipIndexArgs --upgrade msvc-runtime } else { & pip install @pipIndexArgs --upgrade msvc-runtime }
+        }
     } else {
-        & pip install --upgrade pip
-        & pip install --upgrade msvc-runtime
+        Write-Host "  Upgrading pip..."
+        if ($script:UseUv) {
+            & $script:UvCmd pip install @pipIndexArgs --upgrade pip
+            & $script:UvCmd pip install @pipIndexArgs --upgrade msvc-runtime
+        } else {
+            & pip install @pipIndexArgs --upgrade pip
+            & pip install @pipIndexArgs --upgrade msvc-runtime
+        }
     }
 
     # GUI dependencies are always installed so `annolid` can launch immediately.
@@ -604,23 +678,33 @@ function Install-Annolid {
     $installTarget = ".[$extrasCsv]"
     Write-Host "  Profile: $Profile"
     Write-Host "  Including extras: $extrasCsv"
+    if ($script:WheelhouseDir) {
+        Write-Host "  Wheelhouse: $script:WheelhouseDir (offline=$($script:OfflineActive))"
+    }
 
     if (Test-PytorchRequested $installExtras) {
-        if ($script:HasNvidiaGpu -and -not $NoGpu) {
+        if ($script:OfflineActive) {
+            Write-Host "  Installing PyTorch from offline wheelhouse..."
+            if ($script:UseUv) {
+                & $script:UvCmd pip install @pipIndexArgs torch torchvision
+            } else {
+                & pip install @pipIndexArgs torch torchvision
+            }
+        } elseif ($script:HasNvidiaGpu -and -not $NoGpu) {
             Write-Host "  Installing CUDA-enabled PyTorch..."
             try {
                 if ($script:UseUv) {
-                    & $script:UvCmd pip install --index-url $script:PytorchCudaIndexUrl torch torchvision
+                    & $script:UvCmd pip install @pipIndexArgs --index-url $script:PytorchCudaIndexUrl torch torchvision
                 } else {
-                    & pip install --index-url $script:PytorchCudaIndexUrl torch torchvision
+                    & pip install @pipIndexArgs --index-url $script:PytorchCudaIndexUrl torch torchvision
                 }
                 Write-Success "CUDA-enabled PyTorch installed"
             } catch {
                 Write-Warning-Msg "CUDA-enabled PyTorch install failed. Falling back to default PyTorch build."
                 if ($script:UseUv) {
-                    & $script:UvCmd pip install torch torchvision
+                    & $script:UvCmd pip install @pipIndexArgs torch torchvision
                 } else {
-                    & pip install torch torchvision
+                    & pip install @pipIndexArgs torch torchvision
                 }
             }
         }
@@ -630,27 +714,53 @@ function Install-Annolid {
 
     Write-Host "  Installing annolid (this may take a few minutes)..."
     if ($script:UseUv) {
-        & $script:UvCmd pip install -e $installTarget
+        & $script:UvCmd pip install @pipIndexArgs -e $installTarget
+        if ($LASTEXITCODE -ne 0 -and $script:OfflineActive) {
+            & $script:UvCmd pip install @pipIndexArgs --no-build-isolation -e $installTarget
+        }
     } else {
-        & pip install -e $installTarget
+        & pip install @pipIndexArgs -e $installTarget
+        if ($LASTEXITCODE -ne 0 -and $script:OfflineActive) {
+            & pip install @pipIndexArgs --no-build-isolation -e $installTarget
+        }
     }
 
     if ($LASTEXITCODE -ne 0) { throw "Annolid package installation failed. Review the error above and rerun." }
 
     if (Test-ExtraSelected $installExtras @("sam3", "sam", "segment_anything", "all")) {
-        Write-Host "  Installing SAM-HQ..."
-        $script:SamHqStatus = "requested"
-        try {
-            if ($script:UseUv) {
-                & $script:UvCmd pip install "segment-anything @ git+https://github.com/SysCV/sam-hq.git"
+        if ($script:OfflineActive) {
+            if ($script:WheelhouseDir -and (Get-ChildItem -LiteralPath $script:WheelhouseDir -Filter "segment_anything-*.whl" -ErrorAction SilentlyContinue)) {
+                Write-Host "  Installing SAM-HQ from offline wheelhouse..."
+                try {
+                    if ($script:UseUv) {
+                        & $script:UvCmd pip install @pipIndexArgs segment-anything
+                    } else {
+                        & pip install @pipIndexArgs segment-anything
+                    }
+                    $script:SamHqStatus = "installed"
+                } catch {
+                    $script:SamHqStatus = "failed"
+                    Add-OptionalFailure "sam_hq"
+                }
             } else {
-                & pip install "segment-anything @ git+https://github.com/SysCV/sam-hq.git"
+                $script:SamHqStatus = "skipped_offline"
+                Write-Info "Offline mode active: skipping GitHub SAM-HQ VCS install (no segment_anything wheel in wheelhouse)."
             }
-            $script:SamHqStatus = "installed"
-        } catch {
-            $script:SamHqStatus = "failed"
-            Add-OptionalFailure "sam_hq"
-            Write-Warning-Msg "SAM-HQ installation failed."
+        } else {
+            Write-Host "  Installing SAM-HQ..."
+            $script:SamHqStatus = "requested"
+            try {
+                if ($script:UseUv) {
+                    & $script:UvCmd pip install @pipIndexArgs "segment-anything @ git+https://github.com/SysCV/sam-hq.git"
+                } else {
+                    & pip install @pipIndexArgs "segment-anything @ git+https://github.com/SysCV/sam-hq.git"
+                }
+                $script:SamHqStatus = "installed"
+            } catch {
+                $script:SamHqStatus = "failed"
+                Add-OptionalFailure "sam_hq"
+                Write-Warning-Msg "SAM-HQ installation failed."
+            }
         }
     } else {
         $script:SamHqStatus = "skipped"
@@ -718,28 +828,38 @@ function Repair-OnnxRuntime {
     }
 
     Write-Warning-Msg "ONNX Runtime failed to import. Repairing runtime dependencies..."
+    $pipIndexArgs = Get-PipIndexArgs
 
-    if ($script:UseUv) {
-        Uninstall-PythonPackages @("onnxruntime", "onnxruntime-gpu", "onnxruntime-directml")
-        & $script:UvCmd pip install --upgrade --force-reinstall msvc-runtime
-    } else {
-        Uninstall-PythonPackages @("onnxruntime", "onnxruntime-gpu", "onnxruntime-directml")
-        & pip install --upgrade --force-reinstall msvc-runtime
+    Uninstall-PythonPackages @("onnxruntime", "onnxruntime-gpu", "onnxruntime-directml")
+    if (-not $script:OfflineActive -or ($script:WheelhouseDir -and (Get-ChildItem -LiteralPath $script:WheelhouseDir -Filter "msvc_runtime-*.whl" -ErrorAction SilentlyContinue))) {
+        if ($script:UseUv) {
+            & $script:UvCmd pip install @pipIndexArgs --upgrade --force-reinstall msvc-runtime
+        } else {
+            & pip install @pipIndexArgs --upgrade --force-reinstall msvc-runtime
+        }
     }
 
     if ($script:HasNvidiaGpu -and $script:HasCuda12 -and -not $NoGpu) {
         Write-Info "Attempting onnxruntime-gpu repair for CUDA 12.x..."
-        if ($script:UseUv) {
-            & $script:UvCmd pip install --upgrade --force-reinstall onnxruntime-gpu --extra-index-url $script:OnnxRuntimeCuda12ExtraIndexUrl
+        if ($script:OfflineActive) {
+            if ($script:UseUv) {
+                & $script:UvCmd pip install @pipIndexArgs --upgrade --force-reinstall onnxruntime-gpu
+            } else {
+                & pip install @pipIndexArgs --upgrade --force-reinstall onnxruntime-gpu
+            }
         } else {
-            & pip install --upgrade --force-reinstall onnxruntime-gpu --extra-index-url $script:OnnxRuntimeCuda12ExtraIndexUrl
+            if ($script:UseUv) {
+                & $script:UvCmd pip install @pipIndexArgs --upgrade --force-reinstall onnxruntime-gpu --extra-index-url $script:OnnxRuntimeCuda12ExtraIndexUrl
+            } else {
+                & pip install @pipIndexArgs --upgrade --force-reinstall onnxruntime-gpu --extra-index-url $script:OnnxRuntimeCuda12ExtraIndexUrl
+            }
         }
     } else {
         Write-Info "Using CPU onnxruntime for repair."
         if ($script:UseUv) {
-            & $script:UvCmd pip install --upgrade --force-reinstall onnxruntime
+            & $script:UvCmd pip install @pipIndexArgs --upgrade --force-reinstall onnxruntime
         } else {
-            & pip install --upgrade --force-reinstall onnxruntime
+            & pip install @pipIndexArgs --upgrade --force-reinstall onnxruntime
         }
     }
 
@@ -883,6 +1003,8 @@ function Write-InstallReport {
             cuda_version = $script:CudaVersion
             onnx_providers = @($onnxProviders)
             sam_hq_status = $script:SamHqStatus
+            offline = [bool]$script:OfflineActive
+            wheelhouse = $script:WheelhouseDir
             failed_optional_steps = @($script:FailedOptionalSteps)
             created_at = $createdAt
         }
@@ -937,6 +1059,7 @@ function Write-Summary {
 # Main
 # =============================================================================
 if ($Help) { Show-Help }
+Initialize-OfflineConfig
 
 Write-Header
 Test-Git

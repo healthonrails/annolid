@@ -1682,19 +1682,25 @@ def _cmd_runtime_cli(argv: list[str]) -> int:
         CAPABILITIES,
         INSTALL_PROFILES,
         _build_smart_install_plan,
+        _find_matching_host_python,
+        _find_uv_binary,
         _missing_dependencies,
         capability_status_dict,
         check_capability,
         detect_accelerator_summary,
+        export_wheelhouse_bundle,
         install_capability_stream,
         install_profile_stream,
         list_capabilities,
+        resolve_wheelhouse_dir,
+        user_runtime_site_dir,
+        verify_wheelhouse_bundle,
     )
 
     parser = argparse.ArgumentParser(
         prog="annolid-run runtime",
         description=(
-            "Inspect and install optional Annolid runtime packages and profiles on demand."
+            "Inspect, install, and bundle optional Annolid runtime packages on demand or offline."
         ),
         formatter_class=_AnnolidHelpFormatter,
     )
@@ -1736,9 +1742,82 @@ def _cmd_runtime_cli(argv: list[str]) -> int:
         help="Named install profile to install.",
     )
     install_p.add_argument(
+        "--wheelhouse",
+        default=None,
+        metavar="DIR",
+        help="Local offline wheelhouse folder containing .whl packages.",
+    )
+    install_p.add_argument(
+        "--offline",
+        action="store_true",
+        default=None,
+        help="Disable PyPI network access (--no-index) and install strictly from --wheelhouse.",
+    )
+    install_p.add_argument(
+        "--user-runtime",
+        action="store_true",
+        default=False,
+        help="Allow installing into isolated ~/.annolid/runtime when running from a frozen bundle.",
+    )
+    install_p.add_argument(
         "--dry-run",
         action="store_true",
         help="Print resolved install commands without executing them.",
+    )
+
+    bundle_p = sub.add_parser(
+        "bundle",
+        help="Export a SHA256-verified offline wheelhouse bundle for air-gapped machines.",
+    )
+    bundle_p.add_argument(
+        "targets",
+        nargs="*",
+        help="Capability or profile names to bundle (e.g. tracking sam3 workstation).",
+    )
+    bundle_p.add_argument(
+        "--profile",
+        choices=tuple(sorted(INSTALL_PROFILES)),
+        default=None,
+        help="Named install profile to bundle.",
+    )
+    bundle_p.add_argument(
+        "--out",
+        "-o",
+        required=True,
+        metavar="DIR",
+        help="Output directory for downloaded .whl packages and wheelhouse-manifest.json.",
+    )
+    bundle_p.add_argument(
+        "--python-version",
+        default=None,
+        metavar="X.Y",
+        help="Optional target Python major.minor version (e.g. 3.12, 3.14).",
+    )
+    bundle_p.add_argument(
+        "--platform",
+        default=None,
+        metavar="TAG",
+        help="Optional PEP 425 platform tag (e.g. manylinux2014_x86_64, win_amd64, macosx_11_0_arm64).",
+    )
+    bundle_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit manifest JSON to stdout.",
+    )
+
+    verify_p = sub.add_parser(
+        "verify-bundle",
+        help="Verify .whl files and SHA256 checksums in an offline wheelhouse directory.",
+    )
+    verify_p.add_argument(
+        "wheelhouse",
+        metavar="DIR",
+        help="Path to the offline wheelhouse directory to verify.",
+    )
+    verify_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit verification report as JSON.",
     )
 
     effective_argv = argv if argv else ["status"]
@@ -1747,6 +1826,42 @@ def _cmd_runtime_cli(argv: list[str]) -> int:
         return 0
     args = parser.parse_args(effective_argv)
     cmd = str(args.runtime_cmd or "status")
+
+    def _parse_targets_and_profiles(
+        raw_targets: list[str],
+        explicit_profile: str | None,
+    ) -> tuple[list[str], list[str]] | None:
+        req_profiles: list[str] = []
+        req_caps: list[str] = []
+        if explicit_profile:
+            req_profiles.append(str(explicit_profile).strip().lower())
+        for raw_target in raw_targets:
+            for token in str(raw_target).split(","):
+                key = token.strip().lower()
+                if not key:
+                    continue
+                if key in CAPABILITIES:
+                    if key not in req_caps:
+                        req_caps.append(key)
+                elif key in INSTALL_PROFILES:
+                    if key not in req_profiles:
+                        req_profiles.append(key)
+                else:
+                    known_caps = ", ".join(list_capabilities())
+                    known_profiles = ", ".join(sorted(INSTALL_PROFILES))
+                    print(
+                        f"[annolid-run] Unknown capability or profile {key!r}.\n"
+                        f"  Capabilities: {known_caps}\n"
+                        f"  Profiles:     {known_profiles}",
+                        file=sys.stderr,
+                    )
+                    return None
+        for pname in req_profiles:
+            for cap in INSTALL_PROFILES[pname]["capabilities"]:  # type: ignore[index]
+                cap_key = str(cap)
+                if cap_key not in req_caps:
+                    req_caps.append(cap_key)
+        return req_profiles, req_caps
 
     if cmd == "status":
         env_info = detect_accelerator_summary()
@@ -1758,12 +1873,22 @@ def _cmd_runtime_cli(argv: list[str]) -> int:
             }
             print(json.dumps(payload, indent=2))
             return 0
-        print(
+        header_line = (
             f"Environment: Python {env_info['python_version']} "
             f"({env_info['python_executable']}) | "
             f"accelerator={env_info['accelerator']} | "
             f"writable={env_info['writable']}"
         )
+        if env_info.get("offline_mode"):
+            header_line += " | offline=True"
+        if env_info.get("wheelhouse_dir"):
+            header_line += f" | wheelhouse={env_info['wheelhouse_dir']}"
+        print(header_line)
+        if env_info.get("frozen"):
+            print(
+                f"Frozen User Runtime: {env_info['user_runtime_dir']} "
+                f"(backend={env_info['user_runtime_backend']})"
+            )
         print("")
         print(f"{'CAPABILITY':<18} {'STATUS':<11} {'~MB':>5}  DESCRIPTION")
         print("-" * 80)
@@ -1806,36 +1931,10 @@ def _cmd_runtime_cli(argv: list[str]) -> int:
         return 0
 
     if cmd == "install":
-        requested_profiles: list[str] = []
-        requested_caps: list[str] = []
-        if args.profile:
-            requested_profiles.append(str(args.profile).strip().lower())
-        for raw_target in list(args.targets or ()):
-            for token in str(raw_target).split(","):
-                key = token.strip().lower()
-                if not key:
-                    continue
-                if key in CAPABILITIES:
-                    if key not in requested_caps:
-                        requested_caps.append(key)
-                elif key in INSTALL_PROFILES:
-                    if key not in requested_profiles:
-                        requested_profiles.append(key)
-                else:
-                    known_caps = ", ".join(list_capabilities())
-                    known_profiles = ", ".join(sorted(INSTALL_PROFILES))
-                    print(
-                        f"[annolid-run] Unknown capability or profile {key!r}.\n"
-                        f"  Capabilities: {known_caps}\n"
-                        f"  Profiles:     {known_profiles}",
-                        file=sys.stderr,
-                    )
-                    return 2
-        for pname in requested_profiles:
-            for cap in INSTALL_PROFILES[pname]["capabilities"]:  # type: ignore[index]
-                cap_key = str(cap)
-                if cap_key not in requested_caps:
-                    requested_caps.append(cap_key)
+        parsed = _parse_targets_and_profiles(list(args.targets or ()), args.profile)
+        if parsed is None:
+            return 2
+        requested_profiles, requested_caps = parsed
         if not requested_caps and not requested_profiles:
             install_p.print_help()
             return 2
@@ -1851,7 +1950,31 @@ def _cmd_runtime_cli(argv: list[str]) -> int:
             if not all_missing:
                 print("All requested capabilities are already installed.")
                 return 0
-            _, steps = _build_smart_install_plan(tuple(all_missing))
+            try:
+                use_user_rt = bool(getattr(sys, "frozen", False))
+                target_site = user_runtime_site_dir() if use_user_rt else None
+                if target_site is not None and not (
+                    _find_uv_binary() or _find_matching_host_python()
+                ):
+                    wh_resolved = resolve_wheelhouse_dir(args.wheelhouse)
+                    if wh_resolved is None:
+                        raise RuntimeError(
+                            "Frozen bundle requires --wheelhouse, 'uv', or matching host Python."
+                        )
+                    specs_str = " ".join(dep.package_spec for dep in all_missing)
+                    print(
+                        f"[wheelhouse] extract ({specs_str}) from {wh_resolved} -> {target_site}"
+                    )
+                    return 0
+                _, steps = _build_smart_install_plan(
+                    tuple(all_missing),
+                    wheelhouse=args.wheelhouse,
+                    offline=args.offline,
+                    target_site_dir=target_site,
+                )
+            except RuntimeError as exc:
+                print(f"[annolid-run] {exc}", file=sys.stderr)
+                return 1
             for primary_cmd, _fallback in steps:
                 print(" ".join(primary_cmd))
             return 0
@@ -1860,24 +1983,99 @@ def _cmd_runtime_cli(argv: list[str]) -> int:
             sys.stdout.write(line if line.endswith("\n") else line + "\n")
             sys.stdout.flush()
 
-        installed_specs: list[str] = []
-        if requested_profiles and not args.targets and len(requested_profiles) == 1:
-            specs = install_profile_stream(requested_profiles[0], on_output=_echo)
-            installed_specs.extend(specs)
-        else:
-            for cap_key in requested_caps:
-                specs = install_capability_stream(
-                    cap_key,
-                    auto_install=True,
+        try:
+            installed_specs: list[str] = []
+            if requested_profiles and not args.targets and len(requested_profiles) == 1:
+                specs = install_profile_stream(
+                    requested_profiles[0],
+                    wheelhouse=args.wheelhouse,
+                    offline=args.offline,
+                    allow_frozen_user_runtime=bool(args.user_runtime),
                     on_output=_echo,
                 )
-                for spec in specs:
-                    if spec not in installed_specs:
-                        installed_specs.append(spec)
+                installed_specs.extend(specs)
+            else:
+                for cap_key in requested_caps:
+                    specs = install_capability_stream(
+                        cap_key,
+                        auto_install=True,
+                        wheelhouse=args.wheelhouse,
+                        offline=args.offline,
+                        allow_frozen_user_runtime=bool(args.user_runtime),
+                        on_output=_echo,
+                    )
+                    for spec in specs:
+                        if spec not in installed_specs:
+                            installed_specs.append(spec)
+        except RuntimeError as exc:
+            print(f"[annolid-run] {exc}", file=sys.stderr)
+            return 1
+
         if not installed_specs:
             print("All requested runtime capabilities are already installed.")
         else:
             print(f"Installed {len(installed_specs)} package specification(s).")
+        return 0
+
+    if cmd == "bundle":
+        parsed = _parse_targets_and_profiles(list(args.targets or ()), args.profile)
+        if parsed is None:
+            return 2
+        requested_profiles, requested_caps = parsed
+        if not requested_caps:
+            bundle_p.print_help()
+            return 2
+
+        def _bundle_echo(line: str) -> None:
+            out_stream = sys.stderr if bool(args.json) else sys.stdout
+            out_stream.write(line if line.endswith("\n") else line + "\n")
+            out_stream.flush()
+
+        try:
+            manifest = export_wheelhouse_bundle(
+                args.out,
+                capability_names=requested_caps,
+                profile_names=requested_profiles,
+                python_version=args.python_version,
+                platform_tag=args.platform,
+                on_output=_bundle_echo,
+            )
+        except (RuntimeError, ValueError, KeyError) as exc:
+            print(f"[annolid-run] {exc}", file=sys.stderr)
+            return 1
+
+        if bool(args.json):
+            print(json.dumps(manifest, indent=2))
+        else:
+            print(
+                f"Exported offline bundle ({manifest['wheel_count']} wheels) to {args.out}"
+            )
+        return 0
+
+    if cmd == "verify-bundle":
+        try:
+            report = verify_wheelhouse_bundle(args.wheelhouse)
+        except RuntimeError as exc:
+            if bool(args.json):
+                print(json.dumps({"valid": False, "error": str(exc)}, indent=2))
+            else:
+                print(
+                    f"[annolid-run] Bundle verification failed: {exc}", file=sys.stderr
+                )
+            return 1
+
+        if bool(args.json):
+            print(json.dumps(report, indent=2))
+        else:
+            manifest_note = (
+                "manifest SHA256 verified"
+                if report.get("manifest_present")
+                else "wheel files present (no manifest)"
+            )
+            print(
+                f"Verified wheelhouse: {report['wheelhouse_dir']} "
+                f"({report['wheel_count']} wheels, {manifest_note})"
+            )
         return 0
 
     parser.print_help()

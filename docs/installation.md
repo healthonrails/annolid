@@ -201,8 +201,20 @@ annolid-run runtime profiles
 annolid-run runtime install tracking sam3
 ```
 
-Use `--profile tracking` or `--profile workstation` when provisioning offline or
-shared lab machines that should download heavy model stacks upfront.
+### Air-Gapped and Offline Lab Machines
+
+For offline or air-gapped workstations, export a self-contained, SHA256-checksummed wheelhouse bundle on an online machine with the matching OS/architecture (or explicit `--python-version` / `--platform`), transfer the folder, verify its checksums, and install with `--offline`:
+
+```bash
+# 1. On an online machine: export binary wheels + wheelhouse-manifest.json
+annolid-run runtime bundle --profile workstation --out ./annolid-wheelhouse
+
+# 2. On the air-gapped machine: verify SHA256 manifest and install without network access
+annolid-run runtime verify-bundle ./annolid-wheelhouse
+annolid-run runtime install --profile workstation --wheelhouse ./annolid-wheelhouse --offline
+```
+
+You can also browse to the wheelhouse folder in **Settings → Runtime & Optional Packages…** (or set `ANNOLID_WHEELHOUSE=/path/to/annolid-wheelhouse` and `ANNOLID_OFFLINE=1`), or bootstrap an existing local checkout offline with `./install.sh --install-dir /path/to/annolid --wheelhouse /path/to/annolid-wheelhouse --offline` (`.\install.ps1 -InstallDir C:\annolid -Wheelhouse C:\annolid-wheelhouse -Offline` on Windows).
 
 SAM-related packages, hosted AI providers, realtime hardware, large-image
 backends, Bot integrations, audio helpers, image editing, and text-to-speech

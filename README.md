@@ -106,14 +106,16 @@ For example, to pre-warm tracking and workstation tools upfront on macOS or Linu
 curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh | bash -s -- --profile workstation
 ```
 
-You can also inspect or pre-install optional runtimes anytime from the GUI (**Settings → Runtime & Optional Packages…**) or the CLI:
+You can also inspect, pre-install, or export offline wheelhouse bundles for air-gapped lab machines anytime from the GUI (**Settings → Runtime & Optional Packages…**) or the CLI:
 
 ```bash
 annolid-run runtime status
 annolid-run runtime install tracking sam3
+annolid-run runtime bundle tracking sam3 --out ./annolid-wheelhouse
+annolid-run runtime install tracking sam3 --wheelhouse ./annolid-wheelhouse --offline
 ```
 
-See [One-Line Installer Choices](docs/one_line_install_choices.md) for Windows profile selection, CPU/GPU options, custom paths, and non-interactive installation.
+See [One-Line Installer Choices](docs/one_line_install_choices.md) for Windows profile selection, offline wheelhouse flags, CPU/GPU options, custom paths, and non-interactive installation.
 
 ### Install into an existing Python environment
 

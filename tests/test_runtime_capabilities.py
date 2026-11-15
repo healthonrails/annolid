@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import importlib
 import io
 import json
+from pathlib import Path
 import subprocess
 import sys
 import threading
+import zipfile
 
 import numpy as np
 import pytest
@@ -16,16 +21,23 @@ from annolid.infrastructure.capabilities import (
     ONNXRUNTIME_CUDA12_EXTRA_INDEX_URL,
     PYTORCH_CPU_INDEX_URL,
     PYTORCH_CUDA12_INDEX_URL,
+    USER_RUNTIME_DIR_ENV,
+    WHEELHOUSE_MANIFEST_NAME,
+    RuntimeCapability,
     RuntimeDependency,
     RuntimeInstallCancelledError,
     _build_smart_install_plan,
+    _extract_verified_wheel,
     _pin_abi_sensitive_specs,
     capability_message,
     check_capability,
     ensure_capability,
+    export_wheelhouse_bundle,
     format_capability_report,
     install_capability_stream,
     list_capabilities,
+    user_runtime_site_dir,
+    verify_wheelhouse_bundle,
 )
 
 
@@ -364,3 +376,345 @@ def test_pure_numpy_fallbacks_for_mask_centroid_and_pca_axis(
     axis = skeletonization._principal_axis(pts)
     assert abs(abs(float(axis[0])) - 1.0) < 1e-6
     assert abs(float(axis[1])) < 1e-6
+
+
+def _make_pep427_wheel(
+    dest_dir: Path,
+    dist_name: str,
+    version: str,
+    *,
+    py_tag: str = "py3",
+    abi_tag: str = "none",
+    plat_tag: str = "any",
+    files: dict[str, bytes] | None = None,
+    requires_dist: tuple[str, ...] = (),
+    tamper_member: str | None = None,
+    extra_unsafe_member: tuple[str, bytes] | None = None,
+) -> Path:
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    norm_dist = dist_name.replace("-", "_")
+    whl_path = dest_dir / f"{norm_dist}-{version}-{py_tag}-{abi_tag}-{plat_tag}.whl"
+    dist_info = f"{norm_dist}-{version}.dist-info"
+
+    meta_lines = [
+        "Metadata-Version: 2.1",
+        f"Name: {dist_name}",
+        f"Version: {version}",
+    ]
+    for req in requires_dist:
+        meta_lines.append(f"Requires-Dist: {req}")
+    metadata_bytes = ("\n".join(meta_lines) + "\n\n").encode("utf-8")
+    wheel_bytes = (
+        "Wheel-Version: 1.0\n"
+        "Generator: annolid-test\n"
+        "Root-Is-Purelib: true\n"
+        f"Tag: {py_tag}-{abi_tag}-{plat_tag}\n"
+    ).encode("utf-8")
+
+    payload: dict[str, bytes] = dict(files or {})
+    payload[f"{dist_info}/METADATA"] = metadata_bytes
+    payload[f"{dist_info}/WHEEL"] = wheel_bytes
+
+    record_lines: list[str] = []
+    for rel_path, content in payload.items():
+        digest = (
+            base64.urlsafe_b64encode(hashlib.sha256(content).digest())
+            .rstrip(b"=")
+            .decode("ascii")
+        )
+        record_lines.append(f"{rel_path},sha256={digest},{len(content)}")
+    record_member = f"{dist_info}/RECORD"
+    record_lines.append(f"{record_member},,")
+    payload[record_member] = ("\n".join(record_lines) + "\n").encode("utf-8")
+
+    if tamper_member is not None and tamper_member in payload:
+        # Keep the same byte length so SHA256 verification specifically catches tampering.
+        orig = payload[tamper_member]
+        payload[tamper_member] = bytes([orig[0] ^ 0xFF]) + orig[1:]
+
+    with zipfile.ZipFile(whl_path, "w") as zf:
+        for rel_path, content in payload.items():
+            zf.writestr(rel_path, content)
+        if extra_unsafe_member is not None:
+            zf.writestr(extra_unsafe_member[0], extra_unsafe_member[1])
+
+    return whl_path
+
+
+def test_export_and_verify_wheelhouse_bundle_detects_tampering(
+    tmp_path: Path,
+) -> None:
+    wh_dir = tmp_path / "offline-bundle"
+    whl_holder: list[Path] = []
+
+    def _fake_download(cmd, **_kwargs):
+        assert "download" in cmd
+        whl = _make_pep427_wheel(
+            wh_dir,
+            "PyMuPDF",
+            "1.25.0",
+            files={"fitz/__init__.py": b"__version__ = '1.25.0'\n"},
+        )
+        whl_holder.append(whl)
+        return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+
+    manifest = export_wheelhouse_bundle(
+        wh_dir,
+        capability_names=("pdf",),
+        runner=_fake_download,
+    )
+    assert manifest["wheel_count"] == 1
+    assert manifest["capabilities"] == ["pdf"]
+    assert (wh_dir / WHEELHOUSE_MANIFEST_NAME).is_file()
+
+    report = verify_wheelhouse_bundle(wh_dir)
+    assert report["valid"] is True
+    assert report["manifest_present"] is True
+    assert report["wheel_count"] == 1
+
+    # Flip one byte inside the wheel without changing file size -> SHA256 mismatch
+    raw = bytearray(whl_holder[0].read_bytes())
+    raw[-1] ^= 0x01
+    whl_holder[0].write_bytes(bytes(raw))
+
+    with pytest.raises(RuntimeError, match="SHA256 checksum mismatch"):
+        verify_wheelhouse_bundle(wh_dir)
+
+
+def test_smart_install_plan_supports_offline_and_cached_wheelhouse(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        "annolid.infrastructure.capabilities._find_uv_binary",
+        lambda: "/usr/bin/uv",
+    )
+    wh_dir = tmp_path / "wheelhouse"
+    _make_pep427_wheel(wh_dir, "pymupdf", "1.25.0")
+
+    deps = (RuntimeDependency("fitz", "pymupdf"),)
+
+    # Strict offline mode: --no-index + --find-links, no PyPI fallback
+    specs_off, steps_off = _build_smart_install_plan(
+        deps, wheelhouse=wh_dir, offline=True
+    )
+    assert specs_off == ("pymupdf",)
+    assert len(steps_off) == 1
+    primary_off, fallback_off = steps_off[0]
+    assert "--no-index" in primary_off
+    assert "--find-links" in primary_off
+    assert str(wh_dir.resolve()) in primary_off
+    assert fallback_off is None
+
+    # Cached wheelhouse mode (offline=False): --find-links primary + offline fallback
+    _, steps_cached = _build_smart_install_plan(deps, wheelhouse=wh_dir, offline=False)
+    primary_cached, fallback_cached = steps_cached[0]
+    assert "--find-links" in primary_cached
+    assert "--no-index" not in primary_cached
+    assert fallback_cached is not None
+    assert "--no-index" in fallback_cached
+
+    # Offline mode without wheelhouse fails fast with actionable guidance
+    with pytest.raises(RuntimeError, match="Offline mode is enabled"):
+        _build_smart_install_plan(deps, wheelhouse=None, offline=True)
+
+
+def test_pure_python_offline_wheelhouse_installer_in_airgapped_frozen_bundle(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    bundle_dir = tmp_path / "Annolid.app" / "Contents" / "MacOS"
+    bundle_dir.mkdir(parents=True)
+    frozen_exe = bundle_dir / "annolid"
+    frozen_exe.write_text("#!/bin/sh\n", encoding="utf-8")
+    bundle_snapshot_before = sorted(
+        p.relative_to(tmp_path / "Annolid.app")
+        for p in (tmp_path / "Annolid.app").rglob("*")
+    )
+
+    user_rt_root = tmp_path / "isolated_user_rt"
+    wh_dir = tmp_path / "airgap_wheelhouse"
+
+    # Root wheel uses cp39-abi3-any tag + PEP 508 conditional transitive dependency
+    _make_pep427_wheel(
+        wh_dir,
+        "airgap-leaf-pkg",
+        "0.4.0",
+        files={"airgap_leaf_mod/__init__.py": b"LEAF_VALUE = 42\n"},
+    )
+    _make_pep427_wheel(
+        wh_dir,
+        "ignored-other-os-pkg",
+        "9.9.9",
+        files={"ignored_other_os_mod/__init__.py": b"SHOULD_NOT_INSTALL = True\n"},
+    )
+    _make_pep427_wheel(
+        wh_dir,
+        "airgap-root-pkg",
+        "1.2.0",
+        py_tag="cp39",
+        abi_tag="abi3",
+        plat_tag="any",
+        requires_dist=(
+            "airgap-leaf-pkg>=0.4.0; python_version >= '3.10'",
+            "ignored-other-os-pkg>=1.0; sys_platform == 'nonexistent_os'",
+        ),
+        files={
+            "airgap_root_mod/__init__.py": (
+                b"from airgap_leaf_mod import LEAF_VALUE\nROOT_VALUE = LEAF_VALUE + 8\n"
+            )
+        },
+    )
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(frozen_exe))
+    monkeypatch.setenv(USER_RUNTIME_DIR_ENV, str(user_rt_root))
+    monkeypatch.setattr(
+        "annolid.infrastructure.capabilities._find_uv_binary", lambda: None
+    )
+    monkeypatch.setattr(
+        "annolid.infrastructure.capabilities._find_matching_host_python",
+        lambda: None,
+    )
+    monkeypatch.setitem(
+        CAPABILITIES,
+        "_test_airgap_ext",
+        RuntimeCapability(
+            name="_test_airgap_ext",
+            title="Airgap Test Extension",
+            dependencies=(
+                RuntimeDependency("airgap_root_mod", "airgap-root-pkg>=1.0.0"),
+            ),
+            package_specs=("airgap-root-pkg>=1.0.0",),
+            docs_url="https://annolid.com/installation/",
+            description="Synthetic capability for zero-toolchain frozen airgap test.",
+        ),
+    )
+
+    site_dir = user_runtime_site_dir()
+    try:
+        installed = ensure_capability(
+            "_test_airgap_ext",
+            wheelhouse=wh_dir,
+            offline=True,
+            allow_frozen_user_runtime=True,
+        )
+        assert installed == ("airgap-root-pkg>=1.0.0",)
+        assert (site_dir / "airgap_root_mod" / "__init__.py").is_file()
+        assert (site_dir / "airgap_leaf_mod" / "__init__.py").is_file()
+        assert not (site_dir / "ignored_other_os_mod").exists()
+
+        mod = importlib.import_module("airgap_root_mod")
+        assert mod.ROOT_VALUE == 50
+
+        # Bundled app directory must remain 100% untouched (read-only contract).
+        bundle_snapshot_after = sorted(
+            p.relative_to(tmp_path / "Annolid.app")
+            for p in (tmp_path / "Annolid.app").rglob("*")
+        )
+        assert bundle_snapshot_after == bundle_snapshot_before
+    finally:
+        for mod_name in ("airgap_root_mod", "airgap_leaf_mod"):
+            sys.modules.pop(mod_name, None)
+        resolved_site = str(site_dir.resolve())
+        while resolved_site in sys.path:
+            sys.path.remove(resolved_site)
+
+
+def test_extract_verified_wheel_rejects_bad_record_hash_and_zipslip(
+    tmp_path: Path,
+) -> None:
+    wh_dir = tmp_path / "bad_wheels"
+    target_site = tmp_path / "site"
+
+    bad_hash_whl = _make_pep427_wheel(
+        wh_dir,
+        "corrupt-pkg",
+        "1.0.0",
+        files={"corrupt_pkg/__init__.py": b"VALUE = 1\n"},
+        tamper_member="corrupt_pkg/__init__.py",
+    )
+    with pytest.raises(RuntimeError, match="RECORD SHA256 mismatch"):
+        _extract_verified_wheel(bad_hash_whl, target_site)
+    assert not list(target_site.rglob("*.annolid-tmp"))
+    assert not (target_site / "corrupt_pkg" / "__init__.py").exists()
+
+    zipslip_whl = _make_pep427_wheel(
+        wh_dir,
+        "evil-pkg",
+        "1.0.0",
+        files={"evil_pkg/__init__.py": b"VALUE = 1\n"},
+        extra_unsafe_member=("../escaped.py", b"raise SystemExit(1)\n"),
+    )
+    with pytest.raises(RuntimeError, match="Unsafe archive path"):
+        _extract_verified_wheel(zipslip_whl, target_site)
+    assert not (tmp_path / "escaped.py").exists()
+
+
+def test_annolid_run_runtime_cli_bundle_verify_and_offline_dry_run(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from annolid.engine.cli import main as cli_main
+
+    wh_dir = tmp_path / "cli_wheelhouse"
+
+    def _fake_export(out_dir, *, capability_names=(), **_kwargs):
+        _make_pep427_wheel(Path(out_dir), "pymupdf", "1.25.0")
+        manifest = {
+            "schema_version": 1,
+            "wheel_count": 1,
+            "capabilities": list(capability_names),
+            "wheels": [
+                {
+                    "filename": "pymupdf-1.25.0-py3-none-any.whl",
+                    "size_bytes": (Path(out_dir) / "pymupdf-1.25.0-py3-none-any.whl")
+                    .stat()
+                    .st_size,
+                    "sha256": hashlib.sha256(
+                        (Path(out_dir) / "pymupdf-1.25.0-py3-none-any.whl").read_bytes()
+                    ).hexdigest(),
+                }
+            ],
+        }
+        (Path(out_dir) / WHEELHOUSE_MANIFEST_NAME).write_text(
+            json.dumps(manifest), encoding="utf-8"
+        )
+        return manifest
+
+    monkeypatch.setattr(
+        "annolid.infrastructure.capabilities.export_wheelhouse_bundle",
+        _fake_export,
+    )
+
+    rc_bundle = cli_main(["runtime", "bundle", "pdf", "--out", str(wh_dir), "--json"])
+    assert rc_bundle == 0
+    bundle_json = json.loads(capsys.readouterr().out)
+    assert bundle_json["wheel_count"] == 1
+
+    rc_verify = cli_main(["runtime", "verify-bundle", str(wh_dir), "--json"])
+    assert rc_verify == 0
+    verify_json = json.loads(capsys.readouterr().out)
+    assert verify_json["valid"] is True
+    assert verify_json["manifest_present"] is True
+
+    monkeypatch.setattr(
+        "annolid.infrastructure.capabilities._missing_dependencies",
+        lambda cap, **_kw: cap.dependencies,
+    )
+    rc_dry = cli_main(
+        [
+            "runtime",
+            "install",
+            "pdf",
+            "--wheelhouse",
+            str(wh_dir),
+            "--offline",
+            "--dry-run",
+        ]
+    )
+    assert rc_dry == 0
+    dry_out = capsys.readouterr().out
+    assert "--no-index" in dry_out
+    assert str(wh_dir.resolve()) in dry_out

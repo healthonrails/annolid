@@ -457,3 +457,41 @@ def test_release_workflow_does_not_duplicate_macos_bundle_in_archive() -> None:
         'python -m zipfile -c "${{ matrix.archive-name }}" annolid Annolid.app'
         not in workflow
     )
+
+
+def test_installers_support_offline_wheelhouse_mode() -> None:
+    bash_script = (ROOT / "install.sh").read_text(encoding="utf-8")
+    powershell_script = (ROOT / "install.ps1").read_text(encoding="utf-8")
+
+    assert "--wheelhouse DIR" in bash_script
+    assert "--offline" in bash_script
+    assert "ANNOLID_WHEELHOUSE" in bash_script
+    assert "ANNOLID_OFFLINE" in bash_script
+    assert "build_pip_index_args()" in bash_script
+    assert "PIP_INDEX_ARGS+=(--no-index)" in bash_script
+    assert 'PIP_INDEX_ARGS+=(--find-links "$WHEELHOUSE")' in bash_script
+    assert '"offline":' in bash_script
+    assert '"wheelhouse":' in bash_script
+
+    assert "-Wheelhouse DIR" in powershell_script
+    assert "-Offline" in powershell_script
+    assert "Initialize-OfflineConfig" in powershell_script
+    assert "Get-PipIndexArgs" in powershell_script
+    assert '"--no-index"' in powershell_script
+    assert '"--find-links"' in powershell_script
+    assert "offline = [bool]$script:OfflineActive" in powershell_script
+    assert "wheelhouse = $script:WheelhouseDir" in powershell_script
+
+    # Running install.sh --offline without --wheelhouse fails fast before network/git steps
+    env = dict(os.environ)
+    env.pop("ANNOLID_WHEELHOUSE", None)
+    env.pop("ANNOLID_OFFLINE", None)
+    completed = subprocess.run(
+        ["/bin/bash", str(ROOT / "install.sh"), "--offline"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 1
+    assert "requires --wheelhouse" in completed.stdout

@@ -75,16 +75,74 @@ def test_runtime_manager_dialog_renders_capabilities_and_filters(
         dialog.close()
 
 
-def test_runtime_manager_dialog_disables_install_in_frozen_bundle(
+def test_runtime_manager_dialog_frozen_bundle_modes(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
 ) -> None:
     _ensure_qapp()
     monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(
+        "annolid.infrastructure.capabilities._find_uv_binary", lambda: None
+    )
+    monkeypatch.setattr(
+        "annolid.infrastructure.capabilities._find_matching_host_python",
+        lambda: None,
+    )
 
     dialog = RuntimeManagerDialog()
     try:
+        # Air-gapped frozen bundle with no uv/host-python and no wheelhouse -> disabled
         assert not dialog._install_btn.isEnabled()
         assert dialog.checked_capabilities() == []
+
+        # Selecting a local wheelhouse directory containing .whl files enables User Runtime install
+        wh_dir = tmp_path / "wheelhouse"
+        wh_dir.mkdir()
+        (wh_dir / "pymupdf-1.25.0-py3-none-any.whl").write_bytes(b"fake-whl")
+        dialog.set_wheelhouse_dir(str(wh_dir), offline=True)
+        assert dialog._install_btn.isEnabled()
+        assert "User Runtime" in dialog._env_label.text()
+
+        # Explicit ANNOLID_FROZEN_USER_RUNTIME=0 locks down user-space installs
+        monkeypatch.setenv("ANNOLID_FROZEN_USER_RUNTIME", "0")
+        dialog.refresh_table()
+        assert not dialog._install_btn.isEnabled()
+    finally:
+        dialog.close()
+
+
+def test_runtime_install_dialog_enables_airgapped_frozen_install_with_wheelhouse(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    _ensure_qapp()
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(
+        "annolid.infrastructure.capabilities._find_uv_binary", lambda: None
+    )
+    monkeypatch.setattr(
+        "annolid.infrastructure.capabilities._find_matching_host_python",
+        lambda: None,
+    )
+    status = check_capability("pdf", find_spec=lambda _name: None)
+
+    dialog = RuntimeInstallDialog(
+        (status,),
+        feature_title="PDF Import",
+        auto_start=False,
+        allow_frozen_user_runtime=True,
+    )
+    try:
+        assert not dialog._install_btn.isEnabled()
+        assert "Target User Runtime" in dialog._summary_label.text()
+
+        wh_dir = tmp_path / "offline_wh"
+        wh_dir.mkdir()
+        (wh_dir / "pymupdf-1.25.0-py3-none-any.whl").write_bytes(b"fake-whl")
+        dialog.set_wheelhouse_dir(str(wh_dir), offline=True)
+
+        assert dialog._install_btn.isEnabled()
+        assert "Offline Wheelhouse" in dialog._summary_label.text()
     finally:
         dialog.close()
 

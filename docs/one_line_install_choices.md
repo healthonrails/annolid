@@ -36,6 +36,7 @@ Choose the flag set that matches your goal.
 | Skip GPU detection | `curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh \| bash -s -- --no-gpu` | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/healthonrails/annolid/main/install.ps1))) -NoGpu` |
 | Non-interactive install | `curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh \| bash -s -- --no-interactive` | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/healthonrails/annolid/main/install.ps1))) -NoInteractive` |
 | Named profile | `curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh \| bash -s -- --profile workstation` | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/healthonrails/annolid/main/install.ps1))) -Profile workstation` |
+| Offline wheelhouse install | `./install.sh --install-dir ./annolid --wheelhouse ./wheelhouse --offline` | `.\install.ps1 -InstallDir .\annolid -Wheelhouse .\wheelhouse -Offline` |
 | Install to custom folder | `curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh \| bash -s -- --install-dir /path/to/annolid` | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/healthonrails/annolid/main/install.ps1))) -InstallDir C:\\path\\to\\annolid` |
 | Custom venv location | `curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh \| bash -s -- --venv-dir /path/to/.venv` | `& ([scriptblock]::Create((irm https://raw.githubusercontent.com/healthonrails/annolid/main/install.ps1))) -VenvDir C:\\path\\to\\.venv` |
 | Use Conda env | `curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.sh \| bash -s -- --use-conda` | `Not supported in install.ps1` |
@@ -49,6 +50,8 @@ Choose the flag set that matches your goal.
 - `--venv-dir DIR`
 - `--profile minimal|gui|tracking|workstation|full`
 - `--extras EXTRAS`
+- `--wheelhouse DIR`
+- `--offline`
 - `--no-gpu`
 - `--use-conda`
 - `--no-interactive`
@@ -78,6 +81,8 @@ curl -sSL https://raw.githubusercontent.com/healthonrails/annolid/main/install.s
 - `-VenvDir DIR`
 - `-Profile minimal|gui|tracking|workstation|full`
 - `-Extras EXTRAS`
+- `-Wheelhouse DIR`
+- `-Offline`
 - `-NoGpu`
 - `-NoInteractive`
 - `-Help`

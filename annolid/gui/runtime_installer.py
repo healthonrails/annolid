@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 import sys
 import threading
 from typing import Sequence
@@ -11,13 +12,20 @@ from qtpy import QtCore, QtGui, QtWidgets
 
 from annolid.infrastructure.capabilities import (
     CapabilityStatus,
+    FROZEN_USER_RUNTIME_ENV,
     RuntimeInstallCancelledError,
     _auto_install_optional_deps_enabled,
+    can_install_in_frozen_user_runtime,
     capability_message,
     check_capability,
     ensure_capability,
+    export_wheelhouse_bundle,
+    frozen_user_runtime_enabled,
     install_capability_stream,
+    is_offline_mode,
+    resolve_wheelhouse_dir,
     set_interactive_install_handler,
+    user_runtime_site_dir,
 )
 from annolid.utils.logger import logger
 
@@ -41,10 +49,17 @@ class _CapabilityInstallWorker(QtCore.QThread):
     def __init__(
         self,
         capability_names: tuple[str, ...],
+        *,
+        wheelhouse: str | None = None,
+        offline: bool | None = None,
+        allow_frozen_user_runtime: bool = False,
         parent: QtCore.QObject | None = None,
     ) -> None:
         super().__init__(parent)
         self._capability_names = capability_names
+        self._wheelhouse = wheelhouse
+        self._offline = offline
+        self._allow_frozen_user_runtime = allow_frozen_user_runtime
         self.cancel_event = threading.Event()
 
     def request_cancel(self) -> None:
@@ -58,6 +73,9 @@ class _CapabilityInstallWorker(QtCore.QThread):
                 specs = install_capability_stream(
                     cap_name,
                     auto_install=True,
+                    wheelhouse=self._wheelhouse,
+                    offline=self._offline,
+                    allow_frozen_user_runtime=self._allow_frozen_user_runtime,
                     on_output=lambda line: self.output_line.emit(line),
                     cancel_event=self.cancel_event,
                 )
@@ -71,6 +89,41 @@ class _CapabilityInstallWorker(QtCore.QThread):
             self.install_failed.emit(str(exc))
 
 
+class _WheelhouseExportWorker(QtCore.QThread):
+    output_line = QtCore.Signal(str)
+    export_succeeded = QtCore.Signal(object)
+    export_cancelled = QtCore.Signal()
+    export_failed = QtCore.Signal(str)
+
+    def __init__(
+        self,
+        output_dir: str,
+        capability_names: tuple[str, ...],
+        parent: QtCore.QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._output_dir = output_dir
+        self._capability_names = capability_names
+        self.cancel_event = threading.Event()
+
+    def request_cancel(self) -> None:
+        self.cancel_event.set()
+
+    def run(self) -> None:  # pragma: no cover - exercised via QThread event loop
+        try:
+            manifest = export_wheelhouse_bundle(
+                self._output_dir,
+                capability_names=self._capability_names,
+                on_output=lambda line: self.output_line.emit(line),
+                cancel_event=self.cancel_event,
+            )
+            self.export_succeeded.emit(manifest)
+        except RuntimeInstallCancelledError:
+            self.export_cancelled.emit()
+        except Exception as exc:
+            self.export_failed.emit(str(exc))
+
+
 class RuntimeInstallDialog(QtWidgets.QDialog):
     """Modal progress/confirmation dialog that installs capabilities off the UI thread."""
 
@@ -80,19 +133,32 @@ class RuntimeInstallDialog(QtWidgets.QDialog):
         *,
         feature_title: str | None = None,
         auto_start: bool = False,
+        wheelhouse: str | None = None,
+        offline: bool | None = None,
+        allow_frozen_user_runtime: bool = False,
         parent: QtWidgets.QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._statuses = tuple(statuses)
         self._feature_title = (feature_title or "").strip()
         self._worker: _CapabilityInstallWorker | None = None
+        self._allow_frozen_user_runtime = allow_frozen_user_runtime
         self.installed_specs: tuple[str, ...] = ()
         self.error_message: str = ""
 
+        try:
+            resolved_wh = resolve_wheelhouse_dir(wheelhouse)
+        except RuntimeError:
+            resolved_wh = None
+        self._wheelhouse: str | None = (
+            str(resolved_wh) if resolved_wh is not None else wheelhouse
+        )
+        self._offline: bool | None = offline
+
         titles = ", ".join(st.title or st.name for st in self._statuses)
         self.setWindowTitle(self.tr("Install Optional Runtime Packages"))
-        self.setMinimumWidth(620)
-        self.setMinimumHeight(380)
+        self.setMinimumWidth(650)
+        self.setMinimumHeight(400)
         self.setModal(True)
 
         layout = QtWidgets.QVBoxLayout(self)
@@ -108,23 +174,7 @@ class RuntimeInstallDialog(QtWidgets.QDialog):
         self._header_label.setWordWrap(True)
         layout.addWidget(self._header_label)
 
-        missing_specs: list[str] = []
-        approx_mb = 0
-        for st in self._statuses:
-            approx_mb += int(st.approx_download_mb or 0)
-            for spec in st.missing_package_specs:
-                if spec not in missing_specs:
-                    missing_specs.append(spec)
-
-        summary_parts = [
-            f"Packages to install: <code>{', '.join(missing_specs) or titles}</code>"
-        ]
-        if approx_mb > 0:
-            summary_parts.append(
-                f"Estimated download: ~{approx_mb} MB (cached by uv/pip)"
-            )
-        summary_parts.append(f"Target Python: <code>{sys.executable}</code>")
-        self._summary_label = QtWidgets.QLabel("<br>".join(summary_parts), self)
+        self._summary_label = QtWidgets.QLabel(self)
         self._summary_label.setWordWrap(True)
         self._summary_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
         layout.addWidget(self._summary_label)
@@ -139,9 +189,6 @@ class RuntimeInstallDialog(QtWidgets.QDialog):
         self._log_view.setReadOnly(True)
         font = QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.FixedFont)
         self._log_view.setFont(font)
-        self._log_view.setPlaceholderText(
-            self.tr("Click 'Install Now' to download and enable this feature...")
-        )
         layout.addWidget(self._log_view, stretch=1)
 
         self._auto_confirm_checkbox = QtWidgets.QCheckBox(
@@ -157,6 +204,13 @@ class RuntimeInstallDialog(QtWidgets.QDialog):
         self._copy_cmd_btn = QtWidgets.QPushButton(self.tr("Copy pip Command"), self)
         self._copy_cmd_btn.clicked.connect(self._copy_install_command)
         btn_row.addWidget(self._copy_cmd_btn)
+
+        self._offline_btn = QtWidgets.QPushButton(
+            self.tr("Select Offline Folder…"), self
+        )
+        self._offline_btn.clicked.connect(self._choose_wheelhouse_folder)
+        btn_row.addWidget(self._offline_btn)
+
         btn_row.addStretch(1)
 
         self._cancel_btn = QtWidgets.QPushButton(self.tr("Cancel"), self)
@@ -170,8 +224,85 @@ class RuntimeInstallDialog(QtWidgets.QDialog):
 
         layout.addLayout(btn_row)
 
-        if auto_start:
+        self._refresh_summary_and_state()
+
+        if auto_start and self._install_btn.isEnabled():
             QtCore.QTimer.singleShot(0, self._start_install)
+
+    def _can_install_now(self) -> bool:
+        if not getattr(sys, "frozen", False):
+            return True
+        if not self._allow_frozen_user_runtime:
+            return False
+        can_install, _backend = can_install_in_frozen_user_runtime(self._wheelhouse)
+        return can_install
+
+    def _refresh_summary_and_state(self) -> None:
+        titles = ", ".join(st.title or st.name for st in self._statuses)
+        missing_specs: list[str] = []
+        approx_mb = 0
+        for st in self._statuses:
+            approx_mb += int(st.approx_download_mb or 0)
+            for spec in st.missing_package_specs:
+                if spec not in missing_specs:
+                    missing_specs.append(spec)
+
+        summary_parts = [
+            f"Packages to install: <code>{', '.join(missing_specs) or titles}</code>"
+        ]
+        if approx_mb > 0 and not self._wheelhouse:
+            summary_parts.append(
+                f"Estimated download: ~{approx_mb} MB (cached by uv/pip)"
+            )
+        if getattr(sys, "frozen", False):
+            summary_parts.append(
+                f"Target User Runtime: <code>{user_runtime_site_dir()}</code> "
+                "(desktop app bundle remains read-only)"
+            )
+        else:
+            summary_parts.append(f"Target Python: <code>{sys.executable}</code>")
+
+        if self._wheelhouse:
+            mode_tag = (
+                "offline (--no-index)"
+                if is_offline_mode(self._offline)
+                else "preferred local cache"
+            )
+            summary_parts.append(
+                f"Offline Wheelhouse: <code>{self._wheelhouse}</code> ({mode_tag})"
+            )
+        self._summary_label.setText("<br>".join(summary_parts))
+
+        can_install = self._can_install_now()
+        self._install_btn.setEnabled(can_install)
+        if can_install:
+            self._log_view.setPlaceholderText(
+                self.tr("Click 'Install Now' to enable this feature...")
+            )
+        else:
+            self._log_view.setPlaceholderText(
+                self.tr(
+                    "No external Python/uv installer detected for this frozen bundle. "
+                    "Click 'Select Offline Folder…' to install from a local wheelhouse directory."
+                )
+            )
+
+    def set_wheelhouse_dir(self, folder: str | None, *, offline: bool = True) -> None:
+        cleaned = (folder or "").strip()
+        self._wheelhouse = cleaned or None
+        self._offline = offline if cleaned else None
+        self._refresh_summary_and_state()
+
+    def _choose_wheelhouse_folder(self) -> None:
+        start_dir = self._wheelhouse or str(Path.home())
+        chosen = QtWidgets.QFileDialog.getExistingDirectory(
+            self,
+            self.tr("Select Offline Wheelhouse Directory"),
+            start_dir,
+        )
+        if chosen:
+            self.set_wheelhouse_dir(chosen, offline=True)
+            self._append_log(f"Selected offline wheelhouse: {chosen}")
 
     def _manual_command_text(self) -> str:
         commands = [st.install_command for st in self._statuses if st.install_command]
@@ -195,13 +326,20 @@ class RuntimeInstallDialog(QtWidgets.QDialog):
             return
         _SESSION_AUTO_CONFIRM = bool(self._auto_confirm_checkbox.isChecked())
         self._install_btn.setEnabled(False)
+        self._offline_btn.setEnabled(False)
         self._auto_confirm_checkbox.setEnabled(False)
         self._progress_bar.setVisible(True)
         self._progress_bar.setRange(0, 0)
         self._log_view.clear()
 
         cap_names = tuple(st.name for st in self._statuses)
-        worker = _CapabilityInstallWorker(cap_names, parent=self)
+        worker = _CapabilityInstallWorker(
+            cap_names,
+            wheelhouse=self._wheelhouse,
+            offline=self._offline,
+            allow_frozen_user_runtime=self._allow_frozen_user_runtime,
+            parent=self,
+        )
         worker.output_line.connect(self._append_log)
         worker.install_succeeded.connect(self._on_succeeded)
         worker.install_cancelled.connect(self._on_cancelled)
@@ -221,8 +359,9 @@ class RuntimeInstallDialog(QtWidgets.QDialog):
         self._progress_bar.setRange(0, 1)
         self._progress_bar.setValue(0)
         self._append_log("Installation cancelled.")
-        self._install_btn.setEnabled(True)
+        self._offline_btn.setEnabled(True)
         self._auto_confirm_checkbox.setEnabled(True)
+        self._refresh_summary_and_state()
         self.reject()
 
     def _on_failed(self, message: str) -> None:
@@ -233,8 +372,9 @@ class RuntimeInstallDialog(QtWidgets.QDialog):
         self._append_log("Installation failed:")
         self._append_log(message)
         self._install_btn.setText(self.tr("Retry Install"))
-        self._install_btn.setEnabled(True)
+        self._offline_btn.setEnabled(True)
         self._auto_confirm_checkbox.setEnabled(True)
+        self._refresh_summary_and_state()
 
     def _on_cancel_clicked(self) -> None:
         if self._worker is not None and self._worker.isRunning():
@@ -260,9 +400,9 @@ def _show_readonly_capability_message(
     lines = [capability_message(st) for st in statuses]
     if getattr(sys, "frozen", False):
         lines.append(
-            "\nFrozen desktop bundles are read-only. Install this feature in a "
-            'Python environment (`pip install "annolid[gui,...]"`) and launch '
-            "Annolid from that environment."
+            f"\nUser-space runtime installation is disabled ({FROZEN_USER_RUNTIME_ENV}=0). "
+            "Enable user runtime extensions or install this feature in a Python "
+            'environment (`pip install "annolid[gui,...]"`) and launch Annolid from there.'
         )
     else:
         lines.append(
@@ -290,6 +430,8 @@ def ensure_gui_capabilities(
     *,
     feature_title: str | None = None,
     prompt_user: bool = True,
+    wheelhouse: str | None = None,
+    offline: bool | None = None,
 ) -> bool:
     """Ensure one or more capabilities exist without blocking the Qt UI thread.
 
@@ -306,16 +448,26 @@ def ensure_gui_capabilities(
     if not missing_statuses:
         return True
 
+    is_frozen = bool(getattr(sys, "frozen", False))
+
     if not _on_main_gui_thread():
         try:
             for st in missing_statuses:
-                ensure_capability(st.name)
+                ensure_capability(
+                    st.name,
+                    wheelhouse=wheelhouse,
+                    offline=offline,
+                    allow_frozen_user_runtime=is_frozen
+                    and frozen_user_runtime_enabled(),
+                )
             return True
         except Exception as exc:
             logger.warning("Background capability install failed: %s", exc)
             return False
 
-    if getattr(sys, "frozen", False) or not _auto_install_optional_deps_enabled():
+    if not _auto_install_optional_deps_enabled() or (
+        is_frozen and not frozen_user_runtime_enabled()
+    ):
         _show_readonly_capability_message(
             parent, missing_statuses, feature_title=feature_title
         )
@@ -326,6 +478,9 @@ def ensure_gui_capabilities(
         missing_statuses,
         feature_title=feature_title,
         auto_start=auto_start,
+        wheelhouse=wheelhouse,
+        offline=offline,
+        allow_frozen_user_runtime=is_frozen,
         parent=parent,
     )
     accepted = dlg.exec_() == QtWidgets.QDialog.Accepted
@@ -340,6 +495,8 @@ def ensure_gui_capability(
     *,
     feature_title: str | None = None,
     prompt_user: bool = True,
+    wheelhouse: str | None = None,
+    offline: bool | None = None,
 ) -> bool:
     """Ensure a single capability exists without blocking the Qt UI thread."""
     return ensure_gui_capabilities(
@@ -347,6 +504,8 @@ def ensure_gui_capability(
         (name,),
         feature_title=feature_title,
         prompt_user=prompt_user,
+        wheelhouse=wheelhouse,
+        offline=offline,
     )
 
 
@@ -365,6 +524,7 @@ def _interactive_main_thread_handler(
         (status,),
         feature_title=reason or status.title or status.name,
         auto_start=_SESSION_AUTO_CONFIRM,
+        allow_frozen_user_runtime=bool(getattr(sys, "frozen", False)),
         parent=parent,
     )
     if dlg.exec_() != QtWidgets.QDialog.Accepted:
@@ -381,6 +541,7 @@ def register_gui_capability_handler() -> None:
 
 __all__ = [
     "RuntimeInstallDialog",
+    "_WheelhouseExportWorker",
     "ensure_gui_capabilities",
     "ensure_gui_capability",
     "register_gui_capability_handler",

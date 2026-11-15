@@ -12,6 +12,8 @@
 #   --venv-dir DIR      Directory for virtual environment (default: .venv inside install-dir)
 #   --profile PROFILE   Install profile: minimal,gui,tracking,workstation,full (default: gui)
 #   --extras EXTRAS     Comma-separated optional extras: webengine,onnx,scientific,pdf,model_downloads,sleap,audio,ai_chat,training,ml,tracking,yolo,cutie,realtime,large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot,bot,memory,all (GUI extras are always included)
+#   --wheelhouse DIR    Local wheelhouse directory containing .whl packages for offline/cached installs
+#   --offline           Disable network access (--no-index, skip git pull/uv download); requires --wheelhouse
 #   --no-gpu            Skip GPU/CUDA detection
 #   --use-conda         Use conda instead of venv (requires conda/mamba)
 #   --no-interactive    Skip all prompts and use defaults
@@ -26,6 +28,11 @@ INSTALL_DIR=""
 VENV_DIR=".venv"
 EXTRAS=""
 PROFILE="gui"
+WHEELHOUSE="${ANNOLID_WHEELHOUSE:-}"
+OFFLINE=false
+case "$(printf '%s' "${ANNOLID_OFFLINE:-}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on) OFFLINE=true ;;
+esac
 NO_GPU=false
 USE_CONDA=false
 NO_INTERACTIVE=false
@@ -107,6 +114,8 @@ Options:
   --venv-dir DIR      Directory for virtual environment (default: .venv inside install-dir)
   --profile PROFILE   Install profile: minimal,gui,tracking,workstation,full (default: gui)
   --extras EXTRAS     Comma-separated optional extras: webengine,onnx,scientific,pdf,model_downloads,sleap,audio,ai_chat,training,ml,tracking,yolo,cutie,realtime,large_image,remote_video,sam3,image_editing,text_to_speech,qwen3_embedding,annolid_bot,bot,memory,all
+  --wheelhouse DIR    Local wheelhouse directory containing .whl packages for offline/cached installs
+  --offline           Disable network access (--no-index, skip git pull/uv download); requires --wheelhouse
   --no-gpu            Skip GPU/CUDA detection and install CPU ONNX Runtime
   --use-conda         Use conda instead of venv (requires conda/mamba)
   --no-interactive    Skip prompts and use defaults
@@ -214,6 +223,15 @@ while [[ $# -gt 0 ]]; do
             EXTRAS="$2"
             shift 2
             ;;
+        --wheelhouse)
+            require_arg_value "$1" "${2:-}"
+            WHEELHOUSE="$2"
+            shift 2
+            ;;
+        --offline)
+            OFFLINE=true
+            shift
+            ;;
         --no-gpu)
             NO_GPU=true
             shift
@@ -235,6 +253,34 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+# Validate & normalize offline / wheelhouse configuration before changing directories
+if [[ -n "$WHEELHOUSE" ]]; then
+    case "$WHEELHOUSE" in
+        "~") WHEELHOUSE="$HOME" ;;
+        "~/"*) WHEELHOUSE="$HOME/${WHEELHOUSE#\~/}" ;;
+    esac
+    if [[ ! -d "$WHEELHOUSE" ]]; then
+        print_error "Wheelhouse directory does not exist: $WHEELHOUSE"
+        exit 1
+    fi
+    WHEELHOUSE="$(cd "$WHEELHOUSE" && pwd)"
+fi
+
+if [[ "$OFFLINE" == true && -z "$WHEELHOUSE" ]]; then
+    print_error "--offline (or ANNOLID_OFFLINE=1) requires --wheelhouse DIR (or ANNOLID_WHEELHOUSE)."
+    exit 1
+fi
+
+build_pip_index_args() {
+    PIP_INDEX_ARGS=()
+    if [[ "$OFFLINE" == true ]]; then
+        PIP_INDEX_ARGS+=(--no-index)
+    fi
+    if [[ -n "$WHEELHOUSE" ]]; then
+        PIP_INDEX_ARGS+=(--find-links "$WHEELHOUSE")
+    fi
+}
 
 # =============================================================================
 # Detect Operating System
@@ -283,6 +329,10 @@ check_git() {
     print_step "Checking Git installation..."
 
     if ! command -v git &> /dev/null; then
+        if [[ "$OFFLINE" == true ]]; then
+            print_info "Offline mode active and Git not found; expecting an existing local Annolid checkout."
+            return
+        fi
         print_warning "Git not found. Attempting automatic installation..."
 
         INSTALLED=false
@@ -429,6 +479,8 @@ check_ffmpeg() {
         FFMPEG_VERSION=$(ffmpeg -version 2>&1 | head -1)
         echo "  $FFMPEG_VERSION"
         print_success "FFmpeg found"
+    elif [[ "$OFFLINE" == true ]]; then
+        print_warning "FFmpeg not found (offline mode: skipping network package manager install)."
     else
         print_warning "FFmpeg not found. Attempting automatic installation..."
 
@@ -526,11 +578,17 @@ check_gpu() {
 # =============================================================================
 install_onnx_runtime() {
     print_step "Installing ONNX Runtime..."
+    build_pip_index_args
 
     if [[ "$HAS_NVIDIA_GPU" == true && "$HAS_CUDA12" == true && "$NO_GPU" == false ]]; then
         echo "  Installing onnxruntime-gpu for CUDA 12.x..."
         uninstall_packages onnxruntime-gpu
-        if $PIP_CMD install --upgrade --force-reinstall onnxruntime-gpu --extra-index-url "$ONNXRUNTIME_CUDA12_EXTRA_INDEX_URL"; then
+        if [[ "$OFFLINE" == true ]]; then
+            if $PIP_CMD install "${PIP_INDEX_ARGS[@]}" --upgrade --force-reinstall onnxruntime-gpu; then
+                print_success "onnxruntime-gpu installed (offline wheelhouse)"
+                return
+            fi
+        elif $PIP_CMD install "${PIP_INDEX_ARGS[@]}" --upgrade --force-reinstall onnxruntime-gpu --extra-index-url "$ONNXRUNTIME_CUDA12_EXTRA_INDEX_URL"; then
             print_success "onnxruntime-gpu installed"
             return
         fi
@@ -539,7 +597,7 @@ install_onnx_runtime() {
     fi
 
     uninstall_packages onnxruntime-gpu
-    $PIP_CMD install --upgrade --force-reinstall onnxruntime
+    $PIP_CMD install "${PIP_INDEX_ARGS[@]}" --upgrade --force-reinstall onnxruntime
     print_success "onnxruntime installed"
 }
 
@@ -566,6 +624,12 @@ check_uv() {
         UV_VERSION=$("$UV_CMD" --version)
         echo "  Found: $UV_VERSION"
         USE_UV=true
+        return
+    fi
+
+    if [[ "$OFFLINE" == true ]]; then
+        print_info "Offline mode active and uv not found; using system Python venv + pip."
+        USE_UV=false
         return
     fi
 
@@ -737,30 +801,38 @@ clone_repo() {
     esac
 
     if [[ -e "$INSTALL_DIR" ]]; then
-        if [[ ! -e "$INSTALL_DIR/.git" ]]; then
+        cd "$INSTALL_DIR"
+        if [[ ! -f annolid/__init__.py || ! -f pyproject.toml ]]; then
             print_error "Directory $INSTALL_DIR is not an Annolid checkout. Choose a new --install-dir."
             exit 1
         fi
-        cd "$INSTALL_DIR"
-        if [[ ! -f annolid/__init__.py || ! -f pyproject.toml ]]; then
-            print_error "This is not an Annolid checkout. Choose a new --install-dir."
-            exit 1
-        fi
-        local tracked_changes
-        if ! tracked_changes=$(git status --porcelain --untracked-files=no); then
-            print_error "Could not inspect checkout state. Resolve the Git error above before updating."
-            exit 1
-        fi
-        if [[ -n "$tracked_changes" ]]; then
-            print_error "Local tracked changes found. Commit or stash them before updating."
-            exit 1
-        fi
-        print_info "Updating the existing checkout (fast-forward only)..."
-        if ! git pull --ff-only --recurse-submodules; then
-            print_error "Update failed. Resolve the Git error above and rerun; the environment has not been changed."
-            exit 1
+        if [[ "$OFFLINE" == true ]]; then
+            print_info "Offline mode active: using existing local Annolid checkout at $(pwd) without git pull."
+        else
+            if [[ ! -e ".git" ]]; then
+                print_error "Directory $INSTALL_DIR is not a Git checkout. Choose a new --install-dir or pass --offline with --wheelhouse."
+                exit 1
+            fi
+            local tracked_changes
+            if ! tracked_changes=$(git status --porcelain --untracked-files=no); then
+                print_error "Could not inspect checkout state. Resolve the Git error above before updating."
+                exit 1
+            fi
+            if [[ -n "$tracked_changes" ]]; then
+                print_error "Local tracked changes found. Commit or stash them before updating."
+                exit 1
+            fi
+            print_info "Updating the existing checkout (fast-forward only)..."
+            if ! git pull --ff-only --recurse-submodules; then
+                print_error "Update failed. Resolve the Git error above and rerun; the environment has not been changed."
+                exit 1
+            fi
         fi
     else
+        if [[ "$OFFLINE" == true ]]; then
+            print_error "Offline mode requires an existing Annolid source directory at $INSTALL_DIR (--install-dir)."
+            exit 1
+        fi
         git clone --recurse-submodules "$ANNOLID_REPO" "$INSTALL_DIR"
         cd "$INSTALL_DIR"
     fi
@@ -838,9 +910,17 @@ install_annolid() {
     else
         PIP_CMD="pip"
     fi
+    build_pip_index_args
 
-    echo "  Upgrading pip..."
-    $PIP_CMD install --upgrade pip
+    if [[ "$OFFLINE" == true ]]; then
+        if [[ -n "$WHEELHOUSE" ]] && compgen -G "$WHEELHOUSE/pip-*.whl" > /dev/null; then
+            echo "  Upgrading pip from offline wheelhouse..."
+            $PIP_CMD install "${PIP_INDEX_ARGS[@]}" --upgrade pip || true
+        fi
+    else
+        echo "  Upgrading pip..."
+        $PIP_CMD install "${PIP_INDEX_ARGS[@]}" --upgrade pip
+    fi
 
     # GUI dependencies are always installed so `annolid` can launch immediately.
     PROFILE_EXTRAS="$(profile_extras)"
@@ -849,20 +929,26 @@ install_annolid() {
     INSTALL_TARGET="-e .[${INSTALL_EXTRAS}]"
     echo "  Profile: $PROFILE"
     echo "  Including extras: $INSTALL_EXTRAS"
+    if [[ -n "$WHEELHOUSE" ]]; then
+        echo "  Wheelhouse: $WHEELHOUSE (offline=$OFFLINE)"
+    fi
 
     if needs_pytorch_runtime; then
-        if [[ "$HAS_NVIDIA_GPU" == true && "$NO_GPU" == false ]]; then
+        if [[ "$OFFLINE" == true ]]; then
+            echo "  Installing PyTorch from offline wheelhouse..."
+            $PIP_CMD install "${PIP_INDEX_ARGS[@]}" torch torchvision
+        elif [[ "$HAS_NVIDIA_GPU" == true && "$NO_GPU" == false ]]; then
             echo "  Installing CUDA-enabled PyTorch..."
-            if $PIP_CMD install --index-url "$PYTORCH_CUDA_INDEX_URL" torch torchvision; then
+            if $PIP_CMD install "${PIP_INDEX_ARGS[@]}" --index-url "$PYTORCH_CUDA_INDEX_URL" torch torchvision; then
                 print_success "CUDA-enabled PyTorch installed"
             else
                 print_warning "CUDA-enabled PyTorch install failed. Falling back to default PyTorch build."
-                $PIP_CMD install torch torchvision
+                $PIP_CMD install "${PIP_INDEX_ARGS[@]}" torch torchvision
             fi
         elif [[ "$OS_TYPE" == "linux" ]]; then
             echo "  Installing lightweight CPU PyTorch wheel for non-GPU Linux..."
-            if ! $PIP_CMD install --index-url "$PYTORCH_CPU_INDEX_URL" torch torchvision; then
-                $PIP_CMD install torch torchvision
+            if ! $PIP_CMD install "${PIP_INDEX_ARGS[@]}" --index-url "$PYTORCH_CPU_INDEX_URL" torch torchvision; then
+                $PIP_CMD install "${PIP_INDEX_ARGS[@]}" torch torchvision
             fi
         fi
     else
@@ -870,17 +956,38 @@ install_annolid() {
     fi
 
     echo "  Installing annolid (this may take a few minutes)..."
-    $PIP_CMD install $INSTALL_TARGET
+    if [[ "$OFFLINE" == true ]]; then
+        if ! $PIP_CMD install "${PIP_INDEX_ARGS[@]}" $INSTALL_TARGET; then
+            $PIP_CMD install "${PIP_INDEX_ARGS[@]}" --no-build-isolation $INSTALL_TARGET
+        fi
+    else
+        $PIP_CMD install "${PIP_INDEX_ARGS[@]}" $INSTALL_TARGET
+    fi
 
     if extra_selected "sam3" || extra_selected "sam" || extra_selected "segment_anything" || extra_selected "all"; then
-        echo "  Installing SAM-HQ..."
-        SAM_HQ_STATUS="requested"
-        if $PIP_CMD install "segment-anything @ git+https://github.com/SysCV/sam-hq.git"; then
-            SAM_HQ_STATUS="installed"
+        if [[ "$OFFLINE" == true ]]; then
+            if [[ -n "$WHEELHOUSE" ]] && compgen -G "$WHEELHOUSE/segment_anything-*.whl" > /dev/null; then
+                echo "  Installing SAM-HQ from offline wheelhouse..."
+                if $PIP_CMD install "${PIP_INDEX_ARGS[@]}" segment-anything; then
+                    SAM_HQ_STATUS="installed"
+                else
+                    SAM_HQ_STATUS="failed"
+                    record_optional_failure "sam_hq"
+                fi
+            else
+                SAM_HQ_STATUS="skipped_offline"
+                print_info "Offline mode active: skipping GitHub SAM-HQ VCS install (no segment_anything wheel in wheelhouse)."
+            fi
         else
-            SAM_HQ_STATUS="failed"
-            record_optional_failure "sam_hq"
-            print_warning "SAM-HQ installation failed. Segment Anything may have limited functionality."
+            echo "  Installing SAM-HQ..."
+            SAM_HQ_STATUS="requested"
+            if $PIP_CMD install "${PIP_INDEX_ARGS[@]}" "segment-anything @ git+https://github.com/SysCV/sam-hq.git"; then
+                SAM_HQ_STATUS="installed"
+            else
+                SAM_HQ_STATUS="failed"
+                record_optional_failure "sam_hq"
+                print_warning "SAM-HQ installation failed. Segment Anything may have limited functionality."
+            fi
         fi
     else
         SAM_HQ_STATUS="skipped"
@@ -1021,6 +1128,8 @@ write_install_report() {
     REPORT_HAS_CUDA12="$HAS_CUDA12" \
     REPORT_CUDA_VERSION="$CUDA_VERSION" \
     REPORT_SAM_HQ_STATUS="$SAM_HQ_STATUS" \
+    REPORT_OFFLINE="$OFFLINE" \
+    REPORT_WHEELHOUSE="$WHEELHOUSE" \
     REPORT_FAILED_OPTIONAL_STEPS="$FAILED_OPTIONAL_STEPS" \
     REPORT_PATH="$INSTALL_REPORT_PATH" \
     python - <<'PY'
@@ -1070,6 +1179,8 @@ report = {
     "cuda_version": os.environ.get("REPORT_CUDA_VERSION") or None,
     "onnx_providers": providers,
     "sam_hq_status": os.environ["REPORT_SAM_HQ_STATUS"],
+    "offline": as_bool(os.environ.get("REPORT_OFFLINE", "false")),
+    "wheelhouse": os.environ.get("REPORT_WHEELHOUSE") or None,
     "failed_optional_steps": failed_steps,
     "created_at": datetime.now(timezone.utc).isoformat(),
 }

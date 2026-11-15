@@ -34,7 +34,7 @@ The macOS/Linux and Windows one-line installers expose stable profiles:
 
 The default profile is `gui`. PyTorch and ONNX Runtime are installed upfront only when an ML/ONNX extra or profile (`tracking`, `workstation`, `full`) is selected; SAM-HQ is attempted only when a SAM-related extra such as `sam`, `sam3`, `segment_anything`, or `all` is selected. This keeps default installs small, fast, and independent of multi-gigabyte model downloads until needed.
 
-Each successful installer run writes `annolid-install-report.json` in the install directory. The report includes the selected profile, resolved extras, Python version, OS, architecture, package manager, GPU decision, ONNX Runtime providers, SAM-HQ status, and failed optional steps.
+Each successful installer run writes `annolid-install-report.json` in the install directory. The report includes the selected profile, resolved extras, Python version, OS, architecture, package manager, GPU decision, ONNX Runtime providers, SAM-HQ status, offline/wheelhouse settings, and failed optional steps.
 
 ## Desktop Bundle Contract
 
@@ -42,14 +42,28 @@ The frozen desktop archives are intentionally lean Unix-style annotation
 bundles. Current release binaries are built for macOS and Linux only, and their
 baseline contract is opening media/annotations and drawing/editing polygons.
 They must not bundle ML frameworks, training stacks, model checkpoints,
-generated runs, or optional service clients.
+generated runs, or optional service clients, and Annolid **never** mutates the
+bundled application directory itself (`Annolid.app` / `annolid/_internal` stays
+strictly read-only so code signatures and system-wide installs remain intact).
 
-When a user opens a model, tracking, bot, large-image, remote-video, or other
-optional workflow, Annolid checks that workflow's runtime at the boundary where
-the feature is launched. In a normal Python environment, missing optional
-packages may be installed into that active environment. In a frozen desktop
-bundle, Annolid reports the missing imports and the matching `pip install`
-command instead of mutating the bundle.
+When a user opens a model, tracking, embedded WebEngine viewer, or other
+optional workflow:
+
+- **Editable / virtualenv installs**: missing optional packages are installed on demand into the active Python environment (or from a local `--wheelhouse` / `ANNOLID_WHEELHOUSE`).
+- **Frozen desktop bundles (headless default)**: unprompted headless calls fail fast with the missing imports and exact `pip install` command instead of mutating the bundle.
+- **Frozen desktop bundles (isolated User Runtime)**: when invoked interactively from **Settings → Runtime & Optional Packages…** (or the on-demand GUI prompt, `annolid-run runtime install --user-runtime`, or `ANNOLID_FROZEN_USER_RUNTIME=1`), Annolid installs ABI-matched binary wheels into an isolated user-space directory (`~/.annolid/runtime/py<major>.<minor>-<platform>-<arch>/site-packages`, overridable via `ANNOLID_USER_RUNTIME_DIR`). User-space installs use `uv`, a matching host Python `3.<minor>`, or Annolid's built-in zero-toolchain PEP 427 offline wheelhouse installer (verifying `wheelhouse-manifest.json` and `.dist-info/RECORD` SHA256 digests without requiring `uv`, `pip`, or internet access). Set `ANNOLID_FROZEN_USER_RUNTIME=0` to disable user-space runtime extensions completely.
+
+## Air-Gapped Offline Wheelhouse Bundles
+
+To support air-gapped research workstations, Annolid can export and verify portable, SHA256-checksummed wheelhouse folders:
+
+```bash
+annolid-run runtime bundle tracking sam3 --out ./annolid-wheelhouse
+annolid-run runtime verify-bundle ./annolid-wheelhouse
+annolid-run runtime install tracking sam3 --wheelhouse ./annolid-wheelhouse --offline
+```
+
+When `wheelhouse-manifest.json` is present in a wheelhouse folder, Annolid verifies file sizes and SHA256 checksums before installing any wheel.
 
 ## Optional Runtime Behavior
 

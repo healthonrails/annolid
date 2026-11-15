@@ -104,9 +104,17 @@ def _candidate_qt_package_configs() -> list[tuple[str, Path]]:
         except Exception:
             spec = None
         origin = str(getattr(spec, "origin", "") or "").strip()
-        if not origin:
-            continue
-        configs.append((api_name, Path(origin).resolve().parent / qt_folder))
+        if origin:
+            configs.append((api_name, Path(origin).resolve().parent / qt_folder))
+        if package_name == "PySide6":
+            try:
+                from annolid.infrastructure.capabilities import user_runtime_site_dir
+
+                user_qt_root = user_runtime_site_dir() / "PySide6" / qt_folder
+                if user_qt_root.is_dir():
+                    configs.append((api_name, user_qt_root))
+            except Exception:
+                pass
     return configs
 
 
@@ -143,9 +151,11 @@ def _candidate_qt_webengine_paths() -> list[tuple[Path, Path | None]]:
 
 def configure_qtwebengine_resource_paths() -> None:
     """
-    Set Qt WebEngine resource paths when running from source/venv layouts.
+    Set Qt WebEngine resource paths when running from source/venv/user-runtime layouts.
 
-    This avoids startup warnings like "Qt WebEngine resources not found at ...".
+    This avoids startup warnings like "Qt WebEngine resources not found at ..."
+    and resolves ``QtWebEngineProcess`` when ``PySide6-Addons`` lives in an
+    isolated user-runtime directory alongside bundled ``PySide6-Essentials``.
     """
     candidates = _candidate_qt_webengine_paths()
     if not candidates:
@@ -161,6 +171,25 @@ def configure_qtwebengine_resource_paths() -> None:
         for _, locales_dir in candidates:
             if locales_dir is not None and locales_dir.is_dir():
                 os.environ["QTWEBENGINE_LOCALES_PATH"] = str(locales_dir)
+                break
+
+    if not str(os.environ.get("QTWEBENGINEPROCESS_PATH", "")).strip():
+        for _, qt_root in _candidate_qt_package_configs():
+            helper_candidates = (
+                qt_root / "libexec" / "QtWebEngineProcess",
+                qt_root / "bin" / "QtWebEngineProcess.exe",
+                qt_root
+                / "lib"
+                / "QtWebEngineCore.framework"
+                / "Helpers"
+                / "QtWebEngineProcess.app"
+                / "Contents"
+                / "MacOS"
+                / "QtWebEngineProcess",
+            )
+            found = next((p for p in helper_candidates if p.is_file()), None)
+            if found is not None:
+                os.environ["QTWEBENGINEPROCESS_PATH"] = str(found)
                 break
 
 
@@ -184,6 +213,13 @@ def configure_qt_runtime() -> None:
     environment configuration in one place so launcher and GUI startup stay in
     sync across platforms.
     """
+    if getattr(sys, "frozen", False):
+        try:
+            from annolid.infrastructure.capabilities import activate_user_runtime_site
+
+            activate_user_runtime_site()
+        except Exception:
+            pass
     configure_qt_api(os.environ)
     sanitize_qt_plugin_env(os.environ)
     configure_qtwebengine_chromium_flags()

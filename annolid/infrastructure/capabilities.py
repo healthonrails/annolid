@@ -2,20 +2,34 @@
 
 from __future__ import annotations
 
+import ast
+import base64
+from collections import deque
+import csv
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from email.parser import Parser as EmailHeaderParser
 import functools
+import hashlib
 import importlib
 from importlib import metadata as importlib_metadata
 from importlib import util as importlib_util
+import io
+import json
 import os
+from pathlib import Path
 import platform
 import queue
 import re
 import shutil
+import site
 import subprocess
 import sys
+import sysconfig
+import tempfile
 import threading
-from typing import Callable
+from typing import Callable, Sequence
+import zipfile
 
 
 SpecFinder = Callable[[str], object | None]
@@ -24,6 +38,11 @@ OutputCallback = Callable[[str], None]
 AUTO_INSTALL_OPTIONAL_DEPS_ENV = "ANNOLID_AUTO_INSTALL_OPTIONAL_DEPS"
 NO_GPU_ENV = "ANNOLID_NO_GPU"
 TORCH_INDEX_URL_ENV = "ANNOLID_TORCH_INDEX_URL"
+WHEELHOUSE_ENV = "ANNOLID_WHEELHOUSE"
+OFFLINE_ENV = "ANNOLID_OFFLINE"
+USER_RUNTIME_DIR_ENV = "ANNOLID_USER_RUNTIME_DIR"
+FROZEN_USER_RUNTIME_ENV = "ANNOLID_FROZEN_USER_RUNTIME"
+WHEELHOUSE_MANIFEST_NAME = "wheelhouse-manifest.json"
 
 PYTORCH_CPU_INDEX_URL = "https://download.pytorch.org/whl/cpu"
 PYTORCH_CUDA12_INDEX_URL = "https://download.pytorch.org/whl/cu124"
@@ -534,6 +553,8 @@ def _missing_dependencies(
     *,
     find_spec: SpecFinder | None = None,
 ) -> tuple[RuntimeDependency, ...]:
+    if getattr(sys, "frozen", False) and find_spec is None:
+        activate_user_runtime_site()
     finder = find_spec or _default_find_spec
     enforce_python_bounds = find_spec is None
     return tuple(
@@ -653,30 +674,262 @@ def _probe_nvidia_smi() -> tuple[bool, str | None, bool, str | None]:
         return (False, None, False, None)
 
 
+def _truthy_env(var_name: str) -> bool:
+    raw = os.environ.get(var_name)
+    if raw is None:
+        return False
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def is_offline_mode(explicit: bool | None = None) -> bool:
+    """Return True when network package index access is disabled."""
+    if explicit is not None:
+        return bool(explicit)
+    return _truthy_env(OFFLINE_ENV)
+
+
+def frozen_user_runtime_enabled() -> bool:
+    """Return True unless isolated user-space runtime extensions are disabled."""
+    raw = os.environ.get(FROZEN_USER_RUNTIME_ENV)
+    if raw is None:
+        return True
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _frozen_install_opted_in(allow_frozen_user_runtime: bool) -> bool:
+    if not frozen_user_runtime_enabled():
+        return False
+    if allow_frozen_user_runtime:
+        return True
+    return _truthy_env(FROZEN_USER_RUNTIME_ENV)
+
+
+def user_runtime_abi_slug() -> str:
+    """Return an ABI-isolated slug for user-installed runtime extensions."""
+    arch = (platform.machine() or "unknown").strip().lower()
+    gil_suffix = "t" if bool(sysconfig.get_config_var("Py_GIL_DISABLED")) else ""
+    return (
+        f"py{sys.version_info.major}.{sys.version_info.minor}{gil_suffix}"
+        f"-{sys.platform}-{arch}"
+    )
+
+
+def user_runtime_site_dir() -> Path:
+    """Return the isolated user-space site-packages path (never inside app bundles)."""
+    override = (os.environ.get(USER_RUNTIME_DIR_ENV) or "").strip()
+    base = (
+        Path(override).expanduser()
+        if override
+        else Path.home() / ".annolid" / "runtime"
+    )
+    return base / user_runtime_abi_slug() / "site-packages"
+
+
+def activate_user_runtime_site(site_dir: Path | None = None) -> Path | None:
+    """Attach the user-space runtime site-packages at the end of ``sys.path``.
+
+    Keeping ``site_dir`` after bundled paths guarantees frozen core libraries
+    (``annolid``, ``numpy``, ``cv2``, ``PySide6-Essentials``) are never shadowed,
+    while extending ``PySide6.__path__`` so ``PySide6-Addons`` modules resolve.
+    """
+    if not frozen_user_runtime_enabled():
+        return None
+    target = (site_dir or user_runtime_site_dir()).expanduser()
+    if not target.is_dir():
+        return None
+    resolved_str = str(target.resolve())
+    if resolved_str not in sys.path and str(target) not in sys.path:
+        site.addsitedir(resolved_str)
+    if "PySide6" in sys.modules:
+        pyside_addon_dir = target / "PySide6"
+        if pyside_addon_dir.is_dir():
+            pyside_mod = sys.modules["PySide6"]
+            mod_path = getattr(pyside_mod, "__path__", None)
+            addon_str = str(pyside_addon_dir.resolve())
+            if isinstance(mod_path, list) and addon_str not in mod_path:
+                mod_path.append(addon_str)
+            try:
+                from annolid.infrastructure.runtime import (
+                    configure_qtwebengine_resource_paths,
+                )
+
+                configure_qtwebengine_resource_paths()
+            except Exception:
+                pass
+    importlib.invalidate_caches()
+    return target
+
+
+def _dir_has_wheels(directory: Path) -> bool:
+    try:
+        return directory.is_dir() and any(directory.glob("*.whl"))
+    except Exception:
+        return False
+
+
+def resolve_wheelhouse_dir(
+    explicit: str | os.PathLike[str] | None = None,
+) -> Path | None:
+    """Resolve an explicit, env-configured, or portable adjacent wheelhouse."""
+    if explicit is not None and str(explicit).strip():
+        cand = Path(explicit).expanduser().resolve()
+        if not cand.is_dir():
+            raise RuntimeError(f"Offline wheelhouse directory does not exist: {cand}")
+        return cand
+
+    env_val = (os.environ.get(WHEELHOUSE_ENV) or "").strip()
+    if env_val:
+        cand = Path(env_val).expanduser().resolve()
+        if not cand.is_dir():
+            raise RuntimeError(
+                f"{WHEELHOUSE_ENV} points to a non-existent directory: {cand}"
+            )
+        return cand
+
+    candidates: list[Path] = []
+    if getattr(sys, "frozen", False):
+        exe_path = Path(sys.executable).resolve()
+        candidates.append(exe_path.parent / "wheelhouse")
+        # macOS Annolid.app/Contents/MacOS/annolid -> parent folder beside Annolid.app
+        if len(exe_path.parents) >= 4 and exe_path.parents[2].suffix == ".app":
+            candidates.append(exe_path.parents[3] / "wheelhouse")
+    if not os.environ.get("PYTEST_CURRENT_TEST"):
+        candidates.append(Path.home() / ".annolid" / "wheelhouse")
+
+    for cand in candidates:
+        if _dir_has_wheels(cand):
+            return cand.resolve()
+    return None
+
+
+def _find_uv_binary() -> str | None:
+    found = shutil.which("uv")
+    if found:
+        return found
+    if not getattr(sys, "frozen", False):
+        return None
+    # macOS/Linux desktop bundles launched from Finder/Desktop often omit user/Homebrew PATHs.
+    exe_name = "uv.exe" if sys.platform == "win32" else "uv"
+    extra_dirs = [
+        Path.home() / ".local" / "bin",
+        Path.home() / ".cargo" / "bin",
+        Path("/opt/homebrew/bin"),
+        Path("/usr/local/bin"),
+    ]
+    for directory in extra_dirs:
+        cand = directory / exe_name
+        if cand.is_file() and os.access(cand, os.X_OK):
+            return str(cand)
+    return None
+
+
+@functools.lru_cache(maxsize=1)
+def _find_matching_host_python() -> str | None:
+    """Locate a host CPython matching ``sys.version_info[:2]`` with working ``pip``."""
+    maj, min_ = sys.version_info.major, sys.version_info.minor
+    names = (
+        [f"python{maj}.{min_}.exe", "python.exe"]
+        if sys.platform == "win32"
+        else [f"python{maj}.{min_}", f"python{maj}", "python3"]
+    )
+    candidates: list[str] = []
+    for name in names:
+        hit = shutil.which(name)
+        if hit and hit not in candidates:
+            candidates.append(hit)
+    if sys.platform != "win32":
+        for prefix in ("/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"):
+            cand = Path(prefix) / f"python{maj}.{min_}"
+            if (
+                cand.is_file()
+                and os.access(cand, os.X_OK)
+                and str(cand) not in candidates
+            ):
+                candidates.append(str(cand))
+
+    frozen_exe = str(Path(sys.executable).resolve())
+    expected = f"{maj}.{min_}"
+    for cand in candidates:
+        try:
+            if str(Path(cand).resolve()) == frozen_exe:
+                continue
+            probe = subprocess.run(
+                [
+                    cand,
+                    "-c",
+                    "import pip, sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=3.0,
+            )
+            if probe.returncode == 0 and (probe.stdout or "").strip() == expected:
+                return cand
+        except Exception:
+            continue
+    return None
+
+
+def can_install_in_frozen_user_runtime(
+    wheelhouse: str | os.PathLike[str] | None = None,
+) -> tuple[bool, str]:
+    """Return ``(available, backend)`` for installing into user-space from a frozen app."""
+    if not frozen_user_runtime_enabled() or not _auto_install_optional_deps_enabled():
+        return (False, "disabled")
+    try:
+        wh = resolve_wheelhouse_dir(wheelhouse)
+    except RuntimeError:
+        wh = None
+    if _find_uv_binary():
+        return (True, "uv")
+    if _find_matching_host_python():
+        return (True, "host-python")
+    if wh is not None and _dir_has_wheels(wh):
+        return (True, "wheelhouse")
+    return (False, "none")
+
+
 def detect_accelerator_summary() -> dict[str, object]:
     """Return a lightweight, dependency-free hardware and Python runtime summary."""
     apple_silicon = sys.platform == "darwin" and platform.machine().lower() in {
         "arm64",
         "aarch64",
     }
-    writable = (
-        not bool(getattr(sys, "frozen", False))
-        and _auto_install_optional_deps_enabled()
-    )
+    is_frozen = bool(getattr(sys, "frozen", False))
+    try:
+        wh_dir = resolve_wheelhouse_dir()
+    except RuntimeError:
+        wh_dir = None
+    if is_frozen:
+        can_frozen, frozen_backend = can_install_in_frozen_user_runtime(wh_dir)
+        writable = can_frozen
+    else:
+        frozen_backend = "venv"
+        writable = _auto_install_optional_deps_enabled()
+
+    base_info: dict[str, object] = {
+        "python_version": platform.python_version(),
+        "python_executable": sys.executable,
+        "frozen": is_frozen,
+        "writable": writable,
+        "user_runtime_dir": str(user_runtime_site_dir()),
+        "user_runtime_backend": frozen_backend,
+        "wheelhouse_dir": str(wh_dir) if wh_dir is not None else None,
+        "offline_mode": is_offline_mode(),
+        "platform": sys.platform,
+        "arch": platform.machine(),
+        "apple_silicon": apple_silicon,
+    }
     if _no_gpu_requested():
         return {
-            "python_version": platform.python_version(),
-            "python_executable": sys.executable,
-            "writable": writable,
-            "platform": sys.platform,
-            "arch": platform.machine(),
+            **base_info,
             "accelerator": "cpu",
             "gpu_disabled_by_env": True,
             "has_nvidia_gpu": False,
             "cuda_version": None,
             "has_cuda12": False,
             "gpu_name": None,
-            "apple_silicon": apple_silicon,
         }
     has_nvidia, cuda_version, has_cuda12, gpu_name = _probe_nvidia_smi()
     if has_nvidia:
@@ -686,18 +939,13 @@ def detect_accelerator_summary() -> dict[str, object]:
     else:
         accelerator = "cpu"
     return {
-        "python_version": platform.python_version(),
-        "python_executable": sys.executable,
-        "writable": writable,
-        "platform": sys.platform,
-        "arch": platform.machine(),
+        **base_info,
         "accelerator": accelerator,
         "gpu_disabled_by_env": False,
         "has_nvidia_gpu": has_nvidia,
         "cuda_version": cuda_version,
         "has_cuda12": has_cuda12,
         "gpu_name": gpu_name,
-        "apple_silicon": apple_silicon,
     }
 
 
@@ -732,27 +980,102 @@ def _pin_abi_sensitive_specs(package_specs: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(resolved)
 
 
+def _frozen_bundled_constraints() -> list[str]:
+    """Pin core ABI-sensitive packages already shipped inside a frozen bundle."""
+    pins: list[str] = []
+    pyside_ver = _installed_pyside6_version()
+    if pyside_ver:
+        pins.append(f"PySide6-Essentials=={pyside_ver}")
+        pins.append(f"shiboken6=={pyside_ver}")
+    for dist_name, mod_name in (("numpy", "numpy"), ("Pillow", "PIL")):
+        ver: str | None = None
+        if mod_name in sys.modules:
+            mod_ver = getattr(sys.modules[mod_name], "__version__", None)
+            if isinstance(mod_ver, str) and mod_ver.strip():
+                ver = mod_ver.strip()
+        if not ver:
+            try:
+                ver = importlib_metadata.version(dist_name).strip()
+            except Exception:
+                ver = None
+        if ver:
+            pins.append(f"{dist_name}=={ver}")
+    return pins
+
+
 def _install_command(
     package_specs: tuple[str, ...],
     *,
     index_url: str | None = None,
     extra_index_url: str | None = None,
+    wheelhouse_dir: Path | None = None,
+    offline: bool = False,
+    target_site_dir: Path | None = None,
+    constraints_file: Path | None = None,
 ) -> list[str]:
-    uv_cmd = shutil.which("uv")
-    if uv_cmd:
-        cmd = [uv_cmd, "pip", "install", "--python", sys.executable]
+    is_frozen = bool(getattr(sys, "frozen", False))
+    uv_cmd = _find_uv_binary()
+    if target_site_dir is not None:
+        py_ver = f"{sys.version_info.major}.{sys.version_info.minor}"
+        if uv_cmd:
+            cmd = [
+                uv_cmd,
+                "pip",
+                "install",
+                "--target",
+                str(target_site_dir),
+                "--python-version",
+                py_ver,
+                "--only-binary",
+                ":all:",
+            ]
+        else:
+            host_py = sys.executable if not is_frozen else _find_matching_host_python()
+            if not host_py:
+                raise RuntimeError(
+                    "No external 'uv' or matching host Python interpreter found for --target install."
+                )
+            cmd = [
+                host_py,
+                "-m",
+                "pip",
+                "install",
+                "--target",
+                str(target_site_dir),
+                "--upgrade",
+                "--only-binary=:all:",
+            ]
+        if constraints_file is not None:
+            cmd.extend(["-c", str(constraints_file)])
     else:
-        cmd = [sys.executable, "-m", "pip", "install"]
-    if index_url:
-        cmd.extend(["--index-url", index_url])
-    if extra_index_url:
-        cmd.extend(["--extra-index-url", extra_index_url])
+        if uv_cmd:
+            cmd = [uv_cmd, "pip", "install", "--python", sys.executable]
+        else:
+            cmd = [sys.executable, "-m", "pip", "install"]
+
+    if offline:
+        cmd.append("--no-index")
+        if wheelhouse_dir is not None:
+            cmd.extend(["--find-links", str(wheelhouse_dir)])
+    else:
+        if wheelhouse_dir is not None:
+            cmd.extend(["--find-links", str(wheelhouse_dir)])
+        if index_url:
+            cmd.extend(["--index-url", index_url])
+        if extra_index_url:
+            cmd.extend(["--extra-index-url", extra_index_url])
+
     cmd.extend(package_specs)
     return cmd
 
 
 def _build_smart_install_plan(
     missing: tuple[RuntimeDependency, ...],
+    *,
+    wheelhouse: str | os.PathLike[str] | None = None,
+    offline: bool | None = None,
+    target_site_dir: Path | None = None,
+    constraints_file: Path | None = None,
 ) -> tuple[tuple[str, ...], list[tuple[list[str], list[str] | None]]]:
     """Build primary (and optional fallback) install commands for real environments.
 
@@ -761,8 +1084,45 @@ def _build_smart_install_plan(
     """
     raw_specs = tuple(dep.package_spec for dep in missing)
     pinned_specs = _pin_abi_sensitive_specs(raw_specs)
+    wh_dir = resolve_wheelhouse_dir(wheelhouse)
+    offline_active = is_offline_mode(offline)
+    if offline_active and wh_dir is None:
+        raise RuntimeError(
+            f"Offline mode is enabled ({OFFLINE_ENV}=1 or --offline), "
+            f"but no offline wheelhouse directory was provided via --wheelhouse or {WHEELHOUSE_ENV}."
+        )
+
     accel = detect_accelerator_summary()
     torch_index_override = (os.environ.get(TORCH_INDEX_URL_ENV) or "").strip()
+
+    if offline_active:
+        effective_offline: list[str] = []
+        for spec in pinned_specs:
+            if (
+                (
+                    spec.lower().startswith("onnxruntime>=")
+                    or spec.lower() == "onnxruntime"
+                )
+                and wh_dir is not None
+                and sys.platform in {"linux", "win32"}
+                and accel["has_nvidia_gpu"]
+                and accel["has_cuda12"]
+                and any(wh_dir.glob("onnxruntime_gpu-*.whl"))
+            ):
+                effective_offline.append(
+                    spec.replace("onnxruntime", "onnxruntime-gpu", 1)
+                )
+            else:
+                effective_offline.append(spec)
+        eff_tuple = tuple(effective_offline)
+        cmd = _install_command(
+            eff_tuple,
+            wheelhouse_dir=wh_dir,
+            offline=True,
+            target_site_dir=target_site_dir,
+            constraints_file=constraints_file,
+        )
+        return eff_tuple, [(cmd, None)]
 
     torch_specs: list[str] = []
     onnx_specs: list[str] = []
@@ -779,6 +1139,17 @@ def _build_smart_install_plan(
     steps: list[tuple[list[str], list[str] | None]] = []
     effective_specs: list[str] = []
 
+    def _fallback_for(specs_tuple: tuple[str, ...]) -> list[str] | None:
+        if wh_dir is not None:
+            return _install_command(
+                specs_tuple,
+                wheelhouse_dir=wh_dir,
+                offline=True,
+                target_site_dir=target_site_dir,
+                constraints_file=constraints_file,
+            )
+        return None
+
     if torch_specs:
         effective_specs.extend(torch_specs)
         target_index: str | None = None
@@ -793,17 +1164,41 @@ def _build_smart_install_plan(
         ):
             target_index = PYTORCH_CUDA12_INDEX_URL
 
+        t_tuple = tuple(torch_specs)
         if target_index:
             steps.append(
                 (
-                    _install_command(tuple(torch_specs), index_url=target_index),
-                    _install_command(tuple(torch_specs)),
+                    _install_command(
+                        t_tuple,
+                        index_url=target_index,
+                        wheelhouse_dir=wh_dir,
+                        target_site_dir=target_site_dir,
+                        constraints_file=constraints_file,
+                    ),
+                    _fallback_for(t_tuple)
+                    or _install_command(
+                        t_tuple,
+                        wheelhouse_dir=wh_dir,
+                        target_site_dir=target_site_dir,
+                        constraints_file=constraints_file,
+                    ),
                 )
             )
         else:
-            steps.append((_install_command(tuple(torch_specs)), None))
+            steps.append(
+                (
+                    _install_command(
+                        t_tuple,
+                        wheelhouse_dir=wh_dir,
+                        target_site_dir=target_site_dir,
+                        constraints_file=constraints_file,
+                    ),
+                    _fallback_for(t_tuple),
+                )
+            )
 
     if onnx_specs:
+        o_tuple = tuple(onnx_specs)
         if (
             sys.platform in {"linux", "win32"}
             and accel["has_nvidia_gpu"]
@@ -816,20 +1211,781 @@ def _build_smart_install_plan(
             steps.append(
                 (
                     _install_command(
-                        gpu_specs, extra_index_url=ONNXRUNTIME_CUDA12_EXTRA_INDEX_URL
+                        gpu_specs,
+                        extra_index_url=ONNXRUNTIME_CUDA12_EXTRA_INDEX_URL,
+                        wheelhouse_dir=wh_dir,
+                        target_site_dir=target_site_dir,
+                        constraints_file=constraints_file,
                     ),
-                    _install_command(tuple(onnx_specs)),
+                    _fallback_for(o_tuple)
+                    or _install_command(
+                        o_tuple,
+                        wheelhouse_dir=wh_dir,
+                        target_site_dir=target_site_dir,
+                        constraints_file=constraints_file,
+                    ),
                 )
             )
         else:
             effective_specs.extend(onnx_specs)
-            steps.append((_install_command(tuple(onnx_specs)), None))
+            steps.append(
+                (
+                    _install_command(
+                        o_tuple,
+                        wheelhouse_dir=wh_dir,
+                        target_site_dir=target_site_dir,
+                        constraints_file=constraints_file,
+                    ),
+                    _fallback_for(o_tuple),
+                )
+            )
 
     if other_specs:
+        rest_tuple = tuple(other_specs)
         effective_specs.extend(other_specs)
-        steps.append((_install_command(tuple(other_specs)), None))
+        steps.append(
+            (
+                _install_command(
+                    rest_tuple,
+                    wheelhouse_dir=wh_dir,
+                    target_site_dir=target_site_dir,
+                    constraints_file=constraints_file,
+                ),
+                _fallback_for(rest_tuple),
+            )
+        )
 
     return tuple(effective_specs), steps
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verify_wheelhouse_bundle(
+    wheelhouse_dir: str | os.PathLike[str],
+) -> dict[str, object]:
+    """Verify wheelhouse directory contents and optional SHA256 manifest."""
+    wh_path = Path(wheelhouse_dir).expanduser().resolve()
+    if not wh_path.is_dir():
+        raise RuntimeError(f"Wheelhouse directory does not exist: {wh_path}")
+
+    manifest_path = wh_path / WHEELHOUSE_MANIFEST_NAME
+    wheel_files = sorted(wh_path.glob("*.whl"))
+    if not manifest_path.is_file():
+        if not wheel_files:
+            raise RuntimeError(
+                f"No .whl files found in wheelhouse directory: {wh_path}"
+            )
+        return {
+            "valid": True,
+            "manifest_present": False,
+            "wheelhouse_dir": str(wh_path),
+            "wheel_count": len(wheel_files),
+            "wheels": [w.name for w in wheel_files],
+            "capabilities": [],
+            "profiles": [],
+        }
+
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise RuntimeError(
+            f"Invalid {WHEELHOUSE_MANIFEST_NAME} in {wh_path}: {exc}"
+        ) from exc
+
+    entries = manifest.get("wheels")
+    if not isinstance(entries, list) or not entries:
+        raise RuntimeError(
+            f"{WHEELHOUSE_MANIFEST_NAME} in {wh_path} contains no wheel entries."
+        )
+
+    verified_names: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict) or not entry.get("filename"):
+            raise RuntimeError(f"Malformed wheel entry in {manifest_path}")
+        fname = str(entry["filename"])
+        if "/" in fname or "\\" in fname or ".." in fname:
+            raise RuntimeError(f"Unsafe wheel filename in manifest: {fname}")
+        target = wh_path / fname
+        if not target.is_file():
+            raise RuntimeError(
+                f"Missing wheel file listed in {WHEELHOUSE_MANIFEST_NAME}: {fname}"
+            )
+        expected_size = entry.get("size_bytes")
+        if isinstance(expected_size, int) and target.stat().st_size != expected_size:
+            raise RuntimeError(
+                f"Wheel size mismatch for {fname}: expected {expected_size}, got {target.stat().st_size}"
+            )
+        expected_sha = str(entry.get("sha256") or "").strip().lower()
+        if expected_sha:
+            actual_sha = _sha256_file(target)
+            if actual_sha != expected_sha:
+                raise RuntimeError(
+                    f"SHA256 checksum mismatch for {fname}: expected {expected_sha}, got {actual_sha}"
+                )
+        verified_names.append(fname)
+
+    return {
+        "valid": True,
+        "manifest_present": True,
+        "wheelhouse_dir": str(wh_path),
+        "wheel_count": len(verified_names),
+        "wheels": verified_names,
+        "capabilities": list(manifest.get("capabilities") or ()),
+        "profiles": list(manifest.get("profiles") or ()),
+        "python_version": manifest.get("python_version"),
+        "platform": manifest.get("platform"),
+    }
+
+
+def export_wheelhouse_bundle(
+    output_dir: str | os.PathLike[str],
+    *,
+    capability_names: Sequence[str] = (),
+    profile_names: Sequence[str] = (),
+    python_version: str | None = None,
+    platform_tag: str | None = None,
+    on_output: OutputCallback | None = None,
+    cancel_event: threading.Event | None = None,
+    runner: Callable[..., subprocess.CompletedProcess] | None = None,
+) -> dict[str, object]:
+    """Download a self-contained, SHA256-checksummed offline wheelhouse bundle."""
+    resolved_profiles: list[str] = []
+    resolved_caps: list[str] = []
+
+    for pname in profile_names:
+        key = str(pname).strip().lower()
+        if not key:
+            continue
+        if key not in INSTALL_PROFILES:
+            known = ", ".join(sorted(INSTALL_PROFILES))
+            raise KeyError(f"Unknown install profile '{pname}'. Known: {known}")
+        if key not in resolved_profiles:
+            resolved_profiles.append(key)
+        for cap in INSTALL_PROFILES[key]["capabilities"]:  # type: ignore[index]
+            cap_str = str(cap)
+            if cap_str not in resolved_caps:
+                resolved_caps.append(cap_str)
+
+    for cname in capability_names:
+        key = str(cname).strip().lower()
+        if not key:
+            continue
+        if key not in CAPABILITIES:
+            known = ", ".join(list_capabilities())
+            raise KeyError(
+                f"Unknown runtime capability '{cname}'. Known capabilities: {known}"
+            )
+        if key not in resolved_caps:
+            resolved_caps.append(key)
+
+    if not resolved_caps:
+        raise ValueError(
+            "Select at least one capability or non-empty profile to export an offline bundle."
+        )
+
+    target_py_tuple: tuple[int, int] | None = None
+    if python_version:
+        parts = python_version.strip().split(".")
+        if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+            target_py_tuple = (int(parts[0]), int(parts[1]))
+
+    all_deps: list[RuntimeDependency] = []
+    seen_specs: set[str] = set()
+    for cap_key in resolved_caps:
+        for dep in CAPABILITIES[cap_key].dependencies:
+            if not dep.applies_to_current_python(target_py_tuple):
+                continue
+            if dep.package_spec not in seen_specs:
+                seen_specs.add(dep.package_spec)
+                all_deps.append(dep)
+
+    out_path = Path(output_dir).expanduser().resolve()
+    out_path.mkdir(parents=True, exist_ok=True)
+
+    python_exe = (
+        _find_matching_host_python()
+        if getattr(sys, "frozen", False)
+        else sys.executable
+    )
+    if not python_exe:
+        raise RuntimeError(
+            "Exporting an offline wheelhouse requires a Python environment with 'pip'."
+        )
+
+    pinned_specs = _pin_abi_sensitive_specs(tuple(dep.package_spec for dep in all_deps))
+    cross_targeting = bool(python_version or platform_tag)
+
+    download_cmds: list[list[str]] = []
+    if cross_targeting:
+        cmd = [
+            python_exe,
+            "-m",
+            "pip",
+            "download",
+            "--dest",
+            str(out_path),
+            "--only-binary=:all:",
+        ]
+        if python_version:
+            cmd.extend(["--python-version", python_version.strip()])
+        if platform_tag:
+            cmd.extend(["--platform", platform_tag.strip()])
+        cmd.extend(pinned_specs)
+        download_cmds.append(cmd)
+    else:
+        accel = detect_accelerator_summary()
+        torch_specs = [
+            s
+            for s in pinned_specs
+            if s.lower().startswith(
+                ("torch>=", "torch==", "torchvision>=", "torchvision==")
+            )
+        ]
+        onnx_specs = [
+            s
+            for s in pinned_specs
+            if s.lower().startswith("onnxruntime>=") or s.lower() == "onnxruntime"
+        ]
+        other_specs = [
+            s for s in pinned_specs if s not in torch_specs and s not in onnx_specs
+        ]
+        if torch_specs:
+            t_cmd = [
+                python_exe,
+                "-m",
+                "pip",
+                "download",
+                "--dest",
+                str(out_path),
+                "--only-binary=:all:",
+            ]
+            if sys.platform.startswith("linux") and not accel["has_nvidia_gpu"]:
+                t_cmd.extend(["--index-url", PYTORCH_CPU_INDEX_URL])
+            elif (
+                sys.platform in {"linux", "win32"}
+                and accel["has_nvidia_gpu"]
+                and accel["has_cuda12"]
+            ):
+                t_cmd.extend(["--index-url", PYTORCH_CUDA12_INDEX_URL])
+            t_cmd.extend(torch_specs)
+            download_cmds.append(t_cmd)
+        if onnx_specs:
+            o_cmd = [
+                python_exe,
+                "-m",
+                "pip",
+                "download",
+                "--dest",
+                str(out_path),
+                "--only-binary=:all:",
+            ]
+            if (
+                sys.platform in {"linux", "win32"}
+                and accel["has_nvidia_gpu"]
+                and accel["has_cuda12"]
+            ):
+                o_cmd.extend(["--extra-index-url", ONNXRUNTIME_CUDA12_EXTRA_INDEX_URL])
+                o_cmd.extend(
+                    [s.replace("onnxruntime", "onnxruntime-gpu", 1) for s in onnx_specs]
+                )
+            else:
+                o_cmd.extend(onnx_specs)
+            download_cmds.append(o_cmd)
+        if other_specs:
+            download_cmds.append(
+                [
+                    python_exe,
+                    "-m",
+                    "pip",
+                    "download",
+                    "--dest",
+                    str(out_path),
+                    "--only-binary=:all:",
+                    *other_specs,
+                ]
+            )
+
+    for d_cmd in download_cmds:
+        if runner is not None:
+            completed = runner(d_cmd, check=False, capture_output=True, text=True)
+            if completed.returncode != 0:
+                stderr = str(getattr(completed, "stderr", "") or "").strip()
+                raise RuntimeError(
+                    f"Failed to export offline wheelhouse bundle: {stderr}"
+                )
+        else:
+            rc, out_text = _run_streaming_command(
+                d_cmd,
+                on_output=on_output,
+                cancel_event=cancel_event,
+                capability_name="bundle",
+            )
+            if rc != 0:
+                tail = "\n".join(out_text.splitlines()[-40:]).strip()
+                raise RuntimeError(
+                    f"Failed to export offline wheelhouse bundle:\n{tail}"
+                )
+
+    wheels_meta: list[dict[str, object]] = []
+    for whl in sorted(out_path.glob("*.whl")):
+        wheels_meta.append(
+            {
+                "filename": whl.name,
+                "size_bytes": whl.stat().st_size,
+                "sha256": _sha256_file(whl),
+            }
+        )
+    if not wheels_meta:
+        raise RuntimeError(f"No .whl files were downloaded into {out_path}.")
+
+    manifest: dict[str, object] = {
+        "schema_version": 1,
+        "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "python_version": python_version
+        or f"{sys.version_info.major}.{sys.version_info.minor}",
+        "platform": platform_tag or sysconfig.get_platform(),
+        "arch": platform.machine(),
+        "capabilities": resolved_caps,
+        "profiles": resolved_profiles,
+        "package_specs": list(pinned_specs),
+        "wheel_count": len(wheels_meta),
+        "wheels": wheels_meta,
+    }
+    manifest_file = out_path / WHEELHOUSE_MANIFEST_NAME
+    manifest_file.write_text(
+        json.dumps(manifest, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    if on_output is not None:
+        on_output(
+            f"Wrote {WHEELHOUSE_MANIFEST_NAME} ({len(wheels_meta)} wheels) in {out_path}"
+        )
+    return manifest
+
+
+def _normalize_dist_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", str(name or "").strip()).lower()
+
+
+def _spec_dist_name(spec: str) -> str:
+    head = re.split(r"[<>=!~;\[\s@]", str(spec or "").strip(), maxsplit=1)[0]
+    return _normalize_dist_name(head)
+
+
+def _version_sort_key(version: str) -> tuple[tuple[int, object], ...]:
+    tokens = re.findall(r"\d+|[a-zA-Z]+", version)
+    return tuple((0, int(tok)) if tok.isdigit() else (1, tok.lower()) for tok in tokens)
+
+
+def _wheel_compatibility_rank(
+    py_tags: Sequence[str],
+    abi_tags: Sequence[str],
+    plat_tags: Sequence[str],
+) -> int | None:
+    maj, min_ = sys.version_info.major, sys.version_info.minor
+    gil_disabled = bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
+    exact_cp = f"cp{maj}{min_}"
+    exact_abi = f"{exact_cp}t" if gil_disabled else exact_cp
+
+    py_abi_score = 0
+    for py_tag in py_tags:
+        for abi_tag in abi_tags:
+            if py_tag == exact_cp and abi_tag == exact_abi:
+                py_abi_score = max(py_abi_score, 40)
+            elif (
+                not gil_disabled
+                and abi_tag == "abi3"
+                and sys.implementation.name == "cpython"
+            ):
+                if py_tag in {"cp3", "py3"}:
+                    py_abi_score = max(py_abi_score, 30)
+                elif py_tag.startswith("cp3") and py_tag[3:].isdigit():
+                    if int(py_tag[3:]) <= min_:
+                        py_abi_score = max(py_abi_score, 30)
+            elif abi_tag == "none":
+                if py_tag in {exact_cp, f"py{maj}{min_}"}:
+                    py_abi_score = max(py_abi_score, 25)
+                elif py_tag in {f"py{maj}", "py3", "py2.py3"}:
+                    py_abi_score = max(py_abi_score, 20)
+                elif py_tag.startswith("py3") and py_tag[3:].isdigit():
+                    if int(py_tag[3:]) <= min_:
+                        py_abi_score = max(py_abi_score, 22)
+    if py_abi_score == 0:
+        return None
+
+    raw_arch = (platform.machine() or "").strip().lower()
+    arch_norm = {"amd64": "x86_64"}.get(raw_arch, raw_arch)
+    plat_score = 0
+    for ptag in plat_tags:
+        pt = ptag.lower()
+        if pt == "any":
+            plat_score = max(plat_score, 10)
+            continue
+        if sys.platform == "darwin" and pt.startswith("macosx_"):
+            m = re.match(r"^macosx_(\d+)_(\d+)_(.+)$", pt)
+            if not m:
+                continue
+            w_maj, w_min, w_arch = int(m.group(1)), int(m.group(2)), m.group(3)
+            mac_ver_str = platform.mac_ver()[0] or ""
+            if mac_ver_str:
+                vparts = [p for p in mac_ver_str.split(".") if p.isdigit()]
+                if len(vparts) >= 2 and (w_maj, w_min) > (
+                    int(vparts[0]),
+                    int(vparts[1]),
+                ):
+                    continue
+            if w_arch == arch_norm:
+                plat_score = max(plat_score, 30)
+            elif w_arch == "universal2" and arch_norm in {"arm64", "x86_64"}:
+                plat_score = max(plat_score, 25)
+        elif sys.platform.startswith("linux"):
+            linux_arch = {"arm64": "aarch64"}.get(arch_norm, arch_norm)
+            if pt in {
+                f"linux_{linux_arch}",
+                f"manylinux1_{linux_arch}",
+                f"manylinux2010_{linux_arch}",
+                f"manylinux2014_{linux_arch}",
+            } or (pt.startswith("manylinux_") and pt.endswith(f"_{linux_arch}")):
+                plat_score = max(plat_score, 30)
+        elif sys.platform == "win32":
+            if (arch_norm in {"x86_64", "amd64"} and pt == "win_amd64") or (
+                arch_norm in {"arm64", "aarch64"} and pt == "win_arm64"
+            ):
+                plat_score = max(plat_score, 30)
+
+    if plat_score == 0:
+        return None
+    return py_abi_score + plat_score
+
+
+def _version_tuple_cmp(lhs: str, rhs: str) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    def _nums(val: str) -> list[int]:
+        return [int(x) for x in re.findall(r"\d+", val)] or [0]
+
+    a, b = _nums(lhs), _nums(rhs)
+    width = max(len(a), len(b))
+    a.extend([0] * (width - len(a)))
+    b.extend([0] * (width - len(b)))
+    return tuple(a), tuple(b)
+
+
+def _evaluate_pep508_marker(marker: str) -> bool:
+    """Safely evaluate PEP 508 environment markers via AST (never ``eval``)."""
+    env = {
+        "os_name": os.name,
+        "sys_platform": sys.platform,
+        "platform_system": platform.system(),
+        "platform_machine": platform.machine(),
+        "implementation_name": sys.implementation.name,
+        "python_version": f"{sys.version_info.major}.{sys.version_info.minor}",
+        "python_full_version": platform.python_version(),
+        "extra": "",
+    }
+
+    def _eval_node(node: ast.AST) -> object:
+        if isinstance(node, ast.Expression):
+            return _eval_node(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.Name) and node.id in env:
+            return env[node.id]
+        if isinstance(node, ast.BoolOp):
+            if isinstance(node.op, ast.And):
+                return all(bool(_eval_node(v)) for v in node.values)
+            if isinstance(node.op, ast.Or):
+                return any(bool(_eval_node(v)) for v in node.values)
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            return not bool(_eval_node(node.operand))
+        if isinstance(node, ast.Compare) and len(node.ops) == 1:
+            left = str(_eval_node(node.left))
+            right = str(_eval_node(node.comparators[0]))
+            op = node.ops[0]
+            is_ver = (
+                isinstance(node.left, ast.Name)
+                and node.left.id in {"python_version", "python_full_version"}
+            ) or (
+                isinstance(node.comparators[0], ast.Name)
+                and node.comparators[0].id in {"python_version", "python_full_version"}
+            )
+            lhs: object = left
+            rhs: object = right
+            if is_ver and isinstance(
+                op, (ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.Eq, ast.NotEq)
+            ):
+                lhs, rhs = _version_tuple_cmp(left, right)
+            if isinstance(op, ast.Eq):
+                return lhs == rhs
+            if isinstance(op, ast.NotEq):
+                return lhs != rhs
+            if isinstance(op, ast.Lt):
+                return lhs < rhs  # type: ignore[operator]
+            if isinstance(op, ast.LtE):
+                return lhs <= rhs  # type: ignore[operator]
+            if isinstance(op, ast.Gt):
+                return lhs > rhs  # type: ignore[operator]
+            if isinstance(op, ast.GtE):
+                return lhs >= rhs  # type: ignore[operator]
+            if isinstance(op, ast.In):
+                return left in right
+            if isinstance(op, getattr(ast, "Not" + "In")):
+                return left not in right
+        raise ValueError(f"Unsupported marker AST node: {ast.dump(node)}")
+
+    try:
+        parsed = ast.parse(marker.strip(), mode="eval")
+        return bool(_eval_node(parsed))
+    except Exception:
+        # Fail conservatively: skip ambiguous optional markers unless extra-free.
+        return "extra" not in marker
+
+
+_FROZEN_BUNDLED_DIST_IMPORTS: dict[str, str] = {
+    "numpy": "numpy",
+    "pillow": "PIL",
+    "opencv-python": "cv2",
+    "opencv-contrib-python": "cv2",
+    "opencv-python-headless": "cv2",
+    "pyyaml": "yaml",
+    "pyside6-essentials": "PySide6",
+    "shiboken6": "shiboken6",
+    "pycocotools": "pycocotools",
+    "shapely": "shapely",
+    "psutil": "psutil",
+}
+
+
+def _base_bundled_distributions(target_site_dir: Path) -> set[str]:
+    """Return normalized distribution names already satisfied by the base runtime."""
+    target_resolved = target_site_dir.resolve()
+    base_paths = [
+        p for p in sys.path if p and Path(p).expanduser().resolve() != target_resolved
+    ]
+    present: set[str] = set()
+    for dist in importlib_metadata.distributions(path=base_paths):
+        try:
+            dname = dist.metadata["Name"]
+            if dname:
+                present.add(_normalize_dist_name(dname))
+        except Exception:
+            continue
+    if getattr(sys, "frozen", False):
+        for dist_norm, mod_name in _FROZEN_BUNDLED_DIST_IMPORTS.items():
+            try:
+                spec = importlib_util.find_spec(mod_name)
+                if spec is not None:
+                    present.add(dist_norm)
+            except Exception:
+                continue
+    return present
+
+
+def _read_wheel_requires_dist(whl_path: Path) -> list[str]:
+    with zipfile.ZipFile(whl_path, "r") as zf:
+        meta_names = [
+            name
+            for name in zf.namelist()
+            if name.endswith(".dist-info/METADATA") and name.count("/") == 1
+        ]
+        if not meta_names:
+            return []
+        raw = zf.read(meta_names[0]).decode("utf-8", errors="replace")
+    msg = EmailHeaderParser().parsestr(raw)
+    reqs = msg.get_all("Requires-Dist") or []
+    applicable: list[str] = []
+    for req in reqs:
+        parts = req.split(";", 1)
+        if len(parts) == 2 and not _evaluate_pep508_marker(parts[1]):
+            continue
+        dist_norm = _spec_dist_name(parts[0])
+        if dist_norm:
+            applicable.append(dist_norm)
+    return applicable
+
+
+def _extract_verified_wheel(whl_path: Path, target_site_dir: Path) -> None:
+    """Verify PEP 427 RECORD SHA256 digests and extract safely into ``target_site_dir``."""
+    site_root = target_site_dir.expanduser().resolve()
+    site_root.mkdir(parents=True, exist_ok=True)
+
+    with zipfile.ZipFile(whl_path, "r") as zf:
+        names = zf.namelist()
+        record_candidates = [
+            n for n in names if n.endswith(".dist-info/RECORD") and n.count("/") == 1
+        ]
+        if not record_candidates:
+            raise RuntimeError(
+                f"Invalid wheel (missing .dist-info/RECORD): {whl_path.name}"
+            )
+        record_member = record_candidates[0]
+        record_hashes: dict[str, tuple[str | None, int | None]] = {}
+        record_text = zf.read(record_member).decode("utf-8", errors="replace")
+        for row in csv.reader(io.StringIO(record_text)):
+            if not row:
+                continue
+            rec_path = row[0]
+            rec_hash = row[1] if len(row) > 1 and row[1] else None
+            rec_size = int(row[2]) if len(row) > 2 and row[2].isdigit() else None
+            record_hashes[rec_path] = (rec_hash, rec_size)
+
+        for info in zf.infolist():
+            member = info.filename
+            if info.is_dir():
+                continue
+            norm_parts = Path(member).parts
+            if not norm_parts or ".." in norm_parts or member.startswith(("/", "\\")):
+                raise RuntimeError(
+                    f"Unsafe archive path in wheel {whl_path.name}: {member}"
+                )
+
+            rel_parts = list(norm_parts)
+            if len(rel_parts) >= 3 and rel_parts[0].endswith(".data"):
+                section = rel_parts[1]
+                if section in {"purelib", "platlib"}:
+                    rel_parts = rel_parts[2:]
+                else:
+                    # Skip console scripts / headers / data outside site-packages in frozen mode
+                    continue
+
+            dest = (site_root / Path(*rel_parts)).resolve()
+            try:
+                dest.relative_to(site_root)
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"Wheel path escapes site-packages in {whl_path.name}: {member}"
+                ) from exc
+
+            hasher = hashlib.sha256()
+            total_bytes = 0
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            part_dest = dest.with_name(f".{dest.name}.annolid-tmp")
+            try:
+                with zf.open(info, "r") as src, part_dest.open("wb") as out_f:
+                    while True:
+                        chunk = src.read(256 * 1024)
+                        if not chunk:
+                            break
+                        hasher.update(chunk)
+                        total_bytes += len(chunk)
+                        out_f.write(chunk)
+
+                if member != record_member and member in record_hashes:
+                    exp_hash, exp_size = record_hashes[member]
+                    if exp_size is not None and total_bytes != exp_size:
+                        raise RuntimeError(
+                            f"RECORD size mismatch in {whl_path.name} for {member}"
+                        )
+                    if exp_hash and exp_hash.startswith("sha256="):
+                        b64 = (
+                            base64.urlsafe_b64encode(hasher.digest())
+                            .rstrip(b"=")
+                            .decode("ascii")
+                        )
+                        if f"sha256={b64}" != exp_hash:
+                            raise RuntimeError(
+                                f"RECORD SHA256 mismatch in {whl_path.name} for {member}"
+                            )
+                part_dest.replace(dest)
+            except Exception:
+                part_dest.unlink(missing_ok=True)
+                raise
+
+
+def _install_wheels_from_wheelhouse_pure_python(
+    package_specs: tuple[str, ...],
+    *,
+    wheelhouse_dir: Path,
+    target_site_dir: Path,
+    on_output: OutputCallback | None = None,
+    cancel_event: threading.Event | None = None,
+    capability_name: str = "runtime",
+) -> tuple[str, ...]:
+    """Zero-toolchain PEP 427/425 offline wheel installer for air-gapped frozen bundles."""
+    verify_wheelhouse_bundle(wheelhouse_dir)
+
+    # Index compatible wheels by normalized distribution name -> best (version, rank, Path)
+    best_wheels: dict[str, tuple[tuple[tuple[int, object], ...], int, Path]] = {}
+    for whl_path in sorted(wheelhouse_dir.glob("*.whl")):
+        stem = whl_path.name[:-4]
+        parts = stem.split("-")
+        if len(parts) not in (5, 6):
+            continue
+        dist_norm = _normalize_dist_name(parts[0])
+        ver_str = parts[1]
+        py_tags = parts[-3].split(".")
+        abi_tags = parts[-2].split(".")
+        plat_tags = parts[-1].split(".")
+        rank = _wheel_compatibility_rank(py_tags, abi_tags, plat_tags)
+        if rank is None:
+            continue
+        key = (_version_sort_key(ver_str), rank)
+        prev = best_wheels.get(dist_norm)
+        if prev is None or key >= (prev[0], prev[1]):
+            best_wheels[dist_norm] = (key[0], key[1], whl_path)
+
+    bundled = _base_bundled_distributions(target_site_dir)
+    queue_dists: deque[str] = deque()
+    missing_roots: list[str] = []
+
+    for spec in package_specs:
+        dnorm = _spec_dist_name(spec)
+        if dnorm in bundled:
+            continue
+        if dnorm not in best_wheels:
+            if dnorm == "onnxruntime" and "onnxruntime-gpu" in best_wheels:
+                dnorm = "onnxruntime-gpu"
+            elif dnorm == "onnxruntime-gpu" and "onnxruntime" in best_wheels:
+                dnorm = "onnxruntime"
+            else:
+                missing_roots.append(spec)
+                continue
+        queue_dists.append(dnorm)
+
+    if missing_roots:
+        raise RuntimeError(
+            f"Offline wheelhouse {wheelhouse_dir} has no compatible wheel for "
+            f"Python {sys.version_info.major}.{sys.version_info.minor} ({sys.platform}/{platform.machine()}): "
+            + ", ".join(missing_roots)
+        )
+
+    ordered_wheels: list[Path] = []
+    visited: set[str] = set()
+    while queue_dists:
+        curr = queue_dists.popleft()
+        if curr in visited or curr in bundled:
+            continue
+        visited.add(curr)
+        entry = best_wheels.get(curr)
+        if entry is None:
+            continue
+        whl_file = entry[2]
+        ordered_wheels.append(whl_file)
+        for req_dist in _read_wheel_requires_dist(whl_file):
+            if (
+                req_dist not in visited
+                and req_dist not in bundled
+                and req_dist in best_wheels
+            ):
+                queue_dists.append(req_dist)
+
+    for whl_file in ordered_wheels:
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeInstallCancelledError(
+                f"Installation of '{capability_name}' was cancelled."
+            )
+        if on_output is not None:
+            on_output(
+                f"[wheelhouse] Verifying & extracting {whl_file.name} -> {target_site_dir}"
+            )
+        _extract_verified_wheel(whl_file, target_site_dir)
+
+    activate_user_runtime_site(target_site_dir)
+    return package_specs
 
 
 def _run_streaming_command(
@@ -917,6 +2073,7 @@ def _guard_installable(
     *,
     auto_install: bool | None = None,
     find_spec: SpecFinder | None = None,
+    allow_frozen_user_runtime: bool = False,
 ) -> CapabilityStatus:
     status = check_capability(key, find_spec=find_spec)
     should_install = (
@@ -924,21 +2081,108 @@ def _guard_installable(
         if auto_install is None
         else bool(auto_install)
     )
-    if not should_install or getattr(sys, "frozen", False):
+    is_frozen = bool(getattr(sys, "frozen", False))
+    frozen_allowed = is_frozen and _frozen_install_opted_in(allow_frozen_user_runtime)
+    if not should_install or (is_frozen and not frozen_allowed):
         message = capability_message(status)
-        if getattr(sys, "frozen", False):
+        if is_frozen:
             message += (
-                ". Frozen desktop bundles are read-only; install this feature in "
-                "a normal Python environment and launch Annolid from that environment."
+                ". Frozen desktop bundles are read-only; install this feature via "
+                "Settings -> Runtime & Optional Packages (isolated ~/.annolid/runtime), "
+                f"set {FROZEN_USER_RUNTIME_ENV}=1 / {WHEELHOUSE_ENV}=<dir>, "
+                "or run Annolid from a Python environment."
             )
         raise RuntimeError(message)
     return status
+
+
+def _execute_frozen_user_runtime_install(
+    missing: tuple[RuntimeDependency, ...],
+    *,
+    key: str,
+    status: CapabilityStatus,
+    wheelhouse: str | os.PathLike[str] | None = None,
+    offline: bool | None = None,
+    on_output: OutputCallback | None = None,
+    cancel_event: threading.Event | None = None,
+) -> tuple[str, ...]:
+    site_dir = user_runtime_site_dir()
+    site_dir.mkdir(parents=True, exist_ok=True)
+    wh_dir = resolve_wheelhouse_dir(wheelhouse)
+    if wh_dir is not None and (wh_dir / WHEELHOUSE_MANIFEST_NAME).is_file():
+        verify_wheelhouse_bundle(wh_dir)
+
+    pinned_specs = _pin_abi_sensitive_specs(tuple(dep.package_spec for dep in missing))
+    has_external_tool = bool(_find_uv_binary() or _find_matching_host_python())
+
+    if not has_external_tool:
+        if wh_dir is None:
+            raise RuntimeError(
+                capability_message(status)
+                + ". Frozen desktop bundles are read-only and no external 'uv', "
+                f"matching Python {sys.version_info.major}.{sys.version_info.minor}, "
+                f"or offline wheelhouse ({WHEELHOUSE_ENV}) was found for user-space runtime install."
+            )
+        return _install_wheels_from_wheelhouse_pure_python(
+            pinned_specs,
+            wheelhouse_dir=wh_dir,
+            target_site_dir=site_dir,
+            on_output=on_output,
+            cancel_event=cancel_event,
+            capability_name=key,
+        )
+
+    pins = _frozen_bundled_constraints()
+    tmp_constraints: Path | None = None
+    try:
+        if pins:
+            fd, tmp_name = tempfile.mkstemp(prefix="annolid-frozen-", suffix=".txt")
+            os.close(fd)
+            tmp_constraints = Path(tmp_name)
+            tmp_constraints.write_text("\n".join(pins) + "\n", encoding="utf-8")
+
+        effective_specs, steps = _build_smart_install_plan(
+            missing,
+            wheelhouse=wh_dir,
+            offline=offline,
+            target_site_dir=site_dir,
+            constraints_file=tmp_constraints,
+        )
+        for primary_cmd, fallback_cmd in steps:
+            rc, combined_output = _run_streaming_command(
+                primary_cmd,
+                on_output=on_output,
+                cancel_event=cancel_event,
+                capability_name=key,
+            )
+            if rc != 0 and fallback_cmd is not None:
+                if on_output is not None:
+                    on_output("Primary index failed; retrying with fallback source...")
+                rc, combined_output = _run_streaming_command(
+                    fallback_cmd,
+                    on_output=on_output,
+                    cancel_event=cancel_event,
+                    capability_name=key,
+                )
+            if rc != 0:
+                tail = "\n".join(combined_output.splitlines()[-40:]).strip()
+                detail = f"\n\npip output:\n{tail}" if tail else ""
+                raise RuntimeError(capability_message(status) + detail)
+    finally:
+        if tmp_constraints is not None:
+            tmp_constraints.unlink(missing_ok=True)
+
+    activate_user_runtime_site(site_dir)
+    return effective_specs
 
 
 def install_capability_stream(
     name: str,
     *,
     auto_install: bool | None = None,
+    wheelhouse: str | os.PathLike[str] | None = None,
+    offline: bool | None = None,
+    allow_frozen_user_runtime: bool = False,
     on_output: OutputCallback | None = None,
     cancel_event: threading.Event | None = None,
     find_spec: SpecFinder | None = None,
@@ -953,35 +2197,61 @@ def install_capability_stream(
     capability = CAPABILITIES[key]
 
     with _capability_lock(key):
+        if getattr(sys, "frozen", False):
+            activate_user_runtime_site()
         missing = _missing_dependencies(capability, find_spec=find_spec)
         if not missing:
             return ()
 
-        status = _guard_installable(key, auto_install=auto_install, find_spec=find_spec)
-        effective_specs, steps = _build_smart_install_plan(missing)
+        status = _guard_installable(
+            key,
+            auto_install=auto_install,
+            find_spec=find_spec,
+            allow_frozen_user_runtime=allow_frozen_user_runtime,
+        )
 
-        for primary_cmd, fallback_cmd in steps:
-            rc, combined_output = _run_streaming_command(
-                primary_cmd,
+        if getattr(sys, "frozen", False):
+            effective_specs = _execute_frozen_user_runtime_install(
+                missing,
+                key=key,
+                status=status,
+                wheelhouse=wheelhouse,
+                offline=offline,
                 on_output=on_output,
                 cancel_event=cancel_event,
-                capability_name=key,
             )
-            if rc != 0 and fallback_cmd is not None:
-                if on_output is not None:
-                    on_output(
-                        "Primary accelerator wheel index failed; retrying with standard PyPI index..."
-                    )
+        else:
+            wh_dir = resolve_wheelhouse_dir(wheelhouse)
+            if wh_dir is not None and (wh_dir / WHEELHOUSE_MANIFEST_NAME).is_file():
+                verify_wheelhouse_bundle(wh_dir)
+            effective_specs, steps = _build_smart_install_plan(
+                missing,
+                wheelhouse=wh_dir,
+                offline=offline,
+            )
+
+            for primary_cmd, fallback_cmd in steps:
                 rc, combined_output = _run_streaming_command(
-                    fallback_cmd,
+                    primary_cmd,
                     on_output=on_output,
                     cancel_event=cancel_event,
                     capability_name=key,
                 )
-            if rc != 0:
-                tail = "\n".join(combined_output.splitlines()[-40:]).strip()
-                detail = f"\n\npip output:\n{tail}" if tail else ""
-                raise RuntimeError(capability_message(status) + detail)
+                if rc != 0 and fallback_cmd is not None:
+                    if on_output is not None:
+                        on_output(
+                            "Primary accelerator wheel index failed; retrying with fallback source..."
+                        )
+                    rc, combined_output = _run_streaming_command(
+                        fallback_cmd,
+                        on_output=on_output,
+                        cancel_event=cancel_event,
+                        capability_name=key,
+                    )
+                if rc != 0:
+                    tail = "\n".join(combined_output.splitlines()[-40:]).strip()
+                    detail = f"\n\npip output:\n{tail}" if tail else ""
+                    raise RuntimeError(capability_message(status) + detail)
 
         importlib.invalidate_caches()
         still_missing = _missing_dependencies(capability, find_spec=find_spec)
@@ -995,6 +2265,9 @@ def install_capability_stream(
 def install_profile_stream(
     profile_name: str,
     *,
+    wheelhouse: str | os.PathLike[str] | None = None,
+    offline: bool | None = None,
+    allow_frozen_user_runtime: bool = False,
     on_output: OutputCallback | None = None,
     cancel_event: threading.Event | None = None,
     find_spec: SpecFinder | None = None,
@@ -1010,6 +2283,9 @@ def install_profile_stream(
         specs = install_capability_stream(
             str(cap_name),
             auto_install=True,
+            wheelhouse=wheelhouse,
+            offline=offline,
+            allow_frozen_user_runtime=allow_frozen_user_runtime,
             on_output=on_output,
             cancel_event=cancel_event,
             find_spec=find_spec,
@@ -1025,14 +2301,18 @@ def ensure_capability(
     *,
     reason: str = "",
     auto_install: bool | None = None,
+    wheelhouse: str | os.PathLike[str] | None = None,
+    offline: bool | None = None,
+    allow_frozen_user_runtime: bool = False,
     runner: Callable[..., subprocess.CompletedProcess] | None = None,
     find_spec: SpecFinder | None = None,
 ) -> tuple[str, ...]:
     """Ensure an optional runtime exists, installing missing packages on first use.
 
     Returns the package specs installed during this call. Frozen desktop bundles
-    intentionally do not mutate themselves; they raise a clear install message
-    instead so users can install the feature in a normal Python environment.
+    never mutate the bundled application directory; unless user-space runtime
+    installation is explicitly invoked (GUI prompt or ``ANNOLID_FROZEN_USER_RUNTIME=1``),
+    headless calls fail fast with an actionable install command.
     """
     key = name.strip().lower()
     if key not in CAPABILITIES:
@@ -1042,12 +2322,15 @@ def ensure_capability(
         )
     capability = CAPABILITIES[key]
 
+    if getattr(sys, "frozen", False) and find_spec is None:
+        activate_user_runtime_site()
+
     if (
         runner is None
         and find_spec is None
         and auto_install is not False
         and _INTERACTIVE_INSTALL_HANDLER is not None
-        and not getattr(sys, "frozen", False)
+        and (not getattr(sys, "frozen", False) or frozen_user_runtime_enabled())
         and _auto_install_optional_deps_enabled()
         and _missing_dependencies(capability)
     ):
@@ -1060,13 +2343,23 @@ def ensure_capability(
         if not missing:
             return ()
 
-        status = _guard_installable(key, auto_install=auto_install, find_spec=find_spec)
+        status = _guard_installable(
+            key,
+            auto_install=auto_install,
+            find_spec=find_spec,
+            allow_frozen_user_runtime=allow_frozen_user_runtime,
+        )
 
         # Preserve deterministic single-command injection contract for callers/tests
         # that pass an explicit subprocess runner.
         if runner is not None:
+            wh_dir = resolve_wheelhouse_dir(wheelhouse)
             package_specs = tuple(dependency.package_spec for dependency in missing)
-            command = _install_command(package_specs)
+            command = _install_command(
+                package_specs,
+                wheelhouse_dir=wh_dir,
+                offline=is_offline_mode(offline),
+            )
             completed = runner(command, check=False, capture_output=True, text=True)
             if completed.returncode != 0:
                 stderr = str(getattr(completed, "stderr", "") or "").strip()
@@ -1080,7 +2373,29 @@ def ensure_capability(
                 raise RuntimeError(capability_message(refreshed))
             return package_specs
 
-        effective_specs, steps = _build_smart_install_plan(missing)
+        if getattr(sys, "frozen", False):
+            effective_specs = _execute_frozen_user_runtime_install(
+                missing,
+                key=key,
+                status=status,
+                wheelhouse=wheelhouse,
+                offline=offline,
+            )
+            importlib.invalidate_caches()
+            still_missing = _missing_dependencies(capability, find_spec=find_spec)
+            if still_missing:
+                refreshed = check_capability(key, find_spec=find_spec)
+                raise RuntimeError(capability_message(refreshed))
+            return effective_specs
+
+        wh_dir = resolve_wheelhouse_dir(wheelhouse)
+        if wh_dir is not None and (wh_dir / WHEELHOUSE_MANIFEST_NAME).is_file():
+            verify_wheelhouse_bundle(wh_dir)
+        effective_specs, steps = _build_smart_install_plan(
+            missing,
+            wheelhouse=wh_dir,
+            offline=offline,
+        )
         reason_suffix = f" for {reason.strip()}" if str(reason or "").strip() else ""
         print(
             f"[annolid] Installing optional '{key}' runtime packages{reason_suffix} "
@@ -1127,20 +2442,34 @@ __all__ = [
     "AUTO_INSTALL_OPTIONAL_DEPS_ENV",
     "CAPABILITIES",
     "CapabilityStatus",
+    "FROZEN_USER_RUNTIME_ENV",
     "INSTALL_PROFILES",
     "NO_GPU_ENV",
+    "OFFLINE_ENV",
     "RuntimeCapability",
     "RuntimeDependency",
     "RuntimeInstallCancelledError",
     "TORCH_INDEX_URL_ENV",
+    "USER_RUNTIME_DIR_ENV",
+    "WHEELHOUSE_ENV",
+    "WHEELHOUSE_MANIFEST_NAME",
+    "activate_user_runtime_site",
+    "can_install_in_frozen_user_runtime",
     "capability_message",
     "capability_status_dict",
     "check_capability",
     "detect_accelerator_summary",
     "ensure_capability",
+    "export_wheelhouse_bundle",
     "format_capability_report",
+    "frozen_user_runtime_enabled",
     "install_capability_stream",
     "install_profile_stream",
+    "is_offline_mode",
     "list_capabilities",
+    "resolve_wheelhouse_dir",
     "set_interactive_install_handler",
+    "user_runtime_abi_slug",
+    "user_runtime_site_dir",
+    "verify_wheelhouse_bundle",
 ]
