@@ -20,6 +20,10 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
+from annolid.annotation.keypoint_visibility import (
+    KeypointVisibility,
+    visibility_from_labelme_shape,
+)
 from annolid.annotation.polygon_constraints import make_instance_masks_exclusive
 from annolid.utils.annotation_store import (
     AnnotationStore,
@@ -29,6 +33,7 @@ from annolid.utils.annotation_store import (
 from annolid.utils.atomic_io import atomic_write_json
 from annolid.utils.body_part_shapes import (
     build_body_part_shape_dict,
+    classify_keypoint_junction_role,
     extract_body_part_label,
     extract_body_part_parent_instance,
     infer_part_from_keypoint_name,
@@ -162,6 +167,9 @@ class BodyPartPrototype:
     std_thickness: float
     seed_area_ratio: float
     is_unassigned: bool = False
+    coat_l_mean: float = 128.0
+    inherited_cross_instance: bool = False
+    working_adapted: bool = False
 
 
 @dataclass(slots=True)
@@ -350,6 +358,57 @@ def _estimate_intrinsic_appearance_dipole(
     return vx_t, vy_t
 
 
+_FAST_CHROMA_STRUCT_WEIGHTS = np.array(
+    [0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+    dtype=np.float32,
+)
+
+
+def _foreground_lab_l_mean(work_rgb: np.ndarray, work_mask: np.ndarray) -> float:
+    """Return mean CIE Lab L channel [0..255] inside ``work_mask``."""
+    mask_bool = np.asarray(work_mask, dtype=bool)
+    if not np.any(mask_bool):
+        return 128.0
+    lab_l = cv2.cvtColor(work_rgb, cv2.COLOR_RGB2LAB)[:, :, 0]
+    return float(lab_l[mask_bool].mean())
+
+
+def _prototype_pixel_similarity(
+    proto: BodyPartPrototype,
+    flat_feats: np.ndarray,
+    *,
+    work_l_mean: Optional[float] = None,
+) -> Tuple[np.ndarray, np.ndarray, bool]:
+    """Compute ``(seed_sim, work_sim, cross_albedo)`` over ``flat_feats`` ``(C, N)``."""
+    cross_albedo = (
+        work_l_mean is not None
+        and abs(float(work_l_mean) - float(proto.coat_l_mean)) > 40.0
+        and flat_feats.shape[0] == 11
+        and proto.seed_prototypes.shape[-1] == 11
+    )
+    if not cross_albedo:
+        seed_sim = np.max(proto.seed_prototypes @ flat_feats, axis=0)
+        work_sim = proto.working_prototype @ flat_feats
+        return seed_sim, work_sim, False
+
+    w = _FAST_CHROMA_STRUCT_WEIGHTS
+    p_seed = proto.seed_prototypes * w[None, :]
+    p_seed_norm = np.linalg.norm(p_seed, axis=1, keepdims=True)
+    p_seed = np.where(p_seed_norm > 1e-6, p_seed / np.maximum(p_seed_norm, 1e-6), 0.0)
+
+    f_sub = flat_feats * w[:, None]
+    f_norm = np.linalg.norm(f_sub, axis=0, keepdims=True)
+    f_sub = np.where(f_norm > 1e-6, f_sub / np.maximum(f_norm, 1e-6), 0.0)
+    seed_sim = np.max(p_seed @ f_sub, axis=0)
+
+    if proto.working_adapted:
+        work_sim = proto.working_prototype @ flat_feats
+    else:
+        p_work = _l2_normalize_vec(proto.working_prototype * w)
+        work_sim = p_work @ f_sub
+    return seed_sim, work_sim, True
+
+
 def estimate_body_frame_pose(
     work_mask: np.ndarray,
     *,
@@ -358,6 +417,7 @@ def estimate_body_frame_pose(
     prev_pose: Optional[BodyFramePose] = None,
     features: Optional[np.ndarray] = None,
     prototypes: Optional[Sequence[BodyPartPrototype]] = None,
+    work_l_mean: Optional[float] = None,
 ) -> BodyFramePose:
     """Compute an oriented, polarity-disambiguated canonical 2D pose for ``work_mask``.
 
@@ -481,25 +541,66 @@ def estimate_body_frame_pose(
     fg_feats: Optional[np.ndarray] = (
         features[:, mask_bool] if features is not None else None
     )
-    if fg_feats is not None and prototypes:
-        for proto in prototypes:
+    sec_r = max(2, int(round(0.12 * min(wh, ww))))
+    sec_kernel = cv2.getStructuringElement(
+        cv2.MORPH_ELLIPSE, (2 * sec_r + 1, 2 * sec_r + 1)
+    )
+    local_sec_t = cv2.dilate(thickness_map, sec_kernel)
+    fg_sec_t = local_sec_t[mask_bool]
+
+    active_protos = [p for p in (prototypes or []) if p is not None]
+    proto_sims: List[Tuple[BodyPartPrototype, np.ndarray, bool]] = []
+    if fg_feats is not None and active_protos:
+        for proto in active_protos:
+            seed_sim, work_sim, is_cross = _prototype_pixel_similarity(
+                proto, fg_feats, work_l_mean=work_l_mean
+            )
+            raw_sim = 0.72 * seed_sim + 0.28 * work_sim
+            # Penalize thin-appendage prototypes from matching thick head/trunk rims across strains.
+            over_t = np.maximum(0.0, fg_sec_t - (proto.mean_thickness + 0.16))
+            t_pen = (0.65 if is_cross else 0.20) * (over_t / 0.20) ** 2
+            proto_sims.append((proto, raw_sim - t_pen, is_cross))
+
+        n_fg = int(fg_feats.shape[1])
+        sim_stack = np.stack([item[1] for item in proto_sims], axis=0)
+        for idx_p, (proto, sim, is_cross) in enumerate(proto_sims):
             if proto.is_unassigned or abs(proto.mean_u) < 0.12:
                 continue
-            seed_sim = np.max(proto.seed_prototypes @ fg_feats, axis=0)
-            work_sim = proto.working_prototype @ fg_feats
-            sim = 0.72 * seed_sim + 0.28 * work_sim
-            p55 = float(np.percentile(sim, 55))
-            weights = np.maximum(0.0, sim - p55) ** 3
+            if sim_stack.shape[0] >= 2:
+                other_max = np.max(np.delete(sim_stack, idx_p, axis=0), axis=0)
+                adv = sim - other_max
+            else:
+                adv = sim
+            k_top = max(
+                4,
+                min(
+                    n_fg,
+                    int(
+                        round(
+                            n_fg
+                            * float(np.clip(proto.seed_area_ratio * 1.25, 0.02, 0.35))
+                        )
+                    ),
+                ),
+            )
+            thresh = float(np.partition(adv, n_fg - k_top)[n_fg - k_top])
+            weights = np.where(
+                adv >= thresh,
+                (np.maximum(0.0, adv - thresh) + 0.05) ** 2,
+                0.0,
+            )
             w_sum = float(weights.sum())
-            if w_sum <= 1e-6:
-                weights = np.clip(sim, 0.0, 1.0) ** 3
-                w_sum = float(weights.sum())
-            if w_sum <= 1e-6:
+            if w_sum <= 1e-8:
                 continue
             est_dx = float(np.sum(weights * dx) / w_sum)
             est_dy = float(np.sum(weights * dy) / w_sum)
-            proto_vx += proto.mean_u * proto.seed_area_ratio * est_dx
-            proto_vy += proto.mean_u * proto.seed_area_ratio * est_dy
+            part_w = (
+                float(proto.seed_area_ratio)
+                if is_cross
+                else float(np.clip(proto.seed_area_ratio, 0.08, 0.35))
+            )
+            proto_vx += proto.mean_u * part_w * est_dx
+            proto_vy += proto.mean_u * part_w * est_dy
 
     proto_norm = math.hypot(proto_vx, proto_vy)
     w_shape = float(np.clip((aspect_ratio - 1.08) / 0.30, 0.0, 1.0)) ** 2
@@ -553,29 +654,93 @@ def estimate_body_frame_pose(
             cos_prev = ax_x * prev_pose.axial_vec[0] + ax_y * prev_pose.axial_vec[1]
             score_pos += 0.30 * cos_prev
             score_neg -= 0.30 * cos_prev
-        if fg_feats is not None and prototypes:
+        if fg_feats is not None and proto_sims:
             fg_u = raw_u[mask_bool]
             fg_v = raw_v[mask_bool]
-            for proto in prototypes:
+            n_fg = int(fg_feats.shape[1])
+            sim_stack = np.stack([item[1] for item in proto_sims], axis=0)
+            any_cross_albedo = any(item[2] for item in proto_sims)
+            for idx_p, (proto, sim, is_cross) in enumerate(proto_sims):
                 if proto.is_unassigned or (
                     abs(proto.mean_u) < 0.15 and abs(proto.mean_v) < 0.15
                 ):
                     continue
-                sim = np.max(proto.seed_prototypes @ fg_feats, axis=0)
-                weights = np.clip(sim, 0.0, 1.0) ** 2
+                if sim_stack.shape[0] >= 2:
+                    other_max = np.max(np.delete(sim_stack, idx_p, axis=0), axis=0)
+                    adv = sim - other_max
+                else:
+                    adv = sim
+                k_top = max(
+                    4,
+                    min(
+                        n_fg,
+                        int(
+                            round(
+                                n_fg
+                                * float(
+                                    np.clip(proto.seed_area_ratio * 1.25, 0.02, 0.35)
+                                )
+                            )
+                        ),
+                    ),
+                )
+                thresh = float(np.partition(adv, n_fg - k_top)[n_fg - k_top])
+                weights = np.where(
+                    adv >= thresh,
+                    (np.maximum(0.0, adv - thresh) + 0.05) ** 2,
+                    0.0,
+                )
                 w_sum = float(weights.sum())
-                if w_sum <= 1e-6:
+                if w_sum <= 1e-8:
                     continue
                 est_u = float(np.sum(weights * fg_u) / w_sum)
                 est_v = float(np.sum(weights * fg_v) / w_sum)
+                app_w = 0.45 if is_cross else 1.0
+                part_w = (
+                    float(proto.seed_area_ratio)
+                    if is_cross
+                    else float(np.clip(proto.seed_area_ratio, 0.10, 0.35))
+                )
                 score_pos -= (
-                    (est_u - proto.mean_u) ** 2 / max(proto.std_u**2, 0.08)
-                    + 0.5 * (est_v - proto.mean_v) ** 2 / max(proto.std_v**2, 0.08)
-                ) * proto.seed_area_ratio
+                    app_w
+                    * (
+                        (est_u - proto.mean_u) ** 2 / max(proto.std_u**2, 0.08)
+                        + 0.5 * (est_v - proto.mean_v) ** 2 / max(proto.std_v**2, 0.08)
+                    )
+                    * part_w
+                )
                 score_neg -= (
-                    (-est_u - proto.mean_u) ** 2 / max(proto.std_u**2, 0.08)
-                    + 0.5 * (-est_v - proto.mean_v) ** 2 / max(proto.std_v**2, 0.08)
-                ) * proto.seed_area_ratio
+                    app_w
+                    * (
+                        (-est_u - proto.mean_u) ** 2 / max(proto.std_u**2, 0.08)
+                        + 0.5 * (-est_v - proto.mean_v) ** 2 / max(proto.std_v**2, 0.08)
+                    )
+                    * part_w
+                )
+            # Distal-pole thickness taper alignment (species-agnostic: matches sign of prototype pole taper).
+            proto_ant = [
+                p.mean_thickness
+                for p, _, _ in proto_sims
+                if not p.is_unassigned and p.mean_u >= 0.25
+            ]
+            proto_post = [
+                p.mean_thickness
+                for p, _, _ in proto_sims
+                if not p.is_unassigned and p.mean_u <= -0.35
+            ]
+            if proto_ant and proto_post:
+                expected_diff = float(np.mean(proto_ant) - np.mean(proto_post))
+                if abs(expected_diff) > 0.10 and fg_u.size >= 12:
+                    pos_pole = fg_u >= float(np.percentile(fg_u, 82))
+                    neg_pole = fg_u <= float(np.percentile(fg_u, 18))
+                    if np.any(pos_pole) and np.any(neg_pole):
+                        obs_diff = float(
+                            fg_sec_t[pos_pole].mean() - fg_sec_t[neg_pole].mean()
+                        )
+                        taper_w = 1.85 if any_cross_albedo else 0.85
+                        pole_align = float(np.sign(expected_diff)) * obs_diff
+                        score_pos += taper_w * pole_align
+                        score_neg -= taper_w * pole_align
         elif prev_pose is None and dir_norm <= 1e-5:
             fg_u = raw_u[mask_bool]
             asym = float(np.mean(np.sign(fg_u) * fg_t))
@@ -759,13 +924,17 @@ def _extract_fast_crop_features(
         l_vals = lab[:, :, 0][mask_bool]
         l_mean = float(l_vals.mean())
         l_std = max(12.0, float(l_vals.std()))
+        a_center = float(np.median(lab[:, :, 1][mask_bool]))
+        b_center = float(np.median(lab[:, :, 2][mask_bool]))
     else:
         l_mean = 128.0
         l_std = 32.0
+        a_center = 128.0
+        b_center = 128.0
 
     l_norm = (lab[:, :, 0] - l_mean) / l_std
-    a_norm = (lab[:, :, 1] - 128.0) / 24.0
-    b_norm = (lab[:, :, 2] - 128.0) / 24.0
+    a_norm = (lab[:, :, 1] - a_center) / 20.0
+    b_norm = (lab[:, :, 2] - b_center) / 20.0
     base = np.stack([l_norm, a_norm, b_norm], axis=-1)  # (H, W, 3)
 
     smooth_fine = cv2.GaussianBlur(base, (0, 0), sigmaX=1.4, sigmaY=1.4)
@@ -1241,6 +1410,7 @@ class InstanceBodyPartSegmenter:
         features: np.ndarray,
         pose: BodyFramePose,
         is_unassigned: bool = False,
+        coat_l_mean: float = 128.0,
     ) -> Optional[BodyPartPrototype]:
         pmask = np.asarray(part_work_mask, dtype=bool) & np.asarray(
             instance_work_mask, dtype=bool
@@ -1270,6 +1440,9 @@ class InstanceBodyPartSegmenter:
             std_thickness=max(0.15, float(t_vals.std()) + 0.08),
             seed_area_ratio=float(part_area) / float(inst_area),
             is_unassigned=is_unassigned,
+            coat_l_mean=float(coat_l_mean),
+            inherited_cross_instance=False,
+            working_adapted=True,
         )
 
     def fit_seed_frame(
@@ -1350,6 +1523,7 @@ class InstanceBodyPartSegmenter:
                         py_s, px_s = np.nonzero(wp)
                         pose_kps[pname] = (float(px_s.mean()), float(py_s.mean()))
 
+            inst_l_mean = _foreground_lab_l_mean(crop.work_rgb, crop.work_mask)
             pose = estimate_body_frame_pose(
                 crop.work_mask,
                 keypoints_work=pose_kps,
@@ -1360,6 +1534,7 @@ class InstanceBodyPartSegmenter:
                     else None
                 ),
                 features=feats,
+                work_l_mean=inst_l_mean,
             )
             inst_protos: List[BodyPartPrototype] = []
             union_seeded = np.zeros_like(crop.work_mask, dtype=bool)
@@ -1371,6 +1546,7 @@ class InstanceBodyPartSegmenter:
                     features=feats,
                     pose=pose,
                     is_unassigned=False,
+                    coat_l_mean=inst_l_mean,
                 )
                 if proto is not None:
                     inst_protos.append(proto)
@@ -1399,6 +1575,7 @@ class InstanceBodyPartSegmenter:
                         features=feats,
                         pose=pose,
                         is_unassigned=True,
+                        coat_l_mean=inst_l_mean,
                     )
                     if rem_proto is not None:
                         inst_protos.append(rem_proto)
@@ -1406,6 +1583,26 @@ class InstanceBodyPartSegmenter:
 
             self._instance_prototypes[inst_label] = self._merge_prototype_lists(
                 self._instance_prototypes.get(inst_label, []), inst_protos
+            )
+            merged_inst = self._instance_prototypes[inst_label]
+            seed_mask_by_label: Dict[str, np.ndarray] = {
+                pname: wp for pname, wp in zip(ordered_names, exclusive_parts)
+            }
+            if not full_partition:
+                seed_mask_by_label[_UNASSIGNED_PART] = crop.work_mask & ~union_seeded
+            seed_probs = np.zeros(
+                (len(merged_inst), *crop.work_mask.shape), dtype=np.float32
+            )
+            for idx_m, m_proto in enumerate(merged_inst):
+                pm_s = seed_mask_by_label.get(m_proto.part_label)
+                if pm_s is not None:
+                    seed_probs[idx_m][pm_s] = 1.0
+            self._temporal_states[inst_label] = _TemporalInstanceState(
+                pose=pose,
+                part_labels=tuple(p.part_label for p in merged_inst),
+                work_probs=seed_probs,
+                u_grid=pose.u_map,
+                v_grid=pose.v_map,
             )
 
         if shared_accum:
@@ -1436,6 +1633,9 @@ class InstanceBodyPartSegmenter:
                             np.mean([p.seed_area_ratio for p in plist])
                         ),
                         is_unassigned=any(p.is_unassigned for p in plist),
+                        coat_l_mean=float(np.mean([p.coat_l_mean for p in plist])),
+                        inherited_cross_instance=True,
+                        working_adapted=False,
                     )
                 )
             self._shared_prototypes = self._merge_prototype_lists(
@@ -1473,6 +1673,10 @@ class InstanceBodyPartSegmenter:
                 std_thickness=0.5 * (prev.std_thickness + inc.std_thickness),
                 seed_area_ratio=0.5 * (prev.seed_area_ratio + inc.seed_area_ratio),
                 is_unassigned=prev.is_unassigned or inc.is_unassigned,
+                coat_l_mean=0.5 * (prev.coat_l_mean + inc.coat_l_mean),
+                inherited_cross_instance=prev.inherited_cross_instance
+                and inc.inherited_cross_instance,
+                working_adapted=prev.working_adapted or inc.working_adapted,
             )
         return list(by_name.values())
 
@@ -1596,6 +1800,9 @@ class InstanceBodyPartSegmenter:
                     std_thickness=p.std_thickness,
                     seed_area_ratio=p.seed_area_ratio,
                     is_unassigned=p.is_unassigned,
+                    coat_l_mean=p.coat_l_mean,
+                    inherited_cross_instance=True,
+                    working_adapted=False,
                 )
                 for p in self._shared_prototypes
             ]
@@ -1607,26 +1814,33 @@ class InstanceBodyPartSegmenter:
         K = len(protos)
         part_labels = [p.part_label for p in protos]
         flat_feats = feats.reshape(feats.shape[0], -1)  # (C, H*W)
+        work_l_mean = _foreground_lab_l_mean(crop.work_rgb, crop.work_mask)
 
         logits = np.zeros((K, wh, ww), dtype=np.float32)
         for idx, proto in enumerate(protos):
-            seed_sim = np.max(proto.seed_prototypes @ flat_feats, axis=0).reshape(
-                wh, ww
+            seed_sim_1d, work_sim_1d, is_cross = _prototype_pixel_similarity(
+                proto, flat_feats, work_l_mean=work_l_mean
             )
-            work_sim = (proto.working_prototype @ flat_feats).reshape(wh, ww)
-            app_score = 0.72 * seed_sim + 0.28 * work_sim
+            seed_sim = seed_sim_1d.reshape(wh, ww)
+            work_sim = work_sim_1d.reshape(wh, ww)
+            if is_cross and proto.working_adapted:
+                app_score = 0.45 * seed_sim + 0.55 * work_sim
+            else:
+                app_score = 0.72 * seed_sim + 0.28 * work_sim
 
             du = (pose.u_map - proto.mean_u) / max(proto.std_u, 0.14)
             dv = (pose.v_map - proto.mean_v) / max(proto.std_v, 0.18)
             dt = (pose.thickness_map - proto.mean_thickness) / max(
                 proto.std_thickness, 0.15
             )
-            canon_score = -0.5 * (du * du + 0.75 * dv * dv + 0.35 * dt * dt)
+            thick_w = 0.65 if is_cross else 0.35
+            canon_score = -0.5 * (du * du + 0.75 * dv * dv + thick_w * dt * dt)
             # Mildly relax canonical spatial penalty for catch-all unassigned remainder.
-            canon_mult = 0.35 if proto.is_unassigned else 1.0
+            canon_mult = 0.35 if proto.is_unassigned else (1.35 if is_cross else 1.0)
+            app_mult = 2.1 if (is_cross and not proto.working_adapted) else 3.2
 
             logits[idx] = (
-                self.config.appearance_weight * 3.2 * app_score
+                self.config.appearance_weight * app_mult * app_score
                 + self.config.canonical_prior_weight * canon_mult * canon_score
             )
 
@@ -1709,44 +1923,165 @@ class InstanceBodyPartSegmenter:
     ) -> Tuple[List[str], np.ndarray]:
         wh, ww = crop.work_mask.shape
         kp_to_part: Dict[str, str] = {}
-        grouped_pts: Dict[str, List[Tuple[float, float]]] = defaultdict(list)
+        kp_role: Dict[str, str] = {}
+        grouped_raw: Dict[str, List[Tuple[str, float, float, str]]] = defaultdict(list)
         for kp_name, (kx, ky) in kps_work.items():
-            mapped = self.config.keypoint_part_map.get(
-                kp_name.strip().lower()
-            ) or infer_part_from_keypoint_name(
+            explicit = self.config.keypoint_part_map.get(kp_name.strip().lower())
+            mapped = explicit or infer_part_from_keypoint_name(
                 kp_name, granularity=self.config.keypoint_granularity
             )
+            role = "" if explicit else classify_keypoint_junction_role(kp_name)
             kp_to_part[kp_name] = mapped
-            grouped_pts[mapped].append((kx, ky))
+            kp_role[kp_name] = role
+            grouped_raw[mapped].append((kp_name, kx, ky, role))
 
-        part_labels = list(grouped_pts.keys())
+        part_labels = list(grouped_raw.keys())
         if not part_labels:
             return [], np.zeros((0, wh, ww), dtype=np.float32)
 
-        seed_masks: List[np.ndarray] = []
+        has_torso = "torso" in grouped_raw
+        has_head = "head" in grouped_raw
+
         radius = max(1, int(round(0.04 * max(wh, ww))))
+        sec_r = max(3, int(round(0.14 * min(wh, ww))))
+        local_width = cv2.dilate(
+            pose.thickness_map,
+            cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE, (2 * sec_r + 1, 2 * sec_r + 1)
+            ),
+        )
+        fg_ys_all, fg_xs_all = np.nonzero(crop.work_mask)
+        torso_raw_pts = [(kx, ky) for _n, kx, ky, _r in grouped_raw.get("torso", [])]
+        if torso_raw_pts:
+            t_samples = [
+                float(
+                    local_width[
+                        int(np.clip(round(ty), 0, wh - 1)),
+                        int(np.clip(round(tx), 0, ww - 1)),
+                    ]
+                )
+                for tx, ty in torso_raw_pts
+            ]
+            trunk_t_est = float(np.mean(t_samples))
+        else:
+            trunk_t_est = 0.75
+
+        # Adjust inter-part junction hinges (e.g. tail_base, neck) inward toward their part's
+        # interior shaft/landmarks when neighboring regions are also present, preventing Voronoi
+        # midpoints from cutting into the adjacent head or pelvic rump.
+        effective_kp_xy: Dict[str, Tuple[float, float]] = {
+            kp_name: (kx, ky) for kp_name, (kx, ky) in kps_work.items()
+        }
+        grouped_pts: Dict[str, List[Tuple[float, float]]] = {}
+        for pname, entries in grouped_raw.items():
+            pts_out: List[Tuple[float, float]] = []
+            if pname == "tail" and has_torso and fg_xs_all.size > 0:
+                distal = [
+                    (kp_name, kx, ky)
+                    for kp_name, kx, ky, r in entries
+                    if r != "torso_tail"
+                ]
+                max_snap_d2 = float((radius + 3) ** 2)
+                on_shaft_distal = [
+                    (kx, ky)
+                    for _n, kx, ky in distal
+                    if float(np.min((fg_xs_all - kx) ** 2 + (fg_ys_all - ky) ** 2))
+                    <= max_snap_d2
+                ]
+                if on_shaft_distal:
+                    pts_out = list(on_shaft_distal)
+                    for kp_name, kx, ky, r in entries:
+                        if r == "torso_tail":
+                            nx, ny = min(
+                                on_shaft_distal,
+                                key=lambda p: (p[0] - kx) ** 2 + (p[1] - ky) ** 2,
+                            )
+                            effective_kp_xy[kp_name] = (nx, ny)
+                else:
+                    thin_cut = min(0.40, trunk_t_est - 0.20)
+                    fg_t_all = local_width[fg_ys_all, fg_xs_all]
+                    for kp_name, kx, ky, r in entries:
+                        if r == "torso_tail" and torso_raw_pts:
+                            tx, ty = min(
+                                torso_raw_pts,
+                                key=lambda p: (p[0] - kx) ** 2 + (p[1] - ky) ** 2,
+                            )
+                            vx, vy = kx - tx, ky - ty
+                            v_len = math.hypot(vx, vy)
+                            if v_len > 1.0:
+                                ux, uy = vx / v_len, vy / v_len
+                                proj = (fg_xs_all - kx) * ux + (fg_ys_all - ky) * uy
+                                dist_b = np.hypot(fg_xs_all - kx, fg_ys_all - ky)
+                                cand = (
+                                    (proj >= 1.5)
+                                    & (dist_b <= 0.45 * max(wh, ww))
+                                    & (fg_t_all <= thin_cut)
+                                )
+                                cand_idx = np.flatnonzero(cand)
+                                if cand_idx.size >= 2:
+                                    order = cand_idx[np.argsort(proj[cand_idx])]
+                                    i0 = int(order[int(0.35 * (order.size - 1))])
+                                    i1 = int(order[int(0.80 * (order.size - 1))])
+                                    p_prox = (
+                                        float(fg_xs_all[i0]),
+                                        float(fg_ys_all[i0]),
+                                    )
+                                    p_dist = (
+                                        float(fg_xs_all[i1]),
+                                        float(fg_ys_all[i1]),
+                                    )
+                                    effective_kp_xy[kp_name] = p_prox
+                                    pts_out.append(p_prox)
+                                    if p_dist != p_prox:
+                                        pts_out.append(p_dist)
+                                    continue
+                        pts_out.append((kx, ky))
+            elif pname == "torso" and has_head:
+                trunk_core = [
+                    (kx, ky) for _n, kx, ky, r in entries if r != "head_torso"
+                ]
+                for kp_name, kx, ky, r in entries:
+                    if r == "head_torso" and trunk_core:
+                        nx, ny = min(
+                            trunk_core,
+                            key=lambda p: (p[0] - kx) ** 2 + (p[1] - ky) ** 2,
+                        )
+                        sx, sy = 0.62 * kx + 0.38 * nx, 0.62 * ky + 0.38 * ny
+                        effective_kp_xy[kp_name] = (sx, sy)
+                        pts_out.append((sx, sy))
+                    else:
+                        pts_out.append((kx, ky))
+            else:
+                pts_out = [(kx, ky) for _n, kx, ky, _r in entries]
+            grouped_pts[pname] = pts_out
+
+        seed_masks: List[np.ndarray] = []
         for pname in part_labels:
+            is_limb = pname == "limbs" or "limb" in pname.lower()
+            p_rad = (
+                max(1, radius // 2) if (is_limb and (has_torso or has_head)) else radius
+            )
             canvas = np.zeros((wh, ww), dtype=np.uint8)
             for kx, ky in grouped_pts[pname]:
-                cv2.circle(canvas, (int(round(kx)), int(round(ky))), radius, 1, -1)
+                cv2.circle(canvas, (int(round(kx)), int(round(ky))), p_rad, 1, -1)
             # Rasterize intra-part skeleton bones when available!
             if skeleton_edges:
                 for src, dst in skeleton_edges:
                     if (
-                        src in kps_work
-                        and dst in kps_work
+                        src in effective_kp_xy
+                        and dst in effective_kp_xy
                         and kp_to_part.get(src) == pname
                         and kp_to_part.get(dst) == pname
                     ):
                         p0 = (
-                            int(round(kps_work[src][0])),
-                            int(round(kps_work[src][1])),
+                            int(round(effective_kp_xy[src][0])),
+                            int(round(effective_kp_xy[src][1])),
                         )
                         p1 = (
-                            int(round(kps_work[dst][0])),
-                            int(round(kps_work[dst][1])),
+                            int(round(effective_kp_xy[dst][0])),
+                            int(round(effective_kp_xy[dst][1])),
                         )
-                        cv2.line(canvas, p0, p1, 1, thickness=max(1, radius))
+                        cv2.line(canvas, p0, p1, 1, thickness=max(1, p_rad))
             sm = (canvas > 0) & crop.work_mask
             if not np.any(sm):
                 # Snap slightly off-mask keypoint to nearest foreground pixel in work_mask!
@@ -1765,19 +2100,31 @@ class InstanceBodyPartSegmenter:
             edge_weight=self.config.geodesic_edge_weight,
         )
 
-        # Combine masked geodesic proximity + local seed appearance affinity!
+        # Combine masked geodesic proximity + local seed appearance affinity + appendage thickness barrier!
         K = len(part_labels)
         flat_feats = feats.reshape(feats.shape[0], -1)
         scale_len = max(5.0, 0.45 * (pose.axial_scale + pose.lateral_scale))
         logits = np.zeros((K, wh, ww), dtype=np.float32)
 
-        ys_fg, xs_fg = np.nonzero(crop.work_mask)
+        trunk_seed_t = 0.0
+        if has_torso:
+            torso_idx = part_labels.index("torso")
+            torso_sm = seed_masks[torso_idx]
+            trunk_seed_t = (
+                float(local_width[torso_sm].mean()) if np.any(torso_sm) else 0.75
+            )
+
         for idx, sm in enumerate(seed_masks):
+            pname = part_labels[idx]
+            p_low = pname.lower()
+            is_limb = p_low == "limbs" or "limb" in p_low
+            is_tail = p_low == "tail" or p_low.endswith("_tail")
+
             d_slice = geo_dists[idx]
             # Fallback Euclidean distance only for disconnected foreground mask islands!
             unreachable = crop.work_mask & ~np.isfinite(d_slice)
             if np.any(unreachable):
-                pts = grouped_pts[part_labels[idx]]
+                pts = grouped_pts[pname]
                 u_ys, u_xs = np.nonzero(unreachable)
                 min_euc = np.min(
                     np.stack(
@@ -1789,15 +2136,32 @@ class InstanceBodyPartSegmenter:
                 d_slice = d_slice.copy()
                 d_slice[unreachable] = min_euc * 1.35
 
-            geo_score = -d_slice / scale_len
+            part_scale = (
+                max(3.5, 0.36 * scale_len)
+                if (is_limb and (has_torso or has_head))
+                else scale_len
+            )
+            geo_score = -d_slice / part_scale
             if np.any(sm):
                 loc_proto = _l2_normalize_vec(feats[:, sm].mean(axis=1))
                 app_sim = (loc_proto @ flat_feats).reshape(wh, ww)
+                part_seed_t = float(local_width[sm].mean())
             else:
                 app_sim = np.zeros((wh, ww), dtype=np.float32)
-            logits[idx] = (
-                2.4 * geo_score + 0.85 * self.config.appearance_weight * app_sim
-            )
+                part_seed_t = 0.25
+
+            score = 2.4 * geo_score + 0.85 * self.config.appearance_weight * app_sim
+            if (
+                has_torso
+                and (is_tail or is_limb)
+                and (trunk_seed_t - part_seed_t) > 0.18
+            ):
+                t_cap = min(0.44, part_seed_t + 0.14)
+                excess_t = np.maximum(0.0, local_width - t_cap)
+                score = (
+                    score - 4.5 * (trunk_seed_t - part_seed_t) * (excess_t / 0.18) ** 2
+                )
+            logits[idx] = score
 
         temp_prior = self._project_temporal_prior(
             inst_label, part_labels, pose, crop.work_mask
@@ -2450,6 +2814,7 @@ class InstanceBodyPartSegmenter:
             if instance_label in self._temporal_states
             else None
         )
+        work_l_mean = _foreground_lab_l_mean(crop.work_rgb, crop.work_mask)
         pose = estimate_body_frame_pose(
             crop.work_mask,
             keypoints_work=kps_work,
@@ -2457,6 +2822,7 @@ class InstanceBodyPartSegmenter:
             prev_pose=prev_pose,
             features=feats,
             prototypes=candidate_protos,
+            work_l_mean=work_l_mean,
         )
 
         used_protos: Optional[List[BodyPartPrototype]] = None
@@ -2499,10 +2865,17 @@ class InstanceBodyPartSegmenter:
                 conf_w = float(work_probs[idx][pm_w].mean())
                 if conf_w >= self.config.ema_min_confidence:
                     obs_vec = _l2_normalize_vec(feats[:, pm_w].mean(axis=1))
-                    proto.working_prototype = _l2_normalize_vec(
-                        (1.0 - self.config.ema_alpha) * proto.working_prototype
-                        + self.config.ema_alpha * obs_vec
+                    alpha = (
+                        max(self.config.ema_alpha, 0.55)
+                        if (
+                            proto.inherited_cross_instance and not proto.working_adapted
+                        )
+                        else self.config.ema_alpha
                     )
+                    proto.working_prototype = _l2_normalize_vec(
+                        (1.0 - alpha) * proto.working_prototype + alpha * obs_vec
+                    )
+                    proto.working_adapted = True
 
         # Upsample work_probs -> native crop resolution (crop_h, crop_w).
         ch, cw = crop.crop_mask.shape
@@ -3043,6 +3416,9 @@ def parse_frame_instances_and_seed_parts(
     keypoints_by_inst: Dict[str, Dict[str, Tuple[float, float]]] = defaultdict(dict)
     for shape in point_shapes:
         if shape.get("visible") is False:
+            continue
+        kp_vis = visibility_from_labelme_shape(shape)
+        if kp_vis is not None and int(kp_vis) < int(KeypointVisibility.VISIBLE):
             continue
         pts_raw = shape.get("points") or []
         if (

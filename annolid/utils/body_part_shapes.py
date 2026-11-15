@@ -40,6 +40,22 @@ _COARSE_PART_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "limbs",
         (
+            "forepaw",
+            "hindpaw",
+            "rearpaw",
+            "frontpaw",
+            "backpaw",
+            "foreleg",
+            "hindleg",
+            "rearleg",
+            "frontleg",
+            "backleg",
+            "forelimb",
+            "hindlimb",
+            "forearm",
+            "upperarm",
+            "forefoot",
+            "hindfoot",
             "paw",
             "foot",
             "feet",
@@ -48,12 +64,20 @@ _COARSE_PART_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "ankle",
             "elbow",
             "knee",
+            "thigh",
+            "shank",
+            "hock",
+            "stifle",
+            "carpus",
             "limb",
             "leg",
             "arm",
             "tarsus",
             "tibia",
             "femur",
+            "manus",
+            "pes",
+            "digit",
             "claw",
             "toe",
             "finger",
@@ -334,9 +358,23 @@ def _detect_laterality(tokens: set[str], normalized: str) -> str:
 
 
 def _detect_fore_hind(tokens: set[str], normalized: str) -> str:
-    if tokens & {"fore", "front", "anterior", "upper", "hand", "wrist", "elbow", "arm"}:
+    if tokens & {
+        "fore",
+        "front",
+        "anterior",
+        "upper",
+        "hand",
+        "wrist",
+        "elbow",
+        "arm",
+        "carpus",
+        "manus",
+    } or any(
+        tok.startswith(("fore", "front", "anterior", "upper")) and tok != "forehead"
+        for tok in tokens
+    ):
         return "fore"
-    if normalized.startswith(("lf_", "rf_", "fl_", "fr_")):
+    if normalized.startswith(("lf_", "rf_", "fl_", "fr_", "lfore", "rfore")):
         return "fore"
     if tokens & {
         "hind",
@@ -348,10 +386,49 @@ def _detect_fore_hind(tokens: set[str], normalized: str) -> str:
         "ankle",
         "knee",
         "leg",
-    }:
+        "thigh",
+        "shank",
+        "hock",
+        "stifle",
+        "tarsus",
+        "tibia",
+        "femur",
+        "pes",
+    } or any(
+        tok.startswith(("hind", "rear", "back", "posterior", "lower")) for tok in tokens
+    ):
         return "hind"
-    if normalized.startswith(("lh_", "rh_", "hl_", "hr_")):
+    if normalized.startswith(("lh_", "rh_", "hl_", "hr_", "lhind", "rhind")):
         return "hind"
+    return ""
+
+
+def classify_keypoint_junction_role(keypoint_label: str) -> str:
+    """Return ``'torso_tail'`` or ``'head_torso'`` when a landmark sits on an inter-part hinge."""
+    clean = _clean_text(keypoint_label)
+    if not clean:
+        return ""
+    if ":" in clean:
+        clean = clean.rsplit(":", 1)[-1].strip() or clean
+    normalized = re.sub(r"[^a-z0-9]+", "_", clean.lower()).strip("_")
+    tokens = {tok for tok in normalized.split("_") if tok}
+    if (
+        normalized
+        in {
+            "tail_base",
+            "base_tail",
+            "base_of_tail",
+            "tail_root",
+            "root_tail",
+            "tailbase",
+            "tailroot",
+        }
+        or ("tail" in tokens and tokens & {"base", "root", "origin", "start"})
+        or tokens & {"rump", "sacrum"}
+    ):
+        return "torso_tail"
+    if tokens & {"neck", "nape", "throat", "occiput", "cervical"}:
+        return "head_torso"
     return ""
 
 
@@ -381,8 +458,8 @@ def infer_part_from_keypoint_name(
     normalized = re.sub(r"[^a-z0-9]+", "_", clean.lower()).strip("_")
     tokens = {tok for tok in normalized.split("_") if tok}
 
-    # Special case: "tail_base" / "base_tail" belongs to tail unless it's explicitly spine/rump.
-    if "tail" in tokens:
+    # Special case: "tail_base" / "base_tail" / "tailtip" belongs to tail unless explicitly spine/rump.
+    if "tail" in tokens or any(tok.startswith("tail") for tok in tokens):
         return "tail"
 
     matched_coarse = ""
@@ -393,6 +470,15 @@ def infer_part_from_keypoint_name(
                 break
         if matched_coarse:
             break
+
+    if not matched_coarse:
+        if any(
+            tok.endswith(("ear", "eye", "jaw", "lip")) and tok != "rear"
+            for tok in tokens
+        ):
+            matched_coarse = "head"
+        elif any(tok.endswith(("paw", "leg", "arm", "toe", "fin")) for tok in tokens):
+            matched_coarse = "limbs"
 
     if not matched_coarse:
         return clean if mode == "fine" else "torso"
@@ -431,11 +517,20 @@ def keypoint_axial_polarity(keypoint_label: str) -> float:
         "antenna",
         "proboscis",
         "forehead",
-    }:
+    } or any(tok.endswith("ear") and tok != "rear" for tok in tokens):
         return 1.0
     if "neck" in tokens or "nape" in tokens:
         return 0.5
-    if tokens & {"tail", "caudal", "uropod", "fluke", "anus", "rump", "pelvis", "hip"}:
+    if tokens & {
+        "tail",
+        "caudal",
+        "uropod",
+        "fluke",
+        "anus",
+        "rump",
+        "pelvis",
+        "hip",
+    } or any(tok.startswith("tail") for tok in tokens):
         return -1.0
     if _detect_fore_hind(tokens, normalized) == "fore":
         return 0.4

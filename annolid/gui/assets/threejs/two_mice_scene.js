@@ -19,6 +19,8 @@ const CONTACT_QA = datasetQuery.get('contact_qa');
 const REARING_QA = datasetQuery.get('rearing_qa');
 const GROOMING_QA = datasetQuery.get('grooming_qa');
 const ANATOMY_QA = datasetQuery.get('anatomy_qa');
+const DATASET_CAMERA_VIEW = datasetQuery.get('camera_view');
+const DATASET_SCENARIO = datasetQuery.get('scenario');
 const ANATOMY_QA_VIEWS = new Set(['ears', 'ears-front', 'torso-side', 'torso-front']);
 const IS_ANATOMY_QA = ANATOMY_QA_VIEWS.has(ANATOMY_QA);
 const IS_TORSO_ANATOMY_QA = ANATOMY_QA === 'torso-side'
@@ -4928,6 +4930,51 @@ if (
     guiParams.isPaused = true;
   }
 }
+if (DATASET_CAPTURE && DATASET_SCENARIO && mice.length >= 2) {
+  const mouseA = mice[0];
+  const mouseB = mice[1];
+  const placeMouse = (mouse, px, pz, hx, hz, speed) => {
+    const dir = new THREE.Vector2(hx, hz).normalize();
+    mouse.mesh.position.set(px, 0, pz);
+    mouse.heading.copy(dir);
+    mouse.yawAngle = Math.atan2(dir.x, dir.y);
+    mouse.prevHeadingAngle = mouse.yawAngle;
+    mouse.mesh.rotation.y = mouse.yawAngle;
+    mouse.velocity.set(dir.x * speed, dir.y * speed);
+    mouse.prevVelocity.copy(mouse.velocity);
+  };
+  if (DATASET_SCENARIO === 'social_huddle') {
+    placeMouse(mouseA, -3.1, -0.68, 1.0, 0.12, 1.85);
+    placeMouse(mouseB, 3.1, 0.68, -1.0, -0.12, 1.85);
+    mouseA.groomCooldown = 999;
+    mouseB.groomCooldown = 999;
+    mouseA.rearCooldown = 999;
+    mouseB.rearCooldown = 999;
+  } else if (DATASET_SCENARIO === 'curled_groom') {
+    placeMouse(mouseA, -1.65, 0.35, -0.45, 0.89, 0.0);
+    mouseA.startGrooming('flank-groom', 999);
+    mouseA.grooming.side = 1;
+    mouseA.grooming.phase = 'active';
+    mouseA.grooming.phaseTime = 0;
+    mouseA.grooming.elapsed = 0.22;
+    mouseA.grooming.activeDuration = 6.0;
+    mouseA.groomAmount = mouseA.grooming.peakAmount;
+    mouseA.groomVel = 0;
+    placeMouse(mouseB, 2.35, -1.35, -0.78, 0.62, 1.35);
+    mouseB.groomCooldown = 999;
+    mouseB.rearCooldown = 999;
+  } else if (DATASET_SCENARIO === 'rearing_social') {
+    placeMouse(mouseA, -1.35, 0.30, 0.68, 0.73, 0.0);
+    mouseA.startRearing('unsupported', null, 999);
+    mouseA.rearing.holdDuration = 1.65;
+    placeMouse(mouseB, 2.45, -0.75, -0.92, 0.38, 1.20);
+    mouseB.groomCooldown = 999;
+    mouseB.rearCooldown = 999;
+  } else if (DATASET_SCENARIO === 'arena_explore') {
+    placeMouse(mouseA, -2.55, -1.35, 0.94, 0.34, 1.65);
+    placeMouse(mouseB, 2.55, 1.35, -0.94, -0.34, 1.55);
+  }
+}
 
 function projectPoseNode(node, width, height) {
   const worldPosition = new THREE.Vector3();
@@ -5122,6 +5169,18 @@ window.addEventListener('resize', () => {
     camera.position.set(0, 18, 0.1);
     camera.up.set(0, 0, -1);
     controls.target.set(0, 0, 0);
+  } else if (DATASET_CAPTURE && DATASET_CAMERA_VIEW === 'top-close') {
+    camera.position.set(0, 19.5, 0.02);
+    camera.up.set(0, 0, -1);
+    controls.target.set(0, 0.35, 0);
+  } else if (DATASET_CAPTURE && DATASET_CAMERA_VIEW === 'top') {
+    camera.position.set(0, 29.0, 0.02);
+    camera.up.set(0, 0, -1);
+    controls.target.set(0, 0.35, 0);
+  } else if (DATASET_CAPTURE && DATASET_CAMERA_VIEW === 'oblique-close') {
+    camera.position.set(5.8, 4.4, 12.6);
+    camera.up.set(0, 1, 0);
+    controls.target.set(0, 0.85, 0);
   } else {
     camera.up.set(0, 1, 0);
     camera.position.copy(cameraBasePosition).sub(cameraTarget).multiplyScalar(cameraDistanceScale).add(cameraTarget);
@@ -5506,6 +5565,272 @@ function advanceDatasetFrame(targetFrame) {
   scene.updateMatrixWorld(true);
 }
 
+const SEGMENTATION_FINE_PARTS = Object.freeze({
+  1: 'head',
+  2: 'snout',
+  3: 'left_ear',
+  4: 'right_ear',
+  5: 'neck',
+  6: 'torso',
+  7: 'left_forelimb',
+  8: 'right_forelimb',
+  9: 'left_hindlimb',
+  10: 'right_hindlimb',
+  11: 'tail',
+});
+const SEGMENTATION_COARSE_PARTS = Object.freeze({
+  1: 'head',
+  2: 'torso',
+  3: 'limbs',
+  4: 'tail',
+});
+
+let segmentationRenderTarget = null;
+let segmentationPixelBuffer = null;
+let segmentationDiscardMaterial = null;
+const segmentationIdMaterials = new Map();
+
+function getSegmentationDiscardMaterial() {
+  if (!segmentationDiscardMaterial) {
+    segmentationDiscardMaterial = new THREE.ShaderMaterial({
+      vertexShader: 'void main() { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); }',
+      fragmentShader: 'void main() { discard; }',
+      depthTest: false,
+      depthWrite: false,
+      colorWrite: false,
+      toneMapped: false,
+    });
+  }
+  return segmentationDiscardMaterial;
+}
+
+function getSegmentationIdMaterial(r, g, b, side = THREE.FrontSide) {
+  const key = `${r}:${g}:${b}:${side}`;
+  let material = segmentationIdMaterials.get(key);
+  if (!material) {
+    material = new THREE.ShaderMaterial({
+      uniforms: {
+        uIdColor: { value: new THREE.Vector4(r / 255, g / 255, b / 255, 1.0) },
+      },
+      vertexShader: `
+        void main() {
+          vec4 mvPosition = vec4(position, 1.0);
+          #ifdef USE_INSTANCING
+            mvPosition = instanceMatrix * mvPosition;
+          #endif
+          mvPosition = modelViewMatrix * mvPosition;
+          gl_Position = projectionMatrix * mvPosition;
+        }
+      `,
+      fragmentShader: `
+        uniform vec4 uIdColor;
+        void main() {
+          gl_FragColor = uIdColor;
+        }
+      `,
+      side,
+      transparent: false,
+      depthTest: true,
+      depthWrite: true,
+      toneMapped: false,
+    });
+    segmentationIdMaterials.set(key, material);
+  }
+  return material;
+}
+
+function classifySubjectSegmentationNodes(mouse) {
+  const partByNode = new Map();
+  const markSubtree = (root, fineId, coarseId) => {
+    if (!root) return;
+    root.traverse(node => {
+      partByNode.set(node, { fineId, coarseId });
+    });
+  };
+  markSubtree(mouse.rig, 6, 2);
+  markSubtree(mouse.neckMesh, 5, 2);
+  markSubtree(mouse.headGroup, 1, 1);
+  markSubtree(mouse.snoutTip, 2, 1);
+  markSubtree(mouse.earL, 3, 1);
+  markSubtree(mouse.earR, 4, 1);
+  markSubtree(mouse.armL?._forearm, 7, 3);
+  markSubtree(mouse.armR?._forearm, 8, 3);
+  markSubtree(mouse.hindL?._shank, 9, 3);
+  markSubtree(mouse.hindR?._shank, 10, 3);
+  markSubtree(mouse.tailMesh, 11, 4);
+  markSubtree(mouse.tailRoot, 11, 4);
+
+  const excludeSubtree = root => {
+    if (!root) return;
+    root.traverse(node => {
+      partByNode.delete(node);
+    });
+  };
+  excludeSubtree(mouse.contactShadow);
+  excludeSubtree(mouse.trackingGroup);
+  excludeSubtree(mouse.padL);
+  excludeSubtree(mouse.padR);
+  return partByNode;
+}
+
+function captureDatasetSegmentationMasks() {
+  controls.update();
+  scene.updateMatrixWorld(true);
+  camera.updateMatrixWorld(true);
+  const width = Math.max(1, Math.round(canvas.getBoundingClientRect().width || innerWidth));
+  const height = Math.max(1, Math.round(canvas.getBoundingClientRect().height || innerHeight));
+
+  if (
+    !segmentationRenderTarget
+    || segmentationRenderTarget.width !== width
+    || segmentationRenderTarget.height !== height
+  ) {
+    segmentationRenderTarget?.dispose?.();
+    segmentationRenderTarget = new THREE.WebGLRenderTarget(width, height, {
+      minFilter: THREE.NearestFilter,
+      magFilter: THREE.NearestFilter,
+      format: THREE.RGBAFormat,
+      type: THREE.UnsignedByteType,
+      colorSpace: THREE.NoColorSpace,
+      depthBuffer: true,
+      stencilBuffer: false,
+      samples: 0,
+    });
+    segmentationPixelBuffer = new Uint8Array(width * height * 4);
+  }
+
+  const mouseRoots = new Set(mice.map(m => m.mesh));
+  const savedChildVisibility = [];
+  for (const child of scene.children) {
+    savedChildVisibility.push({ child, visible: child.visible });
+    if (!mouseRoots.has(child)) {
+      child.visible = false;
+    }
+  }
+
+  const savedMeshMaterials = [];
+  const discardMat = getSegmentationDiscardMaterial();
+  for (const mouse of mice) {
+    if (!mouse.mesh.visible) continue;
+    const trackByte = Math.max(1, Math.min(254, Number(mouse.trackId) || 1));
+    const partByNode = classifySubjectSegmentationNodes(mouse);
+    mouse.mesh.traverse(node => {
+      if (!node.isMesh) return;
+      savedMeshMaterials.push({ node, material: node.material });
+      const primaryMat = Array.isArray(node.material) ? node.material[0] : node.material;
+      const partInfo = partByNode.get(node);
+      const isWhisker = Boolean(
+        node.name && (node.name.includes('vibrissa') || node.name.includes('whisker'))
+      );
+      const isSolidPart = Boolean(
+        partInfo
+        && !isWhisker
+        && node.visible
+        && primaryMat
+        && primaryMat.colorWrite !== false
+        && primaryMat.depthWrite !== false
+        && !(primaryMat.transparent && (primaryMat.opacity ?? 1.0) < 0.65)
+      );
+      if (isSolidPart) {
+        node.material = getSegmentationIdMaterial(
+          trackByte,
+          partInfo.fineId,
+          partInfo.coarseId,
+          primaryMat.side ?? THREE.FrontSide
+        );
+      } else {
+        node.material = discardMat;
+      }
+    });
+  }
+
+  const prevRenderTarget = renderer.getRenderTarget();
+  const prevClearColor = renderer.getClearColor(new THREE.Color());
+  const prevClearAlpha = renderer.getClearAlpha();
+  const prevToneMapping = renderer.toneMapping;
+  const prevAutoClear = renderer.autoClear;
+  const prevShadowEnabled = renderer.shadowMap.enabled;
+  const prevBackground = scene.background;
+  const prevFog = scene.fog;
+
+  try {
+    renderer.shadowMap.enabled = false;
+    renderer.toneMapping = THREE.NoToneMapping;
+    renderer.autoClear = true;
+    scene.background = null;
+    scene.fog = null;
+    renderer.setRenderTarget(segmentationRenderTarget);
+    renderer.setClearColor(0x000000, 1.0);
+    renderer.clear(true, true, true);
+    renderer.render(scene, camera);
+    renderer.readRenderTargetPixels(
+      segmentationRenderTarget,
+      0,
+      0,
+      width,
+      height,
+      segmentationPixelBuffer
+    );
+  } finally {
+    renderer.setRenderTarget(prevRenderTarget);
+    renderer.setClearColor(prevClearColor, prevClearAlpha);
+    renderer.toneMapping = prevToneMapping;
+    renderer.autoClear = prevAutoClear;
+    renderer.shadowMap.enabled = prevShadowEnabled;
+    scene.background = prevBackground;
+    scene.fog = prevFog;
+    for (const { node, material } of savedMeshMaterials) {
+      node.material = material;
+    }
+    for (const { child, visible } of savedChildVisibility) {
+      child.visible = visible;
+    }
+  }
+
+  const rle = [];
+  let curR = -1;
+  let curG = -1;
+  let curB = -1;
+  let runLen = 0;
+  for (let y = 0; y < height; y++) {
+    const glRow = (height - 1 - y) * width * 4;
+    for (let x = 0; x < width; x++) {
+      const idx = glRow + x * 4;
+      const r = segmentationPixelBuffer[idx];
+      const g = segmentationPixelBuffer[idx + 1];
+      const b = segmentationPixelBuffer[idx + 2];
+      if (r === curR && g === curG && b === curB) {
+        runLen += 1;
+      } else {
+        if (runLen > 0) {
+          rle.push(runLen, curR, curG, curB);
+        }
+        curR = r;
+        curG = g;
+        curB = b;
+        runLen = 1;
+      }
+    }
+  }
+  if (runLen > 0) {
+    rle.push(runLen, curR, curG, curB);
+  }
+
+  return {
+    frame_id: datasetCurrentFrameIndex,
+    width,
+    height,
+    rle,
+    fine_parts: SEGMENTATION_FINE_PARTS,
+    coarse_parts: SEGMENTATION_COARSE_PARTS,
+    subjects: mice.map(m => ({
+      track_id: m.trackId,
+      strain: m.strainName,
+      label: `mouse_${m.trackId}`,
+    })),
+  };
+}
+
 if (DATASET_CAPTURE) {
   advanceDatasetFrame(DATASET_FRAME_INDEX);
   window.annolidPoseDataset = Object.freeze({
@@ -5516,6 +5841,7 @@ if (DATASET_CAPTURE) {
       canvas.dataset.datasetReady = 'true';
       return buildDatasetFramePayload();
     },
+    captureSegmentationMasks: captureDatasetSegmentationMasks,
   });
 }
 
@@ -5564,6 +5890,15 @@ function disposeSceneResources() {
   }
   clearMice();
   postFX.dispose();
+  segmentationRenderTarget?.dispose?.();
+  segmentationRenderTarget = null;
+  segmentationPixelBuffer = null;
+  segmentationDiscardMaterial?.dispose?.();
+  segmentationDiscardMaterial = null;
+  for (const material of segmentationIdMaterials.values()) {
+    material?.dispose?.();
+  }
+  segmentationIdMaterials.clear();
   scene.environment?.dispose?.();
   scene.environment = null;
   keyLight.shadow.map?.dispose?.();

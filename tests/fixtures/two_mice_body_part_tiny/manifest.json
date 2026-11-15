@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "generator": "scripts/generate_two_mice_body_part_videos.py",
+  "width": 320,
+  "height": 240,
+  "keypoint_names": [
+    "nose",
+    "left_ear",
+    "right_ear",
+    "neck",
+    "spine_1",
+    "spine_2",
+    "tail_base",
+    "left_forepaw",
+    "right_forepaw",
+    "left_hindpaw",
+    "right_hindpaw",
+    "tail_mid",
+    "tail_tip"
+  ],
+  "coarse_part_id_to_name": {
+    "1": "head",
+    "2": "torso",
+    "3": "limbs",
+    "4": "tail"
+  },
+  "fine_part_id_to_name": {
+    "1": "head",
+    "2": "snout",
+    "3": "left_ear",
+    "4": "right_ear",
+    "5": "neck",
+    "6": "torso",
+    "7": "left_forelimb",
+    "8": "right_forelimb",
+    "9": "left_hindlimb",
+    "10": "right_hindlimb",
+    "11": "tail"
+  },
+  "frames": [
+    {
+      "index": 0,
+      "scenario": "social_huddle",
+      "source_frame": 0,
+      "camera_view": "top-close",
+      "image_file": "images/social_huddle_f00.jpg",
+      "id_mask_file": "masks/social_huddle_f00_ids.png",
+      "labelme_file": "labelme/social_huddle_f00.json"
+    },
+    {
+      "index": 1,
+      "scenario": "social_huddle",
+      "source_frame": 2,
+      "camera_view": "top-close",
+      "image_file": "images/social_huddle_f02.jpg",
+      "id_mask_file": "masks/social_huddle_f02_ids.png",
+      "labelme_file": "labelme/social_huddle_f02.json"
+    },
+    {
+      "index": 2,
+      "scenario": "social_huddle",
+      "source_frame": 3,
+      "camera_view": "top-close",
+      "image_file": "images/social_huddle_f03.jpg",
+      "id_mask_file": "masks/social_huddle_f03_ids.png",
+      "labelme_file": "labelme/social_huddle_f03.json"
+    },
+    {
+      "index": 3,
+      "scenario": "social_huddle",
+      "source_frame": 6,
+      "camera_view": "top-close",
+      "image_file": "images/social_huddle_f06.jpg",
+      "id_mask_file": "masks/social_huddle_f06_ids.png",
+      "labelme_file": "labelme/social_huddle_f06.json"
+    },
+    {
+      "index": 4,
+      "scenario": "curled_grooming",
+      "source_frame": 0,
+      "camera_view": "top-close",
+      "image_file": "images/curled_grooming_f00.jpg",
+      "id_mask_file": "masks/curled_grooming_f00_ids.png",
+      "labelme_file": "labelme/curled_grooming_f00.json"
+    },
+    {
+      "index": 5,
+      "scenario": "curled_grooming",
+      "source_frame": 3,
+      "camera_view": "top-close",
+      "image_file": "images/curled_grooming_f03.jpg",
+      "id_mask_file": "masks/curled_grooming_f03_ids.png",
+      "labelme_file": "labelme/curled_grooming_f03.json"
+    },
+    {
+      "index": 6,
+      "scenario": "rearing_oblique",
+      "source_frame": 2,
+      "camera_view": "oblique-close",
+      "image_file": "images/rearing_oblique_f02.jpg",
+      "id_mask_file": "masks/rearing_oblique_f02_ids.png",
+      "labelme_file": "labelme/rearing_oblique_f02.json"
+    },
+    {
+      "index": 7,
+      "scenario": "rearing_oblique",
+      "source_frame": 4,
+      "camera_view": "oblique-close",
+      "image_file": "images/rearing_oblique_f04.jpg",
+      "id_mask_file": "masks/rearing_oblique_f04_ids.png",
+      "labelme_file": "labelme/rearing_oblique_f04.json"
+    }
+  ]
+}

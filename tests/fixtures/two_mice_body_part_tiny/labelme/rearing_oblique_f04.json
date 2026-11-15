@@ -1,0 +1,2544 @@
+{
+  "version": "5.4.1",
+  "flags": {},
+  "shapes": [
+    {
+      "label": "mouse_1",
+      "points": [
+        [
+          148.0,
+          48.0
+        ],
+        [
+          141.0,
+          44.0
+        ],
+        [
+          140.0,
+          42.0
+        ],
+        [
+          135.0,
+          41.0
+        ],
+        [
+          117.0,
+          32.0
+        ],
+        [
+          116.0,
+          33.0
+        ],
+        [
+          112.0,
+          33.0
+        ],
+        [
+          111.0,
+          32.0
+        ],
+        [
+          110.0,
+          33.0
+        ],
+        [
+          105.0,
+          33.0
+        ],
+        [
+          104.0,
+          34.0
+        ],
+        [
+          103.0,
+          33.0
+        ],
+        [
+          100.0,
+          35.0
+        ],
+        [
+          96.0,
+          33.0
+        ],
+        [
+          93.0,
+          33.0
+        ],
+        [
+          88.0,
+          37.0
+        ],
+        [
+          86.0,
+          41.0
+        ],
+        [
+          86.0,
+          47.0
+        ],
+        [
+          89.0,
+          52.0
+        ],
+        [
+          88.0,
+          56.0
+        ],
+        [
+          85.0,
+          59.0
+        ],
+        [
+          82.0,
+          60.0
+        ],
+        [
+          81.0,
+          62.0
+        ],
+        [
+          76.0,
+          65.0
+        ],
+        [
+          74.0,
+          68.0
+        ],
+        [
+          70.0,
+          71.0
+        ],
+        [
+          69.0,
+          74.0
+        ],
+        [
+          55.0,
+          90.0
+        ],
+        [
+          45.0,
+          106.0
+        ],
+        [
+          44.0,
+          112.0
+        ],
+        [
+          43.0,
+          113.0
+        ],
+        [
+          43.0,
+          118.0
+        ],
+        [
+          42.0,
+          119.0
+        ],
+        [
+          38.0,
+          120.0
+        ],
+        [
+          26.0,
+          116.0
+        ],
+        [
+          22.0,
+          116.0
+        ],
+        [
+          18.0,
+          114.0
+        ],
+        [
+          4.0,
+          111.0
+        ],
+        [
+          10.0,
+          112.0
+        ],
+        [
+          17.0,
+          115.0
+        ],
+        [
+          20.0,
+          115.0
+        ],
+        [
+          27.0,
+          118.0
+        ],
+        [
+          30.0,
+          118.0
+        ],
+        [
+          43.0,
+          123.0
+        ],
+        [
+          47.0,
+          132.0
+        ],
+        [
+          51.0,
+          138.0
+        ],
+        [
+          53.0,
+          139.0
+        ],
+        [
+          55.0,
+          142.0
+        ],
+        [
+          66.0,
+          147.0
+        ],
+        [
+          68.0,
+          146.0
+        ],
+        [
+          72.0,
+          146.0
+        ],
+        [
+          77.0,
+          143.0
+        ],
+        [
+          81.0,
+          145.0
+        ],
+        [
+          86.0,
+          145.0
+        ],
+        [
+          90.0,
+          143.0
+        ],
+        [
+          93.0,
+          140.0
+        ],
+        [
+          93.0,
+          139.0
+        ],
+        [
+          91.0,
+          138.0
+        ],
+        [
+          91.0,
+          135.0
+        ],
+        [
+          94.0,
+          133.0
+        ],
+        [
+          95.0,
+          134.0
+        ],
+        [
+          99.0,
+          134.0
+        ],
+        [
+          100.0,
+          133.0
+        ],
+        [
+          104.0,
+          136.0
+        ],
+        [
+          104.0,
+          139.0
+        ],
+        [
+          105.0,
+          140.0
+        ],
+        [
+          113.0,
+          140.0
+        ],
+        [
+          114.0,
+          139.0
+        ],
+        [
+          117.0,
+          139.0
+        ],
+        [
+          118.0,
+          138.0
+        ],
+        [
+          117.0,
+          137.0
+        ],
+        [
+          114.0,
+          137.0
+        ],
+        [
+          113.0,
+          138.0
+        ],
+        [
+          112.0,
+          137.0
+        ],
+        [
+          111.0,
+          138.0
+        ],
+        [
+          108.0,
+          137.0
+        ],
+        [
+          105.0,
+          134.0
+        ],
+        [
+          105.0,
+          131.0
+        ],
+        [
+          108.0,
+          129.0
+        ],
+        [
+          113.0,
+          119.0
+        ],
+        [
+          113.0,
+          116.0
+        ],
+        [
+          117.0,
+          111.0
+        ],
+        [
+          123.0,
+          99.0
+        ],
+        [
+          123.0,
+          96.0
+        ],
+        [
+          125.0,
+          92.0
+        ],
+        [
+          125.0,
+          86.0
+        ],
+        [
+          126.0,
+          85.0
+        ],
+        [
+          126.0,
+          74.0
+        ],
+        [
+          134.0,
+          70.0
+        ],
+        [
+          134.0,
+          68.0
+        ],
+        [
+          145.0,
+          54.0
+        ]
+      ],
+      "group_id": 1,
+      "shape_type": "polygon",
+      "flags": {},
+      "visible": true,
+      "description": "C57BL/6 (Black)"
+    },
+    {
+      "label": "nose",
+      "points": [
+        [
+          148.03,
+          49.0
+        ]
+      ],
+      "group_id": 1,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_1",
+      "display_label": "nose",
+      "visible": true
+    },
+    {
+      "label": "left_ear",
+      "points": [
+        [
+          123.45,
+          41.06
+        ]
+      ],
+      "group_id": 1,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_1",
+      "display_label": "left_ear",
+      "visible": true
+    },
+    {
+      "label": "right_ear",
+      "points": [
+        [
+          104.56,
+          42.07
+        ]
+      ],
+      "group_id": 1,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_1",
+      "display_label": "right_ear",
+      "visible": true
+    },
+    {
+      "label": "neck",
+      "points": [
+        [
+          100.22,
+          54.57
+        ]
+      ],
+      "group_id": 1,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_1",
+      "display_label": "neck",
+      "visible": true
+    },
+    {
+      "label": "spine_1",
+      "points": [
+        [
+          80.29,
+          81.3
+        ]
+      ],
+      "group_id": 1,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_1",
+      "display_label": "spine_1",
+      "visible": true
+    },
+    {
+      "label": "spine_2",
+      "points": [
+        [
+          70.22,
+          106.22
+        ]
+      ],
+      "group_id": 1,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_1",
+      "display_label": "spine_2",
+      "visible": true
+    },
+    {
+      "label": "tail_base",
+      "points": [
+        [
+          65.42,
+          137.57
+        ]
+      ],
+      "group_id": 1,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_1",
+      "display_label": "tail_base",
+      "visible": true
+    },
+    {
+      "label": "left_forepaw",
+      "points": [
+        [
+          137.51,
+          49.13
+        ]
+      ],
+      "group_id": 1,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": false
+      },
+      "kp_visibility": 1,
+      "instance_label": "mouse_1",
+      "display_label": "left_forepaw",
+      "visible": true
+    },
+    {
+      "label": "right_forepaw",
+      "points": [
+        [
+          115.25,
+          50.05
+        ]
+      ],
+      "group_id": 1,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_1",
+      "display_label": "right_forepaw",
+      "visible": true
+    },
+    {
+      "label": "left_hindpaw",
+      "points": [
+        [
+          112.16,
+          140.68
+        ]
+      ],
+      "group_id": 1,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_1",
+      "display_label": "left_hindpaw",
+      "visible": true
+    },
+    {
+      "label": "right_hindpaw",
+      "points": [
+        [
+          89.23,
+          143.94
+        ]
+      ],
+      "group_id": 1,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_1",
+      "display_label": "right_hindpaw",
+      "visible": true
+    },
+    {
+      "label": "tail_mid",
+      "points": [
+        [
+          38.56,
+          120.84
+        ]
+      ],
+      "group_id": 1,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_1",
+      "display_label": "tail_mid",
+      "visible": true
+    },
+    {
+      "label": "head",
+      "points": [
+        [
+          91.0,
+          34.0
+        ],
+        [
+          88.0,
+          37.0
+        ],
+        [
+          86.0,
+          41.0
+        ],
+        [
+          86.0,
+          47.0
+        ],
+        [
+          89.0,
+          52.0
+        ],
+        [
+          95.0,
+          55.0
+        ],
+        [
+          94.0,
+          58.0
+        ],
+        [
+          98.0,
+          63.0
+        ],
+        [
+          97.0,
+          64.0
+        ],
+        [
+          110.0,
+          66.0
+        ],
+        [
+          113.0,
+          60.0
+        ],
+        [
+          113.0,
+          54.0
+        ],
+        [
+          110.0,
+          50.0
+        ],
+        [
+          112.0,
+          47.0
+        ],
+        [
+          110.0,
+          49.0
+        ],
+        [
+          108.0,
+          47.0
+        ],
+        [
+          108.0,
+          45.0
+        ],
+        [
+          110.0,
+          43.0
+        ],
+        [
+          113.0,
+          44.0
+        ],
+        [
+          118.0,
+          50.0
+        ],
+        [
+          120.0,
+          58.0
+        ],
+        [
+          115.0,
+          68.0
+        ],
+        [
+          115.0,
+          72.0
+        ],
+        [
+          114.0,
+          74.0
+        ],
+        [
+          116.0,
+          76.0
+        ],
+        [
+          121.0,
+          76.0
+        ],
+        [
+          124.0,
+          74.0
+        ],
+        [
+          126.0,
+          75.0
+        ],
+        [
+          128.0,
+          72.0
+        ],
+        [
+          130.0,
+          72.0
+        ],
+        [
+          136.0,
+          66.0
+        ],
+        [
+          148.0,
+          49.0
+        ],
+        [
+          147.0,
+          47.0
+        ],
+        [
+          141.0,
+          44.0
+        ],
+        [
+          140.0,
+          42.0
+        ],
+        [
+          135.0,
+          41.0
+        ],
+        [
+          117.0,
+          32.0
+        ],
+        [
+          116.0,
+          33.0
+        ],
+        [
+          105.0,
+          33.0
+        ],
+        [
+          104.0,
+          34.0
+        ],
+        [
+          103.0,
+          33.0
+        ],
+        [
+          100.0,
+          35.0
+        ],
+        [
+          96.0,
+          33.0
+        ]
+      ],
+      "group_id": 1,
+      "shape_type": "polygon",
+      "flags": {
+        "is_body_part": true
+      },
+      "visible": true,
+      "description": "ThreeJSGroundTruth",
+      "semantic_type": "body_part",
+      "part_label": "head",
+      "display_label": "head",
+      "parent_instance": "mouse_1",
+      "instance_label": "mouse_1",
+      "score": 1.0,
+      "area_ratio": 0.2373,
+      "segmentation_mode": "ground_truth_3d"
+    },
+    {
+      "label": "torso",
+      "points": [
+        [
+          134.0,
+          69.0
+        ],
+        [
+          132.0,
+          71.0
+        ],
+        [
+          133.0,
+          71.0
+        ]
+      ],
+      "group_id": 1,
+      "shape_type": "polygon",
+      "flags": {
+        "is_body_part": true
+      },
+      "visible": true,
+      "description": "ThreeJSGroundTruth",
+      "semantic_type": "body_part",
+      "part_label": "torso",
+      "display_label": "torso",
+      "parent_instance": "mouse_1",
+      "instance_label": "mouse_1",
+      "score": 1.0,
+      "area_ratio": 0.7144,
+      "segmentation_mode": "ground_truth_3d"
+    },
+    {
+      "label": "torso",
+      "points": [
+        [
+          89.0,
+          53.0
+        ],
+        [
+          88.0,
+          56.0
+        ],
+        [
+          85.0,
+          59.0
+        ],
+        [
+          82.0,
+          60.0
+        ],
+        [
+          81.0,
+          62.0
+        ],
+        [
+          76.0,
+          65.0
+        ],
+        [
+          74.0,
+          68.0
+        ],
+        [
+          70.0,
+          71.0
+        ],
+        [
+          69.0,
+          74.0
+        ],
+        [
+          55.0,
+          90.0
+        ],
+        [
+          45.0,
+          106.0
+        ],
+        [
+          44.0,
+          112.0
+        ],
+        [
+          43.0,
+          113.0
+        ],
+        [
+          43.0,
+          118.0
+        ],
+        [
+          41.0,
+          119.0
+        ],
+        [
+          43.0,
+          121.0
+        ],
+        [
+          44.0,
+          126.0
+        ],
+        [
+          51.0,
+          138.0
+        ],
+        [
+          53.0,
+          139.0
+        ],
+        [
+          55.0,
+          142.0
+        ],
+        [
+          66.0,
+          147.0
+        ],
+        [
+          68.0,
+          146.0
+        ],
+        [
+          72.0,
+          146.0
+        ],
+        [
+          77.0,
+          143.0
+        ],
+        [
+          79.0,
+          144.0
+        ],
+        [
+          79.0,
+          142.0
+        ],
+        [
+          77.0,
+          141.0
+        ],
+        [
+          78.0,
+          140.0
+        ],
+        [
+          82.0,
+          140.0
+        ],
+        [
+          83.0,
+          141.0
+        ],
+        [
+          90.0,
+          138.0
+        ],
+        [
+          91.0,
+          135.0
+        ],
+        [
+          94.0,
+          133.0
+        ],
+        [
+          95.0,
+          134.0
+        ],
+        [
+          99.0,
+          134.0
+        ],
+        [
+          103.0,
+          131.0
+        ],
+        [
+          105.0,
+          132.0
+        ],
+        [
+          110.0,
+          126.0
+        ],
+        [
+          113.0,
+          119.0
+        ],
+        [
+          113.0,
+          116.0
+        ],
+        [
+          117.0,
+          111.0
+        ],
+        [
+          123.0,
+          99.0
+        ],
+        [
+          123.0,
+          96.0
+        ],
+        [
+          125.0,
+          92.0
+        ],
+        [
+          126.0,
+          76.0
+        ],
+        [
+          124.0,
+          75.0
+        ],
+        [
+          121.0,
+          77.0
+        ],
+        [
+          116.0,
+          77.0
+        ],
+        [
+          113.0,
+          74.0
+        ],
+        [
+          114.0,
+          70.0
+        ],
+        [
+          112.0,
+          70.0
+        ],
+        [
+          110.0,
+          67.0
+        ],
+        [
+          97.0,
+          65.0
+        ],
+        [
+          96.0,
+          64.0
+        ],
+        [
+          99.0,
+          62.0
+        ],
+        [
+          97.0,
+          63.0
+        ],
+        [
+          93.0,
+          58.0
+        ],
+        [
+          94.0,
+          55.0
+        ]
+      ],
+      "group_id": 1,
+      "shape_type": "polygon",
+      "flags": {
+        "is_body_part": true
+      },
+      "visible": true,
+      "description": "ThreeJSGroundTruth",
+      "semantic_type": "body_part",
+      "part_label": "torso",
+      "display_label": "torso",
+      "parent_instance": "mouse_1",
+      "instance_label": "mouse_1",
+      "score": 1.0,
+      "area_ratio": 0.7144,
+      "segmentation_mode": "ground_truth_3d"
+    },
+    {
+      "label": "limbs",
+      "points": [
+        [
+          93.0,
+          139.0
+        ],
+        [
+          91.0,
+          138.0
+        ],
+        [
+          83.0,
+          142.0
+        ],
+        [
+          82.0,
+          141.0
+        ],
+        [
+          78.0,
+          141.0
+        ],
+        [
+          80.0,
+          142.0
+        ],
+        [
+          81.0,
+          145.0
+        ],
+        [
+          86.0,
+          145.0
+        ],
+        [
+          90.0,
+          143.0
+        ]
+      ],
+      "group_id": 1,
+      "shape_type": "polygon",
+      "flags": {
+        "is_body_part": true
+      },
+      "visible": true,
+      "description": "ThreeJSGroundTruth",
+      "semantic_type": "body_part",
+      "part_label": "limbs",
+      "display_label": "limbs",
+      "parent_instance": "mouse_1",
+      "instance_label": "mouse_1",
+      "score": 1.0,
+      "area_ratio": 0.0388,
+      "segmentation_mode": "ground_truth_3d"
+    },
+    {
+      "label": "limbs",
+      "points": [
+        [
+          101.0,
+          133.0
+        ],
+        [
+          101.0,
+          134.0
+        ],
+        [
+          104.0,
+          136.0
+        ],
+        [
+          104.0,
+          139.0
+        ],
+        [
+          105.0,
+          140.0
+        ],
+        [
+          113.0,
+          140.0
+        ],
+        [
+          118.0,
+          138.0
+        ],
+        [
+          117.0,
+          137.0
+        ],
+        [
+          114.0,
+          137.0
+        ],
+        [
+          113.0,
+          138.0
+        ],
+        [
+          112.0,
+          137.0
+        ],
+        [
+          110.0,
+          138.0
+        ],
+        [
+          108.0,
+          137.0
+        ],
+        [
+          104.0,
+          132.0
+        ]
+      ],
+      "group_id": 1,
+      "shape_type": "polygon",
+      "flags": {
+        "is_body_part": true
+      },
+      "visible": true,
+      "description": "ThreeJSGroundTruth",
+      "semantic_type": "body_part",
+      "part_label": "limbs",
+      "display_label": "limbs",
+      "parent_instance": "mouse_1",
+      "instance_label": "mouse_1",
+      "score": 1.0,
+      "area_ratio": 0.0388,
+      "segmentation_mode": "ground_truth_3d"
+    },
+    {
+      "label": "limbs",
+      "points": [
+        [
+          110.0,
+          44.0
+        ],
+        [
+          109.0,
+          47.0
+        ],
+        [
+          114.0,
+          54.0
+        ],
+        [
+          114.0,
+          60.0
+        ],
+        [
+          111.0,
+          65.0
+        ],
+        [
+          111.0,
+          68.0
+        ],
+        [
+          114.0,
+          69.0
+        ],
+        [
+          119.0,
+          58.0
+        ],
+        [
+          119.0,
+          56.0
+        ],
+        [
+          117.0,
+          50.0
+        ],
+        [
+          114.0,
+          47.0
+        ],
+        [
+          115.0,
+          46.0
+        ],
+        [
+          114.0,
+          47.0
+        ],
+        [
+          113.0,
+          45.0
+        ]
+      ],
+      "group_id": 1,
+      "shape_type": "polygon",
+      "flags": {
+        "is_body_part": true
+      },
+      "visible": true,
+      "description": "ThreeJSGroundTruth",
+      "semantic_type": "body_part",
+      "part_label": "limbs",
+      "display_label": "limbs",
+      "parent_instance": "mouse_1",
+      "instance_label": "mouse_1",
+      "score": 1.0,
+      "area_ratio": 0.0388,
+      "segmentation_mode": "ground_truth_3d"
+    },
+    {
+      "label": "tail",
+      "points": [
+        [
+          4.0,
+          111.0
+        ],
+        [
+          10.0,
+          112.0
+        ],
+        [
+          17.0,
+          115.0
+        ],
+        [
+          20.0,
+          115.0
+        ],
+        [
+          27.0,
+          118.0
+        ],
+        [
+          30.0,
+          118.0
+        ],
+        [
+          43.0,
+          123.0
+        ],
+        [
+          41.0,
+          120.0
+        ],
+        [
+          38.0,
+          120.0
+        ],
+        [
+          26.0,
+          116.0
+        ],
+        [
+          22.0,
+          116.0
+        ],
+        [
+          18.0,
+          114.0
+        ]
+      ],
+      "group_id": 1,
+      "shape_type": "polygon",
+      "flags": {
+        "is_body_part": true
+      },
+      "visible": true,
+      "description": "ThreeJSGroundTruth",
+      "semantic_type": "body_part",
+      "part_label": "tail",
+      "display_label": "tail",
+      "parent_instance": "mouse_1",
+      "instance_label": "mouse_1",
+      "score": 1.0,
+      "area_ratio": 0.0094,
+      "segmentation_mode": "ground_truth_3d"
+    },
+    {
+      "label": "mouse_2",
+      "points": [
+        [
+          189.0,
+          90.0
+        ],
+        [
+          191.0,
+          93.0
+        ],
+        [
+          191.0,
+          100.0
+        ],
+        [
+          193.0,
+          105.0
+        ],
+        [
+          200.0,
+          111.0
+        ],
+        [
+          201.0,
+          113.0
+        ],
+        [
+          201.0,
+          118.0
+        ],
+        [
+          202.0,
+          119.0
+        ],
+        [
+          202.0,
+          123.0
+        ],
+        [
+          199.0,
+          125.0
+        ],
+        [
+          196.0,
+          125.0
+        ],
+        [
+          195.0,
+          124.0
+        ],
+        [
+          194.0,
+          125.0
+        ],
+        [
+          193.0,
+          124.0
+        ],
+        [
+          193.0,
+          127.0
+        ],
+        [
+          201.0,
+          132.0
+        ],
+        [
+          201.0,
+          130.0
+        ],
+        [
+          204.0,
+          127.0
+        ],
+        [
+          204.0,
+          125.0
+        ],
+        [
+          207.0,
+          123.0
+        ],
+        [
+          213.0,
+          128.0
+        ],
+        [
+          216.0,
+          127.0
+        ],
+        [
+          223.0,
+          131.0
+        ],
+        [
+          232.0,
+          134.0
+        ],
+        [
+          235.0,
+          136.0
+        ],
+        [
+          235.0,
+          138.0
+        ],
+        [
+          232.0,
+          140.0
+        ],
+        [
+          229.0,
+          140.0
+        ],
+        [
+          229.0,
+          141.0
+        ],
+        [
+          236.0,
+          147.0
+        ],
+        [
+          240.0,
+          149.0
+        ],
+        [
+          245.0,
+          150.0
+        ],
+        [
+          246.0,
+          147.0
+        ],
+        [
+          252.0,
+          142.0
+        ],
+        [
+          264.0,
+          141.0
+        ],
+        [
+          267.0,
+          143.0
+        ],
+        [
+          268.0,
+          140.0
+        ],
+        [
+          272.0,
+          137.0
+        ],
+        [
+          287.0,
+          137.0
+        ],
+        [
+          288.0,
+          136.0
+        ],
+        [
+          290.0,
+          137.0
+        ],
+        [
+          295.0,
+          135.0
+        ],
+        [
+          319.0,
+          143.0
+        ],
+        [
+          319.0,
+          138.0
+        ],
+        [
+          313.0,
+          136.0
+        ],
+        [
+          308.0,
+          133.0
+        ],
+        [
+          308.0,
+          124.0
+        ],
+        [
+          309.0,
+          123.0
+        ],
+        [
+          308.0,
+          117.0
+        ],
+        [
+          309.0,
+          116.0
+        ],
+        [
+          309.0,
+          113.0
+        ],
+        [
+          306.0,
+          104.0
+        ],
+        [
+          303.0,
+          101.0
+        ],
+        [
+          303.0,
+          99.0
+        ],
+        [
+          302.0,
+          99.0
+        ],
+        [
+          296.0,
+          92.0
+        ],
+        [
+          285.0,
+          85.0
+        ],
+        [
+          273.0,
+          81.0
+        ],
+        [
+          269.0,
+          81.0
+        ],
+        [
+          268.0,
+          80.0
+        ],
+        [
+          258.0,
+          80.0
+        ],
+        [
+          257.0,
+          79.0
+        ],
+        [
+          256.0,
+          80.0
+        ],
+        [
+          245.0,
+          80.0
+        ],
+        [
+          244.0,
+          81.0
+        ],
+        [
+          233.0,
+          81.0
+        ],
+        [
+          232.0,
+          82.0
+        ],
+        [
+          226.0,
+          77.0
+        ],
+        [
+          221.0,
+          77.0
+        ],
+        [
+          218.0,
+          79.0
+        ],
+        [
+          210.0,
+          78.0
+        ],
+        [
+          205.0,
+          80.0
+        ],
+        [
+          203.0,
+          80.0
+        ],
+        [
+          200.0,
+          78.0
+        ],
+        [
+          197.0,
+          78.0
+        ],
+        [
+          194.0,
+          81.0
+        ],
+        [
+          191.0,
+          88.0
+        ]
+      ],
+      "group_id": 2,
+      "shape_type": "polygon",
+      "flags": {},
+      "visible": true,
+      "description": "BALB/c (White)"
+    },
+    {
+      "label": "nose",
+      "points": [
+        [
+          192.1,
+          94.29
+        ]
+      ],
+      "group_id": 2,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_2",
+      "display_label": "nose",
+      "visible": true
+    },
+    {
+      "label": "left_ear",
+      "points": [
+        [
+          197.85,
+          86.84
+        ]
+      ],
+      "group_id": 2,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_2",
+      "display_label": "left_ear",
+      "visible": true
+    },
+    {
+      "label": "right_ear",
+      "points": [
+        [
+          218.04,
+          85.39
+        ]
+      ],
+      "group_id": 2,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_2",
+      "display_label": "right_ear",
+      "visible": true
+    },
+    {
+      "label": "neck",
+      "points": [
+        [
+          216.37,
+          91.77
+        ]
+      ],
+      "group_id": 2,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_2",
+      "display_label": "neck",
+      "visible": true
+    },
+    {
+      "label": "spine_1",
+      "points": [
+        [
+          243.58,
+          89.1
+        ]
+      ],
+      "group_id": 2,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_2",
+      "display_label": "spine_1",
+      "visible": true
+    },
+    {
+      "label": "spine_2",
+      "points": [
+        [
+          269.95,
+          97.29
+        ]
+      ],
+      "group_id": 2,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_2",
+      "display_label": "spine_2",
+      "visible": true
+    },
+    {
+      "label": "tail_base",
+      "points": [
+        [
+          302.22,
+          120.02
+        ]
+      ],
+      "group_id": 2,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_2",
+      "display_label": "tail_base",
+      "visible": true
+    },
+    {
+      "label": "left_forepaw",
+      "points": [
+        [
+          197.47,
+          128.99
+        ]
+      ],
+      "group_id": 2,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_2",
+      "display_label": "left_forepaw",
+      "visible": true
+    },
+    {
+      "label": "right_forepaw",
+      "points": [
+        [
+          210.99,
+          126.1
+        ]
+      ],
+      "group_id": 2,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_2",
+      "display_label": "right_forepaw",
+      "visible": true
+    },
+    {
+      "label": "left_hindpaw",
+      "points": [
+        [
+          236.93,
+          146.19
+        ]
+      ],
+      "group_id": 2,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_2",
+      "display_label": "left_hindpaw",
+      "visible": true
+    },
+    {
+      "label": "right_hindpaw",
+      "points": [
+        [
+          259.64,
+          138.74
+        ]
+      ],
+      "group_id": 2,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_2",
+      "display_label": "right_hindpaw",
+      "visible": true
+    },
+    {
+      "label": "head",
+      "points": [
+        [
+          228.0,
+          78.0
+        ],
+        [
+          226.0,
+          77.0
+        ],
+        [
+          221.0,
+          77.0
+        ],
+        [
+          218.0,
+          79.0
+        ],
+        [
+          210.0,
+          78.0
+        ],
+        [
+          205.0,
+          80.0
+        ],
+        [
+          203.0,
+          80.0
+        ],
+        [
+          200.0,
+          78.0
+        ],
+        [
+          197.0,
+          78.0
+        ],
+        [
+          194.0,
+          81.0
+        ],
+        [
+          191.0,
+          88.0
+        ],
+        [
+          189.0,
+          90.0
+        ],
+        [
+          191.0,
+          93.0
+        ],
+        [
+          191.0,
+          100.0
+        ],
+        [
+          193.0,
+          105.0
+        ],
+        [
+          199.0,
+          110.0
+        ],
+        [
+          199.0,
+          105.0
+        ],
+        [
+          202.0,
+          104.0
+        ],
+        [
+          201.0,
+          103.0
+        ],
+        [
+          202.0,
+          102.0
+        ],
+        [
+          200.0,
+          101.0
+        ],
+        [
+          203.0,
+          100.0
+        ],
+        [
+          205.0,
+          95.0
+        ],
+        [
+          209.0,
+          90.0
+        ],
+        [
+          215.0,
+          85.0
+        ],
+        [
+          217.0,
+          85.0
+        ],
+        [
+          219.0,
+          83.0
+        ],
+        [
+          225.0,
+          82.0
+        ],
+        [
+          226.0,
+          81.0
+        ],
+        [
+          230.0,
+          81.0
+        ]
+      ],
+      "group_id": 2,
+      "shape_type": "polygon",
+      "flags": {
+        "is_body_part": true
+      },
+      "visible": true,
+      "description": "ThreeJSGroundTruth",
+      "semantic_type": "body_part",
+      "part_label": "head",
+      "display_label": "head",
+      "parent_instance": "mouse_2",
+      "instance_label": "mouse_2",
+      "score": 1.0,
+      "area_ratio": 0.0887,
+      "segmentation_mode": "ground_truth_3d"
+    },
+    {
+      "label": "torso",
+      "points": [
+        [
+          203.0,
+          95.0
+        ],
+        [
+          202.0,
+          97.0
+        ],
+        [
+          203.0,
+          97.0
+        ],
+        [
+          202.0,
+          96.0
+        ]
+      ],
+      "group_id": 2,
+      "shape_type": "polygon",
+      "flags": {
+        "is_body_part": true
+      },
+      "visible": true,
+      "description": "ThreeJSGroundTruth",
+      "semantic_type": "body_part",
+      "part_label": "torso",
+      "display_label": "torso",
+      "parent_instance": "mouse_2",
+      "instance_label": "mouse_2",
+      "score": 1.0,
+      "area_ratio": 0.8536,
+      "segmentation_mode": "ground_truth_3d"
+    },
+    {
+      "label": "torso",
+      "points": [
+        [
+          199.0,
+          103.0
+        ],
+        [
+          200.0,
+          105.0
+        ],
+        [
+          201.0,
+          118.0
+        ],
+        [
+          203.0,
+          121.0
+        ],
+        [
+          206.0,
+          122.0
+        ],
+        [
+          208.0,
+          121.0
+        ],
+        [
+          217.0,
+          128.0
+        ],
+        [
+          234.0,
+          135.0
+        ],
+        [
+          235.0,
+          138.0
+        ],
+        [
+          243.0,
+          143.0
+        ],
+        [
+          246.0,
+          142.0
+        ],
+        [
+          250.0,
+          142.0
+        ],
+        [
+          251.0,
+          143.0
+        ],
+        [
+          252.0,
+          142.0
+        ],
+        [
+          264.0,
+          141.0
+        ],
+        [
+          272.0,
+          137.0
+        ],
+        [
+          287.0,
+          137.0
+        ],
+        [
+          288.0,
+          136.0
+        ],
+        [
+          290.0,
+          137.0
+        ],
+        [
+          291.0,
+          136.0
+        ],
+        [
+          297.0,
+          135.0
+        ],
+        [
+          300.0,
+          133.0
+        ],
+        [
+          303.0,
+          133.0
+        ],
+        [
+          305.0,
+          131.0
+        ],
+        [
+          308.0,
+          132.0
+        ],
+        [
+          308.0,
+          124.0
+        ],
+        [
+          309.0,
+          123.0
+        ],
+        [
+          308.0,
+          117.0
+        ],
+        [
+          309.0,
+          116.0
+        ],
+        [
+          309.0,
+          113.0
+        ],
+        [
+          306.0,
+          104.0
+        ],
+        [
+          303.0,
+          101.0
+        ],
+        [
+          303.0,
+          99.0
+        ],
+        [
+          302.0,
+          99.0
+        ],
+        [
+          296.0,
+          92.0
+        ],
+        [
+          290.0,
+          88.0
+        ],
+        [
+          287.0,
+          87.0
+        ],
+        [
+          285.0,
+          85.0
+        ],
+        [
+          273.0,
+          81.0
+        ],
+        [
+          269.0,
+          81.0
+        ],
+        [
+          268.0,
+          80.0
+        ],
+        [
+          258.0,
+          80.0
+        ],
+        [
+          257.0,
+          79.0
+        ],
+        [
+          256.0,
+          80.0
+        ],
+        [
+          245.0,
+          80.0
+        ],
+        [
+          244.0,
+          81.0
+        ],
+        [
+          233.0,
+          81.0
+        ],
+        [
+          232.0,
+          82.0
+        ],
+        [
+          231.0,
+          81.0
+        ],
+        [
+          230.0,
+          82.0
+        ],
+        [
+          219.0,
+          84.0
+        ],
+        [
+          217.0,
+          86.0
+        ],
+        [
+          215.0,
+          86.0
+        ],
+        [
+          211.0,
+          89.0
+        ],
+        [
+          206.0,
+          95.0
+        ],
+        [
+          204.0,
+          100.0
+        ],
+        [
+          201.0,
+          101.0
+        ]
+      ],
+      "group_id": 2,
+      "shape_type": "polygon",
+      "flags": {
+        "is_body_part": true
+      },
+      "visible": true,
+      "description": "ThreeJSGroundTruth",
+      "semantic_type": "body_part",
+      "part_label": "torso",
+      "display_label": "torso",
+      "parent_instance": "mouse_2",
+      "instance_label": "mouse_2",
+      "score": 1.0,
+      "area_ratio": 0.8536,
+      "segmentation_mode": "ground_truth_3d"
+    },
+    {
+      "label": "limbs",
+      "points": [
+        [
+          268.0,
+          140.0
+        ],
+        [
+          265.0,
+          141.0
+        ],
+        [
+          265.0,
+          142.0
+        ],
+        [
+          267.0,
+          143.0
+        ]
+      ],
+      "group_id": 2,
+      "shape_type": "polygon",
+      "flags": {
+        "is_body_part": true
+      },
+      "visible": true,
+      "description": "ThreeJSGroundTruth",
+      "semantic_type": "body_part",
+      "part_label": "limbs",
+      "display_label": "limbs",
+      "parent_instance": "mouse_2",
+      "instance_label": "mouse_2",
+      "score": 1.0,
+      "area_ratio": 0.0385,
+      "segmentation_mode": "ground_truth_3d"
+    },
+    {
+      "label": "limbs",
+      "points": [
+        [
+          229.0,
+          140.0
+        ],
+        [
+          229.0,
+          141.0
+        ],
+        [
+          236.0,
+          147.0
+        ],
+        [
+          243.0,
+          150.0
+        ],
+        [
+          245.0,
+          150.0
+        ],
+        [
+          246.0,
+          147.0
+        ],
+        [
+          249.0,
+          145.0
+        ],
+        [
+          250.0,
+          143.0
+        ],
+        [
+          243.0,
+          144.0
+        ],
+        [
+          239.0,
+          142.0
+        ],
+        [
+          236.0,
+          139.0
+        ]
+      ],
+      "group_id": 2,
+      "shape_type": "polygon",
+      "flags": {
+        "is_body_part": true
+      },
+      "visible": true,
+      "description": "ThreeJSGroundTruth",
+      "semantic_type": "body_part",
+      "part_label": "limbs",
+      "display_label": "limbs",
+      "parent_instance": "mouse_2",
+      "instance_label": "mouse_2",
+      "score": 1.0,
+      "area_ratio": 0.0385,
+      "segmentation_mode": "ground_truth_3d"
+    },
+    {
+      "label": "limbs",
+      "points": [
+        [
+          193.0,
+          124.0
+        ],
+        [
+          193.0,
+          127.0
+        ],
+        [
+          200.0,
+          132.0
+        ],
+        [
+          201.0,
+          132.0
+        ],
+        [
+          201.0,
+          130.0
+        ],
+        [
+          204.0,
+          127.0
+        ],
+        [
+          204.0,
+          125.0
+        ],
+        [
+          207.0,
+          123.0
+        ],
+        [
+          209.0,
+          124.0
+        ],
+        [
+          211.0,
+          127.0
+        ],
+        [
+          213.0,
+          128.0
+        ],
+        [
+          215.0,
+          127.0
+        ],
+        [
+          208.0,
+          122.0
+        ],
+        [
+          206.0,
+          123.0
+        ],
+        [
+          202.0,
+          121.0
+        ],
+        [
+          202.0,
+          123.0
+        ],
+        [
+          199.0,
+          125.0
+        ],
+        [
+          196.0,
+          125.0
+        ],
+        [
+          195.0,
+          124.0
+        ],
+        [
+          194.0,
+          125.0
+        ]
+      ],
+      "group_id": 2,
+      "shape_type": "polygon",
+      "flags": {
+        "is_body_part": true
+      },
+      "visible": true,
+      "description": "ThreeJSGroundTruth",
+      "semantic_type": "body_part",
+      "part_label": "limbs",
+      "display_label": "limbs",
+      "parent_instance": "mouse_2",
+      "instance_label": "mouse_2",
+      "score": 1.0,
+      "area_ratio": 0.0385,
+      "segmentation_mode": "ground_truth_3d"
+    },
+    {
+      "label": "tail",
+      "points": [
+        [
+          297.0,
+          136.0
+        ],
+        [
+          303.0,
+          138.0
+        ],
+        [
+          306.0,
+          138.0
+        ],
+        [
+          319.0,
+          143.0
+        ],
+        [
+          319.0,
+          138.0
+        ],
+        [
+          305.0,
+          132.0
+        ],
+        [
+          303.0,
+          134.0
+        ],
+        [
+          300.0,
+          134.0
+        ]
+      ],
+      "group_id": 2,
+      "shape_type": "polygon",
+      "flags": {
+        "is_body_part": true
+      },
+      "visible": true,
+      "description": "ThreeJSGroundTruth",
+      "semantic_type": "body_part",
+      "part_label": "tail",
+      "display_label": "tail",
+      "parent_instance": "mouse_2",
+      "instance_label": "mouse_2",
+      "score": 1.0,
+      "area_ratio": 0.0192,
+      "segmentation_mode": "ground_truth_3d"
+    }
+  ],
+  "imagePath": "../images/rearing_oblique_f04.jpg",
+  "imageData": null,
+  "imageHeight": 240,
+  "imageWidth": 320
+}

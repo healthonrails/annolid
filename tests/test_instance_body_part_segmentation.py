@@ -30,8 +30,10 @@ from annolid.utils.body_part_shapes import (
     build_body_part_flags,
     build_body_part_metadata,
     build_body_part_shape_dict,
+    classify_keypoint_junction_role,
     infer_part_from_keypoint_name,
     is_body_part_shape_payload,
+    keypoint_axial_polarity,
 )
 
 
@@ -382,16 +384,38 @@ def test_dino_and_hybrid_feature_backends_with_mock_extractor():
 
 def test_keypoint_lexical_inference_granularities():
     assert infer_part_from_keypoint_name("left_ear", granularity="coarse") == "head"
+    assert infer_part_from_keypoint_name("lear", granularity="coarse") == "head"
     assert infer_part_from_keypoint_name("tail_base", granularity="coarse") == "tail"
+    assert infer_part_from_keypoint_name("tailbase", granularity="coarse") == "tail"
+    assert (
+        infer_part_from_keypoint_name("left_forepaw", granularity="coarse") == "limbs"
+    )
+    assert (
+        infer_part_from_keypoint_name("right_hindpaw", granularity="coarse") == "limbs"
+    )
     assert (
         infer_part_from_keypoint_name("left_fore_paw", granularity="fine")
         == "left_forelimb"
+    )
+    assert (
+        infer_part_from_keypoint_name("left_forepaw", granularity="fine")
+        == "left_forelimb"
+    )
+    assert (
+        infer_part_from_keypoint_name("right_hindpaw", granularity="fine")
+        == "right_hindlimb"
     )
     assert (
         infer_part_from_keypoint_name("right_wing_tip", granularity="fine")
         == "right_wing"
     )
     assert infer_part_from_keypoint_name("nose", granularity="per_keypoint") == "nose"
+    assert classify_keypoint_junction_role("tail_base") == "torso_tail"
+    assert classify_keypoint_junction_role("tailbase") == "torso_tail"
+    assert classify_keypoint_junction_role("neck") == "head_torso"
+    assert classify_keypoint_junction_role("tail_tip") == ""
+    assert keypoint_axial_polarity("lear") == 1
+    assert keypoint_axial_polarity("tailtip") == -1
 
 
 def test_hierarchy_aware_polygon_conflict_resolution():

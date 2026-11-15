@@ -275,3 +275,44 @@ def test_anatomy_and_behavior_poses_render(scene_page, query):
         page.screenshot(
             path=str(directory / (query.replace("&", "_").replace("=", "-") + ".png"))
         )
+
+
+def test_dataset_segmentation_masks_match_viewport_and_subjects(scene_page):
+    import numpy as np
+
+    page = scene_page(
+        "dataset=1&seed=20260713&camera_view=oblique-close&scenario=rearing_social"
+    )
+    page.evaluate("window.annolidPoseDataset.setFrame(4)")
+    before_gpu = page.evaluate("window.annolidTwoMice.getDiagnostics().renderer")
+    seg = page.evaluate("window.annolidPoseDataset.captureSegmentationMasks()")
+    after_gpu = page.evaluate("window.annolidTwoMice.getDiagnostics().renderer")
+    # Repeated captures must reuse the offscreen target without leaking WebGL geometries/textures.
+    seg_repeat = page.evaluate("window.annolidPoseDataset.captureSegmentationMasks()")
+    repeat_gpu = page.evaluate("window.annolidTwoMice.getDiagnostics().renderer")
+    assert repeat_gpu["geometries"] == after_gpu["geometries"]
+    assert repeat_gpu["textures"] == after_gpu["textures"]
+    assert seg == seg_repeat
+    _ = before_gpu
+
+    width = int(seg["width"])
+    height = int(seg["height"])
+    assert (width, height) == (1100, 800)
+
+    rle = np.asarray(seg["rle"], dtype=np.int32).reshape(-1, 4)
+    flat_rgb = np.repeat(rle[:, 1:4].astype(np.uint8), rle[:, 0], axis=0)
+    assert flat_rgb.shape == (width * height, 3)
+    id_img = flat_rgb.reshape((height, width, 3))
+    track_map = id_img[:, :, 0]
+    fine_map = id_img[:, :, 1]
+    coarse_map = id_img[:, :, 2]
+
+    assert set(np.unique(track_map).tolist()) == {0, 1, 2}
+    # Background pixels must never carry body-part IDs; foreground pixels must always carry valid part IDs.
+    assert not np.any((track_map == 0) & (coarse_map > 0))
+    assert not np.any((track_map == 0) & (fine_map > 0))
+    assert np.all(coarse_map[track_map > 0] > 0)
+    assert np.all(fine_map[track_map > 0] > 0)
+    # Oblique rearing scene exposes all 4 coarse parts (head, torso, limbs, tail) and fine limb IDs.
+    assert {1, 2, 3, 4}.issubset(set(np.unique(coarse_map).tolist()))
+    assert bool(set(np.unique(fine_map).tolist()) & {7, 8, 9, 10})

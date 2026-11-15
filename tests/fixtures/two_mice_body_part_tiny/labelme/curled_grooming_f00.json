@@ -1,0 +1,1922 @@
+{
+  "version": "5.4.1",
+  "flags": {},
+  "shapes": [
+    {
+      "label": "mouse_1",
+      "points": [
+        [
+          187.0,
+          0.0
+        ],
+        [
+          186.0,
+          0.0
+        ],
+        [
+          186.0,
+          2.0
+        ],
+        [
+          168.0,
+          37.0
+        ],
+        [
+          166.0,
+          39.0
+        ],
+        [
+          160.0,
+          51.0
+        ],
+        [
+          149.0,
+          68.0
+        ],
+        [
+          145.0,
+          71.0
+        ],
+        [
+          143.0,
+          70.0
+        ],
+        [
+          138.0,
+          72.0
+        ],
+        [
+          134.0,
+          72.0
+        ],
+        [
+          130.0,
+          74.0
+        ],
+        [
+          125.0,
+          74.0
+        ],
+        [
+          120.0,
+          77.0
+        ],
+        [
+          118.0,
+          77.0
+        ],
+        [
+          115.0,
+          80.0
+        ],
+        [
+          111.0,
+          81.0
+        ],
+        [
+          107.0,
+          84.0
+        ],
+        [
+          102.0,
+          94.0
+        ],
+        [
+          102.0,
+          98.0
+        ],
+        [
+          98.0,
+          108.0
+        ],
+        [
+          96.0,
+          119.0
+        ],
+        [
+          94.0,
+          122.0
+        ],
+        [
+          94.0,
+          125.0
+        ],
+        [
+          91.0,
+          134.0
+        ],
+        [
+          91.0,
+          142.0
+        ],
+        [
+          92.0,
+          143.0
+        ],
+        [
+          92.0,
+          146.0
+        ],
+        [
+          90.0,
+          147.0
+        ],
+        [
+          90.0,
+          150.0
+        ],
+        [
+          89.0,
+          151.0
+        ],
+        [
+          89.0,
+          160.0
+        ],
+        [
+          90.0,
+          161.0
+        ],
+        [
+          90.0,
+          164.0
+        ],
+        [
+          92.0,
+          167.0
+        ],
+        [
+          92.0,
+          177.0
+        ],
+        [
+          99.0,
+          173.0
+        ],
+        [
+          101.0,
+          173.0
+        ],
+        [
+          108.0,
+          177.0
+        ],
+        [
+          111.0,
+          177.0
+        ],
+        [
+          115.0,
+          180.0
+        ],
+        [
+          118.0,
+          180.0
+        ],
+        [
+          118.0,
+          179.0
+        ],
+        [
+          121.0,
+          177.0
+        ],
+        [
+          122.0,
+          178.0
+        ],
+        [
+          131.0,
+          178.0
+        ],
+        [
+          132.0,
+          179.0
+        ],
+        [
+          134.0,
+          177.0
+        ],
+        [
+          134.0,
+          176.0
+        ],
+        [
+          132.0,
+          175.0
+        ],
+        [
+          132.0,
+          173.0
+        ],
+        [
+          129.0,
+          168.0
+        ],
+        [
+          129.0,
+          164.0
+        ],
+        [
+          126.0,
+          160.0
+        ],
+        [
+          126.0,
+          156.0
+        ],
+        [
+          137.0,
+          145.0
+        ],
+        [
+          143.0,
+          137.0
+        ],
+        [
+          150.0,
+          125.0
+        ],
+        [
+          154.0,
+          121.0
+        ],
+        [
+          155.0,
+          117.0
+        ],
+        [
+          157.0,
+          116.0
+        ],
+        [
+          157.0,
+          114.0
+        ],
+        [
+          159.0,
+          111.0
+        ],
+        [
+          159.0,
+          103.0
+        ],
+        [
+          158.0,
+          102.0
+        ],
+        [
+          158.0,
+          98.0
+        ],
+        [
+          156.0,
+          93.0
+        ],
+        [
+          156.0,
+          89.0
+        ],
+        [
+          154.0,
+          83.0
+        ],
+        [
+          151.0,
+          78.0
+        ],
+        [
+          150.0,
+          71.0
+        ],
+        [
+          152.0,
+          69.0
+        ],
+        [
+          157.0,
+          58.0
+        ],
+        [
+          159.0,
+          56.0
+        ],
+        [
+          167.0,
+          40.0
+        ],
+        [
+          169.0,
+          38.0
+        ],
+        [
+          185.0,
+          6.0
+        ]
+      ],
+      "group_id": 1,
+      "shape_type": "polygon",
+      "flags": {},
+      "visible": true,
+      "description": "C57BL/6 (Black)"
+    },
+    {
+      "label": "nose",
+      "points": [
+        [
+          134.06,
+          178.42
+        ]
+      ],
+      "group_id": 1,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_1",
+      "display_label": "nose",
+      "visible": true
+    },
+    {
+      "label": "left_ear",
+      "points": [
+        [
+          116.22,
+          156.15
+        ]
+      ],
+      "group_id": 1,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_1",
+      "display_label": "left_ear",
+      "visible": true
+    },
+    {
+      "label": "right_ear",
+      "points": [
+        [
+          104.06,
+          173.61
+        ]
+      ],
+      "group_id": 1,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_1",
+      "display_label": "right_ear",
+      "visible": true
+    },
+    {
+      "label": "neck",
+      "points": [
+        [
+          100.94,
+          156.34
+        ]
+      ],
+      "group_id": 1,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_1",
+      "display_label": "neck",
+      "visible": true
+    },
+    {
+      "label": "spine_1",
+      "points": [
+        [
+          115.36,
+          127.41
+        ]
+      ],
+      "group_id": 1,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_1",
+      "display_label": "spine_1",
+      "visible": true
+    },
+    {
+      "label": "spine_2",
+      "points": [
+        [
+          128.75,
+          101.56
+        ]
+      ],
+      "group_id": 1,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_1",
+      "display_label": "spine_2",
+      "visible": true
+    },
+    {
+      "label": "tail_base",
+      "points": [
+        [
+          144.66,
+          74.8
+        ]
+      ],
+      "group_id": 1,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_1",
+      "display_label": "tail_base",
+      "visible": true
+    },
+    {
+      "label": "left_forepaw",
+      "points": [
+        [
+          114.3,
+          168.19
+        ]
+      ],
+      "group_id": 1,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": false
+      },
+      "kp_visibility": 1,
+      "instance_label": "mouse_1",
+      "display_label": "left_forepaw",
+      "visible": true
+    },
+    {
+      "label": "right_forepaw",
+      "points": [
+        [
+          99.42,
+          159.1
+        ]
+      ],
+      "group_id": 1,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": false
+      },
+      "kp_visibility": 1,
+      "instance_label": "mouse_1",
+      "display_label": "right_forepaw",
+      "visible": true
+    },
+    {
+      "label": "left_hindpaw",
+      "points": [
+        [
+          145.24,
+          118.48
+        ]
+      ],
+      "group_id": 1,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": false
+      },
+      "kp_visibility": 1,
+      "instance_label": "mouse_1",
+      "display_label": "left_hindpaw",
+      "visible": true
+    },
+    {
+      "label": "right_hindpaw",
+      "points": [
+        [
+          121.03,
+          106.34
+        ]
+      ],
+      "group_id": 1,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": false
+      },
+      "kp_visibility": 1,
+      "instance_label": "mouse_1",
+      "display_label": "right_hindpaw",
+      "visible": true
+    },
+    {
+      "label": "tail_mid",
+      "points": [
+        [
+          172.25,
+          31.21
+        ]
+      ],
+      "group_id": 1,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_1",
+      "display_label": "tail_mid",
+      "visible": true
+    },
+    {
+      "label": "head",
+      "points": [
+        [
+          95.0,
+          157.0
+        ],
+        [
+          96.0,
+          158.0
+        ],
+        [
+          94.0,
+          160.0
+        ],
+        [
+          95.0,
+          160.0
+        ],
+        [
+          96.0,
+          162.0
+        ],
+        [
+          95.0,
+          163.0
+        ],
+        [
+          94.0,
+          162.0
+        ],
+        [
+          96.0,
+          167.0
+        ],
+        [
+          99.0,
+          170.0
+        ],
+        [
+          94.0,
+          173.0
+        ],
+        [
+          92.0,
+          177.0
+        ],
+        [
+          98.0,
+          174.0
+        ],
+        [
+          97.0,
+          172.0
+        ],
+        [
+          98.0,
+          171.0
+        ],
+        [
+          108.0,
+          177.0
+        ],
+        [
+          113.0,
+          178.0
+        ],
+        [
+          115.0,
+          180.0
+        ],
+        [
+          118.0,
+          180.0
+        ],
+        [
+          118.0,
+          179.0
+        ],
+        [
+          121.0,
+          177.0
+        ],
+        [
+          122.0,
+          178.0
+        ],
+        [
+          131.0,
+          178.0
+        ],
+        [
+          132.0,
+          179.0
+        ],
+        [
+          134.0,
+          177.0
+        ],
+        [
+          134.0,
+          176.0
+        ],
+        [
+          132.0,
+          175.0
+        ],
+        [
+          132.0,
+          173.0
+        ],
+        [
+          129.0,
+          168.0
+        ],
+        [
+          129.0,
+          164.0
+        ],
+        [
+          126.0,
+          160.0
+        ],
+        [
+          126.0,
+          157.0
+        ],
+        [
+          117.0,
+          157.0
+        ],
+        [
+          116.0,
+          156.0
+        ],
+        [
+          113.0,
+          156.0
+        ],
+        [
+          111.0,
+          154.0
+        ],
+        [
+          111.0,
+          150.0
+        ],
+        [
+          111.0,
+          154.0
+        ],
+        [
+          110.0,
+          155.0
+        ],
+        [
+          100.0,
+          153.0
+        ],
+        [
+          97.0,
+          154.0
+        ]
+      ],
+      "group_id": 1,
+      "shape_type": "polygon",
+      "flags": {
+        "is_body_part": true
+      },
+      "visible": true,
+      "description": "ThreeJSGroundTruth",
+      "semantic_type": "body_part",
+      "part_label": "head",
+      "display_label": "head",
+      "parent_instance": "mouse_1",
+      "instance_label": "mouse_1",
+      "score": 1.0,
+      "area_ratio": 0.1465,
+      "segmentation_mode": "ground_truth_3d"
+    },
+    {
+      "label": "torso",
+      "points": [
+        [
+          97.0,
+          173.0
+        ],
+        [
+          98.0,
+          172.0
+        ],
+        [
+          100.0,
+          173.0
+        ],
+        [
+          99.0,
+          172.0
+        ]
+      ],
+      "group_id": 1,
+      "shape_type": "polygon",
+      "flags": {
+        "is_body_part": true
+      },
+      "visible": true,
+      "description": "ThreeJSGroundTruth",
+      "semantic_type": "body_part",
+      "part_label": "torso",
+      "display_label": "torso",
+      "parent_instance": "mouse_1",
+      "instance_label": "mouse_1",
+      "score": 1.0,
+      "area_ratio": 0.8177,
+      "segmentation_mode": "ground_truth_3d"
+    },
+    {
+      "label": "torso",
+      "points": [
+        [
+          146.0,
+          70.0
+        ],
+        [
+          145.0,
+          71.0
+        ],
+        [
+          143.0,
+          70.0
+        ],
+        [
+          138.0,
+          72.0
+        ],
+        [
+          134.0,
+          72.0
+        ],
+        [
+          130.0,
+          74.0
+        ],
+        [
+          125.0,
+          74.0
+        ],
+        [
+          120.0,
+          77.0
+        ],
+        [
+          118.0,
+          77.0
+        ],
+        [
+          115.0,
+          80.0
+        ],
+        [
+          111.0,
+          81.0
+        ],
+        [
+          107.0,
+          84.0
+        ],
+        [
+          102.0,
+          94.0
+        ],
+        [
+          102.0,
+          98.0
+        ],
+        [
+          98.0,
+          108.0
+        ],
+        [
+          96.0,
+          119.0
+        ],
+        [
+          94.0,
+          122.0
+        ],
+        [
+          94.0,
+          125.0
+        ],
+        [
+          91.0,
+          134.0
+        ],
+        [
+          91.0,
+          142.0
+        ],
+        [
+          92.0,
+          143.0
+        ],
+        [
+          92.0,
+          146.0
+        ],
+        [
+          90.0,
+          147.0
+        ],
+        [
+          90.0,
+          150.0
+        ],
+        [
+          89.0,
+          151.0
+        ],
+        [
+          89.0,
+          160.0
+        ],
+        [
+          90.0,
+          161.0
+        ],
+        [
+          90.0,
+          164.0
+        ],
+        [
+          92.0,
+          167.0
+        ],
+        [
+          92.0,
+          175.0
+        ],
+        [
+          94.0,
+          172.0
+        ],
+        [
+          98.0,
+          170.0
+        ],
+        [
+          95.0,
+          167.0
+        ],
+        [
+          94.0,
+          165.0
+        ],
+        [
+          95.0,
+          161.0
+        ],
+        [
+          93.0,
+          160.0
+        ],
+        [
+          95.0,
+          158.0
+        ],
+        [
+          94.0,
+          157.0
+        ],
+        [
+          97.0,
+          153.0
+        ],
+        [
+          102.0,
+          152.0
+        ],
+        [
+          103.0,
+          153.0
+        ],
+        [
+          110.0,
+          154.0
+        ],
+        [
+          110.0,
+          150.0
+        ],
+        [
+          111.0,
+          149.0
+        ],
+        [
+          113.0,
+          155.0
+        ],
+        [
+          116.0,
+          155.0
+        ],
+        [
+          117.0,
+          156.0
+        ],
+        [
+          126.0,
+          156.0
+        ],
+        [
+          137.0,
+          145.0
+        ],
+        [
+          149.0,
+          128.0
+        ],
+        [
+          150.0,
+          125.0
+        ],
+        [
+          154.0,
+          121.0
+        ],
+        [
+          155.0,
+          117.0
+        ],
+        [
+          157.0,
+          116.0
+        ],
+        [
+          157.0,
+          114.0
+        ],
+        [
+          159.0,
+          111.0
+        ],
+        [
+          159.0,
+          103.0
+        ],
+        [
+          158.0,
+          102.0
+        ],
+        [
+          158.0,
+          98.0
+        ],
+        [
+          156.0,
+          93.0
+        ],
+        [
+          156.0,
+          89.0
+        ],
+        [
+          150.0,
+          74.0
+        ]
+      ],
+      "group_id": 1,
+      "shape_type": "polygon",
+      "flags": {
+        "is_body_part": true
+      },
+      "visible": true,
+      "description": "ThreeJSGroundTruth",
+      "semantic_type": "body_part",
+      "part_label": "torso",
+      "display_label": "torso",
+      "parent_instance": "mouse_1",
+      "instance_label": "mouse_1",
+      "score": 1.0,
+      "area_ratio": 0.8177,
+      "segmentation_mode": "ground_truth_3d"
+    },
+    {
+      "label": "tail",
+      "points": [
+        [
+          187.0,
+          0.0
+        ],
+        [
+          186.0,
+          0.0
+        ],
+        [
+          186.0,
+          2.0
+        ],
+        [
+          168.0,
+          37.0
+        ],
+        [
+          166.0,
+          39.0
+        ],
+        [
+          164.0,
+          44.0
+        ],
+        [
+          162.0,
+          46.0
+        ],
+        [
+          155.0,
+          59.0
+        ],
+        [
+          147.0,
+          70.0
+        ],
+        [
+          150.0,
+          73.0
+        ],
+        [
+          150.0,
+          71.0
+        ],
+        [
+          152.0,
+          69.0
+        ],
+        [
+          157.0,
+          58.0
+        ],
+        [
+          159.0,
+          56.0
+        ],
+        [
+          167.0,
+          40.0
+        ],
+        [
+          169.0,
+          38.0
+        ],
+        [
+          185.0,
+          6.0
+        ]
+      ],
+      "group_id": 1,
+      "shape_type": "polygon",
+      "flags": {
+        "is_body_part": true
+      },
+      "visible": true,
+      "description": "ThreeJSGroundTruth",
+      "semantic_type": "body_part",
+      "part_label": "tail",
+      "display_label": "tail",
+      "parent_instance": "mouse_1",
+      "instance_label": "mouse_1",
+      "score": 1.0,
+      "area_ratio": 0.0358,
+      "segmentation_mode": "ground_truth_3d"
+    },
+    {
+      "label": "mouse_2",
+      "points": [
+        [
+          319.0,
+          6.0
+        ],
+        [
+          295.0,
+          24.0
+        ],
+        [
+          261.0,
+          53.0
+        ],
+        [
+          256.0,
+          56.0
+        ],
+        [
+          252.0,
+          54.0
+        ],
+        [
+          249.0,
+          54.0
+        ],
+        [
+          244.0,
+          52.0
+        ],
+        [
+          240.0,
+          52.0
+        ],
+        [
+          239.0,
+          51.0
+        ],
+        [
+          237.0,
+          52.0
+        ],
+        [
+          234.0,
+          51.0
+        ],
+        [
+          226.0,
+          51.0
+        ],
+        [
+          225.0,
+          52.0
+        ],
+        [
+          221.0,
+          52.0
+        ],
+        [
+          218.0,
+          54.0
+        ],
+        [
+          216.0,
+          54.0
+        ],
+        [
+          195.0,
+          76.0
+        ],
+        [
+          195.0,
+          77.0
+        ],
+        [
+          188.0,
+          83.0
+        ],
+        [
+          181.0,
+          93.0
+        ],
+        [
+          179.0,
+          98.0
+        ],
+        [
+          176.0,
+          100.0
+        ],
+        [
+          174.0,
+          99.0
+        ],
+        [
+          173.0,
+          100.0
+        ],
+        [
+          172.0,
+          107.0
+        ],
+        [
+          164.0,
+          111.0
+        ],
+        [
+          159.0,
+          116.0
+        ],
+        [
+          156.0,
+          117.0
+        ],
+        [
+          156.0,
+          122.0
+        ],
+        [
+          153.0,
+          126.0
+        ],
+        [
+          148.0,
+          130.0
+        ],
+        [
+          149.0,
+          132.0
+        ],
+        [
+          158.0,
+          133.0
+        ],
+        [
+          163.0,
+          137.0
+        ],
+        [
+          166.0,
+          136.0
+        ],
+        [
+          174.0,
+          136.0
+        ],
+        [
+          175.0,
+          137.0
+        ],
+        [
+          180.0,
+          134.0
+        ],
+        [
+          188.0,
+          140.0
+        ],
+        [
+          186.0,
+          136.0
+        ],
+        [
+          186.0,
+          133.0
+        ],
+        [
+          188.0,
+          131.0
+        ],
+        [
+          193.0,
+          129.0
+        ],
+        [
+          197.0,
+          126.0
+        ],
+        [
+          202.0,
+          126.0
+        ],
+        [
+          203.0,
+          125.0
+        ],
+        [
+          206.0,
+          125.0
+        ],
+        [
+          212.0,
+          123.0
+        ],
+        [
+          250.0,
+          102.0
+        ],
+        [
+          255.0,
+          97.0
+        ],
+        [
+          259.0,
+          87.0
+        ],
+        [
+          259.0,
+          82.0
+        ],
+        [
+          261.0,
+          76.0
+        ],
+        [
+          260.0,
+          73.0
+        ],
+        [
+          260.0,
+          61.0
+        ],
+        [
+          259.0,
+          58.0
+        ],
+        [
+          286.0,
+          33.0
+        ],
+        [
+          318.0,
+          8.0
+        ]
+      ],
+      "group_id": 2,
+      "shape_type": "polygon",
+      "flags": {},
+      "visible": true,
+      "description": "BALB/c (White)"
+    },
+    {
+      "label": "nose",
+      "points": [
+        [
+          148.77,
+          131.89
+        ]
+      ],
+      "group_id": 2,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_2",
+      "display_label": "nose",
+      "visible": true
+    },
+    {
+      "label": "left_ear",
+      "points": [
+        [
+          178.12,
+          132.9
+        ]
+      ],
+      "group_id": 2,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_2",
+      "display_label": "left_ear",
+      "visible": true
+    },
+    {
+      "label": "right_ear",
+      "points": [
+        [
+          170.51,
+          112.21
+        ]
+      ],
+      "group_id": 2,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_2",
+      "display_label": "right_ear",
+      "visible": true
+    },
+    {
+      "label": "neck",
+      "points": [
+        [
+          185.95,
+          117.52
+        ]
+      ],
+      "group_id": 2,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_2",
+      "display_label": "neck",
+      "visible": true
+    },
+    {
+      "label": "spine_1",
+      "points": [
+        [
+          212.98,
+          95.4
+        ]
+      ],
+      "group_id": 2,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_2",
+      "display_label": "spine_1",
+      "visible": true
+    },
+    {
+      "label": "spine_2",
+      "points": [
+        [
+          235.35,
+          77.53
+        ]
+      ],
+      "group_id": 2,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_2",
+      "display_label": "spine_2",
+      "visible": true
+    },
+    {
+      "label": "tail_base",
+      "points": [
+        [
+          256.92,
+          59.91
+        ]
+      ],
+      "group_id": 2,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_2",
+      "display_label": "tail_base",
+      "visible": true
+    },
+    {
+      "label": "left_forepaw",
+      "points": [
+        [
+          182.16,
+          131.77
+        ]
+      ],
+      "group_id": 2,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_2",
+      "display_label": "left_forepaw",
+      "visible": true
+    },
+    {
+      "label": "right_forepaw",
+      "points": [
+        [
+          169.05,
+          115.05
+        ]
+      ],
+      "group_id": 2,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": false
+      },
+      "kp_visibility": 1,
+      "instance_label": "mouse_2",
+      "display_label": "right_forepaw",
+      "visible": true
+    },
+    {
+      "label": "left_hindpaw",
+      "points": [
+        [
+          221.9,
+          104.25
+        ]
+      ],
+      "group_id": 2,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": false
+      },
+      "kp_visibility": 1,
+      "instance_label": "mouse_2",
+      "display_label": "left_hindpaw",
+      "visible": true
+    },
+    {
+      "label": "right_hindpaw",
+      "points": [
+        [
+          204.53,
+          82.75
+        ]
+      ],
+      "group_id": 2,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": false
+      },
+      "kp_visibility": 1,
+      "instance_label": "mouse_2",
+      "display_label": "right_hindpaw",
+      "visible": true
+    },
+    {
+      "label": "tail_mid",
+      "points": [
+        [
+          292.31,
+          28.23
+        ]
+      ],
+      "group_id": 2,
+      "shape_type": "point",
+      "flags": {
+        "kp_visible": true
+      },
+      "kp_visibility": 2,
+      "instance_label": "mouse_2",
+      "display_label": "tail_mid",
+      "visible": true
+    },
+    {
+      "label": "head",
+      "points": [
+        [
+          174.0,
+          99.0
+        ],
+        [
+          173.0,
+          100.0
+        ],
+        [
+          172.0,
+          107.0
+        ],
+        [
+          164.0,
+          111.0
+        ],
+        [
+          159.0,
+          116.0
+        ],
+        [
+          156.0,
+          117.0
+        ],
+        [
+          156.0,
+          122.0
+        ],
+        [
+          153.0,
+          126.0
+        ],
+        [
+          148.0,
+          130.0
+        ],
+        [
+          149.0,
+          132.0
+        ],
+        [
+          158.0,
+          133.0
+        ],
+        [
+          163.0,
+          137.0
+        ],
+        [
+          166.0,
+          136.0
+        ],
+        [
+          174.0,
+          136.0
+        ],
+        [
+          175.0,
+          137.0
+        ],
+        [
+          181.0,
+          134.0
+        ],
+        [
+          187.0,
+          140.0
+        ],
+        [
+          188.0,
+          140.0
+        ],
+        [
+          186.0,
+          134.0
+        ],
+        [
+          185.0,
+          134.0
+        ],
+        [
+          184.0,
+          132.0
+        ],
+        [
+          191.0,
+          124.0
+        ],
+        [
+          189.0,
+          123.0
+        ],
+        [
+          190.0,
+          122.0
+        ],
+        [
+          189.0,
+          117.0
+        ],
+        [
+          183.0,
+          110.0
+        ],
+        [
+          176.0,
+          107.0
+        ],
+        [
+          176.0,
+          100.0
+        ]
+      ],
+      "group_id": 2,
+      "shape_type": "polygon",
+      "flags": {
+        "is_body_part": true
+      },
+      "visible": true,
+      "description": "ThreeJSGroundTruth",
+      "semantic_type": "body_part",
+      "part_label": "head",
+      "display_label": "head",
+      "parent_instance": "mouse_2",
+      "instance_label": "mouse_2",
+      "score": 1.0,
+      "area_ratio": 0.1734,
+      "segmentation_mode": "ground_truth_3d"
+    },
+    {
+      "label": "torso",
+      "points": [
+        [
+          257.0,
+          55.0
+        ],
+        [
+          256.0,
+          56.0
+        ],
+        [
+          252.0,
+          54.0
+        ],
+        [
+          249.0,
+          54.0
+        ],
+        [
+          244.0,
+          52.0
+        ],
+        [
+          240.0,
+          52.0
+        ],
+        [
+          239.0,
+          51.0
+        ],
+        [
+          237.0,
+          52.0
+        ],
+        [
+          234.0,
+          51.0
+        ],
+        [
+          226.0,
+          51.0
+        ],
+        [
+          225.0,
+          52.0
+        ],
+        [
+          221.0,
+          52.0
+        ],
+        [
+          218.0,
+          54.0
+        ],
+        [
+          216.0,
+          54.0
+        ],
+        [
+          195.0,
+          76.0
+        ],
+        [
+          195.0,
+          77.0
+        ],
+        [
+          188.0,
+          83.0
+        ],
+        [
+          181.0,
+          93.0
+        ],
+        [
+          179.0,
+          98.0
+        ],
+        [
+          177.0,
+          99.0
+        ],
+        [
+          177.0,
+          107.0
+        ],
+        [
+          183.0,
+          109.0
+        ],
+        [
+          189.0,
+          115.0
+        ],
+        [
+          191.0,
+          120.0
+        ],
+        [
+          190.0,
+          123.0
+        ],
+        [
+          192.0,
+          124.0
+        ],
+        [
+          185.0,
+          133.0
+        ],
+        [
+          197.0,
+          126.0
+        ],
+        [
+          206.0,
+          125.0
+        ],
+        [
+          220.0,
+          119.0
+        ],
+        [
+          227.0,
+          114.0
+        ],
+        [
+          247.0,
+          104.0
+        ],
+        [
+          255.0,
+          97.0
+        ],
+        [
+          259.0,
+          87.0
+        ],
+        [
+          259.0,
+          82.0
+        ],
+        [
+          261.0,
+          76.0
+        ],
+        [
+          260.0,
+          73.0
+        ],
+        [
+          260.0,
+          61.0
+        ]
+      ],
+      "group_id": 2,
+      "shape_type": "polygon",
+      "flags": {
+        "is_body_part": true
+      },
+      "visible": true,
+      "description": "ThreeJSGroundTruth",
+      "semantic_type": "body_part",
+      "part_label": "torso",
+      "display_label": "torso",
+      "parent_instance": "mouse_2",
+      "instance_label": "mouse_2",
+      "score": 1.0,
+      "area_ratio": 0.7938,
+      "segmentation_mode": "ground_truth_3d"
+    },
+    {
+      "label": "tail",
+      "points": [
+        [
+          319.0,
+          6.0
+        ],
+        [
+          295.0,
+          24.0
+        ],
+        [
+          258.0,
+          55.0
+        ],
+        [
+          259.0,
+          58.0
+        ],
+        [
+          286.0,
+          33.0
+        ],
+        [
+          318.0,
+          8.0
+        ]
+      ],
+      "group_id": 2,
+      "shape_type": "polygon",
+      "flags": {
+        "is_body_part": true
+      },
+      "visible": true,
+      "description": "ThreeJSGroundTruth",
+      "semantic_type": "body_part",
+      "part_label": "tail",
+      "display_label": "tail",
+      "parent_instance": "mouse_2",
+      "instance_label": "mouse_2",
+      "score": 1.0,
+      "area_ratio": 0.0326,
+      "segmentation_mode": "ground_truth_3d"
+    }
+  ],
+  "imagePath": "../images/curled_grooming_f00.jpg",
+  "imageData": null,
+  "imageHeight": 240,
+  "imageWidth": 320
+}
