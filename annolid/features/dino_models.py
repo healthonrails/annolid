@@ -91,6 +91,51 @@ DINO_FEATURE_MODEL_CATALOG: tuple[DinoModelInfo, ...] = (
         aliases=("radio", "radio_v4", "radio_so400m"),
         note="Compatible feature backbone; requires open-clip-torch.",
     ),
+    DinoModelInfo(
+        "Google EmbeddingGemma 2 (open, Matryoshka)",
+        "google/embeddinggemma-2",
+        "embeddinggemma",
+        aliases=("embeddinggemma-2", "embeddinggemma2", "embedding_gemma_2"),
+        note=(
+            "Lightweight 170M vision tower (768d with 512/256/128 Matryoshka dims); "
+            "selective tower loading in bfloat16/float32."
+        ),
+    ),
+    DinoModelInfo(
+        "Google SigLIP 2 Base/16 (open)",
+        "google/siglip2-base-patch16-224",
+        "siglip2",
+        aliases=("siglip2", "siglip2_base", "siglip2-b16"),
+        note="Open ViT-B/16 dense vision encoder with strong local landmark features.",
+    ),
+    DinoModelInfo(
+        "Google SigLIP 2 So400m/16 (open)",
+        "google/siglip2-so400m-patch16-384",
+        "siglip2",
+        aliases=("siglip2_so400m", "siglip2-so400m"),
+        note="Higher-capacity SigLIP 2 shape-optimized vision encoder.",
+    ),
+    DinoModelInfo(
+        "Google MobileNetV4 Small (on-device, fast)",
+        "timm/mobilenetv4_conv_small.e2400_r224_in1k",
+        "mobilenet",
+        aliases=("mobilenetv4", "mobilenetv4_small", "mnv4_small"),
+        note="Ultra-fast on-device stride-8 CNN pyramid for CPU/MPS keypoint tracking.",
+    ),
+    DinoModelInfo(
+        "Google MobileNetV4 Hybrid Medium (on-device)",
+        "timm/mobilenetv4_hybrid_medium.e500_r224_in1k",
+        "mobilenet",
+        aliases=("mobilenetv4_hybrid", "mnv4_hybrid"),
+        note="On-device MobileNetV4 hybrid pyramid with mobile attention blocks.",
+    ),
+    DinoModelInfo(
+        "MobileNetV3 Small (torchvision, ultra-light)",
+        "torchvision/mobilenet_v3_small",
+        "mobilenet",
+        aliases=("mobilenetv3_small", "mnv3_small"),
+        note="Lightweight stride-8 CNN pyramid via torchvision.",
+    ),
 )
 
 DINOV3_MODEL_CATALOG: tuple[DinoModelInfo, ...] = tuple(
@@ -166,6 +211,21 @@ def set_dino_model_on_runtime(runtime: object, model_name: object) -> str:
     return selected_model
 
 
+def is_google_vision_model(value: object) -> bool:
+    """Return True when the model id/alias targets Google or on-device vision backbones."""
+    resolved = resolve_dino_model_id(value, default="").strip().lower()
+    if not resolved:
+        return False
+    return (
+        "embeddinggemma" in resolved
+        or "embedding_gemma" in resolved
+        or "siglip" in resolved
+        or "mobilenet" in resolved
+        or resolved.startswith("timm/")
+        or resolved.startswith("torchvision/")
+    )
+
+
 def get_dino_cache_dir(cache_dir: Optional[str | Path] = None) -> Optional[Path]:
     """Return the explicit DINO cache dir, honoring DINOV3_LOCATION."""
     raw = cache_dir if cache_dir is not None else os.getenv("DINOV3_LOCATION")
@@ -183,6 +243,45 @@ def download_dino_model(
 ) -> Path:
     """Download or verify a DINO-family model snapshot in the Hugging Face cache."""
     model_id = resolve_dino_model_id(model_name)
+    resolved_cache_dir = get_dino_cache_dir(cache_dir)
+    if model_id.lower().startswith("torchvision/"):
+        import torch
+
+        hub_dir = (
+            resolved_cache_dir
+            if resolved_cache_dir is not None
+            else Path(torch.hub.get_dir())
+        )
+        checkpoints_dir = hub_dir / "checkpoints"
+        if local_files_only:
+            if checkpoints_dir.exists() and any(checkpoints_dir.glob("mobilenet_v3*")):
+                return checkpoints_dir
+            raise RuntimeError(
+                f"Torchvision model '{model_id}' is not cached in {checkpoints_dir}."
+            )
+        checkpoints_dir.mkdir(parents=True, exist_ok=True)
+        prev_hub_dir = torch.hub.get_dir()
+        try:
+            torch.hub.set_dir(str(hub_dir))
+            from torchvision import models as tv_models
+
+            arch = model_id.split("/", 1)[1].strip().lower()
+            if arch == "mobilenet_v3_large":
+                tv_models.mobilenet_v3_large(
+                    weights=tv_models.MobileNet_V3_Large_Weights.DEFAULT
+                )
+            else:
+                tv_models.mobilenet_v3_small(
+                    weights=tv_models.MobileNet_V3_Small_Weights.DEFAULT
+                )
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to download torchvision model '{model_id}': {exc}"
+            ) from exc
+        finally:
+            torch.hub.set_dir(prev_hub_dir)
+        return checkpoints_dir
+
     try:
         from huggingface_hub import snapshot_download
     except ImportError as exc:  # pragma: no cover - dependency guard
@@ -192,7 +291,6 @@ def download_dino_model(
         ) from exc
 
     try:
-        resolved_cache_dir = get_dino_cache_dir(cache_dir)
         path = snapshot_download(
             repo_id=model_id,
             cache_dir=str(resolved_cache_dir) if resolved_cache_dir else None,

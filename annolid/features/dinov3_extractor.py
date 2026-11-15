@@ -12,6 +12,7 @@ from PIL import Image, ImageOps
 
 from annolid.features.dino_models import (
     DEFAULT_DINOV3_MODEL_ID,
+    is_google_vision_model,
     resolve_dinov3_model_id,
 )
 
@@ -72,6 +73,7 @@ class Dinov3Config:
     use_amp: bool = True
     return_layer: Literal["last", "all"] = "last"
     layers: Optional[Iterable[int]] = None
+    matryoshka_dim: Optional[int] = None
 
 
 class Dinov3FeatureExtractor:
@@ -84,13 +86,18 @@ class Dinov3FeatureExtractor:
     """
 
     def __new__(cls, config: Optional[Dinov3Config] = None) -> Dinov3FeatureExtractor:
-        # Factory dispatch for RADIO models
+        # Factory dispatch for RADIO and Google / on-device vision backbones
         if cls is Dinov3FeatureExtractor:
             cfg = config or Dinov3Config()
-            if "radio" in cfg.model_name.lower():
+            resolved = resolve_dinov3_model_id(cfg.model_name)
+            if "radio" in resolved.lower():
                 from .radio_extractor import RadioFeatureExtractor
 
                 return super().__new__(RadioFeatureExtractor)
+            if is_google_vision_model(resolved):
+                from .google_vision_extractor import GoogleVisionFeatureExtractor
+
+                return super().__new__(GoogleVisionFeatureExtractor)
         return super().__new__(cls)
 
     def __init__(self, config: Optional[Dinov3Config] = None) -> None:
@@ -403,6 +410,15 @@ class Dinov3FeatureExtractor:
             )
         grid = tokens.transpose(1, 2).reshape(1, dim, grid_h, grid_w).to("cpu")
         grid = grid.squeeze(0)
+        if self.cfg.matryoshka_dim is not None:
+            target_dim = int(self.cfg.matryoshka_dim)
+            if target_dim <= 0:
+                raise ValueError(
+                    f"matryoshka_dim must be positive, got {self.cfg.matryoshka_dim!r}"
+                )
+            if target_dim < dim:
+                grid = grid[:target_dim]
+                dim = target_dim
         if normalize:
             flat = grid.view(dim, -1)
             flat = F.normalize(flat, dim=0)

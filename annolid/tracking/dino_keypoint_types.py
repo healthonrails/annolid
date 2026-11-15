@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -58,6 +58,7 @@ class KeypointTrack:
     symmetry_sign: float = 0.0
     support_probes: List[SupportProbe] = field(default_factory=list)
     body_coords: Optional[Tuple[float, float, float]] = None
+    pixel_template: Optional[Any] = None
 
 
 @dataclass

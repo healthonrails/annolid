@@ -79,6 +79,18 @@ TRACKER_PRESETS: Dict[str, Dict[str, object]] = {
         "pixel_refine_window": 15,
         "pixel_refine_max_error": 18.0,
         "pixel_refine_max_jump_px": 24.0,
+        "region_descriptor_radius": 1,
+        "region_descriptor_sigma": 0.85,
+        "region_descriptor_blend": 0.5,
+        "region_descriptor_mask_aware": True,
+        "region_subpatch_sampling": True,
+        "context_gaussian_pooling": True,
+        "pixel_region_refine_enabled": True,
+        "pixel_region_window": 13,
+        "pixel_region_sigma": 3.25,
+        "pixel_region_search_radius_px": 4,
+        "pixel_region_weight": 0.35,
+        "pixel_region_min_zncc": 0.45,
     },
     "fly_70fps_keypoints": {
         "use_cutie_tracking": True,
@@ -139,6 +151,18 @@ TRACKER_PRESETS: Dict[str, Dict[str, object]] = {
         "pixel_refine_window": 11,
         "pixel_refine_max_error": 12.0,
         "pixel_refine_max_jump_px": 18.0,
+        "region_descriptor_radius": 1,
+        "region_descriptor_sigma": 0.7,
+        "region_descriptor_blend": 0.4,
+        "region_descriptor_mask_aware": True,
+        "region_subpatch_sampling": True,
+        "context_gaussian_pooling": True,
+        "pixel_region_refine_enabled": True,
+        "pixel_region_window": 9,
+        "pixel_region_sigma": 2.4,
+        "pixel_region_search_radius_px": 3,
+        "pixel_region_weight": 0.4,
+        "pixel_region_min_zncc": 0.45,
     },
 }
 
@@ -214,6 +238,20 @@ class CutieDinoTrackerConfig:
     pixel_refine_window: int = 15
     pixel_refine_max_error: float = 18.0
     pixel_refine_max_jump_px: float = 24.0
+    # Gaussian-weighted local-region keypoint descriptors & pixel template anchor
+    region_descriptor_radius: int = 0
+    region_descriptor_sigma: float = 0.85
+    region_descriptor_blend: float = 0.5
+    region_descriptor_mask_aware: bool = True
+    region_subpatch_sampling: bool = False
+    context_gaussian_pooling: bool = False
+    pixel_region_refine_enabled: bool = False
+    pixel_region_window: int = 11
+    pixel_region_sigma: float = 3.0
+    pixel_region_search_radius_px: int = 4
+    pixel_region_weight: float = 0.35
+    pixel_region_min_zncc: float = 0.45
+    embedding_matryoshka_dim: Optional[int] = None
     kpseg_apply_mode: str = "never"  # never|auto|always
     kpseg_min_reliable_frames: int = 5
     kpseg_reliable_ratio: float = 0.6
@@ -348,6 +386,31 @@ class CutieDinoTrackerConfig:
             self.pixel_refine_window += 1
         self.pixel_refine_max_error = max(0.0, float(self.pixel_refine_max_error))
         self.pixel_refine_max_jump_px = max(0.0, float(self.pixel_refine_max_jump_px))
+        self.region_descriptor_radius = max(0, int(self.region_descriptor_radius))
+        self.region_descriptor_sigma = max(1e-4, float(self.region_descriptor_sigma))
+        self.region_descriptor_blend = float(
+            min(1.0, max(0.0, float(self.region_descriptor_blend)))
+        )
+        self.region_descriptor_mask_aware = bool(self.region_descriptor_mask_aware)
+        self.region_subpatch_sampling = bool(self.region_subpatch_sampling)
+        self.context_gaussian_pooling = bool(self.context_gaussian_pooling)
+        self.pixel_region_refine_enabled = bool(self.pixel_region_refine_enabled)
+        self.pixel_region_window = max(5, int(self.pixel_region_window))
+        if self.pixel_region_window % 2 == 0:
+            self.pixel_region_window += 1
+        self.pixel_region_sigma = max(0.5, float(self.pixel_region_sigma))
+        self.pixel_region_search_radius_px = max(
+            1, int(self.pixel_region_search_radius_px)
+        )
+        self.pixel_region_weight = float(
+            min(1.0, max(0.0, float(self.pixel_region_weight)))
+        )
+        self.pixel_region_min_zncc = float(
+            min(0.99, max(0.0, float(self.pixel_region_min_zncc)))
+        )
+        if self.embedding_matryoshka_dim is not None:
+            mdim = int(self.embedding_matryoshka_dim)
+            self.embedding_matryoshka_dim = mdim if mdim > 0 else None
         mode = str(self.kpseg_apply_mode or "never").strip().lower()
         if mode not in ("never", "auto", "always"):
             mode = "never"

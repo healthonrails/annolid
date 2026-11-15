@@ -15,6 +15,10 @@ _EXPORTS = {
         "Dinov3FeatureExtractor",
     ),
     "Dinov3Config": ("annolid.features.dinov3_extractor", "Dinov3Config"),
+    "GoogleVisionFeatureExtractor": (
+        "annolid.features.google_vision_extractor",
+        "GoogleVisionFeatureExtractor",
+    ),
     "Dinov3PCAMapper": ("annolid.features.dinov3_pca", "Dinov3PCAMapper"),
     "PCAMapResult": ("annolid.features.dinov3_pca", "PCAMapResult"),
     "features_to_pca_rgb": ("annolid.features.dinov3_pca", "features_to_pca_rgb"),

@@ -80,41 +80,53 @@ same anatomical point every time.
 
 ## How The Backend Works
 
-The implementation separates the DINO-family feature backbone from the tracker
-logic:
+The implementation separates the feature backbone from the tracker logic:
 
-- `annolid/features/dino_models.py` defines the supported DINOv3, DINOv2, and
-  RADIO-compatible feature backbones.
-- `annolid/features/dinov3_extractor.py` loads the selected Hugging Face model,
-  selects CPU, CUDA, or MPS, snaps image sizes to ViT patch multiples, removes
-  special tokens, and returns normalized patch grids.
-- `annolid/tracking/dino_keypoint_types.py`,
+- `annolid/features/dino_models.py` defines the supported DINOv3, DINOv2,
+  Google `EmbeddingGemma 2`, Google `SigLIP 2`, on-device `MobileNetV4` /
+  `MobileNetV3`, and RADIO-compatible feature backbones.
+- `annolid/features/dinov3_extractor.py` and
+  `annolid/features/google_vision_extractor.py` load the selected Hugging Face,
+  `timm`, or `torchvision` backbone, select CPU, CUDA, or MPS, snap image sizes
+  to patch/stride multiples, handle modality-selective loading and Matryoshka
+  channel truncation (`embedding_matryoshka_dim`), and return normalized dense
+  patch grids (plus optional Gaussian-vignetted crop embeddings via
+  `embed_keypoint_regions`).
+- `annolid/tracking/gaussian_region.py`, `annolid/tracking/dino_keypoint_types.py`,
   `annolid/tracking/overlap_assignment.py`, and
-  `annolid/tracking/video_seed_utils.py` define the tracker state structures,
+  `annolid/tracking/video_seed_utils.py` define mask-aware Gaussian region
+  descriptors, sub-patch continuous Gaussian sampling, drift-free Gaussian
+  pixel-region ZNCC template refinement, tracker state structures,
   overlapping-polygon point disambiguation, and shared seed/resume frame
   orchestration across keypoint processors.
 - `annolid/tracking/dino_keypoint_tracker.py` turns those patch grids into
   stateful point tracks.
 
 Each manual point initializes a track with its current descriptor, reference
-descriptor, manual-anchor codebook, appearance codebook, support probes,
-velocity, quality state, and optional structural or symmetry state. On each new
-frame, Annolid:
+descriptor, manual-anchor codebook, optional Gaussian-weighted pixel/gradient
+template, appearance codebook, support probes, velocity, quality state, and
+optional structural or symmetry state. On each new frame, Annolid:
 
-1. extracts the current DINO feature grid;
-2. optionally debiases coordinate-correlated DINO responses;
-3. estimates the current point from valid per-point pyramidal Lucas-Kanade
-   flow, otherwise uses dense Farneback flow at the last emitted point, and
-   falls back to previous velocity when neither flow observation is valid;
+1. extracts the current dense feature grid;
+2. optionally debiases coordinate-correlated feature responses and builds
+   mask-aware Gaussian regional descriptors around each instance so contour
+   landmarks (nose, ears, paws, tail) integrate foreground neighborhood context
+   without background bleed;
+3. estimates the current point from batched per-point pyramidal Lucas-Kanade
+   flow, lazily computing dense Farneback flow only if per-point LK is
+   unavailable, and falling back to previous velocity when neither flow
+   observation is valid;
 4. searches a bounded candidate region around the motion prior;
-5. scores candidates with DINO similarity, appearance/context/support evidence,
-   mask or structure priors, backward consistency, and a motion penalty;
+5. scores candidates with vectorized feature similarity, appearance/context/support
+   evidence, mask or structure priors, backward consistency, and a motion
+   penalty;
 6. resolves one-to-one assignments so two tracks do not claim the same best
    candidate;
-7. optionally blends the DINO-selected point with a valid Lucas-Kanade point
-   estimate for sub-patch refinement;
-8. updates descriptors, velocity, quality, support probes, and output
-   annotation metadata.
+7. refines sub-patch coordinates with connected similarity peaks, Lucas-Kanade
+   optical flow, and optional drift-free Gaussian-weighted pixel/gradient ZNCC
+   template matching anchored to the manual seed;
+8. updates descriptors (optionally sampled continuously at sub-patch coordinates),
+   velocity, quality, support probes, and output annotation metadata.
 
 This split matters in practice: DINO descriptors provide robust coarse
 appearance correspondence, while optical flow handles small movements inside a
@@ -168,6 +180,9 @@ Common choices:
 | `facebook/dinov3-vits16plus-pretrain-lvd1689m` | Slightly stronger small DINOv3 descriptors. |
 | `facebook/dinov3-vitb16-pretrain-lvd1426` | Medium offline runs when ViT-S is not distinctive enough. |
 | `facebook/dinov3-vitl16-pretrain-lvd1689m` | Higher-memory offline runs. |
+| `google/embeddinggemma-2` | Open lightweight 170M vision tower (`768d` with `512`/`256`/`128` Matryoshka dims; selective tower loading in `bfloat16`/`float32`; requires `transformers>=5.19`). |
+| `google/siglip2-base-patch16-224` or `google/siglip2-so400m-patch16-384` | Open dense ViT/16 vision encoders with dynamic position interpolation. |
+| `timm/mobilenetv4_conv_small.e2400_r224_in1k` or `torchvision/mobilenet_v3_small` | Fast on-device stride-8 multi-scale CNN pyramids (2x finer spatial grid than 16px ViTs) for low-latency CPU/MPS runs. |
 | `facebook/dinov2-base` or `facebook/dinov2-large` | Open fallback when DINOv3 access is unavailable. |
 | `nvidia/C-RADIOv4-SO400M` | Compatible feature backbone for specialized workflows. |
 
@@ -215,7 +230,21 @@ The tracker exposes presets through **Tools -> Advanced Parameters -> Tracker**:
 
 Key settings:
 
-- **DINO feature model**: selects the frozen feature backbone.
+- **DINO feature model** and **Embedding Matryoshka dim**: select the frozen
+  feature backbone and optional prefix truncation (`768`, `512`, `256`, `128`)
+  for Matryoshka-trained models such as `google/embeddinggemma-2`.
+- **Gaussian region radius / sigma** and **Sub-patch continuous Gaussian sampling**:
+  aggregate a mask-aware Gaussian patch neighborhood (`region_descriptor_radius`,
+  `region_descriptor_sigma`, `region_descriptor_blend`,
+  `region_descriptor_mask_aware`) and sample descriptors at continuous
+  sub-patch coordinates (`region_subpatch_sampling`) instead of snapping to
+  integer patch cells.
+- **Drift-free Gaussian pixel template refinement**: anchors a zero-mean,
+  unit-weighted-norm Gaussian intensity + gradient ZNCC template around manual
+  seed points (`pixel_region_refine_enabled`, `pixel_region_window`,
+  `pixel_region_sigma`, `pixel_region_search_radius_px`, `pixel_region_weight`)
+  so small frame-to-frame optical-flow errors do not accumulate over long
+  segments.
 - **Clamp keypoints to instance mask** and **Mask snap radius**: keep points
   inside the selected instance when masks are available.
 - **Search tighten**, **Velocity gain**, **Flow gain**, and **Min/Max radius**:

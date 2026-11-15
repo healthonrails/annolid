@@ -455,7 +455,49 @@ class AdvancedParametersDialog(QDialog):
             editable=True,
         )
         self.dino_model_combo.setToolTip(
-            "Choose a DINO feature backbone or paste a Hugging Face model id."
+            "Choose a DINO, EmbeddingGemma 2, SigLIP 2, or on-device MobileNet backbone, or paste a Hugging Face model id."
+        )
+
+        self.embedding_matryoshka_dim_combo = QComboBox()
+        self.embedding_matryoshka_dim_combo.addItem("Full (model default)", None)
+        for mdim in (768, 512, 256, 128):
+            self.embedding_matryoshka_dim_combo.addItem(f"{mdim} dims", mdim)
+        configured_mdim = getattr(
+            self._tracker_config, "embedding_matryoshka_dim", None
+        )
+        if configured_mdim is not None:
+            matched_idx = self.embedding_matryoshka_dim_combo.findData(
+                int(configured_mdim)
+            )
+            if matched_idx >= 0:
+                self.embedding_matryoshka_dim_combo.setCurrentIndex(matched_idx)
+
+        self.region_descriptor_radius_spinbox = QSpinBox()
+        self.region_descriptor_radius_spinbox.setRange(0, 4)
+        self.region_descriptor_radius_spinbox.setSingleStep(1)
+        self.region_descriptor_radius_spinbox.setValue(
+            int(getattr(self._tracker_config, "region_descriptor_radius", 0))
+        )
+
+        self.region_descriptor_sigma_spinbox = QDoubleSpinBox()
+        self.region_descriptor_sigma_spinbox.setRange(0.2, 4.0)
+        self.region_descriptor_sigma_spinbox.setSingleStep(0.05)
+        self.region_descriptor_sigma_spinbox.setValue(
+            float(getattr(self._tracker_config, "region_descriptor_sigma", 0.85))
+        )
+
+        self.region_subpatch_sampling_checkbox = QCheckBox(
+            "Sub-patch continuous Gaussian sampling"
+        )
+        self.region_subpatch_sampling_checkbox.setChecked(
+            bool(getattr(self._tracker_config, "region_subpatch_sampling", False))
+        )
+
+        self.pixel_region_refine_checkbox = QCheckBox(
+            "Drift-free Gaussian pixel template refinement"
+        )
+        self.pixel_region_refine_checkbox.setChecked(
+            bool(getattr(self._tracker_config, "pixel_region_refine_enabled", False))
         )
 
         self.mask_enforce_checkbox = QCheckBox("Clamp keypoints to instance mask")
@@ -640,8 +682,41 @@ class AdvancedParametersDialog(QDialog):
             "DINO feature model",
             self._wrap_with_hint(
                 self.dino_model_combo,
-                "Default ViT-S/16 is fastest. Larger gated DINOv3 models may improve descriptors but require Hugging Face access and more memory.",
+                "Supports DINOv3/v2, Google EmbeddingGemma 2, SigLIP 2, and fast on-device MobileNetV4/V3 pyramids.",
             ),
+        )
+        tracker_form.addRow(
+            "Embedding Matryoshka dim",
+            self._wrap_with_hint(
+                self.embedding_matryoshka_dim_combo,
+                "Optional prefix dimension (e.g. 256/128 for EmbeddingGemma 2) to cut matching memory and latency.",
+            ),
+        )
+        tracker_form.addRow(
+            "Gaussian region radius (patches)",
+            self._wrap_with_hint(
+                self.region_descriptor_radius_spinbox,
+                "0 disables. Aggregates a mask-aware Gaussian patch region around each keypoint without background bleed.",
+            ),
+        )
+        tracker_form.addRow(
+            "Gaussian region sigma",
+            self._wrap_with_hint(
+                self.region_descriptor_sigma_spinbox,
+                "Spatial Gaussian spread (patch units) for local region descriptors and sub-patch sampling.",
+            ),
+        )
+        tracker_form.addRow(
+            self._wrap_checkbox(
+                self.region_subpatch_sampling_checkbox,
+                "Sample descriptors continuously at sub-patch coordinates instead of snapping to discrete patch cells.",
+            )
+        )
+        tracker_form.addRow(
+            self._wrap_checkbox(
+                self.pixel_region_refine_checkbox,
+                "Anchor a Gaussian-weighted local pixel/gradient ZNCC template at manual seeds to prevent multi-frame LK drift.",
+            )
         )
         tracker_form.addRow(
             self._wrap_checkbox(
@@ -1333,10 +1408,18 @@ class AdvancedParametersDialog(QDialog):
             if selected and selected != self._CUSTOM_TRACKER_PRESET:
                 preset = selected
         selected_dino_model = selected_dino_model_identifier(self.dino_model_combo)
+        selected_mdim = self.embedding_matryoshka_dim_combo.currentData()
         self._tracker_settings = {
             "tracker_preset": preset,
             "patch_model_name": selected_dino_model,
             "dinov3_model_name": selected_dino_model,
+            "embedding_matryoshka_dim": (
+                int(selected_mdim) if selected_mdim is not None else None
+            ),
+            "region_descriptor_radius": self.region_descriptor_radius_spinbox.value(),
+            "region_descriptor_sigma": self.region_descriptor_sigma_spinbox.value(),
+            "region_subpatch_sampling": self.region_subpatch_sampling_checkbox.isChecked(),
+            "pixel_region_refine_enabled": self.pixel_region_refine_checkbox.isChecked(),
             "keypoint_refine_radius": self.keypoint_refine_radius_spinbox.value(),
             "keypoint_refine_sigma": self.keypoint_refine_sigma_spinbox.value(),
             "keypoint_refine_temperature": self.keypoint_refine_temperature_spinbox.value(),
