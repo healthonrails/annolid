@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Optional
 
 from qtpy import QtCore, QtWidgets
 
-from annolid.gui.widgets.web_viewer import WebViewerWidget
+from annolid.gui.widgets.web_viewer import WebViewerWidget, _ensure_webengine_loaded
 
 if TYPE_CHECKING:
     from annolid.gui.app import AnnolidWindow
@@ -22,6 +22,21 @@ class WebManager(QtCore.QObject):
         self.web_viewer: Optional[WebViewerWidget] = None
 
     def ensure_web_viewer(self) -> WebViewerWidget:
+        if (
+            self.web_viewer is not None
+            and not self.web_viewer.webengine_available
+            and _ensure_webengine_loaded()
+        ):
+            stale = self.web_viewer
+            self.web_viewer = None
+            try:
+                self.viewer_stack.removeWidget(stale)
+            except Exception:
+                pass
+            try:
+                stale.deleteLater()
+            except Exception:
+                pass
         if self.web_viewer is None:
             viewer = WebViewerWidget(self.window)
             viewer.status_changed.connect(

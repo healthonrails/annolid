@@ -192,11 +192,16 @@ class ToolingDialogsMixin:
 
     def show_web_in_viewer(self, url: str) -> bool:
         manager = getattr(self, "web_manager", None)
-        if manager is None and hasattr(self, "ensure_web_manager"):
+        viewer = manager.viewer_widget() if manager is not None else None
+        if (
+            manager is None
+            or viewer is None
+            or not getattr(viewer, "webengine_available", False)
+        ) and hasattr(self, "ensure_web_manager"):
             try:
                 manager = self.ensure_web_manager()
             except Exception:
-                manager = None
+                pass
         if manager is not None:
             return bool(manager.show_url_in_viewer(url))
         return False

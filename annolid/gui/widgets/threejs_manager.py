@@ -13,7 +13,10 @@ from typing import TYPE_CHECKING, Any, Optional
 from qtpy import QtCore, QtWidgets
 
 from annolid.gui.threejs_support import supports_threejs_canvas
-from annolid.gui.widgets.threejs_viewer import ThreeJsViewerWidget
+from annolid.gui.widgets.threejs_viewer import (
+    ThreeJsViewerWidget,
+    _ensure_webengine_loaded,
+)
 from annolid.simulation import export_simulation_view_payload
 from annolid.utils.logger import logger
 
@@ -41,6 +44,21 @@ class ThreeJsManager(QtCore.QObject):
         self._tiff_payload_cache: dict[str, tuple[int, Path]] = {}
 
     def ensure_threejs_viewer(self) -> ThreeJsViewerWidget:
+        if (
+            self.threejs_viewer is not None
+            and not self.threejs_viewer.webengine_available
+            and _ensure_webengine_loaded()
+        ):
+            stale = self.threejs_viewer
+            self.threejs_viewer = None
+            try:
+                self.viewer_stack.removeWidget(stale)
+            except Exception:
+                pass
+            try:
+                stale.deleteLater()
+            except Exception:
+                pass
         if self.threejs_viewer is None:
             viewer = ThreeJsViewerWidget(self.window)
             viewer.status_changed.connect(

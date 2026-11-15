@@ -600,8 +600,18 @@ def test_resolve_context_selection_uses_text_immediately() -> None:
 
 
 def test_resolve_context_selection_uses_pdf_copy_fallback(monkeypatch) -> None:
+    import types
+
+    import annolid.gui.widgets.web_viewer as web_viewer_mod
     from annolid.gui.widgets.web_viewer import WebViewerWidget
-    from qtpy import QtCore, QtWebEngineWidgets
+    from qtpy import QtCore
+
+    if web_viewer_mod.QtWebEngineWidgets is None:
+        stub_webengine = types.SimpleNamespace(
+            QWebEnginePage=types.SimpleNamespace(Copy="copy-action")
+        )
+        monkeypatch.setattr(web_viewer_mod, "QtWebEngineWidgets", stub_webengine)
+    expected_copy_action = web_viewer_mod.QtWebEngineWidgets.QWebEnginePage.Copy
 
     captured = []
 
@@ -619,7 +629,7 @@ def test_resolve_context_selection_uses_pdf_copy_fallback(monkeypatch) -> None:
 
     class _Page:
         def triggerAction(self, action):
-            assert action == QtWebEngineWidgets.QWebEnginePage.Copy
+            assert action == expected_copy_action
             clipboard.setText("pdf selected text")
 
     class _WebView:
@@ -643,3 +653,114 @@ def test_resolve_context_selection_uses_pdf_copy_fallback(monkeypatch) -> None:
 
     assert captured == ["pdf selected text"]
     assert clipboard.text() == "before"
+
+
+def test_resolve_context_selection_pdf_copy_fallback_without_webengine(
+    monkeypatch,
+) -> None:
+    import annolid.gui.widgets.web_viewer as web_viewer_mod
+    from annolid.gui.widgets.web_viewer import WebViewerWidget
+
+    captured: list[str] = []
+    tooltips: list[str] = []
+
+    class _Clipboard:
+        def text(self) -> str:
+            return "before"
+
+        def setText(self, _value: str) -> None:
+            raise AssertionError("clipboard should not be mutated without WebEngine")
+
+    class _FakeWidget:
+        _web_view = object()
+
+        def _is_inline_pdf_context(self) -> bool:
+            return True
+
+    monkeypatch.setattr(web_viewer_mod, "QtWebEngineWidgets", None)
+    monkeypatch.setattr(web_viewer_mod, "_ensure_webengine_loaded", lambda: False)
+    monkeypatch.setattr(QtWidgets.QApplication, "clipboard", lambda: _Clipboard())
+    monkeypatch.setattr(
+        QtWidgets.QToolTip,
+        "showText",
+        lambda _pos, msg, *_args: tooltips.append(str(msg)),
+    )
+
+    WebViewerWidget._resolve_context_selection(
+        _FakeWidget(),
+        "",
+        lambda text: captured.append(text),
+        empty_message="No PDF selection.",
+    )
+
+    assert captured == []
+    assert tooltips == ["No PDF selection."]
+
+
+def test_ensure_webengine_loaded_recovers_after_late_install(monkeypatch) -> None:
+    import sys
+    import types
+
+    import annolid.gui.widgets.web_viewer as web_viewer_mod
+    import qtpy
+
+    class _StubPageBase:
+        Copy = "stub-copy"
+
+        def __init__(self, *args, **kwargs):
+            self._args = args
+            self._kwargs = kwargs
+
+    stub_qwe = types.ModuleType("qtpy.QtWebEngineWidgets")
+    stub_qwe.QWebEnginePage = _StubPageBase  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(web_viewer_mod, "_WEBENGINE_AVAILABLE", False)
+    monkeypatch.setattr(web_viewer_mod, "QtWebEngineWidgets", None)
+    monkeypatch.setattr(web_viewer_mod, "_AnnolidWebEnginePage", None)
+    monkeypatch.setitem(sys.modules, "qtpy.QtWebEngineWidgets", stub_qwe)
+    monkeypatch.setattr(qtpy, "QtWebEngineWidgets", stub_qwe, raising=False)
+
+    assert web_viewer_mod._ensure_webengine_loaded() is True
+    assert web_viewer_mod._WEBENGINE_AVAILABLE is True
+    assert web_viewer_mod.QtWebEngineWidgets is stub_qwe
+    assert web_viewer_mod._AnnolidWebEnginePage is not None
+    assert issubclass(web_viewer_mod._AnnolidWebEnginePage, _StubPageBase)
+
+
+def test_viewer_modules_gracefully_import_without_qtwebengine() -> None:
+    import subprocess
+    import sys
+    import textwrap
+
+    script = textwrap.dedent(
+        """
+        import importlib.abc
+        import sys
+
+        class BlockWebEngine(importlib.abc.MetaPathFinder):
+            def find_spec(self, fullname, path=None, target=None):
+                if "QtWebEngine" in fullname or "QtWebChannel" in fullname:
+                    raise ModuleNotFoundError(f"No module named {fullname!r}")
+                return None
+
+        sys.meta_path.insert(0, BlockWebEngine())
+
+        import annolid.gui.widgets.pdf_viewer_impl as pdf_mod
+        import annolid.gui.widgets.threejs_viewer as three_mod
+        import annolid.gui.widgets.web_viewer as web_mod
+
+        assert web_mod._WEBENGINE_AVAILABLE is False
+        assert web_mod._ensure_webengine_loaded() is False
+        assert pdf_mod._WEBENGINE_AVAILABLE is False
+        assert pdf_mod._ensure_webengine_loaded() is False
+        assert three_mod._WEBENGINE_AVAILABLE is False
+        assert three_mod._ensure_webengine_loaded() is False
+        """
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr

@@ -33,6 +33,7 @@ from annolid.utils.citations import (
 )
 from annolid.utils.logger import logger
 from annolid.gui.widgets.webengine_lifecycle import release_webengine_view
+import importlib
 import os
 
 try:
@@ -47,6 +48,8 @@ try:
 except Exception:
     QtWebEngineWidgets = None  # type: ignore
     _WEBENGINE_AVAILABLE = False
+
+_AnnolidWebEnginePage = None
 
 
 _MAX_CONTEXT_MENU_TEXT_CHARS = 8192
@@ -923,9 +926,8 @@ class _SavePdfTask(QtCore.QRunnable):
         )
 
 
-if _WEBENGINE_AVAILABLE:
-
-    class _AnnolidWebEnginePage(QtWebEngineWidgets.QWebEnginePage):
+def _build_annolid_webengine_page_class():
+    class _Page(QtWebEngineWidgets.QWebEnginePage):
         """Embedded browser page with compatibility helpers and noise filtering."""
 
         def __init__(
@@ -1165,6 +1167,48 @@ if _WEBENGINE_AVAILABLE:
             except Exception:
                 pass
 
+    _Page.__name__ = "_AnnolidWebEnginePage"
+    return _Page
+
+
+def _ensure_webengine_loaded() -> bool:
+    global QtWebEngineWidgets, _WEBENGINE_AVAILABLE, _AnnolidWebEnginePage
+    if (
+        _WEBENGINE_AVAILABLE
+        and QtWebEngineWidgets is not None
+        and _AnnolidWebEnginePage is not None
+    ):
+        return True
+    try:
+        importlib.invalidate_caches()
+        if sys.modules.get("qtpy.QtWebEngineWidgets") is None:
+            sys.modules.pop("qtpy.QtWebEngineWidgets", None)
+        from annolid.infrastructure.runtime import (
+            configure_qtwebengine_chromium_flags,
+            configure_qtwebengine_resource_paths,
+        )
+
+        configure_qtwebengine_resource_paths()
+        configure_qtwebengine_chromium_flags()
+    except Exception:
+        pass
+    try:
+        from qtpy import QtWebEngineWidgets as _qwe  # type: ignore
+
+        QtWebEngineWidgets = _qwe
+        _WEBENGINE_AVAILABLE = True
+        if _AnnolidWebEnginePage is None:
+            _AnnolidWebEnginePage = _build_annolid_webengine_page_class()
+        return True
+    except Exception:
+        QtWebEngineWidgets = None  # type: ignore
+        _WEBENGINE_AVAILABLE = False
+        return False
+
+
+if _WEBENGINE_AVAILABLE and QtWebEngineWidgets is not None:
+    _AnnolidWebEnginePage = _build_annolid_webengine_page_class()
+
 
 def _create_ephemeral_web_profile(
     parent: Optional[QtCore.QObject],
@@ -1219,11 +1263,12 @@ class WebViewerWidget(QtWidgets.QWidget):
         self._last_scrape_time = 0.0
         self._shortcuts: list[QtWidgets.QShortcut] = []
         self._web_profile = None
+        _ensure_webengine_loaded()
         self._build_ui()
 
     @property
     def webengine_available(self) -> bool:
-        return bool(_WEBENGINE_AVAILABLE)
+        return bool(_WEBENGINE_AVAILABLE and self._web_view is not None)
 
     @staticmethod
     def _apply_nav_icon(
@@ -2479,8 +2524,22 @@ class WebViewerWidget(QtWidgets.QWidget):
             return
 
         original = clipboard.text()
+        copy_action = getattr(
+            getattr(QtWebEngineWidgets, "QWebEnginePage", None),
+            "Copy",
+            None,
+        )
+        if copy_action is None and _ensure_webengine_loaded():
+            copy_action = getattr(
+                getattr(QtWebEngineWidgets, "QWebEnginePage", None),
+                "Copy",
+                None,
+            )
+        if copy_action is None:
+            QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), empty_message, self)
+            return
         try:
-            self._web_view.page().triggerAction(QtWebEngineWidgets.QWebEnginePage.Copy)
+            self._web_view.page().triggerAction(copy_action)
         except Exception:
             QtWidgets.QToolTip.showText(QtGui.QCursor.pos(), empty_message, self)
             return

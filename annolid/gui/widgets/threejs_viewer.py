@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import importlib
 import json
+import sys
 import time
 from pathlib import Path
 from typing import List, Optional
@@ -27,6 +29,8 @@ from annolid.gui.widgets.webengine_lifecycle import release_webengine_view
 from annolid.gui.threejs_support import supports_threejs_canvas
 from annolid.utils.logger import logger
 
+_ThreeJsWebEnginePage = None
+
 _THREEJS_IMPORTMAP = json.dumps(
     {
         "imports": {
@@ -37,9 +41,8 @@ _THREEJS_IMPORTMAP = json.dumps(
 )
 
 
-if _WEBENGINE_AVAILABLE:
-
-    class _ThreeJsWebEnginePage(QtWebEngineWidgets.QWebEnginePage):
+def _build_threejs_webengine_page_class():
+    class _Page(QtWebEngineWidgets.QWebEnginePage):
         flybody_command_requested = QtCore.Signal(str, str)
         region_picked = QtCore.Signal(str)
 
@@ -122,6 +125,48 @@ if _WEBENGINE_AVAILABLE:
                 pass
             return super().acceptNavigationRequest(url, nav_type, is_main_frame)
 
+    _Page.__name__ = "_ThreeJsWebEnginePage"
+    return _Page
+
+
+def _ensure_webengine_loaded() -> bool:
+    global QtWebEngineWidgets, _WEBENGINE_AVAILABLE, _ThreeJsWebEnginePage
+    if (
+        _WEBENGINE_AVAILABLE
+        and QtWebEngineWidgets is not None
+        and _ThreeJsWebEnginePage is not None
+    ):
+        return True
+    try:
+        importlib.invalidate_caches()
+        if sys.modules.get("qtpy.QtWebEngineWidgets") is None:
+            sys.modules.pop("qtpy.QtWebEngineWidgets", None)
+        from annolid.infrastructure.runtime import (
+            configure_qtwebengine_chromium_flags,
+            configure_qtwebengine_resource_paths,
+        )
+
+        configure_qtwebengine_resource_paths()
+        configure_qtwebengine_chromium_flags()
+    except Exception:
+        pass
+    try:
+        from qtpy import QtWebEngineWidgets as _qwe  # type: ignore
+
+        QtWebEngineWidgets = _qwe
+        _WEBENGINE_AVAILABLE = True
+        if _ThreeJsWebEnginePage is None:
+            _ThreeJsWebEnginePage = _build_threejs_webengine_page_class()
+        return True
+    except Exception:
+        QtWebEngineWidgets = None  # type: ignore
+        _WEBENGINE_AVAILABLE = False
+        return False
+
+
+if _WEBENGINE_AVAILABLE and QtWebEngineWidgets is not None:
+    _ThreeJsWebEnginePage = _build_threejs_webengine_page_class()
+
 
 def _create_ephemeral_web_profile(
     parent: Optional[QtCore.QObject],
@@ -160,7 +205,12 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
         self._web_view = None
         self._web_profile = None
         self._current_path: Optional[Path] = None
+        _ensure_webengine_loaded()
         self._build_ui()
+
+    @property
+    def webengine_available(self) -> bool:
+        return bool(_WEBENGINE_AVAILABLE and self._web_view is not None)
 
     def _build_viewer_html(
         self,

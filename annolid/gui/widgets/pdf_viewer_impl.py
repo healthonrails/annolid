@@ -6,7 +6,9 @@ This module contains the full implementation and may be split further over time.
 
 from __future__ import annotations
 
+import importlib
 import json
+import sys
 import tempfile
 import time
 import uuid
@@ -50,6 +52,8 @@ from annolid.gui.widgets.pdf_user_state import (
     pdf_state_key,
     save_pdf_state,
 )
+
+_AnnolidWebEnginePage = None
 
 _PDFJS_BENIGN_CONSOLE_PATTERNS = (
     'loadfont - translatefont failed: "formaterror: invalid font name"',
@@ -236,9 +240,9 @@ def _is_benign_pdfjs_console_message(message: str) -> bool:
     return any(pattern in value for pattern in _PDFJS_BENIGN_CONSOLE_PATTERNS)
 
 
-if _WEBENGINE_AVAILABLE:
+def _build_annolid_webengine_page_class():
     # type: ignore[misc]
-    class _AnnolidWebEnginePage(QtWebEngineWidgets.QWebEnginePage):
+    class _Page(QtWebEngineWidgets.QWebEnginePage):
         def __init__(self, *args, **kwargs) -> None:
             super().__init__(*args, **kwargs)
             self._console_seen: dict[str, int] = {}
@@ -348,6 +352,71 @@ if _WEBENGINE_AVAILABLE:
                     )
             except Exception:
                 pass
+
+    _Page.__name__ = "_AnnolidWebEnginePage"
+    return _Page
+
+
+def _ensure_webengine_loaded() -> bool:
+    global \
+        QtWebEngineWidgets, \
+        QtWebChannel, \
+        _WEBENGINE_AVAILABLE, \
+        _WEBCHANNEL_AVAILABLE, \
+        _AnnolidWebEnginePage
+    if (
+        _WEBENGINE_AVAILABLE
+        and QtWebEngineWidgets is not None
+        and _AnnolidWebEnginePage is not None
+    ):
+        if not _WEBCHANNEL_AVAILABLE or QtWebChannel is None:
+            try:
+                from qtpy import QtWebChannel as _qwc  # type: ignore
+
+                QtWebChannel = _qwc
+                _WEBCHANNEL_AVAILABLE = True
+            except Exception:
+                pass
+        return True
+    try:
+        importlib.invalidate_caches()
+        for mod_name in ("qtpy.QtWebEngineWidgets", "qtpy.QtWebChannel"):
+            if sys.modules.get(mod_name) is None:
+                sys.modules.pop(mod_name, None)
+        from annolid.infrastructure.runtime import (
+            configure_qtwebengine_chromium_flags,
+            configure_qtwebengine_resource_paths,
+        )
+
+        configure_qtwebengine_resource_paths()
+        configure_qtwebengine_chromium_flags()
+    except Exception:
+        pass
+    try:
+        from qtpy import QtWebEngineWidgets as _qwe  # type: ignore
+
+        QtWebEngineWidgets = _qwe
+        _WEBENGINE_AVAILABLE = True
+        if _AnnolidWebEnginePage is None:
+            _AnnolidWebEnginePage = _build_annolid_webengine_page_class()
+    except Exception:
+        QtWebEngineWidgets = None  # type: ignore
+        _WEBENGINE_AVAILABLE = False
+        return False
+    if not _WEBCHANNEL_AVAILABLE or QtWebChannel is None:
+        try:
+            from qtpy import QtWebChannel as _qwc  # type: ignore
+
+            QtWebChannel = _qwc
+            _WEBCHANNEL_AVAILABLE = True
+        except Exception:
+            QtWebChannel = None  # type: ignore
+            _WEBCHANNEL_AVAILABLE = False
+    return True
+
+
+if _WEBENGINE_AVAILABLE and QtWebEngineWidgets is not None:
+    _AnnolidWebEnginePage = _build_annolid_webengine_page_class()
 
 
 def _create_ephemeral_web_profile(
@@ -461,6 +530,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
         self._reader_pending_restart: Optional[int] = None
         self._active_speak_token: Optional[_SpeakToken] = None
         self._last_reader_stop_log_ts = 0.0
+        _ensure_webengine_loaded()
         self._build_ui()
         logger.info(
             f"QtWebEngine available={bool(_WEBENGINE_AVAILABLE)}, "
@@ -1374,8 +1444,21 @@ class PdfViewerWidget(QtWidgets.QWidget):
         except Exception:
             return
         original = clipboard.text()
+        copy_action = getattr(
+            getattr(QtWebEngineWidgets, "QWebEnginePage", None),
+            "Copy",
+            None,
+        )
+        if copy_action is None and _ensure_webengine_loaded():
+            copy_action = getattr(
+                getattr(QtWebEngineWidgets, "QWebEnginePage", None),
+                "Copy",
+                None,
+            )
+        if copy_action is None:
+            return
         try:
-            self._web_view.page().triggerAction(QtWebEngineWidgets.QWebEnginePage.Copy)
+            self._web_view.page().triggerAction(copy_action)
         except Exception:
             return
 
