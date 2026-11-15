@@ -11,7 +11,7 @@ import re
 import shutil
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING
 
@@ -470,7 +470,10 @@ class BehaviorDescribeWidget(QtWidgets.QWidget):
             "fps": self._video_fps,
             "num_frames": self._video_num_frames,
             "step_seconds": int(step_seconds),
-            "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "generated_at": datetime.now(timezone.utc)
+            .replace(tzinfo=None)
+            .isoformat(timespec="seconds")
+            + "Z",
             "prompt": prompt,
             "end_frame": int(end_frame),
             "points": list(points),

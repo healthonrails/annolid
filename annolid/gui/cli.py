@@ -1,5 +1,4 @@
 import argparse
-import codecs
 import os
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
@@ -68,7 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _load_items_from_source(raw_value: str) -> List[str]:
     """Interpret a flag/label source as newline separated file or comma list."""
     if os.path.isfile(raw_value):
-        with codecs.open(raw_value, "r", encoding="utf-8") as file_obj:
+        with open(raw_value, "r", encoding="utf-8") as file_obj:
             return [line.strip() for line in file_obj if line.strip()]
     return [item.strip() for item in raw_value.split(",") if item.strip()]
 
@@ -80,7 +79,7 @@ def _normalize_cli_collections(namespace: argparse.Namespace) -> None:
     if hasattr(namespace, "labels"):
         source = namespace.labels
         if Path(source).is_file():
-            with codecs.open(source, "r", encoding="utf-8") as file_obj:
+            with open(source, "r", encoding="utf-8") as file_obj:
                 namespace.labels = [line.strip() for line in file_obj if line.strip()]
         else:
             namespace.labels = [item for item in source.split(",") if item]

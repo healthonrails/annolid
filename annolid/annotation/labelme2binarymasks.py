@@ -1,7 +1,10 @@
 import numpy as np
-import matplotlib.pyplot as plt
-from skimage.draw import polygon
 from annolid.utils.annotation_store import load_labelme_json
+
+try:
+    from skimage.draw import polygon as _skimage_polygon
+except ImportError:  # optional on Python 3.15+ before cp315 wheels land
+    _skimage_polygon = None
 
 
 class LabelMeProcessor:
@@ -72,10 +75,20 @@ class LabelMeProcessor:
             np.ndarray: Binary mask of the polygon.
         """
         mask = np.zeros(self.image_shape, dtype=np.uint8)
-        poly_x = [point[0] for point in polygon_points]
-        poly_y = [point[1] for point in polygon_points]
-        rr, cc = polygon(poly_y, poly_x, self.image_shape)
-        mask[rr, cc] = 1
+        if not polygon_points:
+            return mask
+        if _skimage_polygon is not None:
+            poly_x = [point[0] for point in polygon_points]
+            poly_y = [point[1] for point in polygon_points]
+            rr, cc = _skimage_polygon(poly_y, poly_x, self.image_shape)
+            mask[rr, cc] = 1
+            return mask
+
+        import cv2
+
+        pts = np.round(np.asarray(polygon_points, dtype=np.float64)).astype(np.int32)
+        if pts.ndim == 2 and pts.shape[1] == 2:
+            cv2.fillPoly(mask, [pts], 1)
         return mask
 
     def get_all_masks(self):
@@ -98,6 +111,8 @@ class LabelMeProcessor:
         Args:
             masks (list): List of binary masks to visualize.
         """
+        import matplotlib.pyplot as plt
+
         for i, (mask, label) in enumerate(masks):
             plt.figure(figsize=(10, 5))
             plt.imshow(mask, cmap="gray")

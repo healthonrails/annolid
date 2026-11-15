@@ -210,12 +210,13 @@ def _encode_mask(mask: np.ndarray) -> Dict[str, object]:
 def _build_dataset_skeleton(
     categories: Sequence[Dict[str, object]],
 ) -> Dict[str, object]:
-    now = _dt.datetime.utcnow().isoformat() + "Z"
+    utc_now = _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None)
+    now = utc_now.isoformat() + "Z"
     return {
         "info": {
             "description": "Annolid LabelMe to COCO export",
             "version": "1.0",
-            "year": _dt.datetime.utcnow().year,
+            "year": utc_now.year,
             "date_created": now,
         },
         "licenses": [{"id": 1, "name": "Unknown", "url": ""}],

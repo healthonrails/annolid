@@ -160,12 +160,17 @@ def calculate_mask_centroid(mask):
         rle = [mask_array]
         mask_array = mask_util.decode(rle)
     # Calculate the center of mass of the binary mask
-    from scipy import ndimage
+    try:
+        from scipy import ndimage
 
-    center_of_mass = ndimage.center_of_mass(mask_array)
-
-    # Convert the center of mass to the original image coordinates
-    x = int(center_of_mass[1])
-    y = int(center_of_mass[0])
+        center_of_mass = ndimage.center_of_mass(mask_array)
+        x = int(center_of_mass[1])
+        y = int(center_of_mass[0])
+    except ImportError:
+        ys, xs = np.nonzero(mask_array)
+        if len(xs) == 0:
+            return 0, 0
+        x = int(np.mean(xs))
+        y = int(np.mean(ys))
 
     return x, y

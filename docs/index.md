@@ -110,7 +110,7 @@ the surrounding panels and toolbar.
 
 ## Product Snapshot
 
-- Python package metadata supports `>=3.10`; the default GUI/core workflow is documented for Python 3.10-3.14.
+- Python package metadata supports `>=3.10`; the default GUI/core workflow is documented for Python 3.10-3.15.
 - Primary entry points are `annolid` (GUI) and `annolid-run` (CLI/plugins).
 - Memory subsystem includes GUI CRUD manager, structured settings profiles, and legacy-source migration tooling.
 - Annolid Bot supports multimodal chat and optional provider integrations in the GUI.

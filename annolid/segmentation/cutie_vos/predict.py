@@ -11,7 +11,7 @@ import torch
 import json
 import numpy as np
 from bisect import bisect_right
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
@@ -79,6 +79,10 @@ References:
 }
 https://github.com/hkchengrex/Cutie/tree/main
 """
+
+
+def _utc_timestamp_iso() -> str:
+    return datetime.now(timezone.utc).replace(tzinfo=None).isoformat() + "Z"
 
 
 def find_mask_center_opencv(mask, bbox: Optional[BBoxXYXY] = None):
@@ -598,7 +602,7 @@ class CutieCoreVideoProcessor:
             "version": self._TRACKING_STATS_VERSION,
             "video_name": video_name,
             "results_dir": str(results_dir),
-            "updated_at": datetime.utcnow().isoformat() + "Z",
+            "updated_at": _utc_timestamp_iso(),
             "frame_stats": {},
             "store_signature": "",
             "store_labeled_frames": [],
@@ -701,7 +705,7 @@ class CutieCoreVideoProcessor:
         ):
             return
         payload = self._load_tracking_stats()
-        payload["updated_at"] = datetime.utcnow().isoformat() + "Z"
+        payload["updated_at"] = _utc_timestamp_iso()
         persist_payload = self._build_tracking_stats_persist_payload(payload)
         payload["summary"] = dict(persist_payload.get("summary", {}))
         path = self._tracking_stats_path()
@@ -995,7 +999,7 @@ class CutieCoreVideoProcessor:
                 {str(item) for item in identity_ambiguity_labels if item}
             )
             entry["identity_ambiguity_labels"] = labels
-        entry["last_updated"] = datetime.utcnow().isoformat() + "Z"
+        entry["last_updated"] = _utc_timestamp_iso()
         entry["frame"] = normalized_frame
 
         persist_entry = self._is_manual_or_abnormal_frame_stat(entry)
@@ -1022,7 +1026,7 @@ class CutieCoreVideoProcessor:
                 "start_frame": int(start_frame),
                 "end_frame": int(end_frame),
                 "status": str(status),
-                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "timestamp": _utc_timestamp_iso(),
             }
         )
         # Keep this bounded for long-running sessions.
@@ -1120,7 +1124,7 @@ class CutieCoreVideoProcessor:
                 "reason": str(reason),
                 "resolved": bool(resolved),
                 "repair_source": str(repair_source) if repair_source else "",
-                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "timestamp": _utc_timestamp_iso(),
             }
         )
         if len(events) > 5000:
@@ -1151,7 +1155,7 @@ class CutieCoreVideoProcessor:
                 failed_labels = []
             failed_labels.append(str(label))
             entry["bad_shape_failed_labels"] = sorted(set(failed_labels))
-        entry["last_updated"] = datetime.utcnow().isoformat() + "Z"
+        entry["last_updated"] = _utc_timestamp_iso()
         frame_stats[frame_key] = entry
         self._tracking_stats_dirty = True
         self._tracking_stats_pending_updates = int(

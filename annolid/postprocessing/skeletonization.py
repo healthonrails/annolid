@@ -6,11 +6,78 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-import matplotlib.pyplot as plt
-from scipy.ndimage import distance_transform_edt, label as ndi_label
-from skimage.morphology import medial_axis, skeletonize
 from annolid.annotation.labelme2binarymasks import LabelMeProcessor
-from sklearn.decomposition import PCA
+
+try:
+    from scipy.ndimage import (
+        distance_transform_edt as _scipy_distance_transform_edt,
+        label as _scipy_ndi_label,
+    )
+except ImportError:
+    _scipy_distance_transform_edt = None
+    _scipy_ndi_label = None
+
+try:
+    from sklearn.decomposition import PCA as _SklearnPCA
+except ImportError:
+    _SklearnPCA = None
+
+try:
+    from skimage.morphology import (
+        medial_axis as _skimage_medial_axis,
+        skeletonize as _skimage_skeletonize,
+    )
+except ImportError:  # optional on Python 3.15+ or lean installs
+    _skimage_medial_axis = None
+    _skimage_skeletonize = None
+
+
+def distance_transform_edt(binary_mask: np.ndarray) -> np.ndarray:
+    if _scipy_distance_transform_edt is not None:
+        return _scipy_distance_transform_edt(binary_mask)
+    import cv2
+
+    mask_u8 = (np.asarray(binary_mask) > 0).astype(np.uint8)
+    return cv2.distanceTransform(mask_u8, cv2.DIST_L2, 5).astype(np.float64)
+
+
+def ndi_label(binary_mask: np.ndarray) -> Tuple[np.ndarray, int]:
+    if _scipy_ndi_label is not None:
+        return _scipy_ndi_label(binary_mask)
+    import cv2
+
+    mask_u8 = (np.asarray(binary_mask) > 0).astype(np.uint8)
+    num_labels, labels = cv2.connectedComponents(mask_u8, connectivity=8)
+    return labels, max(0, int(num_labels) - 1)
+
+
+def _principal_axis(points: np.ndarray) -> np.ndarray:
+    pts = np.asarray(points, dtype=np.float64)
+    if _SklearnPCA is not None:
+        pca = _SklearnPCA(n_components=min(2, pts.shape[1], len(pts)))
+        pca.fit(pts)
+        return pca.components_[0]
+    centered = pts - np.mean(pts, axis=0, keepdims=True)
+    _u, _s, vt = np.linalg.svd(centered, full_matrices=False)
+    return vt[0]
+
+
+def _skeletonize_mask(binary_mask: np.ndarray) -> np.ndarray:
+    if _skimage_skeletonize is not None:
+        return _skimage_skeletonize(binary_mask)
+    import cv2
+
+    mask_u8 = (np.asarray(binary_mask) > 0).astype(np.uint8) * 255
+    return cv2.ximgproc.thinning(mask_u8) > 0
+
+
+def _medial_axis_with_distance(
+    binary_mask: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    if _skimage_medial_axis is not None:
+        return _skimage_medial_axis(binary_mask, return_distance=True)
+    mask_bool = np.asarray(binary_mask) > 0
+    return _skeletonize_mask(mask_bool), distance_transform_edt(mask_bool)
 
 
 class ShapeProcessor:
@@ -24,9 +91,9 @@ class ShapeProcessor:
             A binary mask representing the shape.
         """
         self.binary_mask = binary_mask
-        self.skeleton = skeletonize(self.binary_mask)
+        self.skeleton = _skeletonize_mask(self.binary_mask)
         # Compute medial axis and its distance transform
-        medial, dist = medial_axis(self.binary_mask, return_distance=True)
+        medial, dist = _medial_axis_with_distance(self.binary_mask)
         self.medial_axis = medial
         self.dist_transform = dist
         self.medial_axis = self.prune_medial_axis(threshold_length=2)
@@ -74,10 +141,8 @@ class ShapeProcessor:
         head_region = points[points[:, 1] < self.centroid[1]]
         if len(head_region) < 2:  # fallback to all points
             head_region = points
-        pca = PCA(n_components=2)
-        pca.fit(head_region)
         center = np.mean(head_region, axis=0)
-        axis = pca.components_[0]  # first principal component
+        axis = _principal_axis(head_region)  # first principal component
         return center, axis
 
     def refine_keypoints_with_symmetry(
@@ -272,9 +337,7 @@ class ShapeProcessor:
 
         # Order points using PCA – this provides an approximate order along the body.
         points_arr = np.array(points)
-        pca = PCA(n_components=1)
-        pca.fit(points_arr)
-        projection = points_arr @ pca.components_[0]
+        projection = points_arr @ _principal_axis(points_arr)
         sorted_indices = np.argsort(projection)
         sorted_points = points_arr[sorted_indices]
 
@@ -404,6 +467,8 @@ class ShapeProcessor:
         """
         Visualize the binary mask, medial axis, and key points with annotations.
         """
+        import matplotlib.pyplot as plt
+
         plt.figure(figsize=(10, 5))
         plt.imshow(self.binary_mask, cmap="gray")
         plt.imshow(self.medial_axis, cmap="jet", alpha=0.5)
@@ -445,7 +510,7 @@ def extract_medial_axis(binary_image: np.ndarray) -> np.ndarray:
     np.ndarray:
         The medial axis.
     """
-    medial, _ = medial_axis(binary_image, return_distance=True)
+    medial, _ = _medial_axis_with_distance(binary_image)
     return medial
 
 

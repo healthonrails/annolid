@@ -44,6 +44,27 @@ from annolid.annotation.keypoint_visibility import (
     keypoint_visibility_from_shape_object,
 )
 
+
+def _find_mask_contours(mask: np.ndarray) -> list[np.ndarray]:
+    """Return closed ``(row, col)`` contour polylines for a 2D boolean mask."""
+    try:
+        import skimage.measure
+    except ImportError:
+        mask_u8 = (np.asarray(mask) > 0).astype(np.uint8)
+        raw_contours, _ = cv2.findContours(
+            mask_u8, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE
+        )
+        contours: list[np.ndarray] = []
+        for raw in raw_contours:
+            pts_xy = raw.reshape(-1, 2).astype(np.float64)
+            pts_rc = np.column_stack((pts_xy[:, 1] + 0.5, pts_xy[:, 0] + 0.5))
+            if len(pts_rc) > 1:
+                pts_rc = np.vstack((pts_rc, pts_rc[:1]))
+            contours.append(pts_rc)
+        return contours
+    return list(skimage.measure.find_contours(np.pad(mask, pad_width=1)))
+
+
 # TODO(unknown):
 # - [opt] Store paths instead of creating new ones at each paint.
 
@@ -294,8 +315,6 @@ class Shape(object):
         painter.setPen(pen)
 
         if self.mask is not None:
-            import skimage.measure
-
             image_to_draw = np.zeros(self.mask.shape + (4,), dtype=np.uint8)
             fill_color = (
                 self.select_fill_color.getRgb()
@@ -311,9 +330,9 @@ class Shape(object):
             )
 
             line_path = QtGui.QPainterPath()
-            contours = skimage.measure.find_contours(np.pad(self.mask, pad_width=1))
+            contours = _find_mask_contours(self.mask)
             for contour in contours:
-                contour += [self.points[0].y(), self.points[0].x()]
+                contour = contour + [self.points[0].y(), self.points[0].x()]
                 line_path.moveTo(contour[0, 1], contour[0, 0])
                 for point in contour[1:]:
                     line_path.lineTo(point[1], point[0])

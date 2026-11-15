@@ -4,7 +4,7 @@ This is the recommended development-style setup for this repository and matches 
 
 ## Prerequisites
 
-- Python 3.10 to 3.14 on your `PATH`
+- Python 3.10 to 3.15 on your `PATH` (or `uv`, which can download a managed Python automatically)
 - `git`
 - `ffmpeg` recommended for video-heavy workflows
 - `uv` installed from <https://docs.astral.sh/uv/>
@@ -109,7 +109,7 @@ annolid
 - The current terminal command is `annolid-run`, not older `annolid-train` or `annolid-track` commands.
 - The repo’s local validation instructions assume a repository-local `.venv`.
 - Optional extras are defined in `pyproject.toml`; install only what you need.
-- Python 3.14 works for the default GUI/core install. The optional `remote_video` extra may require native FFmpeg development headers because it installs `ffpyplayer`.
+- Python 3.14 and 3.15 work for the default GUI/core install. The optional `remote_video` extra may require native FFmpeg development headers because it installs `ffpyplayer`.
 
 ## Troubleshooting
 

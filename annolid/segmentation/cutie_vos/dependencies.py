@@ -24,7 +24,7 @@ CUTIE_RUNTIME_DEPENDENCIES: tuple[RuntimeDependency, ...] = (
     RuntimeDependency("torchvision", "torchvision>=0.20.0"),
     RuntimeDependency("omegaconf", "omegaconf>=2.3.0"),
     RuntimeDependency("hydra", "hydra-core>=1.3.2"),
-    RuntimeDependency("PIL", "Pillow>=9.3.0,<12.0"),
+    RuntimeDependency("PIL", "Pillow>=9.3.0"),
     RuntimeDependency("pycocotools", "pycocotools>=2.0.2"),
     RuntimeDependency("einops", "einops>=0.6.0"),
 )

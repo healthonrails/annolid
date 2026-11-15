@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import http.server
 import json
+import subprocess
 import sys
 import threading
 import warnings
@@ -13,6 +14,8 @@ import pandas as pd
 import pycocotools.mask as mask_util
 import pytest
 
+from annolid.annotation.labelme2coco import _build_dataset_skeleton
+from annolid.gui import cli as gui_cli
 from annolid.gui import tensorboard as tb_mod
 from annolid.gui import workers as workers_mod
 from annolid.postprocessing.quality_control import TracksResults, pred_dict_to_labelme
@@ -64,7 +67,6 @@ def test_tensorboard_http_helpers_work_without_requests() -> None:
 def test_gui_entrypoint_has_no_unguarded_non_gui_third_party_imports() -> None:
     allowed_top_modules = {
         "numpy",
-        "numba",
         "scipy",
         "skimage",
         "sklearn",
@@ -149,6 +151,24 @@ def test_coco2yolo_has_no_syntax_warnings() -> None:
         ast.parse(source, filename=str(src_path))
 
 
+def test_tracked_python_sources_have_no_syntax_warnings() -> None:
+    repo_root = Path(__file__).resolve().parent.parent
+    tracked = subprocess.check_output(
+        ["git", "ls-files", "*.py"],
+        cwd=repo_root,
+        text=True,
+    ).splitlines()
+    assert tracked
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", SyntaxWarning)
+        for rel in tracked:
+            src_path = repo_root / rel
+            if not src_path.is_file():
+                continue
+            source = src_path.read_text(encoding="utf-8")
+            ast.parse(source, filename=str(src_path))
+
+
 def test_quality_control_tracks_results_and_border_mask_handling(
     tmp_path: Path,
 ) -> None:
@@ -201,3 +221,100 @@ def test_quality_control_tracks_results_and_border_mask_handling(
     tr = TracksResults(tracking_csv=str(csv_path))
     filled = tr.fill_missing_instances(instance_name="mouse_2")
     assert set(filled["frame_number"].tolist()) == {0, 1, 2, 3}
+
+
+def test_cli_utf8_files_and_coco_skeleton_emit_no_deprecation_warnings(
+    tmp_path: Path,
+) -> None:
+    labels_file = tmp_path / "labels.txt"
+    flags_file = tmp_path / "flags.txt"
+    config_file = tmp_path / "config.yaml"
+    labels_file.write_bytes("mouse_α\r\n\r\nrat_β\r\n".encode("utf-8"))
+    flags_file.write_bytes("grooming\r\nrearing_γ\r\n".encode("utf-8"))
+    config_file.write_text("{}\n", encoding="utf-8")
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        _cfg, namespace, version_requested = gui_cli.parse_cli(
+            [
+                "--config",
+                str(config_file),
+                "--labels",
+                str(labels_file),
+                "--flags",
+                str(flags_file),
+            ]
+        )
+        skeleton = _build_dataset_skeleton([{"id": 1, "name": "mouse"}])
+
+    assert version_requested is False
+    assert namespace.labels == ["mouse_α", "rat_β"]
+    assert namespace.flags == ["grooming", "rearing_γ"]
+    info = skeleton["info"]
+    assert isinstance(info["year"], int)
+    assert str(info["date_created"]).endswith("Z")
+    assert "+00:00Z" not in str(info["date_created"])
+
+
+def test_mask_and_skeleton_helpers_work_without_scikit_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import builtins
+
+    import annolid.annotation.labelme2binarymasks as l2bm
+    import annolid.postprocessing.skeletonization as skel_mod
+    from annolid.gui.shape import _find_mask_contours
+
+    real_import = builtins.__import__
+
+    def _block_skimage(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "skimage" or name.startswith("skimage."):
+            raise ImportError("Blocked skimage for Python 3.15+ fallback test")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _block_skimage)
+    monkeypatch.setattr(l2bm, "_skimage_polygon", None)
+    monkeypatch.setattr(skel_mod, "_skimage_skeletonize", None)
+    monkeypatch.setattr(skel_mod, "_skimage_medial_axis", None)
+
+    mask = np.zeros((24, 32), dtype=bool)
+    mask[6:18, 5:27] = True
+    contours = _find_mask_contours(mask)
+    assert len(contours) >= 1
+    assert contours[0].ndim == 2 and contours[0].shape[1] == 2
+    assert np.allclose(contours[0][0], contours[0][-1])
+
+    lm_path = tmp_path / "frame_00000001.json"
+    lm_path.write_text(
+        json.dumps(
+            {
+                "version": "5.0.1",
+                "flags": {},
+                "shapes": [
+                    {
+                        "label": "mouse_1",
+                        "points": [[5.0, 6.0], [26.0, 6.0], [26.0, 17.0], [5.0, 17.0]],
+                        "group_id": None,
+                        "shape_type": "polygon",
+                        "flags": {},
+                    }
+                ],
+                "imagePath": "frame_00000001.png",
+                "imageData": None,
+                "imageHeight": 24,
+                "imageWidth": 32,
+            }
+        ),
+        encoding="utf-8",
+    )
+    processor = l2bm.LabelMeProcessor(str(lm_path))
+    masks = processor.get_all_masks()
+    assert len(masks) == 1
+    binary_mask, label = masks[0]
+    assert label == "mouse_1"
+    assert int(binary_mask.sum()) > 100
+
+    sp = skel_mod.ShapeProcessor(binary_mask.astype(bool))
+    assert sp.skeleton.shape == (24, 32)
+    assert int(sp.skeleton.sum()) > 0
+    assert sp.dist_transform.shape == (24, 32)

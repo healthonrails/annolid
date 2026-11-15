@@ -7,6 +7,7 @@ import pytest
 
 from annolid.segmentation.cutie_vos.dependencies import (
     AUTO_INSTALL_ENV,
+    CUTIE_RUNTIME_DEPENDENCIES,
     RuntimeDependency,
     ensure_cutie_runtime_dependencies,
     missing_cutie_runtime_dependencies,
@@ -107,3 +108,12 @@ def test_ensure_cutie_runtime_dependencies_can_disable_auto_install(
     assert "missing_pkg" in str(exc_info.value)
     assert "python" in str(exc_info.value)
     assert "missing-package" in str(exc_info.value)
+
+
+def test_cutie_runtime_dependencies_allow_pillow_12_plus_wheels() -> None:
+    pillow_specs = [
+        dep.package_spec
+        for dep in CUTIE_RUNTIME_DEPENDENCIES
+        if dep.import_name == "PIL"
+    ]
+    assert pillow_specs == ["Pillow>=9.3.0"]
