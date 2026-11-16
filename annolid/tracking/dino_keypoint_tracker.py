@@ -2569,11 +2569,17 @@ class DinoKeypointTracker:
             return None
 
         mask_u8 = patch_mask.astype(np.uint8) * 255
-        thickness_map = cv2.distanceTransform(mask_u8, cv2.DIST_L2, 3)
-        thickness_values = thickness_map[patch_mask]
+        if bool(np.all(patch_mask)):
+            padded_u8 = np.pad(mask_u8, 1, mode="constant", constant_values=0)
+            thickness_map = cv2.distanceTransform(padded_u8, cv2.DIST_L2, 3)[1:-1, 1:-1]
+        else:
+            thickness_map = cv2.distanceTransform(mask_u8, cv2.DIST_L2, 3)
+        thickness_values = thickness_map[patch_mask].astype(np.float64, copy=False)
         sigma_thickness = float(np.std(thickness_values))
         if not math.isfinite(sigma_thickness) or sigma_thickness < 1e-6:
             sigma_thickness = float(np.median(thickness_values))
+        if not math.isfinite(sigma_thickness):
+            sigma_thickness = 1.0
         sigma_thickness = max(1.0, float(sigma_thickness))
 
         coords = np.stack([ys.astype(np.float32), xs.astype(np.float32)], axis=1)

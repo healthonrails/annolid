@@ -134,13 +134,21 @@ def test_compute_resized_hw_caps_elongated_roi_while_preserving_standard_frames(
     assert gh % 48 == 0 and gw % 48 == 0
 
 
-def test_dinov3_extract_skips_all_hidden_states_on_default_last_and_recovers_from_oom() -> (
-    None
-):
+def test_dinov3_extract_skips_all_hidden_states_on_default_last_and_recovers_from_oom(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Simulate Linux CI where torch.mps exists as a module stub without an MPS backend.
+    if hasattr(torch.backends, "mps"):
+        monkeypatch.setattr(torch.backends.mps, "is_available", lambda: False)
+    if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
+
+        def _fail_empty_cache() -> None:
+            raise RuntimeError("Cannot execute emptyCache() without MPS backend.")
+
+        monkeypatch.setattr(torch.mps, "empty_cache", _fail_empty_cache)
+
     ext = object.__new__(Dinov3FeatureExtractor)
-    ext.cfg = Dinov3Config(
-        short_side=32, max_long_side=64, patch_size=16, use_amp=False
-    )
+    ext.cfg = Dinov3Config(short_side=32, max_long_side=64, patch_size=16, use_amp=True)
     ext.patch_size = 16
     ext._num_special_tokens = 1
     ext.num_hidden_layers = 12

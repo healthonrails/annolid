@@ -125,10 +125,7 @@ class Dinov3FeatureExtractor:
         except RuntimeError as exc:
             if "out of memory" not in str(exc).lower() or self.device.type == "cpu":
                 raise
-            if self.device.type == "mps" and hasattr(torch.mps, "empty_cache"):
-                torch.mps.empty_cache()
-            elif self.device.type == "cuda":
-                torch.cuda.empty_cache()
+            self._safe_empty_accelerator_cache(self.device)
             logger.warning(
                 "Accelerator out of memory moving DINOv3 model to %s (%s); falling back to CPU.",
                 self.device,
@@ -208,6 +205,22 @@ class Dinov3FeatureExtractor:
         if torch.backends.mps.is_available():
             return torch.device("mps")
         return torch.device("cpu")
+
+    @staticmethod
+    def _safe_empty_accelerator_cache(device: torch.device) -> None:
+        try:
+            if (
+                device.type == "mps"
+                and hasattr(torch.backends, "mps")
+                and torch.backends.mps.is_available()
+                and hasattr(torch, "mps")
+                and hasattr(torch.mps, "empty_cache")
+            ):
+                torch.mps.empty_cache()
+            elif device.type == "cuda" and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
 
     def _load_model(self):
         try:
@@ -354,10 +367,16 @@ class Dinov3FeatureExtractor:
 
         def _forward_model(inp: torch.Tensor):
             dev_type = self.device.type
-            use_amp = bool(self.cfg.use_amp and dev_type in ("cuda", "mps"))
-            autocast_device = dev_type if dev_type in ("cuda", "mps") else "cpu"
+            mps_ready = bool(
+                dev_type == "mps"
+                and hasattr(torch.backends, "mps")
+                and torch.backends.mps.is_available()
+            )
+            cuda_ready = bool(dev_type == "cuda" and torch.cuda.is_available())
+            use_amp = bool(self.cfg.use_amp and (cuda_ready or mps_ready))
+            autocast_device = dev_type if (cuda_ready or mps_ready) else "cpu"
             autocast_kwargs = (
-                {"dtype": torch.float16} if (use_amp and dev_type == "mps") else {}
+                {"dtype": torch.float16} if (use_amp and mps_ready) else {}
             )
             with torch.autocast(
                 device_type=autocast_device,
@@ -375,10 +394,7 @@ class Dinov3FeatureExtractor:
         except RuntimeError as exc:
             if "out of memory" not in str(exc).lower() or self.device.type == "cpu":
                 raise
-            if self.device.type == "mps" and hasattr(torch.mps, "empty_cache"):
-                torch.mps.empty_cache()
-            elif self.device.type == "cuda":
-                torch.cuda.empty_cache()
+            self._safe_empty_accelerator_cache(self.device)
             logger.warning(
                 "Accelerator out of memory during DINOv3 extraction on %s (%s); falling back to CPU.",
                 self.device,

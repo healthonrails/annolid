@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import math
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 from typing import List, Optional, Tuple
 
@@ -697,6 +699,7 @@ def test_siglip2_vision_model_extraction_and_pos_interpolation(monkeypatch) -> N
 )
 def test_ondevice_mobilenet_pyramids_extract_stride8_and_track_offline(
     model_alias: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cfg = Dinov3Config(
         model_name=model_alias,
@@ -706,6 +709,25 @@ def test_ondevice_mobilenet_pyramids_extract_stride8_and_track_offline(
     )
     # Avoid any network weight download in offline CI.
     cfg._disable_pretrained = True  # type: ignore[attr-defined]
+    if model_alias == "mobilenetv4" and importlib.util.find_spec("timm") is None:
+        with pytest.raises(ImportError, match="timm>=1.0.0"):
+            Dinov3FeatureExtractor(cfg)
+
+        class _StubTimmPyramid(nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.pretrained_cfg = {}
+                self.s8 = nn.Conv2d(3, 40, kernel_size=3, stride=8, padding=1)
+                self.s16 = nn.Conv2d(3, 48, kernel_size=3, stride=16, padding=1)
+
+            def forward(self, x: torch.Tensor) -> list[torch.Tensor]:
+                return [self.s8(x), self.s16(x)]
+
+        fake_timm = SimpleNamespace(
+            create_model=lambda _arch, **_kw: _StubTimmPyramid()
+        )
+        monkeypatch.setitem(sys.modules, "timm", fake_timm)
+
     extractor = Dinov3FeatureExtractor(cfg)
     assert isinstance(extractor, GoogleVisionFeatureExtractor)
     assert extractor.patch_size == 8
@@ -715,6 +737,23 @@ def test_ondevice_mobilenet_pyramids_extract_stride8_and_track_offline(
     assert tuple(grid.shape) == (64, 8, 12)
     crops = extractor.embed_keypoint_regions(frame0, [(30.0, 28.0)], crop_size_px=32)
     assert tuple(crops.shape) == (1, 64)
+
+
+def test_ondevice_mobilenetv4_handles_missing_timm_gracefully(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orig_find_spec = importlib.util.find_spec
+    monkeypatch.setitem(sys.modules, "timm", None)  # type: ignore[arg-type]
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name, *args, **kwargs: None
+        if name == "timm"
+        else orig_find_spec(name, *args, **kwargs),
+    )
+    test_ondevice_mobilenet_pyramids_extract_stride8_and_track_offline(
+        "mobilenetv4", monkeypatch
+    )
 
 
 def test_advanced_parameters_dialog_roundtrips_gaussian_region_and_matryoshka() -> None:
