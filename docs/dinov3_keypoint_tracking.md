@@ -258,7 +258,25 @@ Key settings:
   small frame-to-frame optical-flow errors do not accumulate even across large
   in-plane animal turns.
 - **Clamp keypoints to instance mask** and **Mask snap radius**: keep points
-  inside the selected instance when masks are available.
+  inside the selected instance when masks are available. Patch masks are
+  quantized via area occupancy (`cv2.INTER_AREA`) so thin appendages (`tail_mid`,
+  `tail_tip`, paws) remain represented on the ViT grid, cross-instance foreground
+  masks exclude candidates that land strictly inside another animal during close
+  huddling, and sudden partial mask truncation falls back safely without
+  dropping well-supported skeletal points.
+- **Occluded seed keypoint handling**: seed points marked occluded
+  (`kp_visibility = 1` / `kp_visible = false`) do not pollute manual anchor
+  codebooks or pixel templates with the occluding surface; they inherit clean
+  descriptors from visible homologous landmarks when available, follow 2D
+  Procrustes constellation motion while occluded without stealing active sibling
+  patches, and re-acquire `visible = true` only when emerging at a distinct,
+  well-supported anatomical position.
+- **Elongated ROI token cap and accelerator memory resilience**:
+  `Dinov3Config(max_long_side=1408)` preserves full `short_side=768` resolution
+  on standard `4:3` and `16:9` frames while bounding ViT token count on wide
+  multi-animal band crops; both `Dinov3FeatureExtractor` and `CutieMaskManager`
+  automatically flush accelerator memory and migrate to CPU if CUDA/MPS runs out
+  of memory mid-video.
 - **Search tighten**, **Velocity gain**, **Flow gain**, and **Min/Max radius**:
   control the local motion-prior search.
 - **DINOv3 positional debias**: suppresses coordinate-correlated feature
@@ -369,3 +387,18 @@ tracks forward, and writes per-frame JSON outputs.
 | Left/right landmarks swap | Add masks when possible, keep labels consistent, add more anchor points, and configure symmetry pairs in scripted workflows. |
 | Tracking drifts after occlusion | Correct the first bad frame, save it, and rerun from that correction frame. |
 | CPU runs are slow | Use CUDA or MPS when available, reduce `short_side`, validate short segments first, and pre-download the model before long runs. |
+
+## Two-Mice 3D Simulation Dataset & Tracking Evaluation
+
+To generate deterministic multi-scenario two-mouse `.mp4` videos, 3D depth-buffered
+instance/body-part masks, LabelMe JSONs, COCO pose + tracking splits, and
+side-by-side ground-truth vs. tracked diagnostic videos:
+
+```bash
+source .venv/bin/activate
+python scripts/generate_two_mice_keypoint_tracking_eval.py --tag eval
+```
+
+Outputs are written under `output/two_mice_keypoint_tracking_eval/` (pass
+`--generate-only` to export the videos and ground-truth dataset without running
+model inference, or `--skip-generate` to re-benchmark against existing sequences).

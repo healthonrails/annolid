@@ -67,6 +67,7 @@ class Dinov3Config:
 
     model_name: str = DEFAULT_DINOV3_MODEL_ID
     short_side: int = 768
+    max_long_side: Optional[int] = 1408
     patch_size: int = 16
     cache_dir: Optional[str] = None
     device: Optional[str] = None
@@ -119,7 +120,22 @@ class Dinov3FeatureExtractor:
 
         # Load processor + model
         self.processor, self.model = self._load_model()
-        self.model.to(self.device)
+        try:
+            self.model.to(self.device)
+        except RuntimeError as exc:
+            if "out of memory" not in str(exc).lower() or self.device.type == "cpu":
+                raise
+            if self.device.type == "mps" and hasattr(torch.mps, "empty_cache"):
+                torch.mps.empty_cache()
+            elif self.device.type == "cuda":
+                torch.cuda.empty_cache()
+            logger.warning(
+                "Accelerator out of memory moving DINOv3 model to %s (%s); falling back to CPU.",
+                self.device,
+                exc,
+            )
+            self.device = torch.device("cpu")
+            self.model.to(self.device)
         self.model.eval()
 
         # Determine features: patch_size, layers, special_tokens
@@ -237,13 +253,22 @@ class Dinov3FeatureExtractor:
         """Aspect-preserving resize with both sides snapped to patch multiple.
         Returns (new_h, new_w).
         """
-        short = int(self.cfg.short_side)
+        short = max(self.patch_size, int(self.cfg.short_side))
+        w = max(1, int(w))
+        h = max(1, int(h))
 
-        # scale so short side == `short`
+        # Scale so short side == `short`, capped by `max_long_side` on elongated ROIs.
         if h <= w:
             scale = short / h
         else:
             scale = short / w
+        max_long = getattr(self.cfg, "max_long_side", None)
+        if max_long is not None and int(max_long) > 0:
+            long_cap = max(short, int(max_long))
+            long_dim = max(w, h)
+            if long_dim * scale > long_cap:
+                scale = long_cap / float(long_dim)
+
         new_w = max(
             self.patch_size,
             int(math.ceil((w * scale) / self.patch_size) * self.patch_size),
@@ -311,33 +336,58 @@ class Dinov3FeatureExtractor:
             If True, returns L2-normalized channel features (recommended).
         """
         pil = self._to_pil(image, color_space=color_space)
-        x = self._preprocess(pil)
-
-        use_amp = self.cfg.use_amp and self.device.type == "cuda"
-        autocast_device = "cuda" if self.device.type == "cuda" else "cpu"
-
         ret_mode = return_layer or self.cfg.return_layer
 
         # Requesting all hidden states is expensive (and can OOM on MPS).
         # Only do it when we actually need intermediate layers.
         need_hidden_states = True
         if ret_mode == "last":
-            # If the only requested layer is the last transformer block, we can
-            # use `last_hidden_state` directly.
-            resolved = []
-            for layer_idx in self._layers:
-                resolved_idx = layer_idx
-                if layer_idx < 0:
-                    resolved_idx = self.num_hidden_layers + layer_idx
-                resolved.append(int(resolved_idx))
-            if resolved and set(resolved) == {int(self.num_hidden_layers - 1)}:
+            if self.cfg.layers is None:
                 need_hidden_states = False
+            else:
+                resolved = [
+                    (self.num_hidden_layers + idx if idx < 0 else idx)
+                    for idx in self._layers
+                ]
+                if resolved and resolved[-1] == int(self.num_hidden_layers - 1):
+                    need_hidden_states = False
 
-        with torch.autocast(device_type=autocast_device, enabled=use_amp):
-            outputs = self.model(
-                pixel_values=x,
-                output_hidden_states=bool(need_hidden_states),
+        def _forward_model(inp: torch.Tensor):
+            dev_type = self.device.type
+            use_amp = bool(self.cfg.use_amp and dev_type in ("cuda", "mps"))
+            autocast_device = dev_type if dev_type in ("cuda", "mps") else "cpu"
+            autocast_kwargs = (
+                {"dtype": torch.float16} if (use_amp and dev_type == "mps") else {}
             )
+            with torch.autocast(
+                device_type=autocast_device,
+                enabled=use_amp,
+                **autocast_kwargs,
+            ):
+                return self.model(
+                    pixel_values=inp,
+                    output_hidden_states=bool(need_hidden_states),
+                )
+
+        try:
+            x = self._preprocess(pil)
+            outputs = _forward_model(x)
+        except RuntimeError as exc:
+            if "out of memory" not in str(exc).lower() or self.device.type == "cpu":
+                raise
+            if self.device.type == "mps" and hasattr(torch.mps, "empty_cache"):
+                torch.mps.empty_cache()
+            elif self.device.type == "cuda":
+                torch.cuda.empty_cache()
+            logger.warning(
+                "Accelerator out of memory during DINOv3 extraction on %s (%s); falling back to CPU.",
+                self.device,
+                exc,
+            )
+            self.device = torch.device("cpu")
+            self.model.to(self.device)
+            x = self._preprocess(pil)
+            outputs = _forward_model(x)
 
         selected_grids = []
         if not need_hidden_states:
@@ -353,7 +403,12 @@ class Dinov3FeatureExtractor:
             hidden_states = outputs.hidden_states  # (num_layers + 1) tensors
             selected_grids = []
             num_layers = len(hidden_states) - 1
-            for layer_idx in self._layers:
+            layers_to_read = (
+                (self._layers[-1],)
+                if (ret_mode == "last" and self._layers)
+                else self._layers
+            )
+            for layer_idx in layers_to_read:
                 resolved_idx = layer_idx
                 if layer_idx < 0:
                     resolved_idx = num_layers + layer_idx

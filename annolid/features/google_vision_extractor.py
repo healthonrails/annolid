@@ -735,10 +735,18 @@ class GoogleVisionFeatureExtractor(Dinov3FeatureExtractor):
             self._accepts_output_hidden_states = True
 
     def _compute_resized_hw(self, w: int, h: int) -> Tuple[int, int]:
-        """Aspect-preserving resize snapped to ``_snap_multiple``."""
-        short = int(self.cfg.short_side)
-        scale = (short / h) if h <= w else (short / w)
+        """Aspect-preserving resize snapped to ``_snap_multiple`` with ``max_long_side`` cap."""
         multiple = max(self.patch_size, int(self._snap_multiple))
+        short = max(multiple, int(self.cfg.short_side))
+        w = max(1, int(w))
+        h = max(1, int(h))
+        scale = (short / h) if h <= w else (short / w)
+        max_long = getattr(self.cfg, "max_long_side", None)
+        if max_long is not None and int(max_long) > 0:
+            long_cap = max(short, int(max_long))
+            long_dim = max(w, h)
+            if long_dim * scale > long_cap:
+                scale = long_cap / float(long_dim)
         new_w = max(multiple, int(math.ceil((w * scale) / multiple) * multiple))
         new_h = max(multiple, int(math.ceil((h * scale) / multiple) * multiple))
         return new_h, new_w

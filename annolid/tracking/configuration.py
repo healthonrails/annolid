@@ -43,6 +43,7 @@ TRACKER_PRESETS: Dict[str, Dict[str, object]] = {
         "motion_prior_miss_relief": 1.25,
         "motion_prior_flow_relief": 0.15,
         "structural_consistency_weight": 0.55,
+        "symmetry_penalty": 0.35,
         "appearance_bundle_radius": 4,
         "appearance_bundle_size": 60,
         "appearance_bundle_weight": 0.65,

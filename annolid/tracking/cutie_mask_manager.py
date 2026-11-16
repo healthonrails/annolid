@@ -56,6 +56,7 @@ class CutieMaskManager:
         self._last_bboxes: Dict[str, BBoxXYXY] = {}
         self._last_areas: Dict[str, int] = {}
         self._mask_miss_counts: Dict[str, int] = {}
+        self._last_frame: Optional[np.ndarray] = None
 
     def ready(self) -> bool:
         return self.enabled and self._initialized
@@ -72,6 +73,7 @@ class CutieMaskManager:
         self._last_bboxes = {}
         self._last_areas = {}
         self._mask_miss_counts = {}
+        self._last_frame = None
 
     def prime(
         self, frame_number: int, frame: np.ndarray, registry: InstanceRegistry
@@ -82,8 +84,9 @@ class CutieMaskManager:
         try:
             self._ensure_core()
         except Exception as exc:  # pragma: no cover - defensive
-            self._handle_failure(exc, "Failed to initialize Cutie core")
-            return
+            if not self._reinitialize_cpu_core_on_oom(exc):
+                self._handle_failure(exc, "Failed to initialize Cutie core")
+                return
 
         mask_values = self._build_initial_mask(registry)
         if not mask_values:
@@ -98,9 +101,9 @@ class CutieMaskManager:
         composed_mask = mask_values["mask"]
         mapping = mask_values["mapping"]
 
-        frame_tensor = self._prepare_frame_tensor(frame)
         mask_tensor = torch.from_numpy(np.ascontiguousarray(composed_mask))
         try:
+            frame_tensor = self._prepare_frame_tensor(frame)
             self._step_core(
                 frame_tensor,
                 mask_tensor,
@@ -110,12 +113,28 @@ class CutieMaskManager:
                 resize_output=False,
             )
         except Exception as exc:  # pragma: no cover - device level failure
-            self._handle_failure(exc, "Cutie prime inference failed")
-            return
+            if self._reinitialize_cpu_core_on_oom(exc):
+                try:
+                    frame_tensor = self._prepare_frame_tensor(frame)
+                    self._step_core(
+                        frame_tensor,
+                        mask_tensor,
+                        objects=list(mapping.values()),
+                        idx_mask=True,
+                        force_permanent=True,
+                        resize_output=False,
+                    )
+                except Exception as retry_exc:
+                    self._handle_failure(retry_exc, "Cutie CPU fallback prime failed")
+                    return
+            else:
+                self._handle_failure(exc, "Cutie prime inference failed")
+                return
 
         self._label_to_value = mapping
         self._value_to_label = {value: label for label, value in mapping.items()}
         self._initialized = True
+        self._last_frame = frame
         self._seed_last_results(registry)
         logger.debug("CutieMaskManager primed with instances: %s", list(mapping.keys()))
 
@@ -124,16 +143,31 @@ class CutieMaskManager:
     ) -> Dict[str, MaskResult]:
         if not self.ready():
             return {}
-        frame_tensor = self._prepare_frame_tensor(frame)
         try:
+            frame_tensor = self._prepare_frame_tensor(frame)
             prediction = self._step_core(
                 frame_tensor,
                 return_index_mask=True,
                 output_size=tuple(frame.shape[:2]),
             )
         except Exception as exc:  # pragma: no cover - device level failure
-            self._handle_failure(exc, "Cutie update failed")
-            return {}
+            if (
+                self._reinitialize_cpu_core_on_oom(exc)
+                and self._reprime_from_last_state()
+            ):
+                try:
+                    frame_tensor = self._prepare_frame_tensor(frame)
+                    prediction = self._step_core(
+                        frame_tensor,
+                        return_index_mask=True,
+                        output_size=tuple(frame.shape[:2]),
+                    )
+                except Exception as retry_exc:
+                    self._handle_failure(retry_exc, "Cutie CPU fallback update failed")
+                    return {}
+            else:
+                self._handle_failure(exc, "Cutie update failed")
+                return {}
 
         output_prob_to_mask = getattr(self._core, "output_prob_to_mask", None)
         if callable(output_prob_to_mask) and isinstance(prediction, torch.Tensor):
@@ -191,6 +225,7 @@ class CutieMaskManager:
             current_bboxes=current_bboxes,
             current_areas=current_areas,
         )
+        self._last_frame = frame
         return results
 
     def _apply_fallbacks(
@@ -332,6 +367,72 @@ class CutieMaskManager:
         self._processor = processor
         self._device = processor.device
         self._core = InferenceCore(processor.cutie, cfg=processor.cfg)
+
+    def _reinitialize_cpu_core_on_oom(self, exc: Exception) -> bool:
+        """Migrate Cutie inference core to CPU when accelerator memory is exhausted."""
+        if "out of memory" not in str(exc).lower():
+            return False
+        prev_dev = str(self._device or "")
+        if prev_dev.lower() == "cpu":
+            return False
+        self._core = None
+        self._processor = None
+        if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
+            try:
+                torch.mps.empty_cache()
+            except Exception:
+                pass
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        logger.warning(
+            "Cutie accelerator out of memory on %s (%s); migrating Cutie mask propagation to CPU.",
+            prev_dev or "accelerator",
+            exc,
+        )
+        processor = CutieCoreVideoProcessor(
+            str(self.video_path),
+            mem_every=self.config.cutie_mem_every,
+            t_max_value=self.config.cutie_max_mem_frames,
+            use_cpu_only=True,
+            debug=False,
+        )
+        self._processor = processor
+        self._device = "cpu"
+        self._core = InferenceCore(processor.cutie, cfg=processor.cfg)
+        return True
+
+    def _reprime_from_last_state(self) -> bool:
+        """Re-prime a freshly migrated CPU core using the latest tracked masks."""
+        if (
+            self._core is None
+            or self._last_frame is None
+            or not self._label_to_value
+            or not self._last_results
+        ):
+            return False
+        composed = np.zeros(
+            (self.adapter.image_height, self.adapter.image_width), dtype=np.int32
+        )
+        active_objects: List[int] = []
+        for label, value in self._label_to_value.items():
+            res = self._last_results.get(label)
+            if res is None or res.mask_bitmap is None or not np.any(res.mask_bitmap):
+                continue
+            composed[res.mask_bitmap.astype(bool)] = int(value)
+            active_objects.append(int(value))
+        if not active_objects:
+            return False
+        frame_tensor = self._prepare_frame_tensor(self._last_frame)
+        mask_tensor = torch.from_numpy(np.ascontiguousarray(composed))
+        self._step_core(
+            frame_tensor,
+            mask_tensor,
+            objects=active_objects,
+            idx_mask=True,
+            force_permanent=True,
+            resize_output=False,
+        )
+        return True
 
     def _build_initial_mask(self, registry: InstanceRegistry) -> Dict[str, object]:
         composed_mask = np.zeros(

@@ -321,6 +321,8 @@ class DinoKeypointTracker:
 
         self.prev_scale = (scale_x, scale_y)
         self.tracks.clear()
+        occluded_seeds: List[Tuple[object, object]] = []
+        visible_part_descs: Dict[str, List[torch.Tensor]] = {}
         for instance in registry:
             track_feats = instance_region_feats.get(
                 instance.label, default_region_feats
@@ -329,6 +331,9 @@ class DinoKeypointTracker:
             mask_descriptor = cache_entry.get("descriptor") if cache_entry else None
             patch_mask = cache_entry.get("patch_mask") if cache_entry else None
             for keypoint in instance.keypoints.values():
+                if not bool(getattr(keypoint, "visible", True)):
+                    occluded_seeds.append((instance, keypoint))
+                    continue
                 patch_rc = self._pixel_to_patch(
                     keypoint.x, keypoint.y, scale_x, scale_y, grid_hw
                 )
@@ -389,6 +394,8 @@ class DinoKeypointTracker:
                     seed_position=(float(keypoint.x), float(keypoint.y)),
                     template_heading_rad=0.0,
                     last_template_angle_rad=0.0,
+                    seeded_occluded=False,
+                    has_clean_seed_descriptor=True,
                 )
 
                 track.appearance_codebook = self._collect_appearance_codebook(
@@ -414,7 +421,84 @@ class DinoKeypointTracker:
                     reference_desc,
                     confidence=1.0,
                 )
+                norm_lbl = (keypoint.label or "").strip().lower()
+                if norm_lbl:
+                    visible_part_descs.setdefault(norm_lbl, []).append(
+                        reference_desc.detach().clone()
+                    )
                 self.tracks[keypoint.key] = track
+
+        # Pass 2: Initialize occluded seed keypoints without polluting codebooks or
+        # pixel templates with the occluding surface.
+        for instance, keypoint in occluded_seeds:
+            inst_label = str(getattr(instance, "label", ""))
+            kp_key = str(getattr(keypoint, "key", ""))
+            kp_label = str(getattr(keypoint, "label", ""))
+            kp_storage = str(getattr(keypoint, "storage_label", kp_label))
+            kx = float(getattr(keypoint, "x", 0.0))
+            ky = float(getattr(keypoint, "y", 0.0))
+            track_feats = instance_region_feats.get(inst_label, default_region_feats)
+            cache_entry = mask_cache.get(inst_label)
+            mask_descriptor = cache_entry.get("descriptor") if cache_entry else None
+            patch_mask = cache_entry.get("patch_mask") if cache_entry else None
+            patch_rc = self._pixel_to_patch(kx, ky, scale_x, scale_y, grid_hw)
+
+            homologous_desc = self._resolve_homologous_seed_descriptor(
+                instance_label=inst_label,
+                display_label=kp_label,
+                track_key=kp_key,
+                visible_part_descs=visible_part_descs,
+                device=track_feats.device,
+            )
+            has_clean = homologous_desc is not None
+            if homologous_desc is not None:
+                reference_desc = homologous_desc
+            else:
+                base_desc = self._sample_point_descriptor(
+                    track_feats,
+                    xy=(kx, ky),
+                    patch_rc=patch_rc,
+                    scale_x=scale_x,
+                    scale_y=scale_y,
+                    grid_hw=grid_hw,
+                    patch_mask=patch_mask,
+                )
+                reference_desc = self._normalize_descriptor(base_desc)
+
+            descriptor = self._apply_mask_descriptor(
+                reference_desc.clone(), mask_descriptor
+            )
+            existing_manual = self._manual_anchor_codebooks.get(kp_key)
+            track = KeypointTrack(
+                key=kp_key,
+                storage_label=kp_storage,
+                instance_label=inst_label,
+                display_label=kp_label,
+                patch_rc=patch_rc,
+                descriptor=descriptor,
+                reference_descriptor=reference_desc.clone(),
+                context_descriptor=None,
+                manual_codebook=existing_manual,
+                misses=1,
+                last_position=(kx, ky),
+                quality=0.0,
+                appearance_codebook=None,
+                baseline_similarity=0.85,
+                pixel_template=self._manual_pixel_templates.get(kp_key),
+                seed_position=(kx, ky),
+                template_heading_rad=0.0,
+                last_template_angle_rad=0.0,
+                seeded_occluded=True,
+                has_clean_seed_descriptor=bool(
+                    has_clean or existing_manual is not None
+                ),
+            )
+            body_prior = body_priors.get(inst_label)
+            if body_prior is not None:
+                track.body_coords = body_prior.signature(
+                    (float(patch_rc[0]), float(patch_rc[1]))
+                )
+            self.tracks[kp_key] = track
 
         self.prev_gray = frame_gray
         self._initialize_structural_refs(registry)
@@ -480,6 +564,27 @@ class DinoKeypointTracker:
                 label: mask.astype(bool) if mask is not None else None
                 for label, mask in mask_lookup.items()
             }
+        exclusive_other_masks: Dict[str, np.ndarray] = {}
+        collapsed_masks: Set[str] = set()
+        if active_masks:
+            valid_masks = {
+                lbl: m
+                for lbl, m in active_masks.items()
+                if m is not None and m.size > 0 and np.any(m)
+            }
+            for inst_lbl, own_m in active_masks.items():
+                if own_m is not None and np.any(own_m):
+                    ref_span = self._instance_ref_span.get(inst_lbl, 0.0)
+                    if ref_span > 8.0:
+                        cur_span = math.sqrt(float(np.count_nonzero(own_m)))
+                        if 0.0 < cur_span < 0.72 * ref_span:
+                            collapsed_masks.add(inst_lbl)
+                others = [m for lbl, m in valid_masks.items() if lbl != inst_lbl]
+                if others:
+                    other_union = np.logical_or.reduce(others)
+                    exclusive_other_masks[inst_lbl] = (
+                        other_union & (~own_m) if own_m is not None else other_union
+                    )
 
         frame_array = np.array(image)
         frame_gray = cv2.cvtColor(frame_array, cv2.COLOR_RGB2GRAY)
@@ -640,25 +745,76 @@ class DinoKeypointTracker:
                 track.patch_rc = (prev_r, prev_c)
             base_x = float(patch_centers_x[prev_c])
             base_y = float(patch_centers_y[prev_r])
-            if batched_lk_by_track is not None:
-                motion = self._estimate_frame_motion(
-                    track,
-                    prev_gray=prev_gray,
-                    frame_gray=frame_gray,
-                    dense_flow=None,
-                    dense_flow_provider=get_dense_flow,
-                    precomputed_pixel_flow=(True, batched_lk_by_track.get(track.key)),
+            mask_pixels = active_masks.get(track.instance_label)
+            mask_pixels_by_track[track.key] = mask_pixels
+
+            constellation_pred = (
+                self._predict_constellation_xy(track, previous_positions)
+                if (track.seeded_occluded or track.misses >= 2)
+                else None
+            )
+            if constellation_pred is not None:
+                predicted_x, predicted_y = constellation_pred
+                base_x, base_y = constellation_pred
+                flow_vec: Optional[Tuple[float, float]] = (
+                    float(predicted_x - track.last_position[0]),
+                    float(predicted_y - track.last_position[1]),
                 )
+                pixel_flow_by_track[track.key] = None
             else:
-                motion = self._estimate_frame_motion(
-                    track,
-                    prev_gray=prev_gray,
-                    frame_gray=frame_gray,
-                    dense_flow=None,
-                    dense_flow_provider=get_dense_flow,
-                )
-            pixel_flow_by_track[track.key] = motion.pixel_flow
-            predicted_x, predicted_y = motion.predicted_xy
+                if batched_lk_by_track is not None:
+                    motion = self._estimate_frame_motion(
+                        track,
+                        prev_gray=prev_gray,
+                        frame_gray=frame_gray,
+                        dense_flow=None,
+                        dense_flow_provider=get_dense_flow,
+                        precomputed_pixel_flow=(
+                            True,
+                            batched_lk_by_track.get(track.key),
+                        ),
+                    )
+                else:
+                    motion = self._estimate_frame_motion(
+                        track,
+                        prev_gray=prev_gray,
+                        frame_gray=frame_gray,
+                        dense_flow=None,
+                        dense_flow_provider=get_dense_flow,
+                    )
+                pflow = motion.pixel_flow
+                predicted_x, predicted_y = motion.predicted_xy
+                flow_vec = motion.flow_vec
+                if (
+                    pflow is not None
+                    and mask_pixels is not None
+                    and mask_pixels.size > 0
+                    and track.instance_label not in collapsed_masks
+                ):
+                    _, _, flow_near_mask = self.snap_point_to_mask(
+                        pflow.xy[0], pflow.xy[1], mask_pixels, search_radius=2
+                    )
+                    if not flow_near_mask:
+                        pflow = None
+                        alt_const = self._predict_constellation_xy(
+                            track, previous_positions
+                        )
+                        if alt_const is not None:
+                            predicted_x, predicted_y = alt_const
+                            flow_vec = (
+                                float(predicted_x - track.last_position[0]),
+                                float(predicted_y - track.last_position[1]),
+                            )
+                        else:
+                            predicted_x = float(
+                                track.last_position[0] + track.velocity[0]
+                            )
+                            predicted_y = float(
+                                track.last_position[1] + track.velocity[1]
+                            )
+                            flow_vec = None
+                pixel_flow_by_track[track.key] = pflow
+
             predicted_r, predicted_c = self._pixel_to_patch(
                 predicted_x,
                 predicted_y,
@@ -672,7 +828,7 @@ class DinoKeypointTracker:
                 base_xy=(base_x, base_y),
                 predicted_xy=(predicted_x, predicted_y),
                 predicted_rc=(predicted_r, predicted_c),
-                flow_vec=motion.flow_vec,
+                flow_vec=flow_vec,
                 scale_x=scale_x,
                 scale_y=scale_y,
             )
@@ -694,8 +850,6 @@ class DinoKeypointTracker:
             mask_descriptors[track.key] = mask_descriptor
             mask_patches[track.key] = patch_mask
             base_positions[track.key] = (base_x, base_y)
-            mask_pixels = active_masks.get(track.instance_label)
-            mask_pixels_by_track[track.key] = mask_pixels
 
             use_appearance = (
                 appearance_weight > 0.0 and track.appearance_codebook is not None
@@ -880,6 +1034,9 @@ class DinoKeypointTracker:
                     candidate_score -= self._structural_penalty(
                         track, candidate_xy, previous_positions
                     )
+                    candidate_score -= self._intra_instance_crowding_penalty(
+                        track, candidate_xy, previous_positions
+                    )
                 if use_body_prior:
                     candidate_score -= self._body_prior_penalty(
                         track,
@@ -907,6 +1064,16 @@ class DinoKeypointTracker:
                     candidate_score -= self._multi_animal_instance_penalty(
                         track, candidate_xy, instance_context
                     )
+                other_excl_cand = exclusive_other_masks.get(track.instance_label)
+                if other_excl_cand is not None:
+                    cix = int(round(candidate_xy[0]))
+                    ciy = int(round(candidate_xy[1]))
+                    if (
+                        0 <= ciy < other_excl_cand.shape[0]
+                        and 0 <= cix < other_excl_cand.shape[1]
+                        and bool(other_excl_cand[ciy, cix])
+                    ):
+                        candidate_score -= 0.85
                 candidate_list.append(
                     Candidate(
                         rc=(r, c),
@@ -925,7 +1092,11 @@ class DinoKeypointTracker:
                         np.float32
                     ) * float(similarity_bonus)
                 valid_mask = None
-                if mask_region is not None and self.restrict_to_mask:
+                if (
+                    mask_region is not None
+                    and self.restrict_to_mask
+                    and track.instance_label not in collapsed_masks
+                ):
                     valid_mask = mask_region.astype(bool, copy=False)
                 refine_region = RefineRegion(
                     logits=refine_logits,
@@ -954,12 +1125,23 @@ class DinoKeypointTracker:
             else {}
         )
 
-        for track in self.tracks.values():
+        ordered_tracks = sorted(
+            self.tracks.values(),
+            key=lambda t: (1 if (t.seeded_occluded or t.misses > 0) else 0),
+        )
+        accepted_visible_by_inst: Dict[str, List[Tuple[str, float, float]]] = {}
+        current_visible_positions: Dict[str, Tuple[float, float]] = dict(
+            previous_positions
+        )
+        results_by_key: Dict[str, Dict[str, object]] = {}
+
+        for track in ordered_tracks:
             base_x, base_y = base_positions.get(track.key, (0.0, 0.0))
             assignment = assignments.get(track.key)
             mask_descriptor = mask_descriptors.get(track.key)
             patch_mask = mask_patches.get(track.key)
             mask_pixels = mask_pixels_by_track.get(track.key)
+            other_excl = exclusive_other_masks.get(track.instance_label)
             pixel_flow = pixel_flow_by_track.get(track.key)
             assignment_prior = motion_priors.get(track.key)
 
@@ -967,7 +1149,16 @@ class DinoKeypointTracker:
             if assignment is None or quality < effective_min_similarity:
                 track.misses += 1
                 visible = False
-                x, y = base_x, base_y
+                const_xy = self._predict_constellation_xy(
+                    track, current_visible_positions
+                )
+                if const_xy is not None and (
+                    track.seeded_occluded or track.misses >= 2
+                ):
+                    x, y = const_xy
+                    track.last_position = (float(x), float(y))
+                else:
+                    x, y = base_x, base_y
                 self._handle_track_miss_limits(track, tracking_enabled=tracking_enabled)
             else:
                 x, y = assignment.xy
@@ -995,7 +1186,11 @@ class DinoKeypointTracker:
                             patch_centers_y=patch_centers_y,
                         )
                     )
-                    x, y = refined_x, refined_y
+                    if self.keypoint_refine_radius > 0 and refine_confidence > 0.0:
+                        x = 0.65 * float(x) + 0.35 * float(refined_x)
+                        y = 0.65 * float(y) + 0.35 * float(refined_y)
+                    else:
+                        x, y = refined_x, refined_y
                 pixel_refine_confidence = 0.0
                 if pixel_flow is not None:
                     refined_x, refined_y, pixel_refine_confidence = (
@@ -1028,11 +1223,26 @@ class DinoKeypointTracker:
                         float(pixel_refine_confidence), float(tpl_conf)
                     )
                 candidate_visible = True
+                if self._point_in_mask(x, y, other_excl):
+                    if mask_pixels is not None and np.any(mask_pixels):
+                        x, y, snapped_own = self._enforce_mask_position(
+                            x,
+                            y,
+                            mask_pixels,
+                            search_radius=max(int(self.mask_enforce_snap_radius), 20),
+                        )
+                        if not snapped_own or self._point_in_mask(x, y, other_excl):
+                            candidate_visible = False
+                    else:
+                        candidate_visible = False
+
                 if (
-                    self.mask_enforce_position
+                    candidate_visible
+                    and self.mask_enforce_position
                     and mask_pixels is not None
                     and mask_pixels.size > 0
                 ):
+                    pre_snap_x, pre_snap_y = float(x), float(y)
                     x, y, inside_mask = self._enforce_mask_position(
                         x,
                         y,
@@ -1040,7 +1250,30 @@ class DinoKeypointTracker:
                         search_radius=self.mask_enforce_snap_radius,
                     )
                     if not inside_mask and self.mask_enforce_reject_outside:
+                        if (
+                            track.instance_label in collapsed_masks
+                            and quality >= effective_min_similarity + 0.12
+                            and not self._point_in_mask(
+                                pre_snap_x, pre_snap_y, other_excl
+                            )
+                        ):
+                            x, y = pre_snap_x, pre_snap_y
+                            candidate_visible = True
+                        else:
+                            candidate_visible = False
+
+                if candidate_visible and track.seeded_occluded:
+                    if not track.has_clean_seed_descriptor:
                         candidate_visible = False
+                    elif quality < max(effective_min_similarity + 0.12, 0.58):
+                        candidate_visible = False
+                    else:
+                        for _sib_lbl, sib_x, sib_y in accepted_visible_by_inst.get(
+                            track.instance_label, []
+                        ):
+                            if math.hypot(x - sib_x, y - sib_y) < 7.0:
+                                candidate_visible = False
+                                break
 
                 similarity_conf = 0.0
                 if candidate_visible:
@@ -1066,7 +1299,7 @@ class DinoKeypointTracker:
                         candidate_visible = self._satisfies_tracking_constraints(
                             track,
                             candidate_xy=(x, y),
-                            previous_positions=previous_positions,
+                            previous_positions=current_visible_positions,
                             instance_context=instance_context,
                         )
                     if candidate_visible:
@@ -1081,26 +1314,61 @@ class DinoKeypointTracker:
                             track,
                             candidate_rc=candidate_rc,
                             body_prior=body_priors.get(track.instance_label),
+                            candidate_xy=(x, y),
+                            prior=assignment_prior,
                         )
                         body_prior_rejected = not body_prior_accept
                         candidate_visible = candidate_visible and body_prior_accept
 
                 if not candidate_visible:
                     if body_prior_rejected:
-                        # Reject the jump but treat it as a hold at the prior spot.
+                        # Reject the jump; follow articulated constellation when
+                        # available, otherwise hold at the prior spot.
                         visible = True
-                        x, y = track.last_position
+                        const_xy = self._predict_constellation_xy(
+                            track, current_visible_positions
+                        )
+                        if (
+                            const_xy is not None
+                            and not self._point_in_mask(
+                                const_xy[0], const_xy[1], other_excl
+                            )
+                            and (
+                                mask_pixels is None
+                                or not np.any(mask_pixels)
+                                or self.snap_point_to_mask(
+                                    const_xy[0],
+                                    const_xy[1],
+                                    mask_pixels,
+                                    search_radius=6,
+                                )[2]
+                            )
+                        ):
+                            x, y = const_xy
+                        else:
+                            x, y = track.last_position
                         quality = track.quality
                     else:
                         track.misses += 1
                         visible = False
-                        x, y = track.last_position
+                        const_xy = self._predict_constellation_xy(
+                            track, current_visible_positions
+                        )
+                        if const_xy is not None and (
+                            track.seeded_occluded or track.misses >= 1
+                        ):
+                            x, y = const_xy
+                            track.last_position = (float(x), float(y))
+                        else:
+                            x, y = track.last_position
                         quality = 0.0
                         self._handle_track_miss_limits(
                             track, tracking_enabled=tracking_enabled
                         )
                 else:
+                    was_seeded_occluded = track.seeded_occluded
                     track.misses = 0
+                    track.seeded_occluded = False
                     visible = True
                     track.patch_rc = self._pixel_to_patch(
                         x,
@@ -1121,11 +1389,53 @@ class DinoKeypointTracker:
                         grid_hw=grid_hw,
                         patch_mask=patch_mask,
                     )
-                    combined_conf = max(
-                        similarity_conf,
+                    if was_seeded_occluded:
+                        track.reference_descriptor = new_desc.clone()
+                        if use_pixel_region and track.pixel_template is None:
+                            track.pixel_template = extract_gaussian_pixel_template(
+                                frame_gray,
+                                (float(x), float(y)),
+                                window_px=int(
+                                    getattr(
+                                        self.runtime_config, "pixel_region_window", 11
+                                    )
+                                ),
+                                sigma_px=float(
+                                    getattr(
+                                        self.runtime_config, "pixel_region_sigma", 3.0
+                                    )
+                                ),
+                                num_orientations=max(
+                                    1,
+                                    int(
+                                        getattr(
+                                            self.runtime_config,
+                                            "pixel_region_num_orientations",
+                                            12,
+                                        )
+                                    ),
+                                ),
+                            )
+                        if not track.support_probes:
+                            track.support_probes = self._sample_support_probes(
+                                track.key,
+                                track_feats,
+                                track.patch_rc,
+                                grid_hw,
+                                patch_mask,
+                            )
+
+                    aux_conf = max(
                         float(refine_confidence),
                         float(cluster_refine_confidence),
                         float(pixel_refine_confidence),
+                    )
+                    combined_conf = float(
+                        np.clip(
+                            similarity_conf * (0.65 + 0.35 * aux_conf),
+                            0.0,
+                            1.0,
+                        )
                     )
                     effective_momentum = self.momentum * combined_conf
 
@@ -1208,29 +1518,33 @@ class DinoKeypointTracker:
                         (1.0 - velocity_smoothing) * track.velocity[1]
                         + velocity_smoothing * delta_y,
                     )
+                    accepted_visible_by_inst.setdefault(
+                        track.instance_label, []
+                    ).append((track.display_label, float(x), float(y)))
+                    current_visible_positions[track.key] = (float(x), float(y))
 
             quality = max(0.0, quality)
-            results.append(
-                {
-                    "id": track.key,
-                    "label": track.storage_label,
-                    "x": float(x),
-                    "y": float(y),
-                    "visible": visible,
-                    "instance_label": track.instance_label,
-                    "velocity": track.velocity,
-                    "misses": track.misses,
-                    "quality": quality,
-                    "confidence": max(0.0, min(1.0, quality)),
-                    "symmetry_partner": track.symmetry_partner,
-                    "symmetry_sign": track.symmetry_sign,
-                }
-            )
+            results_by_key[track.key] = {
+                "id": track.key,
+                "label": track.storage_label,
+                "x": float(x),
+                "y": float(y),
+                "visible": visible,
+                "instance_label": track.instance_label,
+                "velocity": track.velocity,
+                "misses": track.misses,
+                "quality": quality,
+                "confidence": max(0.0, min(1.0, quality)),
+                "symmetry_partner": track.symmetry_partner,
+                "symmetry_sign": track.symmetry_sign,
+            }
             if visible:
                 track.last_position = (float(x), float(y))
                 track.quality = max(0.0, min(1.0, quality))
             else:
                 track.quality = max(0.0, min(1.0, quality))
+
+        results = [results_by_key[k] for k in self.tracks if k in results_by_key]
         self._update_symmetry_midpoints()
 
         if self._is_fresh_start:
@@ -1319,6 +1633,8 @@ class DinoKeypointTracker:
             track.last_position = (x, y)
             track.velocity = (0.0, 0.0)
             track.misses = 0
+            track.seeded_occluded = False
+            track.has_clean_seed_descriptor = True
             track.quality = max(track.quality, 0.0)
             if refreshed_tpl is not None:
                 track.pixel_template = refreshed_tpl
@@ -1483,9 +1799,21 @@ class DinoKeypointTracker:
 
         max_similarity = max(item[2] for item in component)
         temperature = max(1e-4, float(self.keypoint_refine_temperature))
+        sigma = max(
+            0.5,
+            float(
+                getattr(
+                    self,
+                    "keypoint_refine_sigma",
+                    getattr(self.runtime_config, "keypoint_refine_sigma", 1.25),
+                )
+            ),
+        )
+        inv_sigma_sq = 1.0 / (sigma * sigma)
         total = 0.0
         sum_x = 0.0
         sum_y = 0.0
+        max_weight = 0.0
         for r_idx, c_idx, similarity in component:
             global_r = int(refine_region.r_min + r_idx)
             global_c = int(refine_region.c_min + c_idx)
@@ -1496,15 +1824,19 @@ class DinoKeypointTracker:
                 or global_c >= len(patch_centers_x)
             ):
                 continue
-            weight = math.exp((float(similarity) - float(max_similarity)) / temperature)
+            dr = float(r_idx - local_r)
+            dc = float(c_idx - local_c)
+            spatial = math.exp(-0.5 * (dr * dr + dc * dc) * inv_sigma_sq)
+            sim_w = math.exp((float(similarity) - float(max_similarity)) / temperature)
+            weight = spatial * sim_w
+            max_weight = max(max_weight, weight)
             total += weight
             sum_x += weight * float(patch_centers_x[global_c])
             sum_y += weight * float(patch_centers_y[global_r])
         if total <= 1e-12:
             return fallback_xy[0], fallback_xy[1], 0.0
 
-        max_area = float((2 * radius + 1) * (2 * radius + 1))
-        confidence = float(np.clip(len(component) / max_area, 0.0, 1.0))
+        confidence = float(np.clip(max_weight / total, 0.0, 1.0))
         return (sum_x / total, sum_y / total, confidence)
 
     def _backward_consistency_score(
@@ -1976,18 +2308,193 @@ class DinoKeypointTracker:
         # Otherwise, reject large jumps to prevent identity swaps on occlusion frames.
         return False
 
+    @staticmethod
+    def _point_in_mask(
+        x: float,
+        y: float,
+        mask: Optional[np.ndarray],
+    ) -> bool:
+        if mask is None or mask.size == 0:
+            return False
+        ix = int(round(float(x)))
+        iy = int(round(float(y)))
+        height, width = mask.shape[:2]
+        if 0 <= iy < height and 0 <= ix < width:
+            return bool(mask[iy, ix])
+        return False
+
+    def _resolve_homologous_seed_descriptor(
+        self,
+        *,
+        instance_label: str,
+        display_label: str,
+        track_key: str,
+        visible_part_descs: Dict[str, List[torch.Tensor]],
+        device: torch.device,
+    ) -> Optional[torch.Tensor]:
+        """Resolve a clean descriptor for an occluded seed keypoint from visible homologs."""
+        _ = instance_label
+        manual = self._manual_anchor_codebooks.get(track_key)
+        if manual is not None and manual.numel() > 0:
+            mean_manual = manual.mean(dim=0).to(device=device)
+            return self._normalize_descriptor(mean_manual)
+
+        norm_lbl = (display_label or "").strip().lower()
+        candidates: List[torch.Tensor] = []
+        if norm_lbl and norm_lbl in visible_part_descs:
+            candidates.extend(visible_part_descs[norm_lbl])
+
+        if not candidates and display_label.strip() in self._part_shared_descriptors:
+            candidates.append(self._part_shared_descriptors[display_label.strip()])
+
+        if not candidates and norm_lbl:
+            swaps = (
+                ("left_", "right_"),
+                ("right_", "left_"),
+                ("_left", "_right"),
+                ("_right", "_left"),
+                ("l_", "r_"),
+                ("r_", "l_"),
+            )
+            for src, dst in swaps:
+                if src in norm_lbl:
+                    partner_lbl = norm_lbl.replace(src, dst, 1)
+                    if partner_lbl in visible_part_descs:
+                        candidates.extend(visible_part_descs[partner_lbl])
+                        break
+
+        if not candidates:
+            return None
+        stacked = torch.stack(
+            [c.to(device=device, dtype=torch.float32) for c in candidates], dim=0
+        )
+        return self._normalize_descriptor(stacked.mean(dim=0))
+
+    def _predict_constellation_xy(
+        self,
+        track: KeypointTrack,
+        positions: Dict[str, Tuple[float, float]],
+    ) -> Optional[Tuple[float, float]]:
+        """Predict keypoint position from its nearest visible intra-instance anchors."""
+        if track.seed_position is None:
+            return None
+        sx, sy = float(track.seed_position[0]), float(track.seed_position[1])
+        anchors: List[Tuple[float, Tuple[float, float], Tuple[float, float]]] = []
+        for other in self.tracks.values():
+            if (
+                other.key == track.key
+                or other.instance_label != track.instance_label
+                or other.seeded_occluded
+                or other.misses > 0
+                or other.seed_position is None
+            ):
+                continue
+            cur_pos = positions.get(other.key)
+            if cur_pos is None:
+                continue
+            s_dist = math.hypot(
+                float(other.seed_position[0]) - sx,
+                float(other.seed_position[1]) - sy,
+            )
+            anchors.append((s_dist, other.seed_position, cur_pos))
+
+        if not anchors:
+            return None
+        anchors.sort(key=lambda item: item[0])
+        local_anchors = anchors[:4]
+        if len(local_anchors) == 1:
+            _, s0, c0 = local_anchors[0]
+            return (
+                sx + (float(c0[0]) - float(s0[0])),
+                sy + (float(c0[1]) - float(s0[1])),
+            )
+
+        pairs = [(s_pt, c_pt) for _, s_pt, c_pt in local_anchors]
+        s_arr = np.asarray([p[0] for p in pairs], dtype=np.float64)
+        c_arr = np.asarray([p[1] for p in pairs], dtype=np.float64)
+        s_mean = s_arr.mean(axis=0)
+        c_mean = c_arr.mean(axis=0)
+        angle = self._compute_procrustes_angle(pairs) or 0.0
+        s_var = float(np.sum((s_arr - s_mean) ** 2))
+        c_var = float(np.sum((c_arr - c_mean) ** 2))
+        scale = (
+            float(np.clip(math.sqrt(c_var / s_var), 0.65, 1.35))
+            if s_var > 4.0 and c_var > 1.0
+            else 1.0
+        )
+        rel_x = sx - float(s_mean[0])
+        rel_y = sy - float(s_mean[1])
+        cos_a = math.cos(angle)
+        sin_a = math.sin(angle)
+        pred_x = float(c_mean[0]) + scale * (cos_a * rel_x - sin_a * rel_y)
+        pred_y = float(c_mean[1]) + scale * (sin_a * rel_x + cos_a * rel_y)
+        return (pred_x, pred_y)
+
+    def _intra_instance_crowding_penalty(
+        self,
+        track: KeypointTrack,
+        candidate_xy: Tuple[float, float],
+        previous_positions: Dict[str, Tuple[float, float]],
+    ) -> float:
+        """Discourage distinct anatomical landmarks from collapsing onto occupied siblings."""
+        if track.seed_position is None:
+            return 0.0
+        sx, sy = float(track.seed_position[0]), float(track.seed_position[1])
+        cx, cy = float(candidate_xy[0]), float(candidate_xy[1])
+        penalty = 0.0
+        for other in self.tracks.values():
+            if (
+                other.key == track.key
+                or other.instance_label != track.instance_label
+                or other.seeded_occluded
+                or other.misses > 0
+                or other.seed_position is None
+            ):
+                continue
+            seed_dist = math.hypot(
+                float(other.seed_position[0]) - sx,
+                float(other.seed_position[1]) - sy,
+            )
+            if seed_dist < 16.0:
+                continue
+            other_pos = previous_positions.get(other.key, other.last_position)
+            other_pred_x = float(other_pos[0] + other.velocity[0])
+            other_pred_y = float(other_pos[1] + other.velocity[1])
+            min_sep = min(11.0, 0.35 * seed_dist)
+            dist = min(
+                math.hypot(cx - float(other_pos[0]), cy - float(other_pos[1])),
+                math.hypot(cx - other_pred_x, cy - other_pred_y),
+            )
+            if dist < min_sep:
+                penalty = max(penalty, 0.45 * (1.0 - dist / max(min_sep, 1e-6)))
+        return penalty
+
     def _should_accept_body_prior(
         self,
         track: KeypointTrack,
         *,
         candidate_rc: Tuple[int, int],
         body_prior: Optional[BodyPrior],
+        candidate_xy: Optional[Tuple[float, float]] = None,
+        prior: Optional[MotionPrior] = None,
     ) -> bool:
         weight = float(max(0.0, self.runtime_config.structural_consistency_weight))
         if weight <= 0.0:
             return True
         if body_prior is None or track.body_coords is None:
             return True
+
+        if (
+            candidate_xy is not None
+            and prior is not None
+            and prior.flow_vec is not None
+        ):
+            flow_dist = math.hypot(
+                float(candidate_xy[0]) - float(prior.predicted_xy[0]),
+                float(candidate_xy[1]) - float(prior.predicted_xy[1]),
+            )
+            if flow_dist <= max(10.0, float(prior.radius_px) * 0.65):
+                return True
 
         cand_t, cand_p, cand_th = body_prior.signature(
             (float(candidate_rc[0]), float(candidate_rc[1]))
@@ -2000,9 +2507,12 @@ class DinoKeypointTracker:
         dp = (cand_p - ref_p) / sigma_p
         dth = (cand_th - ref_th) / sigma_th
         d2 = dt * dt + dp * dp + dth * dth
-        # 2-sigma gate in body coordinates: prevents keypoints from hopping to
-        # a different anatomical region (ear -> tail) when appearance is ambiguous.
-        return bool(d2 <= 4.0)
+        # 2-sigma gate in body coordinates prevents ear->tail swaps on elongated
+        # masks; relax to 3-sigma when articulated curling/rearing foreshortens PCA.
+        threshold = (
+            9.0 if (bool(track.struct_refs) and sigma_t < 1.75 * sigma_p) else 4.0
+        )
+        return bool(d2 <= threshold)
 
     def _body_prior_penalty(
         self,
@@ -2536,20 +3046,25 @@ class DinoKeypointTracker:
         )
 
     def _initialize_structural_refs(self, registry: InstanceRegistry) -> None:
+        max_neighbors = 4
         for instance in registry:
             keypoints = {kp.key: kp for kp in instance.keypoints.values()}
             for key, kp in keypoints.items():
                 track = self.tracks.get(key)
                 if track is None:
                     continue
-                struct_refs: Dict[str, float] = {}
+                ranked: List[Tuple[int, float, str]] = []
                 for other_key, other in keypoints.items():
                     if other_key == key:
                         continue
                     dist = math.hypot(other.x - kp.x, other.y - kp.y)
                     if dist > 1e-6:
-                        struct_refs[other_key] = dist
-                track.struct_refs = struct_refs
+                        occ_rank = 0 if bool(getattr(other, "visible", True)) else 1
+                        ranked.append((occ_rank, dist, other_key))
+                ranked.sort(key=lambda item: (item[0], item[1]))
+                track.struct_refs = {
+                    other_key: dist for _occ, dist, other_key in ranked[:max_neighbors]
+                }
 
     def _initialize_symmetry_refs(self, registry: InstanceRegistry) -> None:
         pairs = getattr(self.runtime_config, "symmetry_pairs", ()) or ()
@@ -2650,6 +3165,11 @@ class DinoKeypointTracker:
         total = 0.0
         count = 0
         for other_key, ref_distance in track.struct_refs.items():
+            other_track = self.tracks.get(other_key)
+            if other_track is not None and (
+                other_track.misses > 0 or other_track.seeded_occluded
+            ):
+                continue
             other_pos = previous_positions.get(other_key)
             if other_pos is None or ref_distance <= 1e-6:
                 continue
@@ -3578,10 +4098,25 @@ class DinoKeypointTracker:
                 track.velocity = (0.0, 0.0)
                 track.descriptor = track.reference_descriptor.detach().clone()
 
+    def _track_cell_key(
+        self, track_key: str, rc: Tuple[int, int]
+    ) -> Tuple[str, int, int]:
+        tracks_map = getattr(self, "tracks", None) or {}
+        trk = tracks_map.get(track_key)
+        inst_lbl = str(trk.instance_label) if trk is not None else ""
+        return (inst_lbl, int(rc[0]), int(rc[1]))
+
+    def _is_secondary_assignment_track(self, track_key: str) -> bool:
+        tracks_map = getattr(self, "tracks", None) or {}
+        trk = tracks_map.get(track_key)
+        if trk is None:
+            return False
+        return bool(trk.seeded_occluded or trk.misses > 0)
+
     def _resolve_assignments(
         self, track_candidates: Dict[str, List[Candidate]]
     ) -> Dict[str, Optional[Candidate]]:
-        if (
+        use_hungarian = (
             bool(getattr(self.runtime_config, "tracking_enable", False))
             and str(
                 getattr(self.runtime_config, "tracking_matcher_algorithm", "greedy")
@@ -3589,20 +4124,57 @@ class DinoKeypointTracker:
             .strip()
             .lower()
             == "hungarian"
-        ):
-            return self._resolve_assignments_hungarian(track_candidates)
+        )
+        wave1_cands: Dict[str, List[Candidate]] = {}
+        wave2_keys: List[str] = []
+        for key, cands in track_candidates.items():
+            if self._is_secondary_assignment_track(key):
+                wave2_keys.append(key)
+            else:
+                wave1_cands[key] = cands
 
+        solver = (
+            self._resolve_assignments_hungarian
+            if use_hungarian
+            else self._resolve_assignments_greedy
+        )
+        if not wave2_keys:
+            return solver(track_candidates)
+
+        assignments: Dict[str, Optional[Candidate]] = {}
+        claimed_cells: Set[Tuple[str, int, int]] = set()
+        if wave1_cands:
+            wave1_res = solver(wave1_cands)
+            assignments.update(wave1_res)
+            for k, cand in wave1_res.items():
+                if cand is not None:
+                    claimed_cells.add(self._track_cell_key(k, cand.rc))
+
+        wave2_cands: Dict[str, List[Candidate]] = {
+            k: [
+                c
+                for c in track_candidates.get(k, [])
+                if self._track_cell_key(k, c.rc) not in claimed_cells
+            ]
+            for k in wave2_keys
+        }
+        assignments.update(solver(wave2_cands))
+        return assignments
+
+    def _resolve_assignments_greedy(
+        self, track_candidates: Dict[str, List[Candidate]]
+    ) -> Dict[str, Optional[Candidate]]:
         candidate_pool = {
             key: list(candidates) for key, candidates in track_candidates.items()
         }
         assignments: Dict[str, Optional[Candidate]] = {}
-        rc_owner: Dict[Tuple[int, int], str] = {}
+        rc_owner: Dict[Tuple[str, int, int], str] = {}
 
         def assign(track_key: str) -> None:
             candidates = candidate_pool.get(track_key, [])
             while candidates:
                 candidate = candidates.pop(0)
-                rc_key = candidate.rc
+                rc_key = self._track_cell_key(track_key, candidate.rc)
                 owner = rc_owner.get(rc_key)
                 if owner is None:
                     assignments[track_key] = candidate
@@ -3639,7 +4211,7 @@ class DinoKeypointTracker:
         if not track_keys:
             return {}
 
-        rc_index: Dict[Tuple[int, int], int] = {}
+        rc_index: Dict[Tuple[str, int, int], int] = {}
         by_track_rc: List[Dict[int, Candidate]] = []
         min_score = 0.0
         max_score = 0.0
@@ -3649,7 +4221,8 @@ class DinoKeypointTracker:
             for cand in track_candidates.get(key, []):
                 if not math.isfinite(cand.score):
                     continue
-                col = rc_index.setdefault(cand.rc, len(rc_index))
+                cell_key = self._track_cell_key(key, cand.rc)
+                col = rc_index.setdefault(cell_key, len(rc_index))
                 prev = mapping.get(col)
                 if prev is None or cand.score > prev.score:
                     mapping[col] = cand
@@ -3854,6 +4427,14 @@ class DinoKeypointTracker:
 
     def _mask_to_patch(self, mask: np.ndarray, grid_hw: Tuple[int, int]) -> np.ndarray:
         grid_h, grid_w = grid_hw
+        mask_h, mask_w = mask.shape[:2]
+        if grid_h < mask_h or grid_w < mask_w:
+            resized = cv2.resize(
+                mask.astype(np.float32),
+                (grid_w, grid_h),
+                interpolation=cv2.INTER_AREA,
+            )
+            return resized > 0.0
         resized = cv2.resize(
             mask.astype(np.uint8), (grid_w, grid_h), interpolation=cv2.INTER_NEAREST
         )

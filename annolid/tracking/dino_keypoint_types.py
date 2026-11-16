@@ -62,6 +62,8 @@ class KeypointTrack:
     seed_position: Optional[Tuple[float, float]] = None
     template_heading_rad: float = 0.0
     last_template_angle_rad: float = 0.0
+    seeded_occluded: bool = False
+    has_clean_seed_descriptor: bool = True
 
 
 @dataclass
