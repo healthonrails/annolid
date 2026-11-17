@@ -12,6 +12,10 @@ from annolid.postprocessing.zone_schema import (
     zone_shape_bounds,
     zone_shape_covers_point,
 )
+from annolid.utils.body_part_shapes import (
+    format_body_part_csv_instance_name,
+    split_body_part_csv_instance_name,
+)
 
 
 OUTSIDE_ZONE_LABEL = "__outside__"
@@ -240,10 +244,14 @@ class GenericZoneEngine:
         *,
         fps: float | None = None,
         point_columns: tuple[str, str] | None = None,
+        include_body_parts: bool = False,
+        anchor_part: str | None = None,
     ) -> None:
         self.zone_specs = [spec for spec in zone_specs if spec.is_zone]
         self.fps = fps
         self.point_columns = point_columns
+        self.include_body_parts = bool(include_body_parts)
+        self.anchor_part = str(anchor_part).strip() if anchor_part else None
         self._ordered_zone_specs = sorted(
             enumerate(self.zone_specs),
             key=lambda item: (_zone_area(item[1]), item[0]),
@@ -309,7 +317,29 @@ class GenericZoneEngine:
     ) -> pd.DataFrame:
         if dataframe.empty or "instance_name" not in dataframe.columns:
             return dataframe.iloc[0:0].copy()
-        instance_df = dataframe[dataframe["instance_name"] == instance_label].copy()
+
+        # When anchor_part (e.g. "head") is requested for a whole-animal instance,
+        # prefer '<instance>:<anchor_part>' rows per frame and fall back to '<instance>'
+        # rows only on frames where the anchor part was not segmented.
+        if self.anchor_part and ":" not in str(instance_label):
+            part_key = format_body_part_csv_instance_name(
+                str(instance_label), self.anchor_part
+            )
+            part_df = dataframe[dataframe["instance_name"] == part_key].copy()
+            whole_df = dataframe[dataframe["instance_name"] == instance_label].copy()
+            if not part_df.empty:
+                frame_col = _frame_column(part_df)
+                if frame_col is not None and not whole_df.empty:
+                    covered_frames = set(part_df[frame_col].tolist())
+                    fallback_df = whole_df[~whole_df[frame_col].isin(covered_frames)]
+                    instance_df = pd.concat([part_df, fallback_df], ignore_index=True)
+                else:
+                    instance_df = part_df
+            else:
+                instance_df = whole_df
+        else:
+            instance_df = dataframe[dataframe["instance_name"] == instance_label].copy()
+
         if instance_df.empty:
             return instance_df
 
@@ -458,12 +488,31 @@ class GenericZoneEngine:
         )
 
     def analyze_dataframe(
-        self, dataframe: pd.DataFrame
+        self,
+        dataframe: pd.DataFrame,
+        *,
+        include_body_parts: bool | None = None,
     ) -> dict[str, ZoneAnalysisResult]:
         if dataframe.empty or "instance_name" not in dataframe.columns:
             return {}
+        keep_parts = (
+            self.include_body_parts
+            if include_body_parts is None
+            else bool(include_body_parts)
+        )
+        unique_names = [
+            str(x) for x in dataframe["instance_name"].dropna().astype(str).unique()
+        ]
+        base_parents = {n for n in unique_names if ":" not in n}
         results: dict[str, ZoneAnalysisResult] = {}
-        for instance_label in dataframe["instance_name"].dropna().astype(str).unique():
+        for instance_label in unique_names:
+            if not keep_parts:
+                _parent, part = split_body_part_csv_instance_name(
+                    instance_label,
+                    known_parents=base_parents if base_parents else None,
+                )
+                if part:
+                    continue
             results[instance_label] = self.analyze_instance(dataframe, instance_label)
         return results
 

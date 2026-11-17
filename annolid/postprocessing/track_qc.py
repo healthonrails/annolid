@@ -518,7 +518,12 @@ def _evaluate_frame_body_part_issues(
         return []
     found_issues: List[TrackQCIssue] = []
     parent_by_name: Dict[str, _InstanceObservation] = {}
+    parent_polys_by_name: Dict[str, List[Tuple[Tuple[float, float], ...]]] = (
+        defaultdict(list)
+    )
     for obs in frame_obs:
+        if len(obs.polygon) >= 3:
+            parent_polys_by_name[obs.instance].append(obs.polygon)
         if (
             obs.instance not in parent_by_name
             or obs.area > parent_by_name[obs.instance].area
@@ -585,11 +590,19 @@ def _evaluate_frame_body_part_issues(
         ):
             try:
                 p_part = _ShapelyPolygon(poly)
-                p_parent = _ShapelyPolygon(parent_obs.polygon)
                 if not p_part.is_valid:
                     p_part = p_part.buffer(0)
-                if not p_parent.is_valid:
-                    p_parent = p_parent.buffer(0)
+                p_parent_list = []
+                for p_coords in parent_polys_by_name.get(
+                    parent_name, [parent_obs.polygon]
+                ):
+                    cand_p = _ShapelyPolygon(p_coords)
+                    if not cand_p.is_valid:
+                        cand_p = cand_p.buffer(0)
+                    p_parent_list.append(cand_p)
+                p_parent = p_parent_list[0]
+                for extra_parent in p_parent_list[1:]:
+                    p_parent = p_parent.union(extra_parent)
                 if p_part.area > 0.0:
                     outside_ratio = max(
                         0.0, float(p_part.difference(p_parent).area / p_part.area)
@@ -619,6 +632,8 @@ def _evaluate_frame_body_part_issues(
         if len(siblings) < 2:
             continue
         for (part_a, obs_a), (part_b, obs_b) in combinations(siblings, 2):
+            if part_a == part_b:
+                continue
             iou = _observation_iou(obs_a, obs_b)
             if iou >= 0.10:
                 inst_tuple = (

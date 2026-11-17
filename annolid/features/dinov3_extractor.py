@@ -1,6 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Iterable, Literal, Optional, Tuple, Union
+from typing import Iterable, List, Literal, Optional, Sequence, Tuple, Union
 import logging
 import math
 import os
@@ -453,7 +453,200 @@ class Dinov3FeatureExtractor:
             return f.numpy()
         return f
 
-    def _tokens_to_grid(
+    @torch.inference_mode()
+    def extract_batch(
+        self,
+        images: Sequence[Union[Image.Image, np.ndarray]],
+        *,
+        target_hw: Optional[Tuple[int, int]] = None,
+        color_space: Literal["RGB", "BGR"] = "RGB",
+        return_type: Literal["torch", "numpy"] = "torch",
+        return_layer: Optional[Literal["last", "all"]] = None,
+        normalize: bool = True,
+    ) -> List[Union[torch.Tensor, np.ndarray]]:
+        """Extract dense features for a batch of crops in a single ViT forward pass."""
+        if not images:
+            return []
+        if len(images) == 1:
+            return [
+                self.extract(
+                    images[0],
+                    color_space=color_space,
+                    return_type=return_type,
+                    return_layer=return_layer,
+                    normalize=normalize,
+                )
+            ]
+
+        raw_arrays: List[np.ndarray] = []
+        max_w = 1
+        max_h = 1
+        for img in images:
+            if isinstance(img, np.ndarray):
+                if img.ndim != 3 or img.shape[2] < 3:
+                    raise ValueError("ndarray image must be HxWx3")
+                arr = img[:, :, :3]
+                if color_space.upper() == "BGR":
+                    arr = arr[:, :, ::-1]
+                arr = np.ascontiguousarray(arr, dtype=np.uint8)
+            elif isinstance(img, Image.Image):
+                pil_i = ImageOps.exif_transpose(img.convert("RGB"))
+                arr = np.array(pil_i, dtype=np.uint8, copy=True)
+            else:
+                raise TypeError("images must contain PIL.Image or np.ndarray items")
+            max_h = max(max_h, int(arr.shape[0]))
+            max_w = max(max_w, int(arr.shape[1]))
+            raw_arrays.append(arr)
+
+        if target_hw is not None:
+            new_h = max(
+                self.patch_size,
+                int(math.ceil(int(target_hw[0]) / self.patch_size) * self.patch_size),
+            )
+            new_w = max(
+                self.patch_size,
+                int(math.ceil(int(target_hw[1]) / self.patch_size) * self.patch_size),
+            )
+        else:
+            new_h, new_w = self._compute_resized_hw(max_w, max_h)
+
+        ret_mode = return_layer or self.cfg.return_layer
+        need_hidden_states = True
+        if ret_mode == "last":
+            if self.cfg.layers is None:
+                need_hidden_states = False
+            else:
+                resolved = [
+                    (self.num_hidden_layers + idx if idx < 0 else idx)
+                    for idx in self._layers
+                ]
+                if resolved and resolved[-1] == int(self.num_hidden_layers - 1):
+                    need_hidden_states = False
+
+        def _build_batch_tensor(target_device: torch.device) -> torch.Tensor:
+            resized_list: List[torch.Tensor] = []
+            interp_kwargs = {"mode": "bilinear", "align_corners": False}
+            for arr in raw_arrays:
+                t = (
+                    torch.from_numpy(arr)
+                    .permute(2, 0, 1)
+                    .unsqueeze(0)
+                    .to(device=target_device, dtype=torch.float32, non_blocking=True)
+                    / 255.0
+                )
+                if (arr.shape[0], arr.shape[1]) != (new_h, new_w):
+                    try:
+                        t = F.interpolate(
+                            t,
+                            size=(int(new_h), int(new_w)),
+                            antialias=True,
+                            **interp_kwargs,
+                        )  # type: ignore[arg-type]
+                    except TypeError:
+                        t = F.interpolate(
+                            t, size=(int(new_h), int(new_w)), **interp_kwargs
+                        )
+                resized_list.append(t)
+            batch = torch.cat(resized_list, dim=0)
+            mean = torch.tensor(
+                self._mean, dtype=torch.float32, device=target_device
+            ).view(1, 3, 1, 1)
+            std = torch.tensor(
+                self._std, dtype=torch.float32, device=target_device
+            ).view(1, 3, 1, 1)
+            return (batch - mean) / std
+
+        def _forward_batch(inp: torch.Tensor):
+            dev_type = self.device.type
+            mps_ready = bool(
+                dev_type == "mps"
+                and hasattr(torch.backends, "mps")
+                and torch.backends.mps.is_available()
+            )
+            cuda_ready = bool(dev_type == "cuda" and torch.cuda.is_available())
+            use_amp = bool(self.cfg.use_amp and (cuda_ready or mps_ready))
+            autocast_device = dev_type if (cuda_ready or mps_ready) else "cpu"
+            autocast_kwargs = (
+                {"dtype": torch.float16} if (use_amp and mps_ready) else {}
+            )
+            with torch.autocast(
+                device_type=autocast_device,
+                enabled=use_amp,
+                **autocast_kwargs,
+            ):
+                return self.model(
+                    pixel_values=inp,
+                    output_hidden_states=bool(need_hidden_states),
+                )
+
+        try:
+            x = _build_batch_tensor(self.device)
+            outputs = _forward_batch(x)
+        except RuntimeError as exc:
+            if "out of memory" not in str(exc).lower() or self.device.type == "cpu":
+                raise
+            self._safe_empty_accelerator_cache(self.device)
+            logger.warning(
+                "Accelerator out of memory during batched DINOv3 extraction on %s (%s); falling back to CPU.",
+                self.device,
+                exc,
+            )
+            self.device = torch.device("cpu")
+            self.model.to(self.device)
+            x = _build_batch_tensor(self.device)
+            outputs = _forward_batch(x)
+
+        spatial_hw = (int(x.shape[-2]), int(x.shape[-1]))
+        selected_batches: List[torch.Tensor] = []
+        if not need_hidden_states:
+            selected_batches.append(
+                self._tokens_to_grid_batch(
+                    outputs.last_hidden_state,
+                    spatial_hw=spatial_hw,
+                    detach=True,
+                    normalize=normalize,
+                )
+            )
+        else:
+            hidden_states = outputs.hidden_states
+            num_layers = len(hidden_states) - 1
+            layers_to_read = (
+                (self._layers[-1],)
+                if (ret_mode == "last" and self._layers)
+                else self._layers
+            )
+            for layer_idx in layers_to_read:
+                resolved_idx = (
+                    num_layers + layer_idx if layer_idx < 0 else int(layer_idx)
+                )
+                if resolved_idx < 0 or resolved_idx >= num_layers:
+                    raise IndexError(
+                        f"Requested layer {layer_idx} outside available range -{num_layers}..{num_layers - 1}"
+                    )
+                selected_batches.append(
+                    self._tokens_to_grid_batch(
+                        hidden_states[resolved_idx + 1],
+                        spatial_hw=spatial_hw,
+                        detach=True,
+                        normalize=normalize,
+                    )
+                )
+
+        if not selected_batches:
+            raise RuntimeError("No layers selected for batched feature extraction")
+
+        if ret_mode == "last":
+            batch_out = selected_batches[-1]  # [B, D, gh, gw]
+        else:
+            batch_out = torch.stack(selected_batches, dim=1)  # [B, L, D, gh, gw]
+
+        out_items: List[Union[torch.Tensor, np.ndarray]] = []
+        for b_idx in range(batch_out.shape[0]):
+            item_t = batch_out[b_idx]
+            out_items.append(item_t.numpy() if return_type == "numpy" else item_t)
+        return out_items
+
+    def _tokens_to_grid_batch(
         self,
         tokens: torch.Tensor,
         spatial_hw: Tuple[int, int],
@@ -464,8 +657,6 @@ class Dinov3FeatureExtractor:
         if detach:
             tokens = tokens.detach()
         B, seq_len, dim = tokens.shape
-        if B != 1:
-            raise ValueError("Only batch size 1 is supported for feature extraction")
         H, W = spatial_hw
         grid_h = H // self.patch_size
         grid_w = W // self.patch_size
@@ -474,31 +665,52 @@ class Dinov3FeatureExtractor:
         if seq_len == expected + special:
             tokens = tokens[:, special:, :]
         elif seq_len == expected:
-            pass  # no special tokens to drop
+            pass
         else:
             raise ValueError(
                 f"Unexpected sequence length {seq_len}; expected {expected} or {expected}+{special} (special tokens)"
             )
-        grid = tokens.transpose(1, 2).reshape(1, dim, grid_h, grid_w).to("cpu")
-        grid = grid.squeeze(0)
+        grid = tokens.transpose(1, 2).reshape(B, dim, grid_h, grid_w).to("cpu").float()
         if self.cfg.matryoshka_dim is not None:
             from annolid.features.dino_models import supports_matryoshka_truncation
             from annolid.features.google_vision_extractor import (
                 apply_matryoshka_truncation,
             )
 
-            return apply_matryoshka_truncation(
-                grid,
-                self.cfg.matryoshka_dim,
-                channel_dim=0,
-                normalize=normalize,
-                mrl_native=supports_matryoshka_truncation(self.cfg.model_name),
-            )
+            mrl_ok = supports_matryoshka_truncation(self.cfg.model_name)
+            sliced = [
+                apply_matryoshka_truncation(
+                    grid[b],
+                    self.cfg.matryoshka_dim,
+                    channel_dim=0,
+                    normalize=normalize,
+                    mrl_native=mrl_ok,
+                )
+                for b in range(B)
+            ]
+            return torch.stack(sliced, dim=0)
         if normalize:
-            flat = grid.view(dim, -1)
-            flat = F.normalize(flat, dim=0)
-            grid = flat.view(dim, grid_h, grid_w)
+            flat = grid.view(B, dim, -1)
+            flat = F.normalize(flat, dim=1)
+            grid = flat.view(B, dim, grid_h, grid_w)
         return grid
+
+    def _tokens_to_grid(
+        self,
+        tokens: torch.Tensor,
+        spatial_hw: Tuple[int, int],
+        *,
+        detach: bool,
+        normalize: bool,
+    ) -> torch.Tensor:
+        if tokens.shape[0] != 1:
+            raise ValueError("Only batch size 1 is supported for _tokens_to_grid")
+        return self._tokens_to_grid_batch(
+            tokens,
+            spatial_hw=spatial_hw,
+            detach=detach,
+            normalize=normalize,
+        ).squeeze(0)
 
     @torch.inference_mode()
     def quantize_mask(self, mask_image: Union[Image.Image, np.ndarray]) -> torch.Tensor:

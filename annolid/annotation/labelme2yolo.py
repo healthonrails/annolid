@@ -32,6 +32,11 @@ from annolid.tracking.overlap_assignment import (
     build_local_polygon_raster,
     resolve_overlapping_point_instances,
 )
+from annolid.utils.body_part_shapes import (
+    extract_body_part_label,
+    is_body_part_shape_payload,
+)
+from annolid.utils.zone_shapes import is_zone_shape_payload
 
 _SPLIT_NAME_PATTERN = re.compile(
     r"^(train(?:ing)?|val|valid(?:ation)?|test)(?:[_-].+)?$",
@@ -147,11 +152,21 @@ class Labelme2YOLO:
         include_visibility=False,
         pose_schema_path: Optional[str] = None,
         recursive: bool = True,
+        export_level: str = "instances",
         **_ignored_kwargs,
     ):
+        level = str(export_level or "instances").strip().lower()
+        if level not in {"instances", "parts", "both"}:
+            raise ValueError(
+                f"Unsupported export_level={export_level!r}. "
+                "Expected 'instances', 'parts', or 'both'."
+            )
+        self.export_level = level
         self.json_file_dir = json_dir
         self.recursive = bool(recursive)
-        labels, keypoints = self._scan_labels_and_keypoints(self.json_file_dir)
+        labels, keypoints = self._scan_labels_and_keypoints(
+            self.json_file_dir, export_level=self.export_level
+        )
         self.label_to_id_dict = OrderedDict(
             (label, label_id) for label_id, label in enumerate(labels)
         )
@@ -478,7 +493,11 @@ class Labelme2YOLO:
         return items
 
     @staticmethod
-    def _scan_labels_and_keypoints(json_dir: str) -> Tuple[List[str], List[str]]:
+    def _scan_labels_and_keypoints(
+        json_dir: str,
+        *,
+        export_level: str = "instances",
+    ) -> Tuple[List[str], List[str]]:
         """Scan annotation directory to collect class and keypoint label order."""
         label_order: List[str] = []
         seen_labels: Set[str] = set()
@@ -523,10 +542,25 @@ class Labelme2YOLO:
             saw_non_point = False
 
             for shape in shapes:
+                if not isinstance(shape, dict) or is_zone_shape_payload(shape):
+                    continue
                 shape_type = (shape.get("shape_type") or "polygon").lower()
                 if shape_type == "point":
                     continue
+                is_part = is_body_part_shape_payload(shape)
+                if export_level == "instances" and is_part:
+                    continue
+                if export_level == "parts" and not is_part:
+                    continue
                 saw_non_point = True
+                if is_part:
+                    part_lbl = Labelme2YOLO._clean_label(
+                        extract_body_part_label(shape) or shape.get("label")
+                    )
+                    if part_lbl and part_lbl not in seen_labels:
+                        seen_labels.add(part_lbl)
+                        label_order.append(part_lbl)
+                    continue
                 instance_label = Labelme2YOLO._resolve_instance_label(
                     shape, polygon_labels, default_label=default_label
                 )
@@ -538,6 +572,9 @@ class Labelme2YOLO:
                 if class_label and class_label not in seen_labels:
                     seen_labels.add(class_label)
                     label_order.append(class_label)
+
+            if export_level == "parts":
+                continue
 
             candidate_labels = set(polygon_labels)
             if not candidate_labels and default_label:
@@ -943,6 +980,10 @@ class Labelme2YOLO:
                 keys.append(key)
 
         for shape in shapes:
+            if not isinstance(shape, dict):
+                continue
+            if is_zone_shape_payload(shape) or is_body_part_shape_payload(shape):
+                continue
             shape_type = (shape.get("shape_type") or "polygon").lower()
             if shape_type == "point":
                 continue
@@ -1404,10 +1445,14 @@ class Labelme2YOLO:
             json_path = Path(self.json_file_dir) / json_path
         default_label = self._default_instance_label(json_path, json_data)
 
-        pose_instances = self._collect_pose_instances(
-            shapes, default_instance_label=default_label
+        pose_instances = (
+            {}
+            if self.export_level == "parts"
+            else self._collect_pose_instances(
+                shapes, default_instance_label=default_label
+            )
         )
-        if pose_instances:
+        if pose_instances and self.export_level == "instances":
             self.annotation_type = "pose"
             for data in pose_instances.values():
                 self._update_keypoint_order(data["keypoints"].keys())
@@ -1444,12 +1489,19 @@ class Labelme2YOLO:
 
         yolo_objects = []
         for shape in shapes:
+            if not isinstance(shape, dict) or is_zone_shape_payload(shape):
+                continue
             shape_type = (shape.get("shape_type") or "polygon").lower()
+            if shape_type == "point":
+                continue
+            is_part = is_body_part_shape_payload(shape)
+            if self.export_level == "instances" and is_part:
+                continue
+            if self.export_level == "parts" and not is_part:
+                continue
             if shape_type == "circle":
                 yolo_obj = self.circle_shape_to_yolo(shape, image_height, image_width)
                 yolo_objects.append(yolo_obj)
-            elif shape_type == "point":
-                continue
             else:
                 yolo_obj = self.scale_points(shape, image_height, image_width)
                 yolo_objects.append(yolo_obj)
@@ -1537,8 +1589,15 @@ class Labelme2YOLO:
         # # Close the polygon by appending the first point to the end
         # points = np.append(points, [points[0], points[1]])
         # Map the label of the shape to a label_id
+        lookup_label = (
+            self._clean_label(
+                extract_body_part_label(labelme_shape) or labelme_shape.get("label")
+            )
+            if is_body_part_shape_payload(labelme_shape)
+            else labelme_shape["label"]
+        )
         try:
-            label_id = self.label_to_id_dict[labelme_shape["label"]]
+            label_id = self.label_to_id_dict[lookup_label]
         except KeyError:
             label_id = 0
         # Return the label_id and points as a list

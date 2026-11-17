@@ -88,6 +88,9 @@ def run_body_part_segmentation(
     end_frame: Optional[int] = None,
     step: int = 1,
     export_csv: bool = False,
+    export_ethogram: bool = False,
+    camera_view: str = "auto",
+    fps: Optional[float] = None,
     extractor: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Segment body parts inside tracked instances across ``video_path``."""
@@ -138,11 +141,44 @@ def run_body_part_segmentation(
         if csv_target.exists():
             csv_path_out = str(csv_target)
 
+    ethogram_json_out: Optional[str] = None
+    ethogram_summary: Optional[Dict[str, Any]] = None
+    if export_ethogram and summary.get("frames_processed", 0) > 0:
+        from annolid.data.videos import CV2Video
+        from annolid.postprocessing.body_part_ethogram import (
+            analyze_body_part_ethogram,
+            export_body_part_ethogram_csvs,
+        )
+
+        if fps is not None and float(fps) > 0.0:
+            vid_fps = float(fps)
+        else:
+            vid_fps = 30.0
+            vloader = CV2Video(str(resolved_video))
+            try:
+                raw_fps = float(vloader.get_fps() or 30.0)
+                if raw_fps > 0.0:
+                    vid_fps = raw_fps
+            finally:
+                vloader.release()
+
+        eth_report = analyze_body_part_ethogram(
+            resolved_dir, fps=vid_fps, camera_view=camera_view
+        )
+        ethogram_summary = export_body_part_ethogram_csvs(
+            eth_report,
+            resolved_dir.parent,
+            stem=resolved_dir.name,
+        )
+        ethogram_json_out = str(ethogram_summary["ethogram_json"])
+
     return {
         "video_path": str(resolved_video),
         "annotation_dir": str(resolved_dir),
         "message": message,
         "tracking_csv": csv_path_out,
+        "ethogram_json": ethogram_json_out,
+        "ethogram": ethogram_summary,
         **summary,
         "provenance": {
             "schema": "body_part_segmentation/v1",
@@ -183,6 +219,8 @@ def run_body_part_segmentation_cli(
     end_frame: Optional[int] = None,
     step: int = 1,
     export_csv: bool = False,
+    export_ethogram: bool = False,
+    camera_view: str = "auto",
     json_stdout: bool = False,
     out_json: Optional[Path | str] = None,
 ) -> int:
@@ -227,6 +265,8 @@ def run_body_part_segmentation_cli(
             end_frame=end_frame,
             step=step,
             export_csv=export_csv,
+            export_ethogram=export_ethogram,
+            camera_view=camera_view,
         )
     except (FileNotFoundError, ValueError, OSError) as exc:
         print(f"[annolid-run] {exc}", file=sys.stderr)

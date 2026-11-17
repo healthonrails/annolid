@@ -16,6 +16,12 @@ from PIL import Image, ImageOps
 
 from annolid.datasets.labelme_collection import resolve_image_path
 from annolid.utils.annotation_store import load_labelme_json
+from annolid.utils.body_part_shapes import (
+    extract_body_part_label,
+    extract_body_part_parent_instance,
+    is_body_part_shape_payload,
+)
+from annolid.utils.zone_shapes import is_zone_shape_payload
 
 logger = logging.getLogger(__name__)
 
@@ -72,8 +78,83 @@ def _list_labelme_pairs(input_dir: Path) -> List[Tuple[Path, Path]]:
     return out
 
 
+_VALID_EXPORT_LEVELS = {"instances", "parts", "both"}
+
+
+def _normalize_export_level(export_level: Optional[str]) -> str:
+    level = str(export_level or "instances").strip().lower()
+    if level not in _VALID_EXPORT_LEVELS:
+        raise ValueError(
+            f"Unsupported export_level={export_level!r}. "
+            f"Expected one of {sorted(_VALID_EXPORT_LEVELS)}."
+        )
+    return level
+
+
+def _is_pose_keypoint_point_shape(
+    shape: Dict[str, object],
+    *,
+    areal_group_ids: set[object],
+) -> bool:
+    """Return True when a ``point`` shape represents a pose keypoint rather than a standalone dot mask."""
+    shape_type = str(shape.get("shape_type") or "polygon").lower().strip()
+    if shape_type != "point":
+        return False
+    flags = shape.get("flags")
+    if isinstance(flags, dict) and "kp_visible" in flags:
+        return True
+    if "kp_visibility" in shape or "instance_label" in shape:
+        return True
+    gid = shape.get("group_id")
+    return gid is not None and gid in areal_group_ids
+
+
+def _collect_areal_group_ids(shapes: Sequence[object]) -> set[object]:
+    gids: set[object] = set()
+    for sh in shapes:
+        if not isinstance(sh, dict) or is_zone_shape_payload(sh):
+            continue
+        st = str(sh.get("shape_type") or "polygon").lower().strip()
+        if st != "point" and sh.get("group_id") is not None:
+            gids.add(sh.get("group_id"))
+    return gids
+
+
+def _shape_export_category_name(
+    shape: Dict[str, object],
+    *,
+    export_level: str,
+    areal_group_ids: Optional[set[object]] = None,
+) -> Optional[str]:
+    if is_zone_shape_payload(shape):
+        return None
+    shape_type = str(shape.get("shape_type") or "polygon").lower().strip()
+    if export_level == "parts" and shape_type == "point":
+        return None
+    if areal_group_ids is not None and _is_pose_keypoint_point_shape(
+        shape, areal_group_ids=areal_group_ids
+    ):
+        return None
+    is_part = is_body_part_shape_payload(shape)
+    if export_level == "instances" and is_part:
+        return None
+    if export_level == "parts" and not is_part:
+        return None
+    if is_part:
+        part_name = extract_body_part_label(shape) or str(shape.get("label") or "")
+        clean = part_name.strip()
+    else:
+        clean = str(shape.get("label") or "").strip()
+    if not clean or clean in _IGNORE_LABELS:
+        return None
+    return clean
+
+
 def _read_label_names(
-    labels_file: Optional[str], pairs: Sequence[Tuple[Path, Path]]
+    labels_file: Optional[str],
+    pairs: Sequence[Tuple[Path, Path]],
+    *,
+    export_level: str = "instances",
 ) -> List[str]:
     if labels_file:
         path = Path(labels_file)
@@ -93,11 +174,15 @@ def _read_label_names(
             payload = load_labelme_json(json_path)
         except Exception:
             continue
-        for shape in payload.get("shapes", []) if isinstance(payload, dict) else []:
+        raw_shapes = payload.get("shapes", []) if isinstance(payload, dict) else []
+        areal_gids = _collect_areal_group_ids(raw_shapes)
+        for shape in raw_shapes:
             if not isinstance(shape, dict):
                 continue
-            name = str(shape.get("label") or "").strip()
-            if not name or name in _IGNORE_LABELS:
+            name = _shape_export_category_name(
+                shape, export_level=export_level, areal_group_ids=areal_gids
+            )
+            if not name:
                 continue
             names[name] = None
     return sorted(names.keys())
@@ -261,6 +346,7 @@ def convert(
     train_valid_split: float = 0.7,
     radius_ratio: float = 0.01,
     output_mode: str = "segmentation",
+    export_level: str = "instances",
 ) -> Iterator[Tuple[int, str]]:
     """Convert LabelMe directory to train/valid COCO JSON files.
 
@@ -272,6 +358,9 @@ def convert(
             to ``0.01`` (1 %), which produces a small ~5 px dot or ~10x10 px box
             on a 512-pixel image.
         output_mode: ``"segmentation"`` (default) or ``"keypoints"``.
+        export_level: ``"instances"`` (default: whole-object shapes only,
+            skipping child body parts), ``"parts"`` (body-part polygons only),
+            or ``"both"`` (both parent instances and child body-part polygons).
 
     Yields:
         (progress_percent, json_path)
@@ -286,6 +375,7 @@ def convert(
         raise ValueError(
             f"Unsupported output_mode={output_mode!r}. Use 'segmentation' or 'keypoints'."
         )
+    level = _normalize_export_level(export_level)
 
     input_dir = Path(input_annotated_dir).expanduser().resolve()
     out_dir = Path(output_annotated_dir).expanduser().resolve()
@@ -301,7 +391,7 @@ def convert(
     progress_step = max(1, total // 20)
 
     if mode == "segmentation":
-        category_names = _read_label_names(labels_file, pairs)
+        category_names = _read_label_names(labels_file, pairs, export_level=level)
         if not category_names:
             raise ValueError(
                 "No categories found. Provide labels_file or valid shape labels."
@@ -317,6 +407,10 @@ def convert(
             if isinstance(payload, dict):
                 for shape in payload.get("shapes", []):
                     if not isinstance(shape, dict):
+                        continue
+                    if is_zone_shape_payload(shape) or is_body_part_shape_payload(
+                        shape
+                    ):
                         continue
                     label_name = str(shape.get("label") or "").strip()
                     if not label_name or label_name in _IGNORE_LABELS:
@@ -426,18 +520,34 @@ def convert(
         )
 
         if mode == "segmentation":
-            grouped: Dict[Tuple[str, str], List[Dict[str, object]]] = {}
-            for sidx, shape in enumerate(payload.get("shapes", [])):
+            grouped: Dict[Tuple[str, str, bool, str], List[Dict[str, object]]] = {}
+            frame_shapes = payload.get("shapes", [])
+            areal_gids = _collect_areal_group_ids(frame_shapes)
+            for sidx, shape in enumerate(frame_shapes):
                 if not isinstance(shape, dict):
                     continue
-                label_name = str(shape.get("label") or "").strip()
+                label_name = _shape_export_category_name(
+                    shape, export_level=level, areal_group_ids=areal_gids
+                )
                 if not label_name or label_name not in name_to_id:
                     continue
+                is_part = is_body_part_shape_payload(shape)
+                parent_inst = (
+                    extract_body_part_parent_instance(shape) if is_part else ""
+                )
                 gid = shape.get("group_id")
-                gid_key = str(gid) if gid is not None else f"shape_{sidx}"
-                grouped.setdefault((label_name, gid_key), []).append(shape)
+                if is_part:
+                    owner = parent_inst or (
+                        str(gid) if gid is not None else f"part_{sidx}"
+                    )
+                    gid_key = f"part:{owner}:{label_name}:{sidx}"
+                else:
+                    gid_key = str(gid) if gid is not None else f"shape_{sidx}"
+                grouped.setdefault(
+                    (label_name, gid_key, is_part, parent_inst), []
+                ).append(shape)
 
-            for (label_name, _gid), shapes in grouped.items():
+            for (label_name, _gid, is_part, parent_inst), shapes in grouped.items():
                 mask_union = np.zeros((int(h), int(w)), dtype=np.uint8)
                 segmentations: List[List[float]] = []
                 for shape in shapes:
@@ -478,7 +588,7 @@ def convert(
                     x, y, bw, bh = bbox
                     segmentations = [[x, y, x + bw, y, x + bw, y + bh, x, y + bh]]
 
-                ann = {
+                ann: Dict[str, object] = {
                     "id": int(train_ann_id if ann_id_ref == "train" else valid_ann_id),
                     "image_id": int(image_id),
                     "category_id": int(name_to_id[label_name]),
@@ -487,6 +597,10 @@ def convert(
                     "bbox": bbox,
                     "iscrowd": 0,
                 }
+                if is_part:
+                    ann["is_body_part"] = True
+                    if parent_inst:
+                        ann["parent_instance"] = parent_inst
                 target["annotations"].append(ann)
                 if ann_id_ref == "train":
                     train_ann_id += 1
@@ -504,9 +618,11 @@ def convert(
             #
             # For non-point shapes (polygon / rectangle) lacking group_id we still
             # use a per-shape unique key so separate instance masks are not merged.
-            grouped: Dict[str, List[Dict[str, object]]] = {}
+            grouped_kp: Dict[str, List[Dict[str, object]]] = {}
             for sidx, shape in enumerate(payload.get("shapes", [])):
                 if not isinstance(shape, dict):
+                    continue
+                if is_zone_shape_payload(shape) or is_body_part_shape_payload(shape):
                     continue
                 gid = shape.get("group_id")
                 st = str(shape.get("shape_type") or "polygon").lower().strip()
@@ -518,9 +634,9 @@ def convert(
                 else:
                     # Ungrouped non-point shapes get unique per-shape keys.
                     gid_key = f"shape_{sidx}"
-                grouped.setdefault(gid_key, []).append(shape)
+                grouped_kp.setdefault(gid_key, []).append(shape)
 
-            for _gid, shapes in grouped.items():
+            for _gid, shapes in grouped_kp.items():
                 non_point_shapes: List[Dict[str, object]] = []
                 point_shapes: List[Dict[str, object]] = []
                 for shape in shapes:

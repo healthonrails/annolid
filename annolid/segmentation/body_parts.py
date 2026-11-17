@@ -36,6 +36,7 @@ from annolid.utils.body_part_shapes import (
     classify_keypoint_junction_role,
     extract_body_part_label,
     extract_body_part_parent_instance,
+    infer_intra_part_skeleton_edges,
     infer_part_from_keypoint_name,
     is_body_part_shape_payload,
     keypoint_axial_polarity,
@@ -76,6 +77,11 @@ class BodyPartSegmentationConfig:
     boundary_refine: bool = True
     guided_radius: int = 4
     guided_eps: float = 1e-3
+    potts_refine: bool = True
+    potts_iterations: int = 2
+    potts_weight: float = 0.25
+    use_ridge_seed_probe: bool = True
+    ridge_probe_weight: float = 0.45
     crf_refine: bool = False
     crf_backend: str = "opencv"
     crf_band_px: int = 8
@@ -171,6 +177,10 @@ class BodyPartPrototype:
     inherited_cross_instance: bool = False
     working_adapted: bool = False
     seed_aspect_ratio: float = 1.8
+    seed_tortuosity: float = 1.0
+    posture_archetypes: Tuple[
+        Tuple[float, float, float, float, float, float, float], ...
+    ] = ()
 
 
 @dataclass(slots=True)
@@ -186,6 +196,7 @@ class PartPrediction:
     area_px: int
     area_ratio: float
     group_id: Optional[int | str] = None
+    polygons: Tuple[List[Tuple[float, float]], ...] = ()
 
     def to_full_mask(self, height: int, width: int) -> np.ndarray:
         """Materialize a full-frame boolean mask ``(height, width)`` on demand."""
@@ -478,13 +489,15 @@ def estimate_body_frame_pose(
     axial_scale = max(3.0, 2.0 * math.sqrt(lam1))
     lateral_scale = max(3.0, 2.0 * math.sqrt(lam2))
 
-    edt = cv2.distanceTransform(mask_bool.astype(np.uint8), cv2.DIST_L2, 5)
+    pose_routing_mask = _bridge_disconnected_mask_islands(mask_bool, max_gap_px=22)
+    edt = cv2.distanceTransform(pose_routing_mask.astype(np.uint8), cv2.DIST_L2, 5)
     max_edt = float(edt.max())
     thickness_map = (
         (edt / max_edt).astype(np.float32)
         if max_edt > 1e-6
         else np.zeros((wh, ww), dtype=np.float32)
     )
+    thickness_map[~mask_bool] = 0.0
     fg_t = thickness_map[mask_bool]
 
     # 1. Continuous 2D directional cues (prevents isotropic PCA angle jitter on circular postures).
@@ -738,7 +751,11 @@ def estimate_body_frame_pose(
                 for p, _, _ in proto_sims
                 if not p.is_unassigned and p.mean_u <= -0.25
             ]
-            has_thin_appendage = bool(real_t) and min(real_t) < 0.16
+            has_thin_appendage = (
+                bool(real_t)
+                and min(real_t) < 0.23
+                and (max(real_t) - min(real_t)) > 0.14
+            )
             if proto_ant and fg_u.size >= 12:
                 pos_pole = fg_u >= float(np.percentile(fg_u, 82))
                 neg_pole = fg_u <= float(np.percentile(fg_u, 18))
@@ -819,11 +836,10 @@ def estimate_body_frame_pose(
     # 2. Intrinsic curved geodesic spine coordinate for C-shaped / U-shaped / coiled postures.
     cy_i = int(np.clip(round(my), 0, wh - 1))
     cx_i = int(np.clip(round(mx), 0, ww - 1))
-    if xs.size >= 16 and (
-        not mask_bool[cy_i, cx_i] or float(thickness_map[cy_i, cx_i]) < 0.42
-    ):
+    cy_edt = float(edt[cy_i, cx_i]) / max(max_edt, 1e-6) if max_edt > 1e-6 else 1.0
+    if xs.size >= 16 and (not pose_routing_mask[cy_i, cx_i] or cy_edt < 0.42):
         num_cc, cc_labels, cc_stats, _ = cv2.connectedComponentsWithStats(
-            mask_bool.astype(np.uint8), connectivity=8
+            pose_routing_mask.astype(np.uint8), connectivity=8
         )
         if num_cc > 1:
             largest_cc = 1 + int(np.argmax(cc_stats[1:, cv2.CC_STAT_AREA]))
@@ -833,35 +849,13 @@ def estimate_body_frame_pose(
         c_ys, c_xs = np.nonzero(main_comp)
         if c_xs.size >= 12:
             s0_idx = int(np.argmax((c_xs - mx) ** 2 + (c_ys - my) ** 2))
-            seed0 = np.zeros((wh, ww), dtype=bool)
-            seed0[c_ys[s0_idx], c_xs[s0_idx]] = True
-            d0 = compute_masked_geodesic_distances([seed0], main_comp, edge_weight=0.0)[
-                0
-            ]
-            fin0 = np.isfinite(d0)
-            if np.any(fin0):
-                fy0, fx0 = np.nonzero(fin0)
-                e1_i = int(np.argmax(d0[fin0]))
-                e1_y, e1_x = int(fy0[e1_i]), int(fx0[e1_i])
-                seed1 = np.zeros((wh, ww), dtype=bool)
-                seed1[e1_y, e1_x] = True
-                d1 = compute_masked_geodesic_distances(
-                    [seed1], main_comp, edge_weight=0.0
-                )[0]
-                fin1 = np.isfinite(d1)
-                if np.any(fin1):
-                    fy1, fx1 = np.nonzero(fin1)
-                    e2_i = int(np.argmax(d1[fin1]))
-                    e2_y, e2_x = int(fy1[e2_i]), int(fx1[e2_i])
-                    d_geo = float(d1[e2_y, e2_x])
-                    d_euc = math.hypot(float(e1_x - e2_x), float(e1_y - e2_y))
-                    tortuosity = float(d_geo / max(1.0, d_euc))
-                    if tortuosity > 1.18 and d_geo > 6.0:
-                        seed2 = np.zeros((wh, ww), dtype=bool)
-                        seed2[e2_y, e2_x] = True
-                        d2 = compute_masked_geodesic_distances(
-                            [seed2], main_comp, edge_weight=0.0
-                        )[0]
+            ep_res = _compute_geodesic_spine_pair(
+                main_comp, int(c_ys[s0_idx]), int(c_xs[s0_idx])
+            )
+            if ep_res is not None:
+                e1_x, e1_y, e2_x, e2_y, d_geo, tortuosity, d1, d2 = ep_res
+                if d1 is not None and d2 is not None:
+                    if True:
                         both_fin = np.isfinite(d1) & np.isfinite(d2)
                         raw_u_geo = np.zeros((wh, ww), dtype=np.float32)
                         raw_u_geo[both_fin] = (
@@ -904,8 +898,8 @@ def estimate_body_frame_pose(
                                 for proto in prototypes:
                                     if proto.is_unassigned or abs(proto.mean_u) < 0.15:
                                         continue
-                                    sim = np.max(
-                                        proto.seed_prototypes @ fg_feats, axis=0
+                                    sim, _w_sim, _ = _prototype_pixel_similarity(
+                                        proto, fg_feats, work_l_mean=work_l_mean
                                     )
                                     weights = np.clip(sim, 0.0, 1.0) ** 2
                                     w_sum = float(weights.sum())
@@ -1039,98 +1033,353 @@ def _compute_crop_edge_strength(
     return np.clip(mag / scale, 0.0, 1.5).astype(np.float32)
 
 
+def _build_csr_geodesic_graph(
+    domain: np.ndarray,
+    cost: np.ndarray,
+) -> Optional[Tuple[Any, np.ndarray, np.ndarray, np.ndarray]]:
+    """Build reusable 8-connected sparse foreground graph ``(csr_graph, node_ids, fg_ys, fg_xs)``."""
+    try:
+        from scipy.sparse import csr_matrix
+    except ImportError:
+        return None
+    H, W = domain.shape
+    node_ids = np.full((H, W), -1, dtype=np.int32)
+    fg_ys, fg_xs = np.nonzero(domain)
+    num_fg = int(fg_xs.size)
+    if num_fg == 0:
+        return None
+    node_ids[fg_ys, fg_xs] = np.arange(num_fg, dtype=np.int32)
+
+    src_list: List[np.ndarray] = []
+    dst_list: List[np.ndarray] = []
+    w_list: List[np.ndarray] = []
+    for dy, dx, step_len in (
+        (0, 1, 1.0),
+        (1, 0, 1.0),
+        (1, 1, math.sqrt(2.0)),
+        (1, -1, math.sqrt(2.0)),
+    ):
+        y0_s = slice(0, H - dy)
+        y1_s = slice(dy, H)
+        if dx >= 0:
+            x0_s = slice(0, W - dx)
+            x1_s = slice(dx, W)
+        else:
+            x0_s = slice(-dx, W)
+            x1_s = slice(0, W + dx)
+        u = node_ids[y0_s, x0_s]
+        v = node_ids[y1_s, x1_s]
+        valid = (u >= 0) & (v >= 0)
+        if not np.any(valid):
+            continue
+        u_valid = u[valid]
+        v_valid = v[valid]
+        c_uv = (
+            0.5 * step_len * (cost[y0_s, x0_s][valid] + cost[y1_s, x1_s][valid])
+        ).astype(np.float32)
+        src_list.append(u_valid)
+        dst_list.append(v_valid)
+        w_list.append(c_uv)
+
+    if src_list:
+        rows = np.concatenate(src_list)
+        cols = np.concatenate(dst_list)
+        weights = np.concatenate(w_list)
+        graph = csr_matrix((weights, (rows, cols)), shape=(num_fg, num_fg))
+    else:
+        graph = csr_matrix((num_fg, num_fg), dtype=np.float32)
+    return graph, node_ids, fg_ys, fg_xs
+
+
+def _compute_geodesic_spine_pair(
+    main_comp: np.ndarray,
+    s0_y: int,
+    s0_x: int,
+) -> Optional[
+    Tuple[
+        int,
+        int,
+        int,
+        int,
+        float,
+        float,
+        Optional[np.ndarray],
+        Optional[np.ndarray],
+    ]
+]:
+    """Compute intrinsic geodesic diameter endpoints and distance fields reusing a single graph."""
+    wh, ww = main_comp.shape
+    csr_built = _build_csr_geodesic_graph(
+        main_comp, np.ones((wh, ww), dtype=np.float32)
+    )
+    if csr_built is not None:
+        from scipy.sparse.csgraph import dijkstra as _csr_dijkstra
+
+        g_sp, n_ids, g_ys, g_xs = csr_built
+        s0_node = int(n_ids[s0_y, s0_x])
+        if s0_node < 0:
+            return None
+        d0_fg = _csr_dijkstra(g_sp, directed=False, indices=[s0_node], min_only=True)
+        fin0 = np.flatnonzero(np.isfinite(d0_fg))
+        if fin0.size == 0:
+            return None
+        e1_fg = int(fin0[int(np.argmax(d0_fg[fin0]))])
+        e1_y, e1_x = int(g_ys[e1_fg]), int(g_xs[e1_fg])
+        d1_fg = _csr_dijkstra(g_sp, directed=False, indices=[e1_fg], min_only=True)
+        fin1 = np.flatnonzero(np.isfinite(d1_fg))
+        if fin1.size == 0:
+            return None
+        e2_fg = int(fin1[int(np.argmax(d1_fg[fin1]))])
+        e2_y, e2_x = int(g_ys[e2_fg]), int(g_xs[e2_fg])
+        d_geo = float(d1_fg[e2_fg])
+        d_euc = math.hypot(float(e1_x - e2_x), float(e1_y - e2_y))
+        tort = float(d_geo / max(1.0, d_euc))
+        if tort > 1.18 and d_geo > 6.0:
+            d2_fg = _csr_dijkstra(g_sp, directed=False, indices=[e2_fg], min_only=True)
+            d1 = np.full((wh, ww), np.inf, dtype=np.float32)
+            d2 = np.full((wh, ww), np.inf, dtype=np.float32)
+            d1[g_ys, g_xs] = d1_fg.astype(np.float32)
+            d2[g_ys, g_xs] = d2_fg.astype(np.float32)
+            return e1_x, e1_y, e2_x, e2_y, d_geo, tort, d1, d2
+        return e1_x, e1_y, e2_x, e2_y, d_geo, tort, None, None
+
+    seed0 = np.zeros((wh, ww), dtype=bool)
+    seed0[s0_y, s0_x] = True
+    d0 = compute_masked_geodesic_distances([seed0], main_comp, edge_weight=0.0)[0]
+    fin0_m = np.isfinite(d0)
+    if not np.any(fin0_m):
+        return None
+    fy0, fx0 = np.nonzero(fin0_m)
+    e1_i = int(np.argmax(d0[fin0_m]))
+    e1_y, e1_x = int(fy0[e1_i]), int(fx0[e1_i])
+    seed1 = np.zeros((wh, ww), dtype=bool)
+    seed1[e1_y, e1_x] = True
+    d1 = compute_masked_geodesic_distances([seed1], main_comp, edge_weight=0.0)[0]
+    fin1_m = np.isfinite(d1)
+    if not np.any(fin1_m):
+        return None
+    fy1, fx1 = np.nonzero(fin1_m)
+    e2_i = int(np.argmax(d1[fin1_m]))
+    e2_y, e2_x = int(fy1[e2_i]), int(fx1[e2_i])
+    d_geo = float(d1[e2_y, e2_x])
+    d_euc = math.hypot(float(e1_x - e2_x), float(e1_y - e2_y))
+    tort = float(d_geo / max(1.0, d_euc))
+    if tort > 1.18 and d_geo > 6.0:
+        seed2 = np.zeros((wh, ww), dtype=bool)
+        seed2[e2_y, e2_x] = True
+        d2 = compute_masked_geodesic_distances([seed2], main_comp, edge_weight=0.0)[0]
+        return e1_x, e1_y, e2_x, e2_y, d_geo, tort, d1, d2
+    return e1_x, e1_y, e2_x, e2_y, d_geo, tort, None, None
+
+
+def _trace_medial_bone_on_canvas(
+    canvas: np.ndarray,
+    work_mask: np.ndarray,
+    thickness_map: np.ndarray,
+    p0: Tuple[float, float],
+    p1: Tuple[float, float],
+    radius: int,
+    *,
+    prefer_thin: bool = False,
+) -> None:
+    """Draw bone ``p0 -> p1`` on ``canvas``, following the curved silhouette if chord leaves ``work_mask``."""
+    wh, ww = work_mask.shape
+    x0_i = int(np.clip(round(p0[0]), 0, ww - 1))
+    y0_i = int(np.clip(round(p0[1]), 0, wh - 1))
+    x1_i = int(np.clip(round(p1[0]), 0, ww - 1))
+    y1_i = int(np.clip(round(p1[1]), 0, wh - 1))
+    chord_len = math.hypot(float(x1_i - x0_i), float(y1_i - y0_i))
+    if chord_len <= 3.0:
+        cv2.line(canvas, (x0_i, y0_i), (x1_i, y1_i), 1, thickness=max(1, radius))
+        return
+
+    # Sample chord interior to detect if straight line crosses background air (e.g. C-curved tail/spine).
+    n_samples = max(4, int(round(chord_len)))
+    ts = np.linspace(0.12, 0.88, n_samples)
+    sx_arr = np.clip(np.rint(x0_i + ts * (x1_i - x0_i)).astype(np.int32), 0, ww - 1)
+    sy_arr = np.clip(np.rint(y0_i + ts * (y1_i - y0_i)).astype(np.int32), 0, wh - 1)
+    if bool(np.all(work_mask[sy_arr, sx_arr])):
+        if not prefer_thin or float(np.max(thickness_map[sy_arr, sx_arr])) <= 0.36:
+            cv2.line(canvas, (x0_i, y0_i), (x1_i, y1_i), 1, thickness=max(1, radius))
+            return
+
+    t_clamped = np.maximum(0.0, thickness_map)
+    if prefer_thin:
+        # Appendage bones (tail / limbs) must stay inside thin protrusions and never shortcut through the fat trunk!
+        medial_cost = (1.0 + 8.0 * np.maximum(0.0, t_clamped - 0.28)).astype(np.float32)
+    else:
+        # Axial trunk / cranial bones hug the thick medial spine rather than grazing outer contours.
+        medial_cost = (1.0 / (0.25 + t_clamped)).astype(np.float32)
+
+    csr_graph = _build_csr_geodesic_graph(work_mask, medial_cost)
+    if csr_graph is not None:
+        try:
+            from scipy.sparse.csgraph import dijkstra as _csr_dijkstra
+
+            g_sp, n_ids, g_ys, g_xs = csr_graph
+            n0 = int(n_ids[y0_i, x0_i])
+            if n0 < 0:
+                n0 = int(np.argmin((g_xs - p0[0]) ** 2 + (g_ys - p0[1]) ** 2))
+            n1 = int(n_ids[y1_i, x1_i])
+            if n1 < 0:
+                n1 = int(np.argmin((g_xs - p1[0]) ** 2 + (g_ys - p1[1]) ** 2))
+            if n0 >= 0 and n1 >= 0 and n0 != n1:
+                dists, preds = _csr_dijkstra(
+                    g_sp,
+                    directed=False,
+                    indices=n0,
+                    return_predecessors=True,
+                )
+                if np.isfinite(dists[n1]):
+                    cur = n1
+                    pts_path: List[Tuple[int, int]] = []
+                    arc_px = 0.0
+                    steps = 0
+                    max_steps = int(g_xs.size) + 2
+                    while cur >= 0 and steps < max_steps:
+                        pt_xy = (int(g_xs[cur]), int(g_ys[cur]))
+                        if pts_path:
+                            arc_px += math.hypot(
+                                pt_xy[0] - pts_path[-1][0],
+                                pt_xy[1] - pts_path[-1][1],
+                            )
+                        pts_path.append(pt_xy)
+                        if cur == n0:
+                            break
+                        cur = int(preds[cur])
+                        steps += 1
+                    if len(pts_path) >= 2 and arc_px <= max(8.0, 2.5 * chord_len):
+                        if prefer_thin:
+                            path_t = [
+                                float(thickness_map[py, px]) for px, py in pts_path
+                            ]
+                            if float(np.percentile(path_t, 85)) > 0.40:
+                                return
+                        poly_arr = np.asarray(pts_path, dtype=np.int32).reshape(
+                            -1, 1, 2
+                        )
+                        cv2.polylines(
+                            canvas,
+                            [poly_arr],
+                            isClosed=False,
+                            color=1,
+                            thickness=max(1, radius),
+                        )
+                        return
+        except ImportError:
+            pass
+    if not prefer_thin:
+        cv2.line(canvas, (x0_i, y0_i), (x1_i, y1_i), 1, thickness=max(1, radius))
+
+
+def _bridge_disconnected_mask_islands(
+    domain_mask: np.ndarray,
+    *,
+    max_gap_px: int = 22,
+    min_island_px: int = 6,
+) -> np.ndarray:
+    """Connect multi-component fragments of a bar-occluded instance across narrow gaps.
+
+    Returns ``domain_mask`` unchanged whenever it already has ``<= 1`` foreground component,
+    so unoccluded C/U-curved postures never bridge across concave air gaps.
+    """
+    mask_bool = np.asarray(domain_mask, dtype=bool)
+    n_cc, cc_lbl, stats, _ = cv2.connectedComponentsWithStats(
+        mask_bool.astype(np.uint8), connectivity=8
+    )
+    if n_cc <= 2:
+        return mask_bool
+    valid_ids = [
+        cid
+        for cid in range(1, n_cc)
+        if int(stats[cid, cv2.CC_STAT_AREA]) >= min_island_px
+    ]
+    if len(valid_ids) <= 1:
+        return mask_bool
+
+    valid_ids.sort(key=lambda cid: -int(stats[cid, cv2.CC_STAT_AREA]))
+    bridged_u8 = mask_bool.astype(np.uint8)
+    joined_mask = cc_lbl == valid_ids[0]
+    max_d2 = float(max_gap_px * max_gap_px)
+
+    for cid in valid_ids[1:]:
+        comp_m = cc_lbl == cid
+        j_ys, j_xs = np.nonzero(joined_mask)
+        c_ys, c_xs = np.nonzero(comp_m)
+        if j_xs.size == 0 or c_xs.size == 0:
+            continue
+        # Subsample boundary/foreground coordinates if large for O(1) bridge lookup.
+        j_step = max(1, int(j_xs.size // 240))
+        c_step = max(1, int(c_xs.size // 160))
+        jx_s, jy_s = j_xs[::j_step], j_ys[::j_step]
+        cx_s, cy_s = c_xs[::c_step], c_ys[::c_step]
+        d2_mat = (jx_s[:, None] - cx_s[None, :]) ** 2 + (
+            jy_s[:, None] - cy_s[None, :]
+        ) ** 2
+        flat_min = int(np.argmin(d2_mat))
+        ji, ci = divmod(flat_min, cx_s.size)
+        if float(d2_mat[ji, ci]) <= max_d2:
+            cv2.line(
+                bridged_u8,
+                (int(jx_s[ji]), int(jy_s[ji])),
+                (int(cx_s[ci]), int(cy_s[ci])),
+                1,
+                thickness=3,
+            )
+            joined_mask = bridged_u8 > 0
+    return bridged_u8 > 0
+
+
 def compute_masked_geodesic_distances(
     seed_masks: Sequence[np.ndarray],
     domain_mask: np.ndarray,
     *,
     edge_strength: Optional[np.ndarray] = None,
     edge_weight: float = 3.5,
+    max_solve_side: int = 256,
+    bridge_occluder_gaps: bool = False,
 ) -> np.ndarray:
     """Compute edge-weighted geodesic distances ``(K, H, W)`` strictly inside ``domain_mask``.
 
     Paths cannot cross background pixels ``~domain_mask``, preventing curled/coiled
     appendages (e.g. a tail tip near the nose) from bleeding across air gaps.
+    When ``bridge_occluder_gaps=True`` and ``domain_mask`` is sliced into multiple
+    disconnected fragments by a narrow occluder (e.g. overhead cage bars), wavefronts
+    route across narrow inter-fragment bridges while output distances on ``~domain_mask``
+    remain ``np.inf``.
     """
-    domain = np.asarray(domain_mask, dtype=bool)
-    H, W = domain.shape
+    orig_domain = np.asarray(domain_mask, dtype=bool)
+    H, W = orig_domain.shape
     num_seeds = len(seed_masks)
     if num_seeds == 0:
         return np.zeros((0, H, W), dtype=np.float32)
-    if not np.any(domain):
+    if not np.any(orig_domain):
         return np.full((num_seeds, H, W), np.inf, dtype=np.float32)
+
+    domain = (
+        _bridge_disconnected_mask_islands(orig_domain, max_gap_px=22)
+        if bridge_occluder_gaps
+        else orig_domain
+    )
 
     cost = np.ones((H, W), dtype=np.float32)
     if edge_strength is not None and float(edge_weight) > 0.0:
         cost = cost + float(edge_weight) * np.asarray(edge_strength, dtype=np.float32)
+    if bridge_occluder_gaps:
+        bridge_only = domain & (~orig_domain)
+        if np.any(bridge_only):
+            cost[bridge_only] = 1.35
 
-    # Try fast C-level multi-source Dijkstra over foreground pixels when scipy is installed.
     try:
-        from scipy.sparse import csr_matrix
-        from scipy.sparse.csgraph import dijkstra
+        import scipy.sparse.csgraph as _csgraph  # noqa: F401
 
-        node_ids = np.full((H, W), -1, dtype=np.int32)
-        fg_ys, fg_xs = np.nonzero(domain)
-        num_fg = int(fg_xs.size)
-        node_ids[fg_ys, fg_xs] = np.arange(num_fg, dtype=np.int32)
-
-        src_list: List[np.ndarray] = []
-        dst_list: List[np.ndarray] = []
-        w_list: List[np.ndarray] = []
-        for dy, dx, step_len in (
-            (0, 1, 1.0),
-            (1, 0, 1.0),
-            (1, 1, math.sqrt(2.0)),
-            (1, -1, math.sqrt(2.0)),
-        ):
-            y0_s = slice(0, H - dy)
-            y1_s = slice(dy, H)
-            if dx >= 0:
-                x0_s = slice(0, W - dx)
-                x1_s = slice(dx, W)
-            else:
-                x0_s = slice(-dx, W)
-                x1_s = slice(0, W + dx)
-            u = node_ids[y0_s, x0_s]
-            v = node_ids[y1_s, x1_s]
-            valid = (u >= 0) & (v >= 0)
-            if not np.any(valid):
-                continue
-            u_valid = u[valid]
-            v_valid = v[valid]
-            c_uv = (
-                0.5 * step_len * (cost[y0_s, x0_s][valid] + cost[y1_s, x1_s][valid])
-            ).astype(np.float32)
-            src_list.append(u_valid)
-            dst_list.append(v_valid)
-            w_list.append(c_uv)
-
-        if src_list:
-            rows = np.concatenate(src_list)
-            cols = np.concatenate(dst_list)
-            weights = np.concatenate(w_list)
-            graph = csr_matrix((weights, (rows, cols)), shape=(num_fg, num_fg))
-        else:
-            graph = csr_matrix((num_fg, num_fg), dtype=np.float32)
-
-        out = np.full((num_seeds, H, W), np.inf, dtype=np.float32)
-        for idx, smask in enumerate(seed_masks):
-            s_bool = np.asarray(smask, dtype=bool) & domain
-            seed_nodes = node_ids[s_bool]
-            if seed_nodes.size == 0:
-                continue
-            dists_fg = dijkstra(
-                graph,
-                directed=False,
-                indices=seed_nodes,
-                min_only=True,
-            )
-            out[idx, fg_ys, fg_xs] = dists_fg.astype(np.float32)
-        return out
+        has_scipy = True
     except ImportError:
-        pass
+        has_scipy = False
 
-    # Pure-NumPy fallback: vectorized 8-neighbor Bellman-Ford on compact grid (<= 112 px).
-    max_grid = 112
+    max_grid = max(
+        32, int(max_solve_side) if has_scipy else min(int(max_solve_side), 112)
+    )
     if max(H, W) > max_grid:
         scale = float(max_grid) / float(max(H, W))
         gh = max(8, int(round(H * scale)))
@@ -1171,37 +1420,63 @@ def compute_masked_geodesic_distances(
         g_cost = cost
         g_seeds = [np.asarray(sm, dtype=bool) & domain for sm in seed_masks]
 
-    dist = np.full((num_seeds, gh, gw), np.inf, dtype=np.float32)
-    for idx, gs in enumerate(g_seeds):
-        dist[idx, gs] = 0.0
+    dist: Optional[np.ndarray] = None
+    csr_built = _build_csr_geodesic_graph(g_domain, g_cost)
+    if csr_built is not None:
+        try:
+            from scipy.sparse.csgraph import dijkstra
 
-    ch = 0.5 * (g_cost[:, :-1] + g_cost[:, 1:])
-    cv_step = 0.5 * (g_cost[:-1, :] + g_cost[1:, :])
-    cd1 = 0.5 * math.sqrt(2.0) * (g_cost[:-1, :-1] + g_cost[1:, 1:])
-    cd2 = 0.5 * math.sqrt(2.0) * (g_cost[:-1, 1:] + g_cost[1:, :-1])
-    inv_dom = ~g_domain
+            graph, node_ids, fg_ys, fg_xs = csr_built
+            dist = np.full((num_seeds, gh, gw), np.inf, dtype=np.float32)
+            for idx, gs in enumerate(g_seeds):
+                seed_nodes = node_ids[gs]
+                if seed_nodes.size == 0:
+                    continue
+                dists_fg = dijkstra(
+                    graph,
+                    directed=False,
+                    indices=seed_nodes,
+                    min_only=True,
+                )
+                dist[idx, fg_ys, fg_xs] = dists_fg.astype(np.float32)
+        except ImportError:
+            dist = None
 
-    max_iters = 2 * (gh + gw) + 8
-    for _ in range(max_iters):
-        prev = dist.copy()
-        dist[:, :, 1:] = np.minimum(dist[:, :, 1:], dist[:, :, :-1] + ch)
-        dist[:, :, :-1] = np.minimum(dist[:, :, :-1], dist[:, :, 1:] + ch)
-        dist[:, 1:, :] = np.minimum(dist[:, 1:, :], dist[:, :-1, :] + cv_step)
-        dist[:, :-1, :] = np.minimum(dist[:, :-1, :], dist[:, 1:, :] + cv_step)
-        dist[:, 1:, 1:] = np.minimum(dist[:, 1:, 1:], dist[:, :-1, :-1] + cd1)
-        dist[:, :-1, :-1] = np.minimum(dist[:, :-1, :-1], dist[:, 1:, 1:] + cd1)
-        dist[:, 1:, :-1] = np.minimum(dist[:, 1:, :-1], dist[:, :-1, 1:] + cd2)
-        dist[:, :-1, 1:] = np.minimum(dist[:, :-1, 1:], dist[:, 1:, :-1] + cd2)
-        dist[:, inv_dom] = np.inf
-        cur_finite = np.isfinite(dist)
-        prev_finite = np.isfinite(prev)
-        if np.array_equal(cur_finite, prev_finite) and (
-            not np.any(cur_finite)
-            or float(np.max(np.abs(dist[cur_finite] - prev[cur_finite]))) < 1e-3
-        ):
-            break
+    if dist is None:
+        # Pure-NumPy fallback: vectorized 8-neighbor Bellman-Ford on compact grid (<= 112 px).
+        dist = np.full((num_seeds, gh, gw), np.inf, dtype=np.float32)
+        for idx, gs in enumerate(g_seeds):
+            dist[idx, gs] = 0.0
+
+        ch = 0.5 * (g_cost[:, :-1] + g_cost[:, 1:])
+        cv_step = 0.5 * (g_cost[:-1, :] + g_cost[1:, :])
+        cd1 = 0.5 * math.sqrt(2.0) * (g_cost[:-1, :-1] + g_cost[1:, 1:])
+        cd2 = 0.5 * math.sqrt(2.0) * (g_cost[:-1, 1:] + g_cost[1:, :-1])
+        inv_dom = ~g_domain
+
+        max_iters = 2 * (gh + gw) + 8
+        for _ in range(max_iters):
+            prev = dist.copy()
+            dist[:, :, 1:] = np.minimum(dist[:, :, 1:], dist[:, :, :-1] + ch)
+            dist[:, :, :-1] = np.minimum(dist[:, :, :-1], dist[:, :, 1:] + ch)
+            dist[:, 1:, :] = np.minimum(dist[:, 1:, :], dist[:, :-1, :] + cv_step)
+            dist[:, :-1, :] = np.minimum(dist[:, :-1, :], dist[:, 1:, :] + cv_step)
+            dist[:, 1:, 1:] = np.minimum(dist[:, 1:, 1:], dist[:, :-1, :-1] + cd1)
+            dist[:, :-1, :-1] = np.minimum(dist[:, :-1, :-1], dist[:, 1:, 1:] + cd1)
+            dist[:, 1:, :-1] = np.minimum(dist[:, 1:, :-1], dist[:, :-1, 1:] + cd2)
+            dist[:, :-1, 1:] = np.minimum(dist[:, :-1, 1:], dist[:, 1:, :-1] + cd2)
+            dist[:, inv_dom] = np.inf
+            cur_finite = np.isfinite(dist)
+            prev_finite = np.isfinite(prev)
+            if np.array_equal(cur_finite, prev_finite) and (
+                not np.any(cur_finite)
+                or float(np.max(np.abs(dist[cur_finite] - prev[cur_finite]))) < 1e-3
+            ):
+                break
 
     if (gh, gw) == (H, W):
+        if bridge_occluder_gaps:
+            dist[:, ~orig_domain] = np.inf
         return dist
 
     out_full = np.full((num_seeds, H, W), np.inf, dtype=np.float32)
@@ -1209,18 +1484,12 @@ def compute_masked_geodesic_distances(
         finite_slice = np.isfinite(dist[idx])
         if not np.any(finite_slice):
             continue
-        cap_val = float(np.max(dist[idx][finite_slice])) + 4.0 * max(H, W)
-        filled = np.where(finite_slice, dist[idx], cap_val).astype(np.float32)
-        up = cv2.resize(filled, (W, H), interpolation=cv2.INTER_LINEAR)
-        reach = (
-            cv2.resize(
-                finite_slice.astype(np.uint8),
-                (W, H),
-                interpolation=cv2.INTER_NEAREST,
-            )
-            > 0
-        ) & domain
-        out_full[idx, reach] = up[reach]
+        valid_f = finite_slice.astype(np.float32)
+        weighted = np.where(finite_slice, dist[idx], 0.0).astype(np.float32)
+        up_num = cv2.resize(weighted, (W, H), interpolation=cv2.INTER_LINEAR)
+        up_den = cv2.resize(valid_f, (W, H), interpolation=cv2.INTER_LINEAR)
+        reach = (up_den > 1e-3) & orig_domain
+        out_full[idx, reach] = up_num[reach] / np.maximum(up_den[reach], 1e-4)
     return out_full
 
 
@@ -1297,6 +1566,108 @@ def _select_diverse_prototypes(
     return np.stack(chosen, axis=0).astype(np.float32, copy=False)
 
 
+def _potts_smooth_probabilities(
+    guide_rgb: np.ndarray,
+    probs: np.ndarray,
+    domain_mask: np.ndarray,
+    part_labels: Sequence[str],
+    *,
+    iterations: int = 2,
+    weight: float = 0.25,
+) -> np.ndarray:
+    """Contrast-sensitive multi-label Potts smoothing with anatomical head-tail non-adjacency."""
+    K, H, W = probs.shape
+    if K < 2 or iterations <= 0 or weight <= 0.0 or H < 3 or W < 3:
+        return probs
+    mask_bool = np.asarray(domain_mask, dtype=bool)
+    gray = cv2.cvtColor(guide_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0
+    wx = np.exp(-18.0 * np.square(gray[:, 1:] - gray[:, :-1])).astype(np.float32)
+    wy = np.exp(-18.0 * np.square(gray[1:, :] - gray[:-1, :])).astype(np.float32)
+    mx_pair = (mask_bool[:, 1:] & mask_bool[:, :-1]).astype(np.float32)
+    my_pair = (mask_bool[1:, :] & mask_bool[:-1, :]).astype(np.float32)
+    wx *= mx_pair
+    wy *= my_pair
+
+    # Build compatibility matrices:
+    # 1. Repulsion (-0.65) between incompatible head <-> tail neighbors when torso exists.
+    # 2. Same-label attraction (+0.35) only among axial trunk/head classes inside deep,
+    #    ambiguous interior pixels so torso never erodes minority limbs/tail/wings!
+    coarse_roles = [
+        ""
+        if lbl == _UNASSIGNED_PART
+        else infer_part_from_keypoint_name(lbl, granularity="coarse")
+        for lbl in part_labels
+    ]
+    has_torso_role = "torso" in coarse_roles
+    repel = np.zeros((K, K), dtype=np.float32)
+    same_axial = np.zeros((K, K), dtype=np.float32)
+    for i in range(K):
+        if coarse_roles[i] in {"head", "torso"}:
+            same_axial[i, i] = 0.35
+        if has_torso_role:
+            for j in range(K):
+                if (coarse_roles[i] == "head" and coarse_roles[j] == "tail") or (
+                    coarse_roles[i] == "tail" and coarse_roles[j] == "head"
+                ):
+                    repel[i, j] = -0.65
+
+    edt_dom = cv2.distanceTransform(mask_bool.astype(np.uint8), cv2.DIST_L2, 5)
+    thick_gate = np.clip((edt_dom - 5.0) / 3.0, 0.0, 1.0).astype(np.float32)
+    sorted_p = np.sort(probs, axis=0)
+    margin = sorted_p[-1] - sorted_p[-2]
+    ambig_gate = np.clip((0.22 - margin) / 0.22, 0.0, 1.0).astype(np.float32)
+    axial_gate = thick_gate * ambig_gate
+
+    cur = np.clip(probs.astype(np.float32, copy=True), 1e-6, 1.0)
+    log_unary = np.log(cur)
+    for _ in range(int(iterations)):
+        msg = np.zeros_like(cur)
+        msg[:, :, 1:] += cur[:, :, :-1] * wx[None, :, :]
+        msg[:, :, :-1] += cur[:, :, 1:] * wx[None, :, :]
+        msg[:, 1:, :] += cur[:, :-1, :] * wy[None, :, :]
+        msg[:, :-1, :] += cur[:, 1:, :] * wy[None, :, :]
+        repel_term = np.tensordot(repel, msg, axes=([1], [0]))
+        axial_term = np.tensordot(same_axial, msg, axes=([1], [0]))
+        logits = log_unary + float(weight) * (
+            repel_term + axial_gate[None, :, :] * axial_term
+        )
+        logits -= np.max(logits, axis=0, keepdims=True)
+        exp_l = np.exp(np.clip(logits, -20.0, 0.0))
+        exp_l[:, ~mask_bool] = 0.0
+        denom = np.sum(exp_l, axis=0, keepdims=True)
+        cur = np.where(denom > 1e-8, exp_l / np.maximum(denom, 1e-8), cur)
+    cur[:, ~mask_bool] = 0.0
+    return cur.astype(np.float32, copy=False)
+
+
+def _merge_posture_archetypes(
+    existing: Sequence[Tuple[float, float, float, float, float, float, float]],
+    incoming: Sequence[Tuple[float, float, float, float, float, float, float]],
+    max_slots: int = 4,
+) -> Tuple[Tuple[float, float, float, float, float, float, float], ...]:
+    """Maintain up to ``max_slots`` distinct posture-indexed spatial priors."""
+    slots = list(existing)
+    for cand in incoming:
+        c_ar, c_tr = cand[0], cand[1]
+        matched_i = -1
+        best_d2 = 1e9
+        for i, sl in enumerate(slots):
+            d2 = ((c_ar - sl[0]) / 0.45) ** 2 + ((c_tr - sl[1]) / 0.20) ** 2
+            if d2 < best_d2:
+                best_d2 = d2
+                matched_i = i
+        if matched_i >= 0 and best_d2 < 1.0:
+            prev_s = slots[matched_i]
+            slots[matched_i] = tuple(  # type: ignore[assignment]
+                0.5 * (prev_s[k] + cand[k]) for k in range(7)
+            )
+        elif len(slots) < max_slots:
+            slots.append(cand)
+        elif matched_i >= 0:
+            slots[matched_i] = cand
+    return tuple(slots)
+
+
 class InstanceBodyPartSegmenter:
     """Robust, ROI-cropped intra-instance body-part segmenter."""
 
@@ -1312,6 +1683,9 @@ class InstanceBodyPartSegmenter:
         self._instance_prototypes: Dict[str, List[BodyPartPrototype]] = {}
         self._shared_prototypes: List[BodyPartPrototype] = []
         self._unsupervised_prototypes: Dict[str, List[BodyPartPrototype]] = {}
+        self._instance_ridge_probes: Dict[
+            str, Tuple[Tuple[str, ...], np.ndarray, float]
+        ] = {}
         self._temporal_states: Dict[str, _TemporalInstanceState] = {}
         self._full_frame_tracks: Dict[str, _FullFrameInstanceTrack] = {}
         self.last_frame_diagnostics: Dict[str, Any] = {}
@@ -1331,6 +1705,7 @@ class InstanceBodyPartSegmenter:
                     device=self.config.device,
                     use_amp=True,
                     return_layer="all",
+                    layers=(-2, -1),
                 )
             )
         return self._extractor
@@ -1361,21 +1736,13 @@ class InstanceBodyPartSegmenter:
         self._full_frame_tracks.clear()
         self.last_frame_diagnostics = {}
 
-    def _extract_crop_features(self, crop: _InstanceCrop) -> np.ndarray:
-        wh, ww = crop.work_mask.shape
-        backend = self.config.feature_backend
-        if backend == "fast":
-            return _extract_fast_crop_features(crop.work_rgb, crop.work_mask)
-
-        from PIL import Image
+    def _postprocess_dino_crop_tensor(
+        self, raw_feats: Any, crop: _InstanceCrop
+    ) -> np.ndarray:
         import torch
 
-        extractor = self.extractor
-        if extractor is None:
-            return _extract_fast_crop_features(crop.work_rgb, crop.work_mask)
-
-        pil_img = Image.fromarray(crop.work_rgb)
-        raw_feats = extractor.extract(pil_img, return_layer="all", normalize=True)
+        wh, ww = crop.work_mask.shape
+        backend = self.config.feature_backend
         if isinstance(raw_feats, torch.Tensor):
             feat_np = raw_feats.detach().cpu().float().numpy()
         else:
@@ -1402,7 +1769,6 @@ class InstanceBodyPartSegmenter:
         debiased = _l2_normalize_channels(feat_np - 0.35 * fg_mean)
         if (gh, gw) != (wh, ww):
             hwc = np.transpose(debiased, (1, 2, 0))
-            # OpenCV resize handles arbitrary channel counts cleanly via chunking > 512 if needed.
             if C <= 512:
                 up_hwc = cv2.resize(hwc, (ww, wh), interpolation=cv2.INTER_LINEAR)
                 if up_hwc.ndim == 2:
@@ -1429,6 +1795,91 @@ class InstanceBodyPartSegmenter:
         fast_feats = _extract_fast_crop_features(crop.work_rgb, crop.work_mask)
         fused = np.concatenate([0.82 * dino_feats, 0.58 * fast_feats], axis=0)
         return _l2_normalize_channels(fused)
+
+    def _extract_crop_features(self, crop: _InstanceCrop) -> np.ndarray:
+        backend = self.config.feature_backend
+        if backend == "fast":
+            return _extract_fast_crop_features(crop.work_rgb, crop.work_mask)
+
+        from PIL import Image
+
+        extractor = self.extractor
+        if extractor is None:
+            return _extract_fast_crop_features(crop.work_rgb, crop.work_mask)
+
+        pil_img = Image.fromarray(crop.work_rgb)
+        raw_feats = extractor.extract(pil_img, return_layer="all", normalize=True)
+        return self._postprocess_dino_crop_tensor(raw_feats, crop)
+
+    def _extract_crops_features_batch(
+        self, crops: Mapping[str, _InstanceCrop]
+    ) -> Dict[str, np.ndarray]:
+        if not crops:
+            return {}
+        backend = self.config.feature_backend
+        if backend == "fast" or len(crops) == 1:
+            return {lbl: self._extract_crop_features(c) for lbl, c in crops.items()}
+        extractor = self.extractor
+        if extractor is None or not hasattr(extractor, "extract_batch"):
+            return {lbl: self._extract_crop_features(c) for lbl, c in crops.items()}
+        labels = list(crops.keys())
+        rgb_list = [crops[lbl].work_rgb for lbl in labels]
+        raw_list = extractor.extract_batch(
+            rgb_list,
+            return_layer="all",
+            normalize=True,
+        )
+        return {
+            lbl: self._postprocess_dino_crop_tensor(raw_f, crops[lbl])
+            for lbl, raw_f in zip(labels, raw_list)
+        }
+
+    @staticmethod
+    def _fit_ridge_seed_probe(
+        feats: np.ndarray,
+        pose: BodyFramePose,
+        work_mask: np.ndarray,
+        part_labels: Sequence[str],
+        seed_mask_by_label: Mapping[str, np.ndarray],
+    ) -> Optional[np.ndarray]:
+        """Fit closed-form L2-regularized linear probe ``W`` ``(K, C+4)`` over seed pixels."""
+        K = len(part_labels)
+        if K < 2:
+            return None
+        fg = np.asarray(work_mask, dtype=bool)
+        n_fg = int(np.count_nonzero(fg))
+        if n_fg < 12:
+            return None
+        f_fg = feats[:, fg]  # (C, N)
+        u_fg = (0.35 * pose.u_map[fg])[None, :]
+        v_fg = (0.25 * pose.v_map[fg])[None, :]
+        t_fg = (0.35 * pose.thickness_map[fg])[None, :]
+        bias_fg = np.full((1, n_fg), 0.25, dtype=np.float32)
+        X = np.concatenate([f_fg, u_fg, v_fg, t_fg, bias_fg], axis=0).astype(
+            np.float64, copy=False
+        )  # (D, N)
+        Y = np.full((n_fg, K), -1.0 / float(max(1, K - 1)), dtype=np.float64)
+        labeled_any = False
+        for k, pname in enumerate(part_labels):
+            pm = seed_mask_by_label.get(pname)
+            if pm is None:
+                continue
+            sel = pm[fg]
+            if np.any(sel):
+                Y[sel, :] = -1.0 / float(max(1, K - 1))
+                Y[sel, k] = 1.0
+                labeled_any = True
+        if not labeled_any:
+            return None
+        D = X.shape[0]
+        lam = max(1.0, 0.22 * float(n_fg))
+        gram = X @ X.T + lam * np.eye(D, dtype=np.float64)
+        rhs = X @ Y  # (D, K)
+        try:
+            W_t = np.linalg.solve(gram, rhs)  # (D, K)
+        except np.linalg.LinAlgError:
+            return None
+        return W_t.T.astype(np.float32)  # (K, D)
 
     @staticmethod
     def _scale_keypoints_to_work(
@@ -1482,22 +1933,31 @@ class InstanceBodyPartSegmenter:
         u_vals = pose.u_map[pmask]
         v_vals = pose.v_map[pmask]
         t_vals = pose.thickness_map[pmask]
+        mu = float(u_vals.mean())
+        su = max(0.16, float(u_vals.std()) + 0.08)
+        mv = float(v_vals.mean())
+        sv = max(0.20, float(v_vals.std()) + 0.10)
+        mt = float(t_vals.mean())
+        st = max(0.15, float(t_vals.std()) + 0.08)
+        arch = (float(pose.aspect_ratio), float(pose.tortuosity), mu, su, mv, sv, mt)
         return BodyPartPrototype(
             part_label=part_label,
             seed_prototypes=seed_protos,
             working_prototype=working,
-            mean_u=float(u_vals.mean()),
-            std_u=max(0.16, float(u_vals.std()) + 0.08),
-            mean_v=float(v_vals.mean()),
-            std_v=max(0.20, float(v_vals.std()) + 0.10),
-            mean_thickness=float(t_vals.mean()),
-            std_thickness=max(0.15, float(t_vals.std()) + 0.08),
+            mean_u=mu,
+            std_u=su,
+            mean_v=mv,
+            std_v=sv,
+            mean_thickness=mt,
+            std_thickness=st,
             seed_area_ratio=float(part_area) / float(inst_area),
             is_unassigned=is_unassigned,
             coat_l_mean=float(coat_l_mean),
             inherited_cross_instance=False,
             working_adapted=True,
             seed_aspect_ratio=float(pose.aspect_ratio),
+            seed_tortuosity=float(pose.tortuosity),
+            posture_archetypes=(arch,),
         )
 
     def fit_seed_frame(
@@ -1517,6 +1977,7 @@ class InstanceBodyPartSegmenter:
         built_count = 0
         shared_accum: Dict[str, List[BodyPartPrototype]] = defaultdict(list)
 
+        crops_to_fit: Dict[str, _InstanceCrop] = {}
         for inst_label, inst_mask in instance_masks.items():
             part_map = seed_parts_by_instance.get(inst_label)
             if not part_map:
@@ -1527,14 +1988,21 @@ class InstanceBodyPartSegmenter:
                 crop_size=self.config.crop_size,
                 padding_ratio=self.config.crop_padding_ratio,
             )
-            if crop is None:
+            if crop is not None:
+                crops_to_fit[inst_label] = crop
+
+        feats_by_inst = self._extract_crops_features_batch(crops_to_fit)
+
+        for inst_label, crop in crops_to_fit.items():
+            part_map = seed_parts_by_instance.get(inst_label)
+            if not part_map:
                 continue
             cx0, cy0, cx1, cy1 = crop.crop_bbox
             wh, ww = crop.work_mask.shape
             kps_work = self._scale_keypoints_to_work(
                 (keypoints_by_instance or {}).get(inst_label), crop
             )
-            feats = self._extract_crop_features(crop)
+            feats = feats_by_inst[inst_label]
 
             # Convert part masks to work-crop resolution and enforce mutual exclusion.
             ordered_names = list(part_map.keys())
@@ -1659,6 +2127,28 @@ class InstanceBodyPartSegmenter:
                 u_grid=pose.u_map,
                 v_grid=pose.v_map,
             )
+            if self.config.use_ridge_seed_probe:
+                merged_labels = tuple(p.part_label for p in merged_inst)
+                w_ridge = self._fit_ridge_seed_probe(
+                    feats,
+                    pose,
+                    crop.work_mask,
+                    merged_labels,
+                    seed_mask_by_label,
+                )
+                if w_ridge is not None:
+                    prev_probe = self._instance_ridge_probes.get(inst_label)
+                    if (
+                        prev_probe is not None
+                        and prev_probe[0] == merged_labels
+                        and prev_probe[1].shape == w_ridge.shape
+                    ):
+                        w_ridge = 0.5 * (prev_probe[1] + w_ridge)
+                    self._instance_ridge_probes[inst_label] = (
+                        merged_labels,
+                        w_ridge,
+                        float(inst_l_mean),
+                    )
 
         if shared_accum:
             merged_shared: List[BodyPartPrototype] = []
@@ -1671,6 +2161,13 @@ class InstanceBodyPartSegmenter:
                 mean_work = _l2_normalize_vec(
                     np.mean([p.working_prototype for p in plist], axis=0)
                 )
+                combined_archs: Tuple[
+                    Tuple[float, float, float, float, float, float, float], ...
+                ] = ()
+                for p in plist:
+                    combined_archs = _merge_posture_archetypes(
+                        combined_archs, p.posture_archetypes
+                    )
                 merged_shared.append(
                     BodyPartPrototype(
                         part_label=pname,
@@ -1694,6 +2191,10 @@ class InstanceBodyPartSegmenter:
                         seed_aspect_ratio=float(
                             np.mean([p.seed_aspect_ratio for p in plist])
                         ),
+                        seed_tortuosity=float(
+                            np.mean([p.seed_tortuosity for p in plist])
+                        ),
+                        posture_archetypes=combined_archs,
                     )
                 )
             self._shared_prototypes = self._merge_prototype_lists(
@@ -1719,6 +2220,9 @@ class InstanceBodyPartSegmenter:
             )
             if combined_seeds.shape[0] > 6:
                 combined_seeds = _select_diverse_prototypes(combined_seeds.T, 6)
+            merged_archs = _merge_posture_archetypes(
+                prev.posture_archetypes, inc.posture_archetypes
+            )
             by_name[inc.part_label] = BodyPartPrototype(
                 part_label=inc.part_label,
                 seed_prototypes=combined_seeds,
@@ -1737,6 +2241,8 @@ class InstanceBodyPartSegmenter:
                 working_adapted=prev.working_adapted or inc.working_adapted,
                 seed_aspect_ratio=0.5
                 * (prev.seed_aspect_ratio + inc.seed_aspect_ratio),
+                seed_tortuosity=0.5 * (prev.seed_tortuosity + inc.seed_tortuosity),
+                posture_archetypes=merged_archs,
             )
         return list(by_name.values())
 
@@ -1864,6 +2370,8 @@ class InstanceBodyPartSegmenter:
                     inherited_cross_instance=True,
                     working_adapted=False,
                     seed_aspect_ratio=p.seed_aspect_ratio,
+                    seed_tortuosity=p.seed_tortuosity,
+                    posture_archetypes=p.posture_archetypes,
                 )
                 for p in self._shared_prototypes
             ]
@@ -1876,10 +2384,30 @@ class InstanceBodyPartSegmenter:
         part_labels = [p.part_label for p in protos]
         flat_feats = feats.reshape(feats.shape[0], -1)  # (C, H*W)
         work_l_mean = _foreground_lab_l_mean(crop.work_rgb, crop.work_mask)
-        has_thin_proto = any(
-            not p.is_unassigned and p.mean_thickness < 0.16 for p in protos
+        real_proto_t = [p.mean_thickness for p in protos if not p.is_unassigned]
+        has_thin_proto = (
+            bool(real_proto_t)
+            and min(real_proto_t) < 0.23
+            and (max(real_proto_t) - min(real_proto_t)) > 0.14
         )
         fg_u_vals = pose.u_map[crop.work_mask]
+        has_thin_tail_proto = any(
+            not p.is_unassigned
+            and p.mean_thickness < 0.20
+            and p.mean_u < -0.25
+            and infer_part_from_keypoint_name(p.part_label, granularity="coarse")
+            == "tail"
+            for p in protos
+        )
+        sec_width: Optional[np.ndarray] = None
+        if has_thin_tail_proto:
+            sec_r = max(2, int(round(0.08 * min(wh, ww))))
+            sec_width = cv2.dilate(
+                pose.thickness_map,
+                cv2.getStructuringElement(
+                    cv2.MORPH_ELLIPSE, (2 * sec_r + 1, 2 * sec_r + 1)
+                ),
+            )
         target_has_thin_tail = False
         if not has_thin_proto and fg_u_vals.size >= 16:
             raw_t_s = pose.thickness_map[crop.work_mask]
@@ -1904,31 +2432,62 @@ class InstanceBodyPartSegmenter:
             else:
                 app_score = 0.72 * seed_sim + 0.28 * work_sim
 
-            eff_mean_u = proto.mean_u
-            eff_std_u = proto.std_u
-            ar_ratio = pose.aspect_ratio / max(1.0, proto.seed_aspect_ratio)
+            # Select nearest posture-indexed spatial archetype when multi-view seeds exist.
+            if len(proto.posture_archetypes) >= 2:
+                best_arch = min(
+                    proto.posture_archetypes,
+                    key=lambda a: ((pose.aspect_ratio - a[0]) / 0.75) ** 2
+                    + ((pose.tortuosity - a[1]) / 0.30) ** 2,
+                )
+                ref_ar, _ref_tr, base_mu, base_su, base_mv, base_sv, base_mt = best_arch
+            else:
+                ref_ar = proto.seed_aspect_ratio
+                base_mu = proto.mean_u
+                base_su = proto.std_u
+                base_mv = proto.mean_v
+                base_sv = proto.std_v
+                base_mt = proto.mean_thickness
+
+            eff_mean_u = base_mu
+            eff_std_u = base_su
+            ar_ratio = pose.aspect_ratio / max(1.0, ref_ar)
             if target_has_thin_tail:
                 ar_ratio = max(ar_ratio, 1.85)
             if (
                 not proto.is_unassigned
                 and ar_ratio > 1.25
-                and proto.mean_u > 0.15
+                and base_mu > 0.15
                 and infer_part_from_keypoint_name(
                     proto.part_label, granularity="coarse"
                 )
                 == "head"
             ):
                 stretch = min(2.2, ar_ratio)
-                eff_mean_u = 1.0 - (1.0 - proto.mean_u) / stretch
-                eff_std_u = max(0.16, proto.std_u / stretch)
+                eff_mean_u = 1.0 - (1.0 - base_mu) / stretch
+                eff_std_u = max(0.16, base_su / stretch)
 
             du = (pose.u_map - eff_mean_u) / max(eff_std_u, 0.14)
-            dv = (pose.v_map - proto.mean_v) / max(proto.std_v, 0.18)
-            dt = (pose.thickness_map - proto.mean_thickness) / max(
-                proto.std_thickness, 0.15
-            )
+            dv = (pose.v_map - base_mv) / max(base_sv, 0.18)
+            dt = (pose.thickness_map - base_mt) / max(proto.std_thickness, 0.15)
             thick_w = (0.65 if is_cross else 0.35) if has_thin_proto else 0.12
             canon_score = -0.5 * (du * du + 0.75 * dv * dv + thick_w * dt * dt)
+            if (
+                not proto.is_unassigned
+                and sec_width is not None
+                and has_thin_tail_proto
+            ):
+                p_coarse = infer_part_from_keypoint_name(
+                    proto.part_label, granularity="coarse"
+                )
+                if p_coarse == "tail" and base_mt < 0.20:
+                    over_sec = np.maximum(0.0, sec_width - (base_mt + 0.16))
+                    canon_score = canon_score - 2.6 * (over_sec / 0.18) ** 2
+                elif p_coarse == "torso" and base_mt > 0.30:
+                    caudal_gate = np.clip(-pose.u_map / 0.25, 0.0, 1.0)
+                    under_sec = np.maximum(0.0, (base_mt - 0.14) - sec_width)
+                    canon_score = (
+                        canon_score - 3.0 * caudal_gate * (under_sec / 0.15) ** 2
+                    )
             # Mildly relax canonical spatial penalty for catch-all unassigned remainder.
             canon_mult = 0.35 if proto.is_unassigned else (1.35 if is_cross else 1.0)
             app_mult = 2.1 if (is_cross and not proto.working_adapted) else 3.2
@@ -1937,6 +2496,32 @@ class InstanceBodyPartSegmenter:
                 self.config.appearance_weight * app_mult * app_score
                 + self.config.canonical_prior_weight * canon_mult * canon_score
             )
+
+        # Optional closed-form ridge seed probe boost on matching-albedo, comparable-posture crops!
+        if self.config.use_ridge_seed_probe and self.config.ridge_probe_weight > 0.0:
+            probe_entry = self._instance_ridge_probes.get(inst_label)
+            if probe_entry is not None:
+                p_labels, w_ridge, p_l_mean = probe_entry
+                ref_ar0 = protos[0].seed_aspect_ratio
+                if (
+                    p_labels == tuple(part_labels)
+                    and w_ridge.shape[1] == feats.shape[0] + 4
+                    and abs(float(work_l_mean) - float(p_l_mean)) <= 35.0
+                    and 0.65 * ref_ar0 <= pose.aspect_ratio <= 1.60 * ref_ar0
+                ):
+                    n_pix = wh * ww
+                    x_all = np.concatenate(
+                        [
+                            flat_feats,
+                            (0.35 * pose.u_map.reshape(1, n_pix)),
+                            (0.25 * pose.v_map.reshape(1, n_pix)),
+                            (0.35 * pose.thickness_map.reshape(1, n_pix)),
+                            np.full((1, n_pix), 0.25, dtype=np.float32),
+                        ],
+                        axis=0,
+                    )
+                    ridge_scores = (w_ridge @ x_all).reshape(K, wh, ww)
+                    logits += self.config.ridge_probe_weight * ridge_scores
 
         # Optional keypoint geodesic boost if keypoints exist and match seeded part names!
         if kps_work and self.config.keypoint_boost_weight > 0.0:
@@ -1977,6 +2562,7 @@ class InstanceBodyPartSegmenter:
                     crop.work_mask,
                     edge_strength=edge_map,
                     edge_weight=self.config.geodesic_edge_weight,
+                    bridge_occluder_gaps=True,
                 )
                 scale_len = max(6.0, 0.65 * pose.axial_scale)
                 for m_idx, m_name in enumerate(matched_names):
@@ -2276,33 +2862,60 @@ class InstanceBodyPartSegmenter:
         has_torso = "torso" in part_labels
         has_head = "head" in part_labels
 
+        active_bones = (
+            list(skeleton_edges)
+            if skeleton_edges
+            else infer_intra_part_skeleton_edges(kps_work.keys())
+        )
+        max_bone_snap_d2 = float((radius + 3) ** 2)
         seed_masks: List[np.ndarray] = []
         for pname in part_labels:
             is_limb = pname == "limbs" or "limb" in pname.lower()
+            is_tail = pname == "tail" or pname.endswith("_tail")
             p_rad = (
                 max(1, radius // 2) if (is_limb and (has_torso or has_head)) else radius
             )
             canvas = np.zeros((wh, ww), dtype=np.uint8)
             for kx, ky in grouped_pts[pname]:
                 cv2.circle(canvas, (int(round(kx)), int(round(ky))), p_rad, 1, -1)
-            # Rasterize intra-part skeleton bones when available!
-            if skeleton_edges:
-                for src, dst in skeleton_edges:
+            # Rasterize intra-part skeleton bones along the curved medial axis!
+            if active_bones and fg_xs_all.size > 0:
+                for src, dst in active_bones:
                     if (
                         src in effective_kp_xy
                         and dst in effective_kp_xy
                         and kp_to_part.get(src) == pname
                         and kp_to_part.get(dst) == pname
                     ):
-                        p0 = (
-                            int(round(effective_kp_xy[src][0])),
-                            int(round(effective_kp_xy[src][1])),
+                        p0_f = effective_kp_xy[src]
+                        p1_f = effective_kp_xy[dst]
+                        if (
+                            float(
+                                np.min(
+                                    (fg_xs_all - p0_f[0]) ** 2
+                                    + (fg_ys_all - p0_f[1]) ** 2
+                                )
+                            )
+                            > max_bone_snap_d2
+                            or float(
+                                np.min(
+                                    (fg_xs_all - p1_f[0]) ** 2
+                                    + (fg_ys_all - p1_f[1]) ** 2
+                                )
+                            )
+                            > max_bone_snap_d2
+                        ):
+                            continue
+                        bone_thick = 1 if (is_limb or is_tail) else max(1, p_rad // 2)
+                        _trace_medial_bone_on_canvas(
+                            canvas,
+                            crop.work_mask,
+                            pose.thickness_map,
+                            p0_f,
+                            p1_f,
+                            bone_thick,
+                            prefer_thin=(is_limb or is_tail),
                         )
-                        p1 = (
-                            int(round(effective_kp_xy[dst][0])),
-                            int(round(effective_kp_xy[dst][1])),
-                        )
-                        cv2.line(canvas, p0, p1, 1, thickness=max(1, p_rad))
             sm = (canvas > 0) & crop.work_mask
             if not np.any(sm):
                 # Snap slightly off-mask keypoint to nearest foreground pixel in work_mask!
@@ -2319,6 +2932,7 @@ class InstanceBodyPartSegmenter:
             crop.work_mask,
             edge_strength=edge_map,
             edge_weight=self.config.geodesic_edge_weight,
+            bridge_occluder_gaps=True,
         )
 
         # Combine masked geodesic proximity + local seed appearance affinity + appendage thickness barrier!
@@ -2362,12 +2976,6 @@ class InstanceBodyPartSegmenter:
                 d_slice = d_slice.copy()
                 d_slice[unreachable] = min_euc * 1.35
 
-            part_scale = (
-                max(3.5, 0.36 * scale_len)
-                if (is_limb and (has_torso or has_head))
-                else scale_len
-            )
-            geo_score = -d_slice / part_scale
             if np.any(sm):
                 loc_proto = _l2_normalize_vec(feats[:, sm].mean(axis=1))
                 app_sim = (loc_proto @ flat_feats).reshape(wh, ww)
@@ -2375,6 +2983,13 @@ class InstanceBodyPartSegmenter:
             else:
                 app_sim = np.zeros((wh, ww), dtype=np.float32)
                 part_seed_t_raw = 0.20
+
+            part_scale = (
+                max(3.5, 0.36 * scale_len)
+                if (is_limb and (has_torso or has_head))
+                else scale_len
+            )
+            geo_score = -d_slice / part_scale
 
             score = 2.4 * geo_score + 0.85 * self.config.appearance_weight * app_sim
             if has_torso and is_limb and (trunk_seed_t - part_seed_t_raw) > 0.14:
@@ -2578,6 +3193,15 @@ class InstanceBodyPartSegmenter:
                 radius=self.config.guided_radius,
                 eps=self.config.guided_eps,
             )
+        if self.config.potts_refine and K >= 2:
+            probs = _potts_smooth_probabilities(
+                crop_rgb,
+                probs,
+                crop_mask,
+                part_labels,
+                iterations=self.config.potts_iterations,
+                weight=self.config.potts_weight,
+            )
 
         inst_area = int(np.count_nonzero(crop_mask))
         winners = np.argmax(probs, axis=0)
@@ -2723,7 +3347,7 @@ class InstanceBodyPartSegmenter:
     ) -> Dict[str, List[Tuple[float, float]]]:
         """Extract simplified, non-overlapping polygons strictly inside the parent geometry."""
         from shapely import make_valid
-        from shapely.geometry import MultiPolygon, Polygon
+        from shapely.geometry import LineString, MultiPolygon, Polygon
 
         cx0, cy0, _cx1, _cy1 = crop_bbox
         # Build parent Shapely geometry in full-frame coordinates for exact containment clipping.
@@ -2760,8 +3384,9 @@ class InstanceBodyPartSegmenter:
             key=lambda name: (-float(confidences.get(name, 0.0)), name),
         )
         claimed_geom = None
-        polygons_out: Dict[str, List[Tuple[float, float]]] = {}
+        polygons_out: Dict[str, List[List[Tuple[float, float]]]] = {}
         clearance = 1e-3
+        min_comp_area = max(0.5, float(self.config.min_part_area_px) * 0.4)
 
         for pname in ordered:
             pm = part_masks[pname]
@@ -2770,22 +3395,42 @@ class InstanceBodyPartSegmenter:
             )
             if not contours:
                 continue
-            largest = max(contours, key=cv2.contourArea)
-            if self.config.polygon_epsilon > 0.0:
-                approx = cv2.approxPolyDP(
-                    largest, float(self.config.polygon_epsilon), True
-                )
-            else:
-                approx = largest
-            pts = approx.reshape(-1, 2).astype(np.float64)
-            if len(pts) < 3:
-                pts = largest.reshape(-1, 2).astype(np.float64)
-            if len(pts) < 3:
+            contours_sorted = sorted(contours, key=cv2.contourArea, reverse=True)
+            candidate_polys: List[Polygon] = []
+            for cnt in contours_sorted:
+                if (
+                    len(candidate_polys) >= 1
+                    and float(cv2.contourArea(cnt)) < min_comp_area
+                ):
+                    continue
+                if self.config.polygon_epsilon > 0.0:
+                    approx = cv2.approxPolyDP(
+                        cnt, float(self.config.polygon_epsilon), True
+                    )
+                else:
+                    approx = cnt
+                pts = approx.reshape(-1, 2).astype(np.float64)
+                if len(pts) < 3:
+                    pts = cnt.reshape(-1, 2).astype(np.float64)
+                if len(pts) < 3:
+                    continue
+                shifted = [(float(x + cx0), float(y + cy0)) for x, y in pts]
+                try:
+                    raw_g = Polygon(shifted)
+                    if not raw_g.is_valid:
+                        raw_g = make_valid(raw_g)
+                    sub_p = _largest_valid_polygon(raw_g)
+                    if sub_p is not None and sub_p.area >= 0.5:
+                        candidate_polys.append(sub_p)
+                except Exception:
+                    continue
+            if not candidate_polys:
                 continue
 
-            shifted = [(float(x + cx0), float(y + cy0)) for x, y in pts]
             try:
-                geom = Polygon(shifted)
+                geom: Any = candidate_polys[0]
+                for extra_c in candidate_polys[1:]:
+                    geom = make_valid(geom.union(extra_c))
                 if not geom.is_valid:
                     geom = make_valid(geom)
                 if parent_geom is not None:
@@ -2798,19 +3443,82 @@ class InstanceBodyPartSegmenter:
                             )
                         )
                     )
-                poly = _largest_valid_polygon(geom)
+                # Open any interior holes created by subtracting enclosed sibling parts
+                # via hair-thin 0.02px slits so simple LabelMe rings never overlap!
+                raw_pieces: List[Polygon] = (
+                    [geom]
+                    if isinstance(geom, Polygon)
+                    else [
+                        sub_g
+                        for sub_g in getattr(geom, "geoms", ())
+                        if isinstance(sub_g, Polygon)
+                    ]
+                )
+                valid_pieces: List[Polygon] = []
+                for rp in raw_pieces:
+                    if rp.area < 0.5:
+                        continue
+                    if len(rp.interiors) == 0:
+                        valid_pieces.append(rp)
+                        continue
+                    cur_g: Any = rp
+                    for _pass in range(3):
+                        cur_polys = (
+                            [cur_g]
+                            if isinstance(cur_g, Polygon)
+                            else [
+                                g
+                                for g in getattr(cur_g, "geoms", ())
+                                if isinstance(g, Polygon)
+                            ]
+                        )
+                        holes_left = [
+                            ring
+                            for cp in cur_polys
+                            for ring in cp.interiors
+                            if len(ring.coords) >= 4
+                        ]
+                        if not holes_left:
+                            break
+                        _minx, miny, _maxx, maxy = cur_g.bounds
+                        for ring in holes_left:
+                            hole_p = Polygon(ring)
+                            hx = (
+                                float(hole_p.representative_point().x)
+                                if hole_p.area > 0.0
+                                else float(ring.coords[0][0])
+                            )
+                            slit = LineString(
+                                [(hx, miny - 1.0), (hx, maxy + 1.0)]
+                            ).buffer(0.015, cap_style="flat")
+                            cur_g = make_valid(cur_g.difference(slit))
+                    for sp in (
+                        [cur_g]
+                        if isinstance(cur_g, Polygon)
+                        else list(getattr(cur_g, "geoms", ()))
+                    ):
+                        if isinstance(sp, Polygon) and sp.area >= 0.5:
+                            valid_pieces.append(sp)
+                valid_pieces.sort(key=lambda g: g.area, reverse=True)
             except Exception:
-                poly = None
+                valid_pieces = []
 
-            if poly is None or poly.area < 0.5:
+            if not valid_pieces:
                 continue
-            coords = [(float(x), float(y)) for x, y in poly.exterior.coords[:-1]]
-            if len(coords) < 3:
-                continue
-            polygons_out[pname] = coords
-            claimed_geom = (
-                poly if claimed_geom is None else make_valid(claimed_geom.union(poly))
-            )
+            part_coords_list: List[List[Tuple[float, float]]] = []
+            for vp in valid_pieces:
+                if len(part_coords_list) >= 1 and vp.area < min_comp_area:
+                    continue
+                coords = [(float(x), float(y)) for x, y in vp.exterior.coords[:-1]]
+                if len(coords) >= 3:
+                    part_coords_list.append(coords)
+                    claimed_geom = (
+                        vp
+                        if claimed_geom is None
+                        else make_valid(claimed_geom.union(vp))
+                    )
+            if part_coords_list:
+                polygons_out[pname] = part_coords_list
         return polygons_out
 
     @staticmethod
@@ -3045,13 +3753,19 @@ class InstanceBodyPartSegmenter:
         parent_polygon: Optional[Sequence[Tuple[float, float]]] = None,
         group_id: Optional[int | str] = None,
         freeze_ema: bool = False,
+        precomputed_crop: Optional[_InstanceCrop] = None,
+        precomputed_features: Optional[np.ndarray] = None,
     ) -> Dict[str, PartPrediction]:
         """Segment body parts strictly inside a single tracked ``instance_mask``."""
-        crop = _prepare_instance_crop(
-            frame_rgb,
-            instance_mask,
-            crop_size=self.config.crop_size,
-            padding_ratio=self.config.crop_padding_ratio,
+        crop = (
+            precomputed_crop
+            if precomputed_crop is not None
+            else _prepare_instance_crop(
+                frame_rgb,
+                instance_mask,
+                crop_size=self.config.crop_size,
+                padding_ratio=self.config.crop_padding_ratio,
+            )
         )
         if crop is None:
             return {}
@@ -3061,7 +3775,11 @@ class InstanceBodyPartSegmenter:
             return {}
 
         kps_work = self._scale_keypoints_to_work(keypoints, crop)
-        feats = self._extract_crop_features(crop)
+        feats = (
+            precomputed_features
+            if precomputed_features is not None
+            else self._extract_crop_features(crop)
+        )
         active_mode = self._resolve_mode_for_instance(instance_label, kps_work)
 
         if active_mode == "seeded":
@@ -3179,8 +3897,8 @@ class InstanceBodyPartSegmenter:
 
         predictions: Dict[str, PartPrediction] = {}
         for pname, pmask in part_masks.items():
-            poly = polygons.get(pname)
-            if not poly:
+            poly_list = polygons.get(pname)
+            if not poly_list:
                 continue
             area_px = int(np.count_nonzero(pmask))
             predictions[pname] = PartPrediction(
@@ -3188,7 +3906,8 @@ class InstanceBodyPartSegmenter:
                 parent_instance=instance_label,
                 crop_mask=pmask,
                 crop_bbox=crop.crop_bbox,
-                polygon=poly,
+                polygon=poly_list[0],
+                polygons=tuple(poly_list),
                 confidence=float(confidences.get(pname, 1.0)),
                 area_px=area_px,
                 area_ratio=float(area_px) / float(max(1, inst_area_px)),
@@ -3373,20 +4092,60 @@ class InstanceBodyPartSegmenter:
                 if lbl not in split_sources and lbl not in recovered_instances:
                     anomalous_instances.append(lbl)
 
-        results: Dict[str, Dict[str, PartPrediction]] = {}
+        frame_crops: Dict[str, _InstanceCrop] = {}
         for lbl, excl_mask in active_masks.items():
             if not np.any(excl_mask):
                 continue
-            results[lbl] = self.segment_instance(
+            c_obj = _prepare_instance_crop(
+                frame_rgb,
+                excl_mask,
+                crop_size=self.config.crop_size,
+                padding_ratio=self.config.crop_padding_ratio,
+            )
+            if (
+                c_obj is not None
+                and int(np.count_nonzero(c_obj.crop_mask))
+                >= self.config.min_part_area_px
+            ):
+                frame_crops[lbl] = c_obj
+
+        frame_feats = self._extract_crops_features_batch(frame_crops)
+
+        results: Dict[str, Dict[str, PartPrediction]] = {}
+        all_part_confs: List[float] = []
+        for lbl, excl_mask in active_masks.items():
+            if lbl not in frame_crops:
+                results[lbl] = {}
+                continue
+            c_mask_lbl = frame_crops[lbl].crop_mask
+            n_cc_lbl, _ = cv2.connectedComponents(
+                c_mask_lbl.astype(np.uint8), connectivity=8
+            )
+            has_single_explicit_parent = bool(
+                (parent_polygons and parent_polygons.get(lbl))
+                or lbl in split_sources
+                or lbl in recovered_instances
+            )
+            eff_parent_poly = (
+                None
+                if (n_cc_lbl > 2 and not has_single_explicit_parent)
+                else active_polys.get(lbl)
+            )
+            preds_i = self.segment_instance(
                 frame_rgb,
                 lbl,
                 excl_mask,
                 keypoints=(keypoints_by_instance or {}).get(lbl),
                 skeleton_edges=skeleton_edges,
-                parent_polygon=active_polys.get(lbl),
+                parent_polygon=eff_parent_poly,
                 group_id=active_gids.get(lbl),
                 freeze_ema=(lbl in ema_frozen),
+                precomputed_crop=frame_crops[lbl],
+                precomputed_features=frame_feats.get(lbl),
             )
+            results[lbl] = preds_i
+            for pr in preds_i.values():
+                all_part_confs.append(float(pr.confidence))
 
         # Update full-frame geometry & Lab appearance history for subsequent frames.
         for lbl, trk in list(self._full_frame_tracks.items()):
@@ -3445,12 +4204,25 @@ class InstanceBodyPartSegmenter:
                     prev_trk.last_group_id = active_gids.get(lbl)
                 prev_trk.frames_missing = 0
 
+        mean_conf = float(np.mean(all_part_confs)) if all_part_confs else 1.0
+        min_conf = float(np.min(all_part_confs)) if all_part_confs else 1.0
+        uncertainty = float(
+            np.clip(
+                (1.0 - 0.55 * min_conf - 0.45 * mean_conf)
+                + (0.25 if anomalous_instances else 0.0),
+                0.0,
+                1.0,
+            )
+        )
         self.last_frame_diagnostics = {
             "split_sources": split_sources,
             "recovered_parent_instances": recovered_instances,
             "anomalous_area_instances": anomalous_instances,
             "resolved_parent_polygons": active_polys,
             "resolved_group_ids": active_gids,
+            "mean_part_confidence": round(mean_conf, 4),
+            "min_part_confidence": round(min_conf, 4),
+            "uncertainty_score": round(uncertainty, 4),
         }
         return results
 
@@ -3600,16 +4372,27 @@ def parse_frame_instances_and_seed_parts(
             if best_parent_i is not None:
                 nested_child_indices.add(c_i)
 
-        # Assign stable disambiguated parent names first, then attach inferred nested parts.
-        parent_entries = [
-            item for i, item in enumerate(raw_polygons) if i not in nested_child_indices
-        ]
-    else:
-        parent_entries = list(raw_polygons)
-
-    label_counts: Dict[str, int] = defaultdict(int)
-    for _idx, _sh, lbl, _gid, _pts, _m in parent_entries:
-        label_counts[lbl] += 1
+    # Assign stable disambiguated parent names first, then attach inferred nested parts.
+    identity_counts: Dict[str, int] = defaultdict(int)
+    seen_identities: Dict[str, set[str]] = defaultdict(set)
+    for orig_i, (_idx, sh, lbl, gid, _pts, _m) in enumerate(raw_polygons):
+        if orig_i in nested_child_indices:
+            continue
+        flags = sh.get("flags") if isinstance(sh.get("flags"), Mapping) else {}
+        explicit_inst = str(
+            sh.get("instance_label")
+            or (flags.get("instance_label") if flags else "")
+            or ""
+        ).strip()
+        if explicit_inst:
+            id_key = f"inst:{explicit_inst}"
+        elif gid not in (None, ""):
+            id_key = f"gid:{str(gid).strip()}"
+        else:
+            id_key = f"anon:{orig_i}"
+        if id_key not in seen_identities[lbl]:
+            seen_identities[lbl].add(id_key)
+            identity_counts[lbl] += 1
 
     parent_masks: Dict[str, np.ndarray] = {}
     parent_polys: Dict[str, List[Tuple[float, float]]] = {}
@@ -3621,21 +4404,29 @@ def parse_frame_instances_and_seed_parts(
     for orig_i, (_idx, _sh, lbl, gid, pts, mask) in enumerate(raw_polygons):
         if orig_i in nested_child_indices:
             continue
-        if label_counts[lbl] > 1:
-            suffix = str(gid).strip() if gid not in (None, "") else str(seen_ord[lbl])
-            seen_ord[lbl] += 1
-            inst_name = f"{lbl}_{suffix}"
-            while inst_name in parent_masks:
-                seen_ord[lbl] += 1
+        if identity_counts[lbl] > 1:
+            if gid not in (None, ""):
+                inst_name = f"{lbl}_{str(gid).strip()}"
+            else:
                 inst_name = f"{lbl}_{seen_ord[lbl]}"
+                seen_ord[lbl] += 1
+                while inst_name in parent_masks:
+                    inst_name = f"{lbl}_{seen_ord[lbl]}"
+                    seen_ord[lbl] += 1
         else:
             inst_name = lbl
-        parent_masks[inst_name] = mask
-        parent_polys[inst_name] = pts
-        parent_gids[inst_name] = gid
+
+        if inst_name in parent_masks:
+            parent_masks[inst_name] = parent_masks[inst_name] | mask
+            # Empty list signals multi-polygon parent so segment_frame clips to all mask islands.
+            parent_polys[inst_name] = []
+        else:
+            parent_masks[inst_name] = mask
+            parent_polys[inst_name] = pts
+            parent_gids[inst_name] = gid
+            if gid not in (None, ""):
+                gid_to_parent[str(gid).strip()] = inst_name
         entry_index_to_parent_name[orig_i] = inst_name
-        if gid not in (None, ""):
-            gid_to_parent[str(gid).strip()] = inst_name
 
     # Resolve nested inferred parts to their containing disambiguated parent.
     for c_i in sorted(nested_child_indices):
@@ -4052,6 +4843,7 @@ class InstanceBodyPartVideoProcessor:
 
         # Pass 1: Fit seed frames that contain manual/explicit body-part polygons.
         seed_frames_fitted = 0
+        seed_snapshots: Dict[int, Dict[str, _TemporalInstanceState]] = {}
         if self.config.mode in {"auto", "seeded"}:
             for fnum, fpath in frame_paths.items():
                 if self._should_stop():
@@ -4097,6 +4889,16 @@ class InstanceBodyPartVideoProcessor:
                     )
                 if built > 0:
                     seed_frames_fitted += 1
+                    seed_snapshots[int(fnum)] = {
+                        k_s: _TemporalInstanceState(
+                            pose=st_s.pose,
+                            part_labels=st_s.part_labels,
+                            work_probs=st_s.work_probs.copy(),
+                            u_grid=st_s.u_grid,
+                            v_grid=st_s.v_grid,
+                        )
+                        for k_s, st_s in self.segmenter._temporal_states.items()
+                    }
 
         # Pass 2: Segment body parts inside tracked instances across target frame range.
         target_frames = [
@@ -4107,6 +4909,20 @@ class InstanceBodyPartVideoProcessor:
         if not target_frames:
             return "No tracked frames matched the requested frame range."
 
+        # Bidirectional outward propagation when the earliest seed frame occurs after start_frame:
+        # sweep forward from first_seed -> end_frame, then re-anchor at first_seed and sweep backward!
+        in_range_seeds = sorted(f for f in seed_snapshots if f in set(target_frames))
+        if in_range_seeds and in_range_seeds[0] > target_frames[0]:
+            pivot_seed = in_range_seeds[0]
+            forward_pass = [f for f in target_frames if f >= pivot_seed]
+            backward_pass = [f for f in reversed(target_frames) if f < pivot_seed]
+            ordered_sweeps: List[Tuple[Optional[int], List[int]]] = [
+                (pivot_seed, forward_pass),
+                (pivot_seed, backward_pass),
+            ]
+        else:
+            ordered_sweeps = [(None, target_frames)]
+
         self.segmenter.reset_temporal_state()
         frames_processed = 0
         instances_segmented = 0
@@ -4116,217 +4932,262 @@ class InstanceBodyPartVideoProcessor:
         anomalous_parent_frames = 0
         part_counts: Dict[str, int] = defaultdict(int)
         modes_used: set[str] = set()
+        frame_uncertainties: List[Tuple[float, int]] = []
 
         total_targets = max(1, len(target_frames))
-        for idx, fnum in enumerate(target_frames, start=1):
-            if self._should_stop():
-                return "Body-part segmentation stopped by user."
-            fpath = frame_paths[fnum]
-            try:
-                payload = load_labelme_json(fpath)
-            except (FileNotFoundError, AnnotationStoreError, ValueError):
+        done_count = 0
+        for anchor_seed, sweep_frames in ordered_sweeps:
+            if not sweep_frames:
                 continue
+            self.segmenter.reset_temporal_state()
+            if anchor_seed is not None and anchor_seed in seed_snapshots:
+                for k_s, st_s in seed_snapshots[anchor_seed].items():
+                    self.segmenter._temporal_states[k_s] = _TemporalInstanceState(
+                        pose=st_s.pose,
+                        part_labels=st_s.part_labels,
+                        work_probs=st_s.work_probs.copy(),
+                        u_grid=st_s.u_grid,
+                        v_grid=st_s.v_grid,
+                    )
+            for fnum in sweep_frames:
+                done_count += 1
+                idx = done_count
+                if self._should_stop():
+                    return "Body-part segmentation stopped by user."
+                fpath = frame_paths[fnum]
+                try:
+                    payload = load_labelme_json(fpath)
+                except (FileNotFoundError, AnnotationStoreError, ValueError):
+                    continue
 
-            has_png = fpath.with_suffix(".png").exists()
-            (
-                p_masks,
-                p_polys,
-                p_gids,
-                s_parts,
-                kps_by_inst,
-            ) = parse_frame_instances_and_seed_parts(
-                payload,
-                default_height=self.video_height,
-                default_width=self.video_width,
-                infer_nested_seeds=has_png,
-            )
-            if not p_masks:
-                continue
-
-            frame_rgb = self.video_loader.load_frame(int(fnum))
-            if backbone is None and self.config.feature_backend in {"dino", "hybrid"}:
-                backbone = getattr(self.segmenter.extractor, "model", None)
-
-            with torch_cancellable_forward(backbone, stop_event):
-                preds_by_inst = self.segmenter.segment_frame(
-                    frame_rgb,
+                has_png = fpath.with_suffix(".png").exists()
+                (
                     p_masks,
-                    keypoints_by_instance=kps_by_inst,
-                    skeleton_edges=self.skeleton_edges,
-                    parent_polygons=p_polys,
-                    group_ids=p_gids,
-                    allow_merge_split=not has_png,
+                    p_polys,
+                    p_gids,
+                    s_parts,
+                    kps_by_inst,
+                ) = parse_frame_instances_and_seed_parts(
+                    payload,
+                    default_height=self.video_height,
+                    default_width=self.video_width,
+                    infer_nested_seeds=has_png,
                 )
-            if self._should_stop():
-                return "Body-part segmentation stopped by user."
-
-            diag = self.segmenter.last_frame_diagnostics
-            split_sources_set = set(diag.get("split_sources") or ())
-            rec_parents_list = list(diag.get("recovered_parent_instances") or ())
-            resolved_polys = diag.get("resolved_parent_polygons") or {}
-            resolved_gids = diag.get("resolved_group_ids") or {}
-            if split_sources_set:
-                merged_parent_splits += len(split_sources_set)
-            if rec_parents_list:
-                recovered_parent_instances += len(rec_parents_list)
-            if diag.get("anomalous_area_instances"):
-                anomalous_parent_frames += 1
-
-            for inst_lbl in preds_by_inst:
-                modes_used.add(
-                    self.segmenter._resolve_mode_for_instance(
-                        inst_lbl, kps_by_inst.get(inst_lbl)
-                    )
-                )
-
-            # Merge predicted body-part shapes while preserving non-body-part shapes & manual seeds!
-            existing_shapes = payload.get("shapes") or []
-            kept_shapes: List[Dict[str, Any]] = []
-            for shape in existing_shapes:
-                if not isinstance(shape, Mapping):
+                if not p_masks:
                     continue
-                if is_body_part_shape_payload(shape):
-                    # On manual seed frames, preserve manual seed parts if user drew them;
-                    # on predicted frames, replace body parts cleanly.
-                    if (
-                        has_png
-                        and str(shape.get("description") or "") != "InstanceBodyPartSeg"
-                    ):
-                        kept_shapes.append(dict(shape))
-                    continue
-                # If a shape on a manual frame was auto-inferred as a nested seed part, keep it
-                # promoted with proper body-part metadata so downstream tools treat it cleanly!
-                if has_png and s_parts:
-                    raw_lbl = str(shape.get("label") or "").strip()
-                    matched_parent = next(
-                        (
-                            p_name
-                            for p_name, part_dict in s_parts.items()
-                            if raw_lbl in part_dict and raw_lbl != p_name
-                        ),
-                        None,
+
+                frame_rgb = self.video_loader.load_frame(int(fnum))
+                if backbone is None and self.config.feature_backend in {
+                    "dino",
+                    "hybrid",
+                }:
+                    backbone = getattr(self.segmenter.extractor, "model", None)
+
+                with torch_cancellable_forward(backbone, stop_event):
+                    preds_by_inst = self.segmenter.segment_frame(
+                        frame_rgb,
+                        p_masks,
+                        keypoints_by_instance=kps_by_inst,
+                        skeleton_edges=self.skeleton_edges,
+                        parent_polygons=p_polys,
+                        group_ids=p_gids,
+                        allow_merge_split=not has_png,
                     )
-                    if (
-                        matched_parent is not None
-                        and str(shape.get("shape_type") or "").lower() == "polygon"
-                    ):
-                        promoted = dict(shape)
-                        promoted.update(
-                            build_body_part_shape_dict(
-                                points=list(shape.get("points") or []),
-                                parent_instance=matched_parent,
-                                part_label=raw_lbl,
-                                group_id=(
-                                    shape.get("group_id")
-                                    if shape.get("group_id") is not None
-                                    else p_gids.get(matched_parent)
-                                ),
-                                confidence=1.0,
-                                mode="manual_seed",
-                                description=str(
-                                    shape.get("description") or "manual_seed"
-                                ),
-                            )
+                if self._should_stop():
+                    return "Body-part segmentation stopped by user."
+
+                diag = self.segmenter.last_frame_diagnostics
+                split_sources_set = set(diag.get("split_sources") or ())
+                rec_parents_list = list(diag.get("recovered_parent_instances") or ())
+                resolved_polys = diag.get("resolved_parent_polygons") or {}
+                resolved_gids = diag.get("resolved_group_ids") or {}
+                if split_sources_set:
+                    merged_parent_splits += len(split_sources_set)
+                if rec_parents_list:
+                    recovered_parent_instances += len(rec_parents_list)
+                if diag.get("anomalous_area_instances"):
+                    anomalous_parent_frames += 1
+                unc_val = float(diag.get("uncertainty_score") or 0.0)
+                if unc_val >= 0.25 and not has_png:
+                    frame_uncertainties.append((unc_val, int(fnum)))
+
+                for inst_lbl in preds_by_inst:
+                    modes_used.add(
+                        self.segmenter._resolve_mode_for_instance(
+                            inst_lbl, kps_by_inst.get(inst_lbl)
                         )
-                        kept_shapes.append(promoted)
-                        continue
+                    )
 
-                shape_copy = dict(shape)
-                if (
-                    not has_png
-                    and split_sources_set
-                    and not is_zone_shape_payload(shape_copy)
-                    and str(shape_copy.get("shape_type") or "polygon").lower()
-                    == "polygon"
-                ):
-                    s_inst = str(
-                        shape_copy.get("instance_label")
-                        or shape_copy.get("label")
-                        or ""
-                    ).strip()
-                    matched_split = s_inst if s_inst in split_sources_set else None
-                    if matched_split is None and shape_copy.get("group_id") is not None:
-                        s_gid = str(shape_copy.get("group_id")).strip()
-                        matched_split = next(
+                # Merge predicted body-part shapes while preserving non-body-part shapes & manual seeds!
+                existing_shapes = payload.get("shapes") or []
+                kept_shapes: List[Dict[str, Any]] = []
+                for shape in existing_shapes:
+                    if not isinstance(shape, Mapping):
+                        continue
+                    if is_body_part_shape_payload(shape):
+                        # On manual seed frames, preserve manual seed parts if user drew them;
+                        # on predicted frames, replace body parts cleanly.
+                        if (
+                            has_png
+                            and str(shape.get("description") or "")
+                            != "InstanceBodyPartSeg"
+                        ):
+                            kept_shapes.append(dict(shape))
+                        continue
+                    # If a shape on a manual frame was auto-inferred as a nested seed part, keep it
+                    # promoted with proper body-part metadata so downstream tools treat it cleanly!
+                    if has_png and s_parts:
+                        raw_lbl = str(shape.get("label") or "").strip()
+                        matched_parent = next(
                             (
-                                src
-                                for src in split_sources_set
-                                if p_gids.get(src) is not None
-                                and str(p_gids.get(src)).strip() == s_gid
+                                p_name
+                                for p_name, part_dict in s_parts.items()
+                                if raw_lbl in part_dict and raw_lbl != p_name
                             ),
                             None,
                         )
-                    if matched_split is not None and resolved_polys.get(matched_split):
-                        shape_copy["points"] = [
-                            [float(x), float(y)]
-                            for x, y in resolved_polys[matched_split]
-                        ]
-                kept_shapes.append(shape_copy)
+                        if (
+                            matched_parent is not None
+                            and str(shape.get("shape_type") or "").lower() == "polygon"
+                        ):
+                            promoted = dict(shape)
+                            promoted.update(
+                                build_body_part_shape_dict(
+                                    points=list(shape.get("points") or []),
+                                    parent_instance=matched_parent,
+                                    part_label=raw_lbl,
+                                    group_id=(
+                                        shape.get("group_id")
+                                        if shape.get("group_id") is not None
+                                        else p_gids.get(matched_parent)
+                                    ),
+                                    confidence=1.0,
+                                    mode="manual_seed",
+                                    description=str(
+                                        shape.get("description") or "manual_seed"
+                                    ),
+                                )
+                            )
+                            kept_shapes.append(promoted)
+                            continue
 
-            if not has_png and rec_parents_list:
-                for rec_lbl in rec_parents_list:
-                    rec_poly = resolved_polys.get(rec_lbl)
-                    if not rec_poly or len(rec_poly) < 3:
-                        continue
-                    kept_shapes.append(
-                        {
-                            "label": rec_lbl,
-                            "instance_label": rec_lbl,
-                            "group_id": resolved_gids.get(rec_lbl),
-                            "shape_type": "polygon",
-                            "points": [[float(x), float(y)] for x, y in rec_poly],
-                            "flags": {"recovered_merged_parent": True},
-                            "description": "RecoveredMergedParent",
-                        }
-                    )
+                    shape_copy = dict(shape)
+                    if (
+                        not has_png
+                        and split_sources_set
+                        and not is_zone_shape_payload(shape_copy)
+                        and str(shape_copy.get("shape_type") or "polygon").lower()
+                        == "polygon"
+                    ):
+                        s_inst = str(
+                            shape_copy.get("instance_label")
+                            or shape_copy.get("label")
+                            or ""
+                        ).strip()
+                        matched_split = s_inst if s_inst in split_sources_set else None
+                        if (
+                            matched_split is None
+                            and shape_copy.get("group_id") is not None
+                        ):
+                            s_gid = str(shape_copy.get("group_id")).strip()
+                            matched_split = next(
+                                (
+                                    src
+                                    for src in split_sources_set
+                                    if p_gids.get(src) is not None
+                                    and str(p_gids.get(src)).strip() == s_gid
+                                ),
+                                None,
+                            )
+                        if matched_split is not None and resolved_polys.get(
+                            matched_split
+                        ):
+                            shape_copy["points"] = [
+                                [float(x), float(y)]
+                                for x, y in resolved_polys[matched_split]
+                            ]
+                    kept_shapes.append(shape_copy)
 
-            # Build set of (parent, part) already covered by preserved manual seed shapes on this frame.
-            manual_covered = {
-                (
-                    extract_body_part_parent_instance(s),
-                    extract_body_part_label(s),
-                )
-                for s in kept_shapes
-                if is_body_part_shape_payload(s)
-            }
-
-            new_part_shapes: List[Dict[str, Any]] = []
-            for inst_lbl, part_preds in preds_by_inst.items():
-                if part_preds:
-                    instances_segmented += 1
-                for part_lbl, pred in part_preds.items():
-                    if (inst_lbl, part_lbl) in manual_covered:
-                        continue
-                    label_override = (
-                        f"{inst_lbl}:{part_lbl}"
-                        if self.config.qualify_label_with_instance
-                        else part_lbl
-                    )
-                    mode_used = self.segmenter._resolve_mode_for_instance(
-                        inst_lbl, kps_by_inst.get(inst_lbl)
-                    )
-                    new_part_shapes.append(
-                        build_body_part_shape_dict(
-                            points=[[float(x), float(y)] for x, y in pred.polygon],
-                            parent_instance=inst_lbl,
-                            part_label=part_lbl,
-                            group_id=pred.group_id,
-                            label_override=label_override,
-                            confidence=pred.confidence,
-                            area_ratio=pred.area_ratio,
-                            mode=mode_used,
+                if not has_png and rec_parents_list:
+                    for rec_lbl in rec_parents_list:
+                        rec_poly = resolved_polys.get(rec_lbl)
+                        if not rec_poly or len(rec_poly) < 3:
+                            continue
+                        kept_shapes.append(
+                            {
+                                "label": rec_lbl,
+                                "instance_label": rec_lbl,
+                                "group_id": resolved_gids.get(rec_lbl),
+                                "shape_type": "polygon",
+                                "points": [[float(x), float(y)] for x, y in rec_poly],
+                                "flags": {"recovered_merged_parent": True},
+                                "description": "RecoveredMergedParent",
+                            }
                         )
-                    )
-                    parts_emitted += 1
-                    part_counts[part_lbl] += 1
 
-            updated_payload = dict(payload)
-            updated_payload["shapes"] = kept_shapes + new_part_shapes
-            updated_payload.setdefault("imageHeight", self.video_height)
-            updated_payload.setdefault("imageWidth", self.video_width)
-            self._write_updated_frame_payload(fnum, fpath, updated_payload)
-            frames_processed += 1
-            self._report_progress(int(round(100.0 * idx / total_targets)))
+                # Build set of (parent, part) already covered by preserved manual seed shapes on this frame.
+                manual_covered = {
+                    (
+                        extract_body_part_parent_instance(s),
+                        extract_body_part_label(s),
+                    )
+                    for s in kept_shapes
+                    if is_body_part_shape_payload(s)
+                }
+
+                new_part_shapes: List[Dict[str, Any]] = []
+                for inst_lbl, part_preds in preds_by_inst.items():
+                    if part_preds:
+                        instances_segmented += 1
+                    for part_lbl, pred in part_preds.items():
+                        if (inst_lbl, part_lbl) in manual_covered:
+                            continue
+                        label_override = (
+                            f"{inst_lbl}:{part_lbl}"
+                            if self.config.qualify_label_with_instance
+                            else part_lbl
+                        )
+                        mode_used = self.segmenter._resolve_mode_for_instance(
+                            inst_lbl, kps_by_inst.get(inst_lbl)
+                        )
+                        part_polys = pred.polygons if pred.polygons else (pred.polygon,)
+                        for sub_poly in part_polys:
+                            new_part_shapes.append(
+                                build_body_part_shape_dict(
+                                    points=[[float(x), float(y)] for x, y in sub_poly],
+                                    parent_instance=inst_lbl,
+                                    part_label=part_lbl,
+                                    group_id=pred.group_id,
+                                    label_override=label_override,
+                                    confidence=pred.confidence,
+                                    area_ratio=pred.area_ratio,
+                                    mode=mode_used,
+                                )
+                            )
+                        parts_emitted += 1
+                        part_counts[part_lbl] += 1
+
+                # Re-anchor temporal state when passing through a subsequent manual seed frame!
+                if fnum in seed_snapshots:
+                    for k_s, st_s in seed_snapshots[fnum].items():
+                        self.segmenter._temporal_states[k_s] = _TemporalInstanceState(
+                            pose=st_s.pose,
+                            part_labels=st_s.part_labels,
+                            work_probs=st_s.work_probs.copy(),
+                            u_grid=st_s.u_grid,
+                            v_grid=st_s.v_grid,
+                        )
+
+                updated_payload = dict(payload)
+                updated_payload["shapes"] = kept_shapes + new_part_shapes
+                updated_payload.setdefault("imageHeight", self.video_height)
+                updated_payload.setdefault("imageWidth", self.video_width)
+                self._write_updated_frame_payload(fnum, fpath, updated_payload)
+                frames_processed += 1
+                self._report_progress(int(round(100.0 * idx / total_targets)))
+
+        frame_uncertainties.sort(key=lambda item: (-item[0], item[1]))
+        top_uncertain_frames = [f for _u, f in frame_uncertainties[:5]]
 
         self.last_summary = {
             "frames_processed": frames_processed,
@@ -4336,6 +5197,7 @@ class InstanceBodyPartVideoProcessor:
             "merged_parent_splits": merged_parent_splits,
             "recovered_parent_instances": recovered_parent_instances,
             "anomalous_parent_frames": anomalous_parent_frames,
+            "uncertain_frames": top_uncertain_frames,
             "part_counts": dict(sorted(part_counts.items())),
             "modes_used": sorted(modes_used),
         }

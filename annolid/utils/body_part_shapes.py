@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 BODY_PART_SEMANTIC_TYPE = "body_part"
 
@@ -259,6 +259,25 @@ def format_body_part_csv_instance_name(
             return part
         return f"{parent}:{part}"
     return part or parent
+
+
+def split_body_part_csv_instance_name(
+    instance_name: Any,
+    *,
+    known_parents: set[str] | None = None,
+) -> tuple[str, str]:
+    """Split ``'<parent>:<part>'`` into ``(parent, part)``, or ``(name, '')`` for whole instances."""
+    clean = _clean_text(instance_name)
+    if ":" not in clean:
+        return clean, ""
+    prefix, suffix = clean.split(":", 1)
+    parent = prefix.strip()
+    part = suffix.strip()
+    if not parent or not part:
+        return clean, ""
+    if known_parents is not None and parent not in known_parents:
+        return clean, ""
+    return parent, part
 
 
 def build_body_part_flags(
@@ -537,3 +556,171 @@ def keypoint_axial_polarity(keypoint_label: str) -> float:
     if _detect_fore_hind(tokens, normalized) == "hind":
         return -0.5
     return 0.0
+
+
+def _tail_chain_rank(normalized: str, tokens: set[str]) -> float | None:
+    if not ("tail" in tokens or any(t.startswith("tail") for t in tokens)):
+        return None
+    if tokens & {"base", "root", "start", "origin"} or normalized in {
+        "tailbase",
+        "tailroot",
+    }:
+        return 0.0
+    if tokens & {"prox", "proximal", "upper"}:
+        return 1.0
+    if tokens & {"mid", "middle", "center"} or normalized == "tailmid":
+        return 2.5
+    if tokens & {"dist", "distal", "lower"}:
+        return 3.5
+    if tokens & {"tip", "end"} or normalized == "tailtip":
+        return 5.0
+    for tok in tokens:
+        if tok.isdigit():
+            return 0.5 + float(int(tok)) * 0.8
+        m = re.match(r"^tail(\d+)$", tok)
+        if m:
+            return 0.5 + float(int(m.group(1))) * 0.8
+    return 2.5
+
+
+def _spine_chain_rank(normalized: str, tokens: set[str]) -> float | None:
+    if _detect_laterality(tokens, normalized):
+        return None
+    if tokens & {"neck", "nape", "throat", "cervical", "occiput"}:
+        return 0.0
+    if tokens & {"withers", "thorax", "chest"} or normalized == "upper_back":
+        return 1.0
+    if "spine" in tokens or "vertebra" in tokens or "back" in tokens:
+        for tok in tokens:
+            if tok.isdigit():
+                return 1.0 + float(int(tok)) * 0.8
+        if "mid" in tokens or "center" in tokens:
+            return 2.2
+        if "lower" in tokens:
+            return 3.2
+        return 2.0
+    if tokens & {"center", "centroid", "midbody"}:
+        return 2.2
+    if tokens & {"pelvis", "sacrum", "rump"}:
+        return 4.0
+    return None
+
+
+def _limb_joint_rank(tokens: set[str]) -> float | None:
+    if tokens & {"shoulder", "hip", "coxa"}:
+        return 0.0
+    if tokens & {"upperarm", "thigh", "femur"}:
+        return 1.0
+    if tokens & {"elbow", "knee", "stifle"}:
+        return 2.0
+    if tokens & {"forearm", "shank", "tibia"}:
+        return 3.0
+    if tokens & {"wrist", "ankle", "hock", "carpus", "tarsus"}:
+        return 4.0
+    if tokens & {
+        "paw",
+        "forepaw",
+        "hindpaw",
+        "frontpaw",
+        "backpaw",
+        "rearpaw",
+        "foot",
+        "forefoot",
+        "hindfoot",
+        "hand",
+        "manus",
+        "pes",
+        "toe",
+        "claw",
+    }:
+        return 5.0
+    return None
+
+
+def infer_intra_part_skeleton_edges(
+    keypoint_names: Iterable[str],
+) -> list[tuple[str, str]]:
+    """Infer canonical anatomical bone edges among ``keypoint_names`` when no schema is supplied."""
+    names = [str(k).strip() for k in keypoint_names if str(k).strip()]
+    if len(names) < 2:
+        return []
+
+    parsed: list[tuple[str, str, set[str]]] = []
+    for raw in names:
+        leaf = raw.rsplit(":", 1)[-1].strip() if ":" in raw else raw
+        norm = re.sub(r"[^a-z0-9]+", "_", leaf.lower()).strip("_")
+        toks = {t for t in norm.split("_") if t}
+        parsed.append((raw, norm, toks))
+
+    edges: list[tuple[str, str]] = []
+    seen_edges: set[tuple[str, str]] = set()
+
+    def _add(a: str, b: str) -> None:
+        if a == b:
+            return
+        pair = (a, b) if a < b else (b, a)
+        if pair not in seen_edges:
+            seen_edges.add(pair)
+            edges.append((a, b))
+
+    # 1. Tail chain (tail_base -> tail_1 -> tail_mid -> tail_tip).
+    tail_items: list[tuple[float, str]] = []
+    for raw, norm, toks in parsed:
+        r = _tail_chain_rank(norm, toks)
+        if r is not None:
+            tail_items.append((r, raw))
+    tail_items.sort(key=lambda item: (item[0], item[1]))
+    for i in range(len(tail_items) - 1):
+        _add(tail_items[i][1], tail_items[i + 1][1])
+
+    # 2. Dorsal midline spine chain (neck -> spine_1 -> spine_2 -> pelvis).
+    spine_items: list[tuple[float, str]] = []
+    for raw, norm, toks in parsed:
+        r = _spine_chain_rank(norm, toks)
+        if r is not None:
+            spine_items.append((r, raw))
+    spine_items.sort(key=lambda item: (item[0], item[1]))
+    for i in range(len(spine_items) - 1):
+        _add(spine_items[i][1], spine_items[i + 1][1])
+
+    # 3. Cranial chain (nose/snout -> eyes -> ears, or nose -> ears directly).
+    rostral = [
+        raw
+        for raw, _n, toks in parsed
+        if toks & {"nose", "snout", "rostrum", "beak", "bill", "proboscis"}
+    ]
+    eyes_by_side: dict[str, list[str]] = {"left": [], "right": [], "": []}
+    ears_by_side: dict[str, list[str]] = {"left": [], "right": [], "": []}
+    for raw, norm, toks in parsed:
+        side = _detect_laterality(toks, norm)
+        if toks & {"eye", "pupil"} or any(t.endswith("eye") for t in toks):
+            eyes_by_side[side].append(raw)
+        elif toks & {"ear"} or any(t.endswith("ear") and t != "rear" for t in toks):
+            ears_by_side[side].append(raw)
+    if rostral:
+        r0 = rostral[0]
+        for side in ("left", "right", ""):
+            if eyes_by_side[side]:
+                e0 = eyes_by_side[side][0]
+                _add(r0, e0)
+                for ear_k in ears_by_side[side]:
+                    _add(e0, ear_k)
+            else:
+                for ear_k in ears_by_side[side]:
+                    _add(r0, ear_k)
+
+    # 4. Same-limb joint chains (e.g. left_elbow -> left_wrist -> left_forepaw).
+    limb_groups: dict[tuple[str, str], list[tuple[float, str]]] = {}
+    for raw, norm, toks in parsed:
+        side = _detect_laterality(toks, norm)
+        fh = _detect_fore_hind(toks, norm)
+        jr = _limb_joint_rank(toks)
+        if jr is not None and (side or fh):
+            limb_groups.setdefault((side, fh), []).append((jr, raw))
+    for grp in limb_groups.values():
+        grp.sort(key=lambda item: (item[0], item[1]))
+        for i in range(len(grp) - 1):
+            if grp[i][0] < grp[i + 1][0]:
+                _add(grp[i][1], grp[i + 1][1])
+
+    return edges

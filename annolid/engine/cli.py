@@ -660,6 +660,8 @@ def _cmd_segment_body_parts(args: argparse.Namespace) -> int:
             end_frame=getattr(args, "end_frame", None),
             step=int(getattr(args, "step", 1)),
             export_csv=bool(getattr(args, "export_csv", False)),
+            export_ethogram=bool(getattr(args, "export_ethogram", False)),
+            camera_view=str(getattr(args, "camera_view", "auto") or "auto"),
             json_stdout=bool(getattr(args, "json", False)),
             out_json=getattr(args, "out", None),
         )
@@ -3342,6 +3344,17 @@ def _build_root_parser() -> argparse.ArgumentParser:
         "--export-csv",
         action="store_true",
         help="Regenerate <result_dir>_tracking.csv including hierarchical '<instance>:<part>' rows.",
+    )
+    seg_parts_p.add_argument(
+        "--export-ethogram",
+        action="store_true",
+        help="Export part-level kinematics, directed social-contact bouts, and active-learning uncertainty reports.",
+    )
+    seg_parts_p.add_argument(
+        "--camera-view",
+        choices=("auto", "top", "oblique", "side", "bottom"),
+        default="auto",
+        help="Camera viewpoint hint for ethogram posture disentanglement (default: auto).",
     )
     seg_parts_p.add_argument(
         "--out",

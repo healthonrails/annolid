@@ -26,6 +26,7 @@ from annolid.postprocessing.zone_schema import (
 from annolid.postprocessing.zone_occupancy_policy import (
     apply_zone_occupancy_policy_file,
 )
+from annolid.utils.body_part_shapes import split_body_part_csv_instance_name
 
 
 class TrackingResultsAnalyzer:
@@ -52,6 +53,7 @@ class TrackingResultsAnalyzer:
         fps=None,
         assay_profile=None,
         zone_policy_file=None,
+        anchor_part=None,
     ):
         """
         Initialize the TrackingResultsAnalyzer.
@@ -69,6 +71,7 @@ class TrackingResultsAnalyzer:
         )
         self.zone_file = Path(zone_file) if zone_file else None
         self.zone_policy_file = Path(zone_policy_file) if zone_policy_file else None
+        self.anchor_part = str(anchor_part).strip() if anchor_part else None
         self.fps = fps
         self.assay_profile: ZoneAssayProfile = resolve_assay_profile(assay_profile)
         if fps is None:
@@ -113,10 +116,21 @@ class TrackingResultsAnalyzer:
             suffixes=("_tracking", "_tracked"),
         )
 
-        # Calculate distance between different instances in the same frame
+        # Calculate distance between different whole-animal instances in the same frame
         distances = []
+        all_names = [
+            str(n)
+            for n in self.merged_df["instance_name"].dropna().astype(str).unique()
+        ]
+        base_parents = {n for n in all_names if ":" not in n}
         for frame_number, frame_group in self.merged_df.groupby("frame_number"):
-            instances_in_frame = frame_group["instance_name"].unique()
+            instances_in_frame = [
+                inst
+                for inst in frame_group["instance_name"].dropna().astype(str).unique()
+                if not split_body_part_csv_instance_name(
+                    inst, known_parents=base_parents if base_parents else None
+                )[1]
+            ]
             instance_combinations = itertools.combinations(instances_in_frame, 2)
             for instance_combination in instance_combinations:
                 instance1 = instance_combination[0]
@@ -225,7 +239,11 @@ class TrackingResultsAnalyzer:
 
         self.zone_specs = load_zone_shapes(self.zone_data)
         self.zone_shapes = [spec.to_shape_dict() for spec in self.zone_specs]
-        self.zone_engine = GenericZoneEngine(self.zone_specs, fps=self.fps)
+        self.zone_engine = GenericZoneEngine(
+            self.zone_specs,
+            fps=self.fps,
+            anchor_part=self.anchor_part,
+        )
         self.zone_time_dict = {spec.display_label: 0 for spec in self.zone_specs}
 
     def _resolve_xy_columns(self, dataframe):
