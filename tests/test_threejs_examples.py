@@ -41,6 +41,10 @@ def _two_mice_source():
 
 def test_two_mice_example_preserves_subject_appearance_and_render_readiness():
     source = _two_mice_source()
+    model_source = (
+        Path(__file__).resolve().parents[1]
+        / "annolid/gui/assets/threejs/two_mice_model.js"
+    ).read_text(encoding="utf-8")
 
     assert "this.appearance = Object.freeze({ furColor, skinColor, density" in source
     assert "this.fleshMat.color.set(this.guiParams.skinColor)" not in source
@@ -68,7 +72,7 @@ def test_two_mice_example_preserves_subject_appearance_and_render_readiness():
     assert "canvas.dataset.maximumObservedFootSlip" in source
     assert "canvas.dataset.maximumObservedPawGroundError" in source
     assert "solveFootPlantConstraints(dt = 0.016)" in source
-    assert "updateTailGeometry(otherMice = [])" in source
+    assert "updateTailGeometry(otherMice = [], dt = 0)" in source
     assert "const getSegmentContact = (start, end, index)" in source
     assert "for (let pass = 0; pass < this.tailCount * 2; pass++)" in source
     assert "const CONTACT_QA = datasetQuery.get('contact_qa')" in source
@@ -155,7 +159,7 @@ def test_two_mice_example_preserves_subject_appearance_and_render_readiness():
     assert "paw.position.set(sign * 0.045, -0.20, 0.31)" in source
     assert "this.hindL._paw.rotation.x = -0.10" in source
     assert "this.maxSpeed = params.maxSpeed" in source
-    assert "bodyLength: 2.68, bodyGirthX: 1.27, bodyGirthY: 1.18" in source
+    assert "bodyLength: 2.68, bodyGirthX: 1.13, bodyGirthY: 1.14" in source
     assert "function createPinnaShellGeometry()" in source
     assert "function createPinnaSurfaceGeometry(" in source
     assert "const lowerOpen = THREE.MathUtils.smoothstep" in source
@@ -163,11 +167,11 @@ def test_two_mice_example_preserves_subject_appearance_and_render_readiness():
         "const attachmentBlend = THREE.MathUtils.smoothstep(-y, 0.58, 0.96)" in source
     )
     assert "const attachmentY = -0.70 + Math.abs(x) * 0.035" in source
-    assert "const openingYaw = 0.20 +" in source
+    assert "const openingYaw = 0.24 +" in source
     assert "sideSign * openingYaw + asymmetryYaw" in source
     assert "ear.name = sideSign > 0 ? 'left-ear-root-pivot'" in source
     assert "pinna.position.set(sideSign * 0.012, 0.76, 0.0)" in source
-    assert "0.02 + heightOffset" in source
+    assert "0.03 + heightOffset" in source
     assert "rim.name = 'open-auricular-rim'" in source
     assert "pedicle.name = 'buried-pinna-pedicle'" in source
     assert "concha.name = 'basal-conchal-fold'" in source
@@ -181,11 +185,12 @@ def test_two_mice_example_preserves_subject_appearance_and_render_readiness():
     assert "subject.tailMesh.visible = false" in source
     assert "ANATOMY_QA === 'ears-front'" in source
     assert "const farEarScale" not in source
-    assert "earOuterColor: '#d6c9c7'" in source
+    assert "earOuterColor: '#dcd0cd'" in source
     assert "function createTaperedWhiskerGeometry(" in source
     assert "function createAnatomicalWhiskers(" in source
     assert "earBackingGeo" not in source
-    assert "new THREE.TubeGeometry" not in source
+    assert "new THREE.TubeGeometry" not in model_source
+    assert "const rimTubeGeo = new THREE.TubeGeometry(rimCurve" in source
     assert "createTrackingNode('lforepaw', this.armL._paw" in source
     assert "createTrackingNode('lhindpaw', this.hindL._paw" in source
     assert "const legCycle = this.locomotionTime * 4.1" in source
@@ -216,13 +221,16 @@ def test_two_mice_head_neck_body_transition_is_articulated_and_testable():
     assert "this.guiParams.headSize * 0.94" in source
     assert "this.guiParams.headSize * 1.03" in source
     assert "const occipitalBlend = THREE.MathUtils.smoothstep" in source
-    assert "THREE.MathUtils.smoothstep(zNorm, 0.62, 0.98)" in source
-    assert "neckT * (v.y >= 0 ? 0.25 : 0.10)" in source
+    assert "THREE.MathUtils.smoothstep(zNorm, 0.58, 0.99)" in source
+    assert "neckT * (v.y >= 0 ? 0.22 : 0.10)" in source
 
     assert "this.head.localToWorld" in source
     assert "this.head.worldToLocal" in source
     assert "this.neckMesh.position.x += headOffsetX * 0.48" in source
-    assert "this.neckMesh.rotation.y += this.headGroup.rotation.y * 0.30" in source
+    assert (
+        "this.neckMesh.rotation.y += (this.headGroup.rotation.y - this.spineHeadYaw) * 0.32"
+        in source
+    )
     assert "new THREE.Vector3(0, 0.46, -PROP.neckLength * 0.26)" in source
 
     assert "ANATOMY_QA === 'torso-side'" in source
