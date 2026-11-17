@@ -112,8 +112,11 @@ def build_live_flybody_command(
     steps: int = 180,
     seed: int = 7,
     behavior: str = "walk_imitation",
+    controller: str | None = None,
+    dynamics: str | None = None,
+    connectome_path: str | Path | None = None,
 ) -> list[str]:
-    return [
+    command = [
         str(Path(python_executable).expanduser()),
         "-m",
         "annolid.simulation.flybody_live",
@@ -126,6 +129,13 @@ def build_live_flybody_command(
         "--seed",
         str(int(seed)),
     ]
+    if controller:
+        command.extend(["--controller", str(controller)])
+    if dynamics:
+        command.extend(["--dynamics", str(dynamics)])
+    if connectome_path:
+        command.extend(["--connectome-path", str(Path(connectome_path).expanduser())])
+    return command
 
 
 def probe_flybody_runtime(python_executable: str | Path) -> dict[str, Any]:

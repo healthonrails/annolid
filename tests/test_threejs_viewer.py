@@ -54,6 +54,13 @@ def test_simulation_loader_preserves_world_coordinates_and_exposes_flybody_contr
     assert "addLoadedObject(simulationRoot)" not in source
     assert "annolid://flybody-live/" in source
     assert "annolidThreeFlybodyControls" in source
+    assert '["forage_walk", "forage"' in source
+    assert '["backward_walk", "backward"' in source
+    assert '["grooming", "groom"' in source
+    assert '["escape_takeoff", "escape"' in source
+    assert "simulationBodyPartsRoot.rotation.set(-Math.PI / 2, 0, 0);" in source
+    assert "Brain Circuit:" in source
+    assert "LIF Spikes:" in source
 
 
 def test_simulation_loader_reuses_flybody_mesh_between_motion_updates():

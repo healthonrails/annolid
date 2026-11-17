@@ -484,6 +484,81 @@ def test_prepare_live_flybody_view_payload_uses_combined_mesh_and_hides_overlays
     }
 
 
+def test_prepare_live_flybody_view_payload_prefers_articulated_parts_when_body_poses_present(
+    monkeypatch, tmp_path: Path
+) -> None:
+    payload_path = tmp_path / "flybody_live_articulated.json"
+    payload_path.write_text(
+        json.dumps(
+            {
+                "kind": "annolid-simulation-v1",
+                "adapter": "flybody-live",
+                "frames": [
+                    {
+                        "frame_index": 0,
+                        "body_poses": {
+                            "thorax": {
+                                "position": [0.0, 0.0, 0.0],
+                                "quaternion": [1.0, 0.0, 0.0, 0.0],
+                            }
+                        },
+                        "model_pose": {"scale": 7.5},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "annolid.gui.mixins.viewer_tools_mixin.attach_flybody_mesh_parts",
+        lambda payload, out_dir: {
+            **payload,
+            "mesh": {
+                "type": "flybody_parts",
+                "parts": [{"body": "thorax", "path": "flybody_part_thorax.obj"}],
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "annolid.gui.mixins.viewer_tools_mixin.attach_flybody_floor",
+        lambda payload: payload,
+    )
+
+    out_path = _prepare_live_flybody_view_payload(payload_path, base_dir=tmp_path)
+    prepared = json.loads(Path(out_path).read_text(encoding="utf-8"))
+
+    assert prepared["mesh"]["type"] == "flybody_parts"
+    assert prepared["playback"]["autoplay"] is True
+
+
+def test_is_recent_live_flybody_payload_filters_by_controller(tmp_path: Path) -> None:
+    payload_path = tmp_path / "flybody_live_walk.json"
+    payload_path.write_text(
+        json.dumps(
+            {
+                "kind": "annolid-simulation-v1",
+                "adapter": "flybody-live",
+                "metadata": {
+                    "run_metadata": {
+                        "payload_version": 3,
+                        "behavior": "walk_imitation",
+                        "controller": "random",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert (
+        _is_recent_live_flybody_payload(
+            payload_path,
+            behavior="walk_imitation",
+            controller="connectome",
+        )
+        is False
+    )
+
+
 def test_open_3d_viewer_reports_unsupported_source_for_nifti(
     monkeypatch, tmp_path: Path
 ) -> None:

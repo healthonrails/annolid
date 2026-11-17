@@ -86,6 +86,39 @@ def test_build_live_flybody_command_points_to_module() -> None:
     ]
 
 
+def test_build_live_flybody_command_includes_connectome_and_dynamics_flags() -> None:
+    cmd = build_live_flybody_command(
+        "/tmp/python",
+        out_path="/tmp/flybody.json",
+        steps=60,
+        seed=7,
+        behavior="flight_imitation",
+        controller="connectome",
+        dynamics="spiking",
+        connectome_path="/tmp/malecns.npz",
+    )
+
+    assert cmd == [
+        "/tmp/python",
+        "-m",
+        "annolid.simulation.flybody_live",
+        "--behavior",
+        "flight_imitation",
+        "--out",
+        "/tmp/flybody.json",
+        "--steps",
+        "60",
+        "--seed",
+        "7",
+        "--controller",
+        "connectome",
+        "--dynamics",
+        "spiking",
+        "--connectome-path",
+        "/tmp/malecns.npz",
+    ]
+
+
 def test_probe_flybody_runtime_parses_json(monkeypatch) -> None:
     class _Result:
         returncode = 0

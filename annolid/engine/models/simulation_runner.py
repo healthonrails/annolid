@@ -42,6 +42,11 @@ class SimulationRunnerPlugin(ModelPluginBase):
                 "--env-factory",
                 "--ik-function",
                 "--ik-max-steps",
+                "--rollout-steps",
+                "--behavior",
+                "--dynamics",
+                "--connectome-path",
+                "--seed",
                 "--smooth-mode",
                 "--fps",
                 "--max-gap-frames",
@@ -153,6 +158,34 @@ class SimulationRunnerPlugin(ModelPluginBase):
             default=0.7,
             help="EMA alpha when --smooth-mode ema.",
         )
+        parser.add_argument(
+            "--rollout-steps",
+            type=int,
+            default=0,
+            help="Optional closed-loop connectome rollout step count (>0 enables behavioral rollout).",
+        )
+        parser.add_argument(
+            "--behavior",
+            default="walk_imitation",
+            help="FlyBody behavioral task when running --rollout-steps (e.g. walk_imitation, grooming, flight_imitation).",
+        )
+        parser.add_argument(
+            "--dynamics",
+            choices=("spiking", "rate"),
+            default="spiking",
+            help="Neural dynamics mode for FlyBrainController ('spiking' LIF or 'rate').",
+        )
+        parser.add_argument(
+            "--connectome-path",
+            default=None,
+            help="Optional custom MaleCNS/FlyWire connectome file (.json, .csv, .tsv, .parquet, .feather, or .npz).",
+        )
+        parser.add_argument(
+            "--seed",
+            type=int,
+            default=7,
+            help="Deterministic RNG seed for connectome rollout.",
+        )
 
     def predict(self, args: argparse.Namespace) -> int:
         from annolid.simulation import (
@@ -203,15 +236,21 @@ class SimulationRunnerPlugin(ModelPluginBase):
             save_simulation_mapping_template(template, args.write_mapping_template)
             return 0
 
-        if not args.mapping or not args.out_ndjson or not args.input:
+        rollout_steps = int(getattr(args, "rollout_steps", 0) or 0)
+        if rollout_steps > 0:
+            if not args.out_ndjson:
+                raise RuntimeError(
+                    "--out-ndjson is required when running --rollout-steps."
+                )
+        elif not args.mapping or not args.out_ndjson or not args.input:
             raise RuntimeError(
                 "--input, --mapping, and --out-ndjson are required unless generating a mapping template."
             )
 
         request = SimulationRunRequest(
             backend=str(args.backend),
-            input_path=str(args.input),
-            mapping_path=str(args.mapping),
+            input_path=str(args.input or ""),
+            mapping_path=str(args.mapping or ""),
             out_ndjson=str(
                 args.out_ndjson
                 or build_default_output_path(args.input, backend=str(args.backend))
@@ -229,6 +268,13 @@ class SimulationRunnerPlugin(ModelPluginBase):
             max_gap_frames=int(args.max_gap_frames),
             min_score=float(args.min_score),
             ema_alpha=float(args.ema_alpha),
+            rollout_steps=rollout_steps,
+            behavior=str(
+                getattr(args, "behavior", "walk_imitation") or "walk_imitation"
+            ),
+            dynamics=str(getattr(args, "dynamics", "spiking") or "spiking"),
+            connectome_path=getattr(args, "connectome_path", None),
+            seed=int(getattr(args, "seed", 7)),
         )
         run_simulation_workflow(request)
         return 0

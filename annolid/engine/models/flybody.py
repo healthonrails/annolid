@@ -9,11 +9,12 @@ from annolid.engine.registry import ModelPluginBase, register_model
 @register_model
 class FlyBodyPlugin(ModelPluginBase):
     name = "flybody"
-    description = "Fit Annolid keypoints into FlyBody-compatible site targets and optional IK outputs."
+    description = "Fit Annolid keypoints into FlyBody targets/IK or run connectome-wired behavioral rollouts."
     predict_examples = (
         "annolid-run predict flybody --help-model",
         "annolid-run predict flybody --pose-schema pose_schema.json --write-mapping-template flybody.yaml",
         "annolid-run predict flybody --input pose.ndjson --mapping flybody.yaml --out-ndjson flybody.ndjson --dry-run",
+        "annolid-run predict flybody --rollout-steps 60 --behavior walk_imitation --dynamics spiking --out-ndjson walk.ndjson --dry-run",
         "annolid-run predict flybody --input pose.ndjson --depth-ndjson depth.ndjson --mapping flybody.yaml --out-ndjson flybody.ndjson --smooth-mode ema --max-gap-frames 2 --ik-max-steps 4000",
     )
     predict_help_sections = (
@@ -43,6 +44,11 @@ class FlyBodyPlugin(ModelPluginBase):
                 "--env-factory",
                 "--ik-function",
                 "--ik-max-steps",
+                "--rollout-steps",
+                "--behavior",
+                "--dynamics",
+                "--connectome-path",
+                "--seed",
                 "--smooth-mode",
                 "--max-gap-frames",
                 "--fps",

@@ -406,3 +406,38 @@ def test_attach_flybody_floor_reads_floor_xml(tmp_path: Path, monkeypatch) -> No
     assert payload["environment"]["floor"]["type"] == "plane"
     assert payload["environment"]["floor"]["size"] == [5.0, 5.0]
     assert payload["environment"]["floor"]["position"] == [0.0, 0.0, -0.132]
+
+
+def test_attach_flybody_mesh_parts_applies_default_mesh_scale(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repo = tmp_path / "flybody_repo"
+    assets = repo / "flybody" / "fruitfly" / "assets"
+    assets.mkdir(parents=True)
+    (assets / "body.obj").write_text(
+        "v 10 0 0\nv 0 20 0\nv 0 0 30\nf 1 2 3\n",
+        encoding="utf-8",
+    )
+    (assets / "fruitfly.xml").write_text(
+        "\n".join(
+            [
+                "<mujoco>",
+                "  <default><mesh scale='0.1 0.1 0.1'/></default>",
+                "  <asset><mesh name='thorax' file='body.obj'/></asset>",
+                "  <worldbody><body name='thorax'><geom mesh='thorax' pos='0 0 0' quat='1 0 0 0'/></body></worldbody>",
+                "</mujoco>",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ANNOLID_FLYBODY_PATH", str(repo))
+
+    out_dir = tmp_path / "scaled_parts"
+    payload = attach_flybody_mesh_parts({"kind": "annolid-simulation-v1"}, out_dir)
+    part_obj = (out_dir / payload["mesh"]["parts"][0]["path"]).read_text(
+        encoding="utf-8"
+    )
+
+    assert "v 1.000000 0.000000 0.000000" in part_obj
+    assert "v 0.000000 2.000000 0.000000" in part_obj
+    assert "v 0.000000 0.000000 3.000000" in part_obj

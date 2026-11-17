@@ -179,3 +179,74 @@ def test_build_simulation_view_payload_infers_flybody_edges_from_labels(
 
     assert ["head_site", "thorax_site"] in payload["edges"]
     assert ["thorax_site", "abdomen_tip_site"] in payload["edges"]
+
+
+def test_export_simulation_view_payload_attaches_flybody_mesh_parts_when_body_poses_present(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repo = tmp_path / "flybody_repo"
+    assets = repo / "flybody" / "fruitfly" / "assets"
+    assets.mkdir(parents=True)
+    (assets / "body.obj").write_text(
+        "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n",
+        encoding="utf-8",
+    )
+    (assets / "fruitfly.xml").write_text(
+        "<mujoco>"
+        "<default><mesh scale='0.1 0.1 0.1'/></default>"
+        "<asset><mesh name='thorax' file='body.obj'/></asset>"
+        "<worldbody><body name='thorax'><geom mesh='thorax' pos='0 0 0' quat='1 0 0 0'/></body></worldbody>"
+        "</mujoco>",
+        encoding="utf-8",
+    )
+    (assets / "floor.xml").write_text(
+        "<mujoco><worldbody><geom name='floor' type='plane' size='5 5 .1' pos='0 0 -.132'/></worldbody></mujoco>",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ANNOLID_FLYBODY_PATH", str(repo))
+
+    ndjson_path = tmp_path / "rollout.ndjson"
+    ndjson_path.write_text(
+        json.dumps(
+            {
+                "video_name": "walk_imitation",
+                "frame_index": 0,
+                "imagePath": "",
+                "imageHeight": 1,
+                "imageWidth": 1,
+                "shapes": [],
+                "flags": {},
+                "otherData": {
+                    "simulation": {
+                        "adapter": "flybody",
+                        "state": {
+                            "site_targets": {"thorax": [0.0, 0.0, 0.0]},
+                            "body_poses": {
+                                "thorax": {
+                                    "position": [0.0, 0.0, 0.0],
+                                    "quaternion": [1.0, 0.0, 0.0, 0.0],
+                                }
+                            },
+                            "model_pose": {
+                                "position": [0.0, 0.0, 0.0],
+                                "rotation": [0.0, 0.0, 0.0],
+                                "scale": 7.5,
+                            },
+                        },
+                    }
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    out_dir = tmp_path / "viewer_out"
+    out_path = export_simulation_view_payload(ndjson_path, out_dir=out_dir)
+    payload = json.loads(out_path.read_text(encoding="utf-8"))
+
+    assert payload["mesh"]["type"] == "flybody_parts"
+    assert len(payload["mesh"]["parts"]) == 1
+    assert (out_dir / payload["mesh"]["parts"][0]["path"]).exists()
+    assert payload["environment"]["floor"]["position"] == [0.0, -0.132 * 7.5, 0.0]
+    assert payload["display"]["show_points"] is False

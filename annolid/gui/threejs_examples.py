@@ -740,7 +740,7 @@ def _maybe_build_flybody_mesh_parts(out: Path) -> list[dict[str, str]] | None:
     started = time.perf_counter()
     xml_path = repo_root / "flybody" / "fruitfly" / "assets" / "fruitfly.xml"
     asset_dir = xml_path.parent
-    mesh_files, _mesh_scale, worldbody, _xml_mats = _load_flybody_asset_index(
+    mesh_files, default_mesh_scale, worldbody, _xml_mats = _load_flybody_asset_index(
         str(xml_path),
         int(xml_path.stat().st_mtime_ns),
     )
@@ -753,10 +753,12 @@ def _maybe_build_flybody_mesh_parts(out: Path) -> list[dict[str, str]] | None:
         "wing_left",
         "wing_right",
         "abdomen",
+        "haltere",
         "coxa_",
         "femur_",
         "tibia_",
-        "tarsus_",
+        "tarsus",
+        "claw_",
         "tarsal_claw_",
     )
     parts: list[dict[str, str]] = []
@@ -793,8 +795,16 @@ def _maybe_build_flybody_mesh_parts(out: Path) -> list[dict[str, str]] | None:
                 continue
             offset = len(part_vertices)
             part_vertices.extend(
-                _transform_vertex(vertex, pos_values, quat_values)
-                for vertex in vertices
+                _transform_vertex(
+                    (
+                        vx * default_mesh_scale,
+                        vy * default_mesh_scale,
+                        vz * default_mesh_scale,
+                    ),
+                    pos_values,
+                    quat_values,
+                )
+                for vx, vy, vz in vertices
             )
             for face in faces:
                 part_faces.append([offset + index for index in face])
@@ -802,11 +812,19 @@ def _maybe_build_flybody_mesh_parts(out: Path) -> list[dict[str, str]] | None:
             continue
         safe_body = body_name.replace("/", "_")
         out_path = out / f"flybody_part_{safe_body}.obj"
+        part_header = f"# Annolid FlyBody body part v2: {body_name}"
+        up_to_date = False
         if (
-            not out_path.exists()
-            or out_path.stat().st_mtime_ns < xml_path.stat().st_mtime_ns
+            out_path.exists()
+            and out_path.stat().st_mtime_ns >= xml_path.stat().st_mtime_ns
         ):
-            lines = [f"# Annolid FlyBody body part: {body_name}"]
+            try:
+                with out_path.open("r", encoding="utf-8", errors="ignore") as handle:
+                    up_to_date = handle.readline().strip() == part_header
+            except OSError:
+                up_to_date = False
+        if not up_to_date:
+            lines = [part_header]
             for x, y, z in part_vertices:
                 lines.append(f"v {x:.6f} {y:.6f} {z:.6f}")
             for face in part_faces:

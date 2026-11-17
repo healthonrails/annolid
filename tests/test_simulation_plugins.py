@@ -280,3 +280,44 @@ def test_flybody_plugin_can_write_mapping_template_from_pose_schema(
     assert "backend: flybody" in text
     assert "nose: nose_site" in text
     assert "tail_base: tail_base_site" in text
+
+
+def test_flybody_plugin_connectome_rollout_writes_viewable_ndjson(
+    tmp_path: Path,
+) -> None:
+    from annolid.simulation import build_simulation_view_payload
+
+    output_path = tmp_path / "grooming_rollout.ndjson"
+    rc = annolid_run(
+        [
+            "predict",
+            "flybody",
+            "--rollout-steps",
+            "5",
+            "--behavior",
+            "grooming",
+            "--dynamics",
+            "spiking",
+            "--seed",
+            "11",
+            "--out-ndjson",
+            str(output_path),
+            "--dry-run",
+        ]
+    )
+
+    assert rc == 0
+    lines = output_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 5
+    first = json.loads(lines[0])
+    sim = first["otherData"]["simulation"]
+    assert sim["adapter"] == "flybody"
+    assert sim["run_metadata"]["behavior"] == "grooming"
+    assert sim["run_metadata"]["dynamics"] == "spiking"
+    assert "brain" in sim["diagnostics"]
+    assert "head" in sim["state"]["site_targets"]
+
+    viewer_payload = build_simulation_view_payload(output_path)
+    assert viewer_payload["adapter"] == "flybody"
+    assert len(viewer_payload["frames"]) == 5
+    assert ["head", "thorax"] in viewer_payload["edges"]

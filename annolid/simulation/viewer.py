@@ -101,20 +101,26 @@ def _infer_edges_from_labels(labels: List[str]) -> List[List[str]]:
 
     add(["nose", "head", "head_site"], ["thorax", "thorax_site"])
     add(["thorax", "thorax_site"], ["abdomen", "abdomen_tip", "abdomen_tip_site"])
-    add(["head", "head_site"], ["left_antenna", "left_antenna_site"])
-    add(["head", "head_site"], ["right_antenna", "right_antenna_site"])
-    for prefix in (
-        "left_front",
-        "right_front",
-        "left_middle",
-        "right_middle",
-        "left_hind",
-        "right_hind",
+    add(["head", "head_site"], ["left_antenna", "left_antenna_site", "antenna_left"])
+    add(["head", "head_site"], ["right_antenna", "right_antenna_site", "antenna_right"])
+    for seg, prefix in (
+        ("t1_left", "left_front"),
+        ("t1_right", "right_front"),
+        ("t2_left", "left_middle"),
+        ("t2_right", "right_middle"),
+        ("t3_left", "left_hind"),
+        ("t3_right", "right_hind"),
     ):
         add(
             ["thorax", "thorax_site"],
-            [f"{prefix}_leg_tip", f"{prefix}_tarsus_site"],
+            [
+                f"tarsus_{seg}",
+                f"{prefix}_leg_tip",
+                f"{prefix}_tarsus_site",
+                f"claw_{seg}",
+            ],
         )
+        add([f"tarsus_{seg}", f"{prefix}_tarsus_site"], [f"claw_{seg}"])
     return edges
 
 
@@ -157,18 +163,19 @@ def build_simulation_view_payload(path: str | Path) -> Dict[str, Any]:
 
         state = dict(simulation.get("state") or {})
         diagnostics = dict(simulation.get("diagnostics") or {})
-        frames.append(
-            {
-                "frame_index": int(
-                    record.get("frame_index") or record.get("frame") or 0
-                ),
-                "timestamp_sec": record.get("timestamp_sec"),
-                "points": frame_points,
-                "qpos": list(state.get("qpos") or []),
-                "diagnostics": diagnostics,
-                "dry_run": bool(state.get("dry_run", False)),
-            }
-        )
+        frame_entry: Dict[str, Any] = {
+            "frame_index": int(record.get("frame_index") or record.get("frame") or 0),
+            "timestamp_sec": record.get("timestamp_sec"),
+            "points": frame_points,
+            "qpos": list(state.get("qpos") or []),
+            "diagnostics": diagnostics,
+            "dry_run": bool(state.get("dry_run", False)),
+        }
+        if isinstance(state.get("body_poses"), dict):
+            frame_entry["body_poses"] = dict(state["body_poses"])
+        if isinstance(state.get("model_pose"), dict):
+            frame_entry["model_pose"] = dict(state["model_pose"])
+        frames.append(frame_entry)
 
     metadata = dict(mapping_metadata.get("metadata") or {})
     coordinate_system = dict(mapping_metadata.get("coordinate_system") or {})
@@ -186,6 +193,63 @@ def build_simulation_view_payload(path: str | Path) -> Dict[str, Any]:
         },
         "frames": frames,
     }
+
+
+def _attach_flybody_viewer_assets(
+    payload: Dict[str, Any], target_dir: Path
+) -> Dict[str, Any]:
+    adapter = str(payload.get("adapter") or "").strip().lower()
+    if not adapter.startswith("flybody"):
+        return payload
+    frames = payload.get("frames") or []
+    has_body_poses = any(
+        isinstance(frame, dict) and bool(frame.get("body_poses")) for frame in frames
+    )
+    has_model_pose = any(
+        isinstance(frame, dict) and bool(frame.get("model_pose")) for frame in frames
+    )
+    if not has_body_poses and not has_model_pose:
+        return payload
+    try:
+        from annolid.gui.threejs_examples import (
+            attach_flybody_floor,
+            attach_flybody_mesh,
+            attach_flybody_mesh_parts,
+        )
+    except Exception:
+        return payload
+
+    enriched = dict(payload)
+    if has_body_poses:
+        enriched = attach_flybody_mesh_parts(enriched, target_dir)
+    if not enriched.get("mesh"):
+        enriched = attach_flybody_mesh(enriched, target_dir)
+    enriched = attach_flybody_floor(enriched)
+    floor = (enriched.get("environment") or {}).get("floor") or {}
+    model_scale = float(
+        ((frames or [{}])[0].get("model_pose") or {}).get("scale") or 7.5
+    )
+    if isinstance(floor.get("position"), list) and len(floor["position"]) >= 3:
+        floor_pos = floor["position"]
+        normalized_floor = dict(floor)
+        normalized_floor["position"] = [
+            0.0,
+            float(floor_pos[2]) * model_scale,
+            0.0,
+        ]
+        enriched["environment"] = dict(enriched.get("environment") or {})
+        enriched["environment"]["floor"] = normalized_floor
+    if enriched.get("mesh"):
+        enriched.setdefault("display", {})
+        enriched["display"].update(
+            {
+                "show_points": False,
+                "show_labels": False,
+                "show_edges": False,
+                "show_trails": False,
+            }
+        )
+    return enriched
 
 
 def export_simulation_view_payload(
@@ -208,6 +272,7 @@ def export_simulation_view_payload(
             pass
     started = time.perf_counter()
     payload = build_simulation_view_payload(source)
+    payload = _attach_flybody_viewer_assets(payload, target_dir)
     out_path.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
     logger.info(
         "Exported simulation viewer payload to %s in %.1fms",

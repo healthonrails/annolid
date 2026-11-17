@@ -25,6 +25,7 @@ from annolid.gui.threejs_support import supports_threejs_canvas
 from annolid.gui.threejs_examples import (
     attach_flybody_floor,
     attach_flybody_mesh,
+    attach_flybody_mesh_parts,
     generate_threejs_example,
 )
 from annolid.gui.workers import FlexibleWorker
@@ -47,6 +48,7 @@ def _is_recent_live_flybody_payload(
     *,
     max_age_seconds: float = _LIVE_FLYBODY_EXAMPLE_CACHE_TTL_SECONDS,
     behavior: str | None = None,
+    controller: str | None = None,
 ) -> bool:
     path = Path(payload_path)
     if not path.exists():
@@ -71,6 +73,10 @@ def _is_recent_live_flybody_payload(
         return False
     if behavior is not None and str(run_metadata.get("behavior") or "") != str(
         behavior
+    ):
+        return False
+    if controller is not None and str(run_metadata.get("controller") or "") != str(
+        controller
     ):
         return False
     return True
@@ -129,11 +135,18 @@ def _prepare_live_flybody_view_payload(
 ) -> str:
     payload_file = Path(payload_path)
     payload = json.loads(payload_file.read_text(encoding="utf-8"))
-    payload = attach_flybody_mesh(payload, base_dir)
+    frames = payload.get("frames") or []
+    has_articulated_parts = any(
+        isinstance(frame, dict) and bool(frame.get("body_poses")) for frame in frames
+    )
+    if has_articulated_parts:
+        payload = attach_flybody_mesh_parts(payload, base_dir)
+    if not payload.get("mesh"):
+        payload = attach_flybody_mesh(payload, base_dir)
     payload = attach_flybody_floor(payload)
     floor = (payload.get("environment") or {}).get("floor") or {}
     model_scale = float(
-        ((payload.get("frames") or [{}])[0].get("model_pose") or {}).get("scale") or 7.5
+        ((frames or [{}])[0].get("model_pose") or {}).get("scale") or 7.5
     )
     if isinstance(floor.get("position"), list) and len(floor["position"]) >= 3:
         floor_position = floor["position"]
@@ -157,7 +170,7 @@ def _prepare_live_flybody_view_payload(
     payload["playback"] = {
         "autoplay": True,
         "loop": True,
-        "interval_ms": 90,
+        "interval_ms": 42,
     }
     payload_file.write_text(
         json.dumps(payload, separators=(",", ":")),
@@ -561,7 +574,9 @@ class ViewerToolsMixin:
         base_dir = Path(tempfile.gettempdir()) / "annolid_threejs_examples"
         base_dir.mkdir(parents=True, exist_ok=True)
         payload_path = base_dir / f"flybody_live_{behavior}.json"
-        if _is_recent_live_flybody_payload(payload_path, behavior=behavior):
+        if _is_recent_live_flybody_payload(
+            payload_path, behavior=behavior, controller="connectome"
+        ):
             logger.info("Reusing cached live FlyBody example payload: %s", payload_path)
             manager.update_simulation_in_viewer(
                 str(payload_path), title=f"flybody_live_{behavior}"

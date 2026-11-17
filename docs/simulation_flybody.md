@@ -251,12 +251,27 @@ When found, Annolid:
 - checks the optional FlyBody runtime in `.venv311`, `.venv`, and the current
   interpreter
 - if a usable FlyBody runtime is available, the FlyBody viewer shows in-viewer
-  live buttons for these FlyBody repo behaviors:
-  - `walk_imitation`
-  - `walk_on_ball`
-  - `flight_imitation`
-  - `vision_guided_flight`
-  - `template_task`
+  live buttons driven by the built-in **Drosophila Brain + VNC Connectome**
+  controller (`annolid.simulation.fly_brain`, grounded in Google Research /
+  HHMI Janelia `male-cns:v1.0`, FlyWire, and MANC wiring):
+  - `walk_imitation` (`CX -> DNp09` forward pursuit + VNC tripod gait)
+  - `forage_walk` (`ORN -> PFL3 -> DNa01/DNa02` chemotaxis & asymmetric steering)
+  - `backward_walk` (`Tactile -> MDN` Moonwalker backward locomotion)
+  - `grooming` (`JO -> SEZ -> aDN1 + Pair1` locomotor arrest + `T1` foreleg antennal sweep)
+  - `escape_takeoff` (`LC4 -> Giant Fiber DNp01` ballistic `T2/T3` jump + wing deployment)
+  - `walk_on_ball` (tethered walking on the spherical treadmill)
+  - `flight_imitation` (`DNg02 + WTct` wingbeat power & pitch stabilization)
+  - `vision_guided_flight` (`32x32` compound-eye visual salience -> `DNg02` flight steering)
+  - `template_task` (exploratory arena locomotion)
+- live rollouts attach articulated per-segment body-part meshes (`flybody_parts`)
+  with part-category visibility controls and real-time Leaky Integrate-and-Fire
+  (LIF) spike & Descending Neuron telemetry (`Brain Circuit`, `LIF Spikes`,
+  `Active DNs`) in the viewer metadata HUD
+- aerial tasks (`flight_imitation`, `vision_guided_flight`) automatically supply
+  an aerodynamically calibrated *Drosophila* inclined-stroke-plane wingbeat
+  cycle (`ensure_calibrated_wingbeat_path`) paired with 5 ms low-pass Haltere +
+  Ocellar attitude stabilization so flight sustains altitude without external
+  HDF5 wingbeat files
 - clicking a behavior button keeps the same Three.js view open, starts the
   optional live rollout in the background, and replaces the static example when
   the rollout is ready
@@ -298,6 +313,44 @@ uv pip install -e .
 
 Annolid will now detect that repo-local `.venv` automatically in the FlyBody
 status dialog and when launching the live FlyBody example.
+
+## 3C. Connectome-Wired Brain & VNC Control CLI
+
+You can generate connectome-driven FlyBody rollouts directly from the command
+line (either using the built-in Google Research `male-cns:v1.0` / FlyWire
+canonical sensorimotor circuit or overlaying a custom exported connectome edge
+table in `.csv`, `.tsv`, `.json`, or `.npz` format):
+
+```bash
+python -m annolid.simulation.flybody_live \
+  --behavior forage_walk \
+  --controller connectome \
+  --dynamics spiking \
+  --steps 120 \
+  --out forage_rollout.json
+
+python -m annolid.simulation.flybody_live \
+  --behavior grooming \
+  --dynamics rate \
+  --connectome-path malecns_subcircuit.parquet \
+  --steps 120 \
+  --out grooming_rollout.json
+
+# Or emit schema-validated Annolid NDJSON directly via annolid-run:
+annolid-run predict flybody \
+  --rollout-steps 120 \
+  --behavior walk_imitation \
+  --dynamics spiking \
+  --out-ndjson walk_rollout.ndjson
+```
+
+Supported connectome formats include `.csv`, `.tsv`, `.parquet`, `.feather`,
+`.json`, and sparse/dense `.npz` (supporting both cell-type circuits and
+166,700+ neuron-level `bodyId`/`root_id` graphs via `O(|E|)` CSR sparse spike
+propagation). Supported tabular columns include `pre` / `pre_type` /
+`bodyId_pre`, `post` / `post_type` / `bodyId_post`, `synapse_count` / `weight`,
+and `neurotransmitter` / `nt_type` (`acetylcholine`, `gaba`, `glutamate`,
+`octopamine`, `dopamine`, `serotonin`).
 
 ## 4. Add Depth for 3D Targets
 

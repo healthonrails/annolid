@@ -778,15 +778,31 @@ async function boot() {
       });
       flybodyControlsEl.appendChild(titleEl);
       const controls = [
-        ["walk_imitation", "walk", "Run FlyBody walk imitation"],
-        ["walk_on_ball", "ball", "Run FlyBody walk-on-ball"],
-        ["flight_imitation", "flight", "Run FlyBody flight imitation"],
-        ["vision_guided_flight", "vision", "Run FlyBody vision-guided flight"],
-        ["template_task", "template", "Run FlyBody template task"],
+        ["walk_imitation", "walk", "Connectome walk (DNp09 + CX pursuit)"],
+        ["forage_walk", "forage", "Connectome odor foraging (ORN -> PFL3 -> DNa01/02)"],
+        ["backward_walk", "backward", "Moonwalker backward walk (MDN -> VNC)"],
+        ["grooming", "groom", "Antennal grooming (JO -> aDN1 + Pair1 arrest)"],
+        ["escape_takeoff", "escape", "Looming escape jump & takeoff (LC4 -> Giant Fiber DNp01)"],
+        ["walk_on_ball", "ball", "Tethered walk on spherical treadmill"],
+        ["flight_imitation", "flight", "Connectome flight (DNg02 + Wing Tectulum)"],
+        ["vision_guided_flight", "vision", "Compound-eye vision-guided flight"],
+        ["template_task", "template", "Exploratory connectome arena walk"],
       ];
       const iconSvg = (kind) => {
         if (kind === "walk") {
           return '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M13 4a2 2 0 1 1 0 4 2 2 0 0 1 0-4Zm-2.2 5.2 1.8-.2 1.6 1.5c.4.4 1 .7 1.6.7H19v2h-3.2c-1.1 0-2.1-.4-2.9-1.1l-.8-.7-.7 3 1.8 1.8V20H11v-3.2l-2.2-2.3-.6 2.9H6l1.1-5.1 1.7-3.1c.4-.7 1.1-1.1 2-1.1Zm-2 1.6L7.1 14H4v-2h2l1.4-2.4 1.4 1.2Z"/></svg>';
+        }
+        if (kind === "forage") {
+          return '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 2a7 7 0 0 1 7 7c0 5.2-7 13-7 13S5 14.2 5 9a7 7 0 0 1 7-7Zm0 4.5A2.5 2.5 0 1 0 14.5 9 2.5 2.5 0 0 0 12 6.5Z"/></svg>';
+        }
+        if (kind === "backward") {
+          return '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M11 5v4.5L18.5 5v14L11 14.5V19l-8-7 8-7Z"/></svg>';
+        }
+        if (kind === "groom") {
+          return '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M9 3c1.2 1.8 1.8 3.6 1.8 5.5h2.4C13.2 6.6 13.8 4.8 15 3l1.7 1c-1 1.6-1.6 3.2-1.7 4.9A5 5 0 0 1 17 13v2h-2v-2a3 3 0 0 0-6 0v2H7v-2a5 5 0 0 1 2-4.1C8.9 7.2 8.3 5.6 7.3 4L9 3Zm3 9a2 2 0 0 1 2 2v6h-4v-6a2 2 0 0 1 2-2Z"/></svg>';
+        }
+        if (kind === "escape") {
+          return '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M13 2 4 14h6l-1 8 9-12h-6l1-8Z"/></svg>';
         }
         if (kind === "ball") {
           return '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm6.7 6h-3a15 15 0 0 0-1.3-3.1A8.1 8.1 0 0 1 18.7 8ZM12 4.1A13 13 0 0 1 13.8 8h-3.6A13 13 0 0 1 12 4.1ZM5.3 14a8.4 8.4 0 0 1 0-4h3.4a17.5 17.5 0 0 0 0 4Zm.9 2h3a15 15 0 0 0 1.3 3.1A8.1 8.1 0 0 1 6.2 16Zm3-8h-3a8.1 8.1 0 0 1 4.3-3.1A15 15 0 0 0 9.2 8Zm2.8 11.9A13 13 0 0 1 10.2 16h3.6A13 13 0 0 1 12 19.9ZM14.2 14h-4.4a15.7 15.7 0 0 1 0-4h4.4a15.7 15.7 0 0 1 0 4Zm.3 5.1a15 15 0 0 0 1.3-3.1h3a8.1 8.1 0 0 1-4.3 3.1Zm1.8-5.1a17.5 17.5 0 0 0 0-4h3.4a8.4 8.4 0 0 1 0 4Z"/></svg>';
@@ -1662,6 +1678,30 @@ async function boot() {
       }
       if (Number.isFinite(frame.timestamp_sec)) {
         lines.push(`Time: ${Number(frame.timestamp_sec).toFixed(3)} s`);
+      }
+      const brain = frame.diagnostics && typeof frame.diagnostics === "object"
+        ? frame.diagnostics.brain
+        : null;
+      if (brain && typeof brain === "object") {
+        if (brain.dominant_circuit) {
+          lines.push(`Brain Circuit: ${String(brain.dominant_circuit)}`);
+        }
+        if (brain.spiking && typeof brain.spiking === "object") {
+          lines.push(
+            `LIF Spikes: ${Number(brain.spiking.total_spikes || 0)} (${Number(brain.spiking.mean_firing_rate_hz || 0).toFixed(1)} Hz, ${Number(brain.active_nodes || 0)} neurons)`
+          );
+        }
+        const dns = brain.descending_neurons;
+        if (dns && typeof dns === "object") {
+          const activeDns = Object.entries(dns)
+            .filter(([, v]) => Number(v) >= 0.05)
+            .sort((a, b) => Number(b[1]) - Number(a[1]))
+            .slice(0, 3)
+            .map(([k, v]) => `${k}:${Number(v).toFixed(2)}`);
+          if (activeDns.length) {
+            lines.push(`Active DNs: ${activeDns.join(" ")}`);
+          }
+        }
       }
       metaEl.textContent = lines.join("\n");
     };
@@ -4441,18 +4481,22 @@ async function boot() {
       const modelPos = Array.isArray(modelPose.position) ? modelPose.position : [0, 0, 0];
       const modelRot = Array.isArray(modelPose.rotation) ? modelPose.rotation : [0, 0, 0];
       const modelScale = Number(modelPose.scale);
+      const effectiveScale = Number.isFinite(modelScale) && modelScale > 0 ? modelScale : 1;
       simulationModelRoot.position.set(
-        Number(modelPos[0] || 0) * (Number.isFinite(modelScale) && modelScale > 0 ? modelScale : 1),
-        Number(modelPos[2] || 0) * (Number.isFinite(modelScale) && modelScale > 0 ? modelScale : 1),
-        Number(modelPos[1] || 0) * (Number.isFinite(modelScale) && modelScale > 0 ? modelScale : 1)
+        Number(modelPos[0] || 0) * effectiveScale,
+        Number(modelPos[2] || 0) * effectiveScale,
+        Number(modelPos[1] || 0) * effectiveScale
       );
       // Pre-rotate model root so MuJoCo Z-up aligns to Three.js Y-up,
       // then apply the payload's Euler Z-rotation (yaw) on top.
       const yaw = Number(modelRot[2] || 0);
       simulationModelRoot.rotation.set(-Math.PI / 2, 0, yaw);
-      if (Number.isFinite(modelScale) && modelScale > 0) {
-        simulationModelRoot.scale.setScalar(modelScale);
-      }
+      simulationModelRoot.scale.setScalar(effectiveScale);
+
+      // Align articulated MuJoCo Z-up body parts to Three.js right-handed Y-up world space.
+      simulationBodyPartsRoot.position.set(0, 0, 0);
+      simulationBodyPartsRoot.rotation.set(-Math.PI / 2, 0, 0);
+      simulationBodyPartsRoot.scale.setScalar(effectiveScale);
       simulationBodyPartMap.forEach((entry, label) => {
         const pose = bodyPoses[label];
         const enabled = simulationCategoryState.get(entry.category) !== false;
@@ -4594,7 +4638,9 @@ async function boot() {
       }
       rebuildFlybodyControls();
       if (!shouldReloadMesh) {
-        if (!payload.mesh || payload.mesh.type !== "flybody_parts") {
+        if (payload.mesh && payload.mesh.type === "flybody_parts") {
+          rebuildSimulationCategoryUI();
+        } else {
           if (legendEl) legendEl.hidden = true;
           if (categoryPanelEl && !(adapter === "zarr-volume" || adapter === "tiff-volume")) {
             categoryPanelEl.hidden = true;
@@ -4602,11 +4648,15 @@ async function boot() {
         }
       } else if (payload.mesh && payload.mesh.type === "flybody_parts" && Array.isArray(payload.mesh.parts)) {
         const loader = new OBJLoader();
+        let pendingParts = payload.mesh.parts.length;
         payload.mesh.parts.forEach((part) => {
           if (part && (!part.type || part.type === "obj")) {
             const meshUrl = new URL(String(part.path || ""), modelUrl).toString();
             const bodyLabel = String(part.body || "");
-            if (!meshUrl || !bodyLabel) return;
+            if (!meshUrl || !bodyLabel) {
+              pendingParts = Math.max(0, pendingParts - 1);
+              return;
+            }
             loader.load(
               meshUrl,
               (obj) => {
@@ -4629,12 +4679,19 @@ async function boot() {
                 });
                 rebuildSimulationCategoryUI();
                 renderSimulationFrame(simulationFrameIndex);
+                pendingParts = Math.max(0, pendingParts - 1);
+                if (pendingParts === 0) {
+                  fitCameraToObject(simulationBodyPartsRoot);
+                }
               },
               undefined,
               (err) => {
+                pendingParts = Math.max(0, pendingParts - 1);
                 console.warn("Failed to load FlyBody body part mesh:", bodyLabel, err);
               }
             );
+          } else {
+            pendingParts = Math.max(0, pendingParts - 1);
           }
         });
       } else if (payload.mesh && payload.mesh.type === "obj" && payload.mesh.path) {

@@ -47,8 +47,27 @@ def write_simulation_ndjson(
     by_frame = {item.frame_index: item for item in result.frames}
     metadata = dict(extra_metadata or {})
 
+    effective_pose_frames = list(pose_frames)
+    if not effective_pose_frames and result.frames:
+        default_video = str(
+            result.metadata.get("video_name")
+            or result.metadata.get("behavior")
+            or "simulation"
+        )
+        effective_pose_frames = [
+            Pose2DFrame(
+                frame_index=int(sim_frame.frame_index),
+                timestamp_sec=sim_frame.timestamp_sec,
+                image_height=1,
+                image_width=1,
+                video_name=default_video,
+                image_path="",
+            )
+            for sim_frame in result.frames
+        ]
+
     lines: list[str] = []
-    for pose_frame in pose_frames:
+    for pose_frame in effective_pose_frames:
         sim_frame = by_frame.get(pose_frame.frame_index)
         record = _build_agent_output_record(
             pose_frame,

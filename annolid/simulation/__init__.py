@@ -1,5 +1,20 @@
 """Simulation integration contracts for physics and kinematics backends."""
 
+from annolid.simulation.fly_brain import (
+    CONNECTOME_RELEASE_METADATA,
+    SUPPORTED_BRAIN_DYNAMICS,
+    SUPPORTED_FLYBODY_BEHAVIORS,
+    ConnectomeGraph,
+    FlyBrainController,
+    NeuronPopulation,
+    SparseSynapticWeights,
+    SynapticConnection,
+    build_calibrated_wingbeat_pattern,
+    build_canonical_fly_connectome,
+    build_spiking_fly_connectome,
+    ensure_calibrated_wingbeat_path,
+    load_connectome_graph,
+)
 from annolid.simulation.io import (
     load_pose_schema,
     read_pose_frames,
@@ -57,4 +72,17 @@ __all__ = [
     "build_default_output_path",
     "build_simulation_adapter",
     "run_simulation_workflow",
+    "CONNECTOME_RELEASE_METADATA",
+    "SUPPORTED_BRAIN_DYNAMICS",
+    "SUPPORTED_FLYBODY_BEHAVIORS",
+    "ConnectomeGraph",
+    "FlyBrainController",
+    "NeuronPopulation",
+    "SparseSynapticWeights",
+    "SynapticConnection",
+    "build_calibrated_wingbeat_pattern",
+    "build_canonical_fly_connectome",
+    "build_spiking_fly_connectome",
+    "ensure_calibrated_wingbeat_path",
+    "load_connectome_graph",
 ]
