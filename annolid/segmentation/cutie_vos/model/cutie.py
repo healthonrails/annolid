@@ -10,13 +10,24 @@ from annolid.segmentation.cutie_vos.model.aux_modules import AuxComputer
 from annolid.segmentation.cutie_vos.model.utils.memory_utils import *
 from annolid.segmentation.cutie_vos.model.transformer.object_transformer import QueryTransformer
 from annolid.segmentation.cutie_vos.model.transformer.object_summarizer import ObjectSummarizer
+from annolid.segmentation.cutie_vos.model.weight_compression import (
+    apply_cutie_tucker_structure,
+    fold_cutie_conv_bn_in_place,
+    is_compact_cutie_checkpoint,
+)
 from annolid.segmentation.cutie_vos.utils.tensor_utils import aggregate
 
 log = logging.getLogger()
 
 
 class CUTIE(nn.Module):
-    def __init__(self, cfg: DictConfig, *, single_object=False):
+    def __init__(
+        self,
+        cfg: DictConfig,
+        *,
+        single_object: bool = False,
+        pretrained_backbone: Optional[bool] = None,
+    ):
         super().__init__()
         model_cfg = cfg.model
         self.ms_dims = model_cfg.pixel_encoder.ms_dims
@@ -27,13 +38,18 @@ class CUTIE(nn.Module):
         self.embed_dim = model_cfg.embed_dim
         self.single_object = single_object
 
+        if pretrained_backbone is None:
+            pretrained_backbone = bool(cfg.get("pretrained_backbone", False))
+
         log.info(f'Single object: {self.single_object}')
 
-        self.pixel_encoder = PixelEncoder(model_cfg)
+        self.pixel_encoder = PixelEncoder(model_cfg, pretrained=pretrained_backbone)
         self.pix_feat_proj = nn.Conv2d(
             self.ms_dims[0], self.pixel_dim, kernel_size=1)
         self.key_proj = KeyProjection(model_cfg)
-        self.mask_encoder = MaskEncoder(model_cfg, single_object=single_object)
+        self.mask_encoder = MaskEncoder(
+            model_cfg, single_object=single_object, pretrained=pretrained_backbone
+        )
         self.mask_decoder = MaskDecoder(model_cfg)
         self.pixel_fuser = PixelFeatureFuser(
             model_cfg, single_object=single_object)
@@ -404,7 +420,43 @@ class CUTIE(nn.Module):
     def forward(self, *args, **kwargs):
         raise NotImplementedError
 
-    def load_weights(self, src_dict, init_as_zero_if_needed=False) -> None:
+    def load_weights(
+        self,
+        src_dict,
+        init_as_zero_if_needed: bool = False,
+        *,
+        fold_bn_for_eval: bool = False,
+    ) -> None:
+        if is_compact_cutie_checkpoint(src_dict):
+            tucker_cfg = src_dict.get("tucker_config") or {}
+            apply_cutie_tucker_structure(self, tucker_cfg)
+            raw_weights = dict(src_dict["weights"])
+            if self.single_object:
+                if (
+                    "mask_encoder.conv1.weight" in raw_weights
+                    and raw_weights["mask_encoder.conv1.weight"].shape[1] == 5
+                ):
+                    raw_weights["mask_encoder.conv1.weight"] = raw_weights[
+                        "mask_encoder.conv1.weight"
+                    ][:, :-1]
+                if (
+                    "pixel_fuser.sensory_compress.weight" in raw_weights
+                    and raw_weights["pixel_fuser.sensory_compress.weight"].shape[1]
+                    == self.sensory_dim + 2
+                ):
+                    raw_weights["pixel_fuser.sensory_compress.weight"] = raw_weights[
+                        "pixel_fuser.sensory_compress.weight"
+                    ][:, :-1]
+            target_sd = self.state_dict()
+            cast_weights = {}
+            for k, v in raw_weights.items():
+                if k in target_sd and v.is_floating_point():
+                    cast_weights[k] = v.to(dtype=target_sd[k].dtype)
+                else:
+                    cast_weights[k] = v
+            self.load_state_dict(cast_weights, strict=True)
+            return
+
         if not self.single_object:
             # Map single-object weight to multi-object weight (4->5 out channels in conv1)
             for k in list(src_dict.keys()):
@@ -440,9 +492,13 @@ class CUTIE(nn.Module):
             finetune a trained model with single object datasets.
             """
             if src_dict['mask_encoder.conv1.weight'].shape[1] == 5:
-                log.warning(f'Converting {k} from multiple objects to single object.'
-                            'This is not supposed to happen in standard training.')
-                src_dict[k] = src_dict[k][:, :-1]
+                log.warning(
+                    'Converting mask_encoder.conv1.weight from multiple objects to single object.'
+                    'This is not supposed to happen in standard training.'
+                )
+                src_dict['mask_encoder.conv1.weight'] = src_dict[
+                    'mask_encoder.conv1.weight'
+                ][:, :-1]
 
         for k in src_dict:
             if k not in self.state_dict():
@@ -454,6 +510,8 @@ class CUTIE(nn.Module):
                     f'Key {k} found in self.state_dict() but not in src_dict!!!')
 
         self.load_state_dict(src_dict, strict=False)
+        if fold_bn_for_eval and not self.training:
+            fold_cutie_conv_bn_in_place(self)
 
     @property
     def device(self) -> torch.device:

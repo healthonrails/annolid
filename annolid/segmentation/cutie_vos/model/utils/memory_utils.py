@@ -58,8 +58,9 @@ def do_softmax(
         k = max(1, int(top_k))
         values, indices = torch.topk(similarity, k=k, dim=1)
 
-        x_exp = values.exp_()
-        x_exp /= torch.sum(x_exp, dim=1, keepdim=True)
+        maxes = torch.max(values, dim=1, keepdim=True)[0]
+        x_exp = values.sub_(maxes).exp_()
+        x_exp /= torch.sum(x_exp, dim=1, keepdim=True).clamp(min=1e-12)
         if inplace:
             similarity.zero_().scatter_(1, indices, x_exp)  # B*N*HW
             affinity = similarity

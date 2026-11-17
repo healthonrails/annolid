@@ -6,11 +6,14 @@ from annolid.segmentation.cutie_vos.dependencies import (
 
 ensure_cutie_runtime_dependencies()
 
+import os
+import shutil
+import sys
 import cv2
 import torch
 import numpy as np
 from pathlib import Path
-from typing import Dict, Optional, Iterator, Tuple, Union
+from typing import Callable, Dict, Optional, Iterator, Tuple, Union
 
 from omegaconf import open_dict
 from hydra import compose, initialize
@@ -18,6 +21,11 @@ from hydra.core.global_hydra import GlobalHydra
 
 # Assuming these are from the original Cutie VOS repository or your adaptation
 from annolid.segmentation.cutie_vos.model.cutie import CUTIE
+from annolid.segmentation.cutie_vos.model.weight_compression import (
+    compress_and_factorize_cutie_in_place,
+    is_compact_cutie_checkpoint,
+    pack_compact_cutie_checkpoint,
+)
 from annolid.segmentation.cutie_vos.inference.inference_core import InferenceCore
 from annolid.segmentation.cutie_vos.interactive_utils import (
     image_to_torch,
@@ -27,7 +35,299 @@ from annolid.segmentation.cutie_vos.interactive_utils import (
 
 from annolid.utils.logger import logger
 from annolid.utils.devices import get_device  # For device selection
-from annolid.utils.model_assets import ensure_cached_model_asset
+from annolid.utils.model_assets import (
+    ensure_cached_model_asset,
+    model_downloads_dir,
+    resolve_existing_model_path,
+)
+
+DEFAULT_CUTIE_WEIGHTS_FILENAME = "cutie-base-mega.pth"
+ORIG_BACKUP_CUTIE_WEIGHTS_FILENAME = "cutie-base-mega.orig.pth"
+SAM3_BODYPARTS_CUTIE_WEIGHTS_FILENAME = "cutie-sam3-bodyparts.pth"
+SAM3_BODYPARTS_CUTIE_RELEASE_URL = (
+    "https://github.com/healthonrails/annolid/releases/download/v1.6.10/"
+    f"{SAM3_BODYPARTS_CUTIE_WEIGHTS_FILENAME}"
+)
+SAM3_BODYPARTS_CUTIE_SHA256 = (
+    "9327fe2eec8b7889b91a96c66dc23c8e40600fbf66e3e1ee41243e94f910299d"
+)
+UPGRADED_WEIGHTS_URL_ENV = "ANNOLID_CUTIE_UPGRADED_WEIGHTS_URL"
+UPGRADED_WEIGHTS_SHA256_ENV = "ANNOLID_CUTIE_UPGRADED_WEIGHTS_SHA256"
+_PACKAGE_WEIGHTS_DIR = Path(__file__).resolve().parent / "weights"
+_MANAGED_CUTIE_WEIGHT_FILENAMES = {
+    DEFAULT_CUTIE_WEIGHTS_FILENAME,
+    SAM3_BODYPARTS_CUTIE_WEIGHTS_FILENAME,
+}
+_LEGACY_PLACEHOLDER_WEIGHT_NAMES = {"cutie.pt"}
+
+
+def resolve_cutie_weights_path(
+    weights_path: Optional[Union[str, Path]] = None,
+    *,
+    weights_dir: Optional[Union[str, Path]] = None,
+) -> Optional[Path]:
+    """Resolve an explicit Cutie checkpoint path, or return None for default weights.
+
+    Relative filenames (such as ``cutie-sam3-bodyparts.pth``) are resolved against
+    ``weights_dir`` (defaulting to ``annolid/segmentation/cutie_vos/weights``) and
+    Annolid's standard model asset search roots.
+    """
+    raw = str(weights_path or "").strip()
+    if not raw or raw.lower() in _LEGACY_PLACEHOLDER_WEIGHT_NAMES:
+        return None
+
+    base_weights_dir = (
+        Path(weights_dir).expanduser()
+        if weights_dir is not None
+        else Path(__file__).resolve().parent / "weights"
+    )
+    candidate = Path(raw).expanduser()
+    if candidate.is_file():
+        return candidate
+
+    if not candidate.is_absolute():
+        in_weights_dir = base_weights_dir / candidate
+        if in_weights_dir.is_file():
+            return in_weights_dir
+        by_name = base_weights_dir / candidate.name
+        if by_name.is_file():
+            return by_name
+
+    resolved = resolve_existing_model_path(raw)
+    if resolved is not None and resolved.is_file():
+        return resolved
+
+    # Return explicit target path so callers raise a clear FileNotFoundError
+    if not candidate.is_absolute() and len(candidate.parts) == 1:
+        return base_weights_dir / candidate.name
+    return candidate
+
+
+def unwrap_cutie_state_dict(loaded_weights: Dict) -> Dict:
+    """Extract the CUTIE parameter state dict from flat or nested checkpoints,
+    preserving self-describing compressed checkpoint envelopes."""
+    if not isinstance(loaded_weights, dict):
+        return loaded_weights
+    if "__annolid_cutie_format__" in loaded_weights:
+        return loaded_weights
+    for key in ("model", "weights", "state_dict"):
+        nested = loaded_weights.get(key)
+        if isinstance(nested, dict):
+            return nested
+    return loaded_weights
+
+
+def _atomic_copy_file(src: Path, dst: Path) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_name(f".{dst.name}.tmp.{os.getpid()}")
+    try:
+        shutil.copy2(src, tmp)
+        tmp.replace(dst)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _atomic_torch_save(payload: object, dst: Path) -> None:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_name(f".{dst.name}.tmp.{os.getpid()}")
+    try:
+        torch.save(payload, tmp)
+        tmp.replace(dst)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _is_bare_managed_cutie_weight_spec(raw_spec: Optional[Union[str, Path]]) -> bool:
+    raw = str(raw_spec or "").strip()
+    if not raw:
+        return False
+    p = Path(raw).expanduser()
+    return (not p.is_absolute()) and len(p.parts) == 1 and p.name in _MANAGED_CUTIE_WEIGHT_FILENAMES
+
+
+def _is_bundle_or_readonly_dir(path: Path) -> bool:
+    """Return True when ``path`` lives inside a frozen app bundle or non-writable tree."""
+    if getattr(sys, "frozen", False):
+        return True
+    parts = set(path.parts)
+    if "_internal" in parts or any(part.endswith(".app") for part in parts):
+        return True
+    probe = path
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+    return not os.access(probe, os.W_OK)
+
+
+def _resolve_writable_cutie_cache_dir(weights_dir: Path) -> Path:
+    if _is_bundle_or_readonly_dir(weights_dir):
+        return model_downloads_dir()
+    return weights_dir
+
+
+def ensure_managed_cutie_weights_file(
+    model_weights_path: Optional[Union[str, Path]],
+    *,
+    weights_dir: Path,
+    remote_url: str,
+    expected_md5: str,
+    asset_downloader: Callable[..., Path] = ensure_cached_model_asset,
+    try_release_asset: Optional[bool] = None,
+) -> Path:
+    """Resolve and materialize default or managed Cutie checkpoints on fresh installs.
+
+    Resolution order for missing managed checkpoints (``cutie-base-mega.pth`` and
+    ``cutie-sam3-bodyparts.pth``):
+    1. Local ``weights_dir`` (or ``~/.annolid/workspace/downloads`` when running from a
+       package/frozen install).
+    2. Explicit ``ANNOLID_CUTIE_UPGRADED_WEIGHTS_URL`` (+ SHA-256) override.
+    3. Canonical GitHub Release asset (``SAM3_BODYPARTS_CUTIE_RELEASE_URL`` verified
+       against ``SAM3_BODYPARTS_CUTIE_SHA256``) when ``try_release_asset`` is enabled.
+    4. Upstream ``cutie-base-mega.pth`` (MD5-verified) followed by automatic in-place
+       HOSVD + Conv+BN folding compression in ``maybe_upgrade_and_cache_compact_cutie_weights``.
+    """
+    explicit = resolve_cutie_weights_path(model_weights_path, weights_dir=weights_dir)
+    if explicit is not None:
+        if explicit.exists():
+            return explicit
+        if not _is_bare_managed_cutie_weight_spec(model_weights_path):
+            raise FileNotFoundError(f"Cutie model weights not found at: {explicit}")
+        target_name = explicit.name
+    else:
+        default_in_weights = weights_dir / DEFAULT_CUTIE_WEIGHTS_FILENAME
+        if default_in_weights.exists():
+            return default_in_weights
+        target_name = DEFAULT_CUTIE_WEIGHTS_FILENAME
+
+    is_default_pkg_dir = False
+    try:
+        is_default_pkg_dir = weights_dir.resolve() == _PACKAGE_WEIGHTS_DIR.resolve()
+    except OSError:
+        is_default_pkg_dir = False
+
+    if is_default_pkg_dir or _is_bundle_or_readonly_dir(weights_dir):
+        user_cached = model_downloads_dir() / target_name
+        if user_cached.is_file():
+            return user_cached
+
+    cache_dir = _resolve_writable_cutie_cache_dir(weights_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    target = cache_dir / target_name
+    if target.is_file():
+        return target
+
+    upgraded_url = str(os.environ.get(UPGRADED_WEIGHTS_URL_ENV, "")).strip()
+    upgraded_sha = str(os.environ.get(UPGRADED_WEIGHTS_SHA256_ENV, "")).strip()
+    if upgraded_url and upgraded_sha:
+        return asset_downloader(
+            file_name=target.name,
+            url=upgraded_url,
+            expected_sha256=upgraded_sha,
+            cache_dir=cache_dir,
+        )
+
+    if try_release_asset is None:
+        try_release_asset = asset_downloader is ensure_cached_model_asset
+
+    if try_release_asset and SAM3_BODYPARTS_CUTIE_RELEASE_URL and SAM3_BODYPARTS_CUTIE_SHA256:
+        try:
+            downloaded_release = asset_downloader(
+                file_name=target.name,
+                url=SAM3_BODYPARTS_CUTIE_RELEASE_URL,
+                expected_sha256=SAM3_BODYPARTS_CUTIE_SHA256,
+                cache_dir=cache_dir,
+            )
+            if downloaded_release is not None and Path(downloaded_release).is_file():
+                sibling_name = (
+                    DEFAULT_CUTIE_WEIGHTS_FILENAME
+                    if target.name == SAM3_BODYPARTS_CUTIE_WEIGHTS_FILENAME
+                    else SAM3_BODYPARTS_CUTIE_WEIGHTS_FILENAME
+                )
+                sibling = cache_dir / sibling_name
+                if not sibling.exists():
+                    try:
+                        _atomic_copy_file(Path(downloaded_release), sibling)
+                    except OSError:
+                        pass
+                return Path(downloaded_release)
+        except Exception as exc:
+            logger.debug(
+                "Pre-distilled Cutie release checkpoint unavailable at %s (%s); "
+                "falling back to upstream Cutie + local structural compression.",
+                SAM3_BODYPARTS_CUTIE_RELEASE_URL,
+                exc,
+            )
+
+    base_path = cache_dir / DEFAULT_CUTIE_WEIGHTS_FILENAME
+    if not base_path.exists():
+        downloaded = asset_downloader(
+            file_name=base_path.name,
+            url=remote_url,
+            expected_md5=expected_md5,
+            cache_dir=cache_dir,
+        )
+        if downloaded is not None:
+            base_path = Path(downloaded)
+
+    if target.name != base_path.name and base_path.is_file() and not target.exists():
+        try:
+            _atomic_copy_file(base_path, target)
+        except OSError:
+            return base_path
+    return target
+
+
+def maybe_upgrade_and_cache_compact_cutie_weights(
+    model: object,
+    loaded_payload: object,
+    *,
+    model_path: Union[str, Path],
+    weights_dir: Optional[Union[str, Path]] = None,
+) -> None:
+    """When a fresh install loads a dense managed Cutie checkpoint, compress it in-place
+    (48 Conv+BN folded + HOSVD Tucker-2 + FFN pruning) and atomically cache the compact
+    checkpoint while preserving ``cutie-base-mega.orig.pth``."""
+    if not isinstance(model, CUTIE):
+        return
+    if not isinstance(loaded_payload, dict) or is_compact_cutie_checkpoint(loaded_payload):
+        return
+    if "pixel_encoder.conv1.weight" not in loaded_payload:
+        return
+
+    resolved_path = Path(model_path)
+    if resolved_path.name not in _MANAGED_CUTIE_WEIGHT_FILENAMES:
+        return
+    if not resolved_path.is_file():
+        return
+
+    raw_dir = Path(weights_dir) if weights_dir is not None else resolved_path.parent
+    base_dir = _resolve_writable_cutie_cache_dir(raw_dir)
+    orig_backup = base_dir / ORIG_BACKUP_CUTIE_WEIGHTS_FILENAME
+    try:
+        if not orig_backup.exists():
+            _atomic_copy_file(resolved_path, orig_backup)
+    except OSError:
+        logger.debug("Skipping upstream Cutie backup write in read-only directory: %s", base_dir)
+
+    tucker_cfg = compress_and_factorize_cutie_in_place(model)
+    compact_payload = pack_compact_cutie_checkpoint(
+        model,
+        tucker_cfg=tucker_cfg,
+        metadata={"auto_bootstrapped_from_upstream": True},
+    )
+    model.load_weights(compact_payload)
+
+    for fname in _MANAGED_CUTIE_WEIGHT_FILENAMES:
+        dest = base_dir / fname
+        if dest == resolved_path or not dest.exists():
+            try:
+                _atomic_torch_save(compact_payload, dest)
+            except OSError:
+                logger.debug("Skipping compact Cutie cache write in read-only directory: %s", dest)
+        elif dest.is_file() and dest.stat().st_size > 80 * 1024 * 1024:
+            try:
+                _atomic_torch_save(compact_payload, dest)
+            except OSError:
+                pass
 
 
 class CutieEngine:
@@ -39,19 +339,28 @@ class CutieEngine:
     """
     _REMOTE_MODEL_URL = "https://github.com/hkchengrex/Cutie/releases/download/v1.0/cutie-base-mega.pth"
     _MD5 = "a6071de6136982e396851903ab4c083a"
-    _MODEL_FILENAME = 'cutie-base-mega.pth'
+    _MODEL_FILENAME = DEFAULT_CUTIE_WEIGHTS_FILENAME
 
     def __init__(self,
                  # e.g., mem_every, t_max_value
                  cutie_config_overrides: Optional[Dict] = None,
                  device: Optional[Union[torch.device, str]] = None,
-                 model_weights_path: Optional[str] = None):
+                 model_weights_path: Optional[Union[str, Path]] = None):
 
         self.device = device or get_device()
         logger.info(f"CutieEngine: Initializing on device: {self.device}")
 
         self.cfg = self._load_hydra_config(cutie_config_overrides)
-        self.model_weights_path = model_weights_path or self._get_model_weights_path()
+        weights_dir = Path(__file__).resolve().parent / "weights"
+        self.model_weights_path = str(
+            ensure_managed_cutie_weights_file(
+                model_weights_path,
+                weights_dir=weights_dir,
+                remote_url=self._REMOTE_MODEL_URL,
+                expected_md5=self._MD5,
+                asset_downloader=ensure_cached_model_asset,
+            )
+        )
 
         self.cutie_model: Optional[CUTIE] = None
         self.inference_core: Optional[InferenceCore] = None
@@ -209,16 +518,16 @@ class CutieEngine:
                 weights_only=True,
             )
 
-            # Handle potential nesting of weights (e.g. 'model', 'state_dict')
-            if 'model' in loaded_weights:
-                weights_to_load = loaded_weights['model']
-            elif 'state_dict' in loaded_weights:
-                weights_to_load = loaded_weights['state_dict']
-            else:
-                weights_to_load = loaded_weights
+            # Handle potential nesting of weights (e.g. 'model', 'weights', 'state_dict')
+            weights_to_load = unwrap_cutie_state_dict(loaded_weights)
 
             # Assumes CUTIE class has a load_weights method
             model.load_weights(weights_to_load)
+            maybe_upgrade_and_cache_compact_cutie_weights(
+                model,
+                weights_to_load,
+                model_path=self.cfg.weights,
+            )
             # Or use model.load_state_dict(weights_to_load) directly
             # if load_weights is just a wrapper.
         except Exception as e:

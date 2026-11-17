@@ -763,6 +763,9 @@ class PredictionExecutionMixin:
                 )
                 if self._is_cutie_tracking_model(model_name):
                     processor_kwargs.update(self._cutie_brightness_contrast_kwargs())
+                    raw_cutie_weight = str(model_weight or "").strip()
+                    if raw_cutie_weight and raw_cutie_weight.lower() != "cutie.pt":
+                        processor_kwargs["model_weights_path"] = raw_cutie_weight
                 if self._is_tapnext_model(model_name, model_weight):
                     processor_kwargs["tapnext_model_path"] = model_weight
                 if self._is_body_part_seg_model(model_name, model_weight):

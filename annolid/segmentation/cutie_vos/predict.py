@@ -31,6 +31,12 @@ from annolid.segmentation.cutie_vos.interactive_utils import (
 from omegaconf import open_dict
 from hydra import compose, initialize
 from annolid.segmentation.cutie_vos.model.cutie import CUTIE
+from annolid.segmentation.cutie_vos.engine import (
+    ensure_managed_cutie_weights_file,
+    maybe_upgrade_and_cache_compact_cutie_weights,
+    resolve_cutie_weights_path,
+    unwrap_cutie_state_dict,
+)
 from annolid.segmentation.cutie_vos.inference.inference_core import InferenceCore
 from annolid.utils.annotation_compat import shape_to_mask
 from annolid.utils.shapes import extract_flow_points_in_mask
@@ -175,6 +181,10 @@ class CutieCoreVideoProcessor:
         self.num_tracking_instances = 0
         current_file_path = os.path.abspath(__file__)
         self.current_folder = os.path.dirname(current_file_path)
+        self.model_weights_path = (
+            kwargs.get("model_weights_path")
+            or kwargs.get("cutie_weights_path")
+        )
         self.device = "cpu" if self.use_cpu_only else get_device()
         logger.info(f"Running device: {self.device}.")
         self.cutie, self.cfg = self._initialize_model()
@@ -1734,15 +1744,16 @@ class CutieCoreVideoProcessor:
                 version_base="1.3.2", config_path="config", job_name="eval_config"
             )
             cfg = compose(config_name="eval_config")
-            model_path = Path(self.current_folder) / "weights" / "cutie-base-mega.pth"
-            if not model_path.exists():
-                model_path = ensure_cached_model_asset(
-                    file_name=model_path.name,
-                    url=self._REMOTE_MODEL_URL,
+            weights_dir = Path(self.current_folder) / "weights"
+            model_path = str(
+                ensure_managed_cutie_weights_file(
+                    getattr(self, "model_weights_path", None),
+                    weights_dir=weights_dir,
+                    remote_url=self._REMOTE_MODEL_URL,
                     expected_md5=self._MD5,
-                    cache_dir=model_path.parent,
+                    asset_downloader=ensure_cached_model_asset,
                 )
-            model_path = str(model_path)
+            )
             max_internal_size = self._resolve_max_internal_size(
                 getattr(self, "max_internal_size", 480)
             )
@@ -1785,7 +1796,14 @@ class CutieCoreVideoProcessor:
             model_weights = torch.load(
                 cfg.weights, map_location=self.device, weights_only=True
             )
-            cutie_model.load_weights(model_weights)
+            unwrapped_weights = unwrap_cutie_state_dict(model_weights)
+            cutie_model.load_weights(unwrapped_weights)
+            maybe_upgrade_and_cache_compact_cutie_weights(
+                cutie_model,
+                unwrapped_weights,
+                model_path=cfg.weights,
+                weights_dir=weights_dir,
+            )
         return cutie_model, cfg
 
     def _save_bbox(self, points, frame_area, label):

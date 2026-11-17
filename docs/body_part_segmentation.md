@@ -116,6 +116,51 @@ For single-frame NumPy arrays in custom pipelines, use `InstanceBodyPartSegmente
 
 ---
 
+## Direct Cutie VOS Propagation with Compact SAM3+DINOv3 Distilled Weights
+
+When propagating seeded whole-instance and/or anatomical body-part masks directly with Cutie's temporal memory engine (`InferenceCore`), Annolid ships a directly compressed and Dual-Teacher (`SAM 3.1` + `DINOv3 ViT-L/16`) distilled Cutie checkpoint while keeping `CUTIE.load_weights` backward-compatible with legacy dense checkpoints:
+
+- **Default & SAM3 Body-Parts Cutie (`Cutie` / `Cutie (SAM3 Body Parts)`)**: loads `annolid/segmentation/cutie_vos/weights/cutie-base-mega.pth` (mirrored at `cutie-sam3-bodyparts.pth`), combining algebraic 48-layer `Conv+BN` folding, HOSVD Tucker-2 spatial-channel factorization, structured `FFN` pruning, and mixed-precision `FP16`/`FP32` serialization (`35.02M -> 15.76M` parameters, `-55.0%`; `133.94 MB -> 30.26 MB` on disk, `4.43x` smaller; `1.64x` faster cold load; `1.48x` faster CPU propagation and up to `2.72x` faster on Apple Silicon `mps`) while improving held-out body-part `J&F` from `0.7798` to `0.8127` (`+0.0329` macro-average across 5 suites).
+- **Fresh-Install & Frozen-Bundle Auto-Bootstrap**: On fresh clones, pip wheels, or frozen desktop apps (`Annolid.app`, which stays strictly read-only by routing downloads/caches to `~/.annolid/workspace/downloads`), selecting either `Cutie` or `Cutie (SAM3 Body Parts)` automatically resolves in order:
+  1. Local `weights/` or `~/.annolid/workspace/downloads/` cache,
+  2. Explicit `ANNOLID_CUTIE_UPGRADED_WEIGHTS_URL` + `ANNOLID_CUTIE_UPGRADED_WEIGHTS_SHA256` override,
+  3. Canonical GitHub Release asset (`SAM3_BODYPARTS_CUTIE_RELEASE_URL` verified against `SAM3_BODYPARTS_CUTIE_SHA256`),
+  4. Seamless fallback to upstream `cutie-base-mega.pth` (MD5-verified) + automatic `< 0.5s` `Conv+BN` folding & HOSVD Tucker-2 `30.26 MB` compression.
+- **Immutable Upstream Backup**: `annolid/segmentation/cutie_vos/weights/cutie-base-mega.orig.pth` preserves the untouched upstream Cutie Base Mega checkpoint (`MD5 a6071de6136982e396851903ab4c083a`) for reproducible head-to-head comparison or legacy fallback.
+
+### Selecting Custom Cutie Weights
+
+- **GUI**: Select **`Cutie`** or **`Cutie (SAM3 Body Parts)`** in the top toolbar AI model selector.
+- **Python API**:
+
+```python
+from annolid.segmentation.cutie_vos.engine import CutieEngine
+from annolid.segmentation.cutie_vos.video_processor import CutieVideoProcessor
+from annolid.tracking.configuration import CutieDinoTrackerConfig
+
+engine = CutieEngine(model_weights_path="cutie-sam3-bodyparts.pth")
+processor = CutieVideoProcessor(
+    "/path/to/video.mp4",
+    model_weights_path="cutie-sam3-bodyparts.pth",
+)
+tracker_cfg = CutieDinoTrackerConfig(
+    cutie_weights_path="cutie-sam3-bodyparts.pth",
+)
+```
+
+### Reproducing Direct Weight Compression, Distillation, and Benchmarks
+
+```bash
+# Back up cutie-base-mega.orig.pth, compress via Conv+BN folding + HOSVD Tucker-2,
+# and distill SAM 3.1 + DINOv3 ViT-L/16 into cutie-base-mega.pth & cutie-sam3-bodyparts.pth
+.venv/bin/python scripts/upgrade_cutie_weights_with_sam3.py
+
+# Evaluate cutie-base-mega.orig.pth vs cutie-base-mega.pth on 9 held-out suites (accuracy + FPS)
+.venv/bin/python scripts/evaluate_cutie_bodyparts_benchmark.py
+```
+
+---
+
 ## Saved Data & Downstream Compatibility Contract
 
 To protect LabelMe compatibility, Qt flag editors, and whole-animal post-processing tools, body-part polygons follow an explicit metadata contract (`annolid.utils.body_part_shapes`):

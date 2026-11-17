@@ -361,6 +361,7 @@ class CutieMaskManager:
             str(self.video_path),
             mem_every=self.config.cutie_mem_every,
             t_max_value=self.config.cutie_max_mem_frames,
+            model_weights_path=getattr(self.config, "cutie_weights_path", None),
             use_cpu_only=use_cpu_only,
             debug=False,
         )
@@ -393,6 +394,7 @@ class CutieMaskManager:
             str(self.video_path),
             mem_every=self.config.cutie_mem_every,
             t_max_value=self.config.cutie_max_mem_frames,
+            model_weights_path=getattr(self.config, "cutie_weights_path", None),
             use_cpu_only=True,
             debug=False,
         )

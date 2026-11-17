@@ -27,6 +27,11 @@ MODEL_REGISTRY = [
     ModelConfig("EfficientTAM_s", "efficienttam_s", "efficienttam_s.pt"),
     ModelConfig("EfficientTAM_ti", "efficienttam_ti", "efficienttam_ti.pt"),
     ModelConfig("Cutie", "Cutie", "Cutie.pt"),
+    ModelConfig(
+        "Cutie (SAM3 Body Parts)",
+        "cutie_sam3_bodyparts",
+        "cutie-sam3-bodyparts.pth",
+    ),
     ModelConfig("CoTracker", "CoTracker", "CoTracker.pt"),
     ModelConfig("CoWTracker", "CoWTracker", "facebook/cowtracker"),
     ModelConfig("TAPNext (ONNX)", "TAPNext", "downloads/tapnext.onnx"),

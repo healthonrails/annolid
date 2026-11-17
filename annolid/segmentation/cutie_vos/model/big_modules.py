@@ -20,15 +20,15 @@ from annolid.segmentation.cutie_vos.model.modules import *
 
 
 class PixelEncoder(nn.Module):
-    def __init__(self, model_cfg: DictConfig):
+    def __init__(self, model_cfg: DictConfig, *, pretrained: bool = True):
         super().__init__()
 
         self.is_resnet = 'resnet' in model_cfg.pixel_encoder.type
         if self.is_resnet:
             if model_cfg.pixel_encoder.type == 'resnet18':
-                network = resnet.resnet18(pretrained=True)
+                network = resnet.resnet18(pretrained=pretrained)
             elif model_cfg.pixel_encoder.type == 'resnet50':
-                network = resnet.resnet50(pretrained=True)
+                network = resnet.resnet50(pretrained=pretrained)
             else:
                 raise NotImplementedError
             self.conv1 = network.conv1
@@ -88,7 +88,7 @@ class KeyProjection(nn.Module):
 
 
 class MaskEncoder(nn.Module):
-    def __init__(self, model_cfg: DictConfig, single_object=False):
+    def __init__(self, model_cfg: DictConfig, single_object=False, *, pretrained: bool = True):
         super().__init__()
         pixel_dim = model_cfg.pixel_dim
         value_dim = model_cfg.value_dim
@@ -99,9 +99,9 @@ class MaskEncoder(nn.Module):
         extra_dim = 1 if single_object else 2
 
         if model_cfg.mask_encoder.type == 'resnet18':
-            network = resnet.resnet18(pretrained=True, extra_dim=extra_dim)
+            network = resnet.resnet18(pretrained=pretrained, extra_dim=extra_dim)
         elif model_cfg.mask_encoder.type == 'resnet50':
-            network = resnet.resnet50(pretrained=True, extra_dim=extra_dim)
+            network = resnet.resnet50(pretrained=pretrained, extra_dim=extra_dim)
         else:
             raise NotImplementedError
         self.conv1 = network.conv1

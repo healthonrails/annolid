@@ -135,10 +135,14 @@ class SegmentedCutieExecutor:
                 cutie_engine_config_overrides["max_kv_memory_mb"] = float(
                     self.config["max_kv_memory_mb"]
                 )
+            model_weights_path = (
+                self.config.get("model_weights_path")
+                or self.config.get("cutie_weights_path")
+            )
             self.cutie_engine = CutieEngine(
                 cutie_config_overrides=cutie_engine_config_overrides,
                 device=self.device,
-                # model_weights_path can be passed from self.config if needed
+                model_weights_path=model_weights_path,
             )
         except Exception as e:
             logger.error(

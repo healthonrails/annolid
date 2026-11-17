@@ -180,6 +180,7 @@ class CutieDinoTrackerConfig:
     cutie_frames_to_propagate: int = 30
     cutie_device: Optional[str] = None
     cutie_max_mem_frames: int = 5
+    cutie_weights_path: Optional[str] = None
     mask_dilation_iterations: int = 2
     mask_dilation_kernel: int = 2
     mask_similarity_bonus: float = 0.12

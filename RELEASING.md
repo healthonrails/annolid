@@ -40,3 +40,14 @@ gh workflow run release.yml --ref main \
 The recovery workflow refuses to build unless `annolid/`, `annolid.spec`, and
 `pyproject.toml` still match the release tag and the tag matches the package
 version. This allows release-tooling repairs without moving a published tag.
+
+## Publishing Model Checkpoint Assets
+
+Model checkpoints are intentionally excluded from PyPI wheels/sdists and desktop bundles (`scripts/check_distribution_artifacts.py`) and downloaded on demand into user-space (`~/.annolid/workspace/downloads`) with SHA-256 verification. `SAM3_BODYPARTS_CUTIE_RELEASE_URL` in `annolid/segmentation/cutie_vos/engine.py` pins an immutable release tag URL (`v1.6.10`) so subsequent code-only releases never break checkpoint downloads. When retraining and publishing a newer Dual-Teacher Cutie checkpoint, upload the new asset to that release tag and update `SAM3_BODYPARTS_CUTIE_RELEASE_URL` and `SAM3_BODYPARTS_CUTIE_SHA256`:
+
+```bash
+gh release upload vX.Y.Z \
+  output/cutie_sam3_bodyparts_eval/release_assets/cutie-sam3-bodyparts.pth \
+  output/cutie_sam3_bodyparts_eval/release_assets/cutie-sam3-bodyparts.pth.sha256 \
+  --clobber
+```

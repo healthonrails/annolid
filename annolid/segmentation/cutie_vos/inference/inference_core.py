@@ -760,7 +760,12 @@ class InferenceCore:
                 idx_mask=idx_mask,
             )
             if mask.device != image.device:
-                mask = mask.to(image.device, non_blocking=True)
+                non_blocking = (
+                    image.device.type == "cuda"
+                    and mask.device.type == "cpu"
+                    and mask.is_pinned()
+                )
+                mask = mask.to(image.device, non_blocking=non_blocking)
 
         self.curr_ti += 1
 

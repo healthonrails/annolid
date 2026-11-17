@@ -27,11 +27,27 @@ def resize_frame_for_inference(
     )
 
 
+def _allow_non_blocking_host_transfer(tensor: torch.Tensor, target_device) -> bool:
+    """Only enable async host->device copies for pinned CUDA host buffers.
+
+    On PyTorch MPS, ``non_blocking=True`` on unpinned temporary CPU tensors can
+    dispatch an async Metal blit after the caller drops the last Python reference
+    to the CPU tensor, corrupting input frames or seed masks non-deterministically.
+    """
+    resolved = torch.device(target_device)
+    return (
+        resolved.type == "cuda"
+        and tensor.device.type == "cpu"
+        and tensor.is_pinned()
+    )
+
+
 def image_to_torch(frame: np.ndarray, device: str = 'cuda'):
     # frame: H*W*3 numpy array
     frame_chw = np.ascontiguousarray(frame.transpose(2, 0, 1))
     frame_tensor = torch.from_numpy(frame_chw).float()
-    return frame_tensor.to(device, non_blocking=True).div_(255)
+    non_blocking = _allow_non_blocking_host_transfer(frame_tensor, device)
+    return frame_tensor.to(device, non_blocking=non_blocking).div_(255)
 
 
 def torch_prob_to_numpy_mask(prob: torch.Tensor):
