@@ -100,15 +100,23 @@ const FUR_FRAGMENT_MAIN_GLSL = /* glsl */ `
     float anisoSecondary = pow(sinTH2, max(10.0, specExp * 0.45)) * specScale * 0.45 * keyFacing;
     float anisoRim       = pow(sinTHR, max(14.0, specExp * 0.60)) * specScale * 0.35 * rimFacing;
 
-    // Subtle dorsal-to-ventral / root-to-tip tonal richness without crushing or bleaching base albedo
+    // Subtle dorsal-to-ventral / root-to-tip tonal richness + cylindrical velvet flank roll-off
+    // so both top-down snow-white BALB/c and jet-black C57BL/6 coats show crisp 3D body roundness.
     float dorsalFactor = clamp(nrm.y * 0.5 + 0.5, 0.0, 1.0);
     vec3 fiberTint = mix(uFurRootColor, uFurTipColor, dorsalFactor);
+    float coatLuma = dot(fiberTint, vec3(0.299, 0.587, 0.114));
+    float viewFacing = clamp(abs(dot(viewDir, nrm)), 0.0, 1.0);
+    float cylRollOff = mix(0.84, 1.04, pow(viewFacing, 0.58));
+    float paleMask = smoothstep(0.45, 0.80, coatLuma);
 
-    vec3 pigmentSafeCuticle = mix(fiberTint * 1.4 + vec3(0.03), vec3(0.75, 0.74, 0.72), 0.35);
-    vec3 sheenCuticle = pigmentSafeCuticle * (anisoPrimary + anisoRim * 0.55);
-    vec3 sheenCortex  = fiberTint * (anisoSecondary + graze * specScale * 0.22);
+    vec3 pigmentSafeCuticle = mix(fiberTint * 1.45 + vec3(0.042), vec3(0.78, 0.77, 0.75), 0.38);
+    vec3 sheenCuticle = pigmentSafeCuticle * (anisoPrimary * 1.15 + anisoRim * 0.62);
+    vec3 sheenCortex  = fiberTint * (anisoSecondary + graze * specScale * 0.24);
 
-    gl_FragColor.rgb = gl_FragColor.rgb * mix(vec3(1.0), fiberTint, 0.10) + sheenCuticle + sheenCortex;
+    gl_FragColor.rgb = gl_FragColor.rgb
+      * mix(vec3(1.0), fiberTint, 0.12)
+      * mix(1.0, cylRollOff, 0.55 + 0.45 * paleMask)
+      + sheenCuticle + sheenCortex;
   }
 `;
 
@@ -236,6 +244,121 @@ const AO_FRAGMENT_MAIN_GLSL = /* glsl */ `
     ao = mix(1.0 - clamp(uAOIntensity, 0.0, 1.0), 1.0, pow(ao, 0.6));
     gl_FragColor.rgb *= mix(uAOColor, vec3(1.0), ao);
   }
+`;
+
+// ── 4b. Spinal Flexure & Concertina Squash-and-Stretch ───────
+export const SPINE_DEFORM_GLSL = /* glsl */ `
+  uniform float uSpineBend;
+  uniform float uSpineSCurve;
+  uniform float uSpineArch;
+  uniform float uAxialStretch;
+  uniform float uSpineHalfLen;
+
+  vec3 annolidDeformSpinePos(vec3 p, out float outPsi) {
+    float L = max(0.5, uSpineHalfLen);
+    float stretch = clamp(uAxialStretch, -0.22, 0.26);
+    float bend = clamp(uSpineBend, -0.68, 0.68);
+    float sCurve = clamp(uSpineSCurve, -0.28, 0.28);
+    float arch = clamp(uSpineArch, -0.12, 0.20);
+    float s = clamp(p.z / L, -1.25, 1.25);
+
+    float waistBell = exp(-pow((s - 0.10) / 0.65, 2.0));
+    float girthScale = inversesqrt(max(0.55, 1.0 + stretch * (0.55 + 0.45 * waistBell)));
+
+    float zStretched = p.z * (1.0 + stretch);
+    float z0 = -0.15 * L * (1.0 + stretch);
+    float dz = zStretched - z0;
+    float xi = s + 0.15;
+    float xiClamped = clamp(xi, -1.0, 1.0);
+    float phi = bend * xi * (0.62 + 0.38 * min(1.2, abs(xi)))
+      + sCurve * sin(3.14159265 * xiClamped);
+
+    float absPhi = abs(phi);
+    float sinc = absPhi > 1e-4 ? (sin(phi) / phi) : (1.0 - (phi * phi) / 6.0);
+    float oneMinusCosOverPhi = absPhi > 1e-4 ? ((1.0 - cos(phi)) / phi) : (0.5 * phi);
+
+    float xc = dz * oneMinusCosOverPhi;
+    float zc = z0 + dz * sinc;
+    float psi = phi * 0.88;
+    outPsi = psi;
+    float cosPsi = cos(psi);
+    float sinPsi = sin(psi);
+    float xScaled = p.x * girthScale;
+
+    float archBell = exp(-pow((s + 0.05) / 0.55, 2.0));
+    return vec3(
+      xc + xScaled * cosPsi,
+      p.y * (1.0 - 0.24 * stretch) + arch * archBell,
+      zc - xScaled * sinPsi
+    );
+  }
+`;
+
+const SPINE_DEFAULTNORMAL_REPLACE_GLSL = /* glsl */ `
+  vec3 transformedNormal = objectNormal;
+  #ifdef USE_TANGENT
+    vec3 transformedTangent = objectTangent;
+  #endif
+  #ifdef USE_BATCHING
+    mat3 bm = mat3( batchingMatrix );
+    transformedNormal /= vec3( dot( bm[ 0 ], bm[ 0 ] ), dot( bm[ 1 ], bm[ 1 ] ), dot( bm[ 2 ], bm[ 2 ] ) );
+    transformedNormal = bm * transformedNormal;
+    #ifdef USE_TANGENT
+      transformedTangent = bm * transformedTangent;
+    #endif
+  #endif
+  #ifdef USE_INSTANCING
+    mat3 im = mat3( instanceMatrix );
+    transformedNormal /= vec3( dot( im[ 0 ], im[ 0 ] ), dot( im[ 1 ], im[ 1 ] ), dot( im[ 2 ], im[ 2 ] ) );
+    transformedNormal = im * transformedNormal;
+    #ifdef USE_TANGENT
+      transformedTangent = im * transformedTangent;
+    #endif
+  #endif
+  vec3 annolidBaseLocalPos = transformed;
+  #ifdef USE_INSTANCING
+    annolidBaseLocalPos = ( instanceMatrix * vec4( transformed, 1.0 ) ).xyz;
+  #endif
+  float annolidNormPsi = 0.0;
+  annolidDeformSpinePos( annolidBaseLocalPos, annolidNormPsi );
+  float annolidCosN = cos( annolidNormPsi );
+  float annolidSinN = sin( annolidNormPsi );
+  transformedNormal = vec3(
+    transformedNormal.x * annolidCosN + transformedNormal.z * annolidSinN,
+    transformedNormal.y,
+    -transformedNormal.x * annolidSinN + transformedNormal.z * annolidCosN
+  );
+  transformedNormal = normalMatrix * transformedNormal;
+  #ifdef FLIP_SIDED
+    transformedNormal = - transformedNormal;
+  #endif
+  #ifdef USE_TANGENT
+    transformedTangent = ( modelViewMatrix * vec4( transformedTangent, 0.0 ) ).xyz;
+    #ifdef FLIP_SIDED
+      transformedTangent = - transformedTangent;
+    #endif
+  #endif
+`;
+
+const SPINE_PROJECT_REPLACE_GLSL = /* glsl */ `
+  vec4 mvPosition = vec4( transformed, 1.0 );
+  #ifdef USE_BATCHING
+    mvPosition = batchingMatrix * mvPosition;
+  #endif
+  #ifdef USE_INSTANCING
+    mvPosition = instanceMatrix * mvPosition;
+  #endif
+  float annolidSpinePsi = 0.0;
+  mvPosition.xyz = annolidDeformSpinePos( mvPosition.xyz, annolidSpinePsi );
+  vec3 annolidDeformedLocalPos = mvPosition.xyz;
+  mvPosition = modelViewMatrix * mvPosition;
+  gl_Position = projectionMatrix * mvPosition;
+`;
+
+const SPINE_WORLDPOS_POST_GLSL = /* glsl */ `
+  #if defined( USE_ENVMAP ) || defined( DISTANCE ) || defined ( USE_SHADOWMAP ) || defined ( USE_TRANSMISSION ) || NUM_SPOT_LIGHT_COORDS > 0
+    worldPosition = modelMatrix * vec4( annolidDeformedLocalPos, 1.0 );
+  #endif
 `;
 
 // ── 5. Post-Processing Quad ──────────────────────────────────
@@ -670,6 +793,105 @@ export class AnnolidShaders {
                 shader.fragmentShader, '#include <dithering_fragment>',
                 AO_FRAGMENT_MAIN_GLSL
             );
+        });
+
+        return material;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 4b. SPINAL FLEXURE & CONCERTINA SQUASH-AND-STRETCH SHADER
+    // ═══════════════════════════════════════════════════════════
+    applySpinalFlexShader(material, opts = {}) {
+        const bend = opts.bend ?? 0.0;
+        const sCurve = opts.sCurve ?? 0.0;
+        const arch = opts.arch ?? 0.0;
+        const stretch = opts.stretch ?? 0.0;
+        const halfLen = opts.halfLen ?? 2.68;
+
+        const record = this._ensureRecord(material);
+        if (!record.applied.spine) {
+            record.uniforms.uSpineBend = { value: bend };
+            record.uniforms.uSpineSCurve = { value: sCurve };
+            record.uniforms.uSpineArch = { value: arch };
+            record.uniforms.uAxialStretch = { value: stretch };
+            record.uniforms.uSpineHalfLen = { value: halfLen };
+        }
+
+        this._chainCompile(material, 'spine', (shader, uniforms) => {
+            shader.uniforms.uSpineBend = uniforms.uSpineBend;
+            shader.uniforms.uSpineSCurve = uniforms.uSpineSCurve;
+            shader.uniforms.uSpineArch = uniforms.uSpineArch;
+            shader.uniforms.uAxialStretch = uniforms.uAxialStretch;
+            shader.uniforms.uSpineHalfLen = uniforms.uSpineHalfLen;
+
+            shader.vertexShader = AnnolidShaders._inject(
+                shader.vertexShader,
+                'void main() {',
+                SPINE_DEFORM_GLSL,
+                'before'
+            );
+            if (
+                shader.vertexShader.includes('#include <defaultnormal_vertex>')
+                && shader.vertexShader.includes('#include <begin_vertex>')
+            ) {
+                // Ensure `transformed` exists before normal deformation by moving begin_vertex ahead if needed,
+                // or evaluate directly from `position`. Using `position` avoids ordering dependence!
+                const normalChunk = SPINE_DEFAULTNORMAL_REPLACE_GLSL.replace(
+                    /transformed(\s*;|\s*,)/g,
+                    'position$1'
+                );
+                shader.vertexShader = shader.vertexShader.replace(
+                    '#include <defaultnormal_vertex>',
+                    normalChunk
+                );
+            }
+            if (shader.vertexShader.includes('#include <project_vertex>')) {
+                shader.vertexShader = shader.vertexShader.replace(
+                    '#include <project_vertex>',
+                    SPINE_PROJECT_REPLACE_GLSL
+                );
+                if (shader.vertexShader.includes('#include <worldpos_vertex>')) {
+                    shader.vertexShader = AnnolidShaders._inject(
+                        shader.vertexShader,
+                        '#include <worldpos_vertex>',
+                        SPINE_WORLDPOS_POST_GLSL
+                    );
+                }
+                const epilogue = [];
+                if (shader.vertexShader.includes('vFurWorldPos')) {
+                    epilogue.push(`
+                      {
+                        float cF = cos(annolidSpinePsi);
+                        float sF = sin(annolidSpinePsi);
+                        vec3 rotObjN = vec3(
+                          objectNormal.x * cF + objectNormal.z * sF,
+                          objectNormal.y,
+                          -objectNormal.x * sF + objectNormal.z * cF
+                        );
+                        vec3 rotFlow = vec3(
+                          uFurFlowDir.x * cF + uFurFlowDir.z * sF,
+                          uFurFlowDir.y,
+                          -uFurFlowDir.x * sF + uFurFlowDir.z * cF
+                        );
+                        vFurWorldNormal = (modelMatrix * vec4(rotObjN, 0.0)).xyz;
+                        vFurWorldFlow   = (modelMatrix * vec4(rotFlow, 0.0)).xyz;
+                        vFurWorldPos    = (modelMatrix * vec4(annolidDeformedLocalPos, 1.0)).xyz;
+                      }
+                    `);
+                }
+                if (shader.vertexShader.includes('vAOWorldY')) {
+                    epilogue.push('vAOWorldY = (modelMatrix * vec4(annolidDeformedLocalPos, 1.0)).y;');
+                }
+                if (shader.vertexShader.includes('vMicroWorldPos')) {
+                    epilogue.push('vMicroWorldPos = (modelMatrix * vec4(annolidDeformedLocalPos, 1.0)).xyz;');
+                }
+                if (epilogue.length > 0) {
+                    shader.vertexShader = shader.vertexShader.replace(
+                        /\}\s*$/,
+                        `${epilogue.join('\n')}\n}`
+                    );
+                }
+            }
         });
 
         return material;

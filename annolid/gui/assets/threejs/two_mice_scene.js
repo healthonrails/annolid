@@ -5,9 +5,16 @@ import {
   GUI
 } from './annolid_threejs_runtime.js';
 
-import { AnnolidShaders } from './annolid_shaders.js';
+import { AnnolidShaders, SPINE_DEFORM_GLSL } from './annolid_shaders.js';
 import { createMouseModel } from './two_mice_model.js';
-import { createSeededRandom, FixedStepClock, wallNormalForce, STANCE_CONTACT_LIMITS } from './two_mice_simulation.js';
+import {
+  createSeededRandom,
+  FixedStepClock,
+  wallNormalForce,
+  STANCE_CONTACT_LIMITS,
+  evaluateSpinePoint,
+  computeOrientedWallMargin,
+} from './two_mice_simulation.js';
 
 const datasetQuery = new URLSearchParams(window.location.search);
 const DATASET_CAPTURE = datasetQuery.get('dataset') === '1';
@@ -21,6 +28,11 @@ const GROOMING_QA = datasetQuery.get('grooming_qa');
 const ANATOMY_QA = datasetQuery.get('anatomy_qa');
 const DATASET_CAMERA_VIEW = datasetQuery.get('camera_view');
 const DATASET_SCENARIO = datasetQuery.get('scenario');
+const DATASET_COAT_PAIR = datasetQuery.get('coat_pair') || '';
+const DATASET_LIGHTING = datasetQuery.get('lighting') || '';
+const DATASET_OCCLUDER = datasetQuery.get('occluder') || '';
+const DATASET_ARENA = datasetQuery.get('arena') || '';
+const DATASET_HEADSTAGE = datasetQuery.get('headstage') || '';
 const ANATOMY_QA_VIEWS = new Set(['ears', 'ears-front', 'torso-side', 'torso-front']);
 const IS_ANATOMY_QA = ANATOMY_QA_VIEWS.has(ANATOMY_QA);
 const IS_TORSO_ANATOMY_QA = ANATOMY_QA === 'torso-side'
@@ -66,7 +78,9 @@ controls.enabled = !DATASET_CAPTURE;
 controls.enableDamping = true;
 controls.dampingFactor = 0.05;
 controls.target.copy(cameraTarget);
-controls.maxPolarAngle = Math.PI / 2 - 0.02;
+controls.maxPolarAngle = (DATASET_CAPTURE && DATASET_CAMERA_VIEW === 'bottom-up')
+  ? Math.PI
+  : (Math.PI / 2 - 0.02);
 controls.minDistance = 3.5;
 controls.maxDistance = 70;
 
@@ -97,6 +111,7 @@ const {
   labFloorAlbedoMap,
   labFloorRoughnessMap,
   labFloorNormalMap,
+  homeCageBeddingMaps,
   urineSpotTexture,
   shadowSmudgeTexture,
   fleshMatBase,
@@ -120,6 +135,7 @@ const {
   FUR_DETAIL,
   generateMultiLayerFur,
   buildMouseEar,
+  createTailBaseFur,
   disposeSubject,
   disposeSharedResources,
 } = createMouseModel(THREE, annolidShaders, appearanceRandom);
@@ -210,16 +226,20 @@ function getMouseCollisionDiscs(mouse) {
   const heading = mouse.heading.lengthSq() > 1e-8
     ? mouse.heading
     : new THREE.Vector2(Math.sin(mouse.mesh.rotation.y), Math.cos(mouse.mesh.rotation.y));
+  const leftAxisX = heading.y;
+  const leftAxisZ = -heading.x;
   const bodyScale = THREE.MathUtils.clamp(mouse.guiParams.bodyLength ?? 1.0, 0.65, 1.6);
   const snoutScale = THREE.MathUtils.clamp(mouse.guiParams.snoutLength ?? 1.0, 0.65, 1.6);
   const widthScale = THREE.MathUtils.clamp(mouse.guiParams.chonkiness ?? 1.0, 0.65, 1.6);
   return MOUSE_COLLISION_DISC_LAYOUT.map(({ offset, radius }) => {
     const headExtension = offset > 2.4 ? (snoutScale - 1.0) * 0.55 : 0.0;
-    const scaledOffset = offset * bodyScale + headExtension;
+    const sp = evaluateSpinePoint(0, 0, offset, mouse.spineFlex, PROP.bodyLength);
+    const forwardDist = sp.z * bodyScale + headExtension;
+    const lateralDist = sp.x * widthScale;
     return {
-      x: mouse.mesh.position.x + heading.x * scaledOffset,
-      z: mouse.mesh.position.z + heading.y * scaledOffset,
-      radius: radius * widthScale,
+      x: mouse.mesh.position.x + heading.x * forwardDist + leftAxisX * lateralDist,
+      z: mouse.mesh.position.z + heading.y * forwardDist + leftAxisZ * lateralDist,
+      radius: radius * widthScale * sp.girthScale,
     };
   });
 }
@@ -645,7 +665,8 @@ function resolveAllMouseContacts(subjects, dt = 0.016) {
   for (const mouse of subjects) mouse.solveFootPlantConstraints(dt);
   for (const mouse of subjects) mouse.solveRearSupportConstraints();
   for (const mouse of subjects) mouse.solveForelimbBehaviorConstraints();
-  for (const mouse of subjects) mouse.updateTailGeometry(subjects);
+  for (const mouse of subjects) mouse.updateTailGeometry(subjects, dt);
+  for (const mouse of subjects) mouse.updateHeadstageTether?.();
   for (const mouse of subjects) mouse.updateTrackingGeometry();
 }
 
@@ -745,6 +766,28 @@ class ExpertMouse {
     this.yawVel = 0;
     this.bodyDyn = { y: 1.10, vy: 0, pitch: 0, pitchV: 0, roll: 0, rollV: 0 };
     this.tailDyn = { sway: 0, swayV: 0, lift: 0, liftV: 0 };
+    this.spineFlex = {
+      bend: 0, bendV: 0,
+      sCurve: 0, sCurveV: 0,
+      arch: 0, archV: 0,
+      stretch: 0, stretchV: 0,
+    };
+    this.spineHeadYaw = 0;
+    this.tailWorldPoints = null;
+    this.tailPrevRootWorld = new THREE.Vector3(1e6, 1e6, 1e6);
+    this.boutState = {
+      mode: 'explore-walk',
+      timer: 0.75 + (this.timeOffset % 1.35),
+      scanPhase: (this.timeOffset * 0.37) % (Math.PI * 2),
+    };
+    this.socialState = {
+      mode: 'none',
+      duration: 0,
+      cooldown: 0,
+      targetWorld: new THREE.Vector2(0, 0),
+    };
+    this.earPinAmount = 0;
+    this.yawErr = 0;
     this.behaviorTimer = 0.8 + random() * 2.4;
     this.pauseTimer = random() * 0.9;
     this.socialContact = false;
@@ -850,37 +893,53 @@ class ExpertMouse {
     // ═══ APPLY GLSL SHADERS ═══
     applySkinShaderStack(this.fleshMat, 0.52);
     this.surfaceMat = createCoatMaterial(furColor, skinColor, density, params);
-    if (params.enableContactAO !== false) {
-      annolidShaders.applyContactAO(this.surfaceMat, {
-        groundY: 0.0,
-        radius: Math.min(0.72, params.aoRadius ?? 0.72),
-        intensity: Math.min(0.18, (params.aoIntensity ?? 0.18) * 0.9),
-        color: [0.018, 0.014, 0.010]
-      });
+    this.bodyMat = createCoatMaterial(furColor, skinColor, density, params);
+    this.mesh.userData.ownedMaterials.push(this.surfaceMat, this.bodyMat);
+    for (const coatMat of [this.surfaceMat, this.bodyMat]) {
+      if (params.enableContactAO !== false) {
+        annolidShaders.applyContactAO(coatMat, {
+          groundY: 0.0,
+          radius: Math.min(0.72, params.aoRadius ?? 0.72),
+          intensity: Math.min(0.18, (params.aoIntensity ?? 0.18) * 0.9),
+          color: [0.018, 0.014, 0.010]
+        });
+      }
+      coatMat.userData.annolidShaderScale = {
+        sssThickness: 0.35,
+        sssBacklight: 0.40,
+        aoRadiusCap: 0.72,
+        aoIntensityScale: 0.9,
+        aoIntensityCap: 0.18,
+        microScaleFloor: 70.0,
+        microStrengthScale: 0.32,
+        microStrengthCap: 0.024,
+      };
     }
-    this.surfaceMat.userData.annolidShaderScale = {
-      sssThickness: 0.35,
-      sssBacklight: 0.40,
-      aoRadiusCap: 0.72,
-      aoIntensityScale: 0.9,
-      aoIntensityCap: 0.18,
-      microScaleFloor: 70.0,
-      microStrengthScale: 0.32,
-      microStrengthCap: 0.024,
-    };
+    annolidShaders.applySpinalFlexShader(this.bodyMat, { halfLen: PROP.bodyLength });
+    this.bodyDepthMat = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
+    annolidShaders.applySpinalFlexShader(this.bodyDepthMat, { halfLen: PROP.bodyLength });
+    this.mesh.userData.ownedMaterials.push(this.bodyDepthMat);
 
     // --- RIG HIERARCHY ---
     this.rig = new THREE.Group();
     this.mesh.add(this.rig);
 
-    // BODY
+    // BODY (with GPU spinal flexure + concertina squash-and-stretch)
     const furLenMul = THREE.MathUtils.clamp(params.furLength ?? 1.0, 0.3, 2.5);
-    this.bodyMesh = new THREE.Mesh(bodyGeo, this.surfaceMat);
+    this.bodyMesh = new THREE.Mesh(bodyGeo, this.bodyMat);
+    this.bodyMesh.customDepthMaterial = this.bodyDepthMat;
     this.bodyMesh.scale.set(chonk, chonk, params.bodyLength || 1.0);
     this.bodyMesh.castShadow = true;
     this.rig.add(this.bodyMesh);
     this.bodyFur = generateMultiLayerFur(deformBody, density, furColor, false, params);
     this.bodyFur.name = 'body-fur-coat';
+    this.spinalMaterials = [this.bodyMat, this.bodyDepthMat];
+    for (const furLayer of this.bodyFur.children) {
+      if (furLayer?.material) {
+        annolidShaders.applySpinalFlexShader(furLayer.material, { halfLen: PROP.bodyLength });
+        this.spinalMaterials.push(furLayer.material);
+      }
+    }
     this.bodyMesh.add(this.bodyFur);
 
     // Tapered cervical mantle: broad at the shoulders, narrower under the
@@ -1322,6 +1381,8 @@ class ExpertMouse {
     this.hindR = createHindlimbChain(this.surfaceMat, this.fleshMat, strain, density, furColor, 'R', legLengthScale, legThicknessScale);
     this.rig.add(this.hindR);
     this.hindRestZ = this.hindL.position.z;
+    this.hindRestPosL = this.hindL.position.clone();
+    this.hindRestPosR = this.hindR.position.clone();
 
     // Forelimbs
     this.armL = createForelimbChain(this.surfaceMat, this.fleshMat, strain, density, furColor, 'L', legLengthScale, legThicknessScale);
@@ -1329,6 +1390,8 @@ class ExpertMouse {
     this.armR = createForelimbChain(this.surfaceMat, this.fleshMat, strain, density, furColor, 'R', legLengthScale, legThicknessScale);
     this.rig.add(this.armR);
     this.armRestZ = this.armL.position.z;
+    this.armRestPosL = this.armL.position.clone();
+    this.armRestPosR = this.armR.position.clone();
 
     // References for animation
     this.thighL = this.hindL._thigh;
@@ -1444,7 +1507,71 @@ class ExpertMouse {
     this.tailRoot = new THREE.Mesh(tailRootGeo, tailRootMat);
     this.tailRoot.castShadow = true;
     this.tailRoot.scale.set(1.0, 0.74, 1.16);
+    const tailBaseFur = createTailBaseFur(furColor, density);
+    this.tailBaseFur = tailBaseFur;
+    this.tailRoot.add(tailBaseFur);
     this.mesh.add(this.tailRoot);
+
+    // Optional cranial implant headstage + flexible commutator tether (inspired by CalMS21 / miniscope rigs)
+    this.hasHeadstage = false;
+    this.headstageGroup = new THREE.Group();
+    this.headstageGroup.name = 'cranial-implant-headstage';
+    this.headstageGroup.position.set(0, 0.45, 0.04);
+    this.headstageGroup.visible = false;
+    const cementMat = new THREE.MeshStandardMaterial({
+      color: 0xe9e6de,
+      roughness: 0.64,
+      metalness: 0.0,
+      emissive: 0xffffff,
+      emissiveIntensity: 0.03,
+    });
+    const headbarMat = new THREE.MeshStandardMaterial({
+      color: 0xf7f6f2,
+      roughness: 0.40,
+      metalness: 0.06,
+      emissive: 0xffffff,
+      emissiveIntensity: 0.06,
+    });
+    const holeMat = new THREE.MeshStandardMaterial({ color: 0x18191d, roughness: 0.65, metalness: 0.25 });
+    const scopeMat = new THREE.MeshStandardMaterial({ color: 0x1b1c20, roughness: 0.36, metalness: 0.35 });
+    this.mesh.userData.ownedMaterials.push(cementMat, headbarMat, holeMat, scopeMat);
+
+    const cementCap = new THREE.Mesh(new THREE.SphereGeometry(0.32, 18, 12), cementMat);
+    cementCap.scale.set(1.12, 0.42, 1.24);
+    this.headstageGroup.add(cementCap);
+
+    const wingBar = new THREE.Mesh(new THREE.BoxGeometry(1.36, 0.042, 0.29), headbarMat);
+    wingBar.position.set(0, 0.072, -0.02);
+    wingBar.castShadow = true;
+    this.headstageGroup.add(wingBar);
+    for (const sx of [-0.49, 0.49]) {
+      const screwHole = new THREE.Mesh(new THREE.CylinderGeometry(0.066, 0.066, 0.050, 14), holeMat);
+      screwHole.position.set(sx, 0.074, -0.02);
+      this.headstageGroup.add(screwHole);
+    }
+    const scopeBody = new THREE.Mesh(new THREE.CylinderGeometry(0.088, 0.105, 0.20, 12), scopeMat);
+    scopeBody.position.set(0, 0.16, -0.03);
+    scopeBody.castShadow = true;
+    this.headstageGroup.add(scopeBody);
+    const strainCollar = new THREE.Mesh(new THREE.CylinderGeometry(0.058, 0.074, 0.12, 10), scopeMat);
+    strainCollar.position.set(0, 0.28, -0.03);
+    this.headstageGroup.add(strainCollar);
+    this.headstageConnector = new THREE.Object3D();
+    this.headstageConnector.position.set(0, 0.34, -0.03);
+    this.headstageGroup.add(this.headstageConnector);
+    this.head.add(this.headstageGroup);
+
+    this.tetherSegments = 26;
+    const tetherMat = new THREE.MeshStandardMaterial({ color: 0x141518, roughness: 0.44, metalness: 0.10 });
+    this.mesh.userData.ownedMaterials.push(tetherMat);
+    const tetherGeo = createDynamicTailTubeGeometry(this.tetherSegments, 8);
+    this.tetherMesh = new THREE.Mesh(tetherGeo, tetherMat);
+    this.tetherMesh.name = 'commutator-tether-cable';
+    this.tetherMesh.castShadow = true;
+    this.tetherMesh.frustumCulled = false;
+    this.tetherMesh.visible = false;
+    this.tetherPoints = Array.from({ length: this.tetherSegments + 1 }, () => new THREE.Vector3());
+    this.mesh.add(this.tetherMesh);
 
     // POSE TRACKING SKELETON
     this.poseNodes = {};
@@ -1527,6 +1654,140 @@ class ExpertMouse {
     this.earR.scale.copy(this.baseEarScaleR).multiplyScalar(ratio);
   }
 
+  setHeadstageEnabled(enabled) {
+    const active = Boolean(enabled);
+    this.hasHeadstage = active;
+    if (this.headstageGroup) this.headstageGroup.visible = active;
+    if (this.tetherMesh) this.tetherMesh.visible = active;
+    if (active) this.updateHeadstageTether();
+  }
+
+  updateHeadstageTether() {
+    if (!this.hasHeadstage || !this.tetherMesh || !this.headstageConnector) return;
+    this.mesh.updateMatrixWorld(true);
+    const startWorld = new THREE.Vector3();
+    this.headstageConnector.getWorldPosition(startWorld);
+    // Overhead commutator swivel offset slightly toward the front-left of the cage
+    // so the cable sweeps naturally across the frame just like mouse083_task1_annotator1.mp4.
+    const endWorld = new THREE.Vector3(-15.4, 23.5, 11.6);
+    const dx = endWorld.x - startWorld.x;
+    const dz = endWorld.z - startWorld.z;
+    const horizLen = Math.hypot(dx, dz) || 1.0;
+    const perpX = -dz / horizLen;
+    const perpZ = dx / horizLen;
+    // Natural slack arc visible from overhead (avoids dead-straight ruler line)
+    const headCarryX = -Math.sin(this.yawAngle) * 1.35 + perpX * 1.85;
+    const headCarryZ = -Math.cos(this.yawAngle) * 1.35 + perpZ * 1.85;
+    const ctrl1 = startWorld.clone().add(new THREE.Vector3(
+      dx * 0.22 + headCarryX,
+      2.4,
+      dz * 0.22 + headCarryZ
+    ));
+    const ctrl2 = startWorld.clone().lerp(endWorld, 0.62);
+    ctrl2.x += perpX * 1.15;
+    ctrl2.z += perpZ * 1.15;
+    ctrl2.y -= 2.0;
+    const curve = new THREE.CubicBezierCurve3(startWorld, ctrl1, ctrl2, endWorld);
+    for (let i = 0; i <= this.tetherSegments; i++) {
+      curve.getPoint(i / this.tetherSegments, this.tetherPoints[i]);
+      this.mesh.worldToLocal(this.tetherPoints[i]);
+    }
+    updateDynamicTailTubeGeometry(this.tetherMesh.geometry, this.tetherPoints, 0.42);
+    // Keep tether thickness uniform rather than tapered like a biological tail
+    const state = this.tetherMesh.geometry.userData.tailTube;
+    if (state) {
+      const posArr = this.tetherMesh.geometry.attributes.position.array;
+      const nrmArr = this.tetherMesh.geometry.attributes.normal.array;
+      const colArr = this.tetherMesh.geometry.attributes.color.array;
+      const cableR = 0.082;
+      for (let ring = 0; ring < state.ringCount; ring++) {
+        const pt = this.tetherPoints[ring];
+        for (let side = 0; side <= state.radialSegments; side++) {
+          const vOff = (ring * state.ringStride + side) * 3;
+          const rx = nrmArr[vOff];
+          const ry = nrmArr[vOff + 1];
+          const rz = nrmArr[vOff + 2];
+          posArr[vOff] = pt.x + rx * cableR;
+          posArr[vOff + 1] = pt.y + ry * cableR;
+          posArr[vOff + 2] = pt.z + rz * cableR;
+          colArr[vOff] = 1.0;
+          colArr[vOff + 1] = 1.0;
+          colArr[vOff + 2] = 1.0;
+        }
+      }
+      this.tetherMesh.geometry.attributes.position.needsUpdate = true;
+      this.tetherMesh.geometry.attributes.color.needsUpdate = true;
+    }
+  }
+
+  applySpinalRigTransforms(chonk, bodyLenScale) {
+    const poseDamp = Math.max(
+      0.0,
+      (1.0 - (this.groomAmount || 0) * 0.94) * (1.0 - (this.rearAmount || 0) * 0.92)
+    );
+    const flex = {
+      bend: this.spineFlex.bend * poseDamp,
+      sCurve: this.spineFlex.sCurve * poseDamp,
+      arch: this.spineFlex.arch * poseDamp,
+      stretch: this.spineFlex.stretch * poseDamp,
+    };
+    this.effectiveSpineFlex = flex;
+    const uniformsPayload = {
+      uSpineBend: flex.bend,
+      uSpineSCurve: flex.sCurve,
+      uSpineArch: flex.arch,
+      uAxialStretch: flex.stretch,
+      uSpineHalfLen: PROP.bodyLength,
+    };
+    for (const mat of this.spinalMaterials || []) {
+      annolidShaders.updateUniforms(mat, uniformsPayload);
+    }
+
+    const spNeck = evaluateSpinePoint(0, this.neckRestPosition.y / Math.max(0.4, chonk), this.neckRestPosition.z, flex, PROP.bodyLength);
+    this.neckMesh.position.set(spNeck.x * chonk, spNeck.y * chonk, spNeck.z * bodyLenScale);
+    this.neckMesh.rotation.set(
+      this.neckRestRotation.x,
+      this.neckRestRotation.y + spNeck.yaw,
+      this.neckRestRotation.z
+    );
+
+    const spHead = evaluateSpinePoint(0, this.headRestPosition.y / Math.max(0.4, chonk), this.headRestPosition.z, flex, PROP.bodyLength);
+    this.headGroup.position.set(spHead.x * chonk, spHead.y * chonk, spHead.z * bodyLenScale);
+    this.spineHeadYaw = spHead.yaw;
+
+    const spArmL = evaluateSpinePoint(this.armRestPosL.x, this.armRestPosL.y, this.armRestZ, flex, PROP.bodyLength);
+    const spArmR = evaluateSpinePoint(this.armRestPosR.x, this.armRestPosR.y, this.armRestZ, flex, PROP.bodyLength);
+    this.armL.position.set(spArmL.x * chonk, spArmL.y, spArmL.z * bodyLenScale);
+    this.armR.position.set(spArmR.x * chonk, spArmR.y, spArmR.z * bodyLenScale);
+    this.armL.rotation.y = spArmL.yaw;
+    this.armR.rotation.y = spArmR.yaw;
+
+    const spHindL = evaluateSpinePoint(this.hindRestPosL.x, this.hindRestPosL.y, this.hindRestZ, flex, PROP.bodyLength);
+    const spHindR = evaluateSpinePoint(this.hindRestPosR.x, this.hindRestPosR.y, this.hindRestZ, flex, PROP.bodyLength);
+    this.hindL.position.set(spHindL.x * chonk, spHindL.y, spHindL.z * bodyLenScale);
+    this.hindR.position.set(spHindR.x * chonk, spHindR.y, spHindR.z * bodyLenScale);
+    this.hindL.rotation.y = spHindL.yaw * 0.55;
+    this.hindR.rotation.y = spHindR.yaw * 0.55;
+
+    if (this.bellyFurAnchor) {
+      const spBelly = evaluateSpinePoint(0, -0.43, this.bellyRestZ, flex, PROP.bodyLength);
+      this.bellyFurAnchor.position.set(spBelly.x * chonk, spBelly.y, spBelly.z * bodyLenScale);
+      this.bellyFurAnchor.rotation.z = -spBelly.yaw;
+    }
+    if (this.poseNodes.spine1) {
+      const sp1 = evaluateSpinePoint(0, 0.9, 0.2, flex, PROP.bodyLength);
+      this.poseNodes.spine1.position.set(sp1.x * chonk, sp1.y * chonk, sp1.z * bodyLenScale);
+    }
+    if (this.poseNodes.spine2) {
+      const sp2 = evaluateSpinePoint(0, 0.8, -PROP.bodyLength * 0.41, flex, PROP.bodyLength);
+      this.poseNodes.spine2.position.set(sp2.x * chonk, sp2.y * chonk, sp2.z * bodyLenScale);
+    }
+    if (this.poseNodes.tailbase) {
+      const spTb = evaluateSpinePoint(0, 0.3, -PROP.bodyLength * 0.93, flex, PROP.bodyLength);
+      this.poseNodes.tailbase.position.set(spTb.x * chonk, spTb.y * chonk, spTb.z * bodyLenScale);
+    }
+  }
+
   syncLiveProportions(otherMice = []) {
     const chonk = this.guiParams.chonkiness || 1.0;
     const bodyLenScale = this.guiParams.bodyLength || 1.0;
@@ -1544,20 +1805,16 @@ class ExpertMouse {
     this.snoutTip.position.z = PROP.snoutLength * 0.992;
     this.snoutTip.scale.set(0.84, 0.72, this.guiParams.snoutLength * 0.68);
     if (this.mouth) this.mouth.position.z = PROP.snoutLength * 0.935;
-    this.neckMesh.position.z = this.neckRestPosition.z * bodyLenScale;
-    this.headGroup.position.y = this.headRestPosition.y;
-    this.headGroup.position.z = this.headRestPosition.z * bodyLenScale;
     this.armRestZ = PROP.bodyLength * 0.70;
     this.hindRestZ = -PROP.bodyLength * 0.36;
     this.bellyRestZ = PROP.bodyLength * 0.56;
-    this.armL.position.z = this.armRestZ * bodyLenScale;
-    this.armR.position.z = this.armRestZ * bodyLenScale;
-    this.hindL.position.z = this.hindRestZ * bodyLenScale;
-    this.hindR.position.z = this.hindRestZ * bodyLenScale;
-    if (this.bellyFurAnchor) this.bellyFurAnchor.position.z = this.bellyRestZ * bodyLenScale;
-    if (this.poseNodes.spine2) this.poseNodes.spine2.position.z = -PROP.bodyLength * 0.41 * bodyLenScale;
-    if (this.poseNodes.tailbase) this.poseNodes.tailbase.position.z = -PROP.bodyLength * 0.93 * bodyLenScale;
-    this.updateTailGeometry(otherMice);
+    this.armRestPosL.set(0.52 * PROP.shoulderWidth / 0.90, -0.08, this.armRestZ);
+    this.armRestPosR.set(-0.52 * PROP.shoulderWidth / 0.90, -0.08, this.armRestZ);
+    this.hindRestPosL.set(0.62 * PROP.haunchWidth / 1.04, -0.04, this.hindRestZ);
+    this.hindRestPosR.set(-0.62 * PROP.haunchWidth / 1.04, -0.04, this.hindRestZ);
+    this.applySpinalRigTransforms(chonk, bodyLenScale);
+    this.updateTailGeometry(otherMice, 0);
+    this.updateHeadstageTether();
     if (this.trackingGroup.visible) this.updateTrackingGeometry();
   }
 
@@ -2169,7 +2426,7 @@ class ExpertMouse {
     }
   }
 
-  updateTailGeometry(otherMice = []) {
+  updateTailGeometry(otherMice = [], dt = 0) {
     const { lateralAccel, turnRate, forwardAccel } = this.contactFrame;
     const clampedLatAccel = THREE.MathUtils.clamp(lateralAccel || 0, -18.0, 18.0);
     const clampedTurnRate = THREE.MathUtils.clamp(turnRate || 0, -12.0, 12.0);
@@ -2177,35 +2434,114 @@ class ExpertMouse {
     const speedNorm = Math.min(this.velocity.length() / Math.max(this.maxSpeed, 0.1), 1.0);
     const restDrape = (1.0 - speedNorm * 0.55) * 0.34 + this.rearAmount * 0.12;
     const swayPolarity = (this.trackId || 1) % 2 === 0 ? -1 : 1;
+    const chonk = this.guiParams.chonkiness || 1.0;
     const bodyLenScale = this.guiParams.bodyLength || 1.0;
-    const tailBase = new THREE.Vector3(0, -0.16, -PROP.bodyLength * 0.90 * bodyLenScale);
+    const spSacral = evaluateSpinePoint(
+      0,
+      -0.16 / Math.max(0.4, chonk),
+      -PROP.bodyLength * 0.90,
+      this.spineFlex,
+      PROP.bodyLength
+    );
+    const tailBase = new THREE.Vector3(
+      spSacral.x * chonk,
+      spSacral.y * chonk,
+      spSacral.z * bodyLenScale
+    );
     this.rig.updateMatrix();
     tailBase.applyMatrix4(this.rig.matrix);
-    const tailCurve = [];
+    this.mesh.updateMatrixWorld(true);
+
+    const tailBaseWorld = tailBase.clone();
+    this.mesh.localToWorld(tailBaseWorld);
     const tailLenMul = this.guiParams.tailLength;
     const segLen = this.tailSegLen * tailLenMul;
+
+    // Build ideal caudal rest/muscle curve in mesh-local space aligned with sacral spine yaw
+    const sacralYaw = spSacral.yaw;
+    const cosSac = Math.cos(sacralYaw);
+    const sinSac = Math.sin(sacralYaw);
+    const idealLocal = [];
     for (let i = 0; i <= this.tailCount; i++) {
       const p = i / this.tailCount;
       const lag = p * p;
       const transmit = Math.pow(p, 1.35);
       const midCurve = p * (1.0 - p);
+      const travelWave = Math.sin(
+        this.locomotionTime * 3.4 * this.motion.tailWaveFreqMul - p * 3.8
+      ) * 0.10 * speedNorm * this.motion.tailWaveAmpMul * transmit;
       const bodyForceX = (
-        this.bodyDyn.roll * 0.34 + clampedLatAccel * 0.010 - clampedTurnRate * 0.018
+        this.bodyDyn.roll * 0.34 + clampedLatAccel * 0.012 - clampedTurnRate * 0.024
       ) * transmit;
       const bodyForceY = (
         this.bodyDyn.pitch * 0.32 - clampedFwdAccel * 0.008
       ) * transmit;
-      const naturalSway = Math.sin(p * Math.PI * 1.35) * 0.075 * swayPolarity * (1.0 - speedNorm * 0.45);
-      const waveX = this.tailDyn.sway * lag + bodyForceX + naturalSway
+      const naturalSway = Math.sin(p * Math.PI * 1.35) * 0.085 * swayPolarity * (1.0 - speedNorm * 0.45);
+      const localX = this.tailDyn.sway * lag + bodyForceX + naturalSway + travelWave
         + midCurve * 0.14 * Math.sign(this.tailDyn.sway || bodyForceX || swayPolarity);
       const distalCurl = Math.pow(Math.max(0, p - 0.72) / 0.28, 2.0) * 0.030;
       let waveY = -i * PROP.tailSag * p - restDrape * Math.pow(p, 1.15)
         + this.tailDyn.lift * lag + bodyForceY + midCurve * 0.05 + distalCurl;
       waveY = Math.max(waveY, -1.35);
-      tailCurve.push(new THREE.Vector3(waveX, waveY, -i * segLen));
+      const localZ = -i * segLen;
+      idealLocal.push(new THREE.Vector3(
+        tailBase.x + localX * cosSac + localZ * sinSac,
+        tailBase.y + waveY,
+        tailBase.z - localX * sinSac + localZ * cosSac
+      ));
     }
 
-    const offset = tailBase.clone().sub(tailCurve[0]);
+    // World-space viscoelastic path-trailing chain: preserves S/J curves along the mouse's trajectory
+    const rootJump = tailBaseWorld.distanceTo(this.tailPrevRootWorld);
+    const shouldReinitWorld = !this.tailWorldPoints
+      || this.tailWorldPoints.length !== this.tailCount + 1
+      || rootJump > 1.35
+      || CONTACT_QA === 'tail';
+    const tailCurve = [];
+    if (shouldReinitWorld) {
+      this.tailWorldPoints = idealLocal.map(pt => {
+        const wp = pt.clone();
+        this.mesh.localToWorld(wp);
+        return wp;
+      });
+      for (let i = 0; i <= this.tailCount; i++) {
+        tailCurve.push(idealLocal[i].clone());
+      }
+    } else {
+      const stepDt = THREE.MathUtils.clamp(dt, 0, 0.05);
+      this.tailWorldPoints[0].copy(tailBaseWorld);
+      const idealWorld = new THREE.Vector3();
+      const segVec = new THREE.Vector3();
+      if (!guiParams.isPaused && stepDt > 0) {
+        for (let i = 1; i <= this.tailCount; i++) {
+          const p = i / this.tailCount;
+          idealWorld.copy(idealLocal[i]);
+          this.mesh.localToWorld(idealWorld);
+
+          // 1. Follow-the-leader advection along previous world trajectory
+          segVec.copy(this.tailWorldPoints[i]).sub(this.tailWorldPoints[i - 1]);
+          if (segVec.lengthSq() < 1e-8) {
+            segVec.copy(idealWorld).sub(this.tailWorldPoints[i - 1]);
+            if (segVec.lengthSq() < 1e-8) segVec.set(0, 0, -1);
+          }
+          segVec.normalize().multiplyScalar(segLen);
+          this.tailWorldPoints[i].copy(this.tailWorldPoints[i - 1]).add(segVec);
+
+          // 2. Proximal-to-distal caudal muscular tone (root aligns with sacrum; tip trails fluidly)
+          const rate = THREE.MathUtils.lerp(13.5, 2.6, Math.pow(p, 0.68));
+          const muscleBlend = (1.0 - Math.exp(-rate * stepDt))
+            * THREE.MathUtils.lerp(0.82, 0.22, p);
+          this.tailWorldPoints[i].lerp(idealWorld, muscleBlend);
+        }
+      }
+      for (let i = 0; i <= this.tailCount; i++) {
+        const lp = this.tailWorldPoints[i].clone();
+        this.mesh.worldToLocal(lp);
+        tailCurve.push(lp);
+      }
+    }
+    this.tailPrevRootWorld.copy(tailBaseWorld);
+
     const avoidanceAxisX = this.heading.y;
     const avoidanceAxisZ = -this.heading.x;
     const obstacleBodies = otherMice
@@ -2231,7 +2567,6 @@ class ExpertMouse {
     const worldStart = new THREE.Vector3();
     const worldEnd = new THREE.Vector3();
     const delta = new THREE.Vector3();
-    this.mesh.updateMatrixWorld(true);
 
     const tailRadiusAt = index => {
       const p = index / this.tailCount;
@@ -2422,7 +2757,6 @@ class ExpertMouse {
     };
 
     for (let i = 0; i <= this.tailCount; i++) {
-      tailCurve[i].add(offset);
       clampPointToArena(tailCurve[i], i);
     }
     const fixedRoot = tailCurve[0].clone();
@@ -2551,6 +2885,12 @@ class ExpertMouse {
       tailCurve,
       this.guiParams.tailThickness
     );
+    if (this.tailWorldPoints && this.tailWorldPoints.length === this.tailCount + 1) {
+      for (let i = 0; i <= this.tailCount; i++) {
+        this.tailWorldPoints[i].copy(tailCurve[i]);
+        this.mesh.localToWorld(this.tailWorldPoints[i]);
+      }
+    }
     const isTailVisible = this.tailMesh.visible;
     if (this.tailRoot) this.tailRoot.visible = isTailVisible;
     const tailMidIndex = Math.max(1, Math.floor(this.tailCount * 0.4));
@@ -3104,28 +3444,59 @@ class ExpertMouse {
     if (!guiParams.isPaused) {
       this.behaviorTimer -= dt;
       this.pauseTimer = Math.max(0, this.pauseTimer - dt);
+      this.socialState.cooldown = Math.max(0, this.socialState.cooldown - dt);
+      this.boutState.timer -= dt;
+      this.boutState.scanPhase += dt * 3.4;
+
       if (this.behaviorTimer <= 0) {
-        if (random() < 0.52) {
-          this.pauseTimer = 0.35 + random() * 1.35;
+        if (random() < 0.44) {
+          this.pauseTimer = 0.30 + random() * 0.95;
         }
-        this.behaviorTimer = 1.4 + random() * 4.2;
+        this.behaviorTimer = 1.3 + random() * 3.4;
         if (random() < 0.22) this.wallFollowDir *= -1;
       }
+
+      // Saltatory bout-and-pause rhythm (stop-sniff -> stretch-attend -> explore-walk -> dart-trot)
+      if (this.boutState.timer <= 0 && this.rearing.mode === 'none' && this.grooming.mode === 'none') {
+        const roll = random();
+        if (this.pauseTimer > 0.12) {
+          this.boutState.mode = roll < 0.38 ? 'stretch-attend' : 'pause-sniff';
+          this.boutState.timer = 0.32 + random() * 0.55;
+        } else if (roll < 0.20) {
+          this.boutState.mode = 'pause-sniff';
+          this.boutState.timer = 0.32 + random() * 0.65;
+          this.pauseTimer = Math.max(this.pauseTimer, this.boutState.timer * 0.85);
+        } else if (roll < 0.36) {
+          this.boutState.mode = 'stretch-attend';
+          this.boutState.timer = 0.28 + random() * 0.48;
+        } else if (roll < 0.68) {
+          this.boutState.mode = 'explore-walk';
+          this.boutState.timer = 0.85 + random() * 1.65;
+        } else {
+          this.boutState.mode = 'dart-trot';
+          this.boutState.timer = 0.48 + random() * 0.92;
+        }
+      }
     }
-    const behaviorPause = this.pauseTimer > 0;
+    const behaviorPause = this.pauseTimer > 0 || this.boutState.mode === 'pause-sniff';
     const rearingActive = this.rearing.mode !== 'none';
     const groomingActive = this.grooming.mode !== 'none';
     const isPausing = behaviorPause || rearingActive || groomingActive;
+    const boutSpeedFactor = this.boutState.mode === 'dart-trot'
+      ? 1.18
+      : (this.boutState.mode === 'stretch-attend'
+        ? 0.30
+        : (this.boutState.mode === 'pause-sniff' ? 0.08 : 0.72));
 
     // --- FORCE ACCUMULATION ---
     this.force.set(0, 0);
     let burst = Math.sin(t * 1.5 + this.burstPhase);
     burst = 0.7 + 0.3 * Math.max(0, burst);
     const driveStrength = burst * this.guiParams.wanderForce * (
-      rearingActive || groomingActive ? 0.04 : (isPausing ? 0.18 : 1.0)
+      rearingActive || groomingActive ? 0.04 : (isPausing ? 0.14 : boutSpeedFactor)
     );
 
-    // Thigmotaxis
+    // Thigmotaxis & anticipatory corner steering
     const px = this.mesh.position.x, pz = this.mesh.position.z;
     const wallDists = [
       { dist: ENCLOSURE_HALF_X - px, normalX: -1, normalZ: 0, tangentX: 0, tangentZ: 1 },
@@ -3141,16 +3512,25 @@ class ExpertMouse {
       const wallForce = wallNormalForce(w.dist, driveStrength, wallAttr, w === nearest);
       this.force.x += w.normalX * wallForce;
       this.force.y += w.normalZ * wallForce;
+      // Smooth anticipatory turn along wall tangent when approaching head-on
+      const facingIntoWall = -(this.heading.x * w.normalX + this.heading.y * w.normalZ);
+      if (w.dist < 5.2 && facingIntoWall > 0.25 && !rearingActive && !groomingActive) {
+        const turnUrgency = THREE.MathUtils.clamp((5.2 - w.dist) / 3.4, 0, 1) * facingIntoWall;
+        this.force.x += (w.tangentX * this.wallFollowDir * 1.65 + w.normalX * 0.55)
+          * driveStrength * turnUrgency * 1.8;
+        this.force.y += (w.tangentZ * this.wallFollowDir * 1.65 + w.normalZ * 0.55)
+          * driveStrength * turnUrgency * 1.8;
+      }
     }
     const tX = nearest.tangentX * this.wallFollowDir;
     const tZ = nearest.tangentZ * this.wallFollowDir;
-    const nwF = Math.max(0, 1.0 - wallDist / 5.0);
-    this.force.x += tX * driveStrength * (0.5 + nwF * 1.5);
-    this.force.y += tZ * driveStrength * (0.5 + nwF * 1.5);
+    const nwF = Math.max(0, 1.0 - wallDist / 4.8);
+    this.force.x += tX * driveStrength * (0.52 + nwF * 1.65);
+    this.force.y += tZ * driveStrength * (0.52 + nwF * 1.65);
 
     if (!guiParams.isPaused && !groomingActive) {
-      this.force.x += (Math.sin(t * 2.3) * 0.3 + (random() - 0.5) * 0.2) * driveStrength * 0.3;
-      this.force.y += (Math.cos(t * 1.7) * 0.3 + (random() - 0.5) * 0.2) * driveStrength * 0.3;
+      this.force.x += (Math.sin(t * 2.3) * 0.34 + (random() - 0.5) * 0.24) * driveStrength * 0.34;
+      this.force.y += (Math.cos(t * 1.7) * 0.34 + (random() - 0.5) * 0.24) * driveStrength * 0.34;
     }
 
     // Anti-stuck
@@ -3175,12 +3555,16 @@ class ExpertMouse {
       }
     }
 
-    // Mouse-to-mouse interaction uses oriented body clearance so social
-    // investigation stops before either elongated silhouette penetrates.
-    const SOCIAL_RADIUS = 8.2;
+    // Directed resident-intruder social interactions (nose-to-nose, anogenital follow, flank huddle, breakaway)
+    const SOCIAL_RADIUS = 11.2;
     let isColliding = false;
     let nearestSocialDist = Infinity;
     this.socialContact = false;
+    let activeSocialMode = 'none';
+    const myBodyScale = this.guiParams.bodyLength || 1.0;
+    const mySnoutX = this.mesh.position.x + this.heading.x * 3.35 * myBodyScale;
+    const mySnoutZ = this.mesh.position.z + this.heading.y * 3.35 * myBodyScale;
+
     for (const other of otherMice) {
       if (other === this) continue;
       const dx = this.mesh.position.x - other.mesh.position.x;
@@ -3191,85 +3575,172 @@ class ExpertMouse {
       isColliding = bodyResult.touched || bodyClearance < 0.04 || isColliding;
       if (distSq > 0.001) {
         const dist = Math.sqrt(distSq);
-        const toOtherX = -dx / dist;
-        const toOtherZ = -dz / dist;
+        const otherScale = other.guiParams.bodyLength || 1.0;
+        const otherSnoutX = other.mesh.position.x + other.heading.x * 3.35 * otherScale;
+        const otherSnoutZ = other.mesh.position.z + other.heading.y * 3.35 * otherScale;
+        const otherRumpX = other.mesh.position.x - other.heading.x * 2.25 * otherScale;
+        const otherRumpZ = other.mesh.position.z - other.heading.y * otherScale * 2.25;
+
+        const dNoseToSnout = Math.hypot(mySnoutX - otherSnoutX, mySnoutZ - otherSnoutZ);
+        const dNoseToRump = Math.hypot(mySnoutX - otherRumpX, mySnoutZ - otherRumpZ);
+        const isResident = (this.trackId || 1) === 1;
+        const preferAnogenital = (dNoseToRump < dNoseToSnout * 0.92)
+          || (isResident && dNoseToRump < 6.4 && this.socialState.cooldown <= 0);
+
+        const aimX = preferAnogenital ? otherRumpX : (bodyClearance < 0.95 ? other.mesh.position.x : otherSnoutX);
+        const aimZ = preferAnogenital ? otherRumpZ : (bodyClearance < 0.95 ? other.mesh.position.z : otherSnoutZ);
+        const toAimX = aimX - mySnoutX;
+        const toAimZ = aimZ - mySnoutZ;
+        const aimDist = Math.max(1e-4, Math.hypot(toAimX, toAimZ));
+        const dirAimX = toAimX / aimDist;
+        const dirAimZ = toAimZ / aimDist;
+
         if (dist < nearestSocialDist) {
           nearestSocialDist = dist;
-          this.socialTarget.set(toOtherX, toOtherZ);
+          this.socialTarget.set(dirAimX, dirAimZ);
+          this.socialState.targetWorld.set(aimX, aimZ);
         }
-        if (dist < SOCIAL_RADIUS) {
-          const socialBand = THREE.MathUtils.clamp((SOCIAL_RADIUS - dist) / 4.6, 0, 1);
-          const facing = this.heading.x * toOtherX + this.heading.y * toOtherZ;
-          if (bodyClearance > 0.75) {
-            const curiosity = (0.22 + 0.32 * Math.max(0, Math.sin(time * 0.78 + this.timeOffset * 0.13))) * socialBand;
-            const faceGate = facing > -0.55 ? 1.0 : 0.35;
-            this.force.x += toOtherX * driveStrength * curiosity * faceGate;
-            this.force.y += toOtherZ * driveStrength * curiosity * faceGate;
+
+        if (dist < SOCIAL_RADIUS && !rearingActive && !groomingActive) {
+          const socialBand = THREE.MathUtils.clamp((SOCIAL_RADIUS - dist) / 6.2, 0, 1);
+          const headDot = this.heading.x * other.heading.x + this.heading.y * other.heading.y;
+
+          if (this.socialState.cooldown > 0 && !isResident) {
+            // Energetic post-contact evasive breakaway along enclosure perimeter & nestlet
+            activeSocialMode = 'evasive-dart';
+            this.force.x += (tX * 1.55 - dirAimX * 0.65) * this.guiParams.wanderForce * 2.10;
+            this.force.y += (tZ * 1.55 - dirAimZ * 0.65) * this.guiParams.wanderForce * 2.10;
+          } else if (preferAnogenital && bodyClearance > 0.08) {
+            // Resident/initiator briskly trails partner tail-base in active anogenital pursuit
+            activeSocialMode = 'anogenital-follow';
+            const followGain = (isResident ? 1.85 : 1.05) * (0.45 + 0.55 * socialBand);
+            this.force.x += dirAimX * this.guiParams.wanderForce * followGain;
+            this.force.y += dirAimZ * this.guiParams.wanderForce * followGain;
+            if (dNoseToRump < 2.2) {
+              this.socialContact = true;
+              if (other.velocity.lengthSq() > 0.6) {
+                this.velocity.lerp(other.velocity, 0.08);
+              }
+            }
+          } else if (headDot < -0.25 && dNoseToSnout < 5.5) {
+            // Mutual nose-to-nose stretch-attend sniff
+            activeSocialMode = 'nose-to-nose';
+            if (bodyClearance > 0.32) {
+              this.force.x += dirAimX * driveStrength * 0.85 * socialBand;
+              this.force.y += dirAimZ * driveStrength * 0.85 * socialBand;
+            } else if (DATASET_SCENARIO === 'social_huddle') {
+              this.velocity.multiplyScalar(0.92);
+            }
+            if (dNoseToSnout < 2.4) this.socialContact = true;
+          } else if (bodyClearance > 0.65) {
+            const curiosity = (0.34 + 0.42 * Math.max(0, Math.sin(time * 0.84 + this.timeOffset * 0.13))) * socialBand;
+            this.force.x += dirAimX * driveStrength * curiosity;
+            this.force.y += dirAimZ * driveStrength * curiosity;
           }
+
           if (bodyClearance < 1.35) {
+            if (activeSocialMode === 'none') activeSocialMode = 'flank-huddle';
             const side = this.dir;
-            this.force.x += -toOtherZ * side * socialBand * driveStrength * 0.14;
-            this.force.y += toOtherX * side * socialBand * driveStrength * 0.14;
-            this.velocity.multiplyScalar(bodyClearance < 0.45 ? 0.965 : 0.988);
+            this.force.x += -dirAimZ * side * socialBand * driveStrength * 0.22;
+            this.force.y += dirAimX * side * socialBand * driveStrength * 0.22;
+            if (DATASET_SCENARIO === 'social_huddle') {
+              this.velocity.multiplyScalar(bodyClearance < 0.40 ? 0.955 : 0.985);
+            }
             this.socialContact = true;
           }
         }
       }
     }
+    this.socialState.mode = activeSocialMode;
+    if (!guiParams.isPaused) {
+      if (this.socialContact) {
+        this.socialState.duration += dt;
+        const breakThreshold = DATASET_SCENARIO === 'calms_resident_intruder' ? 0.65 : 1.45;
+        if (this.socialState.duration > breakThreshold && (this.trackId || 1) > 1 && DATASET_SCENARIO !== 'social_huddle') {
+          this.socialState.cooldown = 1.65 + random() * 1.1;
+          this.socialState.duration = 0;
+          this.boutState.mode = 'dart-trot';
+          this.boutState.timer = 1.15;
+        }
+      } else {
+        this.socialState.duration = Math.max(0, this.socialState.duration - dt * 1.5);
+      }
+    }
     this.socialDistance = nearestSocialDist;
 
     const preSpeed = this.velocity.length();
+    const isCloseCropDataset = DATASET_CAPTURE && (
+      DATASET_CAMERA_VIEW === 'top-close'
+      || DATASET_CAMERA_VIEW === 'oblique-close'
+      || DATASET_CAMERA_VIEW === 'bottom-up'
+    );
+    const speedCapScale = isCloseCropDataset ? 0.56 : 1.0;
 
-    // Cruise assist: keep mice from decaying to full stop after startup.
+    // Saltatory target-speed assist: brisk darts, moderate walks, genuine stationary sniff pauses
     if (!guiParams.isPaused && !isPausing) {
-      const cruiseBase = this.socialContact ? 0.16 : 0.30;
-      const cruiseTarget = Math.max(this.guiParams.maxSpeed * cruiseBase, this.socialContact ? 0.75 : 1.8);
+      const modeCruise = this.socialState.mode === 'evasive-dart'
+        ? 0.96
+        : (this.socialState.mode === 'anogenital-follow'
+          ? 0.78
+          : (this.socialContact && DATASET_SCENARIO === 'social_huddle'
+            ? 0.16
+            : (this.boutState.mode === 'dart-trot'
+              ? 0.92
+              : (this.boutState.mode === 'stretch-attend' ? 0.24 : 0.54))));
+      const cruiseTarget = Math.max(
+        this.guiParams.maxSpeed * speedCapScale * modeCruise,
+        this.socialContact ? 0.85 : 1.65
+      );
       if (preSpeed < cruiseTarget) {
         const deficit = (cruiseTarget - preSpeed) / Math.max(cruiseTarget, 1e-3);
         const cruiseDir = this.heading.lengthSq() > 1e-6
           ? this.heading.clone().normalize()
           : new THREE.Vector2(Math.cos(t), Math.sin(t)).normalize();
-        const cruiseBoost = (this.guiParams.wanderForce * 5.0 + 10.0) * deficit;
+        const cruiseBoost = (this.guiParams.wanderForce * 5.2 + 12.0) * deficit;
         this.force.x += cruiseDir.x * cruiseBoost;
         this.force.y += cruiseDir.y * cruiseBoost;
       }
     }
 
-    // Drag (lighter at very low speed so movement does not stall).
-    const dragC = this.guiParams.dragCoeff * (isPausing ? 3.0 : (preSpeed < 1.0 ? 0.45 : 1.0));
+    // Drag (firmer braking during investigative pauses so feet plant crisply without skating).
+    const dragC = this.guiParams.dragCoeff * (
+      isPausing ? 4.2 : (this.boutState.mode === 'dart-trot' || this.socialState.mode === 'evasive-dart' ? 0.72 : (preSpeed < 0.9 ? 0.55 : 0.92))
+    );
     this.force.x -= this.velocity.x * dragC;
     this.force.y -= this.velocity.y * dragC;
 
-    // Low-speed rescue: inject motion if the mouse lingers too long.
+    // Low-speed rescue: inject motion only if stalled unintentionally outside a pause/social bout.
     if (!guiParams.isPaused && !isPausing && !this.socialContact) {
-      if (preSpeed < 0.8) this.lowSpeedTimer += dt;
+      if (preSpeed < 0.85) this.lowSpeedTimer += dt;
       else this.lowSpeedTimer = Math.max(0, this.lowSpeedTimer - dt * 0.5);
-      if (this.lowSpeedTimer > 1.0) {
+      if (this.lowSpeedTimer > 1.05) {
         const rescueDir = new THREE.Vector2(
-          nearest.tangentX * this.wallFollowDir + nearest.normalX * 0.6,
-          nearest.tangentZ * this.wallFollowDir + nearest.normalZ * 0.6
+          nearest.tangentX * this.wallFollowDir + nearest.normalX * 0.55,
+          nearest.tangentZ * this.wallFollowDir + nearest.normalZ * 0.55
         );
         if (rescueDir.lengthSq() < 1e-6) {
           if (this.heading.lengthSq() > 1e-6) rescueDir.copy(this.heading);
           else rescueDir.set(Math.cos(t), Math.sin(t));
         }
         rescueDir.normalize();
-        const kickMag = 32.0;
+        const kickMag = 36.0;
         this.force.x += rescueDir.x * kickMag;
         this.force.y += rescueDir.y * kickMag;
         this.lowSpeedTimer = 0;
       }
     }
 
-    // Integration
+    // Integration (responsive murine mass scaling so darting bursts accelerate crisply)
     if (!guiParams.isPaused) {
       if (behaviorPause && !rearingActive && !groomingActive) {
-        this.velocity.multiplyScalar(Math.exp(-7.0 * dt));
+        this.velocity.multiplyScalar(Math.exp(-9.0 * dt));
       }
-      const ax = this.force.x / (this.mass * 1000);
-      const az = this.force.y / (this.mass * 1000);
+      const effectiveInertia = this.mass * (isCloseCropDataset ? 1000 : 360);
+      const ax = this.force.x / effectiveInertia;
+      const az = this.force.y / effectiveInertia;
       this.velocity.x += ax * dt; this.velocity.y += az * dt;
-      const uMS = this.guiParams.maxSpeed;
+      const dartMul = (this.boutState.mode === 'dart-trot' || this.socialState.mode === 'evasive-dart') ? 1.24 : 1.0;
+      const uMS = this.guiParams.maxSpeed * speedCapScale * dartMul;
       const cS = this.velocity.length();
       if (cS > uMS) this.velocity.multiplyScalar(uMS / cS);
       this.mesh.position.x += this.velocity.x * dt;
@@ -3277,25 +3748,40 @@ class ExpertMouse {
       this.locomotionTime += this.velocity.length() * dt;
     }
 
-    // Hard boundary clamp with tangent turn selection (avoid wall-sticking).
+    // Orientation-aware wall clearance: allows realistic close wall thigmotaxis (~1.55u flank clearance)
+    // and corner exploration while keeping snout and rump strictly inside enclosure walls.
     let hitWall = false;
     let hitXWall = false;
     let hitZWall = false;
-    // Keep full body+head away from walls (not just the body center point).
-    const baseBodyMargin = Math.max(
-      3.8,
-      3.2 * this.guiParams.bodyLength + 0.9 * this.guiParams.snoutLength
-    );
-    const uprightMarginReduction = this.rearing.mode === 'wall-supported'
-      ? this.rearAmount * 2.10
+    const chonk = this.guiParams.chonkiness || 1.0;
+    const bodyLenScale = this.guiParams.bodyLength || 1.0;
+    const snoutLenScale = this.guiParams.snoutLength || 1.0;
+    const uprightReduction = this.rearing.mode === 'wall-supported'
+      ? this.rearAmount * 1.45
       : 0;
-    const HM = baseBodyMargin - uprightMarginReduction;
-    if (this.mesh.position.x > ENCLOSURE_HALF_X - HM) { this.mesh.position.x = ENCLOSURE_HALF_X - HM; this.velocity.x = -Math.abs(this.velocity.x) * 0.25; hitWall = true; hitXWall = true; }
-    if (this.mesh.position.x < -ENCLOSURE_HALF_X + HM) { this.mesh.position.x = -ENCLOSURE_HALF_X + HM; this.velocity.x = Math.abs(this.velocity.x) * 0.25; hitWall = true; hitXWall = true; }
-    if (this.mesh.position.z > ENCLOSURE_HALF_Z - HM) { this.mesh.position.z = ENCLOSURE_HALF_Z - HM; this.velocity.y = -Math.abs(this.velocity.y) * 0.25; hitWall = true; hitZWall = true; }
-    if (this.mesh.position.z < -ENCLOSURE_HALF_Z + HM) { this.mesh.position.z = -ENCLOSURE_HALF_Z + HM; this.velocity.y = Math.abs(this.velocity.y) * 0.25; hitWall = true; hitZWall = true; }
+    const marginPosX = Math.max(1.25, computeOrientedWallMargin(
+      this.heading.x, this.heading.y, -1, 0, bodyLenScale, snoutLenScale, chonk, this.spineFlex.stretch
+    ) - uprightReduction);
+    const marginNegX = Math.max(1.25, computeOrientedWallMargin(
+      this.heading.x, this.heading.y, 1, 0, bodyLenScale, snoutLenScale, chonk, this.spineFlex.stretch
+    ) - uprightReduction);
+    const marginPosZ = Math.max(1.25, computeOrientedWallMargin(
+      this.heading.x, this.heading.y, 0, -1, bodyLenScale, snoutLenScale, chonk, this.spineFlex.stretch
+    ) - uprightReduction);
+    const marginNegZ = Math.max(1.25, computeOrientedWallMargin(
+      this.heading.x, this.heading.y, 0, 1, bodyLenScale, snoutLenScale, chonk, this.spineFlex.stretch
+    ) - uprightReduction);
+    const baseBodyMargin = computeOrientedWallMargin(
+      this.heading.x, this.heading.y, nearest.normalX, nearest.normalZ,
+      bodyLenScale, snoutLenScale, chonk, this.spineFlex.stretch
+    );
+
+    if (this.mesh.position.x > ENCLOSURE_HALF_X - marginPosX) { this.mesh.position.x = ENCLOSURE_HALF_X - marginPosX; this.velocity.x = -Math.abs(this.velocity.x) * 0.22; hitWall = true; hitXWall = true; }
+    if (this.mesh.position.x < -ENCLOSURE_HALF_X + marginNegX) { this.mesh.position.x = -ENCLOSURE_HALF_X + marginNegX; this.velocity.x = Math.abs(this.velocity.x) * 0.22; hitWall = true; hitXWall = true; }
+    if (this.mesh.position.z > ENCLOSURE_HALF_Z - marginPosZ) { this.mesh.position.z = ENCLOSURE_HALF_Z - marginPosZ; this.velocity.y = -Math.abs(this.velocity.y) * 0.22; hitWall = true; hitZWall = true; }
+    if (this.mesh.position.z < -ENCLOSURE_HALF_Z + marginNegZ) { this.mesh.position.z = -ENCLOSURE_HALF_Z + marginNegZ; this.velocity.y = Math.abs(this.velocity.y) * 0.22; hitWall = true; hitZWall = true; }
     if (hitWall) {
-      const minTurnSpeed = Math.max(this.guiParams.maxSpeed * 0.45, 2.2);
+      const minTurnSpeed = Math.max(this.guiParams.maxSpeed * 0.42, 2.0);
       const clearPosX = ENCLOSURE_HALF_X - this.mesh.position.x;
       const clearNegX = ENCLOSURE_HALF_X + this.mesh.position.x;
       const clearPosZ = ENCLOSURE_HALF_Z - this.mesh.position.z;
@@ -3339,9 +3825,9 @@ class ExpertMouse {
       this.updateRearingBehavior(time, dt, behaviorContext);
     }
 
-    // Heading
+    // Heading with responsive murine pivot agility
     const speed = this.velocity.length();
-    let isMoving = speed > 0.3
+    let isMoving = speed > 0.26
       && this.rearing.mode === 'none'
       && this.grooming.mode === 'none';
     if (!guiParams.isPaused) {
@@ -3353,21 +3839,29 @@ class ExpertMouse {
         );
       } else if (isMoving) {
         targetYaw = Math.atan2(this.velocity.x, this.velocity.y);
-      } else if (this.force.lengthSq() > 1e-6) {
+      } else if (this.socialContact && this.socialTarget.lengthSq() > 1e-6) {
+        // Slowly orient forebody toward social partner while investigating
+        const socialYaw = Math.atan2(this.socialTarget.x, this.socialTarget.y);
+        const diff = Math.atan2(Math.sin(socialYaw - this.yawAngle), Math.cos(socialYaw - this.yawAngle));
+        targetYaw = this.yawAngle + THREE.MathUtils.clamp(diff, -0.35, 0.35);
+      } else if (this.force.lengthSq() > 1e-6 && !behaviorPause) {
         targetYaw = Math.atan2(this.force.x, this.force.y);
       }
       const yawErr = Math.atan2(Math.sin(targetYaw - this.yawAngle), Math.cos(targetYaw - this.yawAngle));
+      this.yawErr = yawErr;
       const yawK = this.rearing.mode === 'wall-supported'
         ? 24.0
-        : (isColliding ? 18.0 : 12.0);
-      const yawD = 7.0;
+        : (isColliding ? 20.0 : 15.5);
+      const yawD = 7.4;
       this.yawVel += (yawK * yawErr - yawD * this.yawVel) * dt;
       const maxYawRate = this.rearing.mode === 'wall-supported'
-        ? 3.0
-        : (isColliding ? 2.8 : 2.2);
+        ? 3.2
+        : (isColliding ? 3.4 : 3.0);
       this.yawVel = THREE.MathUtils.clamp(this.yawVel, -maxYawRate, maxYawRate);
       this.yawAngle += this.yawVel * dt;
       this.yawAngle = Math.atan2(Math.sin(this.yawAngle), Math.cos(this.yawAngle));
+    } else {
+      this.yawErr = 0;
     }
     this.heading.set(Math.sin(this.yawAngle), Math.cos(this.yawAngle));
     this.mesh.rotation.y = this.yawAngle;
@@ -3394,26 +3888,35 @@ class ExpertMouse {
             : "FLANK GROOMING";
         }
         stateColor = "#6e4d2f";
-      } else if (this.socialContact) {
+      } else if (this.socialState.mode === 'anogenital-follow') {
+        stateText = "ANOGENITAL PURSUIT";
+        stateColor = "#7a3e34";
+      } else if (this.socialState.mode === 'nose-to-nose' || this.socialContact) {
         stateText = "SOCIAL SNIFFING";
         stateColor = "#7a3e34";
+      } else if (this.boutState.mode === 'stretch-attend' && !isMoving) {
+        stateText = "STRETCH-ATTEND";
+        stateColor = "#6e4d2f";
       } else if (isPausing || !isMoving) {
         stateText = "PAUSE // SNIFFING";
         stateColor = "#6e4d2f";
+      } else if (this.boutState.mode === 'dart-trot') {
+        stateText = "DARTING BOUT";
+        stateColor = "#35543d";
       } else if (wallDist < 3.2) {
-        stateText = "WALL EXPLORATION";
+        stateText = "WALL THIGMOTAXIS";
         stateColor = "#526247";
       }
       hudRef.state.innerText = stateText;
       hudRef.state.style.color = stateColor;
-      hudRef.hr.innerText = isMoving && !isPausing ? "540 BPM" : "410 BPM";
+      hudRef.hr.innerText = isMoving && !isPausing ? "560 BPM" : "415 BPM";
       // Display estimates must not consume the behavioral random stream.
-      hudRef.resp.innerText = isMoving && !isPausing ? "210 BPM" : (162 + Math.round(Math.sin(time * 0.7) * 7)) + " BPM";
+      hudRef.resp.innerText = isMoving && !isPausing ? "215 BPM" : (162 + Math.round(Math.sin(time * 0.7) * 7)) + " BPM";
       hudRef.coord.innerText = `${this.mesh.position.x.toFixed(2)}, ${this.mesh.position.z.toFixed(2)}`;
     }
 
-    // Body + tail dynamics (gravity + inertia)
-    const speedNorm = Math.min(speed / this.maxSpeed, 1.0);
+    // Body + spine + tail dynamics (gravity + inertia + vertebral flexion + concertina elongation)
+    const speedNorm = Math.min(speed / this.maxSpeed, 1.15);
     const invDt = dt > 1e-5 ? 1.0 / dt : 0.0;
     const accelX = (this.velocity.x - this.prevVelocity.x) * invDt;
     const accelZ = (this.velocity.y - this.prevVelocity.y) * invDt;
@@ -3426,14 +3929,43 @@ class ExpertMouse {
     const turnRate = headingDelta * invDt;
     this.prevHeadingAngle = headingAngle;
 
-    if (!guiParams.isPaused) {
-      // Vertical body suspension with gravity.
-      const targetBodyY = 1.17 + speedNorm * 0.045;
+    const rearPoseSuppress = 1.0 - THREE.MathUtils.clamp(
+      this.rearAmount / Math.max(this.rearing.peakAmount || 1.0, 0.01),
+      0,
+      1
+    );
+    const groomPoseNorm = THREE.MathUtils.clamp(
+      this.groomAmount / Math.max(this.grooming.peakAmount || 1.0, 0.01),
+      0,
+      1
+    );
+    const isFaceWash = this.grooming.mode === 'face-wash';
+    const isFlankGroom = this.grooming.mode === 'flank-groom';
+    const qaRigidLock = IS_ANATOMY_QA || Boolean(REARING_QA) || CONTACT_QA === 'framing';
+
+    if (qaRigidLock) {
+      this.spineFlex.bend = 0;
+      this.spineFlex.bendV = 0;
+      this.spineFlex.sCurve = 0;
+      this.spineFlex.sCurveV = 0;
+      this.spineFlex.arch = 0;
+      this.spineFlex.archV = 0;
+      this.spineFlex.stretch = 0;
+      this.spineFlex.stretchV = 0;
+    } else if (GROOMING_QA === 'flank-groom' && guiParams.isPaused) {
+      this.spineFlex.bend = this.grooming.side * 0.42;
+      this.spineFlex.stretch = -0.10;
+      this.spineFlex.arch = 0.08;
+      this.spineFlex.sCurve = 0;
+    } else if (!guiParams.isPaused) {
+      // Vertical body suspension with gravity (slightly sleeker crouch when darting).
+      const crouchOffset = this.boutState.mode === 'dart-trot' ? -0.025 : 0.0;
+      const targetBodyY = 1.16 + Math.min(speedNorm, 1.0) * 0.035 + crouchOffset;
       const bodyK = 24.0, bodyD = 8.0, gravity = 3.4;
       this.bodyDyn.vy += (bodyK * (targetBodyY - this.bodyDyn.y) - bodyD * this.bodyDyn.vy - gravity) * dt;
       this.bodyDyn.y += this.bodyDyn.vy * dt;
-      if (this.bodyDyn.y < 1.04) {
-        this.bodyDyn.y = 1.04;
+      if (this.bodyDyn.y < 1.03) {
+        this.bodyDyn.y = 1.03;
         this.bodyDyn.vy = Math.max(0, this.bodyDyn.vy) * 0.2;
       }
 
@@ -3446,17 +3978,87 @@ class ExpertMouse {
       this.bodyDyn.pitch += this.bodyDyn.pitchV * dt;
       this.bodyDyn.roll += this.bodyDyn.rollV * dt;
 
+      // 1. Lateral spinal flexion (C-bend into turns, investigative scans, social arcs, and flank grooming)
+      let socialSpineLead = 0;
+      if (this.socialContact && this.socialTarget.lengthSq() > 1e-6) {
+        const sYaw = Math.atan2(this.socialTarget.x, this.socialTarget.y);
+        const sRel = Math.atan2(Math.sin(sYaw - this.yawAngle), Math.cos(sYaw - this.yawAngle));
+        socialSpineLead = THREE.MathUtils.clamp(sRel * 0.42, -0.28, 0.28);
+      }
+      const idleScanLead = (!isMoving && !this.socialContact && !groomingActive && !rearingActive)
+        ? Math.sin(this.boutState.scanPhase) * 0.12
+        : 0;
+      const flankCurl = isFlankGroom ? this.grooming.side * groomPoseNorm * 0.44 : 0;
+      const faceWashSuppress = isFaceWash ? (1.0 - groomPoseNorm * 0.92) : 1.0;
+      const rawTargetBend = (
+        (turnRate * 0.145 + this.yawErr * 0.34 - lateralAccel * 0.012 + socialSpineLead + idleScanLead)
+        * rearPoseSuppress * faceWashSuppress
+      ) + flankCurl;
+      const targetBend = THREE.MathUtils.clamp(rawTargetBend, -0.56, 0.56);
+
+      // 2. Subtle S-curve counter-undulation during trotting & slalom turns
+      const gaitWave = isMoving ? Math.sin(this.locomotionTime * 4.1) * Math.min(speedNorm, 1.0) * 0.045 : 0;
+      const targetSCurve = THREE.MathUtils.clamp(
+        (gaitWave - this.yawErr * 0.08) * rearPoseSuppress * faceWashSuppress,
+        -0.18,
+        0.18
+      );
+
+      // 3. Concertina axial squash-and-stretch (matches CalMS21 mouse083 148px..232px axial range)
+      let boutStretch = 0;
+      if (isFlankGroom) {
+        boutStretch = -0.11 * groomPoseNorm;
+      } else if (isFaceWash) {
+        boutStretch = -0.04 * groomPoseNorm;
+      } else if (this.socialState.mode === 'nose-to-nose' || this.boutState.mode === 'stretch-attend') {
+        boutStretch = 0.14;
+      } else if (this.boutState.mode === 'dart-trot' && isMoving) {
+        boutStretch = 0.08 + Math.min(speedNorm, 1.1) * 0.10;
+      } else if (isMoving) {
+        boutStretch = -0.02 + Math.min(speedNorm, 1.0) * 0.11 + THREE.MathUtils.clamp(forwardAccel * 0.008, -0.05, 0.06);
+      } else {
+        boutStretch = -0.085;
+      }
+      const targetStretch = THREE.MathUtils.clamp(
+        boutStretch * rearPoseSuppress,
+        -0.16,
+        0.21
+      );
+
+      // 4. Coupled dorsal kyphotic arch (hunches when bunched/grooming, flattens sleekly when darting)
+      const targetArch = THREE.MathUtils.clamp(
+        (-targetStretch * 0.42 + (isFlankGroom ? groomPoseNorm * 0.075 : 0)) * rearPoseSuppress,
+        -0.08,
+        0.14
+      );
+
+      const spK = 28.0, spD = 9.2;
+      this.spineFlex.bendV += (spK * (targetBend - this.spineFlex.bend) - spD * this.spineFlex.bendV) * dt;
+      this.spineFlex.sCurveV += (spK * (targetSCurve - this.spineFlex.sCurve) - spD * this.spineFlex.sCurveV) * dt;
+      this.spineFlex.stretchV += (22.0 * (targetStretch - this.spineFlex.stretch) - 8.2 * this.spineFlex.stretchV) * dt;
+      this.spineFlex.archV += (22.0 * (targetArch - this.spineFlex.arch) - 8.2 * this.spineFlex.archV) * dt;
+      this.spineFlex.bend += this.spineFlex.bendV * dt;
+      this.spineFlex.sCurve += this.spineFlex.sCurveV * dt;
+      this.spineFlex.stretch += this.spineFlex.stretchV * dt;
+      this.spineFlex.arch += this.spineFlex.archV * dt;
+
+      // Ear pin-back during brisk darts, grooming, or close evasive turns
+      const targetEarPin = (this.boutState.mode === 'dart-trot' && speedNorm > 0.65)
+        ? 0.16
+        : (this.socialContact ? 0.08 : 0.0);
+      this.earPinAmount += (targetEarPin - this.earPinAmount) * Math.min(1.0, dt * 8.0);
+
       // Tail inertial follow-through.
       const groomingTailSway = this.grooming.mode === 'flank-groom'
         ? this.grooming.side * this.groomAmount * 0.18
         : 0;
       const targetTailSway = THREE.MathUtils.clamp(
-        -turnRate * 0.06 - lateralAccel * 0.01 + groomingTailSway,
+        -turnRate * 0.065 - lateralAccel * 0.012 + groomingTailSway,
         -0.9,
         0.9
       );
       const targetTailLift = THREE.MathUtils.clamp(
-        -0.05 - forwardAccel * 0.004 + speedNorm * 0.03
+        -0.05 - forwardAccel * 0.004 + speedNorm * 0.035
           + this.rearAmount * 0.10 + this.groomAmount * 0.025,
         -0.18,
         0.15
@@ -3467,7 +4069,6 @@ class ExpertMouse {
       this.tailDyn.sway += this.tailDyn.swayV * dt;
       this.tailDyn.lift += this.tailDyn.liftV * dt;
       if (speed < 0.45 && this.lowSpeedTimer > 0.6) {
-        // Calm tiny oscillations while nearly stationary.
         const calm = Math.exp(-8.0 * dt);
         this.tailDyn.sway *= calm;
         this.tailDyn.lift *= calm;
@@ -3476,32 +4077,26 @@ class ExpertMouse {
       }
     }
 
-    const bodyLenScale = this.guiParams.bodyLength || 1.0;
     this.rig.position.y = this.bodyDyn.y;
     this.rig.position.z = 0;
     this.rig.rotation.x = this.bodyDyn.pitch;
     this.rig.rotation.z = this.bodyDyn.roll;
-    this.neckMesh.position.set(
-      this.neckRestPosition.x,
-      this.neckRestPosition.y,
-      this.neckRestPosition.z * bodyLenScale
-    );
-    this.neckMesh.rotation.copy(this.neckRestRotation);
-    this.headGroup.position.set(
-      this.headRestPosition.x,
-      this.headRestPosition.y,
-      this.headRestPosition.z * bodyLenScale
-    );
-    this.armL.position.z = this.armRestZ * bodyLenScale;
-    this.armR.position.z = this.armRestZ * bodyLenScale;
-    this.hindL.position.z = this.hindRestZ * bodyLenScale;
-    this.hindR.position.z = this.hindRestZ * bodyLenScale;
-    if (this.bellyFurAnchor) this.bellyFurAnchor.position.z = this.bellyRestZ * bodyLenScale;
-    if (this.poseNodes.spine2) this.poseNodes.spine2.position.z = -PROP.bodyLength * 0.41 * bodyLenScale;
-    if (this.poseNodes.tailbase) this.poseNodes.tailbase.position.z = -PROP.bodyLength * 0.93 * bodyLenScale;
+    this.applySpinalRigTransforms(chonk, bodyLenScale);
+    const spineHeadBaseX = this.headGroup.position.x;
+    const spineHeadBaseY = this.headGroup.position.y;
+    const spineHeadBaseZ = this.headGroup.position.z;
 
-    // Contact shadow follows mouse on ground
-    this.contactShadow.position.set(0, -this.rig.position.y + 0.02, 0);
+    // Contact shadow follows curved & stretched mouse footprint on ground
+    this.contactShadow.position.set(
+      this.spineFlex.bend * 0.18 * chonk,
+      -this.rig.position.y + 0.02,
+      0
+    );
+    this.contactShadow.scale.set(
+      THREE.MathUtils.clamp(1.0 - this.spineFlex.stretch * 0.35, 0.82, 1.15),
+      THREE.MathUtils.clamp(1.0 + this.spineFlex.stretch * 0.85, 0.80, 1.24),
+      1.0
+    );
 
     // ═══ GAIT ANIMATION (anatomically correct) ═══
     const legCycle = this.locomotionTime * 4.1;
@@ -3718,23 +4313,24 @@ class ExpertMouse {
     ) * (calmIdle ? 0.22 : 1.0);
     if (this.socialContact) {
       const targetYaw = Math.atan2(this.socialTarget.x, this.socialTarget.y);
-      let relYaw = targetYaw - this.yawAngle;
+      let relYaw = targetYaw - (this.yawAngle + this.spineHeadYaw);
       if (relYaw > Math.PI) relYaw -= Math.PI * 2;
       if (relYaw < -Math.PI) relYaw += Math.PI * 2;
-      this.headGroup.rotation.y = THREE.MathUtils.clamp(relYaw, -0.46, 0.46) + sniffPulse * 0.028;
+      this.headGroup.rotation.y = this.spineHeadYaw
+        + THREE.MathUtils.clamp(relYaw, -0.52, 0.52) + sniffPulse * 0.032;
       this.headGroup.rotation.x = -0.075 + sniffPulse * 0.030;
       this.snoutTip.position.y = -0.152 + sniffPulse * 0.024;
       const noseScalePulse = 1.0 + sniffPulse * 0.018;
       this.snoutTip.scale.z = 0.68 * this.guiParams.snoutLength * noseScalePulse;
-      this.padL.rotation.y = 0.12 + sniffPulse * 0.055 + whiskSweep * 1.15;
-      this.padR.rotation.y = -0.12 - sniffPulse * 0.055 - whiskSweep * 1.15;
+      this.padL.rotation.y = 0.14 + sniffPulse * 0.060 + whiskSweep * 1.20;
+      this.padR.rotation.y = -0.14 - sniffPulse * 0.060 - whiskSweep * 1.20;
       this.padL.rotation.x = -0.015 + sniffPulse * 0.008;
       this.padR.rotation.x = -0.015 + sniffPulse * 0.008;
       this.padL.rotation.z = sniffPulse * 0.009;
       this.padR.rotation.z = -sniffPulse * 0.009;
     } else if (!isMoving) {
       if (calmIdle) {
-        this.headGroup.rotation.y *= 0.85;
+        this.headGroup.rotation.y = THREE.MathUtils.lerp(this.headGroup.rotation.y, this.spineHeadYaw, 0.15);
         this.headGroup.rotation.x *= 0.85;
         this.snoutTip.position.y = -0.152 + sniffPulse * 0.006;
         this.padL.rotation.y = 0.045 + sniffPulse * 0.012 + whiskSweep;
@@ -3744,20 +4340,23 @@ class ExpertMouse {
         this.padL.rotation.z = 0;
         this.padR.rotation.z = 0;
       } else {
-        this.headGroup.rotation.y = (
-          Math.sin(time * 2.1 + this.timeOffset * 0.03) * 0.11
-          + Math.sin(time * 0.73 + this.timeOffset) * 0.035
+        const activeScan = !guiParams.isPaused
+          ? Math.sin(this.boutState.scanPhase) * 0.24
+          : 0;
+        this.headGroup.rotation.y = this.spineHeadYaw + (
+          activeScan
+          + Math.sin(time * 2.1 + this.timeOffset * 0.03) * 0.12
+          + Math.sin(time * 0.73 + this.timeOffset) * 0.045
         ) * this.motion.headIdleYawMul;
         this.headGroup.rotation.x = (
-          Math.sin(time * 3.2 + this.timeOffset * 0.05) * 0.045
-          + sniffPulse * 0.014
+          Math.sin(time * 3.2 + this.timeOffset * 0.05) * 0.048
+          + sniffPulse * 0.018
         ) * this.motion.headIdlePitchMul;
-        this.snoutTip.position.y = -0.152 + sniffPulse * 0.02;
-        // Nose scale pulse during sniffing (compression)
-        const noseScalePulse = 1.0 + sniffPulse * 0.015;
+        this.snoutTip.position.y = -0.152 + sniffPulse * 0.022;
+        const noseScalePulse = 1.0 + sniffPulse * 0.016;
         this.snoutTip.scale.z = 0.68 * this.guiParams.snoutLength * noseScalePulse;
-        this.padL.rotation.y = sniffPulse * 0.040 + 0.070 + whiskSweep;
-        this.padR.rotation.y = -sniffPulse * 0.040 - 0.070 - whiskSweep;
+        this.padL.rotation.y = sniffPulse * 0.045 + 0.085 + whiskSweep;
+        this.padR.rotation.y = -sniffPulse * 0.045 - 0.085 - whiskSweep;
         this.padL.rotation.x = -0.010 + sniffPulse * 0.006;
         this.padR.rotation.x = -0.010 + sniffPulse * 0.006;
         this.padL.rotation.z = sniffPulse * 0.007;
@@ -3765,12 +4364,21 @@ class ExpertMouse {
       }
     } else {
       const turnAmount = this.velocity.x * this.heading.y - this.velocity.y * this.heading.x;
-      // Head stabilization: slight counter-rotation during locomotion
+      // Expressive rodent head-lead into turns + vestibulo-colic pitch stabilization
+      const headLeadYaw = THREE.MathUtils.clamp(
+        this.yawErr * 0.42 + turnRate * 0.045 + turnAmount * 0.045,
+        -0.44,
+        0.44
+      );
       const headStab = Math.sin(this.locomotionTime * 3.8) * 0.018;
-      this.headGroup.rotation.set(Math.sin(time * 1.8) * 0.030 + headStab, turnAmount * 0.06, 0);
-      this.snoutTip.position.y = -0.152;
-      this.padL.rotation.y = -0.08 + whiskSweep * 1.25;
-      this.padR.rotation.y = 0.08 - whiskSweep * 1.25;
+      this.headGroup.rotation.set(
+        Math.sin(time * 1.8) * 0.026 + headStab - Math.min(speedNorm, 1.0) * 0.022,
+        this.spineHeadYaw + headLeadYaw,
+        -headLeadYaw * 0.08
+      );
+      this.snoutTip.position.y = -0.152 + sniffPulse * 0.010;
+      this.padL.rotation.y = -0.06 + whiskSweep * 1.25;
+      this.padR.rotation.y = 0.06 - whiskSweep * 1.25;
       this.padL.rotation.x = 0.010; this.padR.rotation.x = 0.010;
       this.padL.rotation.z = 0; this.padR.rotation.z = 0;
     }
@@ -3841,20 +4449,19 @@ class ExpertMouse {
       }
     }
 
-    // The cervical mantle follows a fraction of head translation and
-    // rotation, preserving a continuous neck during sniffing and large
-    // rearing/grooming arcs without making the shoulders rotate as a unit.
-    const headOffsetX = this.headGroup.position.x - this.headRestPosition.x;
-    const headOffsetY = this.headGroup.position.y - this.headRestPosition.y;
-    const headOffsetZ = this.headGroup.position.z - this.headRestPosition.z * bodyLenScale;
+    // The cervical mantle follows a fraction of local head translation and
+    // extra atlanto-occipital rotation relative to the curved cervical spine.
+    const headOffsetX = this.headGroup.position.x - spineHeadBaseX;
+    const headOffsetY = this.headGroup.position.y - spineHeadBaseY;
+    const headOffsetZ = this.headGroup.position.z - spineHeadBaseZ;
     this.neckMesh.position.x += headOffsetX * 0.48;
     this.neckMesh.position.y += headOffsetY * 0.36;
     this.neckMesh.position.z += headOffsetZ * 0.32;
     this.neckMesh.rotation.x += this.headGroup.rotation.x * 0.24;
-    this.neckMesh.rotation.y += this.headGroup.rotation.y * 0.30;
+    this.neckMesh.rotation.y += (this.headGroup.rotation.y - this.spineHeadYaw) * 0.32;
     this.neckMesh.rotation.z += this.headGroup.rotation.z * 0.26;
 
-    // ═══ EAR MICRO-TWITCHES ═══
+    // ═══ EAR MICRO-TWITCHES & DYNAMIC PIN-BACK ═══
     if (this.earL && this.earR && this.earMicro.baseRotL) {
       this.earMicro.twitchTimerL += dt;
       this.earMicro.twitchTimerR += dt;
@@ -3871,15 +4478,16 @@ class ExpertMouse {
       // Smooth exponential decay
       this.earMicro.twitchAngleL *= Math.exp(-4.0 * dt);
       this.earMicro.twitchAngleR *= Math.exp(-4.0 * dt);
-      // Locomotion secondary bounce
-      const earBounce = isMoving ? Math.sin(this.locomotionTime * 5.0) * 0.02 : 0;
-      const earScan = Math.sin(time * 0.72 + this.timeOffset * 0.013) * 0.022;
-      this.earL.rotation.z = this.earMicro.baseRotL.z + this.earMicro.twitchAngleL + earBounce;
-      this.earR.rotation.z = this.earMicro.baseRotR.z + this.earMicro.twitchAngleR - earBounce;
-      this.earL.rotation.x = this.earMicro.baseRotL.x + this.earMicro.twitchAngleL * 0.5;
-      this.earR.rotation.x = this.earMicro.baseRotR.x + this.earMicro.twitchAngleR * 0.5;
-      this.earL.rotation.y = this.earMicro.baseRotL.y + earScan + this.earMicro.twitchAngleL * 0.25;
-      this.earR.rotation.y = this.earMicro.baseRotR.y - earScan + this.earMicro.twitchAngleR * 0.25;
+      // Locomotion secondary bounce + aerodynamic/social ear pin-back
+      const earBounce = isMoving ? Math.sin(this.locomotionTime * 5.0) * 0.022 : 0;
+      const earScan = Math.sin(time * 0.72 + this.timeOffset * 0.013) * 0.026;
+      const pin = this.earPinAmount || 0;
+      this.earL.rotation.z = this.earMicro.baseRotL.z + this.earMicro.twitchAngleL + earBounce - pin * 0.28;
+      this.earR.rotation.z = this.earMicro.baseRotR.z + this.earMicro.twitchAngleR - earBounce + pin * 0.28;
+      this.earL.rotation.x = this.earMicro.baseRotL.x - pin * 0.42 + this.earMicro.twitchAngleL * 0.5;
+      this.earR.rotation.x = this.earMicro.baseRotR.x - pin * 0.42 + this.earMicro.twitchAngleR * 0.5;
+      this.earL.rotation.y = this.earMicro.baseRotL.y + earScan + pin * 0.16 + this.earMicro.twitchAngleL * 0.25;
+      this.earR.rotation.y = this.earMicro.baseRotR.y - earScan - pin * 0.16 + this.earMicro.twitchAngleR * 0.25;
       if (groom > 0) {
         const groomPose = THREE.MathUtils.clamp(groom, 0, 1);
         if (this.grooming.mode === 'face-wash') {
@@ -4132,6 +4740,304 @@ function createArenaHardware() {
   return group;
 }
 
+function createHomeCageEnvironment() {
+  // Isolated PRNG so enabling/constructing the shoebox home cage never perturbs subject RNG.
+  const cageRng = createSeededRandom((simulationSeed ^ 0x5F3759DF) >>> 0);
+  const group = new THREE.Group();
+  group.name = 'home-cage-shoebox-environment';
+
+  // Dark matte laboratory bench / optical breadboard surrounding the shoebox cage
+  const benchMat = new THREE.MeshStandardMaterial({
+    color: 0x16171a,
+    roughness: 0.88,
+    metalness: 0.06,
+  });
+  const benchPlane = new THREE.Mesh(new THREE.PlaneGeometry(96, 72), benchMat);
+  benchPlane.rotation.x = -Math.PI / 2;
+  benchPlane.position.y = -0.028;
+  benchPlane.receiveShadow = true;
+  group.add(benchPlane);
+
+  // Molded sloped translucent polycarbonate rodent shoebox cage with rounded corners + rolled upper flange
+  const innerHX = ENCLOSURE_HALF_X + 0.55; // 16.95 -> mice can press flanks right against inner wall
+  const innerHZ = ENCLOSURE_HALF_Z + 0.40; // 11.80
+  const wallH = 6.8;
+  const segAround = 72;
+  const ringProfiles = [
+    { hx: innerHX, hz: innerHZ, y: 0.0, r: 1.35 },
+    { hx: innerHX + 1.55, hz: innerHZ + 0.95, y: wallH * 0.48, r: 1.65 },
+    { hx: innerHX + 3.15, hz: innerHZ + 1.92, y: wallH, r: 1.95 },
+    { hx: innerHX + 4.10, hz: innerHZ + 2.65, y: wallH + 0.14, r: 2.15 },
+    { hx: innerHX + 4.18, hz: innerHZ + 2.72, y: wallH - 0.18, r: 2.18 },
+  ];
+  const sampleRoundedRect = (theta, hx, hz, cornerR) => {
+    const cr = Math.min(cornerR, hx * 0.45, hz * 0.45);
+    const cx = Math.max(0.01, hx - cr);
+    const cz = Math.max(0.01, hz - cr);
+    const cosT = Math.cos(theta);
+    const sinT = Math.sin(theta);
+    // Superellipse-rounded rectangle perimeter with exact corner arc blend
+    const absC = Math.abs(cosT);
+    const absS = Math.abs(sinT);
+    const scale = 1.0 / Math.max(absC / hx, absS / hz, 1e-4);
+    let px = cosT * scale;
+    let pz = sinT * scale;
+    if (Math.abs(px) > cx && Math.abs(pz) > cz) {
+      const dx = Math.abs(px) - cx;
+      const dz = Math.abs(pz) - cz;
+      const dLen = Math.hypot(dx, dz) || 1;
+      px = Math.sign(px) * (cx + (dx / dLen) * cr);
+      pz = Math.sign(pz) * (cz + (dz / dLen) * cr);
+    }
+    return [px, pz];
+  };
+
+  const wallPositions = [];
+  const wallUVs = [];
+  const wallIndices = [];
+  const ringStride = segAround + 1;
+  for (let rIdx = 0; rIdx < ringProfiles.length; rIdx++) {
+    const prof = ringProfiles[rIdx];
+    const vCoord = rIdx / (ringProfiles.length - 1);
+    for (let sIdx = 0; sIdx <= segAround; sIdx++) {
+      const uCoord = sIdx / segAround;
+      const theta = uCoord * Math.PI * 2;
+      const [px, pz] = sampleRoundedRect(theta, prof.hx, prof.hz, prof.r);
+      wallPositions.push(px, prof.y, pz);
+      wallUVs.push(uCoord * 4.0, vCoord);
+    }
+  }
+  for (let rIdx = 0; rIdx < ringProfiles.length - 1; rIdx++) {
+    for (let sIdx = 0; sIdx < segAround; sIdx++) {
+      const a = rIdx * ringStride + sIdx;
+      const b = a + 1;
+      const c = (rIdx + 1) * ringStride + sIdx;
+      const d = c + 1;
+      wallIndices.push(a, c, b, b, c, d);
+    }
+  }
+  const cageWallGeo = new THREE.BufferGeometry();
+  cageWallGeo.setAttribute('position', new THREE.Float32BufferAttribute(wallPositions, 3));
+  cageWallGeo.setAttribute('uv', new THREE.Float32BufferAttribute(wallUVs, 2));
+  cageWallGeo.setIndex(wallIndices);
+  cageWallGeo.computeVertexNormals();
+
+  const polycarbonateMat = new THREE.MeshPhysicalMaterial({
+    color: 0x6c6862,
+    roughness: 0.20,
+    metalness: 0.06,
+    transmission: 0.34,
+    thickness: 0.24,
+    ior: 1.58,
+    transparent: true,
+    opacity: 0.86,
+    clearcoat: 0.72,
+    clearcoatRoughness: 0.16,
+    side: THREE.DoubleSide,
+  });
+  const cageWalls = new THREE.Mesh(cageWallGeo, polycarbonateMat);
+  cageWalls.receiveShadow = true;
+  cageWalls.castShadow = true;
+  cageWalls.renderOrder = 12;
+  group.add(cageWalls);
+
+  // Molded polycarbonate upper rim specular highlight loop (signature top/bottom cage lip in mouse083)
+  const rimLoopPts = [];
+  for (let sIdx = 0; sIdx <= segAround; sIdx++) {
+    const theta = (sIdx / segAround) * Math.PI * 2;
+    const [rx, rz] = sampleRoundedRect(theta, innerHX + 3.55, innerHZ + 2.24, 2.05);
+    rimLoopPts.push(new THREE.Vector3(rx, wallH + 0.16, rz));
+  }
+  const rimCurve = new THREE.CatmullRomCurve3(rimLoopPts, true);
+  const rimTubeGeo = new THREE.TubeGeometry(rimCurve, 96, 0.16, 8, true);
+  const rimHighlightMat = new THREE.MeshPhysicalMaterial({
+    color: 0x9b9892,
+    roughness: 0.18,
+    metalness: 0.12,
+    transparent: true,
+    opacity: 0.62,
+    clearcoat: 0.85,
+  });
+  const rimTube = new THREE.Mesh(rimTubeGeo, rimHighlightMat);
+  rimTube.renderOrder = 14;
+  group.add(rimTube);
+
+  // Subtle inner floor-wall meniscus cove darkening (bedding shadow in shoebox corner radius)
+  const coveRingPositions = [];
+  const coveIndices = [];
+  for (let rIdx = 0; rIdx < 2; rIdx++) {
+    const shrink = rIdx === 0 ? 0.02 : 0.72;
+    const yVal = rIdx === 0 ? 0.08 : 0.012;
+    for (let sIdx = 0; sIdx <= segAround; sIdx++) {
+      const theta = (sIdx / segAround) * Math.PI * 2;
+      const [px, pz] = sampleRoundedRect(theta, innerHX - shrink, innerHZ - shrink, Math.max(0.8, 1.55 - shrink));
+      coveRingPositions.push(px, yVal, pz);
+    }
+  }
+  for (let sIdx = 0; sIdx < segAround; sIdx++) {
+    const a = sIdx, b = sIdx + 1, c = ringStride + sIdx, d = c + 1;
+    coveIndices.push(a, b, c, b, d, c);
+  }
+  const coveGeo = new THREE.BufferGeometry();
+  coveGeo.setAttribute('position', new THREE.Float32BufferAttribute(coveRingPositions, 3));
+  coveGeo.setIndex(coveIndices);
+  coveGeo.computeVertexNormals();
+  const coveMat = new THREE.MeshBasicMaterial({
+    color: 0x26211b,
+    transparent: true,
+    opacity: 0.34,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+  const coveMesh = new THREE.Mesh(coveGeo, coveMat);
+  coveMesh.renderOrder = 4;
+  group.add(coveMesh);
+
+  // 3D instanced corncob / wood-chip granules + darker husk/bolus flecks across the cage floor
+  const granuleGeo = new THREE.IcosahedronGeometry(1.0, 0);
+  const gPos = granuleGeo.attributes.position;
+  for (let i = 0; i < gPos.count; i++) {
+    gPos.setXYZ(
+      i,
+      gPos.getX(i) * 0.92,
+      gPos.getY(i) * 0.46,
+      gPos.getZ(i) * 1.18
+    );
+  }
+  granuleGeo.computeVertexNormals();
+  const granuleMat = new THREE.MeshStandardMaterial({
+    color: 0xc8ba9e,
+    roughness: 0.94,
+    metalness: 0.0,
+  });
+  const granuleCount = 2400;
+  const granules = new THREE.InstancedMesh(granuleGeo, granuleMat, granuleCount);
+  granules.receiveShadow = true;
+  granules.castShadow = false;
+  const dummy = new THREE.Object3D();
+  const gColor = new THREE.Color();
+  for (let i = 0; i < granuleCount; i++) {
+    let gx = (cageRng() - 0.5) * (innerHX * 2.0 - 0.9);
+    let gz = (cageRng() - 0.5) * (innerHZ * 2.0 - 0.9);
+    // Keep granules inside rounded corners
+    const [boundX, boundZ] = sampleRoundedRect(Math.atan2(gz, gx), innerHX - 0.35, innerHZ - 0.35, 1.35);
+    if (Math.abs(gx) > Math.abs(boundX)) gx = Math.sign(gx) * Math.abs(boundX) * (0.90 + cageRng() * 0.09);
+    if (Math.abs(gz) > Math.abs(boundZ)) gz = Math.sign(gz) * Math.abs(boundZ) * (0.90 + cageRng() * 0.09);
+
+    const isDarkFleck = cageRng() < 0.15;
+    const sBase = isDarkFleck ? (0.065 + cageRng() * 0.095) : (0.085 + cageRng() * 0.145);
+    dummy.position.set(gx, 0.020 + cageRng() * 0.032, gz);
+    dummy.rotation.set(
+      (cageRng() - 0.5) * 0.45,
+      cageRng() * Math.PI * 2,
+      (cageRng() - 0.5) * 0.45
+    );
+    dummy.scale.set(
+      sBase * (0.78 + cageRng() * 0.52),
+      sBase * (0.50 + cageRng() * 0.45),
+      sBase * (0.85 + cageRng() * 0.65)
+    );
+    dummy.updateMatrix();
+    granules.setMatrixAt(i, dummy.matrix);
+    if (isDarkFleck) {
+      gColor.setHSL(0.075 + (cageRng() - 0.5) * 0.02, 0.24, 0.18 + cageRng() * 0.14);
+    } else {
+      gColor.setHSL(0.098 + (cageRng() - 0.5) * 0.024, 0.18 + cageRng() * 0.14, 0.48 + cageRng() * 0.28);
+    }
+    granules.setColorAt(i, gColor);
+  }
+  group.add(granules);
+
+  // Soft crumpled tissue/nestlet petals & curls in the upper-left zone + scattered wisps
+  const nestGroup = new THREE.Group();
+  const nestPaperMat = new THREE.MeshStandardMaterial({
+    color: 0xe6e3da,
+    roughness: 0.93,
+    metalness: 0.0,
+    side: THREE.DoubleSide,
+  });
+  const stripGeo = new THREE.PlaneGeometry(1, 1, 4, 7);
+  stripGeo.rotateX(-Math.PI / 2);
+  const sPos = stripGeo.attributes.position;
+  for (let i = 0; i < sPos.count; i++) {
+    const sx = sPos.getX(i), sz = sPos.getZ(i);
+    // Taper ends &scallop edges so fragments read as torn crumpled tissue rather than rectangles
+    const endFade = Math.max(0.18, 1.0 - Math.pow(Math.abs(sz * 1.95), 1.6) * 0.82);
+    const waveX = Math.sin(sz * 5.2) * 0.22 + Math.cos(sx * 4.1) * 0.08;
+    const curlY = Math.sin(sz * Math.PI * 2.2) * 0.24 + Math.cos(sx * Math.PI * 1.8) * 0.16;
+    sPos.setXYZ(i, sx * endFade + waveX, Math.max(0.0, curlY + 0.15), sz);
+  }
+  stripGeo.computeVertexNormals();
+  const stripCount = 260;
+  const strips = new THREE.InstancedMesh(stripGeo, nestPaperMat, stripCount);
+  strips.receiveShadow = true;
+  for (let i = 0; i < stripCount; i++) {
+    const zoneRoll = cageRng();
+    let sx, sz, liftY;
+    const isBroadPetal = cageRng() < 0.48;
+    if (zoneRoll < 0.58) {
+      sx = -innerHX + 1.2 + Math.pow(cageRng(), 0.82) * 6.4;
+      sz = -innerHZ + 1.1 + Math.pow(cageRng(), 0.85) * 9.6;
+      liftY = 0.026 + cageRng() * 0.055;
+    } else if (zoneRoll < 0.84) {
+      sx = -10.8 + cageRng() * 14.0;
+      sz = -4.5 + cageRng() * 9.5;
+      liftY = 0.020 + cageRng() * 0.032;
+    } else {
+      sx = 2.0 + cageRng() * 9.2;
+      sz = 1.2 + cageRng() * 7.5;
+      liftY = 0.020 + cageRng() * 0.030;
+    }
+    sx = THREE.MathUtils.clamp(sx, -innerHX + 0.9, innerHX - 1.8);
+    sz = THREE.MathUtils.clamp(sz, -innerHZ + 0.9, innerHZ - 0.9);
+    dummy.position.set(sx, liftY, sz);
+    dummy.rotation.set(
+      (cageRng() - 0.5) * 0.30,
+      cageRng() * Math.PI * 2,
+      (cageRng() - 0.5) * 0.30
+    );
+    const wScale = isBroadPetal ? (0.42 + cageRng() * 0.52) : (0.18 + cageRng() * 0.26);
+    const lScale = isBroadPetal ? (0.55 + cageRng() * 0.85) : (0.65 + cageRng() * 1.25);
+    dummy.scale.set(wScale, 0.09 + cageRng() * 0.14, lScale);
+    dummy.updateMatrix();
+    strips.setMatrixAt(i, dummy.matrix);
+    gColor.setHSL(0.102, 0.06 + cageRng() * 0.08, 0.68 + cageRng() * 0.20);
+    strips.setColorAt(i, gColor);
+  }
+  nestGroup.add(strips);
+  group.add(nestGroup);
+
+  // Right-wall brushed stainless-steel circular water-port dome & grommet (matching mouse083)
+  const waterPort = new THREE.Group();
+  waterPort.position.set(innerHX - 0.55, 1.85, 0.35);
+  const steelMat = new THREE.MeshStandardMaterial({
+    color: 0xc8ccd2,
+    roughness: 0.30,
+    metalness: 0.82,
+  });
+  const darkBoreMat = new THREE.MeshStandardMaterial({
+    color: 0x18191d,
+    roughness: 0.68,
+    metalness: 0.25,
+  });
+  const shroudDome = new THREE.Mesh(new THREE.SphereGeometry(1.58, 24, 18), steelMat);
+  shroudDome.scale.set(0.72, 0.88, 1.05);
+  shroudDome.castShadow = true;
+  waterPort.add(shroudDome);
+  const grommetCollar = new THREE.Mesh(new THREE.TorusGeometry(1.48, 0.16, 12, 28), steelMat);
+  grommetCollar.rotation.y = Math.PI / 2;
+  grommetCollar.position.set(0.42, 0, 0);
+  waterPort.add(grommetCollar);
+  for (const [dy, dz] of [[0.35, -0.52], [0.35, 0.52], [-0.35, 0.0]]) {
+    const portHole = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 10), darkBoreMat);
+    portHole.position.set(-0.92, dy, dz);
+    waterPort.add(portHole);
+  }
+  group.add(waterPort);
+
+  return group;
+}
+
 
 // ═══════════════════════════════════════════════════════════════
 // 11. SCENE ASSEMBLY
@@ -4154,8 +5060,10 @@ const floorMat = new THREE.MeshPhysicalMaterial({
 const floor = new THREE.Mesh(floorGeo, floorMat);
 floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true;
 scene.add(floor);
-scene.add(createFloorMarks());
-scene.add(createBeddingLayer());
+const floorMarksLayer = createFloorMarks();
+const beddingLayer = createBeddingLayer();
+scene.add(floorMarksLayer);
+scene.add(beddingLayer);
 
 const enclosureMat = new THREE.MeshPhysicalMaterial({
   color: 0xd7eef8,
@@ -4183,7 +5091,15 @@ const enclosureEdges = new THREE.LineSegments(
 enclosureEdges.material.depthTest = true;
 enclosureEdges.renderOrder = 25;
 enclosureEdges.position.copy(enclosureBox.position); scene.add(enclosureEdges);
-scene.add(createArenaHardware());
+const arenaHardwareGroup = createArenaHardware();
+scene.add(arenaHardwareGroup);
+
+for (const tex of [homeCageBeddingMaps.albedo, homeCageBeddingMaps.normal, homeCageBeddingMaps.roughness]) {
+  tex.repeat.set(1.45, 1.10);
+}
+const homeCageGroup = createHomeCageEnvironment();
+homeCageGroup.visible = false;
+scene.add(homeCageGroup);
 
 const grid = new THREE.GridHelper(38, 19, 0xb8b1a4, 0xd1c7b5);
 grid.position.y = 0.05;
@@ -4252,19 +5168,143 @@ const postFX = annolidShaders.createPostProcessing(renderer, {
   saturation: 0.98, brightness: 1.0
 });
 
+let occluderGroup = null;
+if (DATASET_OCCLUDER === 'wire_bars') {
+  occluderGroup = new THREE.Group();
+  occluderGroup.name = 'wire-cage-lid-occluder';
+  const barMat = new THREE.MeshStandardMaterial({
+    color: 0xaeb4ba,
+    roughness: 0.34,
+    metalness: 0.82,
+  });
+  const barGeo = new THREE.CylinderGeometry(0.085, 0.085, ENCLOSURE_D - 1.2, 12);
+  barGeo.rotateX(Math.PI / 2);
+  for (let bx = -14.0; bx <= 14.001; bx += 1.85) {
+    const barMesh = new THREE.Mesh(barGeo, barMat);
+    barMesh.position.set(bx, 3.35, 0);
+    barMesh.castShadow = true;
+    barMesh.receiveShadow = false;
+    occluderGroup.add(barMesh);
+  }
+  scene.add(occluderGroup);
+}
+
+if (DATASET_CAPTURE && DATASET_CAMERA_VIEW === 'bottom-up') {
+  // Ventral glass-floor imaging: hide opaque bedding/floor from below and add ventral illumination.
+  floor.visible = false;
+  floorMarksLayer.visible = false;
+  beddingLayer.visible = false;
+  grid.visible = false;
+  scene.background = new THREE.Color(0x1b1f24);
+  scene.fog = null;
+  const ventralLight = new THREE.DirectionalLight(0xf6f8ff, 0.92);
+  ventralLight.position.set(2.0, -14.0, 3.0);
+  ventralLight.castShadow = false;
+  scene.add(ventralLight);
+}
+
+function applyArenaStyle(styleName) {
+  const isHomeCage = styleName === 'Home Cage (Bedding)';
+  const isVentral = DATASET_CAPTURE && DATASET_CAMERA_VIEW === 'bottom-up';
+  homeCageGroup.visible = isHomeCage && !isVentral;
+  enclosureBox.visible = !isHomeCage;
+  enclosureEdges.visible = !isHomeCage;
+  arenaHardwareGroup.visible = !isHomeCage;
+  floorMarksLayer.visible = !isHomeCage && !isVentral;
+  beddingLayer.visible = !isVentral;
+  grid.visible = !isHomeCage && !isVentral;
+  if (isHomeCage) {
+    // Fit the textured bedding plane cleanly inside the rounded polycarbonate shoebox base
+    floor.scale.set(0.732, 0.688, 1.0);
+    floorMat.color.setHex(0xd4c7af);
+    floorMat.map = homeCageBeddingMaps.albedo;
+    floorMat.roughnessMap = homeCageBeddingMaps.roughness;
+    floorMat.normalMap = homeCageBeddingMaps.normal;
+    floorMat.normalScale.set(0.52, 0.52);
+    floorMat.roughness = 0.94;
+    floorMat.emissiveIntensity = 0.0;
+    floorMat.clearcoat = 0.0;
+  } else {
+    floor.scale.set(1.0, 1.0, 1.0);
+    floorMat.color.setHex(0xf5f6f4);
+    floorMat.map = labFloorAlbedoMap;
+    floorMat.roughnessMap = labFloorRoughnessMap;
+    floorMat.normalMap = labFloorNormalMap;
+    floorMat.normalScale.set(0.075, 0.075);
+    floorMat.roughness = 0.82;
+    floorMat.emissiveIntensity = 0.010;
+    floorMat.clearcoat = 0.05;
+  }
+  floorMat.needsUpdate = true;
+}
+
+if (DATASET_LIGHTING === 'ir_night') {
+  scene.background = new THREE.Color(0x20191b);
+  scene.fog = new THREE.FogExp2(0x20191b, 0.006);
+  scene.environmentIntensity = 0.16;
+  ambientLight.color.setHex(0xd8b4ba);
+  ambientLight.intensity = 0.22;
+  hemiLight.color.setHex(0xd4b6bc);
+  hemiLight.groundColor.setHex(0x3a2c30);
+  hemiLight.intensity = 0.28;
+  keyLight.color.setHex(0xe8c6cc);
+  keyLight.intensity = 0.72;
+  fillLight.color.setHex(0xc8aeb4);
+  fillLight.intensity = 0.18;
+  rimLight.color.setHex(0xf0d4da);
+  rimLight.intensity = 0.38;
+  softbox.color.setHex(0xdcb8be);
+  softbox.intensity = 0.42;
+} else if (DATASET_LIGHTING === 'dim_warm') {
+  scene.environmentIntensity = 0.34;
+  ambientLight.intensity = 0.14;
+  keyLight.color.setHex(0xffdfbe);
+  keyLight.intensity = 0.48;
+  softbox.intensity = 0.38;
+} else if (DATASET_LIGHTING === 'calms_gray') {
+  // Overhead monochrome / near-IR behavioral cage-rack camera (like mouse083_task1_annotator1.mp4)
+  scene.background = new THREE.Color(0x161719);
+  scene.fog = null;
+  scene.environmentIntensity = 0.44;
+  ambientLight.color.setHex(0xf4f4f4);
+  ambientLight.intensity = 0.34;
+  hemiLight.color.setHex(0xf8f8fa);
+  hemiLight.groundColor.setHex(0x4c4a46);
+  hemiLight.intensity = 0.54;
+  keyLight.color.setHex(0xffffff);
+  keyLight.intensity = 0.94;
+  keyLight.position.set(-2.2, 22.0, 2.5);
+  fillLight.color.setHex(0xeeeeff);
+  fillLight.intensity = 0.28;
+  rimLight.color.setHex(0xffffff);
+  rimLight.intensity = 0.36;
+  softbox.color.setHex(0xffffff);
+  softbox.intensity = 0.68;
+}
+
+const isHomeCageDefault = DATASET_ARENA === 'home_cage';
 const guiParams = {
   furColor: '#ffffff', skinColor: '#f0c8b8',
-  chonkiness: 0.96, earSize: 0.82, furDensity: 1.0,
+  chonkiness: isHomeCageDefault ? 1.20 : 0.96,
+  earSize: isHomeCageDefault ? 0.94 : 0.82,
+  furDensity: 1.0,
   showTrackingKeypoints: false, wireframeMode: false, isPaused: false,
+  implantHeadstage: false,
+  arenaStyle: isHomeCageDefault ? 'Home Cage (Bedding)' : 'Open Field',
   playbackSpeed: 1.0, cameraView: 'Both mice',
   addSubject: () => spawnMouse(), clearSubjects: () => clearMice(),
   presets: 'BALB/c (White)',
-  // Body part controls
-  tailLength: 0.85, tailThickness: 0.92,
-  headSize: PROP.headSize, snoutLength: 1.0,
-  bodyLength: 1.0, legLength: 1.06, legThickness: 1.10,
+  // Body part controls (standard shoebox home cage is ~35x21 cm vs ~50x36 cm open field,
+  // so adult mice span ~23% of home-cage width just like mouse083_task1_annotator1.mp4)
+  tailLength: isHomeCageDefault ? 1.14 : 0.94,
+  tailThickness: isHomeCageDefault ? 1.32 : 1.15,
+  headSize: isHomeCageDefault ? PROP.headSize * 1.18 : PROP.headSize,
+  snoutLength: isHomeCageDefault ? 1.08 : 1.0,
+  bodyLength: isHomeCageDefault ? 1.22 : 1.0,
+  legLength: isHomeCageDefault ? 1.16 : 1.06,
+  legThickness: isHomeCageDefault ? 1.18 : 1.10,
   // Physics
-  maxSpeed: 5.4, dragCoeff: 2.55, wanderForce: 5.8, wallAttraction: 1.8,
+  maxSpeed: 9.2, dragCoeff: 2.35, wanderForce: 9.5, wallAttraction: 2.1,
   enableRearing: true, rearingFrequency: 1.0,
   triggerRearing: () => {
     const subject = mice.find(mouse => (
@@ -4306,22 +5346,31 @@ const guiParams = {
   enableSSS: true, sssThickness: 0.45, sssWrap: 0.5, sssBacklight: 0.6,
   enableContactAO: true, aoRadius: 1.5, aoIntensity: 0.35,
   enableMicroDetail: true, microScale: 40.0, microStrength: 0.06,
-  enablePostFX: false, postVignette: 0.16, postGrain: 0.004, postSaturation: 0.98,
+  enablePostFX: DATASET_LIGHTING === 'calms_gray',
+  postVignette: DATASET_LIGHTING === 'calms_gray' ? 0.18 : 0.16,
+  postGrain: DATASET_LIGHTING === 'calms_gray' ? 0.010 : 0.004,
+  postSaturation: DATASET_LIGHTING === 'calms_gray' ? 0.03 : 0.98,
 };
 postFX.enabled = guiParams.enablePostFX;
+postFX.uniforms.uVigIntensity.value = guiParams.postVignette;
+postFX.uniforms.uGrainStrength.value = guiParams.postGrain;
+postFX.uniforms.uSaturation.value = guiParams.postSaturation;
+if (DATASET_ARENA === 'home_cage') {
+  applyArenaStyle('Home Cage (Bedding)');
+}
 
 function getStrainProfile(presetName) {
   if (presetName === 'C57BL/6 (Black)') {
     return {
       eyeColor: '#060505', eyeRimColor: '#1f1617',
-      earOuterTransmission: 0.12, earInnerTransmission: 0.22,
-      earInnerSatOffset: 0.035, earInnerLightOffset: 0.00, earOuterRoughness: 0.64,
-      earOuterColor: '#362e30', earInnerColor: '#7a5958',
-      earSkinBlend: 0.18, earInnerSkinBlend: 0.12, earScaleMul: 0.94,
-      earSheenColor: 0x9b8278, earAttenuationColor: 0x8a5148, earAttenuationDistance: 0.10,
+      earOuterTransmission: 0.18, earInnerTransmission: 0.28,
+      earInnerSatOffset: 0.035, earInnerLightOffset: 0.02, earOuterRoughness: 0.60,
+      earOuterColor: '#66585a', earInnerColor: '#987c7a',
+      earSkinBlend: 0.22, earInnerSkinBlend: 0.16, earScaleMul: 0.96,
+      earSheenColor: 0xb29a90, earAttenuationColor: 0x8a5148, earAttenuationDistance: 0.12,
       earYaw: 0.72, earHeightOffset: -0.02, padDarken: 0.94, clawColor: 0xd0c6be,
       pawColor: '#a67674', pawPadColor: '#885c5b',
-      noseColor: '#966563', tailColor: '#564746', tailTransmission: 0.10,
+      noseColor: '#966563', tailColor: '#524242', tailTransmission: 0.10,
       whiskerColor: 0xb5aba3, pawSpreadMul: 1.0, toeLenMul: 0.98,
       gaitAmpMul: 0.92, headIdleYawMul: 0.82, headIdlePitchMul: 0.88,
       sniffAmpMul: 0.75, breathIdleAmp: 0.010, breathMoveAmp: 0.012,
@@ -4362,16 +5411,16 @@ function getStrainProfile(presetName) {
       breathIdleFreq: 13.0, breathMoveFreq: 24.0, tailWaveAmpMul: 1.18, tailWaveFreqMul: 1.12
     };
   }
-  return { // BALB/c default
-    eyeColor: '#7a141c', eyeRimColor: '#cf8e90',
-    earOuterTransmission: 0.32, earInnerTransmission: 0.44,
-    earInnerSatOffset: 0.065, earInnerLightOffset: 0.035, earOuterRoughness: 0.56,
-    earOuterColor: '#d6c9c7', earInnerColor: '#ebbcbc',
-    earSkinBlend: 0.26, earInnerSkinBlend: 0.22, earScaleMul: 0.95,
-    earSheenColor: 0xf2d4d4, earAttenuationColor: 0xde9ca0, earAttenuationDistance: 0.16,
-    earYaw: 0.50, earHeightOffset: -0.01, padDarken: 0.94, clawColor: 0xe6dcd5,
-    pawColor: '#ebb8b6', pawPadColor: '#d9989a',
-    noseColor: '#e89ca0', tailColor: '#e6b2b0', tailTransmission: 0.26,
+  return { // BALB/c default — deep ruby iris + translucent pale rose pinnae
+    eyeColor: '#4c0c13', eyeRimColor: '#c98a8c',
+    earOuterTransmission: 0.34, earInnerTransmission: 0.46,
+    earInnerSatOffset: 0.055, earInnerLightOffset: 0.030, earOuterRoughness: 0.54,
+    earOuterColor: '#dcd0cd', earInnerColor: '#eac0be',
+    earSkinBlend: 0.24, earInnerSkinBlend: 0.20, earScaleMul: 0.96,
+    earSheenColor: 0xf4dada, earAttenuationColor: 0xde9ca0, earAttenuationDistance: 0.17,
+    earYaw: 0.52, earHeightOffset: -0.01, padDarken: 0.94, clawColor: 0xe6dcd5,
+    pawColor: '#eab9b6', pawPadColor: '#d69799',
+    noseColor: '#e59ca0', tailColor: '#e6b2b0', tailTransmission: 0.26,
     whiskerColor: 0xebe6df, pawSpreadMul: 1.04, toeLenMul: 1.03,
     gaitAmpMul: 1.0, headIdleYawMul: 1.0, headIdlePitchMul: 1.0,
     sniffAmpMul: 1.0, breathIdleAmp: 0.013, breathMoveAmp: 0.016,
@@ -4381,10 +5430,11 @@ function getStrainProfile(presetName) {
 
 function applyStrainPreset(name) {
   guiParams.presets = name;
-  if (name === 'BALB/c (White)') { guiParams.furColor = '#ebe5d9'; guiParams.skinColor = '#ebb4b0'; guiParams.furDensity = 0.88; guiParams.earSize = 0.69; }
-  if (name === 'C57BL/6 (Black)') { guiParams.furColor = '#181617'; guiParams.skinColor = '#483b3d'; guiParams.furDensity = 0.94; guiParams.earSize = 0.67; }
-  if (name === 'CBA (Brown)') { guiParams.furColor = '#6d4d38'; guiParams.skinColor = '#cfa090'; guiParams.furDensity = 0.86; guiParams.earSize = 0.68; }
-  if (name === 'Nude/Hairless') { guiParams.furColor = '#ffd0c8'; guiParams.skinColor = '#ffc0b8'; guiParams.furDensity = 0.0; guiParams.earSize = 0.75; }
+  const earScale = isHomeCageDefault ? 1.18 : 1.0;
+  if (name === 'BALB/c (White)') { guiParams.furColor = '#efebe2'; guiParams.skinColor = '#ebb4b0'; guiParams.furDensity = 0.90; guiParams.earSize = 0.70 * earScale; }
+  if (name === 'C57BL/6 (Black)') { guiParams.furColor = '#171618'; guiParams.skinColor = '#483b3d'; guiParams.furDensity = 0.95; guiParams.earSize = 0.68 * earScale; }
+  if (name === 'CBA (Brown)') { guiParams.furColor = '#6d4d38'; guiParams.skinColor = '#cfa090'; guiParams.furDensity = 0.88; guiParams.earSize = 0.68 * earScale; }
+  if (name === 'Nude/Hairless') { guiParams.furColor = '#ffd0c8'; guiParams.skinColor = '#ffc0b8'; guiParams.furDensity = 0.0; guiParams.earSize = 0.75 * earScale; }
 }
 
 const gui = new GUI({ title: 'OPEN FIELD CONTROLS' });
@@ -4456,6 +5506,9 @@ neuroscienceFolder.add(guiParams, 'showTrackingKeypoints').name('Show Pose Skele
 neuroscienceFolder.add(guiParams, 'wireframeMode').name('Wireframe Bodies').onChange(v => {
   mice.forEach(m => applySubjectWireframe(m, v));
 });
+neuroscienceFolder.add(guiParams, 'implantHeadstage').name('Neural Headstage').onChange(v => {
+  if (mice[0]) mice[0].setHeadstageEnabled(v);
+});
 
 const syncPausedAnatomy = () => {
   if (guiParams.isPaused) {
@@ -4496,9 +5549,11 @@ traitFolder.add(guiParams, 'furDensity', 0.0, 1.0).name('Fur Density').onFinishC
 
 // Simulation Controls
 const controlFolder = gui.addFolder('Simulation Controls');
+controlFolder.add(guiParams, 'arenaStyle', ['Open Field', 'Home Cage (Bedding)'])
+  .name('Arena').onChange(applyArenaStyle);
 controlFolder.add(guiParams, 'isPaused').name('Pause Simulation');
 controlFolder.add(guiParams, 'playbackSpeed', 0.25, 1.5, 0.25).name('Playback Speed');
-controlFolder.add(guiParams, 'cameraView', ['Both mice', 'Follow black', 'Follow white', 'Top down'])
+controlFolder.add(guiParams, 'cameraView', ['Both mice', 'Follow black', 'Follow white', 'Top down', 'Home cage top'])
   .name('Camera').onChange(frameCameraView);
 controlFolder.add(guiParams, 'addSubject').name('(+) Spawn Subject');
 controlFolder.add(guiParams, 'clearSubjects').name('(!) Clear All');
@@ -4779,11 +5834,45 @@ function clearMice() {
 }
 
 // Spawn initial subjects
-applyStrainPreset('C57BL/6 (Black)');
-spawnMouse({ position: [-3.6, -2.6], heading: [1.0, 0.12], speed: 0.9 });
-applyStrainPreset('BALB/c (White)');
-gui.controllersRecursive().forEach(c => c.updateDisplay());
-spawnMouse({ position: [3.3, 2.6], heading: [-1.0, -0.12], speed: 0.85 });
+if (DATASET_COAT_PAIR === 'c57_pair' || DATASET_COAT_PAIR === 'black_pair') {
+  applyStrainPreset('C57BL/6 (Black)');
+  spawnMouse({ position: [-3.6, -2.6], heading: [1.0, 0.12], speed: 0.9 });
+  applyStrainPreset('C57BL/6 (Black)');
+  gui.controllersRecursive().forEach(c => c.updateDisplay());
+  spawnMouse({ position: [3.3, 2.6], heading: [-1.0, -0.12], speed: 0.85 });
+} else if (DATASET_COAT_PAIR === 'balbc_pair' || DATASET_COAT_PAIR === 'white_pair') {
+  applyStrainPreset('BALB/c (White)');
+  spawnMouse({ position: [-3.6, -2.6], heading: [1.0, 0.12], speed: 0.9 });
+  applyStrainPreset('BALB/c (White)');
+  gui.controllersRecursive().forEach(c => c.updateDisplay());
+  spawnMouse({ position: [3.3, 2.6], heading: [-1.0, -0.12], speed: 0.85 });
+} else if (DATASET_COAT_PAIR === 'cba_pair' || DATASET_COAT_PAIR === 'brown_pair') {
+  applyStrainPreset('CBA (Brown)');
+  spawnMouse({ position: [-3.6, -2.6], heading: [1.0, 0.12], speed: 0.9 });
+  applyStrainPreset('CBA (Brown)');
+  gui.controllersRecursive().forEach(c => c.updateDisplay());
+  spawnMouse({ position: [3.3, 2.6], heading: [-1.0, -0.12], speed: 0.85 });
+} else {
+  applyStrainPreset('C57BL/6 (Black)');
+  spawnMouse({ position: [-3.6, -2.6], heading: [1.0, 0.12], speed: 0.9 });
+  applyStrainPreset('BALB/c (White)');
+  gui.controllersRecursive().forEach(c => c.updateDisplay());
+  spawnMouse({ position: [3.3, 2.6], heading: [-1.0, -0.12], speed: 0.85 });
+}
+if (DATASET_CAPTURE && DATASET_CAMERA_VIEW === 'bottom-up') {
+  mice.forEach(m => {
+    if (m.contactShadow) m.contactShadow.visible = false;
+  });
+}
+if (DATASET_HEADSTAGE) {
+  if ((DATASET_HEADSTAGE === 'resident' || DATASET_HEADSTAGE === '1' || DATASET_HEADSTAGE === 'both') && mice[0]) {
+    mice[0].setHeadstageEnabled(true);
+    guiParams.implantHeadstage = true;
+  }
+  if ((DATASET_HEADSTAGE === 'intruder' || DATASET_HEADSTAGE === 'both') && mice[1]) {
+    mice[1].setHeadstageEnabled(true);
+  }
+}
 
 if (IS_ANATOMY_QA) {
   const anatomySubjectIndex = datasetQuery.get('anatomy_subject') === 'white' ? 1 : 0;
@@ -4973,6 +6062,27 @@ if (DATASET_CAPTURE && DATASET_SCENARIO && mice.length >= 2) {
   } else if (DATASET_SCENARIO === 'arena_explore') {
     placeMouse(mouseA, -2.55, -1.35, 0.94, 0.34, 1.65);
     placeMouse(mouseB, 2.55, 1.35, -0.94, -0.34, 1.55);
+  } else if (DATASET_SCENARIO === 'ventral_gait') {
+    placeMouse(mouseA, -2.60, -0.95, 0.96, 0.28, 2.10);
+    placeMouse(mouseB, 2.60, 0.95, -0.96, -0.28, 2.00);
+    mouseA.groomCooldown = 999;
+    mouseB.groomCooldown = 999;
+    mouseA.rearCooldown = 999;
+    mouseB.rearCooldown = 999;
+  } else if (DATASET_SCENARIO === 'calms_resident_intruder') {
+    // Resident-intruder home-cage investigation inspired by mouse083_task1_annotator1.mp4:
+    // resident (black, cranial headstage) greets intruder (white) near the left nestlet, then
+    // actively trails/pursues intruder as they dart and circle along the cage walls.
+    placeMouse(mouseA, -8.40, -2.60, 0.88, 0.47, 7.60);
+    placeMouse(mouseB, -3.20, 1.40, 0.72, -0.69, 6.80);
+    mouseA.boutState.mode = 'dart-trot';
+    mouseA.boutState.timer = 1.35;
+    mouseB.boutState.mode = 'dart-trot';
+    mouseB.boutState.timer = 1.15;
+    mouseA.groomCooldown = 999;
+    mouseB.groomCooldown = 999;
+    mouseA.rearCooldown = 999;
+    mouseB.rearCooldown = 999;
   }
 }
 
@@ -5107,6 +6217,12 @@ function frameCameraView() {
   } else if (guiParams.cameraView === 'Top down') {
     controls.target.set(0, 0, 0);
     camera.position.set(0, 44, 0.01);
+  } else if (guiParams.cameraView === 'Home cage top') {
+    camera.up.set(0, 0, -1);
+    camera.fov = 25.5;
+    camera.updateProjectionMatrix();
+    controls.target.set(0, 0.25, 0);
+    camera.position.set(0, 56.5, 0.02);
   } else {
     controls.target.copy(cameraTarget);
     camera.position.copy(cameraBasePosition);
@@ -5177,10 +6293,19 @@ window.addEventListener('resize', () => {
     camera.position.set(0, 29.0, 0.02);
     camera.up.set(0, 0, -1);
     controls.target.set(0, 0.35, 0);
+  } else if (DATASET_CAPTURE && DATASET_CAMERA_VIEW === 'home-cage-top') {
+    camera.fov = 25.5;
+    camera.position.set(0, 56.5, 0.02);
+    camera.up.set(0, 0, -1);
+    controls.target.set(0, 0.25, 0);
   } else if (DATASET_CAPTURE && DATASET_CAMERA_VIEW === 'oblique-close') {
     camera.position.set(5.8, 4.4, 12.6);
     camera.up.set(0, 1, 0);
     controls.target.set(0, 0.85, 0);
+  } else if (DATASET_CAPTURE && DATASET_CAMERA_VIEW === 'bottom-up') {
+    camera.position.set(0, -18.5, 0.02);
+    camera.up.set(0, 0, 1);
+    controls.target.set(0, 0.28, 0);
   } else {
     camera.up.set(0, 1, 0);
     camera.position.copy(cameraBasePosition).sub(cameraTarget).multiplyScalar(cameraDistanceScale).add(cameraTarget);
@@ -5589,6 +6714,7 @@ let segmentationRenderTarget = null;
 let segmentationPixelBuffer = null;
 let segmentationDiscardMaterial = null;
 const segmentationIdMaterials = new Map();
+const spinalSegmentationIdMaterials = new Map();
 
 function getSegmentationDiscardMaterial() {
   if (!segmentationDiscardMaterial) {
@@ -5639,6 +6765,56 @@ function getSegmentationIdMaterial(r, g, b, side = THREE.FrontSide) {
   return material;
 }
 
+function getSpinalSegmentationIdMaterial(r, g, b, side = THREE.FrontSide, spineFlex = null, halfLen = 2.68) {
+  const key = `${r}:${g}:${b}:${side}`;
+  let material = spinalSegmentationIdMaterials.get(key);
+  if (!material) {
+    material = new THREE.ShaderMaterial({
+      uniforms: {
+        uIdColor: { value: new THREE.Vector4(r / 255, g / 255, b / 255, 1.0) },
+        uSpineBend: { value: 0.0 },
+        uSpineSCurve: { value: 0.0 },
+        uSpineArch: { value: 0.0 },
+        uAxialStretch: { value: 0.0 },
+        uSpineHalfLen: { value: halfLen },
+      },
+      vertexShader: `
+        ${SPINE_DEFORM_GLSL}
+        void main() {
+          vec4 mvPosition = vec4(position, 1.0);
+          #ifdef USE_INSTANCING
+            mvPosition = instanceMatrix * mvPosition;
+          #endif
+          float spinePsi = 0.0;
+          mvPosition.xyz = annolidDeformSpinePos(mvPosition.xyz, spinePsi);
+          mvPosition = modelViewMatrix * mvPosition;
+          gl_Position = projectionMatrix * mvPosition;
+        }
+      `,
+      fragmentShader: `
+        uniform vec4 uIdColor;
+        void main() {
+          gl_FragColor = uIdColor;
+        }
+      `,
+      side,
+      transparent: false,
+      depthTest: true,
+      depthWrite: true,
+      toneMapped: false,
+    });
+    spinalSegmentationIdMaterials.set(key, material);
+  }
+  if (spineFlex) {
+    material.uniforms.uSpineBend.value = spineFlex.bend || 0.0;
+    material.uniforms.uSpineSCurve.value = spineFlex.sCurve || 0.0;
+    material.uniforms.uSpineArch.value = spineFlex.arch || 0.0;
+    material.uniforms.uAxialStretch.value = spineFlex.stretch || 0.0;
+  }
+  material.uniforms.uSpineHalfLen.value = halfLen;
+  return material;
+}
+
 function classifySubjectSegmentationNodes(mouse) {
   const partByNode = new Map();
   const markSubtree = (root, fineId, coarseId) => {
@@ -5659,6 +6835,8 @@ function classifySubjectSegmentationNodes(mouse) {
   markSubtree(mouse.hindR?._shank, 10, 3);
   markSubtree(mouse.tailMesh, 11, 4);
   markSubtree(mouse.tailRoot, 11, 4);
+  // Sacral base pelage belongs to the furred torso contour rather than the scaly caudal tail.
+  markSubtree(mouse.tailBaseFur, 6, 2);
 
   const excludeSubtree = root => {
     if (!root) return;
@@ -5670,6 +6848,8 @@ function classifySubjectSegmentationNodes(mouse) {
   excludeSubtree(mouse.trackingGroup);
   excludeSubtree(mouse.padL);
   excludeSubtree(mouse.padR);
+  excludeSubtree(mouse.headstageGroup);
+  excludeSubtree(mouse.tetherMesh);
   return partByNode;
 }
 
@@ -5703,20 +6883,45 @@ function captureDatasetSegmentationMasks() {
   const savedChildVisibility = [];
   for (const child of scene.children) {
     savedChildVisibility.push({ child, visible: child.visible });
-    if (!mouseRoots.has(child)) {
+    if (!mouseRoots.has(child) && child !== occluderGroup) {
       child.visible = false;
     }
   }
 
   const savedMeshMaterials = [];
+  const bgOccluderMat = getSegmentationIdMaterial(0, 0, 0, THREE.FrontSide);
+  if (occluderGroup && occluderGroup.visible) {
+    occluderGroup.traverse(node => {
+      if (!node.isMesh) return;
+      savedMeshMaterials.push({ node, material: node.material });
+      node.material = bgOccluderMat;
+    });
+  }
   const discardMat = getSegmentationDiscardMaterial();
   for (const mouse of mice) {
     if (!mouse.mesh.visible) continue;
     const trackByte = Math.max(1, Math.min(254, Number(mouse.trackId) || 1));
     const partByNode = classifySubjectSegmentationNodes(mouse);
+    const spinalNodes = new Set([mouse.bodyMesh]);
+    if (mouse.bodyFur) {
+      mouse.bodyFur.traverse(n => {
+        if (n.isMesh) spinalNodes.add(n);
+      });
+    }
+    const implantNodes = new Set();
+    if (mouse.hasHeadstage) {
+      if (mouse.headstageGroup) {
+        mouse.headstageGroup.traverse(n => { if (n.isMesh) implantNodes.add(n); });
+      }
+      if (mouse.tetherMesh) implantNodes.add(mouse.tetherMesh);
+    }
     mouse.mesh.traverse(node => {
       if (!node.isMesh) return;
       savedMeshMaterials.push({ node, material: node.material });
+      if (implantNodes.has(node) && node.visible) {
+        node.material = bgOccluderMat;
+        return;
+      }
       const primaryMat = Array.isArray(node.material) ? node.material[0] : node.material;
       const partInfo = partByNode.get(node);
       const isWhisker = Boolean(
@@ -5732,12 +6937,22 @@ function captureDatasetSegmentationMasks() {
         && !(primaryMat.transparent && (primaryMat.opacity ?? 1.0) < 0.65)
       );
       if (isSolidPart) {
-        node.material = getSegmentationIdMaterial(
-          trackByte,
-          partInfo.fineId,
-          partInfo.coarseId,
-          primaryMat.side ?? THREE.FrontSide
-        );
+        const sideMode = primaryMat.side ?? THREE.FrontSide;
+        node.material = spinalNodes.has(node)
+          ? getSpinalSegmentationIdMaterial(
+            trackByte,
+            partInfo.fineId,
+            partInfo.coarseId,
+            sideMode,
+            mouse.effectiveSpineFlex || mouse.spineFlex,
+            PROP.bodyLength
+          )
+          : getSegmentationIdMaterial(
+            trackByte,
+            partInfo.fineId,
+            partInfo.coarseId,
+            sideMode
+          );
       } else {
         node.material = discardMat;
       }
@@ -5899,6 +7114,10 @@ function disposeSceneResources() {
     material?.dispose?.();
   }
   segmentationIdMaterials.clear();
+  for (const material of spinalSegmentationIdMaterials.values()) {
+    material?.dispose?.();
+  }
+  spinalSegmentationIdMaterials.clear();
   scene.environment?.dispose?.();
   scene.environment = null;
   keyLight.shadow.map?.dispose?.();

@@ -118,6 +118,41 @@ def test_wall_normals_repel_and_attract_on_all_four_sides():
     assert result["boundary"] == result["otherWall"] == result["disabled"] == 0
 
 
+def test_spine_flex_arc_kinematics_and_oriented_wall_margin():
+    result = run_javascript(
+        """
+        const rest = evaluateSpinePoint(0.45, 0.25, 2.1, null, 2.68);
+        const bent = evaluateSpinePoint(0.0, 0.20, 2.4, { bend: 0.55, sCurve: 0.0, arch: 0.08, stretch: 0.0 }, 2.68);
+        const stretched = evaluateSpinePoint(0.50, 0.30, 2.4, { bend: 0.0, sCurve: 0.0, arch: 0.0, stretch: 0.20 }, 2.68);
+        const bunched = evaluateSpinePoint(0.50, 0.30, 2.4, { bend: 0.0, sCurve: 0.0, arch: 0.0, stretch: -0.18 }, 2.68);
+
+        // Parallel to North wall (normal = [0, 1], heading = [1, 0]) vs nose-first into wall (heading = [0, -1])
+        const parallelMargin = computeOrientedWallMargin(1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0);
+        const headOnMargin = computeOrientedWallMargin(0.0, -1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0);
+        const stretchedHeadOn = computeOrientedWallMargin(0.0, -1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.20);
+
+        console.log(JSON.stringify({
+          restExact:
+            Math.abs(rest.x - 0.45) < 1e-9
+            && Math.abs(rest.y - 0.25) < 1e-9
+            && Math.abs(rest.z - 2.1) < 1e-9
+            && Math.abs(rest.yaw) < 1e-9,
+          bentLateralPositive: bent.x > 0.35,
+          bentForeshortenedZ: bent.z < 2.4,
+          bentYawPositive: bent.yaw > 0.35,
+          stretchedLongerZ: stretched.z > 2.65,
+          stretchedSlimmerX: stretched.x < 0.50,
+          bunchedShorterZ: bunched.z < 2.15,
+          bunchedWiderX: bunched.x > 0.50,
+          parallelCloserThanHeadOn: parallelMargin < headOnMargin - 0.75,
+          parallelCloseThigmotaxis: parallelMargin < 1.75 && parallelMargin > 1.25,
+          stretchedIncreasesHeadOn: stretchedHeadOn > headOnMargin,
+        }));
+        """
+    )
+    assert all(result.values()), f"Failed spinal/wall kinematic checks: {result}"
+
+
 def test_seeded_streams_repeat_without_modifying_global_random():
     result = run_javascript(
         """
@@ -186,15 +221,28 @@ def test_annolid_shaders_program_keys_zero_options_and_live_uniforms():
         const sssOnly = makeMat();
         shaders.applySSSShader(sssOnly, { thickness: 0, wrap: 0, backlight: 0 });
 
+        const bodySpine = makeMat();
+        shaders.applyFurShader(bodySpine, { anisotropy: 0.4, specIntensity: 0.12 });
+        shaders.applySpinalFlexShader(bodySpine, { halfLen: 2.68 });
+
         const compiledFur = makeShaderSource();
         furAndAo.onBeforeCompile(compiledFur, null);
         shaders.updateUniforms(furAndAo, { uAOIntensity: 0.25, uFurSpecIntensity: 0.08 });
+
+        const compiledSpine = {
+          uniforms: {},
+          vertexShader: 'void main() {\\n#include <beginnormal_vertex>\\n#include <project_vertex>\\n#include <worldpos_vertex>\\n}',
+          fragmentShader: 'void main() {\\n#include <normal_fragment_maps>\\n#include <dithering_fragment>\\n}',
+        };
+        bodySpine.onBeforeCompile(compiledSpine, null);
+        shaders.updateUniforms(bodySpine, { uSpineBend: 0.42, uAxialStretch: 0.14 });
 
         const compiledSss = makeShaderSource();
         sssOnly.onBeforeCompile(compiledSss, null);
 
         const keyFurAo = furAndAo.customProgramCacheKey();
         const keySss = sssOnly.customProgramCacheKey();
+        const keyBodySpine = bodySpine.customProgramCacheKey();
 
         shaders.removeAllShaders(sssOnly);
         const restoredKey = sssOnly.customProgramCacheKey();
@@ -202,8 +250,9 @@ def test_annolid_shaders_program_keys_zero_options_and_live_uniforms():
         console.log(JSON.stringify({
           keyFurAo,
           keySss,
+          keyBodySpine,
           restoredKey,
-          distinctKeys: keyFurAo !== keySss,
+          distinctKeys: keyFurAo !== keySss && keyBodySpine !== keyFurAo,
           zeroAnisotropyPreserved: compiledFur.uniforms.uFurAnisotropy.value === 0,
           zeroRadiusPreserved: compiledFur.uniforms.uAORadius.value === 0,
           zeroSssPreserved:
@@ -215,6 +264,9 @@ def test_annolid_shaders_program_keys_zero_options_and_live_uniforms():
           liveAoUpdated: compiledFur.uniforms.uAOIntensity.value === 0.25,
           liveFurUpdated: compiledFur.uniforms.uFurSpecIntensity.value === 0.08,
           worldFlowInjected: compiledFur.vertexShader.includes('vFurWorldFlow'),
+          spineShaderInjected: compiledSpine.vertexShader.includes('annolidDeformSpinePos'),
+          liveSpineBendUpdated: compiledSpine.uniforms.uSpineBend.value === 0.42,
+          liveSpineStretchUpdated: compiledSpine.uniforms.uAxialStretch.value === 0.14,
         }));
         """,
         include_simulation=False,
@@ -222,6 +274,7 @@ def test_annolid_shaders_program_keys_zero_options_and_live_uniforms():
     assert result["distinctKeys"] is True
     assert result["keyFurAo"] == "base|annolid:fur+ao"
     assert result["keySss"] == "base|annolid:sss"
+    assert result["keyBodySpine"] == "base|annolid:fur+spine"
     assert result["restoredKey"] == "base"
     assert result["zeroAnisotropyPreserved"] is True
     assert result["zeroRadiusPreserved"] is True
@@ -231,6 +284,9 @@ def test_annolid_shaders_program_keys_zero_options_and_live_uniforms():
     assert result["liveAoUpdated"] is True
     assert result["liveFurUpdated"] is True
     assert result["worldFlowInjected"] is True
+    assert result["spineShaderInjected"] is True
+    assert result["liveSpineBendUpdated"] is True
+    assert result["liveSpineStretchUpdated"] is True
 
 
 def test_threejs_runtime_and_two_mice_assets_have_no_external_cdn_imports():

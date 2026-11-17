@@ -101,6 +101,13 @@ class SimulationScenarioSpec:
     seed: int
     fps: int
     frame_count: int
+    coat_pair: str = ""
+    lighting: str = ""
+    occluder: str = ""
+    arena: str = ""
+    headstage: str = ""
+    width_override: Optional[int] = None
+    height_override: Optional[int] = None
 
 
 DEFAULT_SCENARIOS: Tuple[SimulationScenarioSpec, ...] = (
@@ -139,6 +146,62 @@ DEFAULT_SCENARIOS: Tuple[SimulationScenarioSpec, ...] = (
         seed=20260713,
         fps=8,
         frame_count=10,
+    ),
+)
+
+DOMAIN_RANDOMIZATION_SCENARIOS: Tuple[SimulationScenarioSpec, ...] = (
+    SimulationScenarioSpec(
+        name="same_strain_c57_huddle",
+        description="Two identical black C57BL/6 mice huddling with zero coat-albedo contrast.",
+        camera_view="top-close",
+        scenario="social_huddle",
+        seed=20260714,
+        fps=8,
+        frame_count=10,
+        coat_pair="c57_pair",
+    ),
+    SimulationScenarioSpec(
+        name="ir_night_explore",
+        description="Dim red/IR night-vision behavioral arena illumination.",
+        camera_view="top-close",
+        scenario="arena_explore",
+        seed=20260715,
+        fps=8,
+        frame_count=10,
+        lighting="ir_night",
+    ),
+    SimulationScenarioSpec(
+        name="ventral_glass_gait",
+        description="Bottom-up glass-floor gait imaging exposing all four paws, snout, and tail base.",
+        camera_view="bottom-up",
+        scenario="ventral_gait",
+        seed=20260716,
+        fps=8,
+        frame_count=10,
+    ),
+    SimulationScenarioSpec(
+        name="wire_bar_occluded",
+        description="Overhead stainless-steel cage-lid bars casting partial 3D depth occlusion across subjects.",
+        camera_view="top-close",
+        scenario="arena_explore",
+        seed=20260717,
+        fps=8,
+        frame_count=10,
+        occluder="wire_bars",
+    ),
+    SimulationScenarioSpec(
+        name="calms_resident_intruder",
+        description="CalMS21-style monochrome overhead shoebox home-cage with corncob bedding, shredded nestlet, water port, cranial neural headstage + tether, and directed resident-intruder social pursuit.",
+        camera_view="home-cage-top",
+        scenario="calms_resident_intruder",
+        seed=20260718,
+        fps=10,
+        frame_count=14,
+        lighting="calms_gray",
+        arena="home_cage",
+        headstage="resident",
+        width_override=768,
+        height_override=432,
     ),
 )
 
@@ -349,23 +412,30 @@ def build_ground_truth_labelme_payload(
         tid = int(ann["track_id"])
         inst_label = f"mouse_{tid}"
         inst_mask = track_map == tid
+        # Bridge tiny 1-2px tail gaps, while retaining genuine multi-fragment splits (e.g. wire-bar occlusion).
+        m_bridged = cv2.morphologyEx(
+            inst_mask.astype(np.uint8) * 255,
+            cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
+        )
         parent_polys = mask_to_polygons(
-            inst_mask, epsilon=0.65, min_area_px=12, single_parent_contour=True
+            m_bridged > 0, epsilon=0.65, min_area_px=16, single_parent_contour=False
         )
         if not parent_polys:
             continue
 
-        shapes.append(
-            {
-                "label": inst_label,
-                "points": parent_polys[0],
-                "group_id": tid,
-                "shape_type": "polygon",
-                "flags": {},
-                "visible": True,
-                "description": str(ann.get("subject_name") or "simulated_mouse"),
-            }
-        )
+        for p_poly in parent_polys:
+            shapes.append(
+                {
+                    "label": inst_label,
+                    "points": p_poly,
+                    "group_id": tid,
+                    "shape_type": "polygon",
+                    "flags": {},
+                    "visible": True,
+                    "description": str(ann.get("subject_name") or "simulated_mouse"),
+                }
+            )
 
         raw_kps = ann.get("keypoints") or []
         for kp_idx, kp_name in enumerate(keypoint_names):
@@ -512,16 +582,25 @@ def _capture_scenario_in_page(
     for d in (images_dir, masks_dir, labelme_dir):
         d.mkdir(parents=True, exist_ok=True)
 
-    query = urlencode(
-        {
-            "dataset": 1,
-            "frame": 0,
-            "fps": spec.fps,
-            "seed": spec.seed,
-            "camera_view": spec.camera_view,
-            "scenario": spec.scenario,
-        }
-    )
+    query_params: Dict[str, Any] = {
+        "dataset": 1,
+        "frame": 0,
+        "fps": spec.fps,
+        "seed": spec.seed,
+        "camera_view": spec.camera_view,
+        "scenario": spec.scenario,
+    }
+    if spec.coat_pair:
+        query_params["coat_pair"] = spec.coat_pair
+    if spec.lighting:
+        query_params["lighting"] = spec.lighting
+    if spec.occluder:
+        query_params["occluder"] = spec.occluder
+    if spec.arena:
+        query_params["arena"] = spec.arena
+    if spec.headstage:
+        query_params["headstage"] = spec.headstage
+    query = urlencode(query_params)
     page.goto(f"{base_url}/{SCENE_PATH}?{query}", wait_until="load", timeout=120_000)
     page.wait_for_selector("#c[data-dataset-ready='true']", timeout=120_000)
 
@@ -680,12 +759,15 @@ def generate_simulation_videos_and_ground_truth(
         page.on("pageerror", lambda err: browser_errors.append(str(err)))
 
         for spec in scenarios:
+            scen_w = int(spec.width_override or width)
+            scen_h = int(spec.height_override or height)
+            page.set_viewport_size({"width": scen_w, "height": scen_h})
             scenario_dir = output_dir / spec.name
             if scenario_dir.exists():
                 shutil.rmtree(scenario_dir)
             scenario_dir.mkdir(parents=True, exist_ok=True)
             generated[spec.name] = _capture_scenario_in_page(
-                page, base_url, spec, scenario_dir, width=width, height=height
+                page, base_url, spec, scenario_dir, width=scen_w, height=scen_h
             )
 
         if fixture_output_dir is not None:
@@ -862,7 +944,11 @@ def _extract_visible_keypoints_from_labelme(
     return kps
 
 
-def evaluate_simulation_suite(output_dir: Path) -> Dict[str, Any]:
+def evaluate_simulation_suite(
+    output_dir: Path,
+    *,
+    scenarios: Sequence[SimulationScenarioSpec] = DEFAULT_SCENARIOS,
+) -> Dict[str, Any]:
     """Run all implemented body-part segmentation features against generated Two-Mice 3D ground truth."""
     scenario_summaries: Dict[str, Any] = {}
     overall_part_ious: Dict[str, List[float]] = {
@@ -873,7 +959,13 @@ def evaluate_simulation_suite(output_dir: Path) -> Dict[str, Any]:
     polarity_checks = 0
     polarity_correct = 0
 
-    for spec in DEFAULT_SCENARIOS:
+    active_scenarios = [
+        s
+        for s in scenarios
+        if (output_dir / s.name / "ground_truth" / "sequence_gt.json").exists()
+    ]
+
+    for spec in active_scenarios:
         scenario_dir = output_dir / spec.name
         seq_meta = json.loads(
             (scenario_dir / "ground_truth" / "sequence_gt.json").read_text(
@@ -1277,11 +1369,14 @@ def evaluate_simulation_suite(output_dir: Path) -> Dict[str, Any]:
             persist_json=True,
         ),
         export_csv=True,
+        export_ethogram=True,
+        fps=float(huddle_meta.get("fps", 8.0)),
     )
     csv_out = Path(
         proc_summary.get("tracking_csv")
         or (corrupted_run_dir.parent / f"{corrupted_run_dir.name}_tracking.csv")
     )
+    ethogram_summary = proc_summary.get("ethogram") or {}
 
     recovered_m1_ious: List[float] = []
     recovered_m2_ious: List[float] = []
@@ -1316,10 +1411,47 @@ def evaluate_simulation_suite(output_dir: Path) -> Dict[str, Any]:
         if iss.code in {"body_part_containment_violation", "body_part_overlap"}
     ]
 
+    from annolid.postprocessing.body_part_ethogram import analyze_body_part_ethogram
+
+    posture_disentanglement: Dict[str, Any] = {}
+    rearing_lm_dir = output_dir / "rearing_oblique" / "ground_truth" / "labelme"
+    curled_lm_dir = output_dir / "curled_grooming" / "ground_truth" / "labelme"
+    if rearing_lm_dir.is_dir() and curled_lm_dir.is_dir():
+        rear_eth = analyze_body_part_ethogram(
+            rearing_lm_dir, fps=8.0, camera_view="auto"
+        )
+        curl_eth = analyze_body_part_ethogram(
+            curled_lm_dir, fps=8.0, camera_view="auto"
+        )
+        r_m1 = rear_eth.kinematics_df[
+            rear_eth.kinematics_df["instance_name"] == "mouse_1"
+        ]
+        c_m1 = curl_eth.kinematics_df[
+            curl_eth.kinematics_df["instance_name"] == "mouse_1"
+        ]
+        posture_disentanglement = {
+            "rearing_oblique_mouse1_max_rearing_index": (
+                round(float(r_m1["rearing_index"].max()), 4) if not r_m1.empty else 0.0
+            ),
+            "rearing_oblique_mouse1_mean_curl_index": (
+                round(float(r_m1["curl_groom_index"].mean()), 4)
+                if not r_m1.empty
+                else 0.0
+            ),
+            "curled_grooming_mouse1_mean_curl_index": (
+                round(float(c_m1["curl_groom_index"].mean()), 4)
+                if not c_m1.empty
+                else 0.0
+            ),
+            "curled_grooming_mouse1_mean_rearing_index": (
+                round(float(c_m1["rearing_index"].mean()), 4) if not c_m1.empty else 0.0
+            ),
+        }
+
     summary = {
         "schema_version": 1,
-        "total_scenarios": len(DEFAULT_SCENARIOS),
-        "total_frames_evaluated": sum(s.frame_count for s in DEFAULT_SCENARIOS),
+        "total_scenarios": len(active_scenarios),
+        "total_frames_evaluated": sum(s.frame_count for s in active_scenarios),
         "invariants": {
             "containment_violation_pixels": total_containment_violations,
             "pairwise_part_overlap_pixels": total_overlap_pixels,
@@ -1339,6 +1471,7 @@ def evaluate_simulation_suite(output_dir: Path) -> Dict[str, Any]:
             if fine_limb_ious
             else 0.0,
         },
+        "posture_disentanglement": posture_disentanglement,
         "merged_huddle_recovery": {
             "corrupted_merged_frames": merged_frame_ids,
             "merged_parent_splits": int(proc_summary.get("merged_parent_splits", 0)),
@@ -1352,6 +1485,14 @@ def evaluate_simulation_suite(output_dir: Path) -> Dict[str, Any]:
             if recovered_m2_ious
             else 0.0,
             "csv_exported": csv_out.exists(),
+            "ethogram_exported": bool(ethogram_summary),
+            "ethogram_total_bouts": int(ethogram_summary.get("total_bouts", 0)),
+            "ethogram_bout_counts": dict(
+                ethogram_summary.get("bout_counts_by_type") or {}
+            ),
+            "uncertain_active_learning_frames": len(
+                proc_summary.get("uncertain_frames") or []
+            ),
             "qc_missing_parent_warnings": len(missing_parent_issues),
             "qc_body_part_geometry_violations": len(containment_qc_issues),
         },
@@ -1417,11 +1558,102 @@ def _write_markdown_report(output_dir: Path, summary: Mapping[str, Any]) -> None
     (output_dir / "README.md").write_text("\n".join(lines), encoding="utf-8")
 
 
+def export_simulation_training_datasets(output_dir: Path) -> Dict[str, str]:
+    """Export hierarchy-separated whole-animal and body-part COCO/YOLO datasets from simulation LabelMe GT."""
+    from annolid.annotation import labelme2coco
+    from annolid.annotation.labelme2yolo import Labelme2YOLO
+
+    staging_dir = output_dir / "training_datasets" / "labelme_gt_merged"
+    if staging_dir.exists():
+        shutil.rmtree(staging_dir)
+    staging_dir.mkdir(parents=True, exist_ok=True)
+
+    staged_count = 0
+    for scen_dir in sorted(output_dir.iterdir()):
+        lm_dir = scen_dir / "ground_truth" / "labelme"
+        img_dir = scen_dir / "ground_truth" / "images"
+        if not lm_dir.is_dir() or not img_dir.is_dir():
+            continue
+        for jf in sorted(lm_dir.glob("*.json")):
+            payload = json.loads(jf.read_text(encoding="utf-8"))
+            src_img = img_dir / Path(str(payload["imagePath"])).name
+            if not src_img.exists():
+                continue
+            stem = f"{scen_dir.name}_{jf.stem}"
+            dst_img = staging_dir / f"{stem}{src_img.suffix}"
+            shutil.copy2(src_img, dst_img)
+            payload["imagePath"] = dst_img.name
+            (staging_dir / f"{stem}.json").write_text(
+                json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+            )
+            staged_count += 1
+
+    if staged_count == 0:
+        return {}
+
+    ds_root = output_dir / "training_datasets"
+    coco_inst_dir = ds_root / "coco_instances"
+    coco_parts_dir = ds_root / "coco_parts"
+    list(
+        labelme2coco.convert(
+            str(staging_dir),
+            str(coco_inst_dir),
+            labels_file=None,
+            train_valid_split=0.8,
+            export_level="instances",
+        )
+    )
+    list(
+        labelme2coco.convert(
+            str(staging_dir),
+            str(coco_parts_dir),
+            labels_file=None,
+            train_valid_split=0.8,
+            export_level="parts",
+        )
+    )
+
+    yolo_inst_stage = ds_root / "yolo_instances_src"
+    yolo_parts_stage = ds_root / "yolo_parts_src"
+    for target_stage in (yolo_inst_stage, yolo_parts_stage):
+        if target_stage.exists():
+            shutil.rmtree(target_stage)
+        shutil.copytree(staging_dir, target_stage)
+
+    Labelme2YOLO(str(yolo_inst_stage), export_level="instances").convert(
+        val_size=0.2, test_size=0.0
+    )
+    Labelme2YOLO(str(yolo_parts_stage), export_level="parts").convert(
+        val_size=0.2, test_size=0.0
+    )
+    return {
+        "coco_instances": str(coco_inst_dir),
+        "coco_parts": str(coco_parts_dir),
+        "yolo_instances": str(yolo_inst_stage / "YOLO_dataset"),
+        "yolo_parts": str(yolo_parts_stage / "YOLO_dataset"),
+    }
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
+    parser.add_argument(
+        "--include-domain-variants",
+        action="store_true",
+        help="Also render/evaluate same-strain C57 pair, IR night lighting, ventral glass-floor gait, and wire-bar occlusion scenarios.",
+    )
+    parser.add_argument(
+        "--render-missing-only",
+        action="store_true",
+        help="Only invoke Playwright capture for scenarios whose sequence_gt.json does not yet exist in --output.",
+    )
+    parser.add_argument(
+        "--export-training-datasets",
+        action="store_true",
+        help="Export separated COCO and YOLO-Seg whole-animal + body-part training datasets from generated 3D LabelMe GT.",
+    )
     parser.add_argument(
         "--write-tiny-fixture",
         action="store_true",
@@ -1439,15 +1671,36 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     args = _parse_args()
     out = args.output.resolve()
+    scenarios: Tuple[SimulationScenarioSpec, ...] = (
+        DEFAULT_SCENARIOS + DOMAIN_RANDOMIZATION_SCENARIOS
+        if args.include_domain_variants
+        else DEFAULT_SCENARIOS
+    )
     if not args.evaluate_only:
-        fixture_out = args.fixture_output.resolve() if args.write_tiny_fixture else None
-        generate_simulation_videos_and_ground_truth(
-            out,
-            width=args.width,
-            height=args.height,
-            fixture_output_dir=fixture_out,
+        to_render: Sequence[SimulationScenarioSpec] = (
+            tuple(
+                s
+                for s in scenarios
+                if not (out / s.name / "ground_truth" / "sequence_gt.json").exists()
+            )
+            if args.render_missing_only
+            else scenarios
         )
-    summary = evaluate_simulation_suite(out)
+        fixture_out = args.fixture_output.resolve() if args.write_tiny_fixture else None
+        if to_render or fixture_out is not None:
+            generate_simulation_videos_and_ground_truth(
+                out,
+                scenarios=to_render,
+                width=args.width,
+                height=args.height,
+                fixture_output_dir=fixture_out,
+            )
+    summary = evaluate_simulation_suite(out, scenarios=scenarios)
+    if args.export_training_datasets:
+        summary["exported_training_datasets"] = export_simulation_training_datasets(out)
+        (out / "evaluation_summary.json").write_text(
+            json.dumps(summary, indent=2) + "\n", encoding="utf-8"
+        )
     print(json.dumps(summary, indent=2))
 
 

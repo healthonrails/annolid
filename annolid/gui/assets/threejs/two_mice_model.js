@@ -26,15 +26,15 @@ export function createDeformedSurfaceSampler(THREE, deformFn) {
 export function createMouseModel(THREE, annolidShaders, random) {
   function defaultProportions() {
     return {
-      bodyLength: 2.68, bodyGirthX: 1.27, bodyGirthY: 1.18,
-      ribcageDepth: 1.04, waistTaper: 0.82, haunchWidth: 1.04, shoulderWidth: 0.90,
-      neckLength: 1.34, neckGirth: 0.64,
-      headSize: 0.98, snoutLength: 1.02, snoutWidth: 0.92, cheekFullness: 0.34,
-      earSize: 0.78, earSetBack: -0.40, earYaw: 0.72, earThickness: 0.08,
-      eyeSize: 0.128, eyeSpacing: 0.45, eyeProtrusion: 1.08, eyeYaw: 0.43,
+      bodyLength: 2.68, bodyGirthX: 1.13, bodyGirthY: 1.14,
+      ribcageDepth: 1.04, waistTaper: 0.88, haunchWidth: 1.02, shoulderWidth: 0.88,
+      neckLength: 1.36, neckGirth: 0.70,
+      headSize: 0.96, snoutLength: 1.04, snoutWidth: 0.90, cheekFullness: 0.38,
+      earSize: 0.80, earSetBack: -0.38, earYaw: 0.68, earThickness: 0.08,
+      eyeSize: 0.108, eyeSpacing: 0.415, eyeProtrusion: 0.88, eyeYaw: 0.44,
       foreLimbLength: 0.94, hindLimbLength: 0.80,
-      forePawSize: 1.12, hindPawSize: 1.16,
-      tailLength: 1.0, tailThickness: 1.0, tailTaper: 0.88, tailSag: 0.02,
+      forePawSize: 1.10, hindPawSize: 1.14,
+      tailLength: 1.0, tailThickness: 1.0, tailTaper: 0.88, tailSag: 0.018,
     };
   }
   const PROP = defaultProportions();
@@ -675,6 +675,129 @@ export function createMouseModel(THREE, annolidShaders, random) {
   const urineSpotTexture = createSoftOvalTexture(256, '147,116,62', 0.085);
   const shadowSmudgeTexture = createSoftOvalTexture(256, '46,39,31', 0.13);
 
+  function makeIsolatedRng(seed) {
+    let st = seed >>> 0;
+    return () => {
+      st = (st + 0x6D2B79F5) >>> 0;
+      let v = st;
+      v = Math.imul(v ^ (v >>> 15), v | 1);
+      v ^= v + Math.imul(v ^ (v >>> 7), v | 61);
+      return ((v ^ (v >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  function createHomeCageBeddingMaps(size = 512) {
+    const rng = makeIsolatedRng(0x51C39E4D);
+    const cAlb = document.createElement('canvas'); cAlb.width = cAlb.height = size;
+    const cNrm = document.createElement('canvas'); cNrm.width = cNrm.height = size;
+    const cRgh = document.createElement('canvas'); cRgh.width = cRgh.height = size;
+    const ctxA = cAlb.getContext('2d');
+    const ctxN = cNrm.getContext('2d');
+    const ctxR = cRgh.getContext('2d');
+
+    // Deep inter-granule shadow substrate
+    ctxA.fillStyle = '#736858';
+    ctxA.fillRect(0, 0, size, size);
+    ctxN.fillStyle = '#8080ff';
+    ctxN.fillRect(0, 0, size, size);
+    ctxR.fillStyle = '#dcdcdc';
+    ctxR.fillRect(0, 0, size, size);
+
+    // Dense overlapping corncob & aspen wood-chip granules (tileable across seams)
+    const granuleCount = 5400;
+    for (let i = 0; i < granuleCount; i++) {
+      const x = rng() * size;
+      const y = rng() * size;
+      const isShaving = rng() < 0.28;
+      const w = isShaving ? (6 + rng() * 14) : (3.5 + rng() * 7.5);
+      const h = isShaving ? (2.2 + rng() * 4.8) : (2.8 + rng() * 6.2);
+      const ang = rng() * Math.PI;
+      const toneRoll = rng();
+      let rC;
+      let gC;
+      let bC;
+      if (toneRoll < 0.16) {
+        // Dark bark / toasted hull fleck
+        const d = 76 + Math.floor(rng() * 38);
+        rC = d + 10; gC = d + 4; bC = d - 6;
+      } else if (toneRoll < 0.72) {
+        // Natural oat / corncob medium granule
+        const m = 148 + Math.floor(rng() * 46);
+        rC = m + 12; gC = m + 6; bC = m - 10;
+      } else {
+        // Bright aspen / birch chip highlight
+        const l = 198 + Math.floor(rng() * 42);
+        rC = Math.min(246, l + 8); gC = Math.min(242, l + 4); bC = Math.max(170, l - 12);
+      }
+
+      const nx = Math.floor(128 + Math.cos(ang) * (16 + rng() * 18));
+      const ny = Math.floor(128 + Math.sin(ang) * (16 + rng() * 18));
+      const rv = 176 + Math.floor(rng() * 62);
+
+      // Wrap tile draws near borders for seamless RepeatWrapping
+      const oxList = [0];
+      const oyList = [0];
+      if (x < 16) oxList.push(size);
+      else if (x > size - 16) oxList.push(-size);
+      if (y < 16) oyList.push(size);
+      else if (y > size - 16) oyList.push(-size);
+
+      for (const ox of oxList) {
+        for (const oy of oyList) {
+          const px = x + ox;
+          const py = y + oy;
+          // Subtle crevice shadow under each granule
+          ctxA.save();
+          ctxA.translate(px + 0.9, py + 1.0);
+          ctxA.rotate(ang);
+          ctxA.fillStyle = 'rgba(38,33,27,0.34)';
+          ctxA.fillRect(-w * 0.52, -h * 0.52, w * 1.04, h * 1.04);
+          ctxA.restore();
+
+          ctxA.save();
+          ctxA.translate(px, py);
+          ctxA.rotate(ang);
+          ctxA.fillStyle = `rgb(${rC},${gC},${bC})`;
+          ctxA.fillRect(-w * 0.5, -h * 0.5, w, h);
+          ctxA.fillStyle = 'rgba(255,250,240,0.14)';
+          ctxA.fillRect(-w * 0.45, -h * 0.45, w * 0.9, h * 0.32);
+          ctxA.restore();
+
+          ctxN.save();
+          ctxN.translate(px, py);
+          ctxN.rotate(ang);
+          ctxN.fillStyle = `rgb(${nx},${ny},248)`;
+          ctxN.fillRect(-w * 0.5, -h * 0.5, w, h);
+          ctxN.restore();
+
+          ctxR.save();
+          ctxR.translate(px, py);
+          ctxR.rotate(ang);
+          ctxR.fillStyle = `rgb(${rv},${rv},${rv})`;
+          ctxR.fillRect(-w * 0.5, -h * 0.5, w, h);
+          ctxR.restore();
+        }
+      }
+    }
+
+    const albedo = new THREE.CanvasTexture(cAlb);
+    albedo.wrapS = albedo.wrapT = THREE.RepeatWrapping;
+    albedo.repeat.set(3.8, 2.7);
+    albedo.colorSpace = THREE.SRGBColorSpace;
+    albedo.anisotropy = 8;
+
+    const normal = new THREE.CanvasTexture(cNrm);
+    normal.wrapS = normal.wrapT = THREE.RepeatWrapping;
+    normal.repeat.set(3.8, 2.7);
+
+    const roughness = new THREE.CanvasTexture(cRgh);
+    roughness.wrapS = roughness.wrapT = THREE.RepeatWrapping;
+    roughness.repeat.set(3.8, 2.7);
+
+    return { albedo, normal, roughness };
+  }
+  const homeCageBeddingMaps = createHomeCageBeddingMaps();
+
   // ═══════════════════════════════════════════════════════════════
   // 4. PBR MATERIALS
   // ═══════════════════════════════════════════════════════════════
@@ -705,32 +828,37 @@ export function createMouseModel(THREE, annolidShaders, random) {
     const skin = new THREE.Color(skinColor);
     const hsl = {}; fur.getHSL(hsl);
     const isPale = hsl.l > 0.65;
+    const isDark = hsl.l < 0.18;
     const isHairless = density <= 0;
     const material = new THREE.MeshPhysicalMaterial({
       // The albedo map already contains the strain pigment. Keeping the
       // material tint neutral avoids multiplying dark coats into black.
       color: 0xffffff,
-      roughness: isHairless ? 0.66 : (isPale ? 0.88 : 0.92),
-      envMapIntensity: isHairless ? 0.36 : (isPale ? 0.34 : 0.32),
+      roughness: isHairless ? 0.66 : (isPale ? 0.80 : (isDark ? 0.84 : 0.88)),
+      envMapIntensity: isHairless ? 0.36 : (isPale ? 0.38 : (isDark ? 0.44 : 0.34)),
       metalness: 0.0,
-      clearcoat: isHairless ? 0.04 : 0.0,
-      clearcoatRoughness: isHairless ? 0.56 : 0.78,
-      sheen: isHairless ? 0.16 : (isPale ? 0.32 : 0.38),
-      sheenColor: (isHairless ? skin : fur).clone().offsetHSL(0.0, -0.02, isPale ? 0.03 : 0.07),
-      sheenRoughness: isHairless ? 0.62 : 0.68,
+      clearcoat: isHairless ? 0.04 : (isDark ? 0.03 : 0.0),
+      clearcoatRoughness: isHairless ? 0.56 : 0.72,
+      sheen: isHairless ? 0.16 : (isPale ? 0.46 : (isDark ? 0.54 : 0.40)),
+      sheenColor: isDark
+        ? new THREE.Color(0x4b4850)
+        : (isHairless ? skin : fur).clone().offsetHSL(0.0, -0.02, isPale ? 0.04 : 0.08),
+      sheenRoughness: isHairless ? 0.62 : (isDark ? 0.52 : 0.62),
       map: createCoatAlbedoMap(isHairless ? skinColor : furColor),
       normalMap: createCoatNormalMap(),
       normalScale: isHairless
         ? new THREE.Vector2(0.05, 0.06)
-        : new THREE.Vector2(0.09 + density * 0.06, 0.10 + density * 0.07),
+        : new THREE.Vector2(0.11 + density * 0.07, 0.12 + density * 0.08),
       roughnessMap: createCoatRoughnessMap(),
     });
     if (!isHairless && annolidShaders?.applyFurShader && params?.enableFurShader !== false) {
-      const rootCol = fur.clone().offsetHSL(0.0, 0.0, isPale ? -0.04 : -0.03);
-      const tipCol = fur.clone().offsetHSL(0.006, -0.02, isPale ? 0.03 : 0.06);
+      const rootCol = fur.clone().offsetHSL(0.0, 0.0, isPale ? -0.055 : -0.03);
+      const tipCol = isDark
+        ? fur.clone().offsetHSL(0.0, -0.02, 0.11)
+        : fur.clone().offsetHSL(0.006, -0.02, isPale ? 0.035 : 0.065);
       annolidShaders.applyFurShader(material, {
-        anisotropy: isPale ? 32.0 : 28.0,
-        specIntensity: isPale ? 0.035 : 0.045,
+        anisotropy: isPale ? 28.0 : (isDark ? 24.0 : 28.0),
+        specIntensity: isPale ? 0.042 : (isDark ? 0.072 : 0.050),
         rootColor: [rootCol.r, rootCol.g, rootCol.b],
         tipColor: [tipCol.r, tipCol.g, tipCol.b],
         flowDir: [0.0, -0.08, -0.996],
@@ -747,7 +875,7 @@ export function createMouseModel(THREE, annolidShaders, random) {
     if (params.enableMicroDetail !== false) {
       annolidShaders.applyMicroDetail(material, {
         scale: Math.max(70.0, params.microScale ?? 80.0),
-        strength: Math.min(0.024, (params.microStrength ?? 0.06) * 0.32)
+        strength: Math.min(isPale ? 0.008 : 0.022, (params.microStrength ?? 0.06) * (isPale ? 0.14 : 0.32))
       });
     }
     return material;
@@ -790,37 +918,40 @@ export function createMouseModel(THREE, annolidShaders, random) {
 
   const deformBody = (v) => {
     const zNorm = (v.z + 1) / 2;
-    // Sleek murine pear silhouette: muscular haunches, supple lumbar waist, narrower chest.
-    const rearMass = Math.exp(-Math.pow((zNorm - 0.26) / 0.24, 2.0));
-    let shoulderDrop = THREE.MathUtils.clamp((zNorm - 0.66) / 0.34, 0, 1);
-    shoulderDrop = shoulderDrop * shoulderDrop * (3.0 - 2.0 * shoulderDrop);
-    const waistNarrow = Math.exp(-Math.pow((zNorm - 0.56) / 0.16, 2.0));
-    const frontNarrow = THREE.MathUtils.smoothstep(zNorm, 0.64, 0.94) * 0.055;
+    // Sleek C2-continuous murine tubular-pear silhouette: full hemispherical U-rounded rump
+    // (compensating for polar narrowing of the stretched sphere), smooth mid-trunk, and soft shoulder taper.
+    const rumpRoundness = Math.exp(-Math.pow((zNorm - 0.11) / 0.12, 2.0));
+    const rearMass = Math.exp(-Math.pow((zNorm - 0.30) / 0.28, 2.0));
+    const shoulderSlope = THREE.MathUtils.smoothstep(zNorm, 0.50, 0.96);
+    const waistNarrow = Math.exp(-Math.pow((zNorm - 0.56) / 0.20, 2.0));
     const lateral = (
-      0.98 + rearMass * 0.20 - shoulderDrop * 0.065
-      - waistNarrow * (1.0 - PROP.waistTaper) * 0.20 - frontNarrow
+      0.96
+      + rumpRoundness * 0.15
+      + rearMass * 0.15 * (PROP.haunchWidth / 1.02)
+      - shoulderSlope * (0.12 - (PROP.shoulderWidth - 0.88) * 0.22)
+      - waistNarrow * (1.0 - PROP.waistTaper) * 0.18
     );
     v.x *= lateral * PROP.bodyGirthX;
-    v.y *= (0.97 + rearMass * 0.08 - zNorm * 0.11) * PROP.bodyGirthY;
+    v.y *= (0.96 + rearMass * 0.08 + rumpRoundness * 0.05 - zNorm * 0.10) * PROP.bodyGirthY;
     v.z *= PROP.bodyLength;
     // Smooth elliptical flank curvature so top view shows zero hard shelf.
-    const sideBlend = THREE.MathUtils.clamp((Math.abs(v.y) - 0.06) / 0.72, 0, 1);
-    v.x *= 0.95 + sideBlend * 0.05;
+    const sideBlend = THREE.MathUtils.clamp((Math.abs(v.y) - 0.05) / 0.72, 0, 1);
+    v.x *= 0.96 + sideBlend * 0.04;
 
     // Dorsal thoracolumbar arch: natural murine kyphotic curve peaking over lumbar spine.
-    const hump = Math.exp(-Math.pow((zNorm - 0.35) / 0.25, 2.0));
-    const rump = Math.exp(-Math.pow((zNorm - 0.11) / 0.11, 2.0));
-    const withers = Math.exp(-Math.pow((zNorm - 0.74) / 0.16, 2.0));
-    v.y += hump * 0.25 + rump * 0.075 + withers * 0.115 - shoulderDrop * 0.022;
+    const hump = Math.exp(-Math.pow((zNorm - 0.36) / 0.26, 2.0));
+    const rump = Math.exp(-Math.pow((zNorm - 0.12) / 0.13, 2.0));
+    const withers = Math.exp(-Math.pow((zNorm - 0.74) / 0.17, 2.0));
+    v.y += hump * 0.23 + rump * 0.075 + withers * 0.108 - shoulderSlope * 0.020;
 
     // Ventrum: tucked inguinal groin and streamlined ribcage underside.
     const yRef = v.y;
-    const bellyWidth = Math.exp(-Math.pow((zNorm - 0.48) / 0.28, 2.0));
+    const bellyWidth = Math.exp(-Math.pow((zNorm - 0.46) / 0.28, 2.0));
     const bellyMask = 1 - THREE.MathUtils.smoothstep(yRef, -0.65, 0.16);
     const bellyInfluence = bellyWidth * bellyMask;
-    v.x *= 1.0 + bellyInfluence * 0.13;
+    v.x *= 1.0 + bellyInfluence * 0.08;
     const dropMask = 1 - THREE.MathUtils.smoothstep(yRef, -0.22, 0.22);
-    v.y -= bellyWidth * dropMask * 0.11;
+    v.y -= bellyWidth * dropMask * 0.10;
 
     const lowerBlend = THREE.MathUtils.clamp((0.10 - yRef) / 0.46, 0, 1);
     const groinTuck = Math.exp(-Math.pow((zNorm - 0.18) / 0.15, 2.0)) * 0.12;
@@ -829,29 +960,28 @@ export function createMouseModel(THREE, annolidShaders, random) {
     const targetY = v.y * 0.78 + groinTuck - chestDrop;
     v.y = THREE.MathUtils.lerp(v.y, targetY, lowerBlend);
 
-    // Subtle scapular and gluteal-haunch muscular relief.
-    if (zNorm > 0.68 && zNorm < 0.86 && Math.abs(v.x) > 0.26) {
-      const scapBulge = 1.0 - Math.abs(zNorm - 0.76) * 10.0;
-      if (scapBulge > 0) { v.x *= 1.0 + scapBulge * 0.042; if (v.y > 0) v.y += scapBulge * 0.032; }
-    }
-    if (zNorm > 0.14 && zNorm < 0.36 && Math.abs(v.x) > 0.26) {
-      const hB = 1.0 - Math.abs(zNorm - 0.25) * 6.0;
-      if (hB > 0) { v.x *= 1.0 + hB * 0.125; if (v.y < 0) v.y *= 1.0 + hB * 0.055; }
-    }
-
-    // Tail base integration: gradual sacral taper into caudal root
-    if (zNorm < 0.10) {
-      const tailBlend = zNorm / 0.10;
-      v.x *= 0.68 + tailBlend * 0.32;
-      v.y *= 0.78 + tailBlend * 0.22;
+    // Subtle gluteal-haunch and scapular muscular relief (avoids angular diamond bulge).
+    if (Math.abs(v.x) > 0.22) {
+      const scapBell = Math.exp(-Math.pow((zNorm - 0.75) / 0.09, 2.0));
+      v.x *= 1.0 + scapBell * 0.024;
+      if (v.y > 0) v.y += scapBell * 0.020;
+      const haunchBell = Math.exp(-Math.pow((zNorm - 0.22) / 0.15, 2.0));
+      v.x *= 1.0 + haunchBell * 0.034;
+      if (v.y < 0) v.y *= 1.0 + haunchBell * 0.035;
     }
 
-    // Taper the anterior thorax inside the cervical mantle. Without this
-    // transition the body sphere wraps around the skull as a visible ring.
-    if (zNorm > 0.62) {
-      const neckT = THREE.MathUtils.smoothstep(zNorm, 0.62, 0.98);
-      v.x *= 1.0 - neckT * 0.40;
-      v.y *= 1.0 - neckT * (v.y >= 0 ? 0.25 : 0.10);
+    // Keep rump hemispherical right up to the sacral pole (no pointed cone pinch).
+    if (zNorm < 0.03) {
+      const tailBlend = THREE.MathUtils.smoothstep(zNorm, 0.0, 0.03);
+      v.x *= 0.86 + tailBlend * 0.14;
+      v.y *= 0.88 + tailBlend * 0.12;
+    }
+
+    // Smooth C2 anterior taper inside the broad cervical mantle (eliminates shoulder step).
+    if (zNorm > 0.58) {
+      const neckT = THREE.MathUtils.smoothstep(zNorm, 0.58, 0.99);
+      v.x *= 1.0 - neckT * 0.34;
+      v.y *= 1.0 - neckT * (v.y >= 0 ? 0.22 : 0.10);
     }
   };
 
@@ -928,17 +1058,17 @@ export function createMouseModel(THREE, annolidShaders, random) {
     const arch = Math.sin(t * Math.PI);
     return {
       z: (t - 0.5) * PROP.neckLength,
-      centerY: THREE.MathUtils.lerp(-0.02, 0.18, eased) + arch * 0.018,
+      centerY: THREE.MathUtils.lerp(-0.01, 0.17, eased) + arch * 0.022,
       radiusX: THREE.MathUtils.lerp(
-        PROP.neckGirth * 1.10,
-        PROP.neckGirth * 1.04,
+        PROP.neckGirth * 1.18,
+        PROP.neckGirth * 1.03,
         eased
-      ) + arch * 0.035,
+      ) + arch * 0.042,
       radiusY: THREE.MathUtils.lerp(
-        PROP.neckGirth * 1.10,
-        PROP.neckGirth * 1.04,
+        PROP.neckGirth * 1.12,
+        PROP.neckGirth * 1.02,
         eased
-      ) + arch * 0.035,
+      ) + arch * 0.036,
     };
   }
 
@@ -1050,14 +1180,14 @@ export function createMouseModel(THREE, annolidShaders, random) {
     ));
     const attachmentBlend = THREE.MathUtils.smoothstep(-y, 0.58, 0.96);
 
-    const px = x * (0.90 + shoulder * 0.045)
-      * (0.58 + lowerOpen * 0.42) * crownTaper;
+    const px = x * (0.94 + shoulder * 0.065)
+      * (0.62 + lowerOpen * 0.38) * crownTaper;
     const attachmentY = -0.70 + Math.abs(x) * 0.035;
     const py = THREE.MathUtils.lerp(y * 0.94, attachmentY, attachmentBlend)
       + rootPad * 0.020;
     const pz = (
-      -centerCup * 0.112 + rim * 0.046 + upperFold * 0.028
-      + basalFold * 0.038 + rootPad * 0.020
+      -centerCup * 0.158 + rim * 0.052 + upperFold * 0.032
+      + basalFold * 0.042 + rootPad * 0.022
     ) * depthMul + zLift;
     return new THREE.Vector3(px, py, pz);
   }
@@ -2254,23 +2384,60 @@ export function createMouseModel(THREE, annolidShaders, random) {
     ear.add(baseFur);
 
     const strainScale = strain.earScaleMul ?? 1.0;
-    const s = eSize * 0.88 * strainScale;
-    const openingYaw = 0.20 + (strain.earYaw ?? PROP.earYaw) * 0.22;
+    const s = eSize * 0.90 * strainScale;
+    const openingYaw = 0.24 + (strain.earYaw ?? PROP.earYaw) * 0.26;
     ear.position.set(
-      sideSign * 0.62,
-      0.02 + heightOffset,
-      PROP.earSetBack + 0.10
+      sideSign * 0.59,
+      0.03 + heightOffset,
+      PROP.earSetBack + 0.09
     );
     ear.rotation.set(
-      -0.10 + asymmetryTilt,
+      -0.28 + asymmetryTilt,
       sideSign * openingYaw + asymmetryYaw,
-      sideSign * -0.11
+      sideSign * -0.14
     );
-    ear.scale.set(s * 0.94, s, s);
+    ear.scale.set(s * 0.96, s, s);
     ear._pinna = pinna;
     ear._pedicle = pedicle;
     ear._canal = canal;
     return ear;
+  }
+
+  function createTailBaseFur(furColor, density) {
+    const count = Math.floor(420 * Math.max(0.0, density));
+    if (count <= 0) return new THREE.Group();
+    const rng = makeIsolatedRng(0x2F84A91B);
+    const geo = new THREE.ConeGeometry(0.0048, 0.088, 3);
+    geo.translate(0, 0.044, 0);
+    const mat = enhanceFurMaterial(
+      new THREE.MeshStandardMaterial({
+        color: new THREE.Color(furColor),
+        roughness: 0.86,
+      }),
+      furColor,
+      false
+    );
+    const inst = new THREE.InstancedMesh(geo, mat, count);
+    inst.name = 'sacral-tail-root-fur';
+    const dummy = new THREE.Object3D();
+    const up = new THREE.Vector3(0, 1, 0);
+    const dir = new THREE.Vector3();
+    for (let i = 0; i < count; i++) {
+      const frac = rng() * 0.85;
+      const ang = rng() * Math.PI * 2;
+      const rad = THREE.MathUtils.lerp(0.132, 0.096, frac) * (0.94 + rng() * 0.10);
+      const x = Math.cos(ang) * rad;
+      const y = Math.sin(ang) * rad;
+      const z = frac * 0.24;
+      dummy.position.set(x, y, z);
+      dir.set(x * 0.42, y * 0.42, 0.92 + rng() * 0.18).normalize();
+      dummy.quaternion.setFromUnitVectors(up, dir);
+      const sc = (0.68 + rng() * 0.46) * (1.0 - frac * 0.42);
+      dummy.scale.set(sc, sc, sc);
+      dummy.updateMatrix();
+      inst.setMatrixAt(i, dummy.matrix);
+    }
+    return inst;
   }
 
 
@@ -2282,6 +2449,7 @@ export function createMouseModel(THREE, annolidShaders, random) {
     fleshMatBase, clawMat, eyeMat, corneaMat, padNormalMap, tailRoughnessMap, tailNormalMap,
     eyeIrisMap, earNormalMap, earRoughnessMap, earAlbedoMap, noseAlbedoMap, noseNormalMap,
     noseRoughnessMap, labFloorAlbedoMap, labFloorRoughnessMap, labFloorNormalMap,
+    homeCageBeddingMaps.albedo, homeCageBeddingMaps.normal, homeCageBeddingMaps.roughness,
     urineSpotTexture, shadowSmudgeTexture,
   ]);
 
@@ -2332,6 +2500,7 @@ export function createMouseModel(THREE, annolidShaders, random) {
     labFloorAlbedoMap,
     labFloorRoughnessMap,
     labFloorNormalMap,
+    homeCageBeddingMaps,
     urineSpotTexture,
     shadowSmudgeTexture,
     fleshMatBase,
@@ -2355,6 +2524,7 @@ export function createMouseModel(THREE, annolidShaders, random) {
     FUR_DETAIL,
     generateMultiLayerFur,
     buildMouseEar,
+    createTailBaseFur,
     disposeSubject,
     disposeSharedResources,
   };
