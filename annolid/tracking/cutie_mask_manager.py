@@ -357,11 +357,15 @@ class CutieMaskManager:
         if self._core is not None:
             return
         use_cpu_only = self.config.cutie_device == "cpu"
+        adapter_folder = getattr(self.adapter, "result_folder", None) or getattr(
+            self.adapter, "annotations_dir", None
+        )
         processor = CutieCoreVideoProcessor(
             str(self.video_path),
             mem_every=self.config.cutie_mem_every,
             t_max_value=self.config.cutie_max_mem_frames,
             model_weights_path=getattr(self.config, "cutie_weights_path", None),
+            results_folder=str(adapter_folder) if adapter_folder else None,
             use_cpu_only=use_cpu_only,
             debug=False,
         )
@@ -390,11 +394,15 @@ class CutieMaskManager:
             prev_dev or "accelerator",
             exc,
         )
+        adapter_folder = getattr(self.adapter, "result_folder", None) or getattr(
+            self.adapter, "annotations_dir", None
+        )
         processor = CutieCoreVideoProcessor(
             str(self.video_path),
             mem_every=self.config.cutie_mem_every,
             t_max_value=self.config.cutie_max_mem_frames,
             model_weights_path=getattr(self.config, "cutie_weights_path", None),
+            results_folder=str(adapter_folder) if adapter_folder else None,
             use_cpu_only=True,
             debug=False,
         )

@@ -44,6 +44,7 @@ from annolid.utils.annotation_compat import shape_to_mask
 from annolid.utils.body_part_shapes import (
     apply_cutie_body_part_metadata,
     folder_has_body_part_annotations,
+    format_shape_csv_tracking_name,
     is_body_part_shape_payload,
     prepare_cutie_seed_hierarchy,
 )
@@ -498,7 +499,7 @@ class CutieCoreVideoProcessor:
                 for shape in record.get("shapes") or []:
                     if not isinstance(shape, dict):
                         continue
-                    instance_name = str(shape.get("label") or "").strip()
+                    instance_name = format_shape_csv_tracking_name(shape)
                     if not instance_name:
                         continue
                     # CUTIE shapes usually store cx/cy/motion_index as top-level fields.
@@ -1470,9 +1471,39 @@ class CutieCoreVideoProcessor:
         self._global_object_ids = list(cache["object_ids"])
         self._global_label_names = dict(cache["label_names"])
 
+    @staticmethod
+    def _seed_file_signature(path: Path) -> Tuple[int, int]:
+        try:
+            st = path.stat()
+            return (int(st.st_mtime_ns), int(st.st_size))
+        except OSError:
+            return (-1, -1)
+
+    def _compute_seeds_signature(
+        self, seeds: List[SeedFrame]
+    ) -> Tuple[Tuple[int, Tuple[int, int], Tuple[int, int]], ...]:
+        ordered = sorted(seeds, key=lambda s: int(s.frame_index))
+        return tuple(
+            (
+                int(s.frame_index),
+                self._seed_file_signature(Path(s.json_path)),
+                self._seed_file_signature(Path(s.png_path)),
+            )
+            for s in ordered
+        )
+
     def _prepare_seed_segments(self, seeds: List[SeedFrame]) -> None:
         """Parse every seed frame for the current video and cache the results."""
         video_key = str(Path(self.video_folder).resolve())
+        self.label_registry = {"_background_": 0}
+        if isinstance(getattr(self, "_body_part_shape_specs", None), dict):
+            self._body_part_shape_specs.clear()
+        if isinstance(getattr(self, "_partitioned_parent_children", None), dict):
+            self._partitioned_parent_children.clear()
+        if isinstance(getattr(self, "_parent_group_ids", None), dict):
+            self._parent_group_ids.clear()
+        if isinstance(getattr(self, "_bare_cluster_centroids", None), dict):
+            self._bare_cluster_centroids.clear()
         segments: Dict[int, SeedSegment] = {}
         object_counts: Dict[int, int] = {}
         global_label_names: Dict[int, str] = {}
@@ -1503,6 +1534,7 @@ class CutieCoreVideoProcessor:
             "object_ids": sorted(global_object_ids),
             "label_names": global_label_names,
             "frame_indices": sorted(frame_indices),
+            "seed_signatures": self._compute_seeds_signature(seeds),
         }
         self._video_seed_cache[video_key] = cache_entry
         self._apply_seed_cache(cache_entry)
@@ -1519,13 +1551,16 @@ class CutieCoreVideoProcessor:
         required_frames = sorted(seed.frame_index for seed in seeds)
         cache_entry = self._video_seed_cache.get(video_key)
         cache_frames = cache_entry.get("frame_indices") if cache_entry else None
+        cached_sigs = cache_entry.get("seed_signatures") if cache_entry else None
+        current_sigs = self._compute_seeds_signature(seeds)
 
         if (
             cache_entry is None
             or cache_frames is None
             or not set(required_frames).issubset(cache_frames)
-            # detect removed seeds
+            # detect removed or in-place modified seed files
             or set(cache_frames) != set(required_frames)
+            or cached_sigs != current_sigs
         ):
             self._prepare_seed_segments(seeds)
         else:
@@ -3018,10 +3053,30 @@ class CutieCoreVideoProcessor:
         missing_instances: Set[str],
         *,
         has_occlusion: bool,
+        present_instances: Optional[Set[str]] = None,
     ) -> bool:
         """Return True when a missing-instance frame should stop prediction."""
         if not missing_instances:
             return False
+        effective_missing = set(missing_instances)
+        if present_instances:
+            specs = getattr(self, "_body_part_shape_specs", None) or {}
+            if specs:
+                present_parents = set(present_instances)
+                for p_lbl in present_instances:
+                    p_spec = specs.get(str(p_lbl))
+                    if p_spec and p_spec.get("parent_instance"):
+                        present_parents.add(str(p_spec["parent_instance"]))
+                effective_missing = {
+                    m_lbl
+                    for m_lbl in effective_missing
+                    if not (
+                        (specs.get(str(m_lbl)) or {}).get("parent_instance")
+                        and str(specs[str(m_lbl)]["parent_instance"]) in present_parents
+                    )
+                }
+                if not effective_missing:
+                    return False
         if bool(getattr(self, "automatic_pause_enabled", False)):
             return True
         return (not has_occlusion) and (not self.continue_on_missing_instances)
@@ -4463,6 +4518,7 @@ class CutieCoreVideoProcessor:
                                     and self._should_pause_for_missing_instances(
                                         missing_instances,
                                         has_occlusion=has_occlusion,
+                                        present_instances=set(mask_dict.keys()),
                                     )
                                 )
                                 logger.warning(
@@ -4601,6 +4657,7 @@ class CutieCoreVideoProcessor:
                                 self._should_pause_for_missing_instances(
                                     missing_instances,
                                     has_occlusion=has_occlusion,
+                                    present_instances=set(mask_dict.keys()),
                                 )
                             )
                             if should_pause_for_missing_instances:

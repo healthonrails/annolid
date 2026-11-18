@@ -261,6 +261,33 @@ def format_body_part_csv_instance_name(
     return part or parent
 
 
+def format_shape_csv_tracking_name(shape: Mapping[str, Any] | object | None) -> str:
+    """Return a collision-free CSV ``instance_name`` for whole-instance or body-part shapes."""
+    if shape is None:
+        return ""
+    if is_body_part_shape_payload(shape):
+        parent = extract_body_part_parent_instance(shape)
+        part = extract_body_part_label(shape)
+        if not parent:
+            gid = _get_field(shape, "group_id")
+            if gid not in (None, "") and not isinstance(gid, bool):
+                parent = str(gid).strip()
+        base = format_body_part_csv_instance_name(parent, part)
+        qidx = _get_field(shape, "query_index")
+        if qidx is None:
+            qidx = _get_other_data(shape).get("query_index")
+        if qidx is None:
+            qidx = _get_flags(shape).get("query_index")
+        if qidx is not None and not isinstance(qidx, bool) and str(qidx).strip():
+            return f"{base}#{str(qidx).strip()}"
+        return base
+    inst = _clean_text(
+        _get_field(shape, "instance_label") or _get_field(shape, "instance_name")
+    )
+    lbl = _clean_text(_get_field(shape, "label"))
+    return inst or lbl
+
+
 def split_body_part_csv_instance_name(
     instance_name: Any,
     *,
@@ -276,7 +303,12 @@ def split_body_part_csv_instance_name(
     if not parent or not part:
         return clean, ""
     if known_parents is not None and parent not in known_parents:
-        return clean, ""
+        part_base = part.split("#", 1)[0].strip()
+        is_synthetic_parent = bool(
+            re.fullmatch(r"(?:instance_|group_)?\d+", parent, flags=re.IGNORECASE)
+        )
+        if not (is_synthetic_parent or is_anatomical_body_part_label(part_base)):
+            return clean, ""
     return parent, part
 
 
@@ -779,12 +811,97 @@ _ANATOMICAL_POLYGON_PART_TOKENS: frozenset[str] = frozenset(
         "wings",
         "fin",
         "fins",
+        "implant",
+        "headstage",
+        "miniscope",
+        "cannula",
+        "fiber",
+        "tether",
+        "collar",
+        "harness",
+        "backpack",
+        "jacket",
+        "eartag",
+        "transponder",
+        "crest",
+        "comb",
+        "wattle",
+        "horn",
+        "horns",
+        "antler",
+        "antlers",
+        "carapace",
+        "plastron",
+        "cephalothorax",
+        "mandible",
+        "elytra",
+        "halteres",
+        "ovipositor",
+        "clasper",
+        "gill",
+        "gills",
+        "siphon",
+        "tentacle",
+        "tentacles",
+        "mantle",
+    }
+)
+
+_SCENE_OR_APPARATUS_TOKENS: frozenset[str] = frozenset(
+    {
+        "arena",
+        "floor",
+        "chamber",
+        "cage",
+        "maze",
+        "wall",
+        "walls",
+        "background",
+        "table",
+        "dish",
+        "plate",
+        "tank",
+        "bedding",
+        "nest",
+        "shelter",
+        "burrow",
+        "teaball",
+        "cup",
+        "bottle",
+        "spout",
+        "lever",
+        "port",
+        "wheel",
+        "feeder",
+        "hopper",
+        "dish",
+        "tray",
+        "".join(("trou", "gh")),
+        "pellet",
+        "pellets",
+        "food",
+        "water",
+        "toy",
+        "block",
+        "object",
+        "novel",
+        "zone",
+        "region",
     }
 )
 
 
+def is_scene_or_apparatus_label(label: Any) -> bool:
+    """Return True when ``label`` names a static arena region or non-animal object."""
+    raw = _clean_text(label)
+    if not raw:
+        return False
+    tokens = {tok for tok in re.split(r"[^a-z0-9]+", raw.lower()) if tok}
+    return bool(tokens & _SCENE_OR_APPARATUS_TOKENS)
+
+
 def is_anatomical_body_part_label(label: Any) -> bool:
-    """Return True when ``label`` names an anatomical sub-part (e.g. ``head``, ``mouse_1:tail``, ``left_ear``)."""
+    """Return True when ``label`` names an anatomical or attached animal sub-part."""
     raw = _clean_text(label)
     if not raw:
         return False
@@ -799,14 +916,79 @@ def is_anatomical_body_part_label(label: Any) -> bool:
     return bool(tokens & _ANATOMICAL_POLYGON_PART_TOKENS)
 
 
+def _extract_xy_points(shape: Mapping[str, Any] | object) -> list[tuple[float, float]]:
+    pts_raw = _get_field(shape, "points") or []
+    pts: list[tuple[float, float]] = []
+    for pt in pts_raw:
+        if hasattr(pt, "x") and hasattr(pt, "y"):
+            pts.append((float(pt.x()), float(pt.y())))
+        elif isinstance(pt, (list, tuple)) and len(pt) >= 2:
+            pts.append((float(pt[0]), float(pt[1])))
+    return pts
+
+
+def _has_nested_custom_subpart_polygon(
+    candidate_shapes: list[Mapping[str, Any] | object],
+) -> bool:
+    """Detect non-scene custom sub-part polygons strictly nested inside an animal polygon."""
+    if len(candidate_shapes) < 2:
+        return False
+    try:
+        from shapely import make_valid
+        from shapely.geometry import Polygon
+    except Exception:
+        return False
+
+    polys: list[tuple[str, str, Any, float]] = []
+    for sh in candidate_shapes:
+        lbl = _clean_text(_get_field(sh, "label"))
+        if not lbl or is_scene_or_apparatus_label(lbl):
+            continue
+        pts = _extract_xy_points(sh)
+        if len(pts) < 3:
+            continue
+        try:
+            geom = make_valid(Polygon(pts))
+        except Exception:
+            continue
+        area = float(geom.area)
+        if area <= 0.0:
+            continue
+        gid = _get_field(sh, "group_id")
+        gid_s = "" if gid is None or isinstance(gid, bool) else str(gid).strip()
+        polys.append((lbl, gid_s, geom, area))
+
+    if len(polys) < 2:
+        return False
+    for i, (c_lbl, c_gid, c_geom, c_area) in enumerate(polys):
+        for j, (p_lbl, p_gid, p_geom, p_area) in enumerate(polys):
+            if i == j or c_lbl.lower() == p_lbl.lower():
+                continue
+            if c_area > 0.75 * p_area:
+                continue
+            if c_gid and p_gid and c_gid != p_gid:
+                continue
+            if not p_geom.bounds or not c_geom.bounds:
+                continue
+            px0, py0, px1, py1 = p_geom.bounds
+            cx0, cy0, cx1, cy1 = c_geom.bounds
+            if cx1 < px0 or cx0 > px1 or cy1 < py0 or cy0 > py1:
+                continue
+            inter_area = float(c_geom.intersection(p_geom).area)
+            if inter_area >= 0.90 * c_area:
+                return True
+    return False
+
+
 def has_body_part_polygon_annotations(
     shapes: Iterable[Mapping[str, Any] | object] | None,
 ) -> bool:
-    """Return True if ``shapes`` contain any body-part polygon/mask annotation."""
+    """Return True if ``shapes`` contain any body-part or nested animal sub-part polygon."""
     if shapes is None:
         return False
     from annolid.utils.zone_shapes import is_zone_shape_payload
 
+    polygon_candidates: list[Mapping[str, Any] | object] = []
     for shape in shapes:
         if shape is None or is_zone_shape_payload(shape):
             continue
@@ -815,9 +997,20 @@ def has_body_part_polygon_annotations(
             continue
         if is_body_part_shape_payload(shape):
             return True
-        if is_anatomical_body_part_label(_get_field(shape, "label")):
+        lbl = _clean_text(_get_field(shape, "label"))
+        if is_anatomical_body_part_label(lbl):
             return True
-    return False
+        if ":" in lbl:
+            prefix, suffix = lbl.split(":", 1)
+            if (
+                prefix.strip()
+                and suffix.strip()
+                and not is_scene_or_apparatus_label(prefix)
+                and not is_scene_or_apparatus_label(suffix)
+            ):
+                return True
+        polygon_candidates.append(shape)
+    return _has_nested_custom_subpart_polygon(polygon_candidates)
 
 
 def folder_has_body_part_annotations(
@@ -825,7 +1018,7 @@ def folder_has_body_part_annotations(
     *,
     max_probe_files: int = 8,
 ) -> bool:
-    """Fast probe checking whether seed JSONs or AnnotationStore in ``results_folder`` contain body parts."""
+    """Fast probe checking manual seed JSONs, sampled frame JSONs, and AnnotationStore for body parts."""
     from pathlib import Path
     import json
 
@@ -835,26 +1028,68 @@ def folder_has_body_part_annotations(
     if not folder.is_dir():
         return False
 
-    json_files = sorted(folder.glob("*.json"))[: max(1, int(max_probe_files))]
-    for jf in json_files:
+    def _json_file_has_parts(jf: Path) -> bool:
         try:
             payload = json.loads(jf.read_text(encoding="utf-8"))
         except Exception:
-            continue
+            return False
         if not isinstance(payload, Mapping):
-            continue
+            return False
         shapes = payload.get("shapes")
-        if isinstance(shapes, list) and has_body_part_polygon_annotations(shapes):
+        return isinstance(shapes, list) and has_body_part_polygon_annotations(shapes)
+
+    checked_paths: set[Path] = set()
+    # 1. Always check manual seed frames (*.png -> matching *.json) first so mid/late-video seeds
+    #    (e.g. Frame 50 or Frame 500 after whole-animal tracking) are never missed.
+    for png_path in sorted(folder.glob("*.png"))[:64]:
+        seed_jf = png_path.with_suffix(".json")
+        if seed_jf.is_file():
+            checked_paths.add(seed_jf)
+            if _json_file_has_parts(seed_jf):
+                return True
+
+    # 2. Probe evenly spaced loose JSON files across the folder (start, middle, end)
+    all_jsons = [
+        jf
+        for jf in sorted(folder.glob("*.json"))
+        if jf not in checked_paths and not jf.name.endswith("_tracking_stats.json")
+    ]
+    probe_budget = max(1, int(max_probe_files))
+    if len(all_jsons) <= probe_budget:
+        sampled_jsons = all_jsons
+    else:
+        step = max(1, (len(all_jsons) - 1) // max(1, probe_budget - 1))
+        idxs = list(
+            dict.fromkeys(
+                [*(i * step for i in range(probe_budget - 1)), len(all_jsons) - 1]
+            )
+        )
+        sampled_jsons = [all_jsons[min(i, len(all_jsons) - 1)] for i in idxs]
+    for jf in sampled_jsons:
+        if _json_file_has_parts(jf):
             return True
 
+    # 3. Probe evenly spaced frames in AnnotationStore when present
     try:
         from annolid.utils.annotation_store import AnnotationStore
 
         store = AnnotationStore.for_frame_path(folder / f"{folder.name}_000000000.json")
         if store.store_path.is_file():
-            for idx, frame_no in enumerate(store.iter_frames()):
-                if idx >= max_probe_files:
-                    break
+            frame_nums = sorted(int(f) for f in store.iter_frames())
+            if len(frame_nums) <= probe_budget:
+                sampled_frames = frame_nums
+            else:
+                step = max(1, (len(frame_nums) - 1) // max(1, probe_budget - 1))
+                idxs = list(
+                    dict.fromkeys(
+                        [
+                            *(i * step for i in range(probe_budget - 1)),
+                            len(frame_nums) - 1,
+                        ]
+                    )
+                )
+                sampled_frames = [frame_nums[min(i, len(frame_nums) - 1)] for i in idxs]
+            for frame_no in sampled_frames:
                 rec = store.get_frame(int(frame_no))
                 shapes = rec.get("shapes") if isinstance(rec, Mapping) else None
                 if isinstance(shapes, list) and has_body_part_polygon_annotations(
@@ -1146,7 +1381,46 @@ def prepare_cutie_seed_hierarchy(
             overlaps=[],
         )
 
-    any_body_part = any(p["explicit_part"] or p["anatomical"] for p in parsed)
+    frame_area = float(max(1, image_hw[0] * image_hw[1]))
+    # Detect strictly nested custom non-scene sub-part polygons inside bounded animal parent polygons
+    nested_custom_indices: set[int] = set()
+    if len(parsed) >= 2:
+        for i, c in enumerate(parsed):
+            if (
+                c["explicit_part"]
+                or c["anatomical"]
+                or c["area"] <= 0
+                or is_scene_or_apparatus_label(c["raw_label"])
+            ):
+                continue
+            for j, p in enumerate(parsed):
+                if (
+                    i == j
+                    or p["explicit_part"]
+                    or p["anatomical"]
+                    or p["area"] <= 0
+                    or float(p["area"]) >= 0.65 * frame_area
+                    or is_scene_or_apparatus_label(p["raw_label"])
+                ):
+                    continue
+                if c["raw_label"].lower() == p["raw_label"].lower():
+                    continue
+                if float(c["area"]) > 0.75 * float(p["area"]):
+                    continue
+                if c["gid_str"] and p["gid_str"] and c["gid_str"] != p["gid_str"]:
+                    continue
+                inter = int(np.count_nonzero(c["mask"] & p["mask"]))
+                if float(inter) >= 0.90 * float(c["area"]):
+                    nested_custom_indices.add(i)
+                    break
+
+    for idx_n in nested_custom_indices:
+        parsed[idx_n]["inferred_nested"] = True
+
+    any_body_part = any(
+        p["explicit_part"] or p["anatomical"] or p.get("inferred_nested", False)
+        for p in parsed
+    )
     if not any_body_part:
         for p in sorted(parsed, key=lambda item: item["raw_label"]):
             lbl = p["raw_label"]
@@ -1196,8 +1470,18 @@ def prepare_cutie_seed_hierarchy(
         )
 
     # Separate whole-instance parent polygons from body-part polygons
-    parent_items = [p for p in parsed if not p["explicit_part"] and not p["anatomical"]]
-    part_items = [p for p in parsed if p["explicit_part"] or p["anatomical"]]
+    parent_items = [
+        p
+        for p in parsed
+        if not p["explicit_part"]
+        and not p["anatomical"]
+        and not p.get("inferred_nested", False)
+    ]
+    part_items = [
+        p
+        for p in parsed
+        if p["explicit_part"] or p["anatomical"] or p.get("inferred_nested", False)
+    ]
 
     # Merge multi-polygon parents that share (raw_label, non-empty group_id) before disambiguating
     merged_parent_items: list[dict[str, Any]] = []
@@ -1413,7 +1697,14 @@ def prepare_cutie_seed_hierarchy(
         for lbl, val in sorted(label_name_to_value.items(), key=lambda x: x[1])
         if val and lbl in instance_masks
     ]
-    priorities = [1.0 if lbl in body_part_specs else 0.0 for lbl in ordered_labels]
+    priorities = [
+        (
+            1.0 + 1.0 / (1.0 + float(np.count_nonzero(instance_masks[lbl])))
+            if lbl in body_part_specs
+            else 0.0
+        )
+        for lbl in ordered_labels
+    ]
     exclusive_masks = make_instance_masks_exclusive(
         [instance_masks[lbl] for lbl in ordered_labels],
         scores=priorities,

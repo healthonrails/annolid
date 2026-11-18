@@ -103,17 +103,30 @@ def find_tracking_gaps(video_path: str) -> dict:
             max_frame,
         )
     else:
-        # Fallback if OpenCV is not installed: infer range from JSON files.
-        json_files_for_range = sorted(
-            [p for p in json_directory.glob("*.json")],
-            key=lambda p: int(re.search(r"(\d+)(?=\.json$)", p.name).group(1)),
-        )
-        if not json_files_for_range:
+        # Fallback if OpenCV is not installed: infer range from JSON files or AnnotationStore.
+        from annolid.utils.annotation_store import AnnotationStore
+
+        frame_candidates: list[int] = []
+        for p in json_directory.glob("*.json"):
+            if p.name.endswith("_tracking_stats.json") or p.name.endswith(
+                "_zones.json"
+            ):
+                continue
+            m = re.search(r"(\d+)(?=\.json$)", p.name)
+            if m:
+                frame_candidates.append(int(m.group(1)))
+        try:
+            store = AnnotationStore.for_frame_path(
+                json_directory / f"{json_directory.name}_000000000.json"
+            )
+            if store.store_path.is_file():
+                frame_candidates.extend(int(f) for f in store.iter_frames())
+        except Exception:
+            pass
+        if not frame_candidates:
             logger.warning("No JSON files found to infer frame range.")
             return {}
-        max_frame = int(
-            re.search(r"(\d+)(?=\.json$)", json_files_for_range[-1].name).group(1)
-        )
+        max_frame = max(frame_candidates)
         logger.warning(
             f"OpenCV not found. Inferred max frame is {max_frame} from JSON files."
         )
@@ -128,11 +141,39 @@ def find_tracking_gaps(video_path: str) -> dict:
             tracking_csv
         )
     else:
+        from annolid.utils.annotation_store import AnnotationStore
+        from annolid.utils.body_part_shapes import (
+            format_shape_csv_tracking_name,
+            is_body_part_shape_payload,
+        )
+        from annolid.utils.zone_shapes import is_zone_shape_payload
+
         frame_presence: dict[int, set] = {}
         all_instance_labels = set()
+
+        def _extract_shape_names(shapes_list) -> set:
+            names = set()
+            for shape in shapes_list or []:
+                if not isinstance(shape, dict) or is_zone_shape_payload(shape):
+                    continue
+                if is_body_part_shape_payload(shape):
+                    tname = format_shape_csv_tracking_name(shape)
+                    if tname:
+                        names.add(tname)
+                elif (
+                    "label" in shape
+                    and shape["label"] is not None
+                    and shape["label"] != ""
+                ):
+                    names.add(shape["label"])
+            return names
+
         for file_path in json_directory.glob("*.json"):
+            if file_path.name.endswith(
+                "_tracking_stats.json"
+            ) or file_path.name.endswith("_zones.json"):
+                continue
             try:
-                # Use robust regex to handle filenames like 'video_00001.json'
                 match = re.search(r"(\d+)(?=\.json$)", file_path.name)
                 if not match:
                     continue
@@ -141,17 +182,35 @@ def find_tracking_gaps(video_path: str) -> dict:
                 with open(file_path, "r") as f:
                     data = json.load(f)
 
-                labels_in_frame = {shape["label"] for shape in data.get("shapes", [])}
+                labels_in_frame = _extract_shape_names(data.get("shapes", []))
                 frame_presence.setdefault(frame_number, set()).update(labels_in_frame)
                 all_instance_labels.update(labels_in_frame)
             except (ValueError, IndexError, json.JSONDecodeError) as e:
                 logger.warning(f"Could not parse file {file_path.name}: {e}")
 
+        try:
+            store = AnnotationStore.for_frame_path(
+                json_directory / f"{json_directory.name}_000000000.json"
+            )
+            if store.store_path.is_file():
+                for fno in store.iter_frames():
+                    frame_number = int(fno)
+                    rec = store.get_frame(frame_number)
+                    if not isinstance(rec, dict):
+                        continue
+                    labels_in_frame = _extract_shape_names(rec.get("shapes", []))
+                    frame_presence.setdefault(frame_number, set()).update(
+                        labels_in_frame
+                    )
+                    all_instance_labels.update(labels_in_frame)
+        except Exception as e:
+            logger.warning(f"Could not read AnnotationStore in {json_directory}: {e}")
+
     if not all_instance_labels:
         logger.info("No labeled instances found in any JSON file.")
         return {}
 
-    sorted_labels = sorted(list(all_instance_labels))
+    sorted_labels = sorted(list(all_instance_labels), key=lambda x: str(x))
 
     # --- 3. Build Presence DataFrame and Merge with Master Timeline ---
     if not frame_presence:

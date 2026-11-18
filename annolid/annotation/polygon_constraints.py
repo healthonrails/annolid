@@ -246,9 +246,36 @@ def resolve_polygon_shape_conflicts(
         (idx for idx in range(len(shape_list)) if not is_part_flags[idx]),
         key=lambda index: (-normalized_priorities[index], index),
     )
+    part_indices = [idx for idx in range(len(shape_list)) if is_part_flags[idx]]
+    containment_depth: dict[int, int] = {idx: 0 for idx in part_indices}
+    if len(part_indices) >= 2:
+        part_geoms: dict[int, tuple[Polygon, float]] = {}
+        for idx in part_indices:
+            poly, _is_poly, _rep = _polygon_from_shape(shape_list[idx])
+            if poly is not None and poly.area > 0:
+                part_geoms[idx] = (poly, float(poly.area))
+        for idx_a, (poly_a, area_a) in part_geoms.items():
+            ax0, ay0, ax1, ay1 = poly_a.bounds
+            depth = 0
+            for idx_b, (poly_b, area_b) in part_geoms.items():
+                if idx_a == idx_b or area_a >= 0.85 * area_b:
+                    continue
+                if normalized_priorities[idx_b] > normalized_priorities[idx_a]:
+                    continue
+                bx0, by0, bx1, by1 = poly_b.bounds
+                if ax1 < bx0 or ax0 > bx1 or ay1 < by0 or ay0 > by1:
+                    continue
+                if float(poly_a.intersection(poly_b).area) >= 0.80 * area_a:
+                    depth += 1
+            containment_depth[idx_a] = depth
+
     part_order = sorted(
-        (idx for idx in range(len(shape_list)) if is_part_flags[idx]),
-        key=lambda index: (-normalized_priorities[index], index),
+        part_indices,
+        key=lambda index: (
+            -normalized_priorities[index],
+            -containment_depth.get(index, 0),
+            index,
+        ),
     )
 
     accepted_by_index: dict[int, object] = {}

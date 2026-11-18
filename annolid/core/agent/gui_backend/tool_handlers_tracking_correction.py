@@ -10,6 +10,13 @@ from typing import Any, Dict, Iterable, Mapping, Optional, Sequence
 from annolid.core.agent.tools.common import _resolve_read_path, _resolve_write_path
 from annolid.core.agent.tools.function_sam3 import Sam3AgentVideoTrackTool
 from annolid.core.agent.gui_backend.direct_commands import run_awaitable_sync
+from annolid.utils.body_part_shapes import (
+    extract_body_part_label,
+    extract_body_part_parent_instance,
+    format_shape_csv_tracking_name,
+    is_body_part_shape_payload,
+)
+from annolid.utils.zone_shapes import is_zone_shape_payload
 
 
 @dataclass(frozen=True)
@@ -24,6 +31,10 @@ class TrackTemplate:
     label: str
     group_id: Any
     flags: dict[str, Any]
+    is_body_part: bool = False
+    parent_instance: str = ""
+    part_label: str = ""
+    query_index: Any = None
 
 
 def _read_ndjson_lines(path: Path) -> tuple[list[NdjsonLine], int]:
@@ -76,6 +87,10 @@ def _has_shapes(record: Mapping[str, Any]) -> bool:
 
 
 def _shape_track_id(shape: Mapping[str, Any]) -> str:
+    if is_body_part_shape_payload(shape):
+        tname = format_shape_csv_tracking_name(shape)
+        if tname:
+            return tname
     for key in ("track_id", "tracking_id", "instance_id", "group_id"):
         value = shape.get(key)
         if value not in (None, ""):
@@ -145,16 +160,34 @@ def _shape_source(shape: Mapping[str, Any]) -> str:
     return ""
 
 
-def _shape_identity(shape: Mapping[str, Any]) -> tuple[str, Any, str, str]:
-    return (
+def _shape_identity(shape: Mapping[str, Any]) -> tuple[Any, ...]:
+    is_part = is_body_part_shape_payload(shape)
+    inst_lbl = (
+        extract_body_part_parent_instance(shape)
+        if is_part
+        else str(shape.get("instance_label") or "").strip()
+    )
+    qidx = shape.get("query_index")
+    if qidx is None and isinstance(shape.get("other_data"), Mapping):
+        qidx = shape["other_data"].get("query_index")
+    base = (
         str(shape.get("label", "")),
         shape.get("group_id"),
         str(shape.get("shape_type", "")),
         _shape_source(shape),
+        bool(is_part),
+        inst_lbl,
     )
+    if qidx is not None and not isinstance(qidx, bool):
+        return (*base, str(qidx))
+    return base
 
 
 def _track_template_from_shape(shape: Mapping[str, Any]) -> TrackTemplate:
+    is_part = is_body_part_shape_payload(shape)
+    qidx = shape.get("query_index")
+    if qidx is None and isinstance(shape.get("other_data"), Mapping):
+        qidx = shape["other_data"].get("query_index")
     return TrackTemplate(
         track_id=_shape_track_id(shape),
         label=str(shape.get("label") or ""),
@@ -162,6 +195,10 @@ def _track_template_from_shape(shape: Mapping[str, Any]) -> TrackTemplate:
         flags=dict(shape.get("flags") or {})
         if isinstance(shape.get("flags"), Mapping)
         else {},
+        is_body_part=bool(is_part),
+        parent_instance=extract_body_part_parent_instance(shape) if is_part else "",
+        part_label=extract_body_part_label(shape) if is_part else "",
+        query_index=qidx,
     )
 
 
@@ -177,6 +214,10 @@ def _track_template_with_id(
         label=template.label,
         group_id=template.group_id,
         flags=flags,
+        is_body_part=template.is_body_part,
+        parent_instance=template.parent_instance,
+        part_label=template.part_label,
+        query_index=template.query_index,
     )
 
 
@@ -203,6 +244,16 @@ def _apply_track_template(
         flags["track_id"] = template.track_id
     if "instance_id" not in flags and template.group_id is not None:
         flags["instance_id"] = template.group_id
+    if template.is_body_part:
+        flags["is_body_part"] = True
+        updated["semantic_type"] = "body_part"
+        if template.part_label:
+            updated["part_label"] = template.part_label
+        if template.parent_instance:
+            updated["parent_instance"] = template.parent_instance
+            updated["instance_label"] = template.parent_instance
+        if template.query_index is not None:
+            updated["query_index"] = template.query_index
     flags.setdefault("annolid_correction", reason)
     updated["flags"] = flags
     return updated
@@ -302,7 +353,7 @@ def _candidate_shapes(record: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 def _is_temporal_track_shape(shape: Mapping[str, Any]) -> bool:
-    if _shape_centroid(shape) is None:
+    if is_zone_shape_payload(shape) or _shape_centroid(shape) is None:
         return False
     shape_type = str(shape.get("shape_type") or "").strip().lower()
     if shape_type in {"polygon", "rectangle", "mask"}:
@@ -366,8 +417,17 @@ def _match_shapes_to_tracks(
     costs: list[tuple[float, int, str]] = []
     for shape_idx, shape in enumerate(shapes):
         centroid = _shape_centroid(shape)
+        s_is_part = is_body_part_shape_payload(shape)
+        s_part_lbl = extract_body_part_label(shape).lower() if s_is_part else ""
         for track_id in available_tracks:
             _, prev_shape = last_seen[track_id]
+            p_is_part = is_body_part_shape_payload(prev_shape)
+            if s_is_part != p_is_part:
+                continue
+            if s_is_part:
+                p_part_lbl = extract_body_part_label(prev_shape).lower()
+                if s_part_lbl and p_part_lbl and s_part_lbl != p_part_lbl:
+                    continue
             dist = _distance(centroid, _shape_centroid(prev_shape))
             if dist is None or dist > max_match_distance:
                 continue

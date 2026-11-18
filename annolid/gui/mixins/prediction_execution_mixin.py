@@ -514,6 +514,19 @@ class PredictionExecutionMixin:
             return
 
         if self.video_file:
+            if (
+                bool(getattr(self, "dirty", False))
+                and len(getattr(getattr(self, "canvas", None), "shapes", None) or [])
+                > 0
+                and callable(getattr(self, "saveFile", None))
+            ):
+                try:
+                    self.saveFile()
+                except Exception:
+                    logger.warning(
+                        "Failed to auto-save dirty canvas annotations before prediction.",
+                        exc_info=True,
+                    )
             self._prediction_stop_requested = False
             self._prediction_auto_continue_to_end = False
             self._prediction_target_end_frame = None
@@ -534,6 +547,12 @@ class PredictionExecutionMixin:
                     )
                     return
                 fresh_tracker_config = copy.deepcopy(self.tracker_runtime_config)
+                if not getattr(fresh_tracker_config, "cutie_weights_path", None):
+                    effective_cutie_weight = self._resolve_effective_cutie_weights_path(
+                        None
+                    )
+                    if effective_cutie_weight:
+                        fresh_tracker_config.cutie_weights_path = effective_cutie_weight
                 self._apply_pose_schema_to_tracker_config(fresh_tracker_config)
                 try:
                     self.video_processor = DinoKPSEGVideoProcessor(
@@ -573,6 +592,12 @@ class PredictionExecutionMixin:
                 )
 
                 fresh_tracker_config = copy.deepcopy(self.tracker_runtime_config)
+                if not getattr(fresh_tracker_config, "cutie_weights_path", None):
+                    effective_cutie_weight = self._resolve_effective_cutie_weights_path(
+                        None
+                    )
+                    if effective_cutie_weight:
+                        fresh_tracker_config.cutie_weights_path = effective_cutie_weight
                 self._apply_pose_schema_to_tracker_config(fresh_tracker_config)
                 dino_model = str(
                     resolve_dino_model_from_runtime(

@@ -1774,3 +1774,605 @@ def test_unqualified_multi_animal_body_parts_disambiguated_in_single_and_batch_c
     assert ("instance_1", "torso", 1) in f1_pairs
     assert ("instance_2", "head", 2) in f1_pairs
     assert ("instance_2", "torso", 2) in f1_pairs
+
+
+def test_nested_custom_subparts_late_seeds_csv_rows_and_self_occlusion_pause(
+    tmp_path: Path,
+) -> None:
+    from annolid.annotation.keypoints import save_labels
+    from annolid.gui.shape import Shape
+    from annolid.utils.body_part_shapes import (
+        apply_cutie_body_part_metadata,
+        folder_has_body_part_annotations,
+        has_body_part_polygon_annotations,
+        is_anatomical_body_part_label,
+        is_scene_or_apparatus_label,
+        prepare_cutie_seed_hierarchy,
+    )
+
+    hw = (120, 160)
+
+    # 1. Attached lab/zoological sub-parts vs scene/apparatus labels
+    assert is_anatomical_body_part_label("implant")
+    assert is_anatomical_body_part_label("miniscope")
+    assert is_anatomical_body_part_label("collar")
+    assert is_scene_or_apparatus_label("teaball")
+    assert is_scene_or_apparatus_label("pellet")
+    assert is_scene_or_apparatus_label("arena_floor")
+
+    # 2. Arbitrary custom non-anatomical sub-part ("tag_alpha" > "mouse_1" alphabetically!)
+    #    strictly nested inside "mouse_1" must NOT be erased by "mouse_1" and must trigger body-part mode,
+    #    while an overlapping "pellet" or containing "arena_floor" must NEVER become a body part!
+    custom_nested_shapes = [
+        {
+            "label": "mouse_1",
+            "shape_type": "polygon",
+            "points": [[20, 20], [100, 20], [100, 60], [20, 60]],
+        },
+        {
+            "label": "tag_alpha",
+            "shape_type": "polygon",
+            "points": [[30, 28], [46, 28], [46, 44], [30, 44]],
+        },
+        {
+            "label": "pellet",
+            "shape_type": "polygon",
+            "points": [[120, 80], [136, 80], [136, 96], [120, 96]],
+        },
+    ]
+    assert has_body_part_polygon_annotations(custom_nested_shapes)
+    plan_custom = prepare_cutie_seed_hierarchy(custom_nested_shapes, hw)
+    assert plan_custom.mask is not None
+    assert "mouse_1:tag_alpha" in plan_custom.label_name_to_value
+    assert "mouse_1" in plan_custom.label_name_to_value
+    assert "pellet" in plan_custom.label_name_to_value
+    assert "pellet" not in plan_custom.body_part_specs
+    tag_id = plan_custom.label_name_to_value["mouse_1:tag_alpha"]
+    assert int((plan_custom.mask == tag_id).sum()) > 150
+
+    # Scene/apparatus polygons ("arena_floor" containing "mouse_1" and "pellet") must NOT trigger body-part mode
+    scene_shapes = [
+        {
+            "label": "arena_floor",
+            "shape_type": "polygon",
+            "points": [[2, 2], [156, 2], [156, 116], [2, 116]],
+        },
+        {
+            "label": "mouse_1",
+            "shape_type": "polygon",
+            "points": [[20, 20], [60, 20], [60, 50], [20, 50]],
+        },
+        {
+            "label": "teaball",
+            "shape_type": "polygon",
+            "points": [[90, 60], [115, 60], [115, 85], [90, 85]],
+        },
+    ]
+    assert not has_body_part_polygon_annotations(scene_shapes)
+
+    # 3. Mid/late-video manual seed detection (Frame 50 PNG+JSON after 30 whole-animal-only JSONs)
+    late_dir = tmp_path / "late_seed"
+    late_dir.mkdir()
+    for idx in range(30):
+        (late_dir / f"late_seed_{idx:09d}.json").write_text(
+            json.dumps(
+                {
+                    "shapes": [
+                        {
+                            "label": "mouse_1",
+                            "shape_type": "polygon",
+                            "points": [[10, 10], [40, 10], [40, 30], [10, 30]],
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+    assert not folder_has_body_part_annotations(late_dir, max_probe_files=4)
+
+    (late_dir / "late_seed_000000050.png").write_bytes(b"png")
+    (late_dir / "late_seed_000000050.json").write_text(
+        json.dumps({"shapes": custom_nested_shapes}),
+        encoding="utf-8",
+    )
+    assert folder_has_body_part_annotations(late_dir, max_probe_files=4)
+
+    # 4. Multi-animal + bilateral body-part CSV export must never overwrite mouse_1:head with mouse_2:head
+    #    or mouse_1:ear#1 with mouse_1:ear#2
+    csv_dir = tmp_path / "csv_check"
+    csv_dir.mkdir()
+    specs = {
+        "mouse_1:head": {
+            "raw_label": "head",
+            "parent_instance": "mouse_1",
+            "part_label": "head",
+            "group_id": 1,
+            "query_index": None,
+        },
+        "mouse_2:head": {
+            "raw_label": "head",
+            "parent_instance": "mouse_2",
+            "part_label": "head",
+            "group_id": 2,
+            "query_index": None,
+        },
+        "mouse_1:ear#1": {
+            "raw_label": "ear",
+            "parent_instance": "mouse_1",
+            "part_label": "ear",
+            "group_id": 1,
+            "query_index": 1,
+        },
+        "mouse_1:ear#2": {
+            "raw_label": "ear",
+            "parent_instance": "mouse_1",
+            "part_label": "ear",
+            "group_id": 1,
+            "query_index": 2,
+        },
+    }
+    saved_shapes: list[Shape] = []
+    for idx_s, (tkey, cx_val) in enumerate(
+        [
+            ("mouse_1:head", 25.0),
+            ("mouse_2:head", 95.0),
+            ("mouse_1:ear#1", 22.0),
+            ("mouse_1:ear#2", 28.0),
+        ]
+    ):
+        sh = Shape(label="tmp", shape_type="polygon")
+        sh.points = [
+            [cx_val - 4, 20.0 + idx_s],
+            [cx_val + 4, 20.0 + idx_s],
+            [cx_val + 4, 28.0 + idx_s],
+            [cx_val - 4, 28.0 + idx_s],
+        ]
+        sh.other_data = {
+            "cx": cx_val,
+            "cy": 24.0,
+            "motion_index": 0.5,
+            "annotation_source": "cutie_vos",
+        }
+        apply_cutie_body_part_metadata(sh, tkey, specs)
+        saved_shapes.append(sh)
+
+    save_labels(
+        filename=str(csv_dir / "csv_check_000000001.json"),
+        imagePath=None,
+        label_list=saved_shapes,
+        height=120,
+        width=160,
+        persist_json=False,
+    )
+    proc_csv = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    proc_csv.video_folder = csv_dir
+    rows = proc_csv._read_tracking_rows_from_annotations_store()
+    assert (1, "mouse_1:head") in rows
+    assert (1, "mouse_2:head") in rows
+    assert (1, "mouse_1:ear#1") in rows
+    assert (1, "mouse_1:ear#2") in rows
+    assert rows[(1, "mouse_1:head")][2] == 25.0
+    assert rows[(1, "mouse_2:head")][2] == 95.0
+
+    # 5. Self-occluded body sub-part must NOT trigger automatic_pause_enabled when parent/sibling is visible,
+    #    but MUST pause when all parts of an animal vanish!
+    proc_pause = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    proc_pause.automatic_pause_enabled = True
+    proc_pause.continue_on_missing_instances = True
+    proc_pause._body_part_shape_specs = {
+        "mouse_1:head": {"parent_instance": "mouse_1"},
+        "mouse_1:torso": {"parent_instance": "mouse_1"},
+        "mouse_1:tail": {"parent_instance": "mouse_1"},
+    }
+    assert not proc_pause._should_pause_for_missing_instances(
+        {"mouse_1:tail"},
+        has_occlusion=False,
+        present_instances={"mouse_1:head", "mouse_1:torso"},
+    )
+    assert proc_pause._should_pause_for_missing_instances(
+        {"mouse_1:head", "mouse_1:torso", "mouse_1:tail"},
+        has_occlusion=False,
+        present_instances={"mouse_2"},
+    )
+
+
+def test_multilevel_intra_part_nesting_seed_cache_invalidation_and_parentless_csv_split(
+    tmp_path: Path,
+) -> None:
+    from annolid.annotation.polygon_constraints import resolve_polygon_shape_conflicts
+    from annolid.gui.shape import Shape
+    from annolid.segmentation.cutie_vos.predict import SeedFrame
+    from annolid.utils.body_part_shapes import (
+        build_body_part_flags,
+        build_body_part_metadata,
+        prepare_cutie_seed_hierarchy,
+        split_body_part_csv_instance_name,
+    )
+
+    hw = (120, 160)
+
+    # 1. Multi-level nested body parts: mouse_1 -> head -> implant + snout
+    #    ("head" < "implant" < "snout" alphabetically — neither sub-part may be erased or dropped!)
+    multilevel_shapes = [
+        {
+            "label": "mouse_1",
+            "shape_type": "polygon",
+            "points": [[10, 10], [120, 10], [120, 60], [10, 60]],
+        },
+        {
+            "label": "head",
+            "shape_type": "polygon",
+            "points": [[12, 14], [56, 14], [56, 56], [12, 56]],
+        },
+        {
+            "label": "implant",
+            "shape_type": "polygon",
+            "points": [[26, 20], [40, 20], [40, 34], [26, 34]],
+        },
+        {
+            "label": "snout",
+            "shape_type": "polygon",
+            "points": [[13, 26], [23, 26], [23, 40], [13, 40]],
+        },
+    ]
+    plan = prepare_cutie_seed_hierarchy(multilevel_shapes, hw)
+    assert plan.mask is not None
+    for k in ("mouse_1:head", "mouse_1:implant", "mouse_1:snout", "mouse_1"):
+        assert k in plan.label_name_to_value
+        assert int((plan.mask == plan.label_name_to_value[k]).sum()) > 80
+
+    # Output polygon conflict resolution when RETR_EXTERNAL head contour covers implant & snout
+    parent_sh = Shape(label="mouse_1", shape_type="polygon")
+    parent_sh.points = [[10.0, 10.0], [120.0, 10.0], [120.0, 60.0], [10.0, 60.0]]
+
+    head_sh = Shape(label="head", shape_type="polygon", flags=build_body_part_flags())
+    head_sh.other_data = build_body_part_metadata(
+        parent_instance="mouse_1", part_label="head"
+    )
+    head_sh.points = [[12.0, 14.0], [56.0, 14.0], [56.0, 56.0], [12.0, 56.0]]
+
+    imp_sh = Shape(label="implant", shape_type="polygon", flags=build_body_part_flags())
+    imp_sh.other_data = build_body_part_metadata(
+        parent_instance="mouse_1", part_label="implant"
+    )
+    imp_sh.points = [[26.0, 20.0], [40.0, 20.0], [40.0, 34.0], [26.0, 34.0]]
+
+    snout_sh = Shape(label="snout", shape_type="polygon", flags=build_body_part_flags())
+    snout_sh.other_data = build_body_part_metadata(
+        parent_instance="mouse_1", part_label="snout"
+    )
+    snout_sh.points = [[13.0, 26.0], [23.0, 26.0], [23.0, 40.0], [13.0, 40.0]]
+
+    res = resolve_polygon_shape_conflicts([parent_sh, head_sh, imp_sh, snout_sh])
+    assert res.dropped_shape_indices == ()
+    assert [s.label for s in res.shapes] == ["mouse_1", "head", "implant", "snout"]
+
+    # 2. In-place seed JSON modification invalidates _ensure_seed_cache on a reused processor
+    seed_dir = tmp_path / "cache_check"
+    seed_dir.mkdir()
+    seed_png = seed_dir / "cache_check_000000000.png"
+    seed_json = seed_dir / "cache_check_000000000.json"
+    cv2.imwrite(str(seed_png), np.zeros((64, 64, 3), dtype=np.uint8))
+    seed_json.write_text(
+        json.dumps(
+            {
+                "shapes": [
+                    {
+                        "label": "mouse_1",
+                        "shape_type": "polygon",
+                        "points": [[8, 8], [52, 8], [52, 48], [8, 48]],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    proc = CutieCoreVideoProcessor.__new__(CutieCoreVideoProcessor)
+    proc.video_name = str(tmp_path / "cache_check.mp4")
+    proc.video_folder = seed_dir
+    proc.label_registry = {"_background_": 0}
+    proc._video_seed_cache = {}
+    proc._seed_segment_lookup = {}
+    proc._seed_object_counts = {}
+    proc._global_object_ids = []
+    proc._global_label_names = {}
+    proc._body_part_shape_specs = {}
+    proc._partitioned_parent_children = {}
+    proc._parent_group_ids = {}
+    proc._bare_cluster_centroids = {}
+    proc.cache = cutie_predict.BboxCache(max_size=10)
+
+    sf = SeedFrame(frame_index=0, png_path=seed_png, json_path=seed_json)
+    proc._ensure_seed_cache([sf])
+    assert proc._seed_segment_lookup[0].active_labels == ["mouse_1"]
+
+    # Modify the SAME seed_json in place to add head + torso body parts!
+    seed_json.write_text(
+        json.dumps(
+            {
+                "shapes": [
+                    {
+                        "label": "mouse_1",
+                        "shape_type": "polygon",
+                        "points": [[8, 8], [52, 8], [52, 48], [8, 48]],
+                    },
+                    {
+                        "label": "head",
+                        "shape_type": "polygon",
+                        "points": [[8, 8], [26, 8], [26, 48], [8, 48]],
+                    },
+                    {
+                        "label": "torso",
+                        "shape_type": "polygon",
+                        "points": [[26, 8], [52, 8], [52, 48], [26, 48]],
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    proc._ensure_seed_cache([sf])
+    assert sorted(proc._seed_segment_lookup[0].active_labels) == [
+        "mouse_1:head",
+        "mouse_1:torso",
+    ]
+
+    # 3. Parentless <instance>:<part> CSV splitting even when non-empty known_parents={"teaball"} exists
+    assert split_body_part_csv_instance_name(
+        "instance_1:head", known_parents={"teaball"}
+    ) == ("instance_1", "head")
+    assert split_body_part_csv_instance_name(
+        "mouse_1:ear#2", known_parents={"teaball"}
+    ) == ("mouse_1", "ear#2")
+    assert split_body_part_csv_instance_name("cam:0", known_parents={"teaball"}) == (
+        "cam:0",
+        "",
+    )
+
+
+def test_tracking_gaps_store_and_dirty_canvas_autosave_before_cutie(
+    tmp_path: Path,
+) -> None:
+    from annolid.annotation.keypoints import save_labels
+    from annolid.gui.shape import Shape
+    from annolid.postprocessing.tracking_reports import find_tracking_gaps
+    from annolid.utils.body_part_shapes import (
+        build_body_part_flags,
+        build_body_part_metadata,
+    )
+
+    # 1. find_tracking_gaps reads AnnotationStore (persist_json=False) and distinguishes
+    #    mouse_1:head vs mouse_2:head without mouse_1 masking a gap on mouse_2!
+    video_path = tmp_path / "gap_check.mp4"
+    results_dir = tmp_path / "gap_check"
+    results_dir.mkdir()
+    writer = cv2.VideoWriter(
+        str(video_path), cv2.VideoWriter_fourcc(*"mp4v"), 10.0, (64, 64)
+    )
+    assert writer.isOpened()
+    for _ in range(3):
+        writer.write(np.zeros((64, 64, 3), dtype=np.uint8))
+    writer.release()
+
+    def _part_shape(parent: str, part: str, x0: float) -> Shape:
+        sh = Shape(label=part, shape_type="polygon", flags=build_body_part_flags())
+        sh.other_data = build_body_part_metadata(
+            parent_instance=parent, part_label=part
+        )
+        sh.points = [[x0, 10.0], [x0 + 10.0, 10.0], [x0 + 10.0, 20.0], [x0, 20.0]]
+        return sh
+
+    # Frame 0 & Frame 2 have both mouse_1:head and mouse_2:head; Frame 1 is missing mouse_2:head!
+    for fidx, parts in [
+        (
+            0,
+            [
+                _part_shape("mouse_1", "head", 10.0),
+                _part_shape("mouse_2", "head", 35.0),
+            ],
+        ),
+        (1, [_part_shape("mouse_1", "head", 11.0)]),
+        (
+            2,
+            [
+                _part_shape("mouse_1", "head", 12.0),
+                _part_shape("mouse_2", "head", 37.0),
+            ],
+        ),
+    ]:
+        save_labels(
+            filename=str(results_dir / f"gap_check_{fidx:09d}.json"),
+            imagePath=None,
+            label_list=parts,
+            height=64,
+            width=64,
+            persist_json=False,
+        )
+
+    gaps = find_tracking_gaps(str(video_path))
+    assert "mouse_1:head" not in gaps
+    assert "mouse_2:head" in gaps
+    assert gaps["mouse_2:head"] == [
+        {"start_frame": 1, "end_frame": 1, "duration_frames": 1}
+    ]
+
+    # 2. predict_from_next_frame flushes dirty canvas shapes via saveFile() before processor init
+    saved_calls: list[bool] = []
+
+    class _DirtyHost(PredictionExecutionMixin, ModelIdentityMixin):
+        def __init__(self) -> None:
+            self.video_file = str(video_path)
+            self.video_results_folder = str(results_dir)
+            self.dirty = True
+            self.pred_worker = None
+            self.stop_prediction_flag = False
+            self.canvas = types.SimpleNamespace(
+                shapes=[_part_shape("mouse_1", "head", 10.0)]
+            )
+            self.cutie_weights_override = None
+            self.tracker_runtime_config = CutieDinoTrackerConfig()
+
+        @staticmethod
+        def _resolve_model_identity():
+            return (None, "dino_kpseg_tracker", "DINO_KPSEG_TRACKER_DEFAULT")
+
+        @staticmethod
+        def _current_text_prompt():
+            return ""
+
+        @staticmethod
+        def _resolve_dino_kpseg_weight(_w):
+            return None
+
+        @staticmethod
+        def tr(text: str) -> str:
+            return text
+
+        def saveFile(self) -> None:
+            saved_calls.append(True)
+            self.dirty = False
+
+    from qtpy import QtWidgets
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    _ = app
+    host = _DirtyHost()
+    orig_warn = QtWidgets.QMessageBox.warning
+    QtWidgets.QMessageBox.warning = staticmethod(lambda *args, **kwargs: None)
+    try:
+        host.predict_from_next_frame(to_frame=2)
+    finally:
+        QtWidgets.QMessageBox.warning = orig_warn
+    assert saved_calls == [True]
+    assert host.dirty is False
+
+
+def test_agent_tracking_correction_preserves_parent_and_multi_animal_body_parts() -> (
+    None
+):
+    from annolid.core.agent.gui_backend.tool_handlers_tracking_correction import (
+        _apply_temporal_repair,
+        _merge_shapes,
+    )
+    from annolid.utils.body_part_shapes import (
+        build_body_part_shape_dict,
+        extract_body_part_label,
+        extract_body_part_parent_instance,
+        is_body_part_shape_payload,
+    )
+
+    # Frame 0: mouse_1 (centroid 50,30) + mouse_1:torso (exact same centroid 50,30!) + mouse_1:head
+    #          mouse_2 (centroid 50,90) + mouse_2:head
+    f0_shapes = [
+        {
+            "label": "mouse_1",
+            "group_id": 1,
+            "shape_type": "polygon",
+            "points": [[10, 15], [90, 15], [90, 45], [10, 45]],
+        },
+        build_body_part_shape_dict(
+            points=[[30, 18], [70, 18], [70, 42], [30, 42]],
+            parent_instance="mouse_1",
+            part_label="torso",
+            group_id=1,
+        ),
+        build_body_part_shape_dict(
+            points=[[10, 18], [30, 18], [30, 42], [10, 42]],
+            parent_instance="mouse_1",
+            part_label="head",
+            group_id=1,
+        ),
+        {
+            "label": "mouse_2",
+            "group_id": 2,
+            "shape_type": "polygon",
+            "points": [[10, 75], [90, 75], [90, 105], [10, 105]],
+        },
+        build_body_part_shape_dict(
+            points=[[10, 78], [30, 78], [30, 102], [10, 102]],
+            parent_instance="mouse_2",
+            part_label="head",
+            group_id=2,
+        ),
+    ]
+    # Frame 1: mouse_1:head and mouse_2:head swapped parent_instance/group_id!
+    f1_shapes = [
+        {
+            "label": "mouse_1",
+            "group_id": 1,
+            "shape_type": "polygon",
+            "points": [[12, 15], [92, 15], [92, 45], [12, 45]],
+        },
+        build_body_part_shape_dict(
+            points=[[32, 18], [72, 18], [72, 42], [32, 42]],
+            parent_instance="mouse_1",
+            part_label="torso",
+            group_id=1,
+        ),
+        build_body_part_shape_dict(
+            points=[[12, 18], [32, 18], [32, 42], [12, 42]],
+            parent_instance="mouse_2",  # swapped!
+            part_label="head",
+            group_id=2,
+        ),
+        {
+            "label": "mouse_2",
+            "group_id": 2,
+            "shape_type": "polygon",
+            "points": [[12, 75], [92, 75], [92, 105], [12, 105]],
+        },
+        build_body_part_shape_dict(
+            points=[[12, 78], [32, 78], [32, 102], [12, 102]],
+            parent_instance="mouse_1",  # swapped!
+            part_label="head",
+            group_id=1,
+        ),
+    ]
+
+    lines = [
+        json.dumps({"frame": 0, "shapes": f0_shapes}),
+        json.dumps({"frame": 1, "shapes": f1_shapes}),
+    ]
+    repaired_lines, stats = _apply_temporal_repair(
+        lines,
+        start_frame=0,
+        expected_instance_count=None,
+        max_gap_frames=3,
+        max_match_distance=40.0,
+    )
+    assert stats["id_switches_corrected"] == 2
+    repaired_f1 = json.loads(repaired_lines[1])["shapes"]
+    whole_labels = [
+        s["label"] for s in repaired_f1 if not is_body_part_shape_payload(s)
+    ]
+    assert sorted(whole_labels) == ["mouse_1", "mouse_2"]
+
+    repaired_parts = [
+        (
+            extract_body_part_parent_instance(s),
+            extract_body_part_label(s),
+            round(sum(pt[1] for pt in s["points"]) / 4.0, 1),
+        )
+        for s in repaired_f1
+        if is_body_part_shape_payload(s)
+    ]
+    assert ("mouse_1", "torso", 30.0) in repaired_parts
+    assert ("mouse_1", "head", 30.0) in repaired_parts
+    assert ("mouse_2", "head", 90.0) in repaired_parts
+
+    # _merge_shapes must keep mouse_1:head and mouse_2:head distinct even without group_id
+    m1_h = build_body_part_shape_dict(
+        points=[[10, 10], [20, 10], [20, 20], [10, 20]],
+        parent_instance="mouse_1",
+        part_label="head",
+        group_id=None,
+    )
+    m2_h = build_body_part_shape_dict(
+        points=[[50, 50], [60, 50], [60, 60], [50, 60]],
+        parent_instance="mouse_2",
+        part_label="head",
+        group_id=None,
+    )
+    merged = _merge_shapes([m1_h], [m2_h], replace_all_shapes=False)
+    assert len(merged) == 2
