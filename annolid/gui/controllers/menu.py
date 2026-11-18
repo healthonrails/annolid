@@ -6,6 +6,7 @@ from typing import Dict, TYPE_CHECKING
 import webbrowser
 
 from qtpy import QtCore, QtGui, QtWidgets
+from annolid.gui.qt_compat import configure_compact_combo
 from annolid.gui.theme import (
     apply_modern_theme,
     apply_light_theme,
@@ -239,7 +240,13 @@ class MenuController:
         model_label = QtWidgets.QLabel(w.tr("AI Model"), model_container)
         model_label.setAlignment(QtCore.Qt.AlignCenter)
         model_layout.addWidget(model_label)
-        w._selectAiModelComboBox.setMinimumWidth(180)
+        configure_compact_combo(
+            w._selectAiModelComboBox,
+            min_chars=14,
+            popup_min_width=310,
+            max_width=195,
+        )
+        w._selectAiModelComboBox.setMinimumWidth(145)
         model_layout.addWidget(w._selectAiModelComboBox)
         ai_model_action.setDefaultWidget(model_container)
         registry["ai_model_widget"] = ai_model_action

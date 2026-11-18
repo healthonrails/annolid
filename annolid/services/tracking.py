@@ -46,12 +46,14 @@ def create_cutie_engine(
     *,
     cutie_config_overrides: Optional[Mapping[str, Any]] = None,
     device: Optional[object] = None,
+    model_weights_path: Optional[str] = None,
 ):
     from annolid.segmentation.cutie_vos.engine import CutieEngine
 
     return CutieEngine(
         cutie_config_overrides=dict(cutie_config_overrides or {}),
         device=device,
+        model_weights_path=model_weights_path,
     )
 
 

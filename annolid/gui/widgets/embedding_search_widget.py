@@ -5,6 +5,7 @@ from typing import List, Optional
 
 from qtpy import QtCore, QtGui, QtWidgets
 
+from annolid.gui.qt_compat import configure_compact_combo
 from annolid.infrastructure import AnnotationStore
 
 
@@ -35,66 +36,92 @@ class EmbeddingSearchWidget(QtWidgets.QWidget):
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(5)
 
         query_layout = QtWidgets.QHBoxLayout()
+        query_layout.setContentsMargins(0, 0, 0, 0)
+        query_layout.setSpacing(4)
         self._query_input = QtWidgets.QLineEdit()
+        self._query_input.setMinimumWidth(60)
         self._query_input.setPlaceholderText("Search text (optional)")
         query_layout.addWidget(self._query_input, 1)
 
-        self._text_button = QtWidgets.QPushButton("Search Text")
+        self._text_button = QtWidgets.QPushButton("Text")
+        self._text_button.setToolTip("Run open-vocabulary text similarity search")
         self._text_button.clicked.connect(self._run_text_search)
         query_layout.addWidget(self._text_button)
         layout.addLayout(query_layout)
 
         image_layout = QtWidgets.QHBoxLayout()
+        image_layout.setContentsMargins(0, 0, 0, 0)
+        image_layout.setSpacing(4)
         self._image_label = QtWidgets.QLabel("No frame selected")
+        self._image_label.setMinimumWidth(0)
         self._image_label.setSizePolicy(
-            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred
+            QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred
         )
         self._image_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
-        image_layout.addWidget(self._image_label, 1)
-        self._stride_spin = QtWidgets.QSpinBox()
-        self._stride_spin.setRange(1, 10_000)
-        self._stride_spin.setValue(5)
-        self._stride_spin.setToolTip("Check every Nth frame for faster search")
-        image_layout.addWidget(self._stride_spin)
-
-        self._threshold_spin = QtWidgets.QDoubleSpinBox()
-        self._threshold_spin.setRange(-1.0, 1.0)
-        self._threshold_spin.setDecimals(3)
-        self._threshold_spin.setSingleStep(0.05)
-        self._threshold_spin.setValue(0.35)
-        self._threshold_spin.setToolTip("Only mark frames with similarity >= threshold")
-        image_layout.addWidget(self._threshold_spin)
-
-        self._topk_spin = QtWidgets.QSpinBox()
-        self._topk_spin.setRange(1, 10_000)
-        self._topk_spin.setValue(50)
-        self._topk_spin.setToolTip("Maximum number of matches to keep")
-        image_layout.addWidget(self._topk_spin)
 
         self._backend_combo = QtWidgets.QComboBox()
         self._backend_combo.addItem("DINOv3 (default)", "dinov3")
         self._backend_combo.addItem("Qwen3-VL Embedding", "qwen3vl")
-        image_layout.addWidget(self._backend_combo)
+        configure_compact_combo(self._backend_combo, min_chars=8, popup_min_width=210)
+        image_layout.addWidget(self._backend_combo, 1)
 
-        self._image_button = QtWidgets.QPushButton("Search Video")
+        self._image_button = QtWidgets.QPushButton("Search")
+        self._image_button.setToolTip(
+            "Search video for frames similar to current frame"
+        )
         self._image_button.clicked.connect(self._run_video_search)
         image_layout.addWidget(self._image_button)
         self._stop_button = QtWidgets.QPushButton("Stop")
         self._stop_button.clicked.connect(self._stop_search)
         self._stop_button.setEnabled(False)
         image_layout.addWidget(self._stop_button)
+        layout.addWidget(self._image_label)
         layout.addLayout(image_layout)
 
+        params_layout = QtWidgets.QHBoxLayout()
+        params_layout.setContentsMargins(0, 0, 0, 0)
+        params_layout.setSpacing(4)
+        self._stride_spin = QtWidgets.QSpinBox()
+        self._stride_spin.setRange(1, 10_000)
+        self._stride_spin.setValue(5)
+        self._stride_spin.setPrefix("Step ")
+        self._stride_spin.setToolTip("Check every Nth frame for faster search")
+        params_layout.addWidget(self._stride_spin, 1)
+
+        self._threshold_spin = QtWidgets.QDoubleSpinBox()
+        self._threshold_spin.setRange(-1.0, 1.0)
+        self._threshold_spin.setDecimals(2)
+        self._threshold_spin.setSingleStep(0.05)
+        self._threshold_spin.setValue(0.35)
+        self._threshold_spin.setPrefix("≥")
+        self._threshold_spin.setToolTip("Only mark frames with similarity >= threshold")
+        params_layout.addWidget(self._threshold_spin, 1)
+
+        self._topk_spin = QtWidgets.QSpinBox()
+        self._topk_spin.setRange(1, 10_000)
+        self._topk_spin.setValue(50)
+        self._topk_spin.setPrefix("Top ")
+        self._topk_spin.setToolTip("Maximum number of matches to keep")
+        params_layout.addWidget(self._topk_spin, 1)
+        for spin in (self._stride_spin, self._threshold_spin, self._topk_spin):
+            spin.setMinimumWidth(54)
+        layout.addLayout(params_layout)
+
         splitter = QtWidgets.QSplitter()
-        splitter.setOrientation(QtCore.Qt.Horizontal)
+        splitter.setOrientation(QtCore.Qt.Vertical)
+        splitter.setChildrenCollapsible(False)
 
         left_panel = QtWidgets.QWidget()
         left_layout = QtWidgets.QVBoxLayout(left_panel)
         left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(3)
         filter_layout = QtWidgets.QHBoxLayout()
+        filter_layout.setContentsMargins(0, 0, 0, 0)
         self._file_filter = QtWidgets.QLineEdit()
+        self._file_filter.setMinimumWidth(60)
         self._file_filter.setPlaceholderText("Filter frames…")
         self._file_filter.textChanged.connect(self._apply_file_filter)
         filter_layout.addWidget(self._file_filter)
@@ -108,6 +135,7 @@ class EmbeddingSearchWidget(QtWidgets.QWidget):
         right_panel = QtWidgets.QWidget()
         right_layout = QtWidgets.QVBoxLayout(right_panel)
         right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(3)
         self._results_list = QtWidgets.QListWidget()
         self._results_list.itemDoubleClicked.connect(self._handle_result_double_click)
         right_layout.addWidget(self._results_list, 1)
@@ -118,23 +146,32 @@ class EmbeddingSearchWidget(QtWidgets.QWidget):
         splitter.setStretchFactor(1, 2)
         layout.addWidget(splitter, 1)
 
-        action_layout = QtWidgets.QHBoxLayout()
-        self._mark_chk = QtWidgets.QCheckBox("Mark matches on timeline")
+        toggles_layout = QtWidgets.QHBoxLayout()
+        toggles_layout.setContentsMargins(0, 0, 0, 0)
+        toggles_layout.setSpacing(6)
+        self._mark_chk = QtWidgets.QCheckBox("Mark timeline")
+        self._mark_chk.setToolTip("Mark matching frames on the video timeline")
         self._mark_chk.setChecked(True)
-        action_layout.addWidget(self._mark_chk)
-        self._overlay_chk = QtWidgets.QCheckBox("Overlay annotations")
+        toggles_layout.addWidget(self._mark_chk)
+        self._overlay_chk = QtWidgets.QCheckBox("Overlay shapes")
         self._overlay_chk.setChecked(True)
         self._overlay_chk.setToolTip(
             "If per-frame shapes exist, draw them on the frame before embedding."
         )
-        action_layout.addWidget(self._overlay_chk)
+        toggles_layout.addWidget(self._overlay_chk)
+        toggles_layout.addStretch(1)
+        layout.addLayout(toggles_layout)
+
+        action_layout = QtWidgets.QHBoxLayout()
+        action_layout.setContentsMargins(0, 0, 0, 0)
+        action_layout.setSpacing(4)
         self._clear_marks_btn = QtWidgets.QPushButton("Clear marks")
         self._clear_marks_btn.clicked.connect(self.clearMarkedFramesRequested.emit)
-        action_layout.addWidget(self._clear_marks_btn)
-        self._label_button = QtWidgets.QPushButton("Label Selected Frames")
+        action_layout.addWidget(self._clear_marks_btn, 1)
+        self._label_button = QtWidgets.QPushButton("Label Selected")
+        self._label_button.setToolTip("Auto-label selected match frames")
         self._label_button.clicked.connect(self._label_selected_frames)
-        action_layout.addWidget(self._label_button)
-        action_layout.addStretch(1)
+        action_layout.addWidget(self._label_button, 1)
         layout.addLayout(action_layout)
 
     def set_files(self, files: List[Path]) -> None:

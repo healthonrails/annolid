@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
-from qtpy import QtCore, QtGui
+from qtpy import QtCore, QtGui, QtWidgets
 
 
 def _qt_enum(owner: Any, enum_name: str, member_name: str) -> Any:
@@ -51,3 +51,37 @@ def normalize_orientation(value: Any) -> Any:
     if not resolved_ints and enum_value == 1:
         return vertical
     return value
+
+
+def configure_compact_combo(
+    combo: QtWidgets.QComboBox,
+    *,
+    min_chars: int = 12,
+    popup_min_width: int = 280,
+    max_width: Optional[int] = None,
+) -> None:
+    """Keep a closed QComboBox narrow inside docks/toolbars while widening its popup."""
+    adjust_policy = _qt_enum(
+        QtWidgets.QComboBox,
+        "SizeAdjustPolicy",
+        "AdjustToMinimumContentsLengthWithIcon",
+    )
+    combo.setSizeAdjustPolicy(adjust_policy)
+    combo.setMinimumContentsLength(max(4, int(min_chars)))
+    h_policy = (
+        _qt_enum(QtWidgets.QSizePolicy, "Policy", "Preferred")
+        if max_width is not None
+        else _qt_enum(QtWidgets.QSizePolicy, "Policy", "Expanding")
+    )
+    v_policy = _qt_enum(QtWidgets.QSizePolicy, "Policy", "Fixed")
+    combo.setSizePolicy(h_policy, v_policy)
+    if max_width is not None:
+        combo.setMaximumWidth(int(max_width))
+    view = combo.view()
+    if view is not None:
+        view.setMinimumWidth(max(120, int(popup_min_width)))
+        elide_none = _qt_enum(QtCore.Qt, "TextElideMode", "ElideNone")
+        try:
+            view.setTextElideMode(elide_none)
+        except Exception:
+            pass

@@ -74,8 +74,14 @@ def setup_timeline_feature(deps: GuiFeatureDeps) -> TimelineFeatureState:
         | QtWidgets.QDockWidget.DockWidgetFloatable
     )
     window.addDockWidget(Qt.RightDockWidgetArea, window.behavior_controls_dock)
-    window.tabifyDockWidget(window.behavior_log_dock, window.behavior_controls_dock)
-    window.behavior_log_dock.raise_()
+    video_dock = getattr(window, "video_dock", None)
+    if isinstance(video_dock, QtWidgets.QDockWidget):
+        window.tabifyDockWidget(video_dock, window.behavior_log_dock)
+        window.tabifyDockWidget(window.behavior_log_dock, window.behavior_controls_dock)
+        video_dock.raise_()
+    else:
+        window.tabifyDockWidget(window.behavior_log_dock, window.behavior_controls_dock)
+        window.behavior_log_dock.raise_()
 
     window.timeline_panel = TimelinePanel(window)
     window.timeline_panel.frameSelected.connect(window._jump_to_frame_from_log)

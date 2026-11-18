@@ -138,6 +138,24 @@ def _apply_advanced_parameters(window, profile: SettingsProfile) -> None:
         for key, value in dict(tracker_cfg).items():
             setattr(window.tracker_runtime_config, key, value)
 
+    if "cutie_weights_override" in payload or (
+        isinstance(tracker_cfg, dict) and "cutie_weights_path" in tracker_cfg
+    ):
+        raw_cutie_override = payload.get(
+            "cutie_weights_override",
+            tracker_cfg.get("cutie_weights_path")
+            if isinstance(tracker_cfg, dict)
+            else None,
+        )
+        cleaned_override = str(raw_cutie_override or "").strip() or None
+        prev_override = getattr(window, "cutie_weights_override", None)
+        setattr(window, "cutie_weights_override", cleaned_override)
+        if hasattr(window, "tracker_runtime_config"):
+            window.tracker_runtime_config.cutie_weights_path = cleaned_override
+        if cleaned_override != prev_override:
+            setattr(window, "_tracking_processor_cache_key_value", None)
+        _persist_qsettings(window, "cutie/weights_override", cleaned_override or "")
+
     sam3_runtime = payload.get("sam3_runtime")
     if isinstance(sam3_runtime, dict):
         window._config.setdefault("sam3", {}).update(sam3_runtime)
@@ -363,6 +381,7 @@ def _collect_advanced_parameters(window) -> dict:
             )
         ),
         "tracker_runtime_config": tracker_cfg,
+        "cutie_weights_override": getattr(window, "cutie_weights_override", None),
         "sam3_runtime": dict((getattr(window, "_config", {}) or {}).get("sam3", {})),
     }
 

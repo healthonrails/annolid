@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from annolid.utils.model_assets import (
     candidate_model_paths,
+    model_downloads_dir,
     resolve_existing_model_path,
 )
 from annolid.features.dino_models import (
@@ -31,6 +33,11 @@ MODEL_REGISTRY = [
         "Cutie (SAM3 Body Parts)",
         "cutie_sam3_bodyparts",
         "cutie-sam3-bodyparts.pth",
+    ),
+    ModelConfig(
+        "Cutie (Original Base Mega)",
+        "cutie_original",
+        "cutie-base-mega.orig.pth",
     ),
     ModelConfig("CoTracker", "CoTracker", "CoTracker.pt"),
     ModelConfig("CoWTracker", "CoWTracker", "facebook/cowtracker"),
@@ -257,3 +264,216 @@ def get_model_unavailable_reason(model: ModelConfig) -> Optional[str]:
         return None
     preferred = candidate_model_paths(str(model.weight_file))[0]
     return f"Missing local weights: {preferred}"
+
+
+CUTIE_MODEL_DESCRIPTIONS: Dict[str, str] = {
+    "Cutie": (
+        "Original Cutie VOS (default) — upstream dense 35.0M-parameter Cutie "
+        "Base Mega checkpoint (134 MB) for general video object segmentation."
+    ),
+    "cutie_sam3_bodyparts": (
+        "Improved Compact Cutie VOS — 15.8M parameters (-55%), 30 MB checkpoint, "
+        "1.5x–2.7x faster, SAM 3.1 + DINOv3 distilled for multi-instance and "
+        "coarse/fine anatomical body-part tracking."
+    ),
+    "cutie_original": (
+        "Original Upstream Cutie Base Mega — explicitly pins the untouched "
+        "35.0M-parameter dense checkpoint (134 MB) even when an override is set."
+    ),
+}
+
+
+def inspect_pytorch_checkpoint_keys(
+    path: Path,
+    *,
+    max_raw_bytes: int = 262_144,
+    max_strings: int = 4096,
+) -> frozenset[str]:
+    """Safely extract string keys from a PyTorch ``.pth``/``.pt`` file without ``torch`` or unpickling.
+
+    Inspects ``*/data.pkl`` inside PyTorch ZIP archives (or raw pickle streams for legacy
+    checkpoints) via ``pickletools.genops``, which tokenizes opcodes as inert data without
+    importing modules, instantiating classes, executing pickle gadgets, or reading tensors.
+    """
+    import io
+    import pickletools
+    import zipfile
+
+    if not path.is_file():
+        return frozenset()
+
+    def _extract_strings(buf: bytes, *, max_streams: int = 6) -> set[str]:
+        found: set[str] = set()
+        stream = io.BytesIO(buf)
+        for _ in range(max_streams):
+            pos_before = stream.tell()
+            if pos_before >= len(buf) or len(found) >= max_strings:
+                break
+            saw_stop = False
+            try:
+                for opcode, arg, _pos in pickletools.genops(stream):
+                    if isinstance(arg, str) and arg:
+                        found.add(arg)
+                        if len(found) >= max_strings:
+                            break
+                    elif isinstance(arg, (bytes, bytearray)) and 0 < len(arg) <= 128:
+                        try:
+                            found.add(arg.decode("utf-8"))
+                        except UnicodeDecodeError:
+                            pass
+                    if opcode.name == "STOP":
+                        saw_stop = True
+                        break
+            except Exception:
+                break
+            if not saw_stop or stream.tell() <= pos_before:
+                break
+        return found
+
+    try:
+        if zipfile.is_zipfile(path):
+            collected: set[str] = set()
+            with zipfile.ZipFile(path, "r") as zf:
+                pkl_names = [
+                    name
+                    for name in zf.namelist()
+                    if name.endswith("data.pkl") or name.endswith(".pkl")
+                ]
+                for name in pkl_names[:4]:
+                    with zf.open(name, "r") as entry:
+                        collected.update(_extract_strings(entry.read(max_raw_bytes)))
+                    if len(collected) >= max_strings:
+                        break
+            return frozenset(collected)
+
+        with path.open("rb") as fh:
+            prefix = fh.read(max_raw_bytes)
+        return frozenset(_extract_strings(prefix))
+    except OSError:
+        return frozenset()
+
+
+def is_cutie_checkpoint_file(path: Path) -> bool:
+    """Return True when ``path`` is a compact or dense Cutie VOS ``.pth``/``.pt`` checkpoint."""
+    if not path.is_file() or path.suffix.lower() not in {".pth", ".pt"}:
+        return False
+    lowered = path.name.lower()
+    if "cutie" in lowered and "yolo" not in lowered and "kpseg" not in lowered:
+        return True
+    keys = inspect_pytorch_checkpoint_keys(path)
+    if not keys:
+        return False
+    if "__annolid_cutie_format__" in keys:
+        return True
+    has_pix_enc = any(
+        k.startswith("pixel_encoder.") or ".pixel_encoder." in k for k in keys
+    )
+    has_mask_or_obj = any(
+        k.startswith(("mask_decoder.", "object_transformer."))
+        or ".mask_decoder." in k
+        or ".object_transformer." in k
+        for k in keys
+    )
+    return has_pix_enc and has_mask_or_obj
+
+
+def describe_cutie_checkpoint_status_fast(
+    weights_spec: Optional[str] = None,
+    *,
+    weights_dir: Optional[Path] = None,
+) -> Tuple[bool, str]:
+    """Inspect Cutie checkpoint availability using pure pathlib (no torch import)."""
+    raw = str(weights_spec or "").strip()
+    pkg_weights_dir = (
+        Path(weights_dir).expanduser()
+        if weights_dir is not None
+        else Path(__file__).resolve().parents[1]
+        / "segmentation"
+        / "cutie_vos"
+        / "weights"
+    )
+    dl_dir = model_downloads_dir()
+
+    def _find_managed(fname: str) -> Optional[Path]:
+        for cand in (pkg_weights_dir / fname, dl_dir / fname):
+            try:
+                if cand.is_file():
+                    return cand
+            except OSError:
+                continue
+        return None
+
+    if (
+        not raw
+        or raw.lower() == "cutie.pt"
+        or raw in ("cutie-base-mega.pth", "cutie-base-mega.orig.pth")
+    ):
+        preferred = (
+            "cutie-base-mega.orig.pth"
+            if raw == "cutie-base-mega.orig.pth"
+            else "cutie-base-mega.pth"
+        )
+        fallback = (
+            "cutie-base-mega.pth"
+            if preferred == "cutie-base-mega.orig.pth"
+            else "cutie-base-mega.orig.pth"
+        )
+        found = _find_managed(preferred) or _find_managed(fallback)
+        if found is not None:
+            size_mb = found.stat().st_size / (1024.0 * 1024.0)
+            return (
+                True,
+                f"Ready locally ({size_mb:.1f} MB — Original Upstream Base Mega, 35.0M params)",
+            )
+        return (
+            True,
+            "Auto-downloads on first run (~133.9 MB — Original Upstream Base Mega)",
+        )
+
+    if raw == "cutie-sam3-bodyparts.pth":
+        found = _find_managed("cutie-sam3-bodyparts.pth")
+        if found is not None:
+            size_mb = found.stat().st_size / (1024.0 * 1024.0)
+            if size_mb < 60.0:
+                return (
+                    True,
+                    f"Ready locally ({size_mb:.1f} MB compact — SAM3 + DINOv3, 15.8M params)",
+                )
+            return (
+                True,
+                f"Ready locally ({size_mb:.1f} MB — auto-compresses to 30.3 MB on first load)",
+            )
+        return (
+            True,
+            "Auto-downloads on first run (~30.3 MB — Improved Compact SAM3 + DINOv3)",
+        )
+
+    cand = Path(raw).expanduser()
+    if cand.is_file():
+        size_mb = cand.stat().st_size / (1024.0 * 1024.0)
+        return (True, f"Ready locally ({size_mb:.1f} MB — Custom: {cand.name})")
+    if not cand.is_absolute():
+        in_pkg = pkg_weights_dir / cand.name
+        if in_pkg.is_file():
+            size_mb = in_pkg.stat().st_size / (1024.0 * 1024.0)
+            return (True, f"Ready locally ({size_mb:.1f} MB — Custom: {in_pkg.name})")
+    resolved = resolve_existing_model_path(raw)
+    if resolved is not None and resolved.is_file():
+        size_mb = resolved.stat().st_size / (1024.0 * 1024.0)
+        return (True, f"Ready locally ({size_mb:.1f} MB — Custom: {resolved.name})")
+    return (False, f"Custom checkpoint not found: {raw}")
+
+
+def get_model_description(model: ModelConfig) -> str:
+    """Return a rich user-facing tooltip/description for ``model``."""
+    identifier = str(model.identifier or "").strip()
+    base_desc = CUTIE_MODEL_DESCRIPTIONS.get(identifier, "")
+    if base_desc:
+        _ok, status = describe_cutie_checkpoint_status_fast(model.weight_file)
+        return f"{base_desc}\nStatus: {status}"
+    if identifier.lower().startswith("cutie_custom:") or (
+        "cutie" in identifier.lower() and "kpseg" not in identifier.lower()
+    ):
+        _ok, status = describe_cutie_checkpoint_status_fast(model.weight_file)
+        return f"Custom Cutie VOS checkpoint ({model.weight_file}).\nStatus: {status}"
+    return ""

@@ -115,7 +115,7 @@ class TrackAllWorker(QThread):
     def __init__(self, video_paths, config=None, parent=None):
         super().__init__(parent)
         self.video_paths = self._validate_video_paths(video_paths)
-        self.config = config or {
+        default_config = {
             "mem_every": 5,
             "epsilon_for_polygon": 2.0,
             "t_max_value": 5,
@@ -126,6 +126,7 @@ class TrackAllWorker(QThread):
             "optical_flow_backend": "farneback",  # farneback | farneback_torch | raft
             "has_occlusion": True,
         }
+        self.config = {**default_config, **(config or {})}
         self.is_running = True
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)
@@ -234,6 +235,7 @@ class TrackAllWorker(QThread):
             shared_cutie_engine = create_cutie_engine(
                 cutie_config_overrides=cutie_engine_config_overrides,
                 device=device,
+                model_weights_path=self.config.get("model_weights_path"),
             )
         except Exception as exc:
             error_msg = f"Failed to initialize CutieEngine for {video_name}: {exc}"

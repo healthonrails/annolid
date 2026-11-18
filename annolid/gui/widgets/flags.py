@@ -265,20 +265,32 @@ class FlagTableWidget(QtWidgets.QWidget):
         self._table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self._table.clicked.connect(self._handle_table_clicked)
         buttons_layout = QtWidgets.QHBoxLayout()
+        buttons_layout.setContentsMargins(0, 0, 0, 0)
+        buttons_layout.setSpacing(4)
         self.add_flag_button = QtWidgets.QPushButton("Add")
+        self.add_flag_button.setToolTip("Add a new behavior row")
         self.add_flag_button.clicked.connect(self.add_row)
-        buttons_layout.addWidget(self.add_flag_button)
         self.remove_flag_button = QtWidgets.QPushButton("Remove")
+        self.remove_flag_button.setToolTip("Remove selected behavior row (Ctrl+D)")
         self.remove_flag_button.clicked.connect(self.remove_selected_row)
-        buttons_layout.addWidget(self.remove_flag_button)
-        self.clear_all_button = QtWidgets.QPushButton("Clear All")
+        self.clear_all_button = QtWidgets.QPushButton("Clear")
+        self.clear_all_button.setToolTip("Clear all behavior rows (Ctrl+L)")
         self.clear_all_button.clicked.connect(self.clear_all_rows)
-        buttons_layout.addWidget(self.clear_all_button)
-        self.save_all_button = QtWidgets.QPushButton("Save All")
+        self.save_all_button = QtWidgets.QPushButton("Save")
+        self.save_all_button.setToolTip("Save all behavior flags (Ctrl+S)")
         self.save_all_button.clicked.connect(self.save_all_flags)
-        buttons_layout.addWidget(self.save_all_button)
+        for btn in (
+            self.add_flag_button,
+            self.remove_flag_button,
+            self.clear_all_button,
+            self.save_all_button,
+        ):
+            btn.setMinimumWidth(42)
+            buttons_layout.addWidget(btn, 1)
         layout = QtWidgets.QVBoxLayout(self)
-        layout.addWidget(self._table)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(4)
+        layout.addWidget(self._table, 1)
         layout.addLayout(buttons_layout)
 
         # add keyboard shortcuts

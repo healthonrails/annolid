@@ -89,6 +89,11 @@ class StepSizeWidget(QtWidgets.QWidget):
         self.step_size_spin_box.setFixedWidth(target)
         self.predict_button.setMinimumWidth(target)
         self.setMinimumWidth(target)
+        self.setMaximumWidth(max(84, target + 12))
+        self.setSizePolicy(
+            QtWidgets.QSizePolicy.Fixed,
+            QtWidgets.QSizePolicy.Preferred,
+        )
         self.updateGeometry()
 
     def set_value(self, value):

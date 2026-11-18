@@ -1,4 +1,5 @@
 # cutie_engine.py
+# ruff: noqa: E402
 
 from annolid.segmentation.cutie_vos.dependencies import (
     ensure_cutie_runtime_dependencies,
@@ -54,10 +55,16 @@ SAM3_BODYPARTS_CUTIE_SHA256 = (
 UPGRADED_WEIGHTS_URL_ENV = "ANNOLID_CUTIE_UPGRADED_WEIGHTS_URL"
 UPGRADED_WEIGHTS_SHA256_ENV = "ANNOLID_CUTIE_UPGRADED_WEIGHTS_SHA256"
 _PACKAGE_WEIGHTS_DIR = Path(__file__).resolve().parent / "weights"
-_MANAGED_CUTIE_WEIGHT_FILENAMES = {
+_ORIGINAL_CUTIE_WEIGHT_FILENAMES = {
     DEFAULT_CUTIE_WEIGHTS_FILENAME,
+    ORIG_BACKUP_CUTIE_WEIGHTS_FILENAME,
+}
+_MANAGED_CUTIE_WEIGHT_FILENAMES = {
     SAM3_BODYPARTS_CUTIE_WEIGHTS_FILENAME,
 }
+_DOWNLOADABLE_CUTIE_WEIGHT_FILENAMES = (
+    _ORIGINAL_CUTIE_WEIGHT_FILENAMES | _MANAGED_CUTIE_WEIGHT_FILENAMES
+)
 _LEGACY_PLACEHOLDER_WEIGHT_NAMES = {"cutie.pt"}
 
 
@@ -103,18 +110,132 @@ def resolve_cutie_weights_path(
     return candidate
 
 
+def _build_safe_cutie_checkpoint_globals() -> list:
+    import argparse
+    from collections import OrderedDict, defaultdict
+    import pathlib
+    from typing import Any
+
+    allowed: list = [
+        dict,
+        list,
+        tuple,
+        set,
+        frozenset,
+        int,
+        float,
+        str,
+        bool,
+        bytes,
+        slice,
+        argparse.Namespace,
+        defaultdict,
+        OrderedDict,
+        pathlib.Path,
+        pathlib.PosixPath,
+        pathlib.WindowsPath,
+        Any,
+    ]
+    for np_attr in ("ndarray", "dtype"):
+        obj = getattr(np, np_attr, None)
+        if obj is not None and obj not in allowed:
+            allowed.append(obj)
+    np_dtypes_mod = getattr(np, "dtypes", None)
+    if np_dtypes_mod is not None:
+        for dt_cls in vars(np_dtypes_mod).values():
+            if (
+                isinstance(dt_cls, type)
+                and issubclass(dt_cls, np.dtype)
+                and dt_cls not in allowed
+            ):
+                allowed.append(dt_cls)
+    for mod_name in ("numpy._core.multiarray", "numpy.core.multiarray"):
+        try:
+            mod = __import__(mod_name, fromlist=["scalar", "_reconstruct"])
+            for sym in ("scalar", "_reconstruct"):
+                fn = getattr(mod, sym, None)
+                if fn is not None and fn not in allowed:
+                    allowed.append(fn)
+        except Exception:
+            pass
+    try:
+        from omegaconf import DictConfig, ListConfig
+        from omegaconf.base import Box, ContainerMetadata, Metadata
+        from omegaconf.nodes import (
+            AnyNode,
+            BooleanNode,
+            FloatNode,
+            IntegerNode,
+            StringNode,
+            ValueNode,
+        )
+
+        for cls in (
+            DictConfig,
+            ListConfig,
+            Box,
+            ContainerMetadata,
+            Metadata,
+            AnyNode,
+            ValueNode,
+            BooleanNode,
+            FloatNode,
+            IntegerNode,
+            StringNode,
+        ):
+            if cls not in allowed:
+                allowed.append(cls)
+    except Exception:
+        pass
+    return allowed
+
+
+def safe_load_cutie_checkpoint(
+    weights_path: Union[str, Path],
+    *,
+    map_location: Union[torch.device, str, None] = "cpu",
+) -> Dict:
+    """Load a Cutie checkpoint with ``weights_only=True`` enforced at all times.
+
+    Retries once under ``torch.serialization.safe_globals(...)`` for inert training
+    metadata types (``OmegaConf``, ``argparse.Namespace``, ``pathlib.Path``, ``numpy``
+    scalars) used by third-party/Hydra Cutie checkpoints while keeping arbitrary code
+    execution strictly blocked.
+    """
+    import pickle
+
+    try:
+        return torch.load(weights_path, map_location=map_location, weights_only=True)
+    except pickle.UnpicklingError:
+        safe_ctx = getattr(torch.serialization, "safe_globals", None)
+        if not callable(safe_ctx):
+            raise
+        with safe_ctx(_build_safe_cutie_checkpoint_globals()):
+            return torch.load(
+                weights_path,
+                map_location=map_location,
+                weights_only=True,
+            )
+
+
 def unwrap_cutie_state_dict(loaded_weights: Dict) -> Dict:
     """Extract the CUTIE parameter state dict from flat or nested checkpoints,
-    preserving self-describing compressed checkpoint envelopes."""
+    preserving self-describing compressed checkpoint envelopes and stripping DDP prefixes."""
     if not isinstance(loaded_weights, dict):
         return loaded_weights
     if "__annolid_cutie_format__" in loaded_weights:
         return loaded_weights
+    payload = loaded_weights
     for key in ("model", "weights", "state_dict"):
-        nested = loaded_weights.get(key)
+        nested = payload.get(key)
         if isinstance(nested, dict):
-            return nested
-    return loaded_weights
+            payload = nested
+            break
+    if payload and all(
+        isinstance(k, str) and k.startswith("module.") for k in payload.keys()
+    ):
+        payload = {k[len("module.") :]: v for k, v in payload.items()}
+    return payload
 
 
 def _atomic_copy_file(src: Path, dst: Path) -> None:
@@ -142,7 +263,86 @@ def _is_bare_managed_cutie_weight_spec(raw_spec: Optional[Union[str, Path]]) -> 
     if not raw:
         return False
     p = Path(raw).expanduser()
-    return (not p.is_absolute()) and len(p.parts) == 1 and p.name in _MANAGED_CUTIE_WEIGHT_FILENAMES
+    return (
+        (not p.is_absolute())
+        and len(p.parts) == 1
+        and p.name in _DOWNLOADABLE_CUTIE_WEIGHT_FILENAMES
+    )
+
+
+def describe_cutie_checkpoint_status(
+    weights_path: Optional[Union[str, Path]] = None,
+    *,
+    weights_dir: Optional[Union[str, Path]] = None,
+) -> Tuple[bool, str]:
+    """Return a fast, non-blocking ``(is_valid, status_text)`` summary for GUI badges."""
+    raw = str(weights_path or "").strip()
+    base_dir = (
+        Path(weights_dir).expanduser()
+        if weights_dir is not None
+        else _PACKAGE_WEIGHTS_DIR
+    )
+    dl_dir = model_downloads_dir()
+
+    def _find_managed(fname: str) -> Optional[Path]:
+        for cand in (base_dir / fname, dl_dir / fname):
+            try:
+                if cand.is_file():
+                    return cand
+            except OSError:
+                continue
+        return None
+
+    if (
+        not raw
+        or raw.lower() in _LEGACY_PLACEHOLDER_WEIGHT_NAMES
+        or raw in _ORIGINAL_CUTIE_WEIGHT_FILENAMES
+    ):
+        preferred = (
+            ORIG_BACKUP_CUTIE_WEIGHTS_FILENAME
+            if raw == ORIG_BACKUP_CUTIE_WEIGHTS_FILENAME
+            else DEFAULT_CUTIE_WEIGHTS_FILENAME
+        )
+        fallback = (
+            DEFAULT_CUTIE_WEIGHTS_FILENAME
+            if preferred == ORIG_BACKUP_CUTIE_WEIGHTS_FILENAME
+            else ORIG_BACKUP_CUTIE_WEIGHTS_FILENAME
+        )
+        found = _find_managed(preferred) or _find_managed(fallback)
+        if found is not None:
+            size_mb = found.stat().st_size / (1024.0 * 1024.0)
+            return (
+                True,
+                f"Ready locally ({size_mb:.1f} MB — Original Upstream Cutie Base Mega, 35.0M params)",
+            )
+        return (
+            True,
+            "Auto-downloads on first run (~133.9 MB — Original Upstream Cutie Base Mega)",
+        )
+
+    if raw == SAM3_BODYPARTS_CUTIE_WEIGHTS_FILENAME:
+        found = _find_managed(SAM3_BODYPARTS_CUTIE_WEIGHTS_FILENAME)
+        if found is not None:
+            size_mb = found.stat().st_size / (1024.0 * 1024.0)
+            if size_mb < 60.0:
+                return (
+                    True,
+                    f"Ready locally ({size_mb:.1f} MB — Improved Compact SAM3 + DINOv3, 15.8M params)",
+                )
+            return (
+                True,
+                f"Ready locally ({size_mb:.1f} MB — will auto-compress to 30.3 MB on first load)",
+            )
+        return (
+            True,
+            "Auto-downloads on first run (~30.3 MB — Improved Compact SAM3 + DINOv3)",
+        )
+
+    resolved = resolve_cutie_weights_path(raw, weights_dir=base_dir)
+    if resolved is not None and resolved.is_file():
+        size_mb = resolved.stat().st_size / (1024.0 * 1024.0)
+        return (True, f"Ready locally ({size_mb:.1f} MB — Custom: {resolved.name})")
+    return (False, f"Custom checkpoint not found: {resolved or raw}")
 
 
 def _is_bundle_or_readonly_dir(path: Path) -> bool:
@@ -215,6 +415,31 @@ def ensure_managed_cutie_weights_file(
     if target.is_file():
         return target
 
+    if target.name in _ORIGINAL_CUTIE_WEIGHT_FILENAMES:
+        sibling_orig_name = (
+            DEFAULT_CUTIE_WEIGHTS_FILENAME
+            if target.name == ORIG_BACKUP_CUTIE_WEIGHTS_FILENAME
+            else ORIG_BACKUP_CUTIE_WEIGHTS_FILENAME
+        )
+        for search_dir in (weights_dir, cache_dir):
+            sibling_orig = search_dir / sibling_orig_name
+            try:
+                if (
+                    sibling_orig.is_file()
+                    and sibling_orig.stat().st_size >= 80 * 1024 * 1024
+                ):
+                    _atomic_copy_file(sibling_orig, target)
+                    return target
+            except OSError:
+                pass
+        downloaded_orig = asset_downloader(
+            file_name=target.name,
+            url=remote_url,
+            expected_md5=expected_md5,
+            cache_dir=cache_dir,
+        )
+        return Path(downloaded_orig) if downloaded_orig is not None else target
+
     upgraded_url = str(os.environ.get(UPGRADED_WEIGHTS_URL_ENV, "")).strip()
     upgraded_sha = str(os.environ.get(UPGRADED_WEIGHTS_SHA256_ENV, "")).strip()
     if upgraded_url and upgraded_sha:
@@ -228,7 +453,11 @@ def ensure_managed_cutie_weights_file(
     if try_release_asset is None:
         try_release_asset = asset_downloader is ensure_cached_model_asset
 
-    if try_release_asset and SAM3_BODYPARTS_CUTIE_RELEASE_URL and SAM3_BODYPARTS_CUTIE_SHA256:
+    if (
+        try_release_asset
+        and SAM3_BODYPARTS_CUTIE_RELEASE_URL
+        and SAM3_BODYPARTS_CUTIE_SHA256
+    ):
         try:
             downloaded_release = asset_downloader(
                 file_name=target.name,
@@ -237,17 +466,6 @@ def ensure_managed_cutie_weights_file(
                 cache_dir=cache_dir,
             )
             if downloaded_release is not None and Path(downloaded_release).is_file():
-                sibling_name = (
-                    DEFAULT_CUTIE_WEIGHTS_FILENAME
-                    if target.name == SAM3_BODYPARTS_CUTIE_WEIGHTS_FILENAME
-                    else SAM3_BODYPARTS_CUTIE_WEIGHTS_FILENAME
-                )
-                sibling = cache_dir / sibling_name
-                if not sibling.exists():
-                    try:
-                        _atomic_copy_file(Path(downloaded_release), sibling)
-                    except OSError:
-                        pass
                 return Path(downloaded_release)
         except Exception as exc:
             logger.debug(
@@ -288,7 +506,9 @@ def maybe_upgrade_and_cache_compact_cutie_weights(
     checkpoint while preserving ``cutie-base-mega.orig.pth``."""
     if not isinstance(model, CUTIE):
         return
-    if not isinstance(loaded_payload, dict) or is_compact_cutie_checkpoint(loaded_payload):
+    if not isinstance(loaded_payload, dict) or is_compact_cutie_checkpoint(
+        loaded_payload
+    ):
         return
     if "pixel_encoder.conv1.weight" not in loaded_payload:
         return
@@ -306,7 +526,9 @@ def maybe_upgrade_and_cache_compact_cutie_weights(
         if not orig_backup.exists():
             _atomic_copy_file(resolved_path, orig_backup)
     except OSError:
-        logger.debug("Skipping upstream Cutie backup write in read-only directory: %s", base_dir)
+        logger.debug(
+            "Skipping upstream Cutie backup write in read-only directory: %s", base_dir
+        )
 
     tucker_cfg = compress_and_factorize_cutie_in_place(model)
     compact_payload = pack_compact_cutie_checkpoint(
@@ -322,7 +544,10 @@ def maybe_upgrade_and_cache_compact_cutie_weights(
             try:
                 _atomic_torch_save(compact_payload, dest)
             except OSError:
-                logger.debug("Skipping compact Cutie cache write in read-only directory: %s", dest)
+                logger.debug(
+                    "Skipping compact Cutie cache write in read-only directory: %s",
+                    dest,
+                )
         elif dest.is_file() and dest.stat().st_size > 80 * 1024 * 1024:
             try:
                 _atomic_torch_save(compact_payload, dest)
@@ -337,16 +562,20 @@ class CutieEngine:
     to yield predicted masks for a given segment.
     It does not handle file I/O for annotations or initial mask creation from shapes.
     """
-    _REMOTE_MODEL_URL = "https://github.com/hkchengrex/Cutie/releases/download/v1.0/cutie-base-mega.pth"
+
+    _REMOTE_MODEL_URL = (
+        "https://github.com/hkchengrex/Cutie/releases/download/v1.0/cutie-base-mega.pth"
+    )
     _MD5 = "a6071de6136982e396851903ab4c083a"
     _MODEL_FILENAME = DEFAULT_CUTIE_WEIGHTS_FILENAME
 
-    def __init__(self,
-                 # e.g., mem_every, t_max_value
-                 cutie_config_overrides: Optional[Dict] = None,
-                 device: Optional[Union[torch.device, str]] = None,
-                 model_weights_path: Optional[Union[str, Path]] = None):
-
+    def __init__(
+        self,
+        # e.g., mem_every, t_max_value
+        cutie_config_overrides: Optional[Dict] = None,
+        device: Optional[Union[torch.device, str]] = None,
+        model_weights_path: Optional[Union[str, Path]] = None,
+    ):
         self.device = device or get_device()
         logger.info(f"CutieEngine: Initializing on device: {self.device}")
 
@@ -369,10 +598,13 @@ class CutieEngine:
             self.cutie_model = self._load_cutie_model()
             self.inference_core = InferenceCore(self.cutie_model, cfg=self.cfg)
             logger.info(
-                "CutieEngine: Model and InferenceCore initialized successfully.")
+                "CutieEngine: Model and InferenceCore initialized successfully."
+            )
         except Exception as e:
             logger.error(
-                f"CutieEngine: Failed to initialize model or InferenceCore: {e}", exc_info=True)
+                f"CutieEngine: Failed to initialize model or InferenceCore: {e}",
+                exc_info=True,
+            )
             # Propagate error or handle gracefully
             raise
 
@@ -391,7 +623,8 @@ class CutieEngine:
         """Reset inference state (objects + memory) while keeping model weights loaded."""
         if self.cutie_model is None:
             raise RuntimeError(
-                "CutieEngine reset requested before model initialization.")
+                "CutieEngine reset requested before model initialization."
+            )
         self.inference_core = InferenceCore(self.cutie_model, cfg=self.cfg)
 
     def _get_model_weights_path(self) -> str:
@@ -399,13 +632,14 @@ class CutieEngine:
         # Store weights in a known location, e.g., user's cache or package data
         package_dir = Path(__file__).resolve().parent
         # Example: annolid/segmentation/cutie_vos/weights/
-        weights_dir = package_dir / 'weights'
+        weights_dir = package_dir / "weights"
         weights_dir.mkdir(parents=True, exist_ok=True)
         model_path = weights_dir / self._MODEL_FILENAME
 
         if not model_path.exists():
             logger.info(
-                f"Cutie model weights not found at {model_path}. Downloading...")
+                f"Cutie model weights not found at {model_path}. Downloading..."
+            )
             try:
                 ensure_cached_model_asset(
                     file_name=model_path.name,
@@ -415,10 +649,10 @@ class CutieEngine:
                 )
                 logger.info(f"Cutie model downloaded to {model_path}")
             except Exception as e:
-                logger.error(
-                    f"Failed to download Cutie model: {e}", exc_info=True)
+                logger.error(f"Failed to download Cutie model: {e}", exc_info=True)
                 raise FileNotFoundError(
-                    f"Cutie model weights could not be downloaded to {model_path}")
+                    f"Cutie model weights could not be downloaded to {model_path}"
+                )
         return str(model_path)
 
     # OmegaConf's DictConfig is often returned
@@ -438,15 +672,18 @@ class CutieEngine:
             # Hydra will search from the location of the calling Python file if an absolute path
             # isn't established through other means (like being inside a Hydra app).
             initialize(
-                version_base='1.3.2',
+                version_base="1.3.2",
                 config_path=relative_config_path,  # Use the relative path string
-                job_name="cutie_engine_config"
+                job_name="cutie_engine_config",
             )
             # Loads 'eval_config.yaml' from 'config_path'
             cfg = compose(config_name="eval_config")
         except Exception as e:
-            logger.error(f"Hydra initialization failed. Ensure '{relative_config_path}/eval_config.yaml' exists "
-                         f"relative to 'cutie_engine.py' or is discoverable by Hydra. Error: {e}", exc_info=True)
+            logger.error(
+                f"Hydra initialization failed. Ensure '{relative_config_path}/eval_config.yaml' exists "
+                f"relative to 'cutie_engine.py' or is discoverable by Hydra. Error: {e}",
+                exc_info=True,
+            )
             raise  # Re-raise the exception to stop execution if config is critical
 
         _DEFAULT_RUNTIME_FIELDS = {
@@ -473,13 +710,14 @@ class CutieEngine:
                     try:
                         # For nested keys, use dot notation: OmegaConf.update(cfg, "data.batch_size", value)
                         # For simple top-level keys:
-                        if '.' in key:  # Basic check for nested key attempt
-                            parts = key.split('.')
+                        if "." in key:  # Basic check for nested key attempt
+                            parts = key.split(".")
                             current_level = cfg
                             for i, part in enumerate(parts[:-1]):
                                 if part not in current_level:
                                     logger.warning(
-                                        f"Nested override key part '{part}' in '{key}' not found.")
+                                        f"Nested override key part '{part}' in '{key}' not found."
+                                    )
                                     current_level = None
                                     break
                                 current_level = current_level[part]
@@ -487,35 +725,36 @@ class CutieEngine:
                                 current_level[parts[-1]] = value
                             elif current_level is not None:  # Key not present at leaf
                                 logger.warning(
-                                    f"Leaf override key part '{parts[-1]}' in '{key}' not found.")
+                                    f"Leaf override key part '{parts[-1]}' in '{key}' not found."
+                                )
                             # else: already warned
                         elif key in cfg:
                             cfg[key] = value
                         else:
                             logger.warning(
-                                f"Override key '{key}' not found in base Cutie config.")
+                                f"Override key '{key}' not found in base Cutie config."
+                            )
                     except Exception as e:
-                        logger.error(
-                            f"Error applying override '{key}={value}': {e}")
+                        logger.error(f"Error applying override '{key}={value}': {e}")
         return cfg
 
     def _load_cutie_model(self) -> CUTIE:
         """Loads the CUTIE PyTorch model and its weights."""
         if not self.model_weights_path or not Path(self.model_weights_path).exists():
             raise FileNotFoundError(
-                f"Cutie model weights not found at: {self.model_weights_path}")
+                f"Cutie model weights not found at: {self.model_weights_path}"
+            )
 
         with open_dict(self.cfg):  # Ensure weights path in cfg is correct
-            self.cfg['weights'] = self.model_weights_path
+            self.cfg["weights"] = self.model_weights_path
 
         model = CUTIE(self.cfg).to(self.device).eval()
 
         try:
             logger.debug(f"Loading Cutie weights from: {self.cfg.weights}")
-            loaded_weights = torch.load(
+            loaded_weights = safe_load_cutie_checkpoint(
                 self.cfg.weights,
                 map_location=self.device,
-                weights_only=True,
             )
 
             # Handle potential nesting of weights (e.g. 'model', 'weights', 'state_dict')
@@ -531,8 +770,7 @@ class CutieEngine:
             # Or use model.load_state_dict(weights_to_load) directly
             # if load_weights is just a wrapper.
         except Exception as e:
-            logger.error(
-                f"Error loading Cutie model weights: {e}", exc_info=True)
+            logger.error(f"Error loading Cutie model weights: {e}", exc_info=True)
             raise
         return model
 
@@ -546,21 +784,23 @@ class CutieEngine:
         """Clears only the non-permanent (working) memory of InferenceCore."""
         if self.inference_core:
             self.inference_core.clear_non_permanent_memory()
-            logger.info(
-                "CutieEngine: InferenceCore non-permanent memory cleared.")
+            logger.info("CutieEngine: InferenceCore non-permanent memory cleared.")
 
-    def process_frames(self,
-                       video_capture: cv2.VideoCapture,
-                       start_frame_index: int,    # Actual video frame index to start reading from
-                       # NumPy array (H, W), integer object IDs, 0 for bg
-                       initial_mask_np: np.ndarray,
-                       # Number of distinct objects in initial_mask_np (excluding bg)
-                       num_objects_in_mask: int,
-                       # How many frames to process *including* the start_frame_index
-                       frames_to_propagate: int,
-                       pred_worker: Optional[object] = None,
-                       reset_core: bool = True,
-                       ) -> Iterator[Tuple[int, np.ndarray, np.ndarray]]:  # (frame_idx, frame_bgr, pred_mask_np)
+    def process_frames(
+        self,
+        video_capture: cv2.VideoCapture,
+        start_frame_index: int,  # Actual video frame index to start reading from
+        # NumPy array (H, W), integer object IDs, 0 for bg
+        initial_mask_np: np.ndarray,
+        # Number of distinct objects in initial_mask_np (excluding bg)
+        num_objects_in_mask: int,
+        # How many frames to process *including* the start_frame_index
+        frames_to_propagate: int,
+        pred_worker: Optional[object] = None,
+        reset_core: bool = True,
+    ) -> Iterator[
+        Tuple[int, np.ndarray, np.ndarray]
+    ]:  # (frame_idx, frame_bgr, pred_mask_np)
         """
         Processes a sequence of frames from the video_capture.
 
@@ -578,8 +818,7 @@ class CutieEngine:
                                     The mask is an object ID mask (H, W).
         """
         if not self.cutie_model:
-            logger.error(
-                "CutieEngine: Model not initialized.")
+            logger.error("CutieEngine: Model not initialized.")
             return  # Or raise exception
 
         if not video_capture.isOpened():
@@ -620,7 +859,9 @@ class CutieEngine:
         current_video_frame_idx = start_frame_index
 
         with torch.inference_mode():
-            with torch.amp.autocast('cuda', enabled=bool(self.cfg.amp) and self._device_type() == 'cuda'):
+            with torch.amp.autocast(
+                "cuda", enabled=bool(self.cfg.amp) and self._device_type() == "cuda"
+            ):
                 if current_video_frame_idx < 0:
                     current_video_frame_idx = 0
                 if current_video_frame_idx >= total_video_frames:
@@ -631,35 +872,42 @@ class CutieEngine:
                     )
                     return
 
-                if int(video_capture.get(cv2.CAP_PROP_POS_FRAMES)) != current_video_frame_idx:
-                    video_capture.set(cv2.CAP_PROP_POS_FRAMES,
-                                      current_video_frame_idx)
+                if (
+                    int(video_capture.get(cv2.CAP_PROP_POS_FRAMES))
+                    != current_video_frame_idx
+                ):
+                    video_capture.set(cv2.CAP_PROP_POS_FRAMES, current_video_frame_idx)
 
                 while True:
                     if pred_worker and pred_worker.is_stopped():
                         logger.info(
-                            f"CutieEngine: Processing stopped by worker at frame {current_video_frame_idx}.")
+                            f"CutieEngine: Processing stopped by worker at frame {current_video_frame_idx}."
+                        )
                         break
 
                     if frames_processed_in_this_call >= frames_to_propagate:
                         logger.info(
-                            f"CutieEngine: Reached 'frames_to_propagate' ({frames_to_propagate}). Segment ended at frame {current_video_frame_idx-1}.")
+                            f"CutieEngine: Reached 'frames_to_propagate' ({frames_to_propagate}). Segment ended at frame {current_video_frame_idx - 1}."
+                        )
                         break
 
                     if current_video_frame_idx >= total_video_frames:
                         logger.info(
-                            f"CutieEngine: Reached end of video ({current_video_frame_idx}) while processing segment.")
+                            f"CutieEngine: Reached end of video ({current_video_frame_idx}) while processing segment."
+                        )
                         break
 
                     ret, frame_bgr = video_capture.read()
 
                     if not ret or frame_bgr is None:
                         logger.warning(
-                            f"CutieEngine: Could not read frame {current_video_frame_idx}. Ending segment.")
+                            f"CutieEngine: Could not read frame {current_video_frame_idx}. Ending segment."
+                        )
                         break
 
                     frame_rgb = cv2.cvtColor(
-                        frame_bgr, cv2.COLOR_BGR2RGB)  # Cutie expects RGB
+                        frame_bgr, cv2.COLOR_BGR2RGB
+                    )  # Cutie expects RGB
                     output_size = tuple(frame_rgb.shape[:2])
                     frame_for_inference = resize_frame_for_inference(
                         frame_rgb,
@@ -670,7 +918,9 @@ class CutieEngine:
                         device=self.device,
                     )
 
-                    if frames_processed_in_this_call == 0:  # First frame of this segment processing call
+                    if (
+                        frames_processed_in_this_call == 0
+                    ):  # First frame of this segment processing call
                         if tuple(initial_mask_np.shape) != output_size:
                             raise ValueError(
                                 "CutieEngine initial mask size does not match its seed frame: "
@@ -702,8 +952,7 @@ class CutieEngine:
                         predicted_object_ids = self.inference_core.output_prob_to_mask(
                             predicted_probs_torch
                         )
-                    predicted_mask_np = torch_prob_to_numpy_mask(
-                        predicted_object_ids)
+                    predicted_mask_np = torch_prob_to_numpy_mask(predicted_object_ids)
 
                     yield current_video_frame_idx, frame_bgr, predicted_mask_np
 
@@ -711,17 +960,18 @@ class CutieEngine:
                     current_video_frame_idx += 1
 
         logger.info(
-            f"CutieEngine: Processed {frames_processed_in_this_call} frames for segment starting at {start_frame_index}.")
+            f"CutieEngine: Processed {frames_processed_in_this_call} frames for segment starting at {start_frame_index}."
+        )
 
     def cleanup(self):
         """Releases resources, particularly GPU memory if applicable."""
         logger.debug("CutieEngine: Cleaning up.")
-        if hasattr(self, 'inference_core') and self.inference_core is not None:
+        if hasattr(self, "inference_core") and self.inference_core is not None:
             del self.inference_core
             self.inference_core = None
-        if hasattr(self, 'cutie_model') and self.cutie_model is not None:
+        if hasattr(self, "cutie_model") and self.cutie_model is not None:
             del self.cutie_model
             self.cutie_model = None
 
-        if self._device_type() == 'cuda':
+        if self._device_type() == "cuda":
             torch.cuda.empty_cache()

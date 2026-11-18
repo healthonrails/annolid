@@ -11,6 +11,7 @@ from annolid.gui.keypoint_catalog import (
     merge_keypoint_lists,
     normalize_keypoint_names,
 )
+from annolid.gui.qt_compat import configure_compact_combo
 
 
 class _SkeletonPreviewWidget(QtWidgets.QWidget):
@@ -184,16 +185,36 @@ class KeypointSequencerWidget(QtWidgets.QWidget):
         self._build_ui()
 
     def _build_ui(self) -> None:
-        layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(6)
+        outer_layout = QtWidgets.QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
 
-        schema_row = QtWidgets.QHBoxLayout()
-        schema_row.addWidget(QtWidgets.QLabel("Schema:"))
+        scroll = QtWidgets.QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        content = QtWidgets.QWidget(scroll)
+        scroll.setWidget(content)
+        outer_layout.addWidget(scroll)
+
+        layout = QtWidgets.QVBoxLayout(content)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(5)
+
+        schema_path_row = QtWidgets.QHBoxLayout()
+        schema_path_row.setContentsMargins(0, 0, 0, 0)
+        schema_path_row.setSpacing(4)
+        schema_path_row.addWidget(QtWidgets.QLabel("Schema:"))
         self.schema_path_edit = QtWidgets.QLineEdit(self)
-        self.schema_path_edit.setPlaceholderText("pose_schema.json (or .yaml)")
+        self.schema_path_edit.setMinimumWidth(60)
+        self.schema_path_edit.setPlaceholderText("pose_schema.json / .yaml")
         self.schema_path_edit.editingFinished.connect(self._on_schema_path_edited)
-        schema_row.addWidget(self.schema_path_edit, 1)
+        schema_path_row.addWidget(self.schema_path_edit, 1)
+        layout.addLayout(schema_path_row)
+
+        schema_btn_row = QtWidgets.QHBoxLayout()
+        schema_btn_row.setContentsMargins(0, 0, 0, 0)
+        schema_btn_row.setSpacing(4)
         browse_btn = QtWidgets.QPushButton("Browse…")
         browse_btn.clicked.connect(self._browse_schema)
         load_btn = QtWidgets.QPushButton("Load")
@@ -202,49 +223,56 @@ class KeypointSequencerWidget(QtWidgets.QWidget):
         save_btn.clicked.connect(self._save_schema_clicked)
         save_as_btn = QtWidgets.QPushButton("Save As…")
         save_as_btn.clicked.connect(self._save_schema_as_clicked)
-        schema_row.addWidget(browse_btn)
-        schema_row.addWidget(load_btn)
-        schema_row.addWidget(save_btn)
-        schema_row.addWidget(save_as_btn)
-        layout.addLayout(schema_row)
+        for btn in (browse_btn, load_btn, save_btn, save_as_btn):
+            btn.setMinimumWidth(42)
+            schema_btn_row.addWidget(btn)
+        layout.addLayout(schema_btn_row)
 
-        config_row = QtWidgets.QHBoxLayout()
-        config_row.addWidget(QtWidgets.QLabel("Instance prefixes:"))
+        prefix_row = QtWidgets.QHBoxLayout()
+        prefix_row.setContentsMargins(0, 0, 0, 0)
+        prefix_row.setSpacing(4)
+        prefix_row.addWidget(QtWidgets.QLabel("Prefixes:"))
         self.instance_prefixes_edit = QtWidgets.QLineEdit(self)
-        self.instance_prefixes_edit.setPlaceholderText(
-            "instances/prefixes (comma separated)"
-        )
+        self.instance_prefixes_edit.setMinimumWidth(60)
+        self.instance_prefixes_edit.setPlaceholderText("e.g. mouse_1, mouse_2")
         self.instance_prefixes_edit.editingFinished.connect(
             self._on_instance_config_changed
         )
-        config_row.addWidget(self.instance_prefixes_edit, 1)
-        config_row.addWidget(QtWidgets.QLabel("Separator:"))
+        prefix_row.addWidget(self.instance_prefixes_edit, 1)
+        layout.addLayout(prefix_row)
+
+        sep_row = QtWidgets.QHBoxLayout()
+        sep_row.setContentsMargins(0, 0, 0, 0)
+        sep_row.setSpacing(4)
+        sep_row.addWidget(QtWidgets.QLabel("Sep:"))
         self.instance_separator_edit = QtWidgets.QLineEdit(self)
-        self.instance_separator_edit.setFixedWidth(70)
+        self.instance_separator_edit.setFixedWidth(44)
         self.instance_separator_edit.setText("_")
         self.instance_separator_edit.editingFinished.connect(
             self._on_instance_config_changed
         )
-        config_row.addWidget(self.instance_separator_edit)
+        sep_row.addWidget(self.instance_separator_edit)
         self.normalize_prefixes_btn = QtWidgets.QPushButton("Normalize prefixes")
+        self.normalize_prefixes_btn.setMinimumWidth(60)
         self.normalize_prefixes_btn.clicked.connect(self._normalize_prefixed_schema)
-        config_row.addWidget(self.normalize_prefixes_btn)
-        layout.addLayout(config_row)
+        sep_row.addWidget(self.normalize_prefixes_btn, 1)
+        layout.addLayout(sep_row)
 
-        self.enable_checkbox = QtWidgets.QCheckBox(
-            "Enable click-to-label keypoint sequence"
-        )
+        self.enable_checkbox = QtWidgets.QCheckBox("Enable click-to-label sequence")
         self.enable_checkbox.setChecked(False)
         self.enable_checkbox.toggled.connect(self._on_sequence_mode_toggled)
         layout.addWidget(self.enable_checkbox)
 
-        self.autosave_checkbox = QtWidgets.QCheckBox("Auto-save after each point click")
+        self.autosave_checkbox = QtWidgets.QCheckBox("Auto-save after point click")
         self.autosave_checkbox.setChecked(True)
         layout.addWidget(self.autosave_checkbox)
 
         instance_row = QtWidgets.QHBoxLayout()
+        instance_row.setContentsMargins(0, 0, 0, 0)
+        instance_row.setSpacing(4)
         instance_row.addWidget(QtWidgets.QLabel("Instance:"))
         self.instance_combo = QtWidgets.QComboBox()
+        configure_compact_combo(self.instance_combo, min_chars=10, popup_min_width=200)
         self.instance_combo.currentIndexChanged.connect(self.reset_sequence)
         instance_row.addWidget(self.instance_combo, 1)
         layout.addLayout(instance_row)
@@ -254,36 +282,45 @@ class KeypointSequencerWidget(QtWidgets.QWidget):
         layout.addWidget(self.preview)
 
         self.edge_hint_label = QtWidgets.QLabel(
-            "Edge editor: click two keypoints in the preview to add/remove an edge."
+            "Edge editor: click two keypoints in preview to add/remove an edge."
         )
         self.edge_hint_label.setWordWrap(True)
         layout.addWidget(self.edge_hint_label)
 
         self.edges_list = QtWidgets.QListWidget(self)
+        self.edges_list.setMinimumHeight(64)
         self.edges_list.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         layout.addWidget(self.edges_list)
 
         edge_controls = QtWidgets.QHBoxLayout()
-        remove_edge_btn = QtWidgets.QPushButton("Remove selected edge(s)")
+        edge_controls.setContentsMargins(0, 0, 0, 0)
+        edge_controls.setSpacing(4)
+        remove_edge_btn = QtWidgets.QPushButton("Remove edge(s)")
         clear_edge_btn = QtWidgets.QPushButton("Clear edges")
         remove_edge_btn.clicked.connect(self._remove_selected_edges)
         clear_edge_btn.clicked.connect(self._clear_edges)
-        edge_controls.addWidget(remove_edge_btn)
-        edge_controls.addWidget(clear_edge_btn)
+        edge_controls.addWidget(remove_edge_btn, 1)
+        edge_controls.addWidget(clear_edge_btn, 1)
         layout.addLayout(edge_controls)
 
         symmetry_label = QtWidgets.QLabel("Symmetry pairs (left <-> right):")
         layout.addWidget(symmetry_label)
         self.symmetry_list = QtWidgets.QListWidget(self)
+        self.symmetry_list.setMinimumHeight(64)
         self.symmetry_list.setSelectionMode(
             QtWidgets.QAbstractItemView.ExtendedSelection
         )
         layout.addWidget(self.symmetry_list)
 
         symmetry_add_row = QtWidgets.QHBoxLayout()
+        symmetry_add_row.setContentsMargins(0, 0, 0, 0)
+        symmetry_add_row.setSpacing(4)
         self.symmetry_a_combo = QtWidgets.QComboBox(self)
         self.symmetry_b_combo = QtWidgets.QComboBox(self)
-        add_pair_btn = QtWidgets.QPushButton("Add pair")
+        configure_compact_combo(self.symmetry_a_combo, min_chars=6, popup_min_width=180)
+        configure_compact_combo(self.symmetry_b_combo, min_chars=6, popup_min_width=180)
+        add_pair_btn = QtWidgets.QPushButton("Add")
+        add_pair_btn.setToolTip("Add selected left/right symmetry pair")
         add_pair_btn.clicked.connect(self._add_symmetry_pair_from_combos)
         symmetry_add_row.addWidget(self.symmetry_a_combo, 1)
         symmetry_add_row.addWidget(self.symmetry_b_combo, 1)
@@ -291,25 +328,34 @@ class KeypointSequencerWidget(QtWidgets.QWidget):
         layout.addLayout(symmetry_add_row)
 
         symmetry_controls = QtWidgets.QHBoxLayout()
-        remove_pair_btn = QtWidgets.QPushButton("Remove selected pair(s)")
+        symmetry_controls.setContentsMargins(0, 0, 0, 0)
+        symmetry_controls.setSpacing(4)
+        remove_pair_btn = QtWidgets.QPushButton("Remove")
+        remove_pair_btn.setToolTip("Remove selected symmetry pair(s)")
         remove_pair_btn.clicked.connect(self._remove_selected_symmetry_pairs)
-        clear_pairs_btn = QtWidgets.QPushButton("Clear pairs")
+        clear_pairs_btn = QtWidgets.QPushButton("Clear")
+        clear_pairs_btn.setToolTip("Clear all symmetry pairs")
         clear_pairs_btn.clicked.connect(self._clear_symmetry_pairs)
-        auto_pairs_btn = QtWidgets.QPushButton("Auto symmetry")
+        auto_pairs_btn = QtWidgets.QPushButton("Auto")
+        auto_pairs_btn.setToolTip("Auto-detect left/right symmetry pairs")
         auto_pairs_btn.clicked.connect(self._auto_fill_symmetry_pairs)
-        symmetry_controls.addWidget(remove_pair_btn)
-        symmetry_controls.addWidget(clear_pairs_btn)
-        symmetry_controls.addWidget(auto_pairs_btn)
+        for btn in (remove_pair_btn, clear_pairs_btn, auto_pairs_btn):
+            btn.setMinimumWidth(46)
+            symmetry_controls.addWidget(btn, 1)
         layout.addLayout(symmetry_controls)
 
         flip_row = QtWidgets.QHBoxLayout()
-        flip_row.addWidget(QtWidgets.QLabel("flip_idx preview:"))
+        flip_row.setContentsMargins(0, 0, 0, 0)
+        flip_row.setSpacing(4)
+        flip_row.addWidget(QtWidgets.QLabel("flip_idx:"))
         self.flip_preview_label = QtWidgets.QLabel("")
+        self.flip_preview_label.setWordWrap(True)
         flip_row.addWidget(self.flip_preview_label, 1)
         layout.addLayout(flip_row)
 
         layout.addWidget(QtWidgets.QLabel("Active keypoints (checked = in sequence):"))
         self.keypoint_list = _LockableKeypointListWidget(self)
+        self.keypoint_list.setMinimumHeight(96)
         self.keypoint_list.setSelectionMode(
             QtWidgets.QAbstractItemView.ExtendedSelection
         )
@@ -319,19 +365,21 @@ class KeypointSequencerWidget(QtWidgets.QWidget):
         self.keypoint_list.lockToggleRequested.connect(self._toggle_lock_for_item)
         layout.addWidget(self.keypoint_list, 1)
         self.keypoint_lock_hint = QtWidgets.QLabel(
-            "Tip: click the small lock icon area left of a keypoint to lock/unlock its sequence order."
+            "Tip: click left of a keypoint to lock/unlock its sequence order."
         )
         self.keypoint_lock_hint.setWordWrap(True)
         layout.addWidget(self.keypoint_lock_hint)
 
         add_row = QtWidgets.QHBoxLayout()
+        add_row.setContentsMargins(0, 0, 0, 0)
+        add_row.setSpacing(4)
         self.add_keypoint_edit = QtWidgets.QLineEdit(self)
-        self.add_keypoint_edit.setPlaceholderText(
-            "Add keypoint (e.g. nose, left_ear, right_ear)"
-        )
+        self.add_keypoint_edit.setMinimumWidth(60)
+        self.add_keypoint_edit.setPlaceholderText("Add keypoint (e.g. nose, tail_base)")
         add_keypoint_btn = QtWidgets.QPushButton("Add")
         add_keypoint_btn.clicked.connect(self._add_keypoint_from_input)
-        self.load_from_labels_btn = QtWidgets.QPushButton("Load from Labels Dock")
+        self.load_from_labels_btn = QtWidgets.QPushButton("From Labels")
+        self.load_from_labels_btn.setToolTip("Import keypoints from the Labels dock")
         self.load_from_labels_btn.clicked.connect(self._load_from_labels_dock)
         self.add_keypoint_edit.returnPressed.connect(self._add_keypoint_from_input)
         add_row.addWidget(self.add_keypoint_edit, 1)
@@ -339,26 +387,39 @@ class KeypointSequencerWidget(QtWidgets.QWidget):
         add_row.addWidget(self.load_from_labels_btn)
         layout.addLayout(add_row)
 
-        controls_row = QtWidgets.QHBoxLayout()
-        remove_btn = QtWidgets.QPushButton("Remove selected")
+        controls_grid = QtWidgets.QGridLayout()
+        controls_grid.setContentsMargins(0, 0, 0, 0)
+        controls_grid.setHorizontalSpacing(4)
+        controls_grid.setVerticalSpacing(4)
+        remove_btn = QtWidgets.QPushButton("Remove")
+        remove_btn.setToolTip("Remove selected keypoint(s)")
         remove_btn.clicked.connect(self._remove_selected_keypoints)
-        move_up_btn = QtWidgets.QPushButton("Move up")
+        move_up_btn = QtWidgets.QPushButton("Up")
+        move_up_btn.setToolTip("Move selected keypoint(s) up")
         move_up_btn.clicked.connect(lambda: self._move_selected_keypoints(-1))
-        move_down_btn = QtWidgets.QPushButton("Move down")
+        move_down_btn = QtWidgets.QPushButton("Down")
+        move_down_btn.setToolTip("Move selected keypoint(s) down")
         move_down_btn.clicked.connect(lambda: self._move_selected_keypoints(1))
         select_all_btn = QtWidgets.QPushButton("Select all")
         clear_btn = QtWidgets.QPushButton("Clear")
-        reset_btn = QtWidgets.QPushButton("Reset sequence")
-        controls_row.addWidget(remove_btn)
-        controls_row.addWidget(move_up_btn)
-        controls_row.addWidget(move_down_btn)
+        reset_btn = QtWidgets.QPushButton("Reset")
+        reset_btn.setToolTip("Reset sequence cursor to the first active keypoint")
         select_all_btn.clicked.connect(self._select_all_keypoints)
         clear_btn.clicked.connect(self._clear_all_keypoints)
         reset_btn.clicked.connect(self.reset_sequence)
-        controls_row.addWidget(select_all_btn)
-        controls_row.addWidget(clear_btn)
-        controls_row.addWidget(reset_btn)
-        layout.addLayout(controls_row)
+        for idx, btn in enumerate(
+            (
+                remove_btn,
+                move_up_btn,
+                move_down_btn,
+                select_all_btn,
+                clear_btn,
+                reset_btn,
+            )
+        ):
+            btn.setMinimumWidth(46)
+            controls_grid.addWidget(btn, idx // 3, idx % 3)
+        layout.addLayout(controls_grid)
 
         self.status_label = QtWidgets.QLabel("")
         self.status_label.setWordWrap(True)

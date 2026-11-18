@@ -201,6 +201,7 @@ class AIChatManager(QtCore.QObject):
         widget.set_default_visual_share_mode(attach_canvas=True, attach_window=False)
 
         dock.setWidget(widget)
+        dock.setMinimumWidth(240)
         dock.visibilityChanged.connect(self._on_dock_visibility_changed)
 
         self.ai_chat_dock = dock
@@ -237,6 +238,11 @@ class AIChatManager(QtCore.QObject):
             dock.show()
 
         dock.raise_()
+        try:
+            target_chat_w = min(350, max(280, int(self.window.width() * 0.24)))
+            self.window.resizeDocks([dock], [target_chat_w], QtCore.Qt.Horizontal)
+        except Exception:
+            pass
         widget.prompt_text_edit.setFocus()
 
     def initialize_annolid_bot(self, *, start_visible: bool = True) -> None:

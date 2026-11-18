@@ -129,6 +129,9 @@ class SettingsTimelineMixin:
             getattr(self, "label_dock", None),
             getattr(self, "shape_dock", None),
             getattr(self, "flag_dock", None),
+            getattr(self, "keypoint_sequence_dock", None),
+            getattr(self, "zone_dock", None),
+            getattr(self, "viewer_layer_dock", None),
             getattr(self, "vector_overlay_dock", None),
             getattr(self, "video_dock", None),
             getattr(self, "behavior_log_dock", None),
@@ -149,32 +152,42 @@ class SettingsTimelineMixin:
             if not hint.isValid():
                 return None
             if vertical:
-                return int(max(220, min(380, hint.width() + 18)))
-            return int(max(130, min(340, hint.height() + 18)))
+                return int(max(220, min(300, hint.width() + 12)))
+            return int(max(130, min(320, hint.height() + 14)))
 
-        width_candidates: List[int] = []
+        win_width = max(int(self.width() or 0), 960)
+        target_width = int(min(300, max(230, win_width * 0.19)))
+
+        visible_right_docks: List[QtWidgets.QDockWidget] = []
         for dock in right_docks:
             if dock is None:
                 continue
-            width = _tight_hint(dock, vertical=True)
-            if width is not None:
-                width_candidates.append(width)
-        target_width = max(width_candidates) if width_candidates else None
-        if target_width is not None:
-            visible_right_docks: List[QtWidgets.QDockWidget] = []
-            for dock in right_docks:
-                if dock is None:
-                    continue
-                dock.setMinimumWidth(160)
-                dock.setMaximumWidth(16777215)
-                if dock.isVisible():
-                    visible_right_docks.append(dock)
-            if visible_right_docks:
-                self.resizeDocks(
-                    visible_right_docks,
-                    [target_width] * len(visible_right_docks),
-                    QtCore.Qt.Horizontal,
-                )
+            dock.setMinimumWidth(200)
+            dock.setMaximumWidth(16777215)
+            if dock.isVisible():
+                visible_right_docks.append(dock)
+        if visible_right_docks:
+            self.resizeDocks(
+                visible_right_docks,
+                [target_width] * len(visible_right_docks),
+                QtCore.Qt.Horizontal,
+            )
+
+        # Balance vertical proportions across the 3 primary right-dock tab groups
+        win_height = max(int(self.height() or 0), 720)
+        primary_vertical_groups = [
+            (getattr(self, "flag_dock", None), int(win_height * 0.25)),
+            (getattr(self, "shape_dock", None), int(win_height * 0.43)),
+            (getattr(self, "video_dock", None), int(win_height * 0.32)),
+        ]
+        vert_docks = [
+            d for d, _h in primary_vertical_groups if d is not None and d.isVisible()
+        ]
+        vert_heights = [
+            h for d, h in primary_vertical_groups if d is not None and d.isVisible()
+        ]
+        if len(vert_docks) >= 2:
+            self.resizeDocks(vert_docks, vert_heights, QtCore.Qt.Vertical)
 
         visible_bottom_docks: List[QtWidgets.QDockWidget] = []
         bottom_sizes: List[int] = []

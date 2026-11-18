@@ -423,6 +423,32 @@ class PredictionExecutionMixin:
             "stabilize_lr": True,
         }
 
+    def _resolve_effective_cutie_weights_path(
+        self, model_weight: str | None = None
+    ) -> str | None:
+        """Resolve explicit Cutie checkpoint from toolbar selection or Advanced Parameters."""
+        raw_cutie_weight = str(model_weight or "").strip()
+        if raw_cutie_weight and raw_cutie_weight.lower() != "cutie.pt":
+            return raw_cutie_weight
+        override = str(getattr(self, "cutie_weights_override", "") or "").strip()
+        if not override and hasattr(self, "settings"):
+            try:
+                override = str(
+                    self.settings.value("cutie/weights_override", "") or ""
+                ).strip()
+            except Exception:
+                override = ""
+        if not override:
+            override = str(
+                getattr(
+                    getattr(self, "tracker_runtime_config", None),
+                    "cutie_weights_path",
+                    "",
+                )
+                or ""
+            ).strip()
+        return override or None
+
     def _cutie_brightness_contrast_kwargs(self) -> dict:
         getter = getattr(self, "get_video_brightness_contrast_values", None)
         if not callable(getter):
@@ -763,9 +789,11 @@ class PredictionExecutionMixin:
                 )
                 if self._is_cutie_tracking_model(model_name):
                     processor_kwargs.update(self._cutie_brightness_contrast_kwargs())
-                    raw_cutie_weight = str(model_weight or "").strip()
-                    if raw_cutie_weight and raw_cutie_weight.lower() != "cutie.pt":
-                        processor_kwargs["model_weights_path"] = raw_cutie_weight
+                    effective_cutie_weight = self._resolve_effective_cutie_weights_path(
+                        model_weight
+                    )
+                    if effective_cutie_weight:
+                        processor_kwargs["model_weights_path"] = effective_cutie_weight
                 if self._is_tapnext_model(model_name, model_weight):
                     processor_kwargs["tapnext_model_path"] = model_weight
                 if self._is_body_part_seg_model(model_name, model_weight):

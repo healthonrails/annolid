@@ -570,6 +570,15 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         self.pca_map_clusters = int(self.settings.value("pca_map/clusters", 0))
         if self.pca_map_clusters < 0:
             self.pca_map_clusters = 0
+        saved_cutie_override = (
+            str(self.settings.value("cutie/weights_override", "") or "").strip() or None
+        )
+        configured_cutie_weights = getattr(
+            self.tracker_runtime_config, "cutie_weights_path", None
+        )
+        self.cutie_weights_override = configured_cutie_weights or saved_cutie_override
+        if configured_cutie_weights is None and saved_cutie_override is not None:
+            self.tracker_runtime_config.cutie_weights_path = saved_cutie_override
 
     def ensure_yolo_training_manager(self):
         manager = getattr(self, "yolo_training_manager", None)

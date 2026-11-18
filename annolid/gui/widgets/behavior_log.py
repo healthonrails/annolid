@@ -6,6 +6,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtGui import QKeySequence
 
 from annolid.gui.behavior_controller import BehaviorEvent
+from annolid.gui.qt_compat import configure_compact_combo
 
 
 def _format_seconds(value: Optional[float]) -> str:
@@ -43,9 +44,8 @@ class BehaviorEventLogWidget(QtWidgets.QWidget):
         self._pairing_issues: dict[int, str] = {}
 
         self._search = QtWidgets.QLineEdit()
-        self._search.setPlaceholderText(
-            "Search behavior, subject, modifier or category…"
-        )
+        self._search.setMinimumWidth(60)
+        self._search.setPlaceholderText("Search behavior, subject, modifier…")
         self._search.setClearButtonEnabled(True)
         self._search.setAccessibleName("Search behavior events")
         self._search.textChanged.connect(self._refresh)
@@ -54,6 +54,7 @@ class BehaviorEventLogWidget(QtWidgets.QWidget):
         self._review_filter.addItem("All events", "all")
         self._review_filter.addItem("Unconfirmed", "unconfirmed")
         self._review_filter.addItem("Pairing issues", "issues")
+        configure_compact_combo(self._review_filter, min_chars=10, popup_min_width=200)
         self._review_filter.setToolTip(
             "Find proposals to review or unmatched start/end events"
         )
@@ -85,27 +86,30 @@ class BehaviorEventLogWidget(QtWidgets.QWidget):
 
         header = self._table.horizontalHeader()
         header.setStretchLastSection(True)
-        header.setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(QtWidgets.QHeaderView.Interactive)
 
         filter_layout = QtWidgets.QHBoxLayout()
-        filter_layout.addWidget(QtWidgets.QLabel("Subject:"))
+        filter_layout.setContentsMargins(0, 0, 0, 0)
+        filter_layout.setSpacing(4)
         self._subject_filter = QtWidgets.QComboBox()
         self._subject_filter.addItem("All Subjects", None)
+        configure_compact_combo(self._subject_filter, min_chars=8, popup_min_width=200)
+        self._subject_filter.setToolTip("Filter behavior events by subject")
         self._subject_filter.currentIndexChanged.connect(
             self._on_subject_filter_changed
         )
-        filter_layout.addWidget(self._subject_filter)
+        filter_layout.addWidget(self._subject_filter, 1)
 
-        filter_layout.addWidget(QtWidgets.QLabel("Category:"))
         self._category_filter = QtWidgets.QComboBox()
         self._category_filter.addItem("All Categories", None)
+        configure_compact_combo(self._category_filter, min_chars=8, popup_min_width=200)
+        self._category_filter.setToolTip("Filter behavior events by category")
         self._category_filter.currentIndexChanged.connect(
             self._on_category_filter_changed
         )
-        filter_layout.addWidget(self._category_filter)
-        filter_layout.addStretch(1)
+        filter_layout.addWidget(self._category_filter, 1)
 
-        self._undo_button = QtWidgets.QPushButton("Undo Last")
+        self._undo_button = QtWidgets.QPushButton("Undo")
         self._undo_button.setToolTip("Remove the most recently added behavior event")
         self._undo_button.clicked.connect(self.undoRequested.emit)
 
@@ -113,20 +117,37 @@ class BehaviorEventLogWidget(QtWidgets.QWidget):
         self._clear_button.setToolTip("Remove all recorded behavior events")
         self._clear_button.clicked.connect(self._confirm_clear)
 
-        button_layout = QtWidgets.QHBoxLayout()
-        button_layout.addWidget(self._undo_button)
-        button_layout.addWidget(self._clear_button)
-        button_layout.addStretch(1)
-
-        self._jump_button = QtWidgets.QPushButton("Jump to frame")
+        self._jump_button = QtWidgets.QPushButton("Jump")
+        self._jump_button.setToolTip("Jump canvas to selected event frame")
         self._jump_button.clicked.connect(self._jump_to_selected)
-        self._edit_button = QtWidgets.QPushButton("Edit interval…")
+        self._edit_button = QtWidgets.QPushButton("Edit…")
+        self._edit_button.setToolTip("Edit selected behavior interval")
         self._edit_button.clicked.connect(self._edit_selected)
-        self._review_button = QtWidgets.QPushButton("Confirm interval")
+        self._review_button = QtWidgets.QPushButton("Confirm")
+        self._review_button.setToolTip("Confirm selected behavior interval")
         self._review_button.clicked.connect(self._review_selected)
+
+        for btn in (
+            self._jump_button,
+            self._edit_button,
+            self._review_button,
+            self._undo_button,
+            self._clear_button,
+        ):
+            btn.setMinimumWidth(44)
+
         action_layout = QtWidgets.QHBoxLayout()
+        action_layout.setContentsMargins(0, 0, 0, 0)
+        action_layout.setSpacing(4)
         for button in (self._jump_button, self._edit_button, self._review_button):
-            action_layout.addWidget(button)
+            action_layout.addWidget(button, 1)
+
+        button_layout = QtWidgets.QHBoxLayout()
+        button_layout.setContentsMargins(0, 0, 0, 0)
+        button_layout.setSpacing(4)
+        button_layout.addWidget(self._undo_button, 1)
+        button_layout.addWidget(self._clear_button, 1)
+
         self._summary = QtWidgets.QLabel()
         self._summary.setWordWrap(True)
         self._hint = QtWidgets.QLabel(
@@ -135,11 +156,17 @@ class BehaviorEventLogWidget(QtWidgets.QWidget):
         self._hint.setWordWrap(True)
 
         layout = QtWidgets.QVBoxLayout(self)
-        layout.addWidget(self._search)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(5)
+        search_row = QtWidgets.QHBoxLayout()
+        search_row.setContentsMargins(0, 0, 0, 0)
+        search_row.setSpacing(4)
+        search_row.addWidget(self._search, 1)
+        search_row.addWidget(self._review_filter, 0)
+        layout.addLayout(search_row)
         layout.addLayout(filter_layout)
-        layout.addWidget(self._review_filter)
         layout.addWidget(self._summary)
-        layout.addWidget(self._table)
+        layout.addWidget(self._table, 1)
         layout.addWidget(self._hint)
         layout.addLayout(action_layout)
         layout.addLayout(button_layout)

@@ -512,6 +512,21 @@ class CoreInteractionMixin:
         tracker_settings = advanced_params_dialog.get_tracker_settings()
         for key, value in tracker_settings.items():
             setattr(self.tracker_runtime_config, key, value)
+        cutie_weights_fn = getattr(
+            advanced_params_dialog, "get_cutie_weights_path", None
+        )
+        if callable(cutie_weights_fn):
+            new_cutie_override = cutie_weights_fn()
+        else:
+            new_cutie_override = tracker_settings.get("cutie_weights_path")
+        prev_cutie_override = getattr(self, "cutie_weights_override", None)
+        self.cutie_weights_override = new_cutie_override
+        if new_cutie_override != prev_cutie_override:
+            self._tracking_processor_cache_key_value = None
+        try:
+            self.settings.setValue("cutie/weights_override", new_cutie_override or "")
+        except Exception:
+            logger.debug("Unable to persist Cutie checkpoint override.", exc_info=True)
         selected_dino_model = set_dino_model_on_runtime(
             self.tracker_runtime_config,
             tracker_settings,

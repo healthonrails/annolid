@@ -191,7 +191,8 @@ TRACKING_PROCESSOR_REGISTRY.register(
 TRACKING_PROCESSOR_REGISTRY.register(
     TrackingBackendSpec(
         name=BODY_PART_SEG_BACKEND,
-        predicate=lambda name: ("body_part" in name) or ("body-part" in name),
+        predicate=lambda name: ("cutie" not in name)
+        and (("body_part" in name) or ("body-part" in name)),
         loader=_load_body_part_seg_processor,
     )
 )

@@ -1023,8 +1023,8 @@ def main() -> None:
     parser.add_argument(
         "--update-default-weights",
         action="store_true",
-        default=True,
-        help="Update cutie-base-mega.pth directly after backing up cutie-base-mega.orig.pth.",
+        default=False,
+        help="Also overwrite cutie-base-mega.pth after backing up cutie-base-mega.orig.pth (disabled by default so Original Cutie remains the default).",
     )
     parser.add_argument(
         "--no-update-default",

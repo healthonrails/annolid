@@ -1,20 +1,25 @@
 from pathlib import Path
 import os
+from typing import Optional
 from qtpy.QtWidgets import (
     QWidget,
     QVBoxLayout,
+    QGridLayout,
+    QHeaderView,
+    QComboBox,
     QPushButton,
+    QSizePolicy,
     QTableWidget,
     QFileDialog,
     QTableWidgetItem,
     QProgressBar,
     QMessageBox,
     QAbstractItemView,
-    QHBoxLayout,
     QTextEdit,
 )
 from qtpy.QtCore import Signal, Qt, Slot
 from annolid.data.videos import extract_frames_from_videos
+from annolid.gui.qt_compat import configure_compact_combo
 from annolid.gui.workers import (
     FrameExtractorWorker,
     ProcessVideosWorker,
@@ -37,50 +42,116 @@ class VideoManagerWidget(QWidget):
 
         # Layouts
         self.main_layout = QVBoxLayout(self)
-        self.button_layout = QHBoxLayout()
+        self.main_layout.setContentsMargins(6, 6, 6, 6)
+        self.main_layout.setSpacing(6)
+        self.button_layout = QGridLayout()
+        self.button_layout.setContentsMargins(0, 0, 0, 0)
+        self.button_layout.setHorizontalSpacing(4)
+        self.button_layout.setVerticalSpacing(4)
 
         # Set to track imported videos
         self.imported_videos = set()
 
         # Import Button
-        self.import_button = QPushButton("Import Videos")
+        self.import_button = QPushButton("Import…")
+        self.import_button.setToolTip("Import a folder of video files")
         self.import_button.clicked.connect(self.import_videos)
-        self.button_layout.addWidget(self.import_button)
 
         # Track All Button (replaces Batch Predict)
         self.track_all_button = QPushButton("Track All")
+        self.track_all_button.setToolTip(
+            "Batch propagate labeled segments across all imported videos"
+        )
         self.track_all_button.clicked.connect(self.track_all_videos)
-        self.button_layout.addWidget(self.track_all_button)
 
-        self.stop_track_button = QPushButton("Stop Tracking")
+        self.stop_track_button = QPushButton("Stop")
+        self.stop_track_button.setToolTip("Stop active batch tracking")
         self.stop_track_button.clicked.connect(self.stop_tracking)
         self.stop_track_button.setVisible(False)
-        self.button_layout.addWidget(self.stop_track_button)
-
-        # Process All Videos Button
-        self.process_all_button = QPushButton("Analyze All")
-        self.process_all_button.clicked.connect(self.process_all_videos)
-        self.button_layout.addWidget(self.process_all_button)
 
         # Extract Frames Button
-        self.extract_frames_button = QPushButton("Extract Frames")
+        self.extract_frames_button = QPushButton("Extract")
+        self.extract_frames_button.setToolTip(
+            "Extract frames from imported videos for annotation"
+        )
         self.extract_frames_button.clicked.connect(self.extract_frames)
-        self.button_layout.addWidget(self.extract_frames_button)
+
+        # Cutie checkpoint selector for batch Track All
+        self.cutie_model_combo = QComboBox()
+        self.cutie_model_combo.addItem(
+            "Cutie: Follow Toolbar (default: Original)",
+            "__toolbar__",
+        )
+        self.cutie_model_combo.addItem(
+            "Cutie: Original Base Mega (134 MB)",
+            "cutie-base-mega.orig.pth",
+        )
+        self.cutie_model_combo.addItem(
+            "Cutie: Improved SAM3 + DINOv3 (30 MB)",
+            "cutie-sam3-bodyparts.pth",
+        )
+        configure_compact_combo(
+            self.cutie_model_combo,
+            min_chars=11,
+            popup_min_width=300,
+        )
+        self.cutie_model_combo.setToolTip(
+            "Choose whether Track All uses the toolbar Cutie selection (default: "
+            "Original Cutie Base Mega, 134 MB), explicitly pins Original Cutie, or "
+            "uses the improved compact SAM3 + DINOv3 checkpoint (30 MB)."
+        )
+
+        # Process All Videos Button
+        self.process_all_button = QPushButton("Analyze")
+        self.process_all_button.setToolTip("Run batch analysis on all imported videos")
+        self.process_all_button.clicked.connect(self.process_all_videos)
 
         # Clear All Button
-        self.clear_all_button = QPushButton("Clear All")
+        self.clear_all_button = QPushButton("Clear")
+        self.clear_all_button.setToolTip("Clear all videos from the table")
         self.clear_all_button.clicked.connect(self.clear_all_content)
-        self.button_layout.addWidget(self.clear_all_button)
+
+        for btn in (
+            self.import_button,
+            self.track_all_button,
+            self.stop_track_button,
+            self.extract_frames_button,
+            self.process_all_button,
+            self.clear_all_button,
+        ):
+            btn.setMinimumWidth(48)
+            btn.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+
+        # Row 0: primary video actions
+        self.button_layout.addWidget(self.import_button, 0, 0)
+        self.button_layout.addWidget(self.track_all_button, 0, 1)
+        self.button_layout.addWidget(self.extract_frames_button, 0, 2)
+        self.button_layout.addWidget(self.stop_track_button, 0, 3)
+
+        # Row 1: compact Cutie selector + secondary actions
+        self.button_layout.addWidget(self.cutie_model_combo, 1, 0, 1, 2)
+        self.button_layout.addWidget(self.process_all_button, 1, 2)
+        self.button_layout.addWidget(self.clear_all_button, 1, 3)
+        self.button_layout.setColumnStretch(0, 1)
+        self.button_layout.setColumnStretch(1, 1)
 
         self.main_layout.addLayout(self.button_layout)
 
-        # Video Table
-        # Video Table with new column for JSON status
-        self.video_table = QTableWidget(0, 6)  # Increased column count to 6
+        # Video Table with compact dock-friendly columns (Path stored in col 1 & tooltip)
+        self.video_table = QTableWidget(0, 6)
         self.video_table.setHorizontalHeaderLabels(
-            ["Name", "Path", "Load", "Close", "Delete", "JSON Labeled"]
+            ["Video", "Path", "Load", "Close", "Del", "Labeled"]
         )
+        self.video_table.verticalHeader().setVisible(False)
+        self.video_table.setAlternatingRowColors(True)
+        self.video_table.setShowGrid(False)
         self.video_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.video_table.setColumnHidden(1, True)
+        header = self.video_table.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        for col_idx in (2, 3, 4, 5):
+            header.setSectionResizeMode(col_idx, QHeaderView.ResizeToContents)
 
         # Progress Bar
         self.progress_bar = QProgressBar(self)
@@ -150,8 +221,10 @@ class VideoManagerWidget(QWidget):
         row_position = self.video_table.rowCount()
         self.video_table.insertRow(row_position)
 
-        # Add Name and Path
-        self.video_table.setItem(row_position, 0, QTableWidgetItem(video_name))
+        # Add Name (with full path tooltip) and hidden Path item
+        name_item = QTableWidgetItem(video_name)
+        name_item.setToolTip(video_path)
+        self.video_table.setItem(row_position, 0, name_item)
         self.video_table.setItem(row_position, 1, QTableWidgetItem(video_path))
 
         # Add Load Button
@@ -258,6 +331,41 @@ class VideoManagerWidget(QWidget):
         else:
             self.video_selected.emit(video_path)
 
+    def _resolve_selected_cutie_weights_path(self) -> Optional[str]:
+        """Resolve the Cutie checkpoint path for batch Track All."""
+        selected = str(self.cutie_model_combo.currentData() or "").strip()
+        if selected and selected != "__toolbar__":
+            return selected
+
+        seen_ids: set[int] = set()
+        for host in (self.parent(), self.window()):
+            if host is None or id(host) in seen_ids:
+                continue
+            seen_ids.add(id(host))
+
+            resolve_identity = getattr(host, "_resolve_model_identity", None)
+            is_cutie_fn = getattr(host, "_is_cutie_tracking_model", None)
+            resolve_weights = getattr(
+                host, "_resolve_effective_cutie_weights_path", None
+            )
+            ai_combo = getattr(host, "_selectAiModelComboBox", None) or getattr(
+                host, "aiModelComboBox", None
+            )
+            if callable(resolve_identity) and ai_combo is not None:
+                selected_text = str(ai_combo.currentText() or "").strip()
+                identifier, model_weight = resolve_identity(selected_text)
+                if callable(is_cutie_fn) and is_cutie_fn(identifier):
+                    if callable(resolve_weights):
+                        return resolve_weights(model_weight)
+                    cleaned = str(model_weight or "").strip()
+                    if cleaned and cleaned != "Cutie.pt":
+                        return cleaned
+
+            override = str(getattr(host, "cutie_weights_override", "") or "").strip()
+            if override:
+                return override
+        return None
+
     def track_all_videos(self):
         """Initiate Track All for all imported videos with JSON label files."""
         if not self.imported_videos:
@@ -272,8 +380,17 @@ class VideoManagerWidget(QWidget):
             for row in range(self.video_table.rowCount())
         ]
 
+        worker_config = {}
+        resolved_cutie_weights = self._resolve_selected_cutie_weights_path()
+        if resolved_cutie_weights:
+            worker_config["model_weights_path"] = resolved_cutie_weights
+
         # Initialize worker
-        self.worker = TrackAllWorker(video_paths=video_paths, parent=self)
+        self.worker = TrackAllWorker(
+            video_paths=video_paths,
+            config=worker_config,
+            parent=self,
+        )
         self.track_all_worker_created.emit(self.worker)  # Emit the worker instance
         self.worker.progress.connect(self.update_track_progress)
         self.worker.finished.connect(self.on_track_all_complete)

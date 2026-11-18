@@ -7,8 +7,10 @@ from qtpy import QtCore, QtWidgets
 
 from annolid.gui.models_registry import (
     ModelConfig,
+    get_model_description,
     get_model_unavailable_reason,
     get_runtime_model_registry,
+    is_cutie_checkpoint_file,
 )
 from annolid.utils.logger import logger
 
@@ -16,6 +18,8 @@ from annolid.utils.logger import logger
 RECOMMENDED_AI_MODEL_NAMES: Tuple[str, ...] = (
     "SegmentAnything (Edge)",
     "Cutie",
+    "Cutie (SAM3 Body Parts)",
+    "Cutie (Original Base Mega)",
     "SAM3",
     "Cutie + DINOv3 Keypoint Segmentation",
     "DINOv3 Keypoint Segmentation",
@@ -23,6 +27,11 @@ RECOMMENDED_AI_MODEL_NAMES: Tuple[str, ...] = (
     "YOLO11n",
     "MediaPipe Pose",
 )
+
+
+def _is_cutie_checkpoint_file(path: Path) -> bool:
+    """Return True when ``path`` is a compact or dense Cutie VOS ``.pth``/``.pt`` checkpoint."""
+    return is_cutie_checkpoint_file(path)
 
 
 class AIModelManager(QtCore.QObject):
@@ -206,6 +215,7 @@ class AIModelManager(QtCore.QObject):
             if index >= 0:
                 combo.setCurrentIndex(index)
                 self._last_selection = combo.currentText()
+                self._sync_combo_tooltip()
         finally:
             combo.blockSignals(False)
             self._refresh_in_progress = False
@@ -240,6 +250,7 @@ class AIModelManager(QtCore.QObject):
             return
 
         self._last_selection = current_text
+        self._sync_combo_tooltip()
 
         canvas = self._canvas_getter()
         if not canvas:
@@ -284,7 +295,7 @@ class AIModelManager(QtCore.QObject):
             QtWidgets.QMessageBox.warning(
                 parent_widget,
                 self.tr("Invalid model selection"),
-                self.tr("Selected path is not a compatible YOLO model export."),
+                self.tr("Selected path is not a compatible Cutie or YOLO model file."),
             )
             return
 
@@ -299,7 +310,10 @@ class AIModelManager(QtCore.QObject):
         if existing:
             target_display = existing.display_name
         else:
-            display_base = weight_path.stem
+            is_cutie_ckpt = _is_cutie_checkpoint_file(weight_path)
+            display_base = (
+                f"Cutie: {weight_path.stem}" if is_cutie_ckpt else weight_path.stem
+            )
             existing_names = {cfg.display_name for cfg in self._runtime_registry} | {
                 cfg.display_name for cfg in self._custom_model_configs
             }
@@ -309,9 +323,12 @@ class AIModelManager(QtCore.QObject):
                 candidate = f"{display_base} ({counter})"
                 counter += 1
 
+            custom_identifier = (
+                f"cutie_custom:{weight_path}" if is_cutie_ckpt else str(weight_path)
+            )
             new_config = ModelConfig(
                 display_name=candidate,
-                identifier=str(weight_path),
+                identifier=custom_identifier,
                 weight_file=str(weight_path),
             )
             self._custom_model_configs.append(new_config)
@@ -382,6 +399,11 @@ class AIModelManager(QtCore.QObject):
         if cfg is not None:
             self._set_model_item_availability(idx, cfg)
 
+    def _sync_combo_tooltip(self) -> None:
+        cfg = self._find_model_config(self._combo.currentText())
+        desc = get_model_description(cfg) if cfg is not None else ""
+        self._combo.setToolTip(desc)
+
     def _set_model_item_availability(self, idx: int, cfg: ModelConfig) -> None:
         if idx < 0:
             return
@@ -393,7 +415,8 @@ class AIModelManager(QtCore.QObject):
             if item is not None:
                 item.setEnabled(False)
         else:
-            self._combo.setItemData(idx, "", QtCore.Qt.ToolTipRole)
+            desc = get_model_description(cfg)
+            self._combo.setItemData(idx, desc, QtCore.Qt.ToolTipRole)
             if item is not None:
                 item.setEnabled(True)
 
@@ -406,24 +429,36 @@ class AIModelManager(QtCore.QObject):
                 self._combo.setCurrentIndex(0)
         finally:
             self._combo.blockSignals(False)
+        self._sync_combo_tooltip()
 
     def _select_model_from_catalog(self) -> Optional[str]:
         parent_widget = self._get_parent_widget()
         dialog = QtWidgets.QDialog(parent_widget)
         dialog.setWindowTitle(self.tr("Choose AI Model"))
-        dialog.resize(560, 520)
+        dialog.resize(620, 560)
 
         layout = QtWidgets.QVBoxLayout(dialog)
         search = QtWidgets.QLineEdit(dialog)
-        search.setPlaceholderText(self.tr("Search models"))
+        search.setPlaceholderText(
+            self.tr("Search models (e.g. Cutie, SAM3, body parts, original)")
+        )
         layout.addWidget(search)
 
         tree = QtWidgets.QTreeWidget(dialog)
         tree.setColumnCount(2)
-        tree.setHeaderLabels([self.tr("Model"), self.tr("Type")])
+        tree.setHeaderLabels([self.tr("Model"), self.tr("Category")])
         tree.setRootIsDecorated(True)
         tree.setAlternatingRowColors(True)
         layout.addWidget(tree)
+
+        details_label = QtWidgets.QLabel(dialog)
+        details_label.setWordWrap(True)
+        details_label.setStyleSheet(
+            "color: palette(window-text); font-size: 11px; padding: 6px; "
+            "border: 1px solid palette(midlight); border-radius: 4px;"
+        )
+        details_label.setVisible(False)
+        layout.addWidget(details_label)
 
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel,
@@ -445,8 +480,13 @@ class AIModelManager(QtCore.QObject):
             return str(name) if name else None
 
         def update_select_button() -> None:
+            name = selected_model_name()
             if select_button is not None:
-                select_button.setEnabled(selected_model_name() is not None)
+                select_button.setEnabled(name is not None)
+            item = tree.currentItem()
+            tip = item.toolTip(0) if item is not None else ""
+            details_label.setText(tip)
+            details_label.setVisible(bool(tip))
 
         def rebuild(filter_text: str = "") -> None:
             normalized_filter = filter_text.strip().lower()
@@ -455,7 +495,8 @@ class AIModelManager(QtCore.QObject):
             current_name = self._last_selection or self._combo.currentText()
 
             for name, group, cfg in entries:
-                haystack = f"{name} {group}".lower()
+                desc = get_model_description(cfg) if cfg is not None else ""
+                haystack = f"{name} {group} {desc}".lower()
                 if normalized_filter and normalized_filter not in haystack:
                     continue
                 parent_item = groups.get(group)
@@ -474,6 +515,9 @@ class AIModelManager(QtCore.QObject):
                     if reason:
                         item.setDisabled(True)
                         item.setToolTip(0, reason)
+                    elif desc:
+                        item.setToolTip(0, desc)
+                        item.setToolTip(1, desc)
                 parent_item.addChild(item)
                 if name == current_name:
                     tree.setCurrentItem(item)

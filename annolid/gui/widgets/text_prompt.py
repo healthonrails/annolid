@@ -28,8 +28,8 @@ class AiRectangleWidget(QtWidgets.QWidget):
         self._aiRectanglePrompt = QtWidgets.QLineEdit()
         self._aiRectanglePrompt.setMaxLength(self._MAX_PROMPT_LENGTH)
         self._aiRectanglePrompt.setClearButtonEnabled(True)
-        self._aiRectanglePrompt.setMinimumWidth(150)
-        self._aiRectanglePrompt.setMaximumWidth(260)
+        self._aiRectanglePrompt.setMinimumWidth(135)
+        self._aiRectanglePrompt.setMaximumWidth(235)
         self._aiRectanglePrompt.setPlaceholderText(self.tr("Prompt: mouse, pup=baby…"))
         self._aiRectanglePrompt.setToolTip(
             self.tr(
@@ -84,7 +84,7 @@ class AiRectangleWidget(QtWidgets.QWidget):
         options_row.addWidget(self._confidenceSpinBox, 0)
 
         # Optional CountGD toggle (off by default) — attribute name preserved for compatibility
-        self._useCountGDCheckbox = QtWidgets.QCheckBox(self.tr("Use CountGD"))
+        self._useCountGDCheckbox = QtWidgets.QCheckBox(self.tr("CountGD"))
         self._useCountGDCheckbox.setToolTip(
             self.tr(
                 "Enable CountGD-based object counting in addition to "
@@ -102,18 +102,14 @@ class AiRectangleWidget(QtWidgets.QWidget):
         )
         self._replaceExistingCheckbox.setChecked(False)
 
-        toggles_row = QtWidgets.QHBoxLayout()
-        toggles_row.setContentsMargins(0, 0, 0, 0)
-        toggles_row.setSpacing(6)
-        toggles_row.addWidget(self._useCountGDCheckbox)
-        toggles_row.addWidget(self._replaceExistingCheckbox)
+        options_row.addWidget(self._useCountGDCheckbox, 0)
+        options_row.addWidget(self._replaceExistingCheckbox, 0)
 
         aiRectangleLayout = QtWidgets.QVBoxLayout()
-        aiRectangleLayout.setContentsMargins(2, 2, 2, 2)
-        aiRectangleLayout.setSpacing(3)
+        aiRectangleLayout.setContentsMargins(3, 2, 3, 2)
+        aiRectangleLayout.setSpacing(2)
         aiRectangleLayout.addLayout(prompt_row)
         aiRectangleLayout.addLayout(options_row)
-        aiRectangleLayout.addLayout(toggles_row)
 
         self.aiRectangleWidget = QtWidgets.QWidget()
         self.aiRectangleWidget.setLayout(aiRectangleLayout)

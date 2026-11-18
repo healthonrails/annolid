@@ -126,6 +126,8 @@ class ModelIdentityMixin:
     @staticmethod
     def _is_body_part_seg_model(identifier: str, weight: str) -> bool:
         key = f"{identifier or ''} {weight or ''}".lower()
+        if "cutie" in key:
+            return False
         return ("body_part" in key) or ("body-part" in key)
 
     @staticmethod

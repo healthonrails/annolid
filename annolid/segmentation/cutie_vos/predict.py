@@ -35,6 +35,7 @@ from annolid.segmentation.cutie_vos.engine import (
     ensure_managed_cutie_weights_file,
     maybe_upgrade_and_cache_compact_cutie_weights,
     resolve_cutie_weights_path,
+    safe_load_cutie_checkpoint,
     unwrap_cutie_state_dict,
 )
 from annolid.segmentation.cutie_vos.inference.inference_core import InferenceCore
@@ -1793,8 +1794,8 @@ class CutieCoreVideoProcessor:
             )
             logger.info("CUTIE CUDA automatic mixed precision: %s.", amp_enabled)
             cutie_model = CUTIE(cfg).to(self.device).eval()
-            model_weights = torch.load(
-                cfg.weights, map_location=self.device, weights_only=True
+            model_weights = safe_load_cutie_checkpoint(
+                cfg.weights, map_location=self.device
             )
             unwrapped_weights = unwrap_cutie_state_dict(model_weights)
             cutie_model.load_weights(unwrapped_weights)

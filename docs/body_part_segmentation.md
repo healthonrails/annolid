@@ -120,17 +120,33 @@ For single-frame NumPy arrays in custom pipelines, use `InstanceBodyPartSegmente
 
 When propagating seeded whole-instance and/or anatomical body-part masks directly with Cutie's temporal memory engine (`InferenceCore`), Annolid ships a directly compressed and Dual-Teacher (`SAM 3.1` + `DINOv3 ViT-L/16`) distilled Cutie checkpoint while keeping `CUTIE.load_weights` backward-compatible with legacy dense checkpoints:
 
-- **Default & SAM3 Body-Parts Cutie (`Cutie` / `Cutie (SAM3 Body Parts)`)**: loads `annolid/segmentation/cutie_vos/weights/cutie-base-mega.pth` (mirrored at `cutie-sam3-bodyparts.pth`), combining algebraic 48-layer `Conv+BN` folding, HOSVD Tucker-2 spatial-channel factorization, structured `FFN` pruning, and mixed-precision `FP16`/`FP32` serialization (`35.02M -> 15.76M` parameters, `-55.0%`; `133.94 MB -> 30.26 MB` on disk, `4.43x` smaller; `1.64x` faster cold load; `1.48x` faster CPU propagation and up to `2.72x` faster on Apple Silicon `mps`) while improving held-out body-part `J&F` from `0.7798` to `0.8127` (`+0.0329` macro-average across 5 suites).
-- **Fresh-Install & Frozen-Bundle Auto-Bootstrap**: On fresh clones, pip wheels, or frozen desktop apps (`Annolid.app`, which stays strictly read-only by routing downloads/caches to `~/.annolid/workspace/downloads`), selecting either `Cutie` or `Cutie (SAM3 Body Parts)` automatically resolves in order:
-  1. Local `weights/` or `~/.annolid/workspace/downloads/` cache,
-  2. Explicit `ANNOLID_CUTIE_UPGRADED_WEIGHTS_URL` + `ANNOLID_CUTIE_UPGRADED_WEIGHTS_SHA256` override,
-  3. Canonical GitHub Release asset (`SAM3_BODYPARTS_CUTIE_RELEASE_URL` verified against `SAM3_BODYPARTS_CUTIE_SHA256`),
-  4. Seamless fallback to upstream `cutie-base-mega.pth` (MD5-verified) + automatic `< 0.5s` `Conv+BN` folding & HOSVD Tucker-2 `30.26 MB` compression.
-- **Immutable Upstream Backup**: `annolid/segmentation/cutie_vos/weights/cutie-base-mega.orig.pth` preserves the untouched upstream Cutie Base Mega checkpoint (`MD5 a6071de6136982e396851903ab4c083a`) for reproducible head-to-head comparison or legacy fallback.
+- **Default Original Cutie (`Cutie` / `Cutie (Original Base Mega)`)**: loads the untouched upstream dense `annolid/segmentation/cutie_vos/weights/cutie-base-mega.pth` (`133.94 MB`, `35.02M` parameters, `MD5 a6071de6136982e396851903ab4c083a`, backed up at `cutie-base-mega.orig.pth`) by default to preserve strict upstream compatibility.
+- **Improved Compact SAM3 + DINOv3 Cutie (`Cutie (SAM3 Body Parts)`)**: loads `annolid/segmentation/cutie_vos/weights/cutie-sam3-bodyparts.pth`, combining algebraic 48-layer `Conv+BN` folding, HOSVD Tucker-2 spatial-channel factorization, structured `FFN` pruning, and mixed-precision `FP16`/`FP32` serialization (`35.02M -> 15.76M` parameters, `-55.0%`; `133.94 MB -> 30.26 MB` on disk, `4.43x` smaller; `1.64x` faster cold load; `1.48x` faster CPU propagation and up to `2.72x` faster on Apple Silicon `mps`) while improving held-out body-part `J&F` from `0.7798` to `0.8127` (`+0.0329` macro-average across 5 suites).
+- **Fresh-Install & Frozen-Bundle Auto-Bootstrap**: On fresh clones, pip wheels, or frozen desktop apps (`Annolid.app`, which stays strictly read-only by routing downloads/caches to `~/.annolid/workspace/downloads`):
+  - Selecting default **`Cutie`** or **`Cutie (Original Base Mega)`** resolves local `cutie-base-mega.pth` / `cutie-base-mega.orig.pth` or downloads the MD5-verified upstream checkpoint without modifying or compressing it.
+  - Selecting **`Cutie (SAM3 Body Parts)`** resolves in order:
+    1. Local `weights/cutie-sam3-bodyparts.pth` or `~/.annolid/workspace/downloads/cutie-sam3-bodyparts.pth`,
+    2. Explicit `ANNOLID_CUTIE_UPGRADED_WEIGHTS_URL` + `ANNOLID_CUTIE_UPGRADED_WEIGHTS_SHA256` override,
+    3. Canonical GitHub Release asset (`SAM3_BODYPARTS_CUTIE_RELEASE_URL` verified against `SAM3_BODYPARTS_CUTIE_SHA256`),
+    4. Seamless offline fallback to upstream `cutie-base-mega.pth` + `< 0.5s` `Conv+BN` folding & HOSVD Tucker-2 `30.26 MB` compression saved to `cutie-sam3-bodyparts.pth`.
 
-### Selecting Custom Cutie Weights
+### Selecting Original vs. Improved Cutie in the GUI & Python API
 
-- **GUI**: Select **`Cutie`** or **`Cutie (SAM3 Body Parts)`** in the top toolbar AI model selector.
+Annolid uses Original Cutie (`133.94 MB`, `35.02M` params) by default and exposes the improved compact Cutie checkpoint (`30.26 MB`, `15.76M` params) as well as custom `.pth` checkpoints across all GUI workflows:
+
+1. **Top Toolbar AI Model Selector**:
+   - **`Cutie`** *(default)* — uses Original Cutie (`cutie-base-mega.pth`), or any global Cutie checkpoint override set in **Advanced Parameters**.
+   - **`Cutie (SAM3 Body Parts)`** — explicitly selects the compact `30.26 MB` SAM 3.1 + DINOv3 body-parts & multi-instance checkpoint (`cutie-sam3-bodyparts.pth`).
+   - **`Cutie (Original Base Mega)`** — explicitly pins the untouched `133.94 MB` upstream dense checkpoint (`cutie-base-mega.orig.pth`, never compressed) even if a global override is active.
+   - **`Browse Custom Model…`** — safely inspects `.pth`/`.pt` pickle string keys via `pickletools.genops` (zero `torch` import or code execution) and loads third-party/Hydra checkpoints under `weights_only=True` + `torch.serialization.safe_globals(...)`, registering them in the toolbar as **`Cutie: <checkpoint_stem>`**.
+2. **`More models...` (`Choose AI Model` Catalog Dialog)**:
+   - Search `"cutie"`, `"sam3"`, `"body"`, or `"original"` and inspect the live checkpoint status banner (on-disk path, size in MB, or auto-download readiness) before selecting.
+3. **`Advanced Parameters` -> `Segmentation` Tab (`Cutie VOS checkpoint`)**:
+   - Choose **`Follow Toolbar Selection (default: Original Cutie)`**, **`Original Base Mega — Upstream Dense (134 MB, default)`**, **`Improved Compact — SAM3 + DINOv3 (30 MB, 1.5x–2.7x faster)`**, or **`Custom Cutie Checkpoint (.pth)…`** with a file browser and live on-disk status badge.
+   - Applies to generic **`Cutie`** propagation, **`Cutie + DINOv3 Keypoint Segmentation`** (`CutieDinoTrackerConfig.cutie_weights_path`), and saved workspace settings profiles.
+4. **Video Manager (`Track All` Batch Processing)**:
+   - Use the **`Cutie: Follow Toolbar (default: Original)` / `Cutie: Original Base Mega` / `Cutie: Improved (SAM3 + DINOv3)`** selector next to **Track All** to choose which Cutie checkpoint batch multi-video propagation uses.
+
 - **Python API**:
 
 ```python
@@ -138,7 +154,12 @@ from annolid.segmentation.cutie_vos.engine import CutieEngine
 from annolid.segmentation.cutie_vos.video_processor import CutieVideoProcessor
 from annolid.tracking.configuration import CutieDinoTrackerConfig
 
+# Default: Original untouched upstream dense checkpoint (133.94 MB)
+orig_engine = CutieEngine()
+
+# Improved compact SAM3 + DINOv3 checkpoint (30.26 MB)
 engine = CutieEngine(model_weights_path="cutie-sam3-bodyparts.pth")
+
 processor = CutieVideoProcessor(
     "/path/to/video.mp4",
     model_weights_path="cutie-sam3-bodyparts.pth",
@@ -152,10 +173,10 @@ tracker_cfg = CutieDinoTrackerConfig(
 
 ```bash
 # Back up cutie-base-mega.orig.pth, compress via Conv+BN folding + HOSVD Tucker-2,
-# and distill SAM 3.1 + DINOv3 ViT-L/16 into cutie-base-mega.pth & cutie-sam3-bodyparts.pth
+# and distill SAM 3.1 + DINOv3 ViT-L/16 into cutie-sam3-bodyparts.pth (keeping cutie-base-mega.pth untouched)
 .venv/bin/python scripts/upgrade_cutie_weights_with_sam3.py
 
-# Evaluate cutie-base-mega.orig.pth vs cutie-base-mega.pth on 9 held-out suites (accuracy + FPS)
+# Evaluate cutie-base-mega.pth (Original default) vs cutie-sam3-bodyparts.pth on 9 held-out suites
 .venv/bin/python scripts/evaluate_cutie_bodyparts_benchmark.py
 ```
 

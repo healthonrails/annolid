@@ -515,9 +515,18 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         self.tools.setFloatable(False)
         self.tools.setIconSize(QtCore.QSize(32, 32))
         self.tools.setToolButtonStyle(QtCore.Qt.ToolButtonTextUnderIcon)
-        # Tighten toolbar spacing so more tools fit before overflow ("»").
+        # Tighten toolbar spacing and keep dock tab bars scrollable/compact so multi-tab
+        # right-dock groups never force wide sidebar columns.
         self.tools.setStyleSheet(
-            "QToolBar { spacing: 0px; }QToolButton { margin: 0px; padding: 0px; }"
+            "QToolBar { spacing: 2px; padding: 2px 4px; }"
+            "QToolButton { margin: 0px; padding: 2px 3px; border-radius: 4px; }"
+        )
+        self.setStyleSheet(
+            self.styleSheet()
+            + "\nQMainWindow > QTabBar { qproperty-usesScrollButtons: true; "
+            "qproperty-elideMode: ElideRight; font-size: 12px; }"
+            "\nQDockWidget { font-size: 12px; }"
+            "\nQDockWidget::title { padding: 4px 8px; font-weight: 600; }"
         )
         self.addToolBar(QtCore.Qt.TopToolBarArea, self.tools)
 

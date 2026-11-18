@@ -7,6 +7,8 @@ import weakref
 
 from qtpy import QtCore, QtGui, QtWidgets
 
+from annolid.gui.qt_compat import configure_compact_combo
+
 
 class FileDockMixin:
     """Files dock UI and file-management interactions."""
@@ -35,6 +37,7 @@ class FileDockMixin:
         self.fileListWidget = QtWidgets.QListWidget()
         self.fileListWidget.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.fileSearchWidget = QtWidgets.QLineEdit()
+        self.fileSearchWidget.setMinimumWidth(60)
         self.fileSearchWidget.setClearButtonEnabled(True)
         self.fileSearchWidget.setPlaceholderText(self.tr("Search files..."))
         self.fileSearchWidget.textChanged.connect(
@@ -45,6 +48,7 @@ class FileDockMixin:
         self.fileSortCombo.addItem(self.tr("Date"), "date")
         self.fileSortCombo.addItem(self.tr("Size"), "size")
         self.fileSortCombo.addItem(self.tr("Type"), "type")
+        configure_compact_combo(self.fileSortCombo, min_chars=5, popup_min_width=110)
         self.fileSortCombo.setToolTip(self.tr("Sort files by selected field"))
         self.fileSortCombo.currentIndexChanged.connect(self._on_file_sort_mode_changed)
         self.fileSortOrderButton = QtWidgets.QToolButton()
@@ -106,6 +110,14 @@ class FileDockMixin:
         )
         self.fileRefreshButton.clicked.connect(self._refresh_file_dock_listing)
         file_actions_row.addWidget(self.fileRefreshButton)
+        for btn in (
+            self.fileOpenButton,
+            self.fileRenameButton,
+            self.fileDeleteButton,
+            self.fileRevealButton,
+            self.fileRefreshButton,
+        ):
+            btn.setMinimumWidth(34)
         file_actions_row.addStretch(1)
         file_layout.addLayout(file_actions_row)
         file_layout.addWidget(self.fileListWidget)

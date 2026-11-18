@@ -20,7 +20,7 @@ import shutil
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit, urlunsplit
 from qtpy import QtCore, QtGui, QtWidgets
-from annolid.gui.qt_compat import palette_color_role
+from annolid.gui.qt_compat import configure_compact_combo, palette_color_role
 from qtpy.QtCore import QThreadPool
 
 from annolid.infrastructure.agent_config import (
@@ -1123,18 +1123,31 @@ class AIChatWidget(QtWidgets.QWidget):
 
         self.session_chip_label = QtWidgets.QLabel(self)
         self.session_chip_label.setObjectName("chatSubtitleLabel")
+        self.session_chip_label.setMinimumWidth(0)
+        self.session_chip_label.setSizePolicy(
+            QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred
+        )
         title_col.addWidget(self.session_chip_label)
 
         self.capability_summary_label = QtWidgets.QLabel(self)
         self.capability_summary_label.setObjectName("chatCapabilitySummaryLabel")
         self.capability_summary_label.setWordWrap(False)
+        self.capability_summary_label.setMinimumWidth(0)
+        self.capability_summary_label.setSizePolicy(
+            QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred
+        )
         title_col.addWidget(self.capability_summary_label)
 
         # Model Selector (Compact)
         self.model_selector = QtWidgets.QComboBox(self)
         self.model_selector.setEditable(True)
         self.model_selector.setInsertPolicy(QtWidgets.QComboBox.InsertAtTop)
-        self.model_selector.setMinimumWidth(150)
+        self.model_selector.setMinimumWidth(90)
+        configure_compact_combo(
+            self.model_selector,
+            min_chars=12,
+            popup_min_width=280,
+        )
         # We need to populate this later, but for now add to layout
         title_col.addWidget(self.model_selector)
 
@@ -1241,11 +1254,29 @@ class AIChatWidget(QtWidgets.QWidget):
         container = QtWidgets.QFrame(self)
         container.setObjectName("inputBarContainer")
         layout = QtWidgets.QVBoxLayout(container)
-        layout.setContentsMargins(16, 12, 16, 12)
-        layout.setSpacing(8)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(6)
 
-        # 1. Quick Actions (Horizontal Scroll if needed, or just row)
-        self.quick_actions_layout = QtWidgets.QHBoxLayout()
+        # 1. Quick Actions inside a compact horizontal scroll strip
+        self.quick_actions_scroll = QtWidgets.QScrollArea(self)
+        self.quick_actions_scroll.setObjectName("quickActionsScroll")
+        self.quick_actions_scroll.setWidgetResizable(True)
+        self.quick_actions_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.quick_actions_scroll.setHorizontalScrollBarPolicy(
+            QtCore.Qt.ScrollBarAsNeeded
+        )
+        self.quick_actions_scroll.setVerticalScrollBarPolicy(
+            QtCore.Qt.ScrollBarAlwaysOff
+        )
+        self.quick_actions_scroll.setMaximumHeight(38)
+        self.quick_actions_scroll.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding,
+            QtWidgets.QSizePolicy.Fixed,
+        )
+        quick_actions_body = QtWidgets.QWidget(self.quick_actions_scroll)
+        self.quick_actions_scroll.setWidget(quick_actions_body)
+        self.quick_actions_layout = QtWidgets.QHBoxLayout(quick_actions_body)
+        self.quick_actions_layout.setContentsMargins(0, 0, 0, 0)
         self.quick_actions_layout.setSpacing(6)
         self.quick_action_buttons = []
 
@@ -1274,15 +1305,28 @@ class AIChatWidget(QtWidgets.QWidget):
             self._run_behavior_label_preset_one_second
         )
 
-        layout.addLayout(self.quick_actions_layout)
+        layout.addWidget(self.quick_actions_scroll)
         self._refresh_quick_action_buttons()
 
-        # 2. Main Input Row (Attach | Text | Send/Mic)
-        input_row = QtWidgets.QHBoxLayout()
-        input_row.setSpacing(10)
+        self.zulip_panel = self._build_zulip_panel()
+        layout.addWidget(self.zulip_panel)
 
-        # Attach / Tools Group
+        # 2. Full-width Prompt Input + Compact Composer Action Bar beneath
+        self.prompt_text_edit = QtWidgets.QPlainTextEdit(self)
+        self.prompt_text_edit.setPlaceholderText("Message Annolid Bot...")
+        self.prompt_text_edit.setMinimumWidth(120)
+        self.prompt_text_edit.setFixedHeight(54)
+        self.prompt_text_edit.setToolTip(
+            "Type a message. Use Ctrl+Enter to send. Type / to pick skills, tools, and commands."
+        )
+        layout.addWidget(self.prompt_text_edit)
+
+        input_row = QtWidgets.QHBoxLayout()
+        input_row.setContentsMargins(0, 0, 0, 0)
+        input_row.setSpacing(4)
+
         tools_layout = QtWidgets.QHBoxLayout()
+        tools_layout.setContentsMargins(0, 0, 0, 0)
         tools_layout.setSpacing(2)
 
         self.attach_file_button = self._create_input_icon(
@@ -1307,34 +1351,23 @@ class AIChatWidget(QtWidgets.QWidget):
         tools_layout.addWidget(self.citation_button)
         tools_layout.addWidget(self.zulip_button)
         input_row.addLayout(tools_layout)
+        input_row.addStretch(1)
 
-        self.zulip_panel = self._build_zulip_panel()
-        layout.addWidget(self.zulip_panel)
-
-        # Text Input
-        self.prompt_text_edit = QtWidgets.QPlainTextEdit(self)
-        self.prompt_text_edit.setPlaceholderText("Message Annolid Bot...")
-        self.prompt_text_edit.setFixedHeight(50)
-        self.prompt_text_edit.setToolTip(
-            "Type a message. Use Ctrl+Enter to send. Type / to pick skills, tools, and commands."
-        )
-        input_row.addWidget(self.prompt_text_edit, 1)
-
-        # Send / Talk Group
         send_layout = QtWidgets.QHBoxLayout()
+        send_layout.setContentsMargins(0, 0, 0, 0)
         send_layout.setSpacing(4)
 
         self.talk_button = QtWidgets.QToolButton(self)
         self.talk_button.setObjectName("talkButton")
         self.talk_button.setText(_symbol_text("🎤", "Mic"))
         self.talk_button.setToolTip("Record voice input")
-        self.talk_button.setFixedSize(36, 36)
+        self.talk_button.setFixedSize(32, 32)
 
         self.send_button = QtWidgets.QToolButton(self)
         self.send_button.setObjectName("sendButton")
         self.send_button.setText(_symbol_text("🚀", ">"))
         self.send_button.setToolTip("Send message (Ctrl+Enter)")
-        self.send_button.setFixedSize(36, 36)
+        self.send_button.setFixedSize(32, 32)
 
         send_layout.addWidget(self.talk_button)
         send_layout.addWidget(self.send_button)
