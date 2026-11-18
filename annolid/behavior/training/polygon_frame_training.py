@@ -34,6 +34,7 @@ from annolid.behavior.models.polygon_frame_classifier import (
     _collate_fn,  # type: ignore
     _seed_worker,  # type: ignore
 )
+from annolid.behavior.tcn import safe_load_behavior_checkpoint
 from annolid.utils.logger import logger
 
 
@@ -570,7 +571,11 @@ def main() -> None:
     logger.info(f"Evaluation model structure:\n{model}")
     eval_state = best_state
     try:
-        loaded_state = torch.load(ckpt_best, map_location=device)
+        loaded_state = safe_load_behavior_checkpoint(
+            ckpt_best,
+            map_location=device,
+            extra_globals=(PolygonFeatureConfig, ModelConfig, TrainingConfig),
+        )
         if isinstance(loaded_state, dict) and "model_state" in loaded_state:
             eval_state = loaded_state
             logger.info(f"Loaded best checkpoint from {ckpt_best} for evaluation.")

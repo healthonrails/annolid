@@ -21,6 +21,8 @@ from pathlib import Path
 from statistics import mean
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
+import numpy as np
+
 from annolid.behavior.event_utils import DEFAULT_SUBJECT_LABEL, ParsedEventRow
 from annolid.behavior.project_schema import ProjectSchema
 from annolid.behavior.qc import (
@@ -168,19 +170,14 @@ def compute_binary_cohens_kappa(
             "iou": 1.0,
         }
 
-    n11 = 0
-    n10 = 0
-    n01 = 0
-    n00 = 0
-    for a, b in zip(seq_a, seq_b):
-        if a and b:
-            n11 += 1
-        elif a and not b:
-            n10 += 1
-        elif not a and b:
-            n01 += 1
-        else:
-            n00 += 1
+    a_arr = np.asarray(seq_a).astype(bool, copy=False)
+    b_arr = np.asarray(seq_b).astype(bool, copy=False)
+    n11 = int(np.count_nonzero(a_arr & b_arr))
+    a_ones = int(np.count_nonzero(a_arr))
+    b_ones = int(np.count_nonzero(b_arr))
+    n10 = a_ones - n11
+    n01 = b_ones - n11
+    n00 = n - n11 - n10 - n01
 
     inv_n = 1.0 / float(n)
     p_o = (n11 + n00) * inv_n
@@ -222,13 +219,14 @@ def compute_fleiss_kappa(rater_sequences: Sequence[Sequence[int]]) -> float:
         return 1.0
 
     pairs_per_bin = float(num_raters * (num_raters - 1))
-    sum_p_i = 0.0
-    total_ones = 0
-    for idx in range(n_bins):
-        ones = sum(1 for rater_seq in rater_sequences if rater_seq[idx])
-        zeros = num_raters - ones
-        total_ones += ones
-        sum_p_i += float(ones * (ones - 1) + zeros * (zeros - 1)) / pairs_per_bin
+    mat = np.asarray(rater_sequences).astype(bool, copy=False)
+    ones = mat.sum(axis=0, dtype=np.int64)
+    zeros = num_raters - ones
+    total_ones = int(ones.sum())
+    sum_p_i = (
+        float(np.sum(ones * (ones - 1) + zeros * (zeros - 1), dtype=np.float64))
+        / pairs_per_bin
+    )
 
     p_bar = sum_p_i / float(n_bins)
     p_1 = float(total_ones) / float(n_bins * num_raters)
@@ -311,9 +309,9 @@ def _rasterize_series(
     bin_seconds: float,
     n_bins: int,
 ) -> List[int]:
-    grid = [0] * n_bins
     if n_bins <= 0:
-        return grid
+        return []
+    grid = np.zeros(n_bins, dtype=np.int8)
 
     for interval in intervals:
         s = max(window_start, interval.start)
@@ -328,13 +326,22 @@ def _rasterize_series(
             grid[idx] = 1
             continue
 
-        start_idx = max(0, int(math.floor((s - window_start) / bin_seconds)))
+        start_idx = min(
+            n_bins - 1, max(0, int(math.floor((s - window_start) / bin_seconds)))
+        )
         end_idx = min(
             n_bins - 1,
             max(0, int(math.floor((e - window_start - 1e-9) / bin_seconds))),
         )
         marked_any = False
-        for idx in range(start_idx, end_idx + 1):
+        if end_idx - start_idx > 1:
+            grid[start_idx + 1 : end_idx] = 1
+            marked_any = True
+
+        boundary_indices = (
+            (start_idx,) if start_idx == end_idx else (start_idx, end_idx)
+        )
+        for idx in boundary_indices:
             b0 = window_start + idx * bin_seconds
             b1 = min(window_end, b0 + bin_seconds)
             bin_width = max(1e-9, b1 - b0)
@@ -350,16 +357,20 @@ def _rasterize_series(
             )
             grid[mid_idx] = 1
 
-    for pt in points:
-        if pt.timestamp < window_start - 1e-9 or pt.timestamp > window_end + 1e-9:
-            continue
-        idx = min(
-            n_bins - 1,
-            max(0, int(math.floor((pt.timestamp - window_start) / bin_seconds))),
+    if points:
+        ts_arr = np.fromiter(
+            (pt.timestamp for pt in points), dtype=np.float64, count=len(points)
         )
-        grid[idx] = 1
+        valid = (ts_arr >= window_start - 1e-9) & (ts_arr <= window_end + 1e-9)
+        if np.any(valid):
+            pt_idx = np.clip(
+                np.floor((ts_arr[valid] - window_start) / bin_seconds).astype(np.int64),
+                0,
+                n_bins - 1,
+            )
+            grid[pt_idx] = 1
 
-    return grid
+    return grid.tolist()
 
 
 def compute_irr(

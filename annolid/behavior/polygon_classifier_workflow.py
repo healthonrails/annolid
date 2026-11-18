@@ -26,6 +26,7 @@ from annolid.behavior.models.polygon_frame_classifier import (
     _frame_sort_key,  # type: ignore
     train_polygon_frame_classifier,
 )
+from annolid.behavior.tcn import safe_load_behavior_checkpoint
 from annolid.datasets.polygon_features import create_dataset
 from annolid.datasets.polygon_utils import (
     frame_number_from_filename,
@@ -585,14 +586,43 @@ def _select_device(device: str | None = None) -> torch.device:
     return torch.device("cpu")
 
 
-def _load_checkpoint(path: str | Path, device: torch.device) -> Dict[str, Any]:
+def _safe_load_raw_checkpoint(
+    path: str | Path,
+    device: torch.device,
+    *,
+    extra_globals: Iterable[Any] = (),
+    trust_checkpoint: bool = False,
+    expected_sha256: str | None = None,
+) -> Any:
     checkpoint_path = Path(path).expanduser().resolve()
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
-    try:
-        state = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    except TypeError:
-        state = torch.load(checkpoint_path, map_location=device)
+    merged_globals = (PolygonFeatureConfig, ModelConfig, TrainingConfig, *extra_globals)
+    return safe_load_behavior_checkpoint(
+        checkpoint_path,
+        map_location=device,
+        extra_globals=merged_globals,
+        trust_checkpoint=trust_checkpoint,
+        expected_sha256=expected_sha256,
+    )
+
+
+def _load_checkpoint(
+    path: str | Path,
+    device: torch.device,
+    *,
+    extra_globals: Iterable[Any] = (),
+    trust_checkpoint: bool = False,
+    expected_sha256: str | None = None,
+) -> Dict[str, Any]:
+    checkpoint_path = Path(path).expanduser().resolve()
+    state = _safe_load_raw_checkpoint(
+        checkpoint_path,
+        device,
+        extra_globals=extra_globals,
+        trust_checkpoint=trust_checkpoint,
+        expected_sha256=expected_sha256,
+    )
     if not isinstance(state, dict) or "model_state" not in state:
         raise ValueError(f"Invalid polygon classifier checkpoint: {checkpoint_path}")
     return state
@@ -1101,6 +1131,8 @@ def _predict_polygon_tcn_classifier_csv(
     device: str,
     payload: Mapping[str, Any],
     smoothing_window: int = 1,
+    extra_globals: Iterable[Any] = (),
+    trust_checkpoint: bool = False,
 ) -> PolygonInferenceOutcome:
     from annolid.behavior.tcn import (
         TCNFeatureConfig,
@@ -1142,7 +1174,12 @@ def _predict_polygon_tcn_classifier_csv(
             normalization=_normalization_from_tcn_payload(payload),
             require_labels=False,
         )
-        model, _payload = load_tcn_checkpoint(checkpoint_path, device=device)
+        model, _payload = load_tcn_checkpoint(
+            checkpoint_path,
+            device=device,
+            extra_globals=extra_globals,
+            trust_checkpoint=trust_checkpoint,
+        )
         result = predict_tcn(
             model,
             dataset,
@@ -1167,10 +1204,13 @@ def _predict_polygon_tcn_classifier_csv(
                 session_rows, pred_values.tolist(), score_values.tolist()
             ):
                 pred_idx = int(pred_idx)
+                raw_fn = row.get("frame_number", -1)
+                fn_num = pd.to_numeric(raw_fn, errors="coerce")
+                frame_num_int = int(fn_num) if pd.notna(fn_num) else -1
                 record = {
                     "video": row.get("video", ""),
                     "frame": row.get("frame", ""),
-                    "frame_number": int(row.get("frame_number", -1) or -1),
+                    "frame_number": frame_num_int,
                     "predicted_label": label_names[pred_idx],
                     "confidence": float(probs[pred_idx]),
                 }
@@ -1347,6 +1387,9 @@ def predict_polygon_classifier_csv(
     output_csv: str | Path,
     device: str | None = None,
     smoothing_window: int = 1,
+    extra_globals: Iterable[Any] = (),
+    trust_checkpoint: bool = False,
+    expected_sha256: str | None = None,
 ) -> PolygonInferenceOutcome:
     """Run frame-level polygon classifier inference for a feature CSV."""
     csv_path = Path(feature_csv).expanduser().resolve()
@@ -1355,12 +1398,13 @@ def predict_polygon_classifier_csv(
 
     torch_device = _select_device(device)
     checkpoint_resolved = Path(checkpoint_path).expanduser().resolve()
-    try:
-        raw_state = torch.load(
-            checkpoint_resolved, map_location=torch_device, weights_only=False
-        )
-    except TypeError:
-        raw_state = torch.load(checkpoint_resolved, map_location=torch_device)
+    raw_state = _safe_load_raw_checkpoint(
+        checkpoint_resolved,
+        torch_device,
+        extra_globals=extra_globals,
+        trust_checkpoint=trust_checkpoint,
+        expected_sha256=expected_sha256,
+    )
     if (
         isinstance(raw_state, dict)
         and raw_state.get("metadata", {}).get("annolid_model_type")
@@ -1373,9 +1417,15 @@ def predict_polygon_classifier_csv(
             device=str(torch_device),
             payload=raw_state,
             smoothing_window=smoothing_window,
+            extra_globals=extra_globals,
+            trust_checkpoint=trust_checkpoint,
         )
 
-    state = _load_checkpoint(checkpoint_resolved, torch_device)
+    if not isinstance(raw_state, dict) or "model_state" not in raw_state:
+        raise ValueError(
+            f"Invalid polygon classifier checkpoint: {checkpoint_resolved}"
+        )
+    state = raw_state
     model_config = _checkpoint_model_config(state)
     feature_config = _checkpoint_feature_config(state)
     if state.get("polygon_lengths"):
@@ -1428,14 +1478,19 @@ def predict_polygon_classifier_csv(
             num_workers=0,
             collate_fn=_collate_fn,
         )
-        all_probs: list[list[float]] = []
+        prob_batches: list[np.ndarray] = []
         with torch.no_grad():
             for inputs, _targets in loader:
                 logits = model(inputs.to(torch_device))
-                probs = torch.softmax(logits, dim=1).cpu().numpy()
-                all_probs.extend(probs.tolist())
+                prob_batches.append(torch.softmax(logits, dim=1).cpu().numpy())
 
-        ordered_rows = []
+        probs_mat = (
+            np.concatenate(prob_batches, axis=0)
+            if prob_batches
+            else np.empty((0, len(labels)), dtype=np.float64)
+        )
+
+        sorted_dfs: list[pd.DataFrame] = []
         for _video, df in source_df.groupby("video", sort=False):
             if "frame" in df.columns:
                 df_sorted = df.sort_values(
@@ -1445,37 +1500,64 @@ def predict_polygon_classifier_csv(
                 df_sorted = df.sort_values("frame_number")
             else:
                 df_sorted = df.sort_index()
-            for _, row in df_sorted.iterrows():
-                ordered_rows.append(row)
+            sorted_dfs.append(df_sorted)
 
-        if len(ordered_rows) != len(all_probs):
+        ordered_df = (
+            pd.concat(sorted_dfs, ignore_index=True)
+            if sorted_dfs
+            else source_df.iloc[0:0].copy()
+        )
+        n_rows = len(ordered_df)
+        if n_rows != len(probs_mat):
             raise RuntimeError(
-                f"Prediction row count mismatch: {len(ordered_rows)} rows, {len(all_probs)} predictions."
+                f"Prediction row count mismatch: {n_rows} rows, {len(probs_mat)} predictions."
             )
 
-        records = []
-        for row, probs in zip(ordered_rows, all_probs):
-            probs_arr = np.asarray(probs, dtype=float)
-            pred_idx = int(probs_arr.argmax())
-            record = {
-                "video": row.get("video", ""),
-                "frame": row.get("frame", ""),
-                "frame_number": int(row.get("frame_number", -1) or -1),
-                "predicted_label": labels[pred_idx],
-                "confidence": float(probs_arr[pred_idx]),
-            }
-            if "label" in row:
-                record["label"] = row.get("label", "")
-            for idx, label in enumerate(labels):
-                record[f"prob_{label}"] = float(probs_arr[idx])
-            records.append(record)
+        out_cols: dict[str, Any] = {
+            "video": (
+                ordered_df["video"].fillna("")
+                if "video" in ordered_df.columns
+                else [""] * n_rows
+            ),
+            "frame": (
+                ordered_df["frame"].fillna("")
+                if "frame" in ordered_df.columns
+                else [""] * n_rows
+            ),
+            "frame_number": (
+                pd.to_numeric(ordered_df["frame_number"], errors="coerce")
+                .fillna(-1)
+                .astype(int)
+                if "frame_number" in ordered_df.columns
+                else np.full(n_rows, -1, dtype=int)
+            ),
+        }
+        if n_rows > 0:
+            pred_indices = probs_mat.argmax(axis=1)
+            labels_arr = np.asarray(labels, dtype=object)
+            out_cols["predicted_label"] = labels_arr[pred_indices]
+            out_cols["confidence"] = probs_mat[np.arange(n_rows), pred_indices].astype(
+                np.float64
+            )
+        else:
+            out_cols["predicted_label"] = np.empty(0, dtype=object)
+            out_cols["confidence"] = np.empty(0, dtype=np.float64)
+
+        if "label" in ordered_df.columns:
+            out_cols["label"] = ordered_df["label"].fillna("")
+        for idx, label in enumerate(labels):
+            out_cols[f"prob_{label}"] = (
+                probs_mat[:, idx].astype(np.float64)
+                if n_rows > 0
+                else np.empty(0, dtype=np.float64)
+            )
 
         out_path = Path(output_csv).expanduser().resolve()
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        pd.DataFrame.from_records(records).to_csv(out_path, index=False)
+        pd.DataFrame(out_cols).to_csv(out_path, index=False)
         return PolygonInferenceOutcome(
             output_csv=str(out_path),
-            rows=len(records),
+            rows=n_rows,
             labels=labels,
             model_type="convnet",
         )

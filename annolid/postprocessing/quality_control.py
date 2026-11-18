@@ -8,6 +8,7 @@ import pycocotools.mask as mask_util
 import ast
 import PIL.Image
 import numpy as np
+import pandas as pd
 from annolid.utils.annotation_compat import img_pil_to_data
 
 
@@ -132,13 +133,37 @@ class TracksResults:
         key_frames=False,
         skip_frames=30,
     ) -> str:
+        if self.df is None or self.df.empty or self.cap is None:
+            yield 100, "No detections available"
+            self.clean_up()
+            return
+
         width = self.video_width()
         # Fix the left right based on the middle of
         # length of the video width
-        if self.df is not None:
-            self.df["instance_name"] = self.df.apply(
-                lambda row: self.switch_left_right(row, width), axis=1
-            )
+        if width is not None and width > 0 and "instance_name" in self.df.columns:
+            x_col = "cx" if "cx" in self.df.columns else "x1"
+            if x_col in self.df.columns:
+                inst_str = self.df["instance_name"].astype(str)
+                x_vals = pd.to_numeric(self.df[x_col], errors="coerce")
+                half_w = width / 2.0
+                to_right = inst_str.str.contains("Left", regex=False) & (
+                    x_vals >= half_w
+                )
+                to_left = inst_str.str.contains("Right", regex=False) & (
+                    x_vals < half_w
+                )
+                if to_right.any() or to_left.any():
+                    updated = inst_str.copy()
+                    if to_right.any():
+                        updated.loc[to_right] = inst_str.loc[to_right].str.replace(
+                            "Left", "Right", regex=False
+                        )
+                    if to_left.any():
+                        updated.loc[to_left] = inst_str.loc[to_left].str.replace(
+                            "Right", "Left", regex=False
+                        )
+                    self.df["instance_name"] = updated
         height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         num_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
         if not os.path.exists(output_dir):
@@ -267,16 +292,20 @@ class TracksResults:
         return _img_data
 
     @classmethod
-    def switch_left_right(self, row, width=800):
+    def switch_left_right(cls, row, width=800):
         instance_name = row["instance_name"]
+        if width is None or width <= 0:
+            return instance_name
         if "cx" in row:
             x_val = row["cx"]
         else:
             x_val = row["x1"]
+        if pd.isna(x_val):
+            return instance_name
         if "Left" in str(instance_name) and x_val >= width / 2:
-            return instance_name.replace("Left", "Right")
+            return str(instance_name).replace("Left", "Right")
         elif "Right" in str(instance_name) and x_val < width / 2:
-            return instance_name.replace("Right", "Left")
+            return str(instance_name).replace("Right", "Left")
         return instance_name
 
     def clean_up(self):
@@ -296,24 +325,56 @@ class TracksResults:
                   val: (dist, old instance name, current instance name)
         """
         dists = {}
-        for cidx, ci in cur_instances.iterrows():
-            for oidx, oi in old_instances.iterrows():
-                if (
-                    ci["frame_number"] == oi["frame_number"]
-                    and int(ci["cx"]) == int(oi["cx"])
-                    and int(ci["cy"]) == int(oi["cy"])
-                ):
+        if (
+            old_instances is None
+            or cur_instances is None
+            or old_instances.empty
+            or cur_instances.empty
+        ):
+            return dists
+
+        c_fn = cur_instances["frame_number"].to_numpy()
+        c_cx = pd.to_numeric(cur_instances["cx"], errors="coerce").to_numpy(
+            dtype=np.float64
+        )
+        c_cy = pd.to_numeric(cur_instances["cy"], errors="coerce").to_numpy(
+            dtype=np.float64
+        )
+        c_names = cur_instances["instance_name"].to_numpy()
+
+        o_fn = old_instances["frame_number"].to_numpy()
+        o_cx = pd.to_numeric(old_instances["cx"], errors="coerce").to_numpy(
+            dtype=np.float64
+        )
+        o_cy = pd.to_numeric(old_instances["cy"], errors="coerce").to_numpy(
+            dtype=np.float64
+        )
+        o_names = old_instances["instance_name"].to_numpy()
+
+        c_valid = np.isfinite(c_cx) & np.isfinite(c_cy)
+        o_valid = np.isfinite(o_cx) & np.isfinite(o_cy)
+        if not np.any(c_valid) or not np.any(o_valid):
+            return dists
+
+        d_mat = np.hypot(c_cx[:, None] - o_cx[None, :], c_cy[:, None] - o_cy[None, :])
+        c_icx = np.where(c_valid, np.trunc(c_cx), 0).astype(int)
+        c_icy = np.where(c_valid, np.trunc(c_cy), 0).astype(int)
+        o_icx = np.where(o_valid, np.trunc(o_cx), 0).astype(int)
+        o_icy = np.where(o_valid, np.trunc(o_cy), 0).astype(int)
+
+        for ci_pos in np.flatnonzero(c_valid).tolist():
+            cf = c_fn[ci_pos]
+            ccx = int(c_icx[ci_pos])
+            ccy = int(c_icy[ci_pos])
+            cname = c_names[ci_pos]
+            for oi_pos in np.flatnonzero(o_valid).tolist():
+                of = o_fn[oi_pos]
+                ocx = int(o_icx[oi_pos])
+                ocy = int(o_icy[oi_pos])
+                if cf == of and ccx == ocx and ccy == ocy:
                     continue
-                dist = np.sqrt((ci["cx"] - oi["cx"]) ** 2 + (ci["cy"] - oi["cy"]) ** 2)
-                key = (
-                    oi["frame_number"],
-                    int(oi["cx"]),
-                    int(oi["cy"]),
-                    ci["frame_number"],
-                    int(ci["cx"]),
-                    int(ci["cy"]),
-                )
-                dists[key] = (dist, oi["instance_name"], ci["instance_name"])
+                key = (of, ocx, ocy, cf, ccx, ccy)
+                dists[key] = (d_mat[ci_pos, oi_pos], o_names[oi_pos], cname)
         return dists
 
     def get_missing_instance_frames(self, instance_name="mouse_1"):
@@ -326,12 +387,20 @@ class TracksResults:
         Returns:
             set: frame numbers
         """
-
+        if self.df is None or self.df.empty:
+            return set()
         _df = self.df[self.df.instance_name == instance_name]
-        max_frame_number = max(_df.frame_number)
+        if _df.empty:
+            return set()
+        valid_frames = pd.to_numeric(_df.frame_number, errors="coerce").dropna()
+        if valid_frames.empty:
+            return set()
+        frame_ints = valid_frames.astype(int)
+        max_frame_number = int(frame_ints.max())
+        if max_frame_number < 0:
+            return set()
         all_frames = set(range(0, max_frame_number + 1))
-        frames_with_preds = set(_df.frame_number)
-        del _df
+        frames_with_preds = set(frame_ints.tolist())
         return all_frames - frames_with_preds
 
     def fill_missing_instances(self, instance_name="mouse_2"):

@@ -33,46 +33,97 @@ class FreezingEventAnalyzer:
         return self.data
 
     def preprocess_data(self):
-        """Filters data for the specified instance."""
-        self.instance_data = self.data[
-            self.data["instance_name"] == self.instance_name
-        ].copy()
+        """Filters and sorts data for the specified instance."""
+        filtered = self.data[self.data["instance_name"] == self.instance_name].copy()
+        if filtered.empty:
+            self.instance_data = filtered
+            return
+        filtered["frame_number"] = pd.to_numeric(
+            filtered["frame_number"], errors="coerce"
+        )
+        filtered["motion_index"] = pd.to_numeric(
+            filtered["motion_index"], errors="coerce"
+        )
+        filtered = filtered.dropna(subset=["frame_number"])
+        if not filtered.empty:
+            filtered["frame_number"] = filtered["frame_number"].astype(int)
+            filtered = filtered.sort_values("frame_number", kind="mergesort")
+            filtered = filtered.drop_duplicates(subset=["frame_number"], keep="last")
+        self.instance_data = filtered.reset_index(drop=True)
 
     def identify_freezing_events(self):
-        """Identifies and marks freezing events based on threshold and duration."""
-        self.instance_data["is_freezing"] = (
-            self.instance_data["motion_index"] < self.threshold
+        """Identifies and marks freezing events based on threshold, continuity, and duration."""
+        if self.instance_data.empty:
+            self.instance_data["is_freezing"] = pd.Series(dtype=bool)
+            self.instance_data["freezing_group"] = pd.Series(dtype=int)
+            self.instance_data["freezing_event"] = pd.Series(dtype=bool)
+            return
+
+        motion = self.instance_data["motion_index"]
+        is_freezing = motion.notna() & (motion >= 0.0) & (motion < self.threshold)
+        self.instance_data["is_freezing"] = is_freezing
+
+        state_change = is_freezing != is_freezing.shift(
+            fill_value=not bool(is_freezing.iloc[0])
         )
-        self.instance_data["freezing_group"] = (
-            self.instance_data["is_freezing"]
-            != self.instance_data["is_freezing"].shift()
-        ).cumsum()
-        freezing_durations = self.instance_data.groupby("freezing_group").agg(
-            {"is_freezing": "sum"}
-        )
+        frame_gap = self.instance_data["frame_number"].diff().gt(1).fillna(False)
+        self.instance_data["freezing_group"] = (state_change | frame_gap).cumsum()
+
+        freezing_durations = self.instance_data.groupby("freezing_group")[
+            "is_freezing"
+        ].sum()
         valid_freezing_groups = freezing_durations[
-            freezing_durations["is_freezing"] >= self.min_duration
+            freezing_durations >= self.min_duration
         ].index
         self.instance_data["freezing_event"] = self.instance_data[
             "freezing_group"
-        ].apply(lambda x: x in valid_freezing_groups)
+        ].isin(valid_freezing_groups)
 
     def summarize_freezing_events(self):
         """Summarizes the freezing events."""
-        freezing_events_summary = (
-            self.instance_data[self.instance_data["freezing_event"]]
-            .groupby("freezing_group")
-            .agg({"frame_number": ["min", "max"], "timestamps": ["min", "max"]})
-            .reset_index()
-        )
-        freezing_events_summary.columns = [
+        summary_columns = [
             "freezing_group",
             "start_frame",
             "end_frame",
             "start_time",
             "end_time",
         ]
-        return freezing_events_summary
+        if (
+            self.instance_data.empty
+            or "freezing_event" not in self.instance_data.columns
+        ):
+            return pd.DataFrame(columns=summary_columns)
+
+        active = self.instance_data[self.instance_data["freezing_event"]]
+        if active.empty:
+            return pd.DataFrame(columns=summary_columns)
+
+        time_col = None
+        for candidate in ("timestamps", "timestamp", "time"):
+            if candidate in active.columns:
+                time_col = candidate
+                break
+
+        if time_col is not None:
+            freezing_events_summary = active.groupby(
+                "freezing_group", as_index=False
+            ).agg(
+                start_frame=("frame_number", "min"),
+                end_frame=("frame_number", "max"),
+                start_time=(time_col, "min"),
+                end_time=(time_col, "max"),
+            )
+        else:
+            freezing_events_summary = active.groupby(
+                "freezing_group", as_index=False
+            ).agg(
+                start_frame=("frame_number", "min"),
+                end_frame=("frame_number", "max"),
+            )
+            freezing_events_summary["start_time"] = None
+            freezing_events_summary["end_time"] = None
+
+        return freezing_events_summary[summary_columns]
 
     def analyze(self):
         """Orchestrates the overall analysis process."""

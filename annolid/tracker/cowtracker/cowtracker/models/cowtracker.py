@@ -183,8 +183,9 @@ class CoWTracker(nn.Module, PyTorchModelHubMixin):
             checkpoint_path = os.path.expanduser(checkpoint_path)
             print(f"Loading checkpoint from local path: {checkpoint_path}")
 
-        with open(checkpoint_path, "rb") as fp:
-            ckpt = torch.load(fp, map_location="cpu")
+        from annolid.utils.safe_torch_load import safe_torch_load
+
+        ckpt = safe_torch_load(checkpoint_path, map_location="cpu")
 
         return ckpt
 

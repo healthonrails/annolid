@@ -2,6 +2,7 @@ import argparse
 import os
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 from matplotlib.ticker import ScalarFormatter
 
@@ -67,15 +68,15 @@ def analyze_motion_index(csv_path: str, output_dir: str = "."):
     )
     print(f"High Activity Threshold (95th percentile): {high_activity_threshold:.4f}")
 
-    def classify_motion(motion_index):
-        if motion_index < resting_threshold:
-            return "Resting"
-        elif motion_index >= high_activity_threshold:
-            return "High Activity"
-        else:
-            return "Moderate Activity"
-
-    df_filtered["behavioral_state"] = df_filtered["motion_index"].apply(classify_motion)
+    motion_vals = df_filtered["motion_index"].to_numpy(dtype=np.float64)
+    df_filtered["behavioral_state"] = np.select(
+        [
+            motion_vals < resting_threshold,
+            motion_vals >= high_activity_threshold,
+        ],
+        ["Resting", "High Activity"],
+        default="Moderate Activity",
+    )
 
     state_distribution = (
         df_filtered["behavioral_state"]
@@ -97,8 +98,30 @@ def analyze_motion_index(csv_path: str, output_dir: str = "."):
 
     recommendations = pd.DataFrame()
     if not outlier_df.empty:
-        # Identify contiguous blocks of outlier frames to define distinct events
-        outlier_df["event_block"] = (outlier_df["frame_number"].diff() > 1).cumsum()
+        outlier_df["frame_number"] = pd.to_numeric(
+            outlier_df["frame_number"], errors="coerce"
+        )
+        outlier_df = outlier_df.dropna(subset=["frame_number"])
+    if not outlier_df.empty:
+        if "instance_name" in outlier_df.columns:
+            outlier_df = outlier_df.sort_values(
+                ["instance_name", "frame_number"], kind="mergesort"
+            )
+            inst_change = outlier_df["instance_name"].ne(
+                outlier_df["instance_name"].shift()
+            )
+            frame_gap = (
+                outlier_df.groupby("instance_name", sort=False)["frame_number"]
+                .diff()
+                .gt(1)
+                .fillna(False)
+            )
+            outlier_df["event_block"] = (inst_change | frame_gap).cumsum()
+        else:
+            outlier_df = outlier_df.sort_values("frame_number", kind="mergesort")
+            outlier_df["event_block"] = (
+                outlier_df["frame_number"].diff().gt(1).fillna(True)
+            ).cumsum()
 
         # Aggregate each event block to find start, end, peak frame, and peak motion
         event_summary = (
@@ -247,13 +270,17 @@ def analyze_motion_index(csv_path: str, output_dir: str = "."):
             weight="bold",
         )
 
-    plt.tight_layout(rect=[0, 0, 1, 0.95])
-
-    output_filename = os.path.join(
-        output_dir, os.path.splitext(os.path.basename(csv_path))[0] + "_dashboard.png"
-    )
-    plt.savefig(output_filename, dpi=150, bbox_inches="tight")
-    print(f"\n✅ Dashboard saved to: {output_filename}")
+    try:
+        plt.tight_layout(rect=[0, 0, 1, 0.95])
+        os.makedirs(output_dir, exist_ok=True)
+        output_filename = os.path.join(
+            output_dir,
+            os.path.splitext(os.path.basename(csv_path))[0] + "_dashboard.png",
+        )
+        fig.savefig(output_filename, dpi=150, bbox_inches="tight")
+        print(f"\n✅ Dashboard saved to: {output_filename}")
+    finally:
+        plt.close(fig)
 
 
 def main():

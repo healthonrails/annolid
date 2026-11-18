@@ -9,11 +9,21 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.optimize import linear_sum_assignment
 
+from annolid.utils.body_part_shapes import split_body_part_csv_instance_name
 from annolid.utils.mask_geometry import (
     BBoxXYXY,
     compute_mask_centroid_and_area,
     tight_mask_bbox,
 )
+
+
+def _semantic_track_role(label: str) -> str:
+    """Group labels so whole instances only permute with whole instances and parts with matching parts."""
+    _parent, part = split_body_part_csv_instance_name(label)
+    if part:
+        part_base = part.split("#", 1)[0].strip().lower()
+        return f"part:{part_base or part.lower()}"
+    return "__whole__"
 
 
 @dataclass(frozen=True)
@@ -146,49 +156,64 @@ def detect_centroid_assignment_ambiguity(
         previous_points.append(previous_point)
         current_points.append(current_point)
 
-    cost_matrix = np.empty((len(labels), len(labels)), dtype=np.float64)
-    for previous_index, previous_centroid in enumerate(previous_points):
-        for current_index, current_centroid in enumerate(current_points):
-            cost_matrix[previous_index, current_index] = math.dist(
-                previous_centroid,
-                current_centroid,
-            )
+    prev_arr = np.asarray(previous_points, dtype=np.float64)
+    curr_arr = np.asarray(current_points, dtype=np.float64)
 
-    row_indices, column_indices = linear_sum_assignment(cost_matrix)
-    if len(row_indices) != len(labels):
-        return None
+    role_groups: dict[str, list[int]] = {}
+    for idx, label in enumerate(labels):
+        role_groups.setdefault(_semantic_track_role(label), []).append(idx)
 
-    changed_assignments = tuple(
-        sorted(
-            (labels[current_index], labels[previous_index])
-            for previous_index, current_index in zip(row_indices, column_indices)
-            if previous_index != current_index
-        )
-    )
-    if not changed_assignments:
-        return None
-
-    baseline_cost = float(np.trace(cost_matrix))
-    alternative_cost = float(cost_matrix[row_indices, column_indices].sum())
-    improvement = baseline_cost - alternative_cost
-    if improvement <= 0:
-        return None
-
-    relative_improvement = improvement / max(baseline_cost, 1e-9)
     if min_absolute_improvement_px is None:
         absolute_threshold = max(8.0, math.hypot(width, height) * 0.01)
     else:
         absolute_threshold = max(0.0, float(min_absolute_improvement_px))
+    rel_threshold = max(0.0, float(min_relative_improvement))
 
-    if improvement < absolute_threshold:
-        return None
-    if relative_improvement < max(0.0, float(min_relative_improvement)):
+    changed_list: list[tuple[str, str]] = []
+    total_baseline = 0.0
+    total_alternative = 0.0
+
+    for group_indices in role_groups.values():
+        if len(group_indices) < 2:
+            continue
+        g_idx = np.asarray(group_indices, dtype=np.intp)
+        p_sub = prev_arr[g_idx]
+        c_sub = curr_arr[g_idx]
+        sub_cost = np.hypot(
+            p_sub[:, None, 0] - c_sub[None, :, 0],
+            p_sub[:, None, 1] - c_sub[None, :, 1],
+        )
+        r_ind, c_ind = linear_sum_assignment(sub_cost)
+        if len(r_ind) != len(group_indices):
+            continue
+        group_changes = [
+            (labels[group_indices[int(c_i)]], labels[group_indices[int(r_i)]])
+            for r_i, c_i in zip(r_ind, c_ind)
+            if int(r_i) != int(c_i)
+        ]
+        if not group_changes:
+            continue
+        g_base = float(np.trace(sub_cost))
+        g_alt = float(sub_cost[r_ind, c_ind].sum())
+        g_imp = g_base - g_alt
+        if g_imp <= 0.0:
+            continue
+        g_rel = g_imp / max(g_base, 1e-9)
+        if g_imp < absolute_threshold or g_rel < rel_threshold:
+            continue
+        changed_list.extend(group_changes)
+        total_baseline += g_base
+        total_alternative += g_alt
+
+    if not changed_list:
         return None
 
+    improvement = total_baseline - total_alternative
+    relative_improvement = improvement / max(total_baseline, 1e-9)
     return IdentityAssignmentAmbiguity(
-        changed_assignments=changed_assignments,
-        baseline_cost_px=baseline_cost,
-        alternative_cost_px=alternative_cost,
+        changed_assignments=tuple(sorted(changed_list)),
+        baseline_cost_px=total_baseline,
+        alternative_cost_px=total_alternative,
         improvement_px=improvement,
         relative_improvement=relative_improvement,
     )

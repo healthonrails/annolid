@@ -15,7 +15,9 @@ from scipy import interpolate
 
 def load_ckpt(model, path):
     """Load checkpoint."""
-    state_dict = torch.load(path, map_location=torch.device("cpu"))
+    from annolid.utils.safe_torch_load import safe_torch_load
+
+    state_dict = safe_torch_load(path, map_location=torch.device("cpu"))
     model.load_state_dict(state_dict, strict=False)
 
 

@@ -25,6 +25,8 @@ from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
+from annolid.utils.safe_torch_load import safe_torch_load
+
 
 @dataclass(frozen=True)
 class TCNSession:
@@ -672,13 +674,52 @@ def save_tcn_checkpoint(
     torch.save(payload, path)
 
 
+def safe_load_behavior_checkpoint(
+    path: str | Path,
+    *,
+    map_location: str | torch.device = "cpu",
+    extra_globals: Iterable[Any] = (),
+    trust_checkpoint: bool = False,
+    expected_sha256: str | None = None,
+) -> Any:
+    tcn_globals = (
+        TCNSession,
+        TCNFeatureConfig,
+        TCNModelConfig,
+        TCNTrainingConfig,
+        TCNRunConfig,
+        TCNNormalization,
+        *extra_globals,
+    )
+    return safe_torch_load(
+        path,
+        map_location=map_location,
+        extra_globals=tcn_globals,
+        trust_checkpoint=trust_checkpoint,
+        expected_sha256=expected_sha256,
+    )
+
+
 def load_tcn_checkpoint(
-    path: str | Path, *, device: str | torch.device = "cpu"
+    path: str | Path,
+    *,
+    device: str | torch.device = "cpu",
+    extra_globals: Iterable[Any] = (),
+    trust_checkpoint: bool = False,
+    expected_sha256: str | None = None,
 ) -> tuple[BehaviorTCN, dict[str, Any]]:
     device_t = (
         resolve_device(str(device)) if not isinstance(device, torch.device) else device
     )
-    payload = torch.load(Path(path).expanduser(), map_location=device_t)
+    payload = safe_load_behavior_checkpoint(
+        path,
+        map_location=device_t,
+        extra_globals=extra_globals,
+        trust_checkpoint=trust_checkpoint,
+        expected_sha256=expected_sha256,
+    )
+    if not isinstance(payload, dict) or "state_dict" not in payload:
+        raise ValueError(f"Invalid TCN checkpoint: {path}")
     model_cfg = TCNModelConfig(**payload["run_config"]["model"])
     model = BehaviorTCN(
         input_dim=int(payload["input_dim"]),

@@ -18,7 +18,10 @@ from statistics import mean, median
 import math
 from typing import Deque, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from annolid.behavior.event_utils import normalize_event_label
+from annolid.behavior.event_utils import (
+    normalize_event_label,
+    parse_recording_seconds,
+)
 from annolid.core.behavior.spec import ProjectSchema, load_behavior_spec
 from annolid.utils.atomic_io import atomic_write_text
 
@@ -130,18 +133,31 @@ def aggression_bout_definition(
     )
 
 
-def _safe_float(value: Optional[str]) -> Optional[float]:
-    if value is None or value == "":
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
+def _safe_float(value: object) -> Optional[float]:
+    return parse_recording_seconds(value)
 
 
 def _normalize_subject(value: Optional[str]) -> str:
-    value = (value or "").strip()
+    value = (str(value) if value is not None else "").strip()
     return value if value else DefaultLabel
+
+
+def _normalize_row_keys(row: Dict[str, object]) -> Dict[str, object]:
+    return {
+        str(key).strip().lower(): (val.strip() if isinstance(val, str) else val)
+        for key, val in row.items()
+        if key is not None
+    }
+
+
+def _extract_recording_time(row: Dict[str, object]) -> Optional[float]:
+    if "recording time" in row:
+        raw = row.get("recording time")
+    elif "timestamp" in row:
+        raw = row.get("timestamp")
+    else:
+        raw = row.get("time")
+    return _safe_float(raw)
 
 
 def _read_event_rows(path: Path) -> List[Dict[str, str]]:
@@ -150,17 +166,21 @@ def _read_event_rows(path: Path) -> List[Dict[str, str]]:
         rows: List[Dict[str, str]] = []
         for row in reader:
             cleaned = {
-                key.strip().lower(): (val.strip() if isinstance(val, str) else val)
+                str(key).strip().lower(): (val.strip() if isinstance(val, str) else val)
                 for key, val in row.items()
+                if key is not None
             }
-            rows.append(cleaned)
+            rows.append(cleaned)  # type: ignore[arg-type]
     return rows
 
 
 def extract_behavior_intervals(
-    rows: Iterable[Dict[str, object]],
+    rows: str | Path | Iterable[Dict[str, object]],
 ) -> Tuple[List[BehaviorInterval], List[str]]:
-    """Convert exported rows into balanced behavior intervals."""
+    """Convert exported rows (or a CSV path) into balanced behavior intervals."""
+
+    if isinstance(rows, (str, Path)):
+        rows = _read_event_rows(Path(rows))
 
     intervals: List[BehaviorInterval] = []
     warnings: List[str] = []
@@ -169,24 +189,29 @@ def extract_behavior_intervals(
         list
     )
 
+    normalized_rows = [_normalize_row_keys(dict(row)) for row in rows]
     sorted_rows = sorted(
-        enumerate(rows),
+        enumerate(normalized_rows),
         key=lambda item: (
-            _safe_float(item[1].get("recording time")) or 0.0,
-            str(item[1].get("event") or ""),
+            _extract_recording_time(item[1]) or 0.0,
             item[0],
         ),
     )
 
     for order_idx, row in sorted_rows:
-        behavior = row.get("behavior")
-        subject = _normalize_subject(row.get("subject"))
-        recording_time = _safe_float(row.get("recording time"))
+        raw_behavior = row.get("behavior")
+        behavior = (
+            str(raw_behavior).strip()
+            if raw_behavior is not None and str(raw_behavior).strip()
+            else None
+        )
+        subject = _normalize_subject(row.get("subject"))  # type: ignore[arg-type]
+        recording_time = _extract_recording_time(row)
         label = row.get("event")
 
         if behavior is None or recording_time is None or label is None:
             warnings.append(
-                f"Skipping row with missing fields: behavior={behavior}, recording_time={recording_time}, label={label}"
+                f"Skipping row with missing fields: behavior={raw_behavior}, recording_time={recording_time}, label={label}"
             )
             continue
 
@@ -197,7 +222,7 @@ def extract_behavior_intervals(
             )
             continue
 
-        valid_by_key[(subject, str(behavior))].append(
+        valid_by_key[(subject, behavior)].append(
             (recording_time, event_type, order_idx)
         )
 
@@ -305,9 +330,9 @@ def summarize_intervals(intervals: Iterable[BehaviorInterval]) -> List[TimeBudge
 
 
 def compute_time_budget(
-    rows: Iterable[Dict[str, object]],
+    rows: str | Path | Iterable[Dict[str, object]],
 ) -> Tuple[List[TimeBudgetRow], List[str]]:
-    """Compute aggregated time-budget metrics from raw event rows."""
+    """Compute aggregated time-budget metrics from raw event rows or a CSV path."""
     intervals, warnings = extract_behavior_intervals(rows)
     summary = summarize_intervals(intervals)
     return summary, warnings

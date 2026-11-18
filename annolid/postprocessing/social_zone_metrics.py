@@ -2,11 +2,18 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from itertools import combinations
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+import numpy as np
 import pandas as pd
+
+from annolid.utils.body_part_shapes import (
+    is_anatomical_body_part_label,
+    split_body_part_csv_instance_name,
+)
 
 
 def _normalize_text(value: Any) -> str:
@@ -240,64 +247,260 @@ def compute_pairwise_centroid_summary(
         return pd.DataFrame(), pd.DataFrame()
 
     x_col, y_col = _centroid_columns(dataframe)
-    pair_rows: list[dict[str, Any]] = []
-    nearest_stats: dict[str, list[float]] = {}
-    nearest_labels: dict[str, list[str]] = {}
+    work = dataframe[["frame_number", "instance_name", x_col, y_col]].dropna(
+        subset=["frame_number", "instance_name"]
+    )
+    if work.empty:
+        return pd.DataFrame(), pd.DataFrame()
 
-    for frame_number, frame_group in dataframe.groupby("frame_number", sort=True):
-        labels = frame_group["instance_name"].dropna().astype(str).tolist()
-        if len(labels) < 2:
-            continue
-        coords = {
-            str(row["instance_name"]): (float(row[x_col]), float(row[y_col]))
-            for _, row in frame_group.iterrows()
-            if pd.notna(row.get(x_col)) and pd.notna(row.get(y_col))
+    frames_num = pd.to_numeric(work["frame_number"], errors="coerce").to_numpy(
+        dtype=np.float64
+    )
+    xs_num = pd.to_numeric(work[x_col], errors="coerce").to_numpy(dtype=np.float64)
+    ys_num = pd.to_numeric(work[y_col], errors="coerce").to_numpy(dtype=np.float64)
+    inst_str = work["instance_name"].astype(str).str.strip()
+    valid_mask = (
+        np.isfinite(frames_num)
+        & np.isfinite(xs_num)
+        & np.isfinite(ys_num)
+        & (inst_str != "").to_numpy(dtype=bool)
+    )
+    if not np.any(valid_mask):
+        return pd.DataFrame(), pd.DataFrame()
+
+    clean = pd.DataFrame(
+        {
+            "frame_number": frames_num[valid_mask].astype(np.int64),
+            "instance_name": inst_str.iloc[np.flatnonzero(valid_mask)].to_numpy(),
+            "x": xs_num[valid_mask],
+            "y": ys_num[valid_mask],
         }
-        for left, right in combinations(sorted(coords.keys()), 2):
-            x1, y1 = coords[left]
-            x2, y2 = coords[right]
-            distance = float(((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5)
-            proximity_score = float(1.0 / (1.0 + distance))
-            pair_rows.append(
-                {
-                    "frame_number": int(frame_number),
-                    "instance_name_1": left,
-                    "instance_name_2": right,
-                    "distance_px": distance,
-                    "proximity_score": proximity_score,
-                }
-            )
-            nearest_stats.setdefault(left, []).append(distance)
-            nearest_stats.setdefault(right, []).append(distance)
-            nearest_labels.setdefault(left, []).append(right)
-            nearest_labels.setdefault(right, []).append(left)
+    )
 
-    summary_rows: list[dict[str, Any]] = []
-    for instance_name, distances in nearest_stats.items():
-        if not distances:
-            continue
-        summary_rows.append(
+    all_names = [str(n) for n in clean["instance_name"].unique().tolist()]
+    base_parents = {n for n in all_names if ":" not in n}
+    known_parents = base_parents if base_parents else None
+    whole_names: set[str] = set()
+    part_to_parent: dict[str, str] = {}
+    for name in all_names:
+        parent, part = split_body_part_csv_instance_name(
+            name, known_parents=known_parents
+        )
+        if not part:
+            if ":" not in name and is_anatomical_body_part_label(name):
+                continue
+            whole_names.add(name)
+        elif parent:
+            part_to_parent[name] = parent
+
+    if not whole_names and not part_to_parent:
+        return pd.DataFrame(), pd.DataFrame()
+
+    whole_clean = (
+        clean[clean["instance_name"].isin(whole_names)].drop_duplicates(
+            subset=["frame_number", "instance_name"], keep="last"
+        )
+        if whole_names
+        else clean.iloc[0:0].copy()
+    )
+    if part_to_parent:
+        parts_clean = clean[clean["instance_name"].isin(part_to_parent)].copy()
+        parts_clean["instance_name"] = parts_clean["instance_name"].map(part_to_parent)
+        agg_parts = parts_clean.groupby(
+            ["frame_number", "instance_name"], as_index=False, sort=False
+        )[["x", "y"]].mean()
+        if not whole_clean.empty:
+            covered_keys = pd.MultiIndex.from_frame(
+                whole_clean[["frame_number", "instance_name"]]
+            )
+            part_keys = pd.MultiIndex.from_frame(
+                agg_parts[["frame_number", "instance_name"]]
+            )
+            agg_parts = agg_parts[~part_keys.isin(covered_keys)]
+        clean = (
+            pd.concat([whole_clean, agg_parts], ignore_index=True)
+            if not agg_parts.empty
+            else whole_clean
+        )
+    else:
+        clean = whole_clean
+
+    if clean.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    clean = clean.drop_duplicates(
+        subset=["frame_number", "instance_name"], keep="last"
+    ).sort_values(["frame_number", "instance_name"], kind="mergesort")
+
+    unique_names = sorted(clean["instance_name"].unique().tolist())
+    n_inst = len(unique_names)
+    if n_inst < 2:
+        return pd.DataFrame(), pd.DataFrame()
+
+    frame_vals = clean["frame_number"].to_numpy(dtype=np.int64)
+    x_vals = clean["x"].to_numpy(dtype=np.float64)
+    y_vals = clean["y"].to_numpy(dtype=np.float64)
+    name_to_idx = {name: idx for idx, name in enumerate(unique_names)}
+    inst_idx = np.fromiter(
+        (name_to_idx[name] for name in clean["instance_name"]),
+        dtype=np.int64,
+        count=len(clean),
+    )
+
+    unique_frames, frame_inv, frame_counts = np.unique(
+        frame_vals, return_inverse=True, return_counts=True
+    )
+    multi_frame_mask = frame_counts >= 2
+    if not np.any(multi_frame_mask):
+        return pd.DataFrame(), pd.DataFrame()
+
+    if n_inst <= 64:
+        valid_frames = unique_frames[multi_frame_mask]
+        remap = np.full(len(unique_frames), -1, dtype=np.int64)
+        remap[multi_frame_mask] = np.arange(len(valid_frames), dtype=np.int64)
+        row_f = remap[frame_inv]
+        keep = row_f >= 0
+        row_f = row_f[keep]
+        col_i = inst_idx[keep]
+
+        n_f = len(valid_frames)
+        x_grid = np.full((n_f, n_inst), np.nan, dtype=np.float64)
+        y_grid = np.full((n_f, n_inst), np.nan, dtype=np.float64)
+        x_grid[row_f, col_i] = x_vals[keep]
+        y_grid[row_f, col_i] = y_vals[keep]
+
+        iu, ju = np.triu_indices(n_inst, k=1)
+        pair_dists = np.hypot(
+            x_grid[:, ju] - x_grid[:, iu], y_grid[:, ju] - y_grid[:, iu]
+        )
+        f_pos, p_pos = np.nonzero(np.isfinite(pair_dists))
+        if len(f_pos) == 0:
+            return pd.DataFrame(), pd.DataFrame()
+
+        d_flat = pair_dists[f_pos, p_pos]
+        names_arr = np.asarray(unique_names, dtype=object)
+        detail_df = pd.DataFrame(
             {
-                "instance_name": instance_name,
-                "mean_nearest_neighbor_distance_px": float(
-                    sum(distances) / len(distances)
-                ),
-                "min_nearest_neighbor_distance_px": float(min(distances)),
-                "mean_nearest_neighbor_proximity_score": float(
-                    sum(1.0 / (1.0 + distance) for distance in distances)
-                    / len(distances)
-                ),
-                "closest_neighbor_label": max(
-                    set(nearest_labels.get(instance_name, [])),
-                    key=lambda label: nearest_labels.get(instance_name, []).count(
-                        label
-                    ),
-                    default="",
-                ),
-                "neighbor_observations": len(distances),
+                "frame_number": valid_frames[f_pos],
+                "instance_name_1": names_arr[iu[p_pos]],
+                "instance_name_2": names_arr[ju[p_pos]],
+                "distance_px": d_flat,
+                "proximity_score": 1.0 / (1.0 + d_flat),
             }
         )
 
+        full_dists = np.full((n_f, n_inst, n_inst), np.inf, dtype=np.float64)
+        finite_pairs = np.where(np.isfinite(pair_dists), pair_dists, np.inf)
+        full_dists[:, iu, ju] = finite_pairs
+        full_dists[:, ju, iu] = finite_pairs
+
+        summary_rows: list[dict[str, Any]] = []
+        for idx, instance_name in enumerate(unique_names):
+            inst_row_dists = full_dists[:, idx, :]
+            min_per_frame = inst_row_dists.min(axis=1)
+            has_nbr = np.isfinite(min_per_frame)
+            if not np.any(has_nbr):
+                continue
+            d_inst = min_per_frame[has_nbr]
+            nbr_indices = inst_row_dists[has_nbr, :].argmin(axis=1)
+            counts = np.bincount(nbr_indices, minlength=n_inst)
+            closest_idx = int(np.argmax(counts))
+            all_pair_d = inst_row_dists[np.isfinite(inst_row_dists)]
+            summary_rows.append(
+                {
+                    "instance_name": instance_name,
+                    "mean_nearest_neighbor_distance_px": float(np.mean(d_inst)),
+                    "min_nearest_neighbor_distance_px": float(np.min(d_inst)),
+                    "mean_nearest_neighbor_proximity_score": float(
+                        np.mean(1.0 / (1.0 + d_inst))
+                    ),
+                    "closest_neighbor_label": unique_names[closest_idx],
+                    "neighbor_observations": int(len(d_inst)),
+                    "mean_pairwise_distance_px": float(np.mean(all_pair_d)),
+                    "min_pairwise_distance_px": float(np.min(all_pair_d)),
+                    "max_pairwise_distance_px": float(np.max(all_pair_d)),
+                    "mean_pairwise_proximity_score": float(
+                        np.mean(1.0 / (1.0 + all_pair_d))
+                    ),
+                    "pairwise_observations": int(len(all_pair_d)),
+                }
+            )
+        summary_df = pd.DataFrame(summary_rows)
+        if not summary_df.empty:
+            summary_df = summary_df.set_index("instance_name")
+        return summary_df, detail_df
+
+    # Fallback for large instance cardinality (n_inst > 64): slice contiguous frame blocks
+    pair_rows: list[dict[str, Any]] = []
+    nearest_stats: dict[str, list[float]] = {}
+    all_pair_stats: dict[str, list[float]] = {}
+    nearest_counts: dict[str, Counter[str]] = {}
+    boundaries = np.concatenate(([0], np.cumsum(frame_counts)))
+    names_col = clean["instance_name"].to_numpy()
+    for grp_idx, count in enumerate(frame_counts.tolist()):
+        if count < 2:
+            continue
+        start = int(boundaries[grp_idx])
+        end = int(boundaries[grp_idx + 1])
+        f_num = int(unique_frames[grp_idx])
+        f_names = names_col[start:end]
+        fx = x_vals[start:end]
+        fy = y_vals[start:end]
+        d_mat = np.hypot(fx[:, None] - fx[None, :], fy[:, None] - fy[None, :])
+        for i_local, j_local in combinations(range(count), 2):
+            dist = float(d_mat[i_local, j_local])
+            left_name = str(f_names[i_local])
+            right_name = str(f_names[j_local])
+            pair_rows.append(
+                {
+                    "frame_number": f_num,
+                    "instance_name_1": left_name,
+                    "instance_name_2": right_name,
+                    "distance_px": dist,
+                    "proximity_score": float(1.0 / (1.0 + dist)),
+                }
+            )
+            all_pair_stats.setdefault(left_name, []).append(dist)
+            all_pair_stats.setdefault(right_name, []).append(dist)
+        np.fill_diagonal(d_mat, np.inf)
+        min_j = d_mat.argmin(axis=1)
+        min_d = d_mat[np.arange(count), min_j]
+        for i_local in range(count):
+            src_name = str(f_names[i_local])
+            nbr_name = str(f_names[int(min_j[i_local])])
+            nearest_stats.setdefault(src_name, []).append(float(min_d[i_local]))
+            nearest_counts.setdefault(src_name, Counter())[nbr_name] += 1
+
+    summary_rows = []
+    for instance_name in unique_names:
+        distances = nearest_stats.get(instance_name)
+        if not distances:
+            continue
+        d_arr = np.asarray(distances, dtype=np.float64)
+        all_d_arr = np.asarray(
+            all_pair_stats.get(instance_name, distances), dtype=np.float64
+        )
+        nbr_counter = nearest_counts[instance_name]
+        closest_label = min(nbr_counter.items(), key=lambda kv: (-kv[1], kv[0]))[0]
+        summary_rows.append(
+            {
+                "instance_name": instance_name,
+                "mean_nearest_neighbor_distance_px": float(np.mean(d_arr)),
+                "min_nearest_neighbor_distance_px": float(np.min(d_arr)),
+                "mean_nearest_neighbor_proximity_score": float(
+                    np.mean(1.0 / (1.0 + d_arr))
+                ),
+                "closest_neighbor_label": closest_label,
+                "neighbor_observations": int(len(d_arr)),
+                "mean_pairwise_distance_px": float(np.mean(all_d_arr)),
+                "min_pairwise_distance_px": float(np.min(all_d_arr)),
+                "max_pairwise_distance_px": float(np.max(all_d_arr)),
+                "mean_pairwise_proximity_score": float(
+                    np.mean(1.0 / (1.0 + all_d_arr))
+                ),
+                "pairwise_observations": int(len(all_d_arr)),
+            }
+        )
     summary_df = pd.DataFrame(summary_rows)
     if not summary_df.empty:
         summary_df = summary_df.set_index("instance_name")

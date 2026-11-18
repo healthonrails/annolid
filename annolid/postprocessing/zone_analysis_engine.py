@@ -2,15 +2,17 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
+import math
 from typing import Any, Iterable, Sequence
 
+import numpy as np
 import pandas as pd
-from shapely.geometry import Polygon
 
 from annolid.postprocessing.zone_schema import (
     ZoneShapeSpec,
-    zone_shape_bounds,
+    zone_shape_area,
     zone_shape_covers_point,
+    zone_shape_covers_points_xy,
 )
 from annolid.utils.body_part_shapes import (
     format_body_part_csv_instance_name,
@@ -28,34 +30,50 @@ def _normalize_token(value: Any) -> str:
 def _is_truthy(value: Any) -> bool:
     if isinstance(value, bool):
         return value
-    return _normalize_token(value) in {"1", "true", "yes", "on"}
+    if isinstance(value, (int, float)):
+        try:
+            fval = float(value)
+            return math.isfinite(fval) and fval != 0.0
+        except Exception:
+            return False
+    return _normalize_token(value) in {"1", "1.0", "true", "yes", "on"}
+
+
+def _optional_finite_float(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        numeric = float(value)
+    except Exception:
+        return None
+    return numeric if math.isfinite(numeric) else None
 
 
 def _safe_float(value: Any) -> float:
-    try:
-        return float(value)
-    except Exception:
-        return 0.0
+    parsed = _optional_finite_float(value)
+    return parsed if parsed is not None else 0.0
 
 
 def _safe_int(value: Any) -> int:
     try:
-        return int(value)
+        return int(float(value))
     except Exception:
         return 0
 
 
 def _zone_area(spec: ZoneShapeSpec) -> float:
-    try:
-        bounds = zone_shape_bounds(spec)
-        if bounds is None:
-            return float("inf")
-        points = spec.analysis_points
-        if len(points) < 3:
-            return float("inf")
-        return float(Polygon(points).area)
-    except Exception:
-        return float("inf")
+    area = zone_shape_area(spec)
+    return float(area) if area is not None and math.isfinite(area) else float("inf")
+
+
+def _series_truthy_mask(series: pd.Series) -> np.ndarray:
+    if pd.api.types.is_bool_dtype(series):
+        return series.fillna(False).to_numpy(dtype=bool)
+    if pd.api.types.is_numeric_dtype(series):
+        arr = pd.to_numeric(series, errors="coerce").to_numpy(dtype=np.float64)
+        return np.isfinite(arr) & (arr != 0.0)
+    normalized = series.fillna("").astype(str).str.strip().str.lower()
+    return normalized.isin({"1", "1.0", "true", "yes", "on"}).to_numpy(dtype=bool)
 
 
 def _is_barrier_adjacent_zone(spec: ZoneShapeSpec) -> bool:
@@ -278,18 +296,18 @@ class GenericZoneEngine:
         }
 
     def _resolve_zone_label(self, x: Any, y: Any) -> str | None:
-        point = [_safe_float(x), _safe_float(y)]
-        matches: list[tuple[float, int, ZoneShapeSpec]] = []
-        for order, spec in self._ordered_zone_specs:
+        px = _optional_finite_float(x)
+        py = _optional_finite_float(y)
+        if px is None or py is None:
+            return None
+        point = (px, py)
+        for _order, spec in self._ordered_zone_specs:
             try:
                 if zone_shape_covers_point(spec, point):
-                    matches.append((_zone_area(spec), order, spec))
+                    return spec.display_label
             except Exception:
                 continue
-        if not matches:
-            return None
-        _, _, spec = min(matches, key=lambda item: (item[0], item[1]))
-        return spec.display_label
+        return None
 
     def _zone_columns_for_dataframe(self, dataframe: pd.DataFrame) -> dict[str, str]:
         columns = {str(column) for column in dataframe.columns}
@@ -312,31 +330,83 @@ class GenericZoneEngine:
                 return spec.display_label
         return sorted(zone_labels)[0]
 
+    def _aggregate_parent_body_parts(
+        self,
+        dataframe: pd.DataFrame,
+        parent_label: str,
+        covered_frames: set[Any],
+    ) -> pd.DataFrame:
+        prefix = f"{parent_label}:"
+        inst_str = dataframe["instance_name"].fillna("").astype(str)
+        part_mask = inst_str.str.startswith(prefix)
+        if not part_mask.any():
+            return dataframe.iloc[0:0].copy()
+        sub = dataframe.loc[part_mask].copy()
+        frame_col = _frame_column(sub)
+        if frame_col is not None and covered_frames:
+            sub = sub[~sub[frame_col].isin(covered_frames)]
+        if sub.empty or frame_col is None:
+            return sub
+        agg_spec: dict[str, str] = {"instance_name": "first"}
+        zone_cols = set(self._zone_columns_for_dataframe(sub).values())
+        for col in sub.columns:
+            if col in {frame_col, "instance_name"}:
+                continue
+            if col in zone_cols:
+                sub[col] = _series_truthy_mask(sub[col]).astype(int)
+                agg_spec[col] = "max"
+            elif pd.api.types.is_numeric_dtype(sub[col]):
+                agg_spec[col] = "mean"
+            else:
+                agg_spec[col] = "first"
+        grouped = sub.groupby(frame_col, as_index=False, sort=False).agg(agg_spec)
+        grouped["instance_name"] = parent_label
+        return grouped
+
     def _prepare_instance_dataframe(
         self, dataframe: pd.DataFrame, instance_label: str
     ) -> pd.DataFrame:
         if dataframe.empty or "instance_name" not in dataframe.columns:
             return dataframe.iloc[0:0].copy()
 
-        # When anchor_part (e.g. "head") is requested for a whole-animal instance,
-        # prefer '<instance>:<anchor_part>' rows per frame and fall back to '<instance>'
-        # rows only on frames where the anchor part was not segmented.
-        if self.anchor_part and ":" not in str(instance_label):
-            part_key = format_body_part_csv_instance_name(
-                str(instance_label), self.anchor_part
-            )
-            part_df = dataframe[dataframe["instance_name"] == part_key].copy()
+        # For parent animal labels (no ':'), prefer '<instance>:<anchor_part>' when
+        # anchor_part is configured, fall back to whole-animal '<instance>' rows, and
+        # finally synthesize uncovered frames from '<instance>:<part>' body-part rows.
+        if ":" not in str(instance_label):
+            frame_col = _frame_column(dataframe)
+            pieces: list[pd.DataFrame] = []
+            covered_frames: set[Any] = set()
+
+            if self.anchor_part:
+                part_key = format_body_part_csv_instance_name(
+                    str(instance_label), self.anchor_part
+                )
+                part_df = dataframe[dataframe["instance_name"] == part_key].copy()
+                if not part_df.empty:
+                    pieces.append(part_df)
+                    if frame_col is not None:
+                        covered_frames.update(part_df[frame_col].tolist())
+
             whole_df = dataframe[dataframe["instance_name"] == instance_label].copy()
-            if not part_df.empty:
-                frame_col = _frame_column(part_df)
-                if frame_col is not None and not whole_df.empty:
-                    covered_frames = set(part_df[frame_col].tolist())
-                    fallback_df = whole_df[~whole_df[frame_col].isin(covered_frames)]
-                    instance_df = pd.concat([part_df, fallback_df], ignore_index=True)
-                else:
-                    instance_df = part_df
-            else:
-                instance_df = whole_df
+            if not whole_df.empty:
+                if frame_col is not None and covered_frames:
+                    whole_df = whole_df[~whole_df[frame_col].isin(covered_frames)]
+                if not whole_df.empty:
+                    pieces.append(whole_df)
+                    if frame_col is not None:
+                        covered_frames.update(whole_df[frame_col].tolist())
+
+            agg_parts_df = self._aggregate_parent_body_parts(
+                dataframe, str(instance_label), covered_frames
+            )
+            if not agg_parts_df.empty:
+                pieces.append(agg_parts_df)
+
+            instance_df = (
+                pd.concat(pieces, ignore_index=True)
+                if pieces
+                else dataframe.iloc[0:0].copy()
+            )
         else:
             instance_df = dataframe[dataframe["instance_name"] == instance_label].copy()
 
@@ -358,31 +428,61 @@ class GenericZoneEngine:
         if instance_df.empty:
             return []
         frame_col = _frame_column(instance_df)
+        if frame_col:
+            frames = (
+                pd.to_numeric(instance_df[frame_col], errors="coerce")
+                .fillna(0)
+                .astype(np.int64)
+                .tolist()
+            )
+        else:
+            frames = [_safe_int(idx) for idx in instance_df.index]
+
+        n_rows = len(frames)
         zone_columns = self._zone_columns_for_dataframe(instance_df)
-        use_zone_columns = bool(zone_columns)
-        if not use_zone_columns:
-            if self.point_columns is not None:
-                x_col, y_col = self.point_columns
-                if x_col not in instance_df.columns or y_col not in instance_df.columns:
-                    x_col, y_col = _shape_point_columns(instance_df)
-            else:
+        if zone_columns:
+            row_sets: list[set[str]] = [set() for _ in range(n_rows)]
+            for label, column in zone_columns.items():
+                if column not in instance_df.columns:
+                    continue
+                active_idx = np.flatnonzero(_series_truthy_mask(instance_df[column]))
+                for pos in active_idx.tolist():
+                    row_sets[pos].add(label)
+            return list(zip(frames, row_sets))
+
+        if self.point_columns is not None:
+            x_col, y_col = self.point_columns
+            if x_col not in instance_df.columns or y_col not in instance_df.columns:
                 x_col, y_col = _shape_point_columns(instance_df)
         else:
-            x_col = y_col = ""
-        observations: list[tuple[int, set[str]]] = []
-        for index, row in instance_df.iterrows():
-            frame = _safe_int(row[frame_col]) if frame_col else _safe_int(index)
-            if use_zone_columns:
-                zone_labels = {
-                    label
-                    for label, column in zone_columns.items()
-                    if column in row.index and _is_truthy(row[column])
-                }
-            else:
-                zone_label = self._resolve_zone_label(row[x_col], row[y_col])
-                zone_labels = {zone_label} if zone_label is not None else set()
-            observations.append((frame, zone_labels))
-        return observations
+            x_col, y_col = _shape_point_columns(instance_df)
+
+        xs = pd.to_numeric(instance_df[x_col], errors="coerce").to_numpy(
+            dtype=np.float64
+        )
+        ys = pd.to_numeric(instance_df[y_col], errors="coerce").to_numpy(
+            dtype=np.float64
+        )
+        assigned: list[str | None] = [None] * n_rows
+        unassigned = np.isfinite(xs) & np.isfinite(ys)
+        for _order, spec in self._ordered_zone_specs:
+            if not np.any(unassigned):
+                break
+            unassigned_idx = np.flatnonzero(unassigned)
+            covered = zone_shape_covers_points_xy(
+                spec, xs[unassigned_idx], ys[unassigned_idx]
+            )
+            if np.any(covered):
+                hit_idx = unassigned_idx[covered]
+                disp = spec.display_label
+                for pos in hit_idx.tolist():
+                    assigned[pos] = disp
+                unassigned[hit_idx] = False
+
+        return [
+            (frame, {lbl} if lbl is not None else set())
+            for frame, lbl in zip(frames, assigned)
+        ]
 
     def analyze_instance(
         self, dataframe: pd.DataFrame, instance_label: str
@@ -504,16 +604,27 @@ class GenericZoneEngine:
             str(x) for x in dataframe["instance_name"].dropna().astype(str).unique()
         ]
         base_parents = {n for n in unique_names if ":" not in n}
-        results: dict[str, ZoneAnalysisResult] = {}
+        known_parents = base_parents if base_parents else None
+        target_subjects: list[str] = []
+        seen_subjects: set[str] = set()
         for instance_label in unique_names:
-            if not keep_parts:
-                _parent, part = split_body_part_csv_instance_name(
-                    instance_label,
-                    known_parents=base_parents if base_parents else None,
-                )
-                if part:
-                    continue
-            results[instance_label] = self.analyze_instance(dataframe, instance_label)
+            if keep_parts:
+                if instance_label not in seen_subjects:
+                    seen_subjects.add(instance_label)
+                    target_subjects.append(instance_label)
+                continue
+            parent, part = split_body_part_csv_instance_name(
+                instance_label,
+                known_parents=known_parents,
+            )
+            subject = parent if part else instance_label
+            if subject and subject not in seen_subjects:
+                seen_subjects.add(subject)
+                target_subjects.append(subject)
+
+        results: dict[str, ZoneAnalysisResult] = {}
+        for subject_label in target_subjects:
+            results[subject_label] = self.analyze_instance(dataframe, subject_label)
         return results
 
     def occupancy_seconds_for_instance(

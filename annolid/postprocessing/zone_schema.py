@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Sequence
+from functools import lru_cache
+from typing import Any, Mapping, NamedTuple, Sequence
 
+import numpy as np
+import shapely
 from shapely.geometry import Point, Polygon
+from shapely.validation import make_valid
 
 
 ZONE_SCHEMA_VERSION = 1
@@ -328,37 +333,157 @@ def normalize_zone_shape(shape: Mapping[str, Any]) -> ZoneShapeSpec:
     return ZoneShapeSpec.from_shape_dict(shape)
 
 
+class _CompiledZoneGeometry(NamedTuple):
+    geometry: Any
+    bounds: tuple[float, float, float, float]
+    centroid: tuple[float, float]
+    area: float
+
+
+@lru_cache(maxsize=512)
+def _compile_zone_geometry_cached(
+    source_shape_type: str,
+    raw_points: tuple[tuple[float, float], ...],
+) -> _CompiledZoneGeometry | None:
+    if source_shape_type == "rectangle" and len(raw_points) == 2:
+        pts: list[list[float]] | tuple[tuple[float, float], ...] = (
+            _rectangle_to_polygon(raw_points)
+        )
+    else:
+        pts = raw_points
+    if len(pts) < 3:
+        return None
+    for x_val, y_val in pts:
+        if not (math.isfinite(x_val) and math.isfinite(y_val)):
+            return None
+    try:
+        geom = Polygon(pts)
+        if not geom.is_valid:
+            geom = make_valid(geom)
+        if geom.is_empty:
+            return None
+        shapely.prepare(geom)
+        min_x, min_y, max_x, max_y = geom.bounds
+        centroid_pt = geom.centroid
+        bounds = (float(min_x), float(min_y), float(max_x), float(max_y))
+        centroid = (float(centroid_pt.x), float(centroid_pt.y))
+        area = float(geom.area)
+        if not all(math.isfinite(v) for v in (*bounds, *centroid, area)):
+            return None
+        return _CompiledZoneGeometry(
+            geometry=geom,
+            bounds=bounds,
+            centroid=centroid,
+            area=area,
+        )
+    except Exception:
+        return None
+
+
+def _get_compiled_zone_geometry(shape: ZoneShapeSpec) -> _CompiledZoneGeometry | None:
+    try:
+        raw_points = tuple((float(pt[0]), float(pt[1])) for pt in shape.points)
+    except Exception:
+        return None
+    return _compile_zone_geometry_cached(str(shape.source_shape_type or ""), raw_points)
+
+
+def zone_shape_area(shape: ZoneShapeSpec) -> float | None:
+    compiled = _get_compiled_zone_geometry(shape)
+    return compiled.area if compiled is not None else None
+
+
 def zone_shape_covers_point(shape: ZoneShapeSpec, point: Sequence[float]) -> bool:
-    if len(shape.analysis_points) < 3:
+    compiled = _get_compiled_zone_geometry(shape)
+    if compiled is None or len(point) < 2:
         return False
-    polygon = Polygon(shape.analysis_points)
-    return polygon.covers(Point(float(point[0]), float(point[1])))
+    try:
+        px = float(point[0])
+        py = float(point[1])
+    except Exception:
+        return False
+    if not (math.isfinite(px) and math.isfinite(py)):
+        return False
+    min_x, min_y, max_x, max_y = compiled.bounds
+    if px < min_x or px > max_x or py < min_y or py > max_y:
+        return False
+    return bool(compiled.geometry.covers(Point(px, py)))
+
+
+def zone_shape_covers_points_xy(
+    shape: ZoneShapeSpec,
+    xs: Sequence[float] | np.ndarray,
+    ys: Sequence[float] | np.ndarray,
+) -> np.ndarray:
+    xs_arr = np.asarray(xs, dtype=np.float64)
+    ys_arr = np.asarray(ys, dtype=np.float64)
+    n = len(xs_arr)
+    out = np.zeros(n, dtype=bool)
+    if n == 0 or len(ys_arr) != n:
+        return out
+    compiled = _get_compiled_zone_geometry(shape)
+    if compiled is None:
+        return out
+    min_x, min_y, max_x, max_y = compiled.bounds
+    candidates = (
+        np.isfinite(xs_arr)
+        & np.isfinite(ys_arr)
+        & (xs_arr >= min_x)
+        & (xs_arr <= max_x)
+        & (ys_arr >= min_y)
+        & (ys_arr <= max_y)
+    )
+    if np.any(candidates):
+        pts = shapely.points(xs_arr[candidates], ys_arr[candidates])
+        out[candidates] = np.asarray(shapely.covers(compiled.geometry, pts), dtype=bool)
+    return out
 
 
 def zone_shape_bounds(shape: ZoneShapeSpec) -> tuple[float, float, float, float] | None:
-    if len(shape.analysis_points) < 3:
-        return None
-    polygon = Polygon(shape.analysis_points)
-    min_x, min_y, max_x, max_y = polygon.bounds
-    return min_x, min_y, max_x, max_y
+    compiled = _get_compiled_zone_geometry(shape)
+    return compiled.bounds if compiled is not None else None
 
 
 def zone_shape_centroid(shape: ZoneShapeSpec) -> tuple[float, float] | None:
-    if len(shape.analysis_points) < 3:
-        return None
-    polygon = Polygon(shape.analysis_points)
-    centroid = polygon.centroid
-    return float(centroid.x), float(centroid.y)
+    compiled = _get_compiled_zone_geometry(shape)
+    return compiled.centroid if compiled is not None else None
 
 
 def zone_shape_distance_to_point(
     shape: ZoneShapeSpec,
     point: Sequence[float],
 ) -> float | None:
-    if len(shape.analysis_points) < 3:
+    compiled = _get_compiled_zone_geometry(shape)
+    if compiled is None or len(point) < 2:
         return None
     try:
-        polygon = Polygon(shape.analysis_points)
-        return float(polygon.distance(Point(float(point[0]), float(point[1]))))
+        px = float(point[0])
+        py = float(point[1])
+        if not (math.isfinite(px) and math.isfinite(py)):
+            return None
+        return float(compiled.geometry.distance(Point(px, py)))
     except Exception:
         return None
+
+
+def zone_shape_distances_to_points_xy(
+    shape: ZoneShapeSpec,
+    xs: Sequence[float] | np.ndarray,
+    ys: Sequence[float] | np.ndarray,
+) -> np.ndarray:
+    xs_arr = np.asarray(xs, dtype=np.float64)
+    ys_arr = np.asarray(ys, dtype=np.float64)
+    n = len(xs_arr)
+    out = np.full(n, np.nan, dtype=np.float64)
+    if n == 0 or len(ys_arr) != n:
+        return out
+    compiled = _get_compiled_zone_geometry(shape)
+    if compiled is None:
+        return out
+    valid = np.isfinite(xs_arr) & np.isfinite(ys_arr)
+    if np.any(valid):
+        pts = shapely.points(xs_arr[valid], ys_arr[valid])
+        out[valid] = np.asarray(
+            shapely.distance(compiled.geometry, pts), dtype=np.float64
+        )
+    return out

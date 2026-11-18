@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+import numpy as np
 import pandas as pd
 
 from annolid.postprocessing.zone_schema import (
     ZoneShapeSpec,
-    zone_shape_covers_point,
+    zone_shape_covers_points_xy,
 )
 
 
@@ -81,6 +83,9 @@ def ensure_zone_columns(
     if "cx" not in output.columns or "cy" not in output.columns:
         return output
 
+    xs = pd.to_numeric(output["cx"], errors="coerce").to_numpy(dtype=np.float64)
+    ys = pd.to_numeric(output["cy"], errors="coerce").to_numpy(dtype=np.float64)
+
     for spec in zone_specs:
         column = column_map.get(spec.display_label)
         if not column:
@@ -88,15 +93,7 @@ def ensure_zone_columns(
         existing_values = output[column].fillna(0).astype(str)
         if existing_values.isin({"1", "1.0", "true", "True"}).any():
             continue
-        values: list[int] = []
-        for _, row in output.iterrows():
-            try:
-                point = (float(row["cx"]), float(row["cy"]))
-                inside = zone_shape_covers_point(spec, point)
-            except Exception:
-                inside = False
-            values.append(1 if inside else 0)
-        output[column] = values
+        output[column] = zone_shape_covers_points_xy(spec, xs, ys).astype(int)
     return output
 
 
@@ -105,7 +102,8 @@ def _truthy(value: Any) -> bool:
         return value
     try:
         if isinstance(value, (int, float)):
-            return float(value) != 0.0
+            fval = float(value)
+            return math.isfinite(fval) and fval != 0.0
     except Exception:
         return False
     return str(value or "").strip().lower() in {"1", "1.0", "true", "yes", "on"}
@@ -120,34 +118,44 @@ def _set_flag(dataframe: pd.DataFrame, index: Any, column: str, value: int) -> b
     return True
 
 
-def _row_matches_instance(row: pd.Series, rule: Mapping[str, Any]) -> bool:
-    if "instance_name" not in row:
-        return False
-    instance_name = str(row.get("instance_name") or "")
+def _matching_indices(dataframe: pd.DataFrame, rule: Mapping[str, Any]) -> pd.Index:
+    if dataframe.empty or "instance_name" not in dataframe.columns:
+        return dataframe.index[:0]
     allowed = rule.get("instance_names", rule.get("instances", None))
     if allowed is None:
         single = rule.get("instance_name", rule.get("instance", None))
         allowed = [single] if single is not None else []
     if isinstance(allowed, str):
         allowed = [allowed]
-    return instance_name in {str(item) for item in list(allowed or [])}
+    allowed_set = {str(item) for item in list(allowed or [])}
+    if not allowed_set:
+        return dataframe.index[:0]
 
+    inst_series = dataframe["instance_name"].fillna("").astype(str)
+    mask = inst_series.isin(allowed_set).to_numpy(dtype=bool)
+    if not np.any(mask):
+        return dataframe.index[:0]
 
-def _row_in_frame_range(row: pd.Series, rule: Mapping[str, Any]) -> bool:
-    frame_value = row.get("frame_number", row.get("frame", row.get("frame_idx", None)))
-    if frame_value is None:
-        return True
-    try:
-        frame = int(float(frame_value))
-    except Exception:
-        return True
+    frame_col = None
+    for candidate in ("frame_number", "frame", "frame_idx"):
+        if candidate in dataframe.columns:
+            frame_col = candidate
+            break
+
     start = rule.get("start_frame", rule.get("frame_start", None))
     end = rule.get("end_frame", rule.get("frame_end", None))
-    if start is not None and frame < int(start):
-        return False
-    if end is not None and frame > int(end):
-        return False
-    return True
+    if frame_col is not None and (start is not None or end is not None):
+        frames = pd.to_numeric(dataframe[frame_col], errors="coerce").to_numpy(
+            dtype=np.float64
+        )
+        finite_frames = np.isfinite(frames)
+        int_frames = np.where(finite_frames, np.trunc(frames), 0.0)
+        if start is not None:
+            mask &= (~finite_frames) | (int_frames >= int(start))
+        if end is not None:
+            mask &= (~finite_frames) | (int_frames <= int(end))
+
+    return dataframe.index[mask]
 
 
 def _columns_for_rule(
@@ -219,12 +227,15 @@ def apply_zone_occupancy_policy(
             if not group_columns and not selected_columns:
                 continue
             ordered_group_columns = sorted(group_columns)
-            for index, row in output.iterrows():
-                if not _row_matches_instance(row, effective_rule):
-                    continue
-                if not _row_in_frame_range(row, effective_rule):
-                    continue
-                before = _membership(row, ordered_group_columns)
+            has_frame_number = "frame_number" in output.columns
+            has_frame = "frame" in output.columns
+            has_inst = "instance_name" in output.columns
+            for index in _matching_indices(output, effective_rule):
+                before = [
+                    col
+                    for col in ordered_group_columns
+                    if col in output.columns and _truthy(output.at[index, col])
+                ]
                 changed_columns: list[str] = []
                 if mode == "force_one":
                     target = selected_columns[:1]
@@ -260,14 +271,22 @@ def apply_zone_occupancy_policy(
                             if _set_flag(output, index, column, value):
                                 changed_columns.append(column)
                 if changed_columns:
-                    after = _membership(output.loc[index], ordered_group_columns)
+                    after = [
+                        col
+                        for col in ordered_group_columns
+                        if col in output.columns and _truthy(output.at[index, col])
+                    ]
+                    frame_val = (
+                        output.at[index, "frame_number"]
+                        if has_frame_number
+                        else (output.at[index, "frame"] if has_frame else "")
+                    )
                     audit_rows.append(
                         {
-                            "frame_number": row.get(
-                                "frame_number",
-                                row.get("frame", ""),
+                            "frame_number": frame_val,
+                            "instance_name": (
+                                output.at[index, "instance_name"] if has_inst else ""
                             ),
-                            "instance_name": row.get("instance_name", ""),
                             "rule_name": effective_rule.get("name", ""),
                             "zone_group": effective_rule.get("zone_group", ""),
                             "mode": mode,

@@ -12,6 +12,7 @@ from annolid.behavior.pipeline import (
     build_classifier,
     build_transform,
 )
+from annolid.utils.safe_torch_load import safe_torch_load
 from torch.utils.tensorboard import SummaryWriter  # Import TensorBoard
 
 # Configuration (Best practice: Move these to a separate configuration file or use command-line arguments)
@@ -251,7 +252,8 @@ def main():
 
     # Load best model for final evaluation
     best_model_path = os.path.join(args.checkpoint_dir, "best_model.pth")
-    model.load_state_dict(torch.load(best_model_path))
+    if os.path.isfile(best_model_path):
+        model.load_state_dict(safe_torch_load(best_model_path, map_location=device))
     final_val_loss, final_val_accuracy = validate_model(
         model, val_loader, criterion, device
     )

@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import json
 import itertools
@@ -21,12 +22,15 @@ from annolid.postprocessing.zone_schema import (
     ZoneShapeSpec,
     load_zone_shapes,
     zone_shape_bounds,
-    zone_shape_distance_to_point,
+    zone_shape_distances_to_points_xy,
 )
 from annolid.postprocessing.zone_occupancy_policy import (
     apply_zone_occupancy_policy_file,
 )
-from annolid.utils.body_part_shapes import split_body_part_csv_instance_name
+from annolid.utils.body_part_shapes import (
+    is_anatomical_body_part_label,
+    split_body_part_csv_instance_name,
+)
 
 
 class TrackingResultsAnalyzer:
@@ -116,45 +120,185 @@ class TrackingResultsAnalyzer:
             suffixes=("_tracking", "_tracked"),
         )
 
-        # Calculate distance between different whole-animal instances in the same frame
-        distances = []
+        empty_distances = pd.DataFrame(
+            columns=["frame_number", "instance_name_1", "instance_name_2", "distance"]
+        )
+        if self.merged_df.empty:
+            self.distances_df = empty_distances
+            return
+
+        # Calculate distance between different subject instances in the same frame
         all_names = [
             str(n)
             for n in self.merged_df["instance_name"].dropna().astype(str).unique()
         ]
         base_parents = {n for n in all_names if ":" not in n}
-        for frame_number, frame_group in self.merged_df.groupby("frame_number"):
-            instances_in_frame = [
-                inst
-                for inst in frame_group["instance_name"].dropna().astype(str).unique()
-                if not split_body_part_csv_instance_name(
-                    inst, known_parents=base_parents if base_parents else None
-                )[1]
-            ]
-            instance_combinations = itertools.combinations(instances_in_frame, 2)
-            for instance_combination in instance_combinations:
-                instance1 = instance_combination[0]
-                instance2 = instance_combination[1]
-                instance1_data = frame_group[frame_group["instance_name"] == instance1]
-                instance2_data = frame_group[frame_group["instance_name"] == instance2]
-                for _, row1 in instance1_data.iterrows():
-                    for _, row2 in instance2_data.iterrows():
-                        distance = self.calculate_distance(
-                            row1["cx_tracking"],
-                            row1["cy_tracking"],
-                            row2["cx_tracked"],
-                            row2["cy_tracked"],
-                        )
-                        distances.append(
-                            {
-                                "frame_number": frame_number,
-                                "instance_name_1": instance1,
-                                "instance_name_2": instance2,
-                                "distance": distance,
-                            }
-                        )
+        known_parents = base_parents if base_parents else None
+        whole_names: set[str] = set()
+        part_to_parent: dict[str, str] = {}
+        for inst in all_names:
+            parent, part = split_body_part_csv_instance_name(
+                inst, known_parents=known_parents
+            )
+            if not part:
+                if ":" not in inst and is_anatomical_body_part_label(inst):
+                    continue
+                whole_names.add(inst)
+            elif parent:
+                part_to_parent[inst] = parent
 
-        self.distances_df = pd.DataFrame(distances)
+        subject_names = whole_names | set(part_to_parent.values())
+        if len(subject_names) < 2:
+            self.distances_df = empty_distances
+            return
+
+        x1_col = "cx_tracking" if "cx_tracking" in self.merged_df.columns else "cx"
+        y1_col = "cy_tracking" if "cy_tracking" in self.merged_df.columns else "cy"
+        x2_col = "cx_tracked" if "cx_tracked" in self.merged_df.columns else "cx"
+        y2_col = "cy_tracked" if "cy_tracked" in self.merged_df.columns else "cy"
+
+        valid_mask = (
+            self.merged_df["frame_number"].notna()
+            & self.merged_df["instance_name"].notna()
+        )
+        valid_df = self.merged_df.loc[valid_mask].copy()
+        valid_df["_inst_str"] = valid_df["instance_name"].astype(str)
+        whole_df = (
+            valid_df[valid_df["_inst_str"].isin(whole_names)][
+                ["frame_number", "_inst_str", x1_col, y1_col, x2_col, y2_col]
+            ].copy()
+            if whole_names
+            else valid_df.iloc[0:0][
+                ["frame_number", "_inst_str", x1_col, y1_col, x2_col, y2_col]
+            ].copy()
+        )
+        if part_to_parent:
+            parts_df = valid_df[valid_df["_inst_str"].isin(part_to_parent)][
+                ["frame_number", "_inst_str", x1_col, y1_col, x2_col, y2_col]
+            ].copy()
+            parts_df["_inst_str"] = parts_df["_inst_str"].map(part_to_parent)
+            for col in {x1_col, y1_col, x2_col, y2_col}:
+                parts_df[col] = pd.to_numeric(parts_df[col], errors="coerce")
+            agg_parts = parts_df.groupby(
+                ["frame_number", "_inst_str"], as_index=False, sort=False
+            )[list(dict.fromkeys([x1_col, y1_col, x2_col, y2_col]))].mean()
+            if not whole_df.empty:
+                covered = pd.MultiIndex.from_frame(
+                    whole_df[["frame_number", "_inst_str"]]
+                )
+                part_keys = pd.MultiIndex.from_frame(
+                    agg_parts[["frame_number", "_inst_str"]]
+                )
+                agg_parts = agg_parts[~part_keys.isin(covered)]
+            if not agg_parts.empty:
+                whole_df = pd.concat([whole_df, agg_parts], ignore_index=True)
+
+        if whole_df.empty:
+            self.distances_df = empty_distances
+            return
+        whole_df["_row_order"] = np.arange(len(whole_df), dtype=np.int64)
+        whole_df["_inst_rank"] = whole_df.groupby(
+            ["frame_number", "_inst_str"], sort=False
+        )["_row_order"].transform("min")
+
+        frame_counts = whole_df.groupby("frame_number", sort=False).size()
+        est_join_rows = int((frame_counts.to_numpy(dtype=np.int64) ** 2).sum())
+
+        if est_join_rows <= 2_000_000:
+            left_df = whole_df[
+                [
+                    "frame_number",
+                    "_inst_str",
+                    x1_col,
+                    y1_col,
+                    "_inst_rank",
+                    "_row_order",
+                ]
+            ].rename(
+                columns={
+                    "_inst_str": "instance_name_1",
+                    x1_col: "_x1",
+                    y1_col: "_y1",
+                    "_inst_rank": "_rank_1",
+                    "_row_order": "_ord_1",
+                }
+            )
+            right_df = whole_df[
+                [
+                    "frame_number",
+                    "_inst_str",
+                    x2_col,
+                    y2_col,
+                    "_inst_rank",
+                    "_row_order",
+                ]
+            ].rename(
+                columns={
+                    "_inst_str": "instance_name_2",
+                    x2_col: "_x2",
+                    y2_col: "_y2",
+                    "_inst_rank": "_rank_2",
+                    "_row_order": "_ord_2",
+                }
+            )
+            paired = pd.merge(left_df, right_df, on="frame_number", sort=False)
+            paired = paired[paired["_rank_1"] < paired["_rank_2"]]
+            if paired.empty:
+                self.distances_df = empty_distances
+                return
+            paired = paired.sort_values(
+                ["frame_number", "_rank_1", "_rank_2", "_ord_1", "_ord_2"],
+                kind="mergesort",
+            )
+            dx = pd.to_numeric(paired["_x2"], errors="coerce").to_numpy(
+                dtype=np.float64
+            ) - pd.to_numeric(paired["_x1"], errors="coerce").to_numpy(dtype=np.float64)
+            dy = pd.to_numeric(paired["_y2"], errors="coerce").to_numpy(
+                dtype=np.float64
+            ) - pd.to_numeric(paired["_y1"], errors="coerce").to_numpy(dtype=np.float64)
+            self.distances_df = pd.DataFrame(
+                {
+                    "frame_number": paired["frame_number"].to_numpy(),
+                    "instance_name_1": paired["instance_name_1"].to_numpy(),
+                    "instance_name_2": paired["instance_name_2"].to_numpy(),
+                    "distance": np.hypot(dx, dy),
+                }
+            )
+            return
+
+        # Fallback for frames with hundreds of instances: per-frame NumPy array blocks
+        distances: list[dict[str, object]] = []
+        for frame_number, frame_group in whole_df.groupby("frame_number", sort=True):
+            instances_in_frame = frame_group["_inst_str"].unique().tolist()
+            for instance1, instance2 in itertools.combinations(instances_in_frame, 2):
+                g1 = frame_group[frame_group["_inst_str"] == instance1]
+                g2 = frame_group[frame_group["_inst_str"] == instance2]
+                x1_arr = pd.to_numeric(g1[x1_col], errors="coerce").to_numpy(
+                    dtype=np.float64
+                )
+                y1_arr = pd.to_numeric(g1[y1_col], errors="coerce").to_numpy(
+                    dtype=np.float64
+                )
+                x2_arr = pd.to_numeric(g2[x2_col], errors="coerce").to_numpy(
+                    dtype=np.float64
+                )
+                y2_arr = pd.to_numeric(g2[y2_col], errors="coerce").to_numpy(
+                    dtype=np.float64
+                )
+                d_mat = np.hypot(
+                    x2_arr[None, :] - x1_arr[:, None],
+                    y2_arr[None, :] - y1_arr[:, None],
+                )
+                for dist_val in d_mat.ravel().tolist():
+                    distances.append(
+                        {
+                            "frame_number": frame_number,
+                            "instance_name_1": instance1,
+                            "instance_name_2": instance2,
+                            "distance": float(dist_val),
+                        }
+                    )
+        self.distances_df = pd.DataFrame(distances) if distances else empty_distances
 
     def calculate_distance(self, x1, y1, x2, y2):
         """
@@ -309,7 +453,11 @@ class TrackingResultsAnalyzer:
     ) -> GenericZoneEngine:
         resolved = resolve_assay_profile(profile or self.assay_profile)
         filtered_specs = filter_zone_specs_by_assay_profile(self.zone_specs, resolved)
-        return GenericZoneEngine(filtered_specs, fps=self.fps)
+        return GenericZoneEngine(
+            filtered_specs,
+            fps=self.fps,
+            anchor_part=self.anchor_part,
+        )
 
     def _zone_metrics_dataframe(
         self, profile: str | ZoneAssayProfile | None = None
@@ -531,14 +679,33 @@ class TrackingResultsAnalyzer:
             social_specs,
             fps=self.fps,
             point_columns=("anchor_x", "anchor_y"),
+            anchor_part=self.anchor_part,
         )
+        all_social_names = [
+            str(n) for n in social_df["instance_name"].dropna().astype(str).unique()
+        ]
+        base_parents = {n for n in all_social_names if ":" not in n}
+        known_parents = base_parents if base_parents else None
+        target_names: list[str] = []
+        seen_social: set[str] = set()
+        for name in all_social_names:
+            parent, part = split_body_part_csv_instance_name(
+                name, known_parents=known_parents
+            )
+            subject = parent if part else name
+            if subject and subject not in seen_social:
+                seen_social.add(subject)
+                target_names.append(subject)
+        if not target_names:
+            target_names = all_social_names
+
         rows: list[dict[str, object]] = []
-        for instance_label in social_df["instance_name"].dropna().astype(str).unique():
+        prepared_dfs: dict[str, pd.DataFrame] = {}
+        for instance_label in target_names:
             result = engine.analyze_instance(social_df, instance_label)
             row = result.to_summary_row(fps=self.fps, include_transition_columns=False)
-            instance_df = social_df[
-                social_df["instance_name"].astype(str) == instance_label
-            ]
+            instance_df = engine._prepare_instance_dataframe(social_df, instance_label)
+            prepared_dfs[instance_label] = instance_df
             row["anchor_source"] = (
                 instance_df["anchor_source"].mode().iat[0]
                 if not instance_df.empty
@@ -565,95 +732,68 @@ class TrackingResultsAnalyzer:
         if summary_df.empty:
             return resolved, pd.DataFrame(), pd.DataFrame()
 
-        # Compute zone distance/proximity metrics using the anchor dataframe.
+        # Compute zone distance/proximity metrics vectorially per instance/zone.
         for spec in social_specs:
             zone_label = spec.display_label
-            distances: list[float] = []
-            per_instance_distances: dict[str, list[float]] = {}
-            for _, row in social_df.iterrows():
-                instance_name = str(row.get("instance_name") or "").strip()
-                if not instance_name:
-                    continue
-                anchor_x = row.get("anchor_x")
-                anchor_y = row.get("anchor_y")
-                if pd.isna(anchor_x) or pd.isna(anchor_y):
-                    continue
-                distance = zone_shape_distance_to_point(
-                    spec, (float(anchor_x), float(anchor_y))
-                )
-                if distance is None:
-                    continue
-                distances.append(distance)
-                per_instance_distances.setdefault(instance_name, []).append(distance)
+            zone_bounds = zone_shape_bounds(spec)
+            if zone_bounds is not None:
+                min_x, min_y, max_x, max_y = zone_bounds
+                zone_scale = max(max_x - min_x, max_y - min_y, 1.0)
+            else:
+                zone_scale = 1.0
 
-            for instance_name, summary_row in summary_df.set_index(
-                "instance_name"
-            ).iterrows():
-                inst_distances = per_instance_distances.get(instance_name, [])
-                if not inst_distances:
+            for instance_name in summary_df["instance_name"].tolist():
+                inst_df = prepared_dfs.get(instance_name)
+                if inst_df is None or inst_df.empty:
                     continue
-                mean_distance = float(sum(inst_distances) / len(inst_distances))
-                min_distance = float(min(inst_distances))
-                median_distance = float(pd.Series(inst_distances).median())
-                zone_bounds = zone_shape_bounds(spec)
-                if zone_bounds is not None:
-                    min_x, min_y, max_x, max_y = zone_bounds
-                    zone_scale = max(max_x - min_x, max_y - min_y, 1.0)
-                else:
-                    zone_scale = 1.0
-                proximity_scores = [
-                    max(0.0, 1.0 - (distance / zone_scale))
-                    for distance in inst_distances
-                ]
-                summary_df.loc[
-                    summary_df["instance_name"] == instance_name,
-                    f"zone_distance_min__{zone_label}",
-                ] = min_distance
-                summary_df.loc[
-                    summary_df["instance_name"] == instance_name,
-                    f"zone_distance_mean__{zone_label}",
-                ] = mean_distance
-                summary_df.loc[
-                    summary_df["instance_name"] == instance_name,
-                    f"zone_distance_median__{zone_label}",
-                ] = median_distance
-                summary_df.loc[
-                    summary_df["instance_name"] == instance_name,
-                    f"zone_proximity_mean__{zone_label}",
-                ] = float(sum(proximity_scores) / len(proximity_scores))
-                summary_df.loc[
-                    summary_df["instance_name"] == instance_name,
-                    f"zone_proximity_max__{zone_label}",
-                ] = float(max(proximity_scores))
+                xs = pd.to_numeric(inst_df["anchor_x"], errors="coerce").to_numpy(
+                    dtype=np.float64
+                )
+                ys = pd.to_numeric(inst_df["anchor_y"], errors="coerce").to_numpy(
+                    dtype=np.float64
+                )
+                raw_dists = zone_shape_distances_to_points_xy(spec, xs, ys)
+                valid_dists = raw_dists[np.isfinite(raw_dists)]
+                if len(valid_dists) == 0:
+                    continue
+                row_mask = summary_df["instance_name"] == instance_name
+                mean_distance = float(np.mean(valid_dists))
+                min_distance = float(np.min(valid_dists))
+                median_distance = float(np.median(valid_dists))
+                prox_arr = np.maximum(0.0, 1.0 - (valid_dists / zone_scale))
+                summary_df.loc[row_mask, f"zone_distance_min__{zone_label}"] = (
+                    min_distance
+                )
+                summary_df.loc[row_mask, f"zone_distance_mean__{zone_label}"] = (
+                    mean_distance
+                )
+                summary_df.loc[row_mask, f"zone_distance_median__{zone_label}"] = (
+                    median_distance
+                )
+                summary_df.loc[row_mask, f"zone_proximity_mean__{zone_label}"] = float(
+                    np.mean(prox_arr)
+                )
+                summary_df.loc[row_mask, f"zone_proximity_max__{zone_label}"] = float(
+                    np.max(prox_arr)
+                )
 
                 first_entry_column = f"first_entry_frame__{zone_label}"
                 first_entry_frame = None
                 if first_entry_column in summary_df.columns:
-                    first_entry_series = summary_df.loc[
-                        summary_df["instance_name"] == instance_name,
-                        first_entry_column,
-                    ]
+                    first_entry_series = summary_df.loc[row_mask, first_entry_column]
                     if not first_entry_series.empty:
                         first_entry_frame = first_entry_series.iloc[0]
                 if pd.notna(first_entry_frame):
                     latency_frame = float(first_entry_frame) - float(reference_frame)
-                    summary_df.loc[
-                        summary_df["instance_name"] == instance_name,
-                        f"latency_frame__{zone_label}",
-                    ] = latency_frame
-                    summary_df.loc[
-                        summary_df["instance_name"] == instance_name,
-                        f"latency_seconds__{zone_label}",
-                    ] = latency_frame / float(self.fps) if self.fps else latency_frame
+                    summary_df.loc[row_mask, f"latency_frame__{zone_label}"] = (
+                        latency_frame
+                    )
+                    summary_df.loc[row_mask, f"latency_seconds__{zone_label}"] = (
+                        latency_frame / float(self.fps) if self.fps else latency_frame
+                    )
                 else:
-                    summary_df.loc[
-                        summary_df["instance_name"] == instance_name,
-                        f"latency_frame__{zone_label}",
-                    ] = None
-                    summary_df.loc[
-                        summary_df["instance_name"] == instance_name,
-                        f"latency_seconds__{zone_label}",
-                    ] = None
+                    summary_df.loc[row_mask, f"latency_frame__{zone_label}"] = None
+                    summary_df.loc[row_mask, f"latency_seconds__{zone_label}"] = None
 
         summary_df = summary_df.set_index("instance_name")
         pairwise_summary_df, pairwise_detail_df = compute_pairwise_centroid_summary(
@@ -687,6 +827,8 @@ class TrackingResultsAnalyzer:
                 "zone_proximity_max",
                 "nearest_neighbor_distance",
                 "nearest_neighbor_proximity_score",
+                "pairwise_distance",
+                "pairwise_proximity_score",
             ]
         )
         summary_df["social_zone_labels"] = ", ".join(
@@ -896,10 +1038,9 @@ class TrackingResultsAnalyzer:
             return output_csv
         profiled_engine = self._engine_for_profile(profile)
         all_instances_zone_time: dict[str, dict[str, float]] = {}
-        for instance_label in (
-            analysis_df["instance_name"].dropna().astype(str).unique()
-        ):
-            result = profiled_engine.analyze_instance(analysis_df, instance_label)
+        for instance_label, result in profiled_engine.analyze_dataframe(
+            analysis_df
+        ).items():
             result.assay_profile = profile.name
             all_instances_zone_time[instance_label] = result.occupancy_seconds(self.fps)
 

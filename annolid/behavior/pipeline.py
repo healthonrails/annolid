@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Any, Iterable, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -15,6 +15,7 @@ from annolid.behavior.models.feature_extractors import (
     Dinov3BehaviorFeatureExtractor,
     ResNetFeatureExtractor,
 )
+from annolid.behavior.tcn import safe_load_behavior_checkpoint
 
 BACKBONE_CHOICES = ("clip", "resnet18", "dinov3")
 DEFAULT_DINOV3_MODEL = "facebook/dinov3-vits16-pretrain-lvd1689m"
@@ -91,6 +92,9 @@ def load_classifier(
     dinov3_model: str,
     feature_dim: Optional[int],
     transformer_dim: int,
+    extra_globals: Iterable[Any] = (),
+    trust_checkpoint: bool = False,
+    expected_sha256: Optional[str] = None,
 ) -> BehaviorClassifier:
     model = build_classifier(
         num_classes=num_classes,
@@ -101,7 +105,13 @@ def load_classifier(
         transformer_dim=transformer_dim,
         unfreeze_dinov3=False,
     )
-    state = torch.load(checkpoint_path, map_location=device)
+    state = safe_load_behavior_checkpoint(
+        checkpoint_path,
+        map_location=device,
+        extra_globals=extra_globals,
+        trust_checkpoint=trust_checkpoint,
+        expected_sha256=expected_sha256,
+    )
     model.load_state_dict(state)
     model.eval()
     return model
