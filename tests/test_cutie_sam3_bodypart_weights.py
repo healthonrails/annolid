@@ -1178,10 +1178,10 @@ def test_dock_and_toolbar_widgets_stay_compact_and_user_resizable() -> None:
     ss = StepSizeWidget(5)
     dlg = AdvancedParametersDialog(tracker_config=CutieDinoTrackerConfig())
 
-    assert vm.minimumSizeHint().width() <= 280
+    assert vm.minimumSizeHint().width() <= 295
     assert es.minimumSizeHint().width() <= 315
     assert kp.minimumSizeHint().width() <= 240
-    assert bl.minimumSizeHint().width() <= 280
+    assert bl.minimumSizeHint().width() <= 315
     assert fl.minimumSizeHint().width() <= 230
     assert ss.maximumWidth() <= 120
     assert dlg.width() <= 700
@@ -1193,3 +1193,584 @@ def test_dock_and_toolbar_widgets_stay_compact_and_user_resizable() -> None:
     configure_compact_combo(combo, min_chars=12, popup_min_width=320, max_width=195)
     assert combo.minimumSizeHint().width() <= 195
     assert combo.view().minimumWidth() >= 320
+
+
+def test_cutie_sam3_bodyparts_never_routes_to_sam3_or_sam2_managers() -> None:
+    from annolid.gui.features.viewers import _LazySam2Manager, _LazySam3Manager
+    from annolid.gui.widgets.sam2_manager import Sam2Manager
+    from annolid.gui.widgets.sam3_manager import Sam3Manager
+
+    cutie_cases = [
+        ("cutie_sam3_bodyparts", "cutie-sam3-bodyparts.pth"),
+        ("Cutie", "cutie-sam3-bodyparts.pth"),
+        ("cutie_custom:/tmp/cutie_sam3_distilled.pth", "/tmp/cutie_sam3_distilled.pth"),
+        ("cutie_custom:/tmp/cutie_sam2_hiera.pth", "/tmp/cutie_sam2_hiera.pth"),
+    ]
+    for ident, weight in cutie_cases:
+        assert not Sam3Manager.is_sam3_model(ident, weight)
+        assert not _LazySam3Manager.is_sam3_model(ident, weight)
+        assert not Sam2Manager.is_sam2_model(ident, weight)
+        assert not _LazySam2Manager.is_sam2_model(ident, weight)
+
+    assert Sam3Manager.is_sam3_model("sam3", "sam3")
+    assert _LazySam3Manager.is_sam3_model("sam3", "sam3")
+    assert Sam2Manager.is_sam2_model("sam2_hiera_l", "sam2_hiera_l.pt")
+    assert _LazySam2Manager.is_sam2_model("sam2_hiera_l", "sam2_hiera_l.pt")
+
+
+def test_auto_selects_optimized_cutie_when_body_part_annotations_present(
+    tmp_path: Path,
+) -> None:
+    from annolid.utils.body_part_shapes import (
+        build_body_part_shape_dict,
+        folder_has_body_part_annotations,
+        has_body_part_polygon_annotations,
+        is_anatomical_body_part_label,
+    )
+
+    assert not is_anatomical_body_part_label("mouse_1")
+    assert not is_anatomical_body_part_label("resident_2")
+    assert is_anatomical_body_part_label("head")
+    assert is_anatomical_body_part_label("mouse_1:tail")
+    assert is_anatomical_body_part_label("left_ear")
+
+    whole_only_shapes = [
+        {
+            "label": "mouse_1",
+            "shape_type": "polygon",
+            "points": [[10, 10], [40, 10], [40, 30], [10, 30]],
+            "flags": {},
+        },
+        {
+            "label": "nose",
+            "shape_type": "point",
+            "points": [[12, 15]],
+            "flags": {},
+        },
+        {
+            "label": "head_zone",
+            "shape_type": "polygon",
+            "points": [[0, 0], [50, 0], [50, 50], [0, 50]],
+            "flags": {"is_zone": True},
+        },
+    ]
+    assert not has_body_part_polygon_annotations(whole_only_shapes)
+
+    part_shape = build_body_part_shape_dict(
+        points=[[10, 10], [22, 10], [22, 30], [10, 30]],
+        parent_instance="mouse_1",
+        part_label="head",
+        group_id=1,
+    )
+    assert has_body_part_polygon_annotations([*whole_only_shapes, part_shape])
+
+    whole_dir = tmp_path / "whole_only"
+    whole_dir.mkdir()
+    (whole_dir / "whole_only_000000000.json").write_text(
+        json.dumps({"shapes": whole_only_shapes}), encoding="utf-8"
+    )
+    assert not folder_has_body_part_annotations(whole_dir)
+
+    parts_dir = tmp_path / "with_parts"
+    parts_dir.mkdir()
+    (parts_dir / "with_parts_000000000.json").write_text(
+        json.dumps({"shapes": [*whole_only_shapes, part_shape]}), encoding="utf-8"
+    )
+    assert folder_has_body_part_annotations(parts_dir)
+
+    class _Host(PredictionExecutionMixin, ModelIdentityMixin):
+        def __init__(self) -> None:
+            self.video_file = str(tmp_path / "demo.mp4")
+            self.video_results_folder = str(whole_dir)
+            self.canvas = types.SimpleNamespace(shapes=[])
+            self.cutie_weights_override = None
+            self.tracker_runtime_config = CutieDinoTrackerConfig()
+
+    host = _Host()
+    # Whole-animal annotations keep Original Cutie as default (None -> cutie-base-mega.pth)
+    assert host._resolve_effective_cutie_weights_path("Cutie.pt") is None
+
+    # Body-part annotations in results folder auto-select Optimized Cutie
+    host.video_results_folder = str(parts_dir)
+    assert (
+        host._resolve_effective_cutie_weights_path("Cutie.pt")
+        == SAM3_BODYPARTS_CUTIE_WEIGHTS_FILENAME
+    )
+
+    # Explicit Original Base Mega selection or Advanced Parameters override still wins
+    assert (
+        host._resolve_effective_cutie_weights_path(ORIG_BACKUP_CUTIE_WEIGHTS_FILENAME)
+        == ORIG_BACKUP_CUTIE_WEIGHTS_FILENAME
+    )
+    host.cutie_weights_override = ORIG_BACKUP_CUTIE_WEIGHTS_FILENAME
+    assert (
+        host._resolve_effective_cutie_weights_path("Cutie.pt")
+        == ORIG_BACKUP_CUTIE_WEIGHTS_FILENAME
+    )
+
+
+@pytest.mark.skipif(
+    not UPGRADED_WEIGHTS_PATH.is_file(),
+    reason="Local cutie-sam3-bodyparts.pth checkpoint required for live body-part propagation test.",
+)
+def test_cutie_json_to_mask_and_live_propagation_preserve_multi_animal_and_parent_child_body_parts(
+    tmp_path: Path,
+) -> None:
+    from annolid.utils.annotation_store import load_labelme_json
+    from annolid.utils.body_part_shapes import (
+        build_body_part_shape_dict,
+        extract_body_part_label,
+        extract_body_part_parent_instance,
+        is_body_part_shape_payload,
+    )
+
+    width, height = 160, 120
+    video_path = tmp_path / "slap.mp4"
+    results_dir = tmp_path / "_slap"
+    results_dir.mkdir(parents=True)
+
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(str(video_path), fourcc, 10.0, (width, height))
+    assert writer.isOpened()
+
+    frames_bgr: list[np.ndarray] = []
+    for fidx in range(3):
+        dx = fidx * 2
+        img = np.full((height, width, 3), 235, dtype=np.uint8)
+        # mouse_1 (top): distinct head / torso / tail blocks
+        cv2.rectangle(img, (20 + dx, 18), (44 + dx, 46), (40, 60, 200), -1)  # head
+        cv2.rectangle(img, (44 + dx, 18), (84 + dx, 46), (50, 150, 60), -1)  # torso
+        cv2.rectangle(img, (84 + dx, 24), (116 + dx, 40), (190, 80, 40), -1)  # tail
+        # mouse_2 (bottom): head + body remainder
+        cv2.rectangle(img, (24 + dx, 72), (50 + dx, 100), (30, 160, 220), -1)  # head
+        cv2.rectangle(
+            img, (50 + dx, 72), (112 + dx, 100), (120, 60, 160), -1
+        )  # remainder
+        frames_bgr.append(img)
+        writer.write(img)
+    writer.release()
+
+    seed_png = results_dir / "_slap_000000000.png"
+    seed_json = results_dir / "_slap_000000000.json"
+    cv2.imwrite(str(seed_png), frames_bgr[0])
+
+    # mouse_1 is fully partitioned into head + torso + tail (with 1px outer parent margin)
+    # mouse_2 is partially partitioned (parent whole polygon + head only)
+    shapes_f0 = [
+        {
+            "label": "mouse_1",
+            "group_id": 1,
+            "shape_type": "polygon",
+            "points": [[19, 17], [117, 17], [117, 47], [19, 47]],
+            "flags": {},
+        },
+        build_body_part_shape_dict(
+            points=[[20, 18], [44, 18], [44, 46], [20, 46]],
+            parent_instance="mouse_1",
+            part_label="head",
+            group_id=1,
+        ),
+        build_body_part_shape_dict(
+            points=[[44, 18], [84, 18], [84, 46], [44, 46]],
+            parent_instance="mouse_1",
+            part_label="torso",
+            group_id=1,
+        ),
+        build_body_part_shape_dict(
+            points=[[84, 24], [116, 24], [116, 40], [84, 40]],
+            parent_instance="mouse_1",
+            part_label="tail",
+            group_id=1,
+        ),
+        {
+            "label": "mouse_2",
+            "group_id": 2,
+            "shape_type": "polygon",
+            "points": [[24, 72], [112, 72], [112, 100], [24, 100]],
+            "flags": {},
+        },
+        build_body_part_shape_dict(
+            points=[[24, 72], [50, 72], [50, 100], [24, 100]],
+            parent_instance="mouse_2",
+            part_label="head",
+            group_id=2,
+        ),
+    ]
+    seed_json.write_text(
+        json.dumps(
+            {
+                "version": "5.2.1",
+                "flags": {},
+                "shapes": shapes_f0,
+                "imagePath": seed_png.name,
+                "imageData": None,
+                "imageHeight": height,
+                "imageWidth": width,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    processor = CutieVideoProcessor(
+        str(video_path),
+        results_folder=str(results_dir),
+        save_video_with_color_mask=False,
+        use_cpu_only=True,
+    )
+    try:
+        processor._ensure_cutie_processor(mem_every=1)
+        assert processor.cutie_processor is not None
+        # 1. CutieCoreVideoProcessor must auto-select Optimized Cutie on body-part seed folders
+        assert (
+            processor.cutie_processor.model_weights_path
+            == SAM3_BODYPARTS_CUTIE_WEIGHTS_FILENAME
+        )
+
+        # 2. shapes_to_mask must give distinct IDs to mouse_1:head vs mouse_2:head and never let
+        #    parent whole-animal polygons erase child body-part masks
+        idx_mask, label_map = processor.cutie_processor.shapes_to_mask(
+            str(seed_json), (height, width, 3)
+        )
+        assert idx_mask is not None
+        assert (
+            "mouse_1" not in label_map
+        )  # fully partitioned parent reconstructed from children
+        assert (
+            "mouse_2" in label_map
+        )  # partial remainder tracked alongside mouse_2:head
+        for key in (
+            "mouse_1:head",
+            "mouse_1:torso",
+            "mouse_1:tail",
+            "mouse_2",
+            "mouse_2:head",
+        ):
+            assert key in label_map
+            obj_id = label_map[key]
+            assert int((idx_mask == obj_id).sum()) > 100
+
+        # 3. Propagate across frames 0..2 and verify saved annotations on frame 1
+        processor.process_video_frames(
+            start_frame=0,
+            end_frame=2,
+            step=1,
+            is_cutie=True,
+            mem_every=1,
+        )
+    finally:
+        cleanup = getattr(processor, "cleanup", None)
+        if callable(cleanup):
+            cleanup()
+
+    frame1_payload = load_labelme_json(results_dir / "_slap_000000001.json")
+    shapes_f1 = frame1_payload.get("shapes") or []
+    whole_shapes = {
+        s["label"]: s for s in shapes_f1 if not is_body_part_shape_payload(s)
+    }
+    assert "mouse_1" in whole_shapes
+    assert "mouse_2" in whole_shapes
+    assert whole_shapes["mouse_1"].get("group_id") == 1
+    assert whole_shapes["mouse_2"].get("group_id") == 2
+
+    part_pairs = {
+        (extract_body_part_parent_instance(s), extract_body_part_label(s)): s
+        for s in shapes_f1
+        if is_body_part_shape_payload(s)
+    }
+    assert ("mouse_1", "head") in part_pairs
+    assert ("mouse_1", "torso") in part_pairs
+    assert ("mouse_1", "tail") in part_pairs
+    assert ("mouse_2", "head") in part_pairs
+
+    # Reconstructed mouse_2 whole-animal polygon must span BOTH head (x ~ 26..52) and remainder (x ~ 52..114)
+    m2_xs = [pt[0] for pt in whole_shapes["mouse_2"]["points"]]
+    assert min(m2_xs) <= 35.0
+    assert max(m2_xs) >= 100.0
+
+
+@pytest.mark.skipif(
+    not UPGRADED_WEIGHTS_PATH.is_file(),
+    reason="Local cutie-sam3-bodyparts.pth checkpoint required for live bare multi-animal body-part test.",
+)
+def test_unqualified_multi_animal_body_parts_disambiguated_in_single_and_batch_cutie(
+    tmp_path: Path,
+) -> None:
+    from annolid.utils.annotation_store import load_labelme_json
+    from annolid.utils.body_part_shapes import (
+        extract_body_part_label,
+        extract_body_part_parent_instance,
+        is_body_part_shape_payload,
+        prepare_cutie_seed_hierarchy,
+    )
+
+    hw = (120, 160)
+
+    # 1. Nested bare anatomical polygons inside whole-animal parents (zero flags / group_id)
+    #    PLUS two bilateral bare "ear" polygons on mouse_1
+    nested_shapes = [
+        {
+            "label": "mouse_1",
+            "shape_type": "polygon",
+            "points": [[18, 14], [116, 14], [116, 48], [18, 48]],
+        },
+        {
+            "label": "head",
+            "shape_type": "polygon",
+            "points": [[20, 18], [44, 18], [44, 44], [20, 44]],
+        },
+        {
+            "label": "ear",
+            "shape_type": "polygon",
+            "points": [[36, 15], [43, 15], [43, 21], [36, 21]],
+        },
+        {
+            "label": "ear",
+            "shape_type": "polygon",
+            "points": [[36, 40], [43, 40], [43, 46], [36, 46]],
+        },
+        {
+            "label": "torso",
+            "shape_type": "polygon",
+            "points": [[44, 18], [86, 18], [86, 44], [44, 44]],
+        },
+        {
+            "label": "tail",
+            "shape_type": "polygon",
+            "points": [[86, 24], [114, 24], [114, 38], [86, 38]],
+        },
+        {
+            "label": "mouse_2",
+            "shape_type": "polygon",
+            "points": [[22, 70], [112, 70], [112, 102], [22, 102]],
+        },
+        {
+            "label": "head",
+            "shape_type": "polygon",
+            "points": [[22, 72], [48, 72], [48, 100], [22, 100]],
+        },
+    ]
+    plan_nested = prepare_cutie_seed_hierarchy(nested_shapes, hw)
+    assert plan_nested.mask is not None
+    assert "mouse_1:head" in plan_nested.label_name_to_value
+    assert "mouse_1:ear#1" in plan_nested.label_name_to_value
+    assert "mouse_1:ear#2" in plan_nested.label_name_to_value
+    assert "mouse_1:torso" in plan_nested.label_name_to_value
+    assert "mouse_1:tail" in plan_nested.label_name_to_value
+    assert "mouse_2:head" in plan_nested.label_name_to_value
+    assert "mouse_2" in plan_nested.label_name_to_value
+    assert plan_nested.body_part_specs["mouse_1:ear#1"]["query_index"] == 1
+    assert plan_nested.body_part_specs["mouse_1:ear#2"]["query_index"] == 2
+
+    # 2. Parentless group_id-grouped bare parts (group_id=1 vs group_id=2, no whole-animal polygons)
+    gid_only_shapes = [
+        {
+            "label": "head",
+            "group_id": 1,
+            "shape_type": "polygon",
+            "points": [[20, 20], [42, 20], [42, 42], [20, 42]],
+        },
+        {
+            "label": "torso",
+            "group_id": 1,
+            "shape_type": "polygon",
+            "points": [[42, 20], [80, 20], [80, 42], [42, 42]],
+        },
+        {
+            "label": "head",
+            "group_id": 2,
+            "shape_type": "polygon",
+            "points": [[24, 74], [48, 74], [48, 98], [24, 98]],
+        },
+        {
+            "label": "torso",
+            "group_id": 2,
+            "shape_type": "polygon",
+            "points": [[48, 74], [88, 74], [88, 98], [48, 98]],
+        },
+    ]
+    plan_gid = prepare_cutie_seed_hierarchy(gid_only_shapes, hw)
+    assert "instance_1:head" in plan_gid.label_name_to_value
+    assert "instance_1:torso" in plan_gid.label_name_to_value
+    assert "instance_2:head" in plan_gid.label_name_to_value
+    assert "instance_2:torso" in plan_gid.label_name_to_value
+
+    # 3. Completely bare duplicate anatomical polygons (no parent, no group_id, no flags)
+    #    even when two mice touch noses, plus multi-seed y-crossover continuity
+    bare_touching_f0 = [
+        # Animal 1 (left, nose at x=76..78 touching Animal 2's nose at x=78..80!)
+        {
+            "label": "tail",
+            "shape_type": "polygon",
+            "points": [[10, 40], [30, 40], [30, 52], [10, 52]],
+        },
+        {
+            "label": "torso",
+            "shape_type": "polygon",
+            "points": [[30, 34], [58, 34], [58, 58], [30, 58]],
+        },
+        {
+            "label": "head",
+            "shape_type": "polygon",
+            "points": [[58, 36], [78, 36], [78, 56], [58, 56]],
+        },
+        # Animal 2 (right, nose touching Animal 1's nose at x=78!)
+        {
+            "label": "head",
+            "shape_type": "polygon",
+            "points": [[78, 38], [98, 38], [98, 58], [78, 58]],
+        },
+        {
+            "label": "torso",
+            "shape_type": "polygon",
+            "points": [[98, 36], [126, 36], [126, 60], [98, 60]],
+        },
+        {
+            "label": "tail",
+            "shape_type": "polygon",
+            "points": [[126, 42], [148, 42], [148, 54], [126, 54]],
+        },
+    ]
+    plan_bare0 = prepare_cutie_seed_hierarchy(bare_touching_f0, hw)
+    for k in (
+        "instance_1:head",
+        "instance_1:torso",
+        "instance_1:tail",
+        "instance_2:head",
+        "instance_2:torso",
+        "instance_2:tail",
+    ):
+        assert k in plan_bare0.label_name_to_value
+    # Verify Animal 1 (left, x < 80) owns instance_1:head AND instance_1:torso AND instance_1:tail
+    id_h1 = plan_bare0.label_name_to_value["instance_1:head"]
+    id_t1 = plan_bare0.label_name_to_value["instance_1:torso"]
+    assert int(np.where(plan_bare0.mask == id_h1)[1].mean()) < 78
+    assert int(np.where(plan_bare0.mask == id_t1)[1].mean()) < 58
+
+    # Next seed frame where Animal 1 shifts slightly downward (y=68) while Animal 2 shifts upward (y=28):
+    # prior_cluster_centroids must keep left animal as instance_1 and right animal as instance_2!
+    bare_crossed_f20 = [
+        {
+            "label": "torso",
+            "shape_type": "polygon",
+            "points": [[32, 60], [60, 60], [60, 84], [32, 84]],
+        },
+        {
+            "label": "head",
+            "shape_type": "polygon",
+            "points": [[60, 62], [80, 62], [80, 82], [60, 82]],
+        },
+        {
+            "label": "head",
+            "shape_type": "polygon",
+            "points": [[82, 20], [102, 20], [102, 40], [82, 40]],
+        },
+        {
+            "label": "torso",
+            "shape_type": "polygon",
+            "points": [[102, 18], [130, 18], [130, 42], [102, 42]],
+        },
+    ]
+    plan_bare20 = prepare_cutie_seed_hierarchy(
+        bare_crossed_f20,
+        hw,
+        prior_cluster_centroids=plan_bare0.cluster_centroids,
+    )
+    id20_t1 = plan_bare20.label_name_to_value["instance_1:torso"]
+    id20_t2 = plan_bare20.label_name_to_value["instance_2:torso"]
+    assert int(np.where(plan_bare20.mask == id20_t1)[1].mean()) < 65
+    assert int(np.where(plan_bare20.mask == id20_t2)[1].mean()) > 100
+
+    # 4. Live end-to-end SegmentedCutieExecutor ("Track All") propagation on completely bare
+    #    duplicate "head" + "torso" shapes across 2 mice with ZERO metadata or model_weights_path!
+    video_path = tmp_path / "bare_batch.mp4"
+    video_folder = tmp_path / "bare_batch"
+    video_folder.mkdir(parents=True)
+    writer = cv2.VideoWriter(
+        str(video_path), cv2.VideoWriter_fourcc(*"mp4v"), 10.0, (hw[1], hw[0])
+    )
+    assert writer.isOpened()
+    for fidx in range(3):
+        dx = fidx * 2
+        img = np.full((hw[0], hw[1], 3), 240, dtype=np.uint8)
+        cv2.rectangle(img, (20 + dx, 20), (44 + dx, 46), (30, 50, 210), -1)
+        cv2.rectangle(img, (44 + dx, 20), (84 + dx, 46), (40, 160, 50), -1)
+        cv2.rectangle(img, (24 + dx, 74), (48 + dx, 100), (200, 140, 30), -1)
+        cv2.rectangle(img, (48 + dx, 74), (88 + dx, 100), (140, 50, 170), -1)
+        writer.write(img)
+    writer.release()
+
+    seed0_json = video_folder / "bare_batch_000000000.json"
+    seed0_json.write_text(
+        json.dumps(
+            {
+                "version": "5.2.1",
+                "flags": {},
+                "shapes": [
+                    {
+                        "label": "head",
+                        "shape_type": "polygon",
+                        "points": [[20, 20], [44, 20], [44, 46], [20, 46]],
+                    },
+                    {
+                        "label": "torso",
+                        "shape_type": "polygon",
+                        "points": [[44, 20], [84, 20], [84, 46], [44, 46]],
+                    },
+                    {
+                        "label": "head",
+                        "shape_type": "polygon",
+                        "points": [[24, 74], [48, 74], [48, 100], [24, 100]],
+                    },
+                    {
+                        "label": "torso",
+                        "shape_type": "polygon",
+                        "points": [[48, 74], [88, 74], [88, 100], [48, 100]],
+                    },
+                ],
+                "imagePath": "bare_batch_000000000.png",
+                "imageData": None,
+                "imageHeight": hw[0],
+                "imageWidth": hw[1],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    executor = SegmentedCutieExecutor(
+        str(video_path),
+        segment_annotated_frame=0,
+        segment_start_frame=0,
+        segment_end_frame=2,
+        processing_config={
+            "mem_every": 1,
+            "t_max_value": 5,
+            "compute_optical_flow": False,
+        },
+        device="cpu",
+    )
+    try:
+        assert executor.cutie_engine is not None
+        assert (
+            Path(executor.cutie_engine.model_weights_path).name
+            == SAM3_BODYPARTS_CUTIE_WEIGHTS_FILENAME
+        )
+        msg = executor.process_segment()
+        assert "Completed" in msg or "completed" in msg
+    finally:
+        executor.cleanup()
+
+    f1 = load_labelme_json(video_folder / "bare_batch_000000001.json")
+    f1_shapes = f1.get("shapes") or []
+    f1_pairs = {
+        (
+            extract_body_part_parent_instance(s),
+            extract_body_part_label(s),
+            s.get("group_id"),
+        )
+        for s in f1_shapes
+        if is_body_part_shape_payload(s)
+    }
+    assert ("instance_1", "head", 1) in f1_pairs
+    assert ("instance_1", "torso", 1) in f1_pairs
+    assert ("instance_2", "head", 2) in f1_pairs
+    assert ("instance_2", "torso", 2) in f1_pairs

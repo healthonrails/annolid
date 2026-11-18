@@ -95,6 +95,8 @@ class _LazySam2Manager:
     @staticmethod
     def is_sam2_model(identifier: str, weight: str) -> bool:
         key = f"{identifier or ''} {weight or ''}".lower()
+        if "cutie" in key:
+            return False
         return "sam2_hiera" in key
 
     def build_video_processor(self, *args, **kwargs):
@@ -121,6 +123,8 @@ class _LazySam3Manager:
     @staticmethod
     def is_sam3_model(identifier: str, weight: str) -> bool:
         key = f"{identifier or ''} {weight or ''}".lower()
+        if "cutie" in key:
+            return False
         return "sam3" in key
 
     def close_session(self):

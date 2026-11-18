@@ -132,12 +132,12 @@ When propagating seeded whole-instance and/or anatomical body-part masks directl
 
 ### Selecting Original vs. Improved Cutie in the GUI & Python API
 
-Annolid uses Original Cutie (`133.94 MB`, `35.02M` params) by default and exposes the improved compact Cutie checkpoint (`30.26 MB`, `15.76M` params) as well as custom `.pth` checkpoints across all GUI workflows:
+Annolid uses Original Cutie (`133.94 MB`, `35.02M` params) by default for standard whole-object tracking, **automatically switches to Optimized Cutie (`cutie-sam3-bodyparts.pth`, `30.26 MB`, `15.76M` params)** whenever body-part polygon annotations are present (unless an explicit Original override is pinned), and exposes all Cutie checkpoints across GUI workflows:
 
 1. **Top Toolbar AI Model Selector**:
-   - **`Cutie`** *(default)* — uses Original Cutie (`cutie-base-mega.pth`), or any global Cutie checkpoint override set in **Advanced Parameters**.
-   - **`Cutie (SAM3 Body Parts)`** — explicitly selects the compact `30.26 MB` SAM 3.1 + DINOv3 body-parts & multi-instance checkpoint (`cutie-sam3-bodyparts.pth`).
-   - **`Cutie (Original Base Mega)`** — explicitly pins the untouched `133.94 MB` upstream dense checkpoint (`cutie-base-mega.orig.pth`, never compressed) even if a global override is active.
+   - **`Cutie`** *(default)* — uses Original Cutie (`cutie-base-mega.pth`) for standard whole-object videos, automatically upgrades to `cutie-sam3-bodyparts.pth` when body-part polygons are detected on the canvas or in the video results folder, and honors any explicit Cutie checkpoint override set in **Advanced Parameters**.
+   - **`Cutie (SAM3 Body Parts)`** — explicitly runs Cutie VOS (`CutieVideoProcessor`, never `SAM 3.1`) with the compact `30.26 MB` SAM 3.1 + DINOv3 body-parts & multi-instance checkpoint (`cutie-sam3-bodyparts.pth`) on CUDA, Apple Silicon `mps`, or CPU, preserving multi-animal `<instance>:<part>` identities and parent whole-instance envelopes.
+   - **`Cutie (Original Base Mega)`** — explicitly pins the untouched `133.94 MB` upstream dense checkpoint (`cutie-base-mega.orig.pth`, never compressed) even on body-part datasets or if a global override is active.
    - **`Browse Custom Model…`** — safely inspects `.pth`/`.pt` pickle string keys via `pickletools.genops` (zero `torch` import or code execution) and loads third-party/Hydra checkpoints under `weights_only=True` + `torch.serialization.safe_globals(...)`, registering them in the toolbar as **`Cutie: <checkpoint_stem>`**.
 2. **`More models...` (`Choose AI Model` Catalog Dialog)**:
    - Search `"cutie"`, `"sam3"`, `"body"`, or `"original"` and inspect the live checkpoint status banner (on-disk path, size in MB, or auto-download readiness) before selecting.
@@ -145,7 +145,9 @@ Annolid uses Original Cutie (`133.94 MB`, `35.02M` params) by default and expose
    - Choose **`Follow Toolbar Selection (default: Original Cutie)`**, **`Original Base Mega — Upstream Dense (134 MB, default)`**, **`Improved Compact — SAM3 + DINOv3 (30 MB, 1.5x–2.7x faster)`**, or **`Custom Cutie Checkpoint (.pth)…`** with a file browser and live on-disk status badge.
    - Applies to generic **`Cutie`** propagation, **`Cutie + DINOv3 Keypoint Segmentation`** (`CutieDinoTrackerConfig.cutie_weights_path`), and saved workspace settings profiles.
 4. **Video Manager (`Track All` Batch Processing)**:
-   - Use the **`Cutie: Follow Toolbar (default: Original)` / `Cutie: Original Base Mega` / `Cutie: Improved (SAM3 + DINOv3)`** selector next to **Track All** to choose which Cutie checkpoint batch multi-video propagation uses.
+   - Use the **`Cutie: Follow Toolbar (default: Original)` / `Cutie: Original Base Mega` / `Cutie: Improved (SAM3 + DINOv3)`** selector next to **Track All** to choose which Cutie checkpoint batch multi-video propagation uses (when set to `Follow Toolbar` with generic `Cutie`, batch jobs containing body-part annotations automatically upgrade to `cutie-sam3-bodyparts.pth`).
+5. **Zero-Friction Multi-Animal Body-Part Disambiguation**:
+   - Both single-video Cutie (`CutieVideoProcessor`) and batch `Track All` (`SegmentedCutieExecutor`) automatically disambiguate multi-animal body-part polygons across all manual annotation styles: explicit `is_body_part=True` / `<instance>:<part>` labels, nested bare anatomical polygons inside whole-animal parent masks (`mouse_1` + `head`/`torso`/`tail`), `group_id`-grouped parts, bilateral paired parts (such as two bare `ear` or `paw` polygons on one animal), and completely bare duplicate anatomical polygons (`head`/`torso`/`tail` drawn across multiple animals without `group_id` or parent envelopes).
 
 - **Python API**:
 

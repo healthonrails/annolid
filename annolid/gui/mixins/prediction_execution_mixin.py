@@ -426,7 +426,7 @@ class PredictionExecutionMixin:
     def _resolve_effective_cutie_weights_path(
         self, model_weight: str | None = None
     ) -> str | None:
-        """Resolve explicit Cutie checkpoint from toolbar selection or Advanced Parameters."""
+        """Resolve explicit Cutie checkpoint from toolbar, Advanced Parameters, or body-part auto-upgrade."""
         raw_cutie_weight = str(model_weight or "").strip()
         if raw_cutie_weight and raw_cutie_weight.lower() != "cutie.pt":
             return raw_cutie_weight
@@ -447,7 +447,30 @@ class PredictionExecutionMixin:
                 )
                 or ""
             ).strip()
-        return override or None
+        if override:
+            return override
+
+        # When generic "Cutie" is active with no explicit override, automatically use the
+        # optimized compact SAM3+DINOv3 body-part checkpoint if body-part shapes are present.
+        try:
+            from annolid.utils.body_part_shapes import (
+                folder_has_body_part_annotations,
+                has_body_part_polygon_annotations,
+            )
+
+            canvas_shapes = getattr(getattr(self, "canvas", None), "shapes", None)
+            if has_body_part_polygon_annotations(canvas_shapes) or (
+                folder_has_body_part_annotations(
+                    getattr(self, "video_results_folder", None)
+                )
+            ):
+                logger.info(
+                    "Detected body-part annotations; using optimized Cutie checkpoint 'cutie-sam3-bodyparts.pth'."
+                )
+                return "cutie-sam3-bodyparts.pth"
+        except Exception:
+            pass
+        return None
 
     def _cutie_brightness_contrast_kwargs(self) -> dict:
         getter = getattr(self, "get_video_brightness_contrast_values", None)
@@ -480,7 +503,8 @@ class PredictionExecutionMixin:
             or self._is_dino_kpseg_tracker_model(model_name, model_weight)
             or self._is_dino_kpseg_model(model_name, model_weight)
             or (
-                self.sam3_manager.is_sam3_model(model_name, model_weight)
+                not self._is_cutie_tracking_model(model_name)
+                and self.sam3_manager.is_sam3_model(model_name, model_weight)
                 and text_prompt
             )
         ):
@@ -603,7 +627,9 @@ class PredictionExecutionMixin:
                     model_key=model_key,
                     epsilon_for_polygon=self.epsilon_for_polygon,
                 )
-            elif self.sam2_manager.is_sam2_model(model_name, model_weight):
+            elif not self._is_cutie_tracking_model(
+                model_name
+            ) and self.sam2_manager.is_sam2_model(model_name, model_weight):
                 processor = self.sam2_manager.build_video_processor(
                     model_name=model_name,
                     model_weight=model_weight,
@@ -612,7 +638,9 @@ class PredictionExecutionMixin:
                 if processor is None:
                     return
                 self.video_processor = processor
-            elif self.sam3_manager.is_sam3_model(model_name, model_weight):
+            elif not self._is_cutie_tracking_model(
+                model_name
+            ) and self.sam3_manager.is_sam3_model(model_name, model_weight):
                 processor = self.sam3_manager.build_video_processor(
                     model_name=model_name,
                     model_weight=model_weight,
@@ -1121,14 +1149,18 @@ class PredictionExecutionMixin:
                     frame_idx=frame_idx,
                 )
                 watch_start_frame = int(frame_idx)
-            elif self.sam2_manager.is_sam2_model(model_name, model_weight):
+            elif not self._is_cutie_tracking_model(
+                model_name
+            ) and self.sam2_manager.is_sam2_model(model_name, model_weight):
                 frame_idx = max(int(inference_start_frame), 0)
                 self.pred_worker = FlexibleWorker(
                     task_function=self.video_processor,
                     frame_idx=frame_idx,
                 )
                 watch_start_frame = int(frame_idx)
-            elif self.sam3_manager.is_sam3_model(model_name, model_weight):
+            elif not self._is_cutie_tracking_model(
+                model_name
+            ) and self.sam3_manager.is_sam3_model(model_name, model_weight):
                 self.pred_worker = FlexibleWorker(
                     task_function=self.video_processor,
                 )

@@ -72,6 +72,8 @@ class Sam3Manager:
     @staticmethod
     def is_sam3_model(identifier: str, weight: str) -> bool:
         key = f"{identifier or ''} {weight or ''}".lower()
+        if "cutie" in key:
+            return False
         return "sam3" in key
 
     @staticmethod

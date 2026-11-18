@@ -1,3 +1,4 @@
+# ruff: noqa: E402
 from annolid.segmentation.cutie_vos.dependencies import (
     ensure_cutie_runtime_dependencies,
 )
@@ -9,14 +10,19 @@ import numpy as np
 from pathlib import Path
 from typing import Dict, Optional, List
 import torch
-from .engine import CutieEngine
+from .engine import CutieEngine, SAM3_BODYPARTS_CUTIE_WEIGHTS_FILENAME
 
 # Annolid-specific utilities
 from annolid.data.videos import CV2Video as AnnolidCV2VideoUtil
 from annolid.gui.label_file import LabelFile
 from annolid.gui.shape import MaskShape, Shape  # For saving annotations
 from annolid.annotation.keypoints import save_labels  # For saving annotations
-from annolid.utils.annotation_compat import shapes_to_label
+from annolid.utils.body_part_shapes import (
+    apply_cutie_body_part_metadata,
+    folder_has_body_part_annotations,
+    is_body_part_shape_payload,
+    prepare_cutie_seed_hierarchy,
+)
 from annolid.utils.logger import logger
 from annolid.utils.zone_shapes import is_zone_shape_payload
 
@@ -37,6 +43,7 @@ from annolid.utils.mask_geometry import (
     compute_mask_centroid_and_area,
     compute_mask_mean_flow_magnitude,
     extract_index_mask_bboxes,
+    tight_mask_bbox,
 )
 
 
@@ -60,7 +67,14 @@ class SegmentedCutieExecutor:
         cutie_engine: Optional[CutieEngine] = None,
     ):
         self.video_path = Path(video_path_str)
-        self.video_folder = self.video_path.with_suffix("")
+        custom_folder = (
+            processing_config.get("results_folder")
+            if isinstance(processing_config, dict)
+            else None
+        )
+        self.video_folder = (
+            Path(custom_folder) if custom_folder else self.video_path.with_suffix("")
+        )
 
         self.annotated_frame = segment_annotated_frame
         self.segment_start_frame = segment_start_frame
@@ -110,7 +124,10 @@ class SegmentedCutieExecutor:
                 "mem_every": self.config.get("mem_every", 5),
                 "max_mem_frames": self.config.get("t_max_value", 5),
             }
-            if "chunk_size" in self.config and self.config.get("chunk_size") is not None:
+            if (
+                "chunk_size" in self.config
+                and self.config.get("chunk_size") is not None
+            ):
                 cutie_engine_config_overrides["chunk_size"] = int(
                     self.config["chunk_size"]
                 )
@@ -135,10 +152,18 @@ class SegmentedCutieExecutor:
                 cutie_engine_config_overrides["max_kv_memory_mb"] = float(
                     self.config["max_kv_memory_mb"]
                 )
-            model_weights_path = (
-                self.config.get("model_weights_path")
-                or self.config.get("cutie_weights_path")
-            )
+            model_weights_path = self.config.get(
+                "model_weights_path"
+            ) or self.config.get("cutie_weights_path")
+            if not model_weights_path and folder_has_body_part_annotations(
+                self.video_folder
+            ):
+                model_weights_path = SAM3_BODYPARTS_CUTIE_WEIGHTS_FILENAME
+                logger.info(
+                    "SegmentedCutieExecutor: Body-part annotations detected in '%s'; using '%s'.",
+                    self.video_folder,
+                    model_weights_path,
+                )
             self.cutie_engine = CutieEngine(
                 cutie_config_overrides=cutie_engine_config_overrides,
                 device=self.device,
@@ -183,23 +208,6 @@ class SegmentedCutieExecutor:
                 )
                 return False
 
-            # Create labels_dict (numeric IDs for Cutie) and value_to_name (for saving results)
-            # Background is 0. Objects start from 1.
-            current_id = 1
-            labels_dict_numeric_ids = {}  # e.g. {'animal_1': 1, 'animal_2': 2}
-            # This is what shapes_to_label expects for label_name_to_value
-
-            for shape in sorted(valid_shapes, key=lambda x: x["label"]):
-                label_name = shape["label"]
-                if label_name not in labels_dict_numeric_ids:
-                    labels_dict_numeric_ids[label_name] = current_id
-                    current_id += 1
-
-            num_objects = len(labels_dict_numeric_ids)
-            if num_objects == 0:
-                logger.warning("No objects found after filtering shapes.")
-                return False
-
             # Use Annolid's CV2Video util to get frame dimensions safely
             temp_video_loader = AnnolidCV2VideoUtil(str(self.video_path))
             annotated_frame_image = temp_video_loader.load_frame(self.annotated_frame)
@@ -212,11 +220,15 @@ class SegmentedCutieExecutor:
 
             image_height, image_width, _ = annotated_frame_image.shape
 
-            # Create the initial NumPy mask with object IDs
-            initial_mask_np, _ = shapes_to_label(
-                (image_height, image_width), valid_shapes, labels_dict_numeric_ids
+            plan = prepare_cutie_seed_hierarchy(
+                valid_shapes, (image_height, image_width)
             )
-            if initial_mask_np is None:
+            initial_mask_np = plan.mask
+            labels_dict_numeric_ids = {
+                k: v for k, v in plan.label_name_to_value.items() if k != "_background_"
+            }
+            num_objects = len(labels_dict_numeric_ids)
+            if initial_mask_np is None or num_objects == 0:
                 logger.error(
                     f"Failed to generate initial mask from {annotation_json_path.name}."
                 )
@@ -224,13 +236,14 @@ class SegmentedCutieExecutor:
 
             self.initial_mask_info = {
                 "mask_np": initial_mask_np,  # (H, W) with object IDs 1, 2, ...
-                # {1: 'animal_1', ...}
                 "labels_map_id_to_name": {
                     v: k for k, v in labels_dict_numeric_ids.items()
                 },
                 "num_objects": num_objects,
-                # Store for saving annotations
                 "frame_shape": (image_height, image_width, 3),
+                "body_part_specs": plan.body_part_specs,
+                "partitioned_parents": plan.partitioned_parents,
+                "parent_group_ids": plan.parent_group_ids,
             }
             logger.info(
                 f"Prepared initial mask for segment(annotated at {self.annotated_frame}) with {num_objects} objects."
@@ -318,6 +331,11 @@ class SegmentedCutieExecutor:
         )
         height, width, _ = frame_shape
         label_list_for_save: List[Shape] = []
+        persisted_masks: Dict[str, np.ndarray] = {}
+        mask_info = self.initial_mask_info or {}
+        body_part_specs = mask_info.get("body_part_specs") or {}
+        partitioned_parents = mask_info.get("partitioned_parents") or {}
+        parent_group_ids = mask_info.get("parent_group_ids") or {}
         pred_arr = np.asarray(predicted_mask_np_object_ids)
         object_bboxes = extract_index_mask_bboxes(pred_arr)
 
@@ -372,11 +390,98 @@ class SegmentedCutieExecutor:
                 shape_to_save.other_data = dict(main_polygon.other_data)
                 shape_to_save.other_data.setdefault("annotation_source", "cutie_vos")
                 shape_to_save.points = [[p.x(), p.y()] for p in main_polygon.points]
+                apply_cutie_body_part_metadata(
+                    shape_to_save, obj_label_str, body_part_specs
+                )
+                if (
+                    obj_label_str not in body_part_specs
+                    and parent_group_ids.get(obj_label_str) is not None
+                ):
+                    shape_to_save.group_id = parent_group_ids[obj_label_str]
                 label_list_for_save.append(shape_to_save)
+                persisted_masks[obj_label_str] = single_obj_mask_bool
             else:
                 logger.warning(
                     f"Could not extract polygon for ID {obj_id} (label: {obj_label_str}) in frame {frame_idx}."
                 )
+
+        for parent_label, child_keys in partitioned_parents.items():
+            child_masks = [
+                persisted_masks[ck]
+                for ck in child_keys
+                if ck in persisted_masks and np.any(persisted_masks[ck])
+            ]
+            if not child_masks:
+                continue
+            if parent_label in persisted_masks and np.any(
+                persisted_masks[parent_label]
+            ):
+                union_mask = np.logical_or.reduce(
+                    [persisted_masks[parent_label], *child_masks]
+                )
+                label_list_for_save = [
+                    s
+                    for s in label_list_for_save
+                    if not (
+                        not is_body_part_shape_payload(s)
+                        and getattr(s, "label", "") == parent_label
+                    )
+                ]
+                for idx_csv in range(len(self._csv_frame_numbers) - 1, -1, -1):
+                    if (
+                        self._csv_frame_numbers[idx_csv] == frame_idx
+                        and self._csv_instance_labels[idx_csv] == parent_label
+                    ):
+                        del self._csv_frame_numbers[idx_csv]
+                        del self._csv_instance_labels[idx_csv]
+                        del self._csv_cx_values[idx_csv]
+                        del self._csv_cy_values[idx_csv]
+                        del self._csv_motion_indices[idx_csv]
+                        break
+            else:
+                union_mask = np.logical_or.reduce(child_masks)
+            p_bbox = tight_mask_bbox(union_mask)
+            p_metrics = self._process_object_metrics(
+                parent_label,
+                union_mask,
+                dense_flow_for_this_frame,
+                bbox=p_bbox,
+            )
+            if p_metrics is None:
+                continue
+            p_cx, p_cy, p_motion = p_metrics
+            p_mask_shape = MaskShape(
+                label=parent_label,
+                flags={},
+                description=f"cutie_vos_segment; motion_index: {p_motion:.2f}",
+            )
+            p_mask_shape.other_data = {
+                "cx": p_cx,
+                "cy": p_cy,
+                "motion_index": p_motion,
+                "annotation_source": "cutie_vos",
+            }
+            p_mask_shape.mask = union_mask
+            p_polys = p_mask_shape.toPolygons(
+                epsilon=self.config.get("epsilon_for_polygon", 2.0),
+                fill_holes=False,
+                bbox=p_bbox,
+            )
+            if p_polys:
+                p_main = p_polys[0]
+                p_save = Shape(
+                    label=parent_label,
+                    shape_type="polygon",
+                    flags=p_main.flags,
+                    description=p_main.description,
+                )
+                p_save.other_data = dict(p_main.other_data)
+                p_save.other_data.setdefault("annotation_source", "cutie_vos")
+                if parent_group_ids.get(parent_label) is not None:
+                    p_save.group_id = parent_group_ids[parent_label]
+                p_save.points = [[p.x(), p.y()] for p in p_main.points]
+                label_list_for_save.insert(0, p_save)
+                persisted_masks[parent_label] = union_mask
 
         if label_list_for_save:
             conflict_resolution = resolve_polygon_shape_conflicts(label_list_for_save)

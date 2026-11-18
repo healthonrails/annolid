@@ -231,11 +231,22 @@ class TrackAllWorker(QThread):
             "mem_every": self.config.get("mem_every", 5),
             "max_mem_frames": self.config.get("t_max_value", 5),
         }
+        selected_weights = self.config.get("model_weights_path")
+        if not selected_weights:
+            try:
+                from annolid.utils.body_part_shapes import (
+                    folder_has_body_part_annotations,
+                )
+
+                if folder_has_body_part_annotations(output_folder):
+                    selected_weights = "cutie-sam3-bodyparts.pth"
+            except Exception:
+                pass
         try:
             shared_cutie_engine = create_cutie_engine(
                 cutie_config_overrides=cutie_engine_config_overrides,
                 device=device,
-                model_weights_path=self.config.get("model_weights_path"),
+                model_weights_path=selected_weights,
             )
         except Exception as exc:
             error_msg = f"Failed to initialize CutieEngine for {video_name}: {exc}"

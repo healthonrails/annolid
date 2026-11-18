@@ -32,6 +32,7 @@ from omegaconf import open_dict
 from hydra import compose, initialize
 from annolid.segmentation.cutie_vos.model.cutie import CUTIE
 from annolid.segmentation.cutie_vos.engine import (
+    SAM3_BODYPARTS_CUTIE_WEIGHTS_FILENAME,
     ensure_managed_cutie_weights_file,
     maybe_upgrade_and_cache_compact_cutie_weights,
     resolve_cutie_weights_path,
@@ -40,6 +41,12 @@ from annolid.segmentation.cutie_vos.engine import (
 )
 from annolid.segmentation.cutie_vos.inference.inference_core import InferenceCore
 from annolid.utils.annotation_compat import shape_to_mask
+from annolid.utils.body_part_shapes import (
+    apply_cutie_body_part_metadata,
+    folder_has_body_part_annotations,
+    is_body_part_shape_payload,
+    prepare_cutie_seed_hierarchy,
+)
 from annolid.utils.shapes import extract_flow_points_in_mask
 from annolid.utils.devices import get_device
 from annolid.utils.image_adjustments import (
@@ -182,10 +189,23 @@ class CutieCoreVideoProcessor:
         self.num_tracking_instances = 0
         current_file_path = os.path.abspath(__file__)
         self.current_folder = os.path.dirname(current_file_path)
+        self._body_part_shape_specs: Dict[str, Dict[str, Any]] = {}
+        self._partitioned_parent_children: Dict[str, List[str]] = {}
+        self._parent_group_ids: Dict[str, Any] = {}
+        self._bare_cluster_centroids: Dict[str, Tuple[float, float]] = {}
         self.model_weights_path = (
             kwargs.get("model_weights_path")
             or kwargs.get("cutie_weights_path")
         )
+        if not self.model_weights_path and folder_has_body_part_annotations(
+            getattr(self, "video_folder", None)
+        ):
+            self.model_weights_path = SAM3_BODYPARTS_CUTIE_WEIGHTS_FILENAME
+            logger.info(
+                "Body-part seed annotations detected in '%s'; using optimized Cutie checkpoint '%s'.",
+                self.video_folder,
+                self.model_weights_path,
+            )
         self.device = "cpu" if self.use_cpu_only else get_device()
         logger.info(f"Running device: {self.device}.")
         self.cutie, self.cfg = self._initialize_model()
@@ -2068,6 +2088,7 @@ class CutieCoreVideoProcessor:
                     continue
             self._save_bbox(points, frame_area, label)
             current_shape.points = points
+            self._apply_body_part_metadata_to_shape(current_shape, label)
             label_list.append(current_shape)
             persisted_masks[label] = np.asarray(mask, dtype=bool)
             persisted_centroids[label] = (float(cx), float(cy))
@@ -2135,6 +2156,7 @@ class CutieCoreVideoProcessor:
             recovered_points = [[point.x(), point.y()] for point in recovered_shape.points]
             self._save_bbox(recovered_points, frame_area, label)
             recovered_shape.points = recovered_points
+            self._apply_body_part_metadata_to_shape(recovered_shape, label)
             label_list.append(recovered_shape)
             persisted_masks[label] = np.asarray(repaired_mask, dtype=bool)
             persisted_centroids[label] = (float(cx), float(cy))
@@ -2148,6 +2170,59 @@ class CutieCoreVideoProcessor:
                 resolved=True,
                 repair_source=repair_source,
             )
+        # Reconstruct parent whole-instance polygons when partitioned into child body parts
+        partitioned_parents = getattr(self, "_partitioned_parent_children", None) or {}
+        parent_group_ids = getattr(self, "_parent_group_ids", None) or {}
+        for parent_label, child_keys in partitioned_parents.items():
+            child_masks = [
+                persisted_masks[ck]
+                for ck in child_keys
+                if ck in persisted_masks and np.any(persisted_masks[ck])
+            ]
+            if not child_masks:
+                continue
+            if parent_label in persisted_masks and np.any(persisted_masks[parent_label]):
+                union_mask = np.logical_or.reduce(
+                    [persisted_masks[parent_label], *child_masks]
+                )
+                label_list = [
+                    s
+                    for s in label_list
+                    if not (
+                        not is_body_part_shape_payload(s)
+                        and getattr(s, "label", "") == parent_label
+                    )
+                ]
+            else:
+                union_mask = np.logical_or.reduce(child_masks)
+            p_metrics = self._save_results(parent_label, union_mask)
+            if p_metrics is None:
+                continue
+            p_cx, p_cy, p_motion = p_metrics
+            p_bbox = tight_mask_bbox(union_mask)
+            parent_shape = MaskShape(
+                label=parent_label,
+                flags={},
+                description=f"motion_index: {p_motion}",
+            )
+            parent_shape.other_data = {
+                "cx": p_cx,
+                "cy": p_cy,
+                "motion_index": p_motion,
+                "annotation_source": "cutie_vos",
+            }
+            parent_shape.mask = union_mask
+            p_polys = self._mask_to_polygons(parent_shape, bbox=p_bbox)
+            if p_polys:
+                p_poly = p_polys[0]
+                if parent_group_ids.get(parent_label) is not None:
+                    p_poly.group_id = parent_group_ids[parent_label]
+                p_pts = [[pt.x(), pt.y()] for pt in p_poly.points]
+                self._save_bbox(p_pts, frame_area, parent_label)
+                p_poly.points = p_pts
+                label_list.insert(0, p_poly)
+                persisted_masks[parent_label] = union_mask
+                persisted_centroids[parent_label] = (float(p_cx), float(p_cy))
         self._last_saved_instance_masks = persisted_masks
         self._last_saved_instance_centroids = persisted_centroids
         if isinstance(getattr(self, "_frame_mask_geometry_cache", None), dict):
@@ -2977,64 +3052,51 @@ class CutieCoreVideoProcessor:
 
             filtered_shapes.append(shape)
 
-        for shape in sorted(filtered_shapes, key=lambda x: x.get("label") or ""):
-            label_name = shape.get("label")
-            if not label_name:
-                continue
-            if label_name not in label_name_to_value:
-                label_value = len(label_name_to_value)
-                label_name_to_value[label_name] = label_value
+        body_part_specs = getattr(self, "_body_part_shape_specs", None)
+        if body_part_specs is None:
+            body_part_specs = {}
+            self._body_part_shape_specs = body_part_specs
+        partitioned_parents = getattr(self, "_partitioned_parent_children", None)
+        if partitioned_parents is None:
+            partitioned_parents = {}
+            self._partitioned_parent_children = partitioned_parents
+        parent_group_ids = getattr(self, "_parent_group_ids", None)
+        if parent_group_ids is None:
+            parent_group_ids = {}
+            self._parent_group_ids = parent_group_ids
+        prior_centroids = getattr(self, "_bare_cluster_centroids", None)
+        if prior_centroids is None:
+            prior_centroids = {}
+            self._bare_cluster_centroids = prior_centroids
 
-        if len(label_name_to_value) <= 1:
-            return None, label_name_to_value
-
-        instance_masks: Dict[str, np.ndarray] = {}
-        for shape in filtered_shapes:
-            label = str(shape.get("label") or "")
-            if not label:
-                continue
-            shape_mask = shape_to_mask(
-                image_size,
-                shape.get("points") or [],
-                shape_type=shape.get("shape_type", "polygon"),
-            )
-            if label in instance_masks:
-                instance_masks[label] |= shape_mask
-            else:
-                instance_masks[label] = shape_mask
-        overlaps = find_cross_instance_mask_overlaps(instance_masks)
-        if overlaps:
+        plan = prepare_cutie_seed_hierarchy(
+            filtered_shapes,
+            image_size,
+            prior_cluster_centroids=prior_centroids,
+            existing_body_part_specs=body_part_specs,
+            existing_partitioned_parents=partitioned_parents,
+            existing_parent_group_ids=parent_group_ids,
+        )
+        self._bare_cluster_centroids = plan.cluster_centroids
+        if plan.overlaps:
             details = ", ".join(
                 f"{overlap.first_label}/{overlap.second_label} "
                 f"({overlap.pixel_count} pixel(s))"
-                for overlap in overlaps
+                for overlap in plan.overlaps
             )
             logger.debug(
-                "Resolving shared CUTIE seed pixels in %s by stable label order: %s.",
+                "Resolving shared CUTIE seed pixels in %s by body-part hierarchy and stable label order: %s.",
                 label_json_file,
                 details,
             )
+        return plan.mask, plan.label_name_to_value
 
-        ordered_labels = [
-            label
-            for label, value in sorted(
-                label_name_to_value.items(), key=lambda item: item[1]
-            )
-            if value and label in instance_masks
-        ]
-        exclusive_masks = make_instance_masks_exclusive(
-            [instance_masks[label] for label in ordered_labels]
+    def _apply_body_part_metadata_to_shape(self, shape_obj: Any, tracking_key: str) -> None:
+        apply_cutie_body_part_metadata(
+            shape_obj,
+            tracking_key,
+            getattr(self, "_body_part_shape_specs", None),
         )
-        mask = np.zeros(image_size[:2], dtype=np.int32)
-        for label, instance_mask in zip(ordered_labels, exclusive_masks):
-            bbox = tight_mask_bbox(instance_mask)
-            if bbox is None:
-                continue
-            x0, y0, x1, y1 = bbox
-            mask[y0:y1, x0:x1][instance_mask[y0:y1, x0:x1]] = int(
-                label_name_to_value[label]
-            )
-        return mask, label_name_to_value
 
     def _assign_global_ids(self, label_name_to_value: Dict[str, int]) -> Dict[str, int]:
         assigned: Dict[str, int] = {"_background_": 0}

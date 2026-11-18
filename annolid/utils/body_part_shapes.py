@@ -724,3 +724,772 @@ def infer_intra_part_skeleton_edges(
                 _add(grp[i][1], grp[i + 1][1])
 
     return edges
+
+
+_ANATOMICAL_POLYGON_PART_TOKENS: frozenset[str] = frozenset(
+    {
+        "head",
+        "snout",
+        "nose",
+        "rostrum",
+        "skull",
+        "forehead",
+        "ear",
+        "ears",
+        "eye",
+        "eyes",
+        "beak",
+        "jaw",
+        "chin",
+        "mouth",
+        "neck",
+        "nape",
+        "throat",
+        "torso",
+        "trunk",
+        "thorax",
+        "abdomen",
+        "belly",
+        "flank",
+        "rump",
+        "pelvis",
+        "tail",
+        "caudal",
+        "limb",
+        "limbs",
+        "forelimb",
+        "hindlimb",
+        "forelimbs",
+        "hindlimbs",
+        "foreleg",
+        "hindleg",
+        "forepaw",
+        "hindpaw",
+        "paw",
+        "paws",
+        "leg",
+        "legs",
+        "arm",
+        "arms",
+        "hand",
+        "hands",
+        "foot",
+        "feet",
+        "wing",
+        "wings",
+        "fin",
+        "fins",
+    }
+)
+
+
+def is_anatomical_body_part_label(label: Any) -> bool:
+    """Return True when ``label`` names an anatomical sub-part (e.g. ``head``, ``mouse_1:tail``, ``left_ear``)."""
+    raw = _clean_text(label)
+    if not raw:
+        return False
+    if ":" in raw:
+        _prefix, suffix = raw.split(":", 1)
+        part_tokens = {
+            tok for tok in re.split(r"[^a-z0-9]+", suffix.strip().lower()) if tok
+        }
+        if part_tokens & _ANATOMICAL_POLYGON_PART_TOKENS:
+            return True
+    tokens = {tok for tok in re.split(r"[^a-z0-9]+", raw.lower()) if tok}
+    return bool(tokens & _ANATOMICAL_POLYGON_PART_TOKENS)
+
+
+def has_body_part_polygon_annotations(
+    shapes: Iterable[Mapping[str, Any] | object] | None,
+) -> bool:
+    """Return True if ``shapes`` contain any body-part polygon/mask annotation."""
+    if shapes is None:
+        return False
+    from annolid.utils.zone_shapes import is_zone_shape_payload
+
+    for shape in shapes:
+        if shape is None or is_zone_shape_payload(shape):
+            continue
+        shape_type = _clean_text(_get_field(shape, "shape_type") or "polygon").lower()
+        if shape_type in {"point", "line", "linestrip"}:
+            continue
+        if is_body_part_shape_payload(shape):
+            return True
+        if is_anatomical_body_part_label(_get_field(shape, "label")):
+            return True
+    return False
+
+
+def folder_has_body_part_annotations(
+    results_folder: Any,
+    *,
+    max_probe_files: int = 8,
+) -> bool:
+    """Fast probe checking whether seed JSONs or AnnotationStore in ``results_folder`` contain body parts."""
+    from pathlib import Path
+    import json
+
+    if not results_folder:
+        return False
+    folder = Path(results_folder).expanduser()
+    if not folder.is_dir():
+        return False
+
+    json_files = sorted(folder.glob("*.json"))[: max(1, int(max_probe_files))]
+    for jf in json_files:
+        try:
+            payload = json.loads(jf.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(payload, Mapping):
+            continue
+        shapes = payload.get("shapes")
+        if isinstance(shapes, list) and has_body_part_polygon_annotations(shapes):
+            return True
+
+    try:
+        from annolid.utils.annotation_store import AnnotationStore
+
+        store = AnnotationStore.for_frame_path(folder / f"{folder.name}_000000000.json")
+        if store.store_path.is_file():
+            for idx, frame_no in enumerate(store.iter_frames()):
+                if idx >= max_probe_files:
+                    break
+                rec = store.get_frame(int(frame_no))
+                shapes = rec.get("shapes") if isinstance(rec, Mapping) else None
+                if isinstance(shapes, list) and has_body_part_polygon_annotations(
+                    shapes
+                ):
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+class CutieSeedHierarchyPlan:
+    """Resolved Cutie 2D seed index mask, tracking-key map, and hierarchy metadata."""
+
+    __slots__ = (
+        "mask",
+        "label_name_to_value",
+        "body_part_specs",
+        "partitioned_parents",
+        "parent_group_ids",
+        "cluster_centroids",
+        "overlaps",
+    )
+
+    def __init__(
+        self,
+        *,
+        mask: Any,
+        label_name_to_value: dict[str, int],
+        body_part_specs: dict[str, dict[str, Any]],
+        partitioned_parents: dict[str, list[str]],
+        parent_group_ids: dict[str, Any],
+        cluster_centroids: dict[str, tuple[float, float]],
+        overlaps: list[Any],
+    ) -> None:
+        self.mask = mask
+        self.label_name_to_value = label_name_to_value
+        self.body_part_specs = body_part_specs
+        self.partitioned_parents = partitioned_parents
+        self.parent_group_ids = parent_group_ids
+        self.cluster_centroids = cluster_centroids
+        self.overlaps = overlaps
+
+
+def _mask_centroid(mask: Any, fallback_hw: tuple[int, int]) -> tuple[float, float]:
+    from annolid.utils.mask_geometry import compute_mask_centroid_and_area
+
+    stats = compute_mask_centroid_and_area(mask)
+    if stats is not None:
+        return (float(stats[0]), float(stats[1]))
+    return (0.5 * float(fallback_hw[1]), 0.5 * float(fallback_hw[0]))
+
+
+def _cluster_ungrouped_bare_parts(
+    bare_items: list[dict[str, Any]],
+    image_hw: tuple[int, int],
+    prior_cluster_centroids: Mapping[str, tuple[float, float]] | None = None,
+) -> tuple[list[tuple[str, int]], dict[str, tuple[float, float]]]:
+    """Group ungrouped duplicate bare anatomical polygons into per-animal clusters."""
+    from collections import defaultdict
+    import math
+    import cv2
+    import numpy as np
+    from scipy.optimize import linear_sum_assignment
+
+    by_part: dict[str, list[int]] = defaultdict(list)
+    for idx, item in enumerate(bare_items):
+        by_part[str(item["part_label"]).lower()].append(idx)
+
+    max_dup = max((len(idxs) for idxs in by_part.values()), default=0)
+    if max_dup <= 1:
+        return [("", 0) for _ in bare_items], {}
+
+    def _anchor_priority(part_key: str) -> tuple[int, int, float, str]:
+        idxs = by_part[part_key]
+        is_core = (
+            2
+            if part_key in {"torso", "body", "trunk", "thorax", "abdomen"}
+            else (1 if part_key in {"head", "snout", "skull"} else 0)
+        )
+        mean_area = sum(float(bare_items[i]["area"]) for i in idxs) / max(1, len(idxs))
+        return (len(idxs), is_core, mean_area, part_key)
+
+    anchor_key = max(by_part.keys(), key=_anchor_priority)
+    anchor_idxs = sorted(
+        by_part[anchor_key],
+        key=lambda i: (
+            round(bare_items[i]["centroid"][1] / max(16.0, 0.05 * image_hw[0])),
+            bare_items[i]["centroid"][0],
+            bare_items[i]["centroid"][1],
+        ),
+    )
+    num_clusters = len(anchor_idxs)
+    clusters: list[dict[str, Any]] = [
+        {
+            "indices": [a_idx],
+            "union_mask": bare_items[a_idx]["mask"].copy(),
+        }
+        for a_idx in anchor_idxs
+    ]
+
+    remaining_keys = sorted(
+        (k for k in by_part.keys() if k != anchor_key),
+        key=lambda k: (
+            -sum(float(bare_items[i]["area"]) for i in by_part[k])
+            / max(1, len(by_part[k])),
+            k,
+        ),
+    )
+
+    for part_key in remaining_keys:
+        p_idxs = by_part[part_key]
+        m_items = len(p_idxs)
+        cost = np.zeros((m_items, num_clusters), dtype=np.float64)
+        dist_maps: list[Any] = []
+        cluster_cxy: list[tuple[float, float]] = []
+        for cl in clusters:
+            umask = cl["union_mask"]
+            cluster_cxy.append(_mask_centroid(umask, image_hw))
+            if np.any(umask):
+                inv = (~umask).astype(np.uint8)
+                dist_maps.append(cv2.distanceTransform(inv, cv2.DIST_L2, 3))
+            else:
+                dist_maps.append(None)
+
+        for r_i, item_idx in enumerate(p_idxs):
+            imask = bare_items[item_idx]["mask"]
+            icx, icy = bare_items[item_idx]["centroid"]
+            has_fg = bool(np.any(imask))
+            for c_i in range(num_clusters):
+                ccx, ccy = cluster_cxy[c_i]
+                cdist = math.hypot(icx - ccx, icy - ccy)
+                dmap = dist_maps[c_i]
+                if has_fg and dmap is not None:
+                    bdist = float(dmap[imask].min())
+                else:
+                    bdist = cdist
+                cost[r_i, c_i] = bdist + 1e-3 * cdist
+
+        row_ind, col_ind = linear_sum_assignment(cost)
+        for r_i, c_i in zip(row_ind, col_ind):
+            chosen_item_idx = p_idxs[int(r_i)]
+            clusters[int(c_i)]["indices"].append(chosen_item_idx)
+            clusters[int(c_i)]["union_mask"] |= bare_items[chosen_item_idx]["mask"]
+
+    raw_centroids = [_mask_centroid(cl["union_mask"], image_hw) for cl in clusters]
+
+    cluster_to_inst_num: dict[int, int] = {}
+    prior_clean = {
+        str(k): (float(v[0]), float(v[1]))
+        for k, v in (prior_cluster_centroids or {}).items()
+        if str(k).startswith("instance_")
+    }
+    if prior_clean:
+        prior_keys = sorted(
+            prior_clean.keys(),
+            key=lambda k: (
+                int(k.split("_", 1)[1]) if k.split("_", 1)[1].isdigit() else 9999,
+                k,
+            ),
+        )
+        p_cost = np.zeros((num_clusters, len(prior_keys)), dtype=np.float64)
+        for c_i, (cx, cy) in enumerate(raw_centroids):
+            for p_j, pk in enumerate(prior_keys):
+                px, py = prior_clean[pk]
+                p_cost[c_i, p_j] = math.hypot(cx - px, cy - py)
+        r_ind, c_ind = linear_sum_assignment(p_cost)
+        used_nums: set[int] = set()
+        for c_i, p_j in zip(r_ind, c_ind):
+            pk = prior_keys[int(p_j)]
+            suffix = pk.split("_", 1)[1]
+            num = int(suffix) if suffix.isdigit() else (int(p_j) + 1)
+            cluster_to_inst_num[int(c_i)] = num
+            used_nums.add(num)
+        next_num = 1
+        for c_i in sorted(
+            range(num_clusters),
+            key=lambda i: (
+                round(raw_centroids[i][1] / max(16.0, 0.05 * image_hw[0])),
+                raw_centroids[i][0],
+                raw_centroids[i][1],
+            ),
+        ):
+            if c_i not in cluster_to_inst_num:
+                while next_num in used_nums:
+                    next_num += 1
+                cluster_to_inst_num[c_i] = next_num
+                used_nums.add(next_num)
+    else:
+        ordered_c = sorted(
+            range(num_clusters),
+            key=lambda i: (
+                round(raw_centroids[i][1] / max(16.0, 0.05 * image_hw[0])),
+                raw_centroids[i][0],
+                raw_centroids[i][1],
+            ),
+        )
+        for rank, c_i in enumerate(ordered_c, start=1):
+            cluster_to_inst_num[c_i] = rank
+
+    assignments: list[tuple[str, int]] = [("", 0) for _ in bare_items]
+    out_centroids: dict[str, tuple[float, float]] = {}
+    for c_i, cl in enumerate(clusters):
+        inst_num = cluster_to_inst_num[c_i]
+        inst_name = f"instance_{inst_num}"
+        out_centroids[inst_name] = raw_centroids[c_i]
+        for item_idx in cl["indices"]:
+            assignments[item_idx] = (inst_name, inst_num)
+
+    return assignments, out_centroids
+
+
+def prepare_cutie_seed_hierarchy(
+    filtered_shapes: Iterable[Mapping[str, Any]],
+    image_size: tuple[int, ...],
+    *,
+    prior_cluster_centroids: Mapping[str, tuple[float, float]] | None = None,
+    existing_body_part_specs: dict[str, dict[str, Any]] | None = None,
+    existing_partitioned_parents: dict[str, list[str]] | None = None,
+    existing_parent_group_ids: dict[str, Any] | None = None,
+) -> CutieSeedHierarchyPlan:
+    """Build an exclusive 2D Cutie index mask while disambiguating multi-animal body parts."""
+    from collections import defaultdict
+    import numpy as np
+    from annolid.annotation.polygon_constraints import make_instance_masks_exclusive
+    from annolid.tracking.identity_continuity import find_cross_instance_mask_overlaps
+    from annolid.utils.annotation_compat import shape_to_mask
+    from annolid.utils.mask_geometry import tight_mask_bbox
+
+    image_hw = (int(image_size[0]), int(image_size[1]))
+    body_part_specs = (
+        existing_body_part_specs if existing_body_part_specs is not None else {}
+    )
+    partitioned_parents = (
+        existing_partitioned_parents if existing_partitioned_parents is not None else {}
+    )
+    parent_group_ids = (
+        existing_parent_group_ids if existing_parent_group_ids is not None else {}
+    )
+    cluster_centroids: dict[str, tuple[float, float]] = dict(
+        prior_cluster_centroids or {}
+    )
+
+    shape_list = [s for s in filtered_shapes if isinstance(s, Mapping)]
+    parsed: list[dict[str, Any]] = []
+    for shape in shape_list:
+        raw_label = _clean_text(shape.get("label"))
+        if not raw_label:
+            continue
+        smask = np.asarray(
+            shape_to_mask(
+                image_hw,
+                shape.get("points") or [],
+                shape_type=shape.get("shape_type", "polygon"),
+            ),
+            dtype=bool,
+        )
+        area = int(np.count_nonzero(smask))
+        gid = shape.get("group_id")
+        gid_str = "" if gid is None or isinstance(gid, bool) else str(gid).strip()
+        has_colon_pair = ":" in raw_label and all(
+            p.strip() for p in raw_label.split(":", 1)
+        )
+        explicit_part = is_body_part_shape_payload(shape) or has_colon_pair
+        anatomical = is_anatomical_body_part_label(raw_label)
+        parsed.append(
+            {
+                "shape": shape,
+                "raw_label": raw_label,
+                "mask": smask,
+                "area": area,
+                "gid": gid,
+                "gid_str": gid_str,
+                "explicit_part": explicit_part,
+                "anatomical": anatomical,
+                "centroid": _mask_centroid(smask, image_hw),
+            }
+        )
+
+    label_name_to_value: dict[str, int] = {"_background_": 0}
+    if not parsed:
+        return CutieSeedHierarchyPlan(
+            mask=None,
+            label_name_to_value=label_name_to_value,
+            body_part_specs=body_part_specs,
+            partitioned_parents=partitioned_parents,
+            parent_group_ids=parent_group_ids,
+            cluster_centroids=cluster_centroids,
+            overlaps=[],
+        )
+
+    any_body_part = any(p["explicit_part"] or p["anatomical"] for p in parsed)
+    if not any_body_part:
+        for p in sorted(parsed, key=lambda item: item["raw_label"]):
+            lbl = p["raw_label"]
+            if lbl not in label_name_to_value:
+                label_name_to_value[lbl] = len(label_name_to_value)
+        if len(label_name_to_value) <= 1:
+            return CutieSeedHierarchyPlan(
+                mask=None,
+                label_name_to_value=label_name_to_value,
+                body_part_specs=body_part_specs,
+                partitioned_parents=partitioned_parents,
+                parent_group_ids=parent_group_ids,
+                cluster_centroids=cluster_centroids,
+                overlaps=[],
+            )
+        instance_masks: dict[str, np.ndarray] = {}
+        for p in parsed:
+            lbl = p["raw_label"]
+            if lbl in instance_masks:
+                instance_masks[lbl] |= p["mask"]
+            else:
+                instance_masks[lbl] = p["mask"].copy()
+        overlaps = find_cross_instance_mask_overlaps(instance_masks)
+        ordered_labels = [
+            lbl
+            for lbl, val in sorted(label_name_to_value.items(), key=lambda x: x[1])
+            if val and lbl in instance_masks
+        ]
+        exclusive_masks = make_instance_masks_exclusive(
+            [instance_masks[lbl] for lbl in ordered_labels]
+        )
+        out_mask = np.zeros(image_hw, dtype=np.int32)
+        for lbl, imask in zip(ordered_labels, exclusive_masks):
+            bbox = tight_mask_bbox(imask)
+            if bbox is None:
+                continue
+            x0, y0, x1, y1 = bbox
+            out_mask[y0:y1, x0:x1][imask[y0:y1, x0:x1]] = int(label_name_to_value[lbl])
+        return CutieSeedHierarchyPlan(
+            mask=out_mask,
+            label_name_to_value=label_name_to_value,
+            body_part_specs=body_part_specs,
+            partitioned_parents=partitioned_parents,
+            parent_group_ids=parent_group_ids,
+            cluster_centroids=cluster_centroids,
+            overlaps=overlaps,
+        )
+
+    # Separate whole-instance parent polygons from body-part polygons
+    parent_items = [p for p in parsed if not p["explicit_part"] and not p["anatomical"]]
+    part_items = [p for p in parsed if p["explicit_part"] or p["anatomical"]]
+
+    # Merge multi-polygon parents that share (raw_label, non-empty group_id) before disambiguating
+    merged_parent_items: list[dict[str, Any]] = []
+    by_lbl_gid: dict[tuple[str, str], dict[str, Any]] = {}
+    for p in parent_items:
+        if p["gid_str"]:
+            lg_key = (p["raw_label"], p["gid_str"])
+            if lg_key in by_lbl_gid:
+                acc = by_lbl_gid[lg_key]
+                acc["mask"] = acc["mask"] | p["mask"]
+                acc["area"] = int(np.count_nonzero(acc["mask"]))
+                acc["centroid"] = _mask_centroid(acc["mask"], image_hw)
+            else:
+                clone = dict(p)
+                clone["mask"] = p["mask"].copy()
+                by_lbl_gid[lg_key] = clone
+                merged_parent_items.append(clone)
+        else:
+            merged_parent_items.append(p)
+
+    parent_lbl_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for p in merged_parent_items:
+        parent_lbl_groups[p["raw_label"]].append(p)
+
+    parent_masks_by_key: dict[str, np.ndarray] = {}
+    parent_gid_str_by_key: dict[str, str] = {}
+    gid_to_parent_key: dict[str, str] = {}
+    resolved_entries: list[dict[str, Any]] = []
+
+    for raw_lbl, group in parent_lbl_groups.items():
+        if len(group) == 1:
+            p = group[0]
+            pkey = raw_lbl
+            parent_masks_by_key[pkey] = p["mask"].copy()
+            parent_gid_str_by_key[pkey] = p["gid_str"]
+            if p["gid"] is not None:
+                parent_group_ids[pkey] = p["gid"]
+            if p["gid_str"]:
+                gid_to_parent_key[p["gid_str"]] = pkey
+            resolved_entries.append({"tracking_key": pkey, "mask": p["mask"]})
+        else:
+            ordered_group = sorted(
+                group,
+                key=lambda item: (
+                    round(item["centroid"][1] / max(16.0, 0.05 * image_hw[0])),
+                    item["centroid"][0],
+                    item["centroid"][1],
+                ),
+            )
+            for idx_g, p in enumerate(ordered_group, start=1):
+                pkey = (
+                    f"{raw_lbl}_{p['gid_str']}"
+                    if p["gid_str"]
+                    else f"{raw_lbl}_{idx_g}"
+                )
+                while pkey in parent_masks_by_key:
+                    idx_g += 1
+                    pkey = f"{raw_lbl}_{idx_g}"
+                parent_masks_by_key[pkey] = p["mask"].copy()
+                parent_gid_str_by_key[pkey] = p["gid_str"]
+                eff_gid = p["gid"] if p["gid"] is not None else idx_g
+                parent_group_ids[pkey] = eff_gid
+                if p["gid_str"]:
+                    gid_to_parent_key[p["gid_str"]] = pkey
+                resolved_entries.append({"tracking_key": pkey, "mask": p["mask"]})
+
+    # Resolve parent_instance & group_id for each body-part polygon (5-tier cascade)
+    pending_parts: list[dict[str, Any]] = []
+    ungrouped_bare_slots: list[int] = []
+
+    for p in part_items:
+        shape = p["shape"]
+        raw_lbl = p["raw_label"]
+        explicit_parent = extract_body_part_parent_instance(shape)
+        part_lbl = extract_body_part_label(shape) or raw_lbl
+        if not explicit_parent and ":" in raw_lbl:
+            sp_parent, sp_part = split_body_part_csv_instance_name(raw_lbl)
+            if sp_parent and sp_part:
+                explicit_parent = sp_parent
+                part_lbl = sp_part
+
+        parent_inst = ""
+        resolved_gid = p["gid"]
+
+        if explicit_parent:
+            parent_inst = explicit_parent
+            if resolved_gid is None and parent_inst in parent_group_ids:
+                resolved_gid = parent_group_ids[parent_inst]
+        elif p["gid_str"] and p["gid_str"] in gid_to_parent_key:
+            parent_inst = gid_to_parent_key[p["gid_str"]]
+        elif parent_masks_by_key and p["area"] > 0:
+            best_parent = ""
+            best_inter = 0
+            for pkey, pmask in parent_masks_by_key.items():
+                pgid_s = parent_gid_str_by_key.get(pkey, "")
+                if p["gid_str"] and pgid_s and p["gid_str"] != pgid_s:
+                    continue
+                inter = int(np.count_nonzero(p["mask"] & pmask))
+                if inter > best_inter:
+                    best_inter = inter
+                    best_parent = pkey
+            if best_parent and float(best_inter) >= 0.50 * float(p["area"]):
+                parent_inst = best_parent
+                if resolved_gid is None and best_parent in parent_group_ids:
+                    resolved_gid = parent_group_ids[best_parent]
+        if not parent_inst and p["gid_str"]:
+            parent_inst = f"instance_{p['gid_str']}"
+
+        slot_idx = len(pending_parts)
+        pending_parts.append(
+            {
+                "raw_label": raw_lbl,
+                "part_label": part_lbl,
+                "parent_instance": parent_inst,
+                "group_id": resolved_gid,
+                "mask": p["mask"],
+                "area": p["area"],
+                "centroid": p["centroid"],
+            }
+        )
+        if not parent_inst and not p["gid_str"]:
+            ungrouped_bare_slots.append(slot_idx)
+
+    if ungrouped_bare_slots:
+        bare_subset = [pending_parts[s] for s in ungrouped_bare_slots]
+        bare_assignments, updated_centroids = _cluster_ungrouped_bare_parts(
+            bare_subset,
+            image_hw,
+            prior_cluster_centroids=cluster_centroids,
+        )
+        if updated_centroids:
+            cluster_centroids.update(updated_centroids)
+        for s_idx, (assigned_inst, assigned_gid) in zip(
+            ungrouped_bare_slots, bare_assignments
+        ):
+            if assigned_inst:
+                pending_parts[s_idx]["parent_instance"] = assigned_inst
+                if pending_parts[s_idx]["group_id"] is None and assigned_gid > 0:
+                    pending_parts[s_idx]["group_id"] = assigned_gid
+
+    # Disambiguate bilateral / duplicate same-label parts on the same resolved parent (e.g. two "ear"s)
+    by_base_key: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for item in pending_parts:
+        parent_inst = item["parent_instance"]
+        part_lbl = item["part_label"]
+        base_key = (
+            format_body_part_csv_instance_name(parent_inst, part_lbl)
+            if parent_inst
+            else item["raw_label"]
+        )
+        item["base_key"] = base_key
+        by_base_key[base_key].append(item)
+
+    for base_key, group in by_base_key.items():
+        if len(group) == 1:
+            item = group[0]
+            tkey = base_key
+            body_part_specs[tkey] = {
+                "raw_label": item["raw_label"],
+                "parent_instance": item["parent_instance"],
+                "part_label": item["part_label"],
+                "group_id": item["group_id"],
+                "query_index": None,
+            }
+            resolved_entries.append({"tracking_key": tkey, "mask": item["mask"]})
+        else:
+            ordered_sub = sorted(
+                group,
+                key=lambda x: (
+                    round(x["centroid"][1] / max(12.0, 0.04 * image_hw[0])),
+                    x["centroid"][0],
+                    x["centroid"][1],
+                ),
+            )
+            for sub_idx, item in enumerate(ordered_sub, start=1):
+                tkey = f"{base_key}#{sub_idx}"
+                body_part_specs[tkey] = {
+                    "raw_label": item["raw_label"],
+                    "parent_instance": item["parent_instance"],
+                    "part_label": item["part_label"],
+                    "group_id": item["group_id"],
+                    "query_index": sub_idx,
+                }
+                resolved_entries.append({"tracking_key": tkey, "mask": item["mask"]})
+
+    for entry in sorted(resolved_entries, key=lambda x: x["tracking_key"]):
+        tkey = entry["tracking_key"]
+        if tkey not in label_name_to_value:
+            label_name_to_value[tkey] = len(label_name_to_value)
+
+    if len(label_name_to_value) <= 1:
+        return CutieSeedHierarchyPlan(
+            mask=None,
+            label_name_to_value=label_name_to_value,
+            body_part_specs=body_part_specs,
+            partitioned_parents=partitioned_parents,
+            parent_group_ids=parent_group_ids,
+            cluster_centroids=cluster_centroids,
+            overlaps=[],
+        )
+
+    instance_masks = {}
+    for entry in resolved_entries:
+        tkey = entry["tracking_key"]
+        if tkey in instance_masks:
+            instance_masks[tkey] |= entry["mask"]
+        else:
+            instance_masks[tkey] = entry["mask"].copy()
+
+    overlaps = find_cross_instance_mask_overlaps(instance_masks)
+    ordered_labels = [
+        lbl
+        for lbl, val in sorted(label_name_to_value.items(), key=lambda x: x[1])
+        if val and lbl in instance_masks
+    ]
+    priorities = [1.0 if lbl in body_part_specs else 0.0 for lbl in ordered_labels]
+    exclusive_masks = make_instance_masks_exclusive(
+        [instance_masks[lbl] for lbl in ordered_labels],
+        scores=priorities,
+    )
+
+    kept_labels: list[str] = []
+    kept_masks: list[Any] = []
+    for lbl, ex_mask in zip(ordered_labels, exclusive_masks):
+        if lbl not in body_part_specs and np.any(instance_masks[lbl]):
+            child_keys = [
+                ck
+                for ck, spec in body_part_specs.items()
+                if spec.get("parent_instance") == lbl and ck in instance_masks
+            ]
+            if child_keys:
+                existing_children = partitioned_parents.get(lbl, [])
+                partitioned_parents[lbl] = list(
+                    dict.fromkeys([*existing_children, *child_keys])
+                )
+                parent_total = int(instance_masks[lbl].sum())
+                rem_area = int(ex_mask.sum())
+                if rem_area < max(32, int(0.25 * parent_total)):
+                    continue
+        kept_labels.append(lbl)
+        kept_masks.append(ex_mask)
+
+    rebuilt_map: dict[str, int] = {"_background_": 0}
+    for idx, lbl in enumerate(kept_labels, start=1):
+        rebuilt_map[lbl] = idx
+
+    out_mask = np.zeros(image_hw, dtype=np.int32)
+    for lbl, imask in zip(kept_labels, kept_masks):
+        bbox = tight_mask_bbox(imask)
+        if bbox is None:
+            continue
+        x0, y0, x1, y1 = bbox
+        out_mask[y0:y1, x0:x1][imask[y0:y1, x0:x1]] = int(rebuilt_map[lbl])
+
+    return CutieSeedHierarchyPlan(
+        mask=out_mask,
+        label_name_to_value=rebuilt_map,
+        body_part_specs=body_part_specs,
+        partitioned_parents=partitioned_parents,
+        parent_group_ids=parent_group_ids,
+        cluster_centroids=cluster_centroids,
+        overlaps=overlaps,
+    )
+
+
+def apply_cutie_body_part_metadata(
+    shape_obj: Any,
+    tracking_key: str,
+    body_part_specs: Mapping[str, Mapping[str, Any]] | None,
+) -> None:
+    """Attach canonical LabelMe body-part flags, group_id, and other_data onto ``shape_obj``."""
+    if not body_part_specs:
+        return
+    spec = body_part_specs.get(tracking_key)
+    if not spec:
+        return
+    raw_label = str(spec.get("raw_label") or tracking_key)
+    part_lbl = str(spec.get("part_label") or raw_label)
+    parent_inst = str(spec.get("parent_instance") or "")
+    shape_obj.label = raw_label
+    flags = dict(getattr(shape_obj, "flags", None) or {})
+    flags["is_body_part"] = True
+    shape_obj.flags = flags
+    if spec.get("group_id") is not None:
+        shape_obj.group_id = spec.get("group_id")
+    other = dict(getattr(shape_obj, "other_data", None) or {})
+    other["semantic_type"] = BODY_PART_SEMANTIC_TYPE
+    other["part_label"] = part_lbl
+    other["display_label"] = part_lbl
+    if parent_inst:
+        other["parent_instance"] = parent_inst
+        other["instance_label"] = parent_inst
+    if spec.get("query_index") is not None:
+        other["query_index"] = int(spec["query_index"])
+    shape_obj.other_data = other

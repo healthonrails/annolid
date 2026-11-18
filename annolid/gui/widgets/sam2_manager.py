@@ -17,9 +17,10 @@ class Sam2Manager:
 
     @staticmethod
     def is_sam2_model(identifier: str, weight: str) -> bool:
-        identifier = (identifier or "").lower()
-        weight = (weight or "").lower()
-        return "sam2_hiera" in identifier or "sam2_hiera" in weight
+        key = f"{identifier or ''} {weight or ''}".lower()
+        if "cutie" in key:
+            return False
+        return "sam2_hiera" in key
 
     @staticmethod
     def resolve_model_config(identifier: str, weight: str) -> str:
