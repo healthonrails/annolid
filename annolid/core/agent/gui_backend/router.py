@@ -104,6 +104,9 @@ async def execute_direct_gui_command(
     exec_process: Callable[..., Any],
     self_update: Callable[..., Any] | None = None,
     dream_memory: Callable[..., Any] | None = None,
+    stats_slash: Callable[..., Any] | None = None,
+    qc_slash: Callable[..., Any] | None = None,
+    report_slash: Callable[..., Any] | None = None,
 ) -> Dict[str, Any]:
     if not command:
         return {"message": "", "payload": {}}
@@ -1254,5 +1257,49 @@ async def execute_direct_gui_command(
         if action == "kill":
             return f"Killed session {payload.get('session_id')}"
         return "Shell session command completed."
+
+    if name == "stats_slash":
+        if stats_slash is None:
+            return "Direct `/stats` command is unavailable in this runtime."
+        payload = await _run(
+            stats_slash,
+            path=str(args.get("path") or ""),
+            fps=args.get("fps"),
+            px_per_cm=args.get("px_per_cm"),
+            calibration=str(args.get("calibration") or ""),
+        )
+        if payload.get("ok"):
+            return str(payload.get("summary_text") or "Stats computed.")
+        return str(payload.get("error") or "Failed to compute stats.")
+
+    if name == "qc_slash":
+        if qc_slash is None:
+            return "Direct `/qc` command is unavailable in this runtime."
+        payload = await _run(
+            qc_slash,
+            path=str(args.get("path") or ""),
+            fps=args.get("fps"),
+            schema_path=str(args.get("schema_path") or ""),
+        )
+        if payload.get("ok"):
+            return str(payload.get("summary_text") or "Quality check completed.")
+        return str(payload.get("error") or "Failed to run quality check.")
+
+    if name == "report_slash":
+        if report_slash is None:
+            return "Direct `/report` command is unavailable in this runtime."
+        payload = await _run(
+            report_slash,
+            path=str(args.get("path") or ""),
+            output_dir=str(args.get("output_dir") or ""),
+            events_csv=str(args.get("events_csv") or ""),
+            zone_file=str(args.get("zone_file") or ""),
+            calibration=str(args.get("calibration") or ""),
+            fps=args.get("fps"),
+            px_per_cm=args.get("px_per_cm"),
+        )
+        if payload.get("ok"):
+            return str(payload.get("summary_text") or "Unified report generated.")
+        return str(payload.get("error") or "Failed to generate unified report.")
 
     return ""

@@ -4,7 +4,11 @@ import json
 import itertools
 from pathlib import Path
 from datetime import datetime
-import matplotlib.pyplot as plt
+
+try:
+    import matplotlib.pyplot as plt
+except Exception:  # pragma: no cover - optional dependency
+    plt = None  # type: ignore[assignment]
 from annolid.data.videos import CV2Video
 from annolid.utils.logger import logger
 from annolid.postprocessing.zone_analysis_engine import GenericZoneEngine
@@ -79,7 +83,16 @@ class TrackingResultsAnalyzer:
         self.fps = fps
         self.assay_profile: ZoneAssayProfile = resolve_assay_profile(assay_profile)
         if fps is None:
-            self.fps = CV2Video(self.video_path).get_fps()
+            _vid = CV2Video(self.video_path)
+            try:
+                self.fps = _vid.get_fps()
+            finally:
+                cap_obj = getattr(_vid, "cap", None) or getattr(_vid, "video", None)
+                if cap_obj is not None and hasattr(cap_obj, "release"):
+                    try:
+                        cap_obj.release()
+                    except Exception:
+                        pass
         self.zone_specs: list[ZoneShapeSpec] = []
         self.zone_shapes = None
         self.zone_time_dict = None
@@ -87,9 +100,22 @@ class TrackingResultsAnalyzer:
         self.load_zone_json()
 
     def read_csv_files(self):
-        """Read tracking and tracked CSV files into DataFrames."""
-        self.tracking_df = pd.read_csv(self.tracking_csv)
-        self.tracked_df = pd.read_csv(self.tracked_csv)
+        """Read tracking and/or tracked CSV files into DataFrames."""
+        has_tracking = self.tracking_csv.is_file()
+        has_tracked = self.tracked_csv.is_file()
+        if not has_tracking and not has_tracked:
+            raise FileNotFoundError(
+                f"Neither '{self.tracking_csv}' nor '{self.tracked_csv}' was found."
+            )
+        if has_tracking and has_tracked:
+            self.tracking_df = pd.read_csv(self.tracking_csv)
+            self.tracked_df = pd.read_csv(self.tracked_csv)
+        elif has_tracked:
+            self.tracked_df = pd.read_csv(self.tracked_csv)
+            self.tracking_df = self.tracked_df.copy()
+        else:
+            self.tracking_df = pd.read_csv(self.tracking_csv)
+            self.tracked_df = self.tracking_df.copy()
         self._apply_zone_policy_to_tracked_dataframe()
 
     def _apply_zone_policy_to_tracked_dataframe(self) -> None:
@@ -152,10 +178,8 @@ class TrackingResultsAnalyzer:
             self.distances_df = empty_distances
             return
 
-        x1_col = "cx_tracking" if "cx_tracking" in self.merged_df.columns else "cx"
-        y1_col = "cy_tracking" if "cy_tracking" in self.merged_df.columns else "cy"
-        x2_col = "cx_tracked" if "cx_tracked" in self.merged_df.columns else "cx"
-        y2_col = "cy_tracked" if "cy_tracked" in self.merged_df.columns else "cy"
+        x_col, y_col = self._resolve_xy_columns(self.merged_df)
+        xy_cols = list(dict.fromkeys([x_col, y_col]))
 
         valid_mask = (
             self.merged_df["frame_number"].notna()
@@ -165,23 +189,21 @@ class TrackingResultsAnalyzer:
         valid_df["_inst_str"] = valid_df["instance_name"].astype(str)
         whole_df = (
             valid_df[valid_df["_inst_str"].isin(whole_names)][
-                ["frame_number", "_inst_str", x1_col, y1_col, x2_col, y2_col]
+                ["frame_number", "_inst_str", *xy_cols]
             ].copy()
             if whole_names
-            else valid_df.iloc[0:0][
-                ["frame_number", "_inst_str", x1_col, y1_col, x2_col, y2_col]
-            ].copy()
+            else valid_df.iloc[0:0][["frame_number", "_inst_str", *xy_cols]].copy()
         )
         if part_to_parent:
             parts_df = valid_df[valid_df["_inst_str"].isin(part_to_parent)][
-                ["frame_number", "_inst_str", x1_col, y1_col, x2_col, y2_col]
+                ["frame_number", "_inst_str", *xy_cols]
             ].copy()
             parts_df["_inst_str"] = parts_df["_inst_str"].map(part_to_parent)
-            for col in {x1_col, y1_col, x2_col, y2_col}:
+            for col in xy_cols:
                 parts_df[col] = pd.to_numeric(parts_df[col], errors="coerce")
             agg_parts = parts_df.groupby(
                 ["frame_number", "_inst_str"], as_index=False, sort=False
-            )[list(dict.fromkeys([x1_col, y1_col, x2_col, y2_col]))].mean()
+            )[xy_cols].mean()
             if not whole_df.empty:
                 covered = pd.MultiIndex.from_frame(
                     whole_df[["frame_number", "_inst_str"]]
@@ -209,16 +231,16 @@ class TrackingResultsAnalyzer:
                 [
                     "frame_number",
                     "_inst_str",
-                    x1_col,
-                    y1_col,
+                    x_col,
+                    y_col,
                     "_inst_rank",
                     "_row_order",
                 ]
             ].rename(
                 columns={
                     "_inst_str": "instance_name_1",
-                    x1_col: "_x1",
-                    y1_col: "_y1",
+                    x_col: "_x1",
+                    y_col: "_y1",
                     "_inst_rank": "_rank_1",
                     "_row_order": "_ord_1",
                 }
@@ -227,16 +249,16 @@ class TrackingResultsAnalyzer:
                 [
                     "frame_number",
                     "_inst_str",
-                    x2_col,
-                    y2_col,
+                    x_col,
+                    y_col,
                     "_inst_rank",
                     "_row_order",
                 ]
             ].rename(
                 columns={
                     "_inst_str": "instance_name_2",
-                    x2_col: "_x2",
-                    y2_col: "_y2",
+                    x_col: "_x2",
+                    y_col: "_y2",
                     "_inst_rank": "_rank_2",
                     "_row_order": "_ord_2",
                 }
@@ -273,16 +295,16 @@ class TrackingResultsAnalyzer:
             for instance1, instance2 in itertools.combinations(instances_in_frame, 2):
                 g1 = frame_group[frame_group["_inst_str"] == instance1]
                 g2 = frame_group[frame_group["_inst_str"] == instance2]
-                x1_arr = pd.to_numeric(g1[x1_col], errors="coerce").to_numpy(
+                x1_arr = pd.to_numeric(g1[x_col], errors="coerce").to_numpy(
                     dtype=np.float64
                 )
-                y1_arr = pd.to_numeric(g1[y1_col], errors="coerce").to_numpy(
+                y1_arr = pd.to_numeric(g1[y_col], errors="coerce").to_numpy(
                     dtype=np.float64
                 )
-                x2_arr = pd.to_numeric(g2[x2_col], errors="coerce").to_numpy(
+                x2_arr = pd.to_numeric(g2[x_col], errors="coerce").to_numpy(
                     dtype=np.float64
                 )
-                y2_arr = pd.to_numeric(g2[y2_col], errors="coerce").to_numpy(
+                y2_arr = pd.to_numeric(g2[y_col], errors="coerce").to_numpy(
                     dtype=np.float64
                 )
                 d_mat = np.hypot(
@@ -673,7 +695,10 @@ class TrackingResultsAnalyzer:
                 reference_frame = 0
             social_df = social_df[social_df["frame_number"] >= reference_frame].copy()
         else:
-            reference_frame = 0
+            valid_frames = pd.to_numeric(
+                social_df["frame_number"], errors="coerce"
+            ).dropna()
+            reference_frame = int(valid_frames.min()) if not valid_frames.empty else 0
 
         engine = GenericZoneEngine(
             social_specs,

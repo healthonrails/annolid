@@ -209,6 +209,10 @@ class ZoneAnalysisResult:
             "barrier_adjacent_seconds": self.barrier_adjacent_seconds(fps),
             "total_transitions": self.total_transitions(),
         }
+        visit_lengths_by_zone: dict[str, list[int]] = defaultdict(list)
+        for visit in self.segments:
+            visit_lengths_by_zone[visit.zone_label].append(int(visit.frame_count))
+
         for zone_label in sorted(set(self.occupancy_frames) | set(self.entry_counts)):
             row[f"occupancy_frames__{zone_label}"] = self.occupancy_frames.get(
                 zone_label, 0
@@ -220,6 +224,14 @@ class ZoneAnalysisResult:
             row[f"dwell_seconds__{zone_label}"] = self._seconds(
                 fps, self.dwell_frames.get(zone_label, 0)
             )
+            v_lens = visit_lengths_by_zone.get(zone_label, [])
+            mean_v = (float(sum(v_lens)) / float(len(v_lens))) if v_lens else 0.0
+            max_v = int(max(v_lens)) if v_lens else 0
+            row[f"mean_visit_frames__{zone_label}"] = round(mean_v, 4)
+            row[f"mean_visit_seconds__{zone_label}"] = (
+                round(mean_v / float(fps), 6) if fps and fps > 0 else round(mean_v, 4)
+            )
+            row[f"max_visit_seconds__{zone_label}"] = self._seconds(fps, max_v)
             row[f"entry_count__{zone_label}"] = self.entry_counts.get(zone_label, 0)
             first_entry_frame = self.first_entry_frames.get(zone_label)
             row[f"first_entry_frame__{zone_label}"] = (

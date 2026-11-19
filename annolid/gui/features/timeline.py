@@ -49,6 +49,13 @@ def setup_timeline_feature(deps: GuiFeatureDeps) -> TimelineFeatureState:
     window.behavior_log_widget.rejectRequested.connect(
         window._reject_behavior_event_from_log
     )
+    window.behavior_log_widget.timeBudgetRequested.connect(
+        window.show_behavior_time_budget_dialog
+    )
+    if hasattr(window, "open_analysis_studio"):
+        window.behavior_log_widget.analysisStudioRequested.connect(
+            lambda: window.open_analysis_studio(initial_tab="behavior")
+        )
 
     window.behavior_log_dock = QtWidgets.QDockWidget("Behavior Log", window)
     window.behavior_log_dock.setObjectName("behaviorLogDock")

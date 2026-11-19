@@ -76,6 +76,17 @@ from .coding_harness import (
     CodingSessionStartTool,
 )
 from .automation_scheduler import AutomationSchedulerTool
+from .analytics_reporting import (
+    AnnolidBehaviorCohortTool,
+    AnnolidBehaviorIRRTool,
+    AnnolidBehaviorQCTool,
+    AnnolidKinematicsTool,
+    AnnolidTimeBudgetTool,
+    AnnolidTrackQCTool,
+    AnnolidTrackingStatsTool,
+    AnnolidUnifiedReportTool,
+    AnnolidZoneAnalysisTool,
+)
 from .annolid_run import AnnolidRunTool
 from .dataset import AnnolidDatasetInspectTool, AnnolidDatasetPrepareTool
 from .eval_reporting import AnnolidEvalReportTool
@@ -312,6 +323,23 @@ async def register_nanobot_style_tools(
             allowed_read_roots=allowed_read_roots,
         )
     )
+    for analytics_cls in (
+        AnnolidTrackingStatsTool,
+        AnnolidTrackQCTool,
+        AnnolidKinematicsTool,
+        AnnolidZoneAnalysisTool,
+        AnnolidTimeBudgetTool,
+        AnnolidBehaviorQCTool,
+        AnnolidBehaviorIRRTool,
+        AnnolidBehaviorCohortTool,
+        AnnolidUnifiedReportTool,
+    ):
+        register_tool(
+            analytics_cls(
+                allowed_dir=allowed_dir,
+                allowed_read_roots=allowed_read_roots,
+            )
+        )
     register_tool(
         AnnolidDatasetInspectTool(
             allowed_dir=allowed_dir,

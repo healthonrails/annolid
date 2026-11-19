@@ -64,6 +64,25 @@ def _rectangle_to_polygon(points: Sequence[Sequence[Any]]) -> list[list[float]]:
     return _normalize_points([top_left, top_right, bottom_right, bottom_left, top_left])
 
 
+def _circle_to_polygon(
+    points: Sequence[Sequence[Any]], num_segments: int = 64
+) -> list[list[float]]:
+    if len(points) < 2:
+        return _normalize_points(points)
+    cx, cy = float(points[0][0]), float(points[0][1])
+    px, py = float(points[1][0]), float(points[1][1])
+    radius = math.hypot(px - cx, py - cy)
+    if not math.isfinite(radius) or radius <= 0.0:
+        return []
+    segs = max(12, int(num_segments))
+    ring: list[list[float]] = []
+    for idx in range(segs):
+        theta = 2.0 * math.pi * float(idx) / float(segs)
+        ring.append([cx + radius * math.cos(theta), cy + radius * math.sin(theta)])
+    ring.append(list(ring[0]))
+    return ring
+
+
 def _infer_zone_kind(label: str, description: str, flags: Mapping[str, Any]) -> str:
     explicit = _normalize_text(
         flags.get("zone_kind") or flags.get("zone_type") or flags.get("kind")
@@ -183,8 +202,15 @@ class ZoneShapeSpec:
 
     @property
     def analysis_points(self) -> list[list[float]]:
-        if self.source_shape_type == "rectangle" and len(self.points) == 2:
+        eff_type = (
+            self.source_shape_type
+            if self.source_shape_type and self.source_shape_type != "polygon"
+            else self.shape_type
+        )
+        if eff_type == "rectangle" and len(self.points) == 2:
             return _rectangle_to_polygon(self.points)
+        if eff_type == "circle" and len(self.points) == 2:
+            return _circle_to_polygon(self.points)
         return _normalize_points(self.points)
 
     @property
@@ -308,6 +334,7 @@ def build_zone_shape(
         phase=phase,
         occupant_role=occupant_role,
         access_state=access_state,
+        source_shape_type=shape_type,
     )
     return spec.to_shape_dict()
 
@@ -345,10 +372,39 @@ def _compile_zone_geometry_cached(
     source_shape_type: str,
     raw_points: tuple[tuple[float, float], ...],
 ) -> _CompiledZoneGeometry | None:
-    if source_shape_type == "rectangle" and len(raw_points) == 2:
+    norm_type = _normalize_text(source_shape_type)
+    if norm_type == "rectangle" and len(raw_points) == 2:
         pts: list[list[float]] | tuple[tuple[float, float], ...] = (
             _rectangle_to_polygon(raw_points)
         )
+    elif norm_type == "circle" and len(raw_points) == 2:
+        cx, cy = raw_points[0]
+        px, py = raw_points[1]
+        if not all(math.isfinite(v) for v in (cx, cy, px, py)):
+            return None
+        radius = math.hypot(px - cx, py - cy)
+        if not math.isfinite(radius) or radius <= 0.0:
+            return None
+        try:
+            geom = Point(cx, cy).buffer(radius, quad_segs=16)
+            if geom.is_empty:
+                return None
+            shapely.prepare(geom)
+            min_x, min_y, max_x, max_y = geom.bounds
+            centroid_pt = geom.centroid
+            bounds = (float(min_x), float(min_y), float(max_x), float(max_y))
+            centroid = (float(centroid_pt.x), float(centroid_pt.y))
+            area = float(geom.area)
+            if not all(math.isfinite(v) for v in (*bounds, *centroid, area)):
+                return None
+            return _CompiledZoneGeometry(
+                geometry=geom,
+                bounds=bounds,
+                centroid=centroid,
+                area=area,
+            )
+        except Exception:
+            return None
     else:
         pts = raw_points
     if len(pts) < 3:
@@ -385,7 +441,12 @@ def _get_compiled_zone_geometry(shape: ZoneShapeSpec) -> _CompiledZoneGeometry |
         raw_points = tuple((float(pt[0]), float(pt[1])) for pt in shape.points)
     except Exception:
         return None
-    return _compile_zone_geometry_cached(str(shape.source_shape_type or ""), raw_points)
+    eff_type = (
+        str(shape.source_shape_type or "")
+        if shape.source_shape_type and shape.source_shape_type != "polygon"
+        else str(shape.shape_type or shape.source_shape_type or "")
+    )
+    return _compile_zone_geometry_cached(eff_type, raw_points)
 
 
 def zone_shape_area(shape: ZoneShapeSpec) -> float | None:

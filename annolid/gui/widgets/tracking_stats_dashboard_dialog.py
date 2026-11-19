@@ -10,10 +10,33 @@ from annolid.postprocessing.tracking_stats_dashboard import (
     TrackingStatsArtifacts,
     analyze_and_visualize_tracking_stats,
 )
+from annolid.services.unified_reporting import build_unified_analysis_report
 from annolid.utils.logger import logger
 
 
+class _TrackingStatsWorker(QtCore.QObject):
+    finished = QtCore.Signal(object, str)
+
+    def __init__(self, *, root_dir: Path, output_dir: Optional[Path]) -> None:
+        super().__init__()
+        self._root_dir = Path(root_dir)
+        self._output_dir = Path(output_dir) if output_dir is not None else None
+
+    @QtCore.Slot()
+    def run(self) -> None:
+        try:
+            artifacts = analyze_and_visualize_tracking_stats(
+                root_dir=self._root_dir,
+                output_dir=self._output_dir,
+            )
+            self.finished.emit(artifacts, "")
+        except Exception as exc:
+            self.finished.emit(None, str(exc))
+
+
 class TrackingStatsDashboardWidget(QtWidgets.QWidget):
+    jumpToVideoFrameRequested = QtCore.Signal(str, int)
+
     def __init__(
         self,
         *,
@@ -22,6 +45,8 @@ class TrackingStatsDashboardWidget(QtWidgets.QWidget):
     ) -> None:
         super().__init__(parent)
         self._artifacts: Optional[TrackingStatsArtifacts] = None
+        self._worker_thread: Optional[QtCore.QThread] = None
+        self._worker: Optional[_TrackingStatsWorker] = None
 
         main_layout = QtWidgets.QVBoxLayout(self)
         main_layout.setContentsMargins(10, 10, 10, 10)
@@ -40,11 +65,16 @@ class TrackingStatsDashboardWidget(QtWidgets.QWidget):
         self.run_btn = QtWidgets.QPushButton("Run Analysis")
         self.open_output_btn = QtWidgets.QPushButton("Open Output Folder")
         self.open_output_btn.setEnabled(False)
+        self.export_report_btn = QtWidgets.QPushButton("Export Unified Report…")
+        self.export_report_btn.setToolTip(
+            "Generate a unified HTML5 + SVG + Markdown + JSON report for this root directory"
+        )
 
         self.root_browse_btn.clicked.connect(self._choose_root_dir)
         self.output_browse_btn.clicked.connect(self._choose_output_dir)
-        self.run_btn.clicked.connect(self.run_analysis)
+        self.run_btn.clicked.connect(self._on_run_clicked)
         self.open_output_btn.clicked.connect(self._open_output_folder)
+        self.export_report_btn.clicked.connect(self._export_unified_report)
 
         controls_layout.addWidget(QtWidgets.QLabel("Root Directory"), 0, 0)
         controls_layout.addWidget(self.root_dir_edit, 0, 1)
@@ -52,8 +82,11 @@ class TrackingStatsDashboardWidget(QtWidgets.QWidget):
         controls_layout.addWidget(QtWidgets.QLabel("Output Directory"), 1, 0)
         controls_layout.addWidget(self.output_dir_edit, 1, 1)
         controls_layout.addWidget(self.output_browse_btn, 1, 2)
-        controls_layout.addWidget(self.run_btn, 2, 1)
-        controls_layout.addWidget(self.open_output_btn, 2, 2)
+        action_row = QtWidgets.QHBoxLayout()
+        action_row.addWidget(self.run_btn)
+        action_row.addWidget(self.open_output_btn)
+        action_row.addWidget(self.export_report_btn)
+        controls_layout.addLayout(action_row, 2, 1, 1, 2)
         main_layout.addWidget(controls_group)
 
         cards_row = QtWidgets.QHBoxLayout()
@@ -77,7 +110,20 @@ class TrackingStatsDashboardWidget(QtWidgets.QWidget):
             table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
             table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
             table.setAlternatingRowColors(True)
+            table.setSortingEnabled(True)
             table.horizontalHeader().setStretchLastSection(True)
+
+        self.overview_table.cellDoubleClicked.connect(
+            lambda r, _c: self._emit_jump_from_table(self.overview_table, r, None)
+        )
+        self.abnormal_table.cellDoubleClicked.connect(
+            lambda r, _c: self._emit_jump_from_table(
+                self.abnormal_table, r, "start_frame"
+            )
+        )
+        self.bad_shape_table.cellDoubleClicked.connect(
+            lambda r, _c: self._emit_jump_from_table(self.bad_shape_table, r, "frame")
+        )
 
         self.tabs.addTab(self.overview_table, "Overview")
         self.tabs.addTab(self.abnormal_table, "Abnormal Segments")
@@ -95,7 +141,7 @@ class TrackingStatsDashboardWidget(QtWidgets.QWidget):
         main_layout.addWidget(self.tabs, stretch=1)
 
         self.status_label = QtWidgets.QLabel(
-            "Select a root directory and run analysis."
+            "Select a root directory and run analysis. Double-click any abnormal segment or bad-shape row to jump to its frame."
         )
         self.status_label.setWordWrap(True)
         main_layout.addWidget(self.status_label)
@@ -107,6 +153,38 @@ class TrackingStatsDashboardWidget(QtWidgets.QWidget):
         )
         self.root_dir_edit.setText(str(default_root))
         self.output_dir_edit.setText(str(default_root / "tracking_stats_dashboard"))
+
+    def _emit_jump_from_table(
+        self,
+        table: QtWidgets.QTableWidget,
+        row: int,
+        frame_col_name: Optional[str],
+    ) -> None:
+        headers = {
+            str(
+                table.horizontalHeaderItem(i).text()
+                if table.horizontalHeaderItem(i)
+                else ""
+            ): i
+            for i in range(table.columnCount())
+        }
+        stats_idx = headers.get("stats_path")
+        vid_idx = headers.get("video_id")
+        target = ""
+        if stats_idx is not None and table.item(row, stats_idx) is not None:
+            target = table.item(row, stats_idx).text().strip()
+        elif vid_idx is not None and table.item(row, vid_idx) is not None:
+            target = table.item(row, vid_idx).text().strip()
+
+        frame_num = 0
+        if frame_col_name and frame_col_name in headers:
+            cell = table.item(row, headers[frame_col_name])
+            if cell is not None:
+                try:
+                    frame_num = max(0, int(float(cell.text().strip())))
+                except ValueError:
+                    frame_num = 0
+        self.jumpToVideoFrameRequested.emit(target, frame_num)
 
     @staticmethod
     def _make_stat_card(title: str, value: str) -> QtWidgets.QFrame:
@@ -172,6 +250,8 @@ class TrackingStatsDashboardWidget(QtWidgets.QWidget):
     def _populate_table(table: QtWidgets.QTableWidget, dataframe: pd.DataFrame) -> None:
         if dataframe is None:
             dataframe = pd.DataFrame()
+        was_sorting = table.isSortingEnabled()
+        table.setSortingEnabled(False)
         table.clear()
         columns = [str(c) for c in dataframe.columns]
         table.setColumnCount(len(columns))
@@ -187,6 +267,7 @@ class TrackingStatsDashboardWidget(QtWidgets.QWidget):
                 item = QtWidgets.QTableWidgetItem(str(value))
                 table.setItem(row_idx, col_idx, item)
         table.resizeColumnsToContents()
+        table.setSortingEnabled(was_sorting)
 
     def _clear_plot_previews(self) -> None:
         while self.plot_layout.count():
@@ -265,15 +346,14 @@ class TrackingStatsDashboardWidget(QtWidgets.QWidget):
         )
         self.plot_layout.addStretch(1)
 
-    def run_analysis(self) -> None:
+    def _validate_inputs(self) -> Optional[tuple[Path, Optional[Path]]]:
         root_text = self.root_dir_edit.text().strip()
         output_text = self.output_dir_edit.text().strip()
         if not root_text:
             QtWidgets.QMessageBox.warning(
                 self, "Missing Root Directory", "Please select a root directory."
             )
-            return
-
+            return None
         root_dir = Path(root_text).expanduser()
         if not root_dir.exists():
             QtWidgets.QMessageBox.warning(
@@ -281,9 +361,64 @@ class TrackingStatsDashboardWidget(QtWidgets.QWidget):
                 "Directory Not Found",
                 f"Root directory does not exist:\n{root_dir}",
             )
-            return
-
+            return None
         output_dir = Path(output_text).expanduser() if output_text else None
+        return root_dir, output_dir
+
+    def _on_run_clicked(self) -> None:
+        if self.isVisible():
+            self.run_analysis_async()
+        else:
+            self.run_analysis()
+
+    def run_analysis_async(self) -> None:
+        if self._worker_thread is not None:
+            return
+        validated = self._validate_inputs()
+        if validated is None:
+            return
+        root_dir, output_dir = validated
+        self.run_btn.setEnabled(False)
+        self.status_label.setText(f"Scanning {root_dir} in background...")
+
+        thread = QtCore.QThread(self)
+        worker = _TrackingStatsWorker(root_dir=root_dir, output_dir=output_dir)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._on_async_finished)
+        worker.finished.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_worker_refs)
+        self._worker_thread = thread
+        self._worker = worker
+        thread.start()
+
+    def _clear_worker_refs(self) -> None:
+        self._worker_thread = None
+        self._worker = None
+
+    @QtCore.Slot(object, str)
+    def _on_async_finished(self, artifacts: object, error: str) -> None:
+        self.run_btn.setEnabled(True)
+        if error or not isinstance(artifacts, TrackingStatsArtifacts):
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Dashboard Error",
+                f"Failed to generate tracking stats dashboard:\n\n{error}",
+            )
+            self.status_label.setText("Dashboard generation failed.")
+            return
+        self._artifacts = artifacts
+        self.open_output_btn.setEnabled(True)
+        self._refresh_from_artifacts(artifacts)
+        self.status_label.setText(f"Dashboard generated in {artifacts.output_dir}.")
+
+    def run_analysis(self) -> None:
+        validated = self._validate_inputs()
+        if validated is None:
+            return
+        root_dir, output_dir = validated
         self.run_btn.setEnabled(False)
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
         try:
@@ -308,8 +443,37 @@ class TrackingStatsDashboardWidget(QtWidgets.QWidget):
             QtWidgets.QApplication.restoreOverrideCursor()
             self.run_btn.setEnabled(True)
 
+    def _export_unified_report(self) -> None:
+        validated = self._validate_inputs()
+        if validated is None:
+            return
+        root_dir, output_dir = validated
+        report_dir = (
+            output_dir / "unified_report"
+            if output_dir is not None
+            else root_dir / "unified_report"
+        )
+        try:
+            artifacts = build_unified_analysis_report(
+                root_dir,
+                output_dir=report_dir,
+                include_plots=True,
+            )
+            self.status_label.setText(f"Unified report exported: {artifacts.html_path}")
+            QtGui.QDesktopServices.openUrl(
+                QtCore.QUrl.fromLocalFile(str(artifacts.html_path))
+            )
+        except Exception as exc:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Report Export Error",
+                f"Could not generate unified report:\n\n{exc}",
+            )
+
 
 class TrackingStatsDashboardDialog(QtWidgets.QDialog):
+    jumpToVideoFrameRequested = QtCore.Signal(str, int)
+
     def __init__(
         self,
         *,
@@ -322,5 +486,8 @@ class TrackingStatsDashboardDialog(QtWidgets.QDialog):
         layout = QtWidgets.QVBoxLayout(self)
         self.dashboard = TrackingStatsDashboardWidget(
             initial_root_dir=initial_root_dir, parent=self
+        )
+        self.dashboard.jumpToVideoFrameRequested.connect(
+            self.jumpToVideoFrameRequested.emit
         )
         layout.addWidget(self.dashboard)

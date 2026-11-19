@@ -37,15 +37,18 @@ from annolid.utils.atomic_io import atomic_write_json, atomic_write_text
 __all__ = [
     "IRRComputationError",
     "BehaviorIRRRow",
+    "IRRDisagreementBout",
     "IRRReport",
     "compute_binary_cohens_kappa",
     "compute_fleiss_kappa",
+    "compute_krippendorff_alpha_binary",
     "compute_onset_matching_f1",
     "compute_irr",
     "compute_irr_from_csvs",
     "format_irr_report_table",
     "write_irr_report_json",
     "write_irr_summary_csv",
+    "write_irr_disagreements_csv",
 ]
 
 _EPSILON = 1e-12
@@ -54,6 +57,30 @@ _IDLE_STATE_TOKEN = "__none__"
 
 class IRRComputationError(Exception):
     """Raised when inter-rater reliability cannot be computed from inputs."""
+
+
+@dataclass(frozen=True)
+class IRRDisagreementBout:
+    """Contiguous time window where raters disagreed on a behavior."""
+
+    subject: str
+    behavior: str
+    start_s: float
+    end_s: float
+    duration_s: float
+    raters_active: Tuple[str, ...]
+    raters_inactive: Tuple[str, ...]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "subject": self.subject,
+            "behavior": self.behavior,
+            "start_s": round(float(self.start_s), 6),
+            "end_s": round(float(self.end_s), 6),
+            "duration_s": round(float(self.duration_s), 6),
+            "raters_active": list(self.raters_active),
+            "raters_inactive": list(self.raters_inactive),
+        }
 
 
 @dataclass(frozen=True)
@@ -75,6 +102,9 @@ class BehaviorIRRRow:
     onset_f1: float
     rater_durations: Dict[str, float]
     rater_event_counts: Dict[str, int]
+    krippendorff_alpha: float = 1.0
+    cohens_kappa_ci95_low: float = 1.0
+    cohens_kappa_ci95_high: float = 1.0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -82,7 +112,10 @@ class BehaviorIRRRow:
             "behavior": self.behavior,
             "total_bins": int(self.total_bins),
             "cohens_kappa": round(float(self.cohens_kappa), 6),
+            "cohens_kappa_ci95_low": round(float(self.cohens_kappa_ci95_low), 6),
+            "cohens_kappa_ci95_high": round(float(self.cohens_kappa_ci95_high), 6),
             "fleiss_kappa": round(float(self.fleiss_kappa), 6),
+            "krippendorff_alpha": round(float(self.krippendorff_alpha), 6),
             "pabak": round(float(self.pabak), 6),
             "observed_agreement": round(float(self.observed_agreement), 6),
             "expected_agreement": round(float(self.expected_agreement), 6),
@@ -118,6 +151,8 @@ class IRRReport:
     macro_onset_f1: float
     multiclass_cohens_kappa: float
     rater_qc_issue_counts: Dict[str, Dict[str, int]]
+    macro_krippendorff_alpha: float = 1.0
+    disagreements: Tuple[IRRDisagreementBout, ...] = ()
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -131,6 +166,7 @@ class IRRReport:
             "pool_subjects": bool(self.pool_subjects),
             "macro_cohens_kappa": round(float(self.macro_cohens_kappa), 6),
             "macro_fleiss_kappa": round(float(self.macro_fleiss_kappa), 6),
+            "macro_krippendorff_alpha": round(float(self.macro_krippendorff_alpha), 6),
             "macro_pabak": round(float(self.macro_pabak), 6),
             "macro_onset_f1": round(float(self.macro_onset_f1), 6),
             "multiclass_cohens_kappa": round(float(self.multiclass_cohens_kappa), 6),
@@ -139,6 +175,7 @@ class IRRReport:
                 for name, counts in self.rater_qc_issue_counts.items()
             },
             "rows": [row.to_dict() for row in self.rows],
+            "disagreements": [d.to_dict() for d in self.disagreements],
         }
 
 
@@ -233,6 +270,151 @@ def compute_fleiss_kappa(rater_sequences: Sequence[Sequence[int]]) -> float:
     p_0 = 1.0 - p_1
     p_e_bar = (p_1 * p_1) + (p_0 * p_0)
     return _safe_kappa(p_bar, p_e_bar)
+
+
+def compute_krippendorff_alpha_binary(
+    rater_sequences: Sequence[Sequence[int]],
+) -> float:
+    """Compute nominal Krippendorff's alpha across ``R >= 2`` binary sequences."""
+    num_raters = len(rater_sequences)
+    if num_raters < 2:
+        raise ValueError("Krippendorff's alpha requires at least 2 raters.")
+    n_bins = len(rater_sequences[0])
+    if any(len(seq) != n_bins for seq in rater_sequences):
+        raise ValueError("All rater sequences must have equal length.")
+    if n_bins == 0:
+        return 1.0
+
+    mat = np.asarray(rater_sequences).astype(bool, copy=False)
+    ones_per_bin = mat.sum(axis=0, dtype=np.int64)
+    zeros_per_bin = num_raters - ones_per_bin
+    total_vals = n_bins * num_raters
+    total_ones = int(ones_per_bin.sum())
+    total_zeros = total_vals - total_ones
+    if total_ones == 0 or total_zeros == 0 or total_vals <= 1:
+        return 1.0
+
+    # Observed disagreement D_o across within-unit rater pairs
+    d_o = float(np.sum(2.0 * ones_per_bin * zeros_per_bin)) / float(
+        n_bins * num_raters * (num_raters - 1)
+    )
+    # Expected disagreement D_e across all coded values
+    d_e = float(2.0 * total_ones * total_zeros) / float(total_vals * (total_vals - 1))
+    if d_e <= _EPSILON:
+        return 1.0 if d_o <= _EPSILON else 0.0
+    return max(-1.0, min(1.0, 1.0 - (d_o / d_e)))
+
+
+def _bootstrap_mean_cohens_kappa_ci95(
+    per_rater_grids: Mapping[str, Sequence[int]],
+    rater_pairs: Sequence[Tuple[str, str]],
+    *,
+    n_boot: int = 200,
+    seed: int = 42,
+) -> Tuple[float, float]:
+    if not rater_pairs:
+        return 1.0, 1.0
+    first_seq = per_rater_grids[rater_pairs[0][0]]
+    n_bins = len(first_seq)
+    if n_bins <= 1:
+        val = mean(
+            compute_binary_cohens_kappa(per_rater_grids[ra], per_rater_grids[rb])[
+                "cohens_kappa"
+            ]
+            for ra, rb in rater_pairs
+        )
+        return val, val
+
+    arrays = {
+        name: np.asarray(seq, dtype=bool) for name, seq in per_rater_grids.items()
+    }
+    rng = np.random.default_rng(seed)
+    boot_indices = rng.integers(0, n_bins, size=(n_boot, n_bins))
+    pair_boot_kappas = np.zeros(n_boot, dtype=np.float64)
+    inv_n = 1.0 / float(n_bins)
+
+    for ra, rb in rater_pairs:
+        a_boot = arrays[ra][boot_indices]
+        b_boot = arrays[rb][boot_indices]
+        n11 = np.sum(a_boot & b_boot, axis=1, dtype=np.float64)
+        a1 = np.sum(a_boot, axis=1, dtype=np.float64)
+        b1 = np.sum(b_boot, axis=1, dtype=np.float64)
+        n10 = a1 - n11
+        n01 = b1 - n11
+        n00 = float(n_bins) - n11 - n10 - n01
+        p_o = (n11 + n00) * inv_n
+        p_a1 = a1 * inv_n
+        p_b1 = b1 * inv_n
+        p_e = (p_a1 * p_b1) + ((1.0 - p_a1) * (1.0 - p_b1))
+        denom = 1.0 - p_e
+        k_vec = np.where(
+            denom <= _EPSILON,
+            np.where(p_o >= 1.0 - _EPSILON, 1.0, 0.0),
+            np.clip((p_o - p_e) / np.maximum(denom, _EPSILON), -1.0, 1.0),
+        )
+        pair_boot_kappas += k_vec
+
+    pair_boot_kappas /= float(len(rater_pairs))
+    lo = float(np.percentile(pair_boot_kappas, 2.5))
+    hi = float(np.percentile(pair_boot_kappas, 97.5))
+    return lo, hi
+
+
+def _extract_disagreement_bouts(
+    *,
+    subject: str,
+    behavior: str,
+    rater_names: Sequence[str],
+    per_rater_grids: Mapping[str, Sequence[int]],
+    window_start: float,
+    window_end: float,
+    bin_seconds: float,
+) -> List[IRRDisagreementBout]:
+    if not rater_names:
+        return []
+    n_bins = len(per_rater_grids[rater_names[0]])
+    if n_bins == 0:
+        return []
+    mat = np.asarray([per_rater_grids[r] for r in rater_names], dtype=bool)
+    ones = mat.sum(axis=0)
+    num_raters = len(rater_names)
+    disagreed_mask = (ones > 0) & (ones < num_raters)
+    if not np.any(disagreed_mask):
+        return []
+
+    bouts: List[IRRDisagreementBout] = []
+    idx = 0
+    while idx < n_bins:
+        if not disagreed_mask[idx]:
+            idx += 1
+            continue
+        active_sig = tuple(
+            rater_names[r_i] for r_i in range(num_raters) if mat[r_i, idx]
+        )
+        end_idx = idx + 1
+        while end_idx < n_bins and disagreed_mask[end_idx]:
+            next_sig = tuple(
+                rater_names[r_i] for r_i in range(num_raters) if mat[r_i, end_idx]
+            )
+            if next_sig != active_sig:
+                break
+            end_idx += 1
+        s_time = window_start + float(idx) * bin_seconds
+        e_time = min(window_end, window_start + float(end_idx) * bin_seconds)
+        inactive_sig = tuple(r for r in rater_names if r not in active_sig)
+        bouts.append(
+            IRRDisagreementBout(
+                subject=subject,
+                behavior=behavior,
+                start_s=s_time,
+                end_s=e_time,
+                duration_s=max(0.0, e_time - s_time),
+                raters_active=active_sig,
+                raters_inactive=inactive_sig,
+            )
+        )
+        idx = end_idx
+    return bouts
 
 
 def _compute_multiclass_cohens_kappa_pair(
@@ -540,6 +722,7 @@ def compute_irr(
     # Store rasterized grids per (rater, subject, behavior) to reuse for multiclass kappa.
     grids: Dict[Tuple[str, str, str], List[int]] = {}
     rows_out: List[BehaviorIRRRow] = []
+    disagreements_all: List[IRRDisagreementBout] = []
 
     for subj in subjects_ordered:
         for beh in behaviors_ordered:
@@ -616,6 +799,23 @@ def compute_irr(
                 for ra, rb in rater_pairs
             ]
             fleiss = compute_fleiss_kappa([per_rater_grids[r] for r in rater_names])
+            kripp_alpha = compute_krippendorff_alpha_binary(
+                [per_rater_grids[r] for r in rater_names]
+            )
+            ci_lo, ci_hi = _bootstrap_mean_cohens_kappa_ci95(
+                per_rater_grids, rater_pairs
+            )
+            disagreements_all.extend(
+                _extract_disagreement_bouts(
+                    subject=subj,
+                    behavior=beh,
+                    rater_names=rater_names,
+                    per_rater_grids=per_rater_grids,
+                    window_start=win_start,
+                    window_end=win_end,
+                    bin_seconds=bin_seconds,
+                )
+            )
 
             rows_out.append(
                 BehaviorIRRRow(
@@ -640,10 +840,15 @@ def compute_irr(
                     onset_f1=mean(pair_onset_f1),
                     rater_durations=durations,
                     rater_event_counts=event_counts,
+                    krippendorff_alpha=kripp_alpha,
+                    cohens_kappa_ci95_low=ci_lo,
+                    cohens_kappa_ci95_high=ci_hi,
                 )
             )
 
     # Dominant-state multiclass sequence across (subject, bin) units per rater.
+    # Order overlapping behaviors by ascending overall prevalence (rarer/briefer
+    # behaviors take precedence over broad background states; ties break by name).
     multiclass_sequences: Dict[str, List[str]] = {name: [] for name in rater_names}
     for subj in subjects_ordered:
         subj_behaviors = [
@@ -653,11 +858,18 @@ def compute_irr(
         ]
         if not subj_behaviors:
             continue
+        beh_prevalence = {
+            beh: sum(sum(grids.get((r, subj, beh), ())) for r in rater_names)
+            for beh in subj_behaviors
+        }
+        prioritized_behaviors = sorted(
+            subj_behaviors, key=lambda b: (beh_prevalence[b], b)
+        )
         for rater_name in rater_names:
             seq = multiclass_sequences[rater_name]
             for bin_idx in range(n_bins):
                 chosen = _IDLE_STATE_TOKEN
-                for beh in subj_behaviors:
+                for beh in prioritized_behaviors:
                     grid = grids.get((rater_name, subj, beh))
                     if grid is not None and grid[bin_idx]:
                         chosen = beh
@@ -675,13 +887,22 @@ def compute_irr(
     if rows_out:
         macro_cohen = mean(r.cohens_kappa for r in rows_out)
         macro_fleiss = mean(r.fleiss_kappa for r in rows_out)
+        macro_alpha = mean(r.krippendorff_alpha for r in rows_out)
         macro_pabak = mean(r.pabak for r in rows_out)
         macro_onset = mean(r.onset_f1 for r in rows_out)
     else:
         macro_cohen = 1.0
         macro_fleiss = 1.0
+        macro_alpha = 1.0
         macro_pabak = 1.0
         macro_onset = 1.0
+
+    disagreements_sorted = tuple(
+        sorted(
+            disagreements_all,
+            key=lambda d: (-d.duration_s, d.start_s, d.subject, d.behavior),
+        )
+    )
 
     return IRRReport(
         raters=rater_names,
@@ -698,6 +919,8 @@ def compute_irr(
         macro_onset_f1=macro_onset,
         multiclass_cohens_kappa=multiclass_kappa,
         rater_qc_issue_counts=rater_qc_issue_counts,
+        macro_krippendorff_alpha=macro_alpha,
+        disagreements=disagreements_sorted,
     )
 
 
@@ -860,6 +1083,7 @@ def write_irr_summary_csv(report: IRRReport, path: Path | str) -> None:
     for rater in report.raters:
         headers.append(f"{rater}_Seconds")
         headers.append(f"{rater}_Events")
+    headers.extend(["KrippendorffAlpha", "CohensKappaCI95Low", "CohensKappaCI95High"])
     writer.writerow(headers)
 
     for row in report.rows:
@@ -881,6 +1105,43 @@ def write_irr_summary_csv(report: IRRReport, path: Path | str) -> None:
         for rater in report.raters:
             values.append(f"{row.rater_durations.get(rater, 0.0):.6f}")
             values.append(int(row.rater_event_counts.get(rater, 0)))
+        values.extend(
+            [
+                f"{row.krippendorff_alpha:.6f}",
+                f"{row.cohens_kappa_ci95_low:.6f}",
+                f"{row.cohens_kappa_ci95_high:.6f}",
+            ]
+        )
         writer.writerow(values)
 
+    atomic_write_text(Path(path), buffer.getvalue(), encoding="utf-8")
+
+
+def write_irr_disagreements_csv(report: IRRReport, path: Path | str) -> None:
+    """Atomically write contiguous rater-disagreement bouts to CSV."""
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(
+        [
+            "Subject",
+            "Behavior",
+            "StartSeconds",
+            "EndSeconds",
+            "DurationSeconds",
+            "RatersActive",
+            "RatersInactive",
+        ]
+    )
+    for d in report.disagreements:
+        writer.writerow(
+            [
+                d.subject,
+                d.behavior,
+                f"{d.start_s:.6f}",
+                f"{d.end_s:.6f}",
+                f"{d.duration_s:.6f}",
+                "|".join(d.raters_active),
+                "|".join(d.raters_inactive),
+            ]
+        )
     atomic_write_text(Path(path), buffer.getvalue(), encoding="utf-8")

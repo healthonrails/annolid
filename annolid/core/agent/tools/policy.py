@@ -72,6 +72,18 @@ _CAPABILITY_GUI: Set[str] = {
     "gui_correct_tracking_ndjson",
     "gui_label_behavior_segments",
     "gui_process_video_behaviors",
+    "gui_score_aggression_bouts",
+    "gui_behavior_catalog",
+    "gui_analyze_tracking_stats",
+    "gui_arxiv_search",
+    "gui_list_pdfs",
+    "gui_list_shapes",
+    "gui_select_shapes",
+    "gui_set_selected_shape_label",
+    "gui_delete_selected_shapes",
+    "gui_list_shapes_in_annotation",
+    "gui_relabel_shapes_in_annotation",
+    "gui_delete_shapes_in_annotation",
     "gui_save_citation",
     "gui_verify_citations",
     "gui_generate_annolid_tutorial",
@@ -82,6 +94,28 @@ _CAPABILITY_GUI: Set[str] = {
     "gui_list_log_files",
     "gui_read_log_file",
     "gui_search_logs",
+}
+
+_CAPABILITY_ANALYSIS: Set[str] = {
+    "annolid_run",
+    "annolid_tracking_stats",
+    "annolid_track_qc",
+    "annolid_kinematics_stats",
+    "annolid_zone_analysis",
+    "annolid_behavior_time_budget",
+    "annolid_behavior_qc",
+    "annolid_behavior_irr",
+    "annolid_behavior_cohort",
+    "annolid_generate_report",
+    "annolid_dataset_inspect",
+    "annolid_dataset_prepare",
+    "annolid_eval_report",
+    "annolid_eval_start",
+    "annolid_novelty_check",
+    "annolid_paper_run_report",
+    "build_research_packet",
+    "assess_paper_draft",
+    "literature_search",
 }
 
 
@@ -97,8 +131,11 @@ TOOL_PROFILE_BASE: Mapping[str, Set[str] | None] = {
     "capability_email": set(_CAPABILITY_EMAIL),
     "capability_realtime": set(_CAPABILITY_REALTIME),
     "capability_gui": set(_CAPABILITY_GUI),
+    "analysis": set(_CAPABILITY_ANALYSIS),
+    "capability_analysis": set(_CAPABILITY_ANALYSIS),
     "coding": {
         *_CAPABILITY_FILESYSTEM,
+        *_CAPABILITY_ANALYSIS,
         "git_status",
         "git_cli",
         "git_diff",
@@ -147,6 +184,7 @@ _CAPABILITY_PROFILE_MAP: Mapping[str, Set[str]] = {
     "email": _CAPABILITY_EMAIL,
     "realtime": _CAPABILITY_REALTIME,
     "gui": _CAPABILITY_GUI,
+    "analysis": _CAPABILITY_ANALYSIS,
 }
 
 
@@ -224,6 +262,18 @@ TOOL_GROUPS: Mapping[str, Set[str]] = {
         "gui_correct_tracking_ndjson",
         "gui_label_behavior_segments",
         "gui_process_video_behaviors",
+        "gui_score_aggression_bouts",
+        "gui_behavior_catalog",
+        "gui_analyze_tracking_stats",
+        "gui_arxiv_search",
+        "gui_list_pdfs",
+        "gui_list_shapes",
+        "gui_select_shapes",
+        "gui_set_selected_shape_label",
+        "gui_delete_selected_shapes",
+        "gui_list_shapes_in_annotation",
+        "gui_relabel_shapes_in_annotation",
+        "gui_delete_shapes_in_annotation",
         "gui_start_realtime_stream",
         "gui_stop_realtime_stream",
         "gui_get_realtime_status",
@@ -273,6 +323,7 @@ TOOL_GROUPS: Mapping[str, Set[str]] = {
     },
     "group:pdf": {"extract_pdf_text", "open_pdf", "extract_pdf_images"},
     "group:skills": {"clawhub_search_skills", "clawhub_install_skill"},
+    "group:analysis": set(_CAPABILITY_ANALYSIS),
 }
 
 

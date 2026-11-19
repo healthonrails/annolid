@@ -93,6 +93,53 @@ def _is_zone_shape(shape: Mapping[str, Any]) -> bool:
     return "zone" in f"{label} {description}".lower()
 
 
+def _is_point_visible(shape: Mapping[str, Any]) -> bool:
+    vis = shape.get("kp_visibility")
+    if vis is not None:
+        try:
+            if int(vis) <= 0:
+                return False
+        except Exception:
+            pass
+    flags = shape.get("flags") or {}
+    if isinstance(flags, Mapping):
+        if flags.get("kp_visible") is False:
+            return False
+        fvis = flags.get("kp_visibility")
+        if fvis is not None:
+            try:
+                if int(fvis) <= 0:
+                    return False
+            except Exception:
+                pass
+    return True
+
+
+def _extract_frame_keypoint_rows(
+    frame_number: int, shapes: Sequence[Any]
+) -> list[dict[str, Any]]:
+    per_instance: dict[str, dict[str, Any]] = {}
+    for shape in shapes:
+        if not isinstance(shape, Mapping):
+            continue
+        if str(shape.get("shape_type") or "").strip().lower() != "point":
+            continue
+        if _is_zone_shape(shape) or not _is_point_visible(shape):
+            continue
+        point = _extract_point(shape)
+        instance_name = _extract_instance_name(shape)
+        keypoint_name = _extract_keypoint_name(shape)
+        if point is None or not instance_name or not keypoint_name:
+            continue
+        row = per_instance.setdefault(
+            instance_name,
+            {"frame_number": frame_number, "instance_name": instance_name},
+        )
+        row[f"{keypoint_name}_x"] = point[0]
+        row[f"{keypoint_name}_y"] = point[1]
+    return list(per_instance.values())
+
+
 def load_pose_keypoint_observations(
     video_path: str | Path,
     *,
@@ -109,7 +156,7 @@ def load_pose_keypoint_observations(
     if not folder.exists() or not folder.is_dir():
         return pd.DataFrame()
 
-    records: list[dict[str, Any]] = []
+    frame_payloads: dict[int, list[Any]] = {}
     for json_path in sorted(folder.glob("*.json")):
         frame_number = _frame_number_from_name(json_path)
         if frame_number is None:
@@ -121,30 +168,31 @@ def load_pose_keypoint_observations(
         if not isinstance(payload, dict):
             continue
         shapes = payload.get("shapes") or []
-        if not isinstance(shapes, list):
-            continue
+        if isinstance(shapes, list):
+            frame_payloads[frame_number] = shapes
 
-        per_instance: dict[str, dict[str, Any]] = {}
-        for shape in shapes:
-            if not isinstance(shape, Mapping):
-                continue
-            if str(shape.get("shape_type") or "").strip().lower() != "point":
-                continue
-            if _is_zone_shape(shape):
-                continue
-            point = _extract_point(shape)
-            instance_name = _extract_instance_name(shape)
-            keypoint_name = _extract_keypoint_name(shape)
-            if point is None or not instance_name or not keypoint_name:
-                continue
-            row = per_instance.setdefault(
-                instance_name,
-                {"frame_number": frame_number, "instance_name": instance_name},
-            )
-            row[f"{keypoint_name}_x"] = point[0]
-            row[f"{keypoint_name}_y"] = point[1]
+    try:
+        from annolid.utils.annotation_store import AnnotationStore
 
-        records.extend(per_instance.values())
+        store = AnnotationStore.for_frame_path(folder / f"{folder.name}_000000000.json")
+        if store.store_path.is_file():
+            for fno in store.iter_frames():
+                frame_number = int(fno)
+                if frame_number in frame_payloads:
+                    continue
+                rec = store.get_frame(frame_number)
+                if isinstance(rec, Mapping):
+                    shapes = rec.get("shapes") or []
+                    if isinstance(shapes, list):
+                        frame_payloads[frame_number] = shapes
+    except Exception:
+        pass
+
+    records: list[dict[str, Any]] = []
+    for frame_number in sorted(frame_payloads):
+        records.extend(
+            _extract_frame_keypoint_rows(frame_number, frame_payloads[frame_number])
+        )
 
     if not records:
         return pd.DataFrame()
@@ -157,6 +205,7 @@ def _centroid_columns(dataframe: pd.DataFrame) -> tuple[str, str]:
         ("cx_tracking", "cy_tracking"),
         ("cx", "cy"),
         ("x", "y"),
+        ("anchor_x", "anchor_y"),
     ]
     for x_col, y_col in candidates:
         if x_col in dataframe.columns and y_col in dataframe.columns:

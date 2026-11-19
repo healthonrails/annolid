@@ -27,6 +27,8 @@ class BehaviorEventLogWidget(QtWidgets.QWidget):
     rejectRequested = QtCore.Signal(object)
     undoRequested = QtCore.Signal()
     clearRequested = QtCore.Signal()
+    timeBudgetRequested = QtCore.Signal()
+    analysisStudioRequested = QtCore.Signal()
 
     def __init__(
         self,
@@ -145,6 +147,14 @@ class BehaviorEventLogWidget(QtWidgets.QWidget):
         button_layout = QtWidgets.QHBoxLayout()
         button_layout.setContentsMargins(0, 0, 0, 0)
         button_layout.setSpacing(4)
+        self._time_budget_button = QtWidgets.QPushButton("Time Budget…")
+        self._time_budget_button.setToolTip("Open Behavior Time Budget summary")
+        self._time_budget_button.clicked.connect(self.timeBudgetRequested.emit)
+        self._studio_button = QtWidgets.QPushButton("Studio…")
+        self._studio_button.setToolTip("Open Analysis & Reporting Studio")
+        self._studio_button.clicked.connect(self.analysisStudioRequested.emit)
+        button_layout.addWidget(self._time_budget_button, 1)
+        button_layout.addWidget(self._studio_button, 1)
         button_layout.addWidget(self._undo_button, 1)
         button_layout.addWidget(self._clear_button, 1)
 

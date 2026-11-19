@@ -53,30 +53,57 @@ def _presence_from_tracking_csv(csv_path: Path) -> tuple[dict[int, set], set, in
     return frame_presence, all_instance_labels, int(df["frame_number"].max())
 
 
+def _resolve_gap_inputs(
+    source_path: str | Path,
+) -> tuple[Path, Path | None, Path, str]:
+    """Normalize a video, tracking CSV, or frame JSON directory path for gap analysis."""
+    raw = Path(source_path)
+    if raw.is_file() and raw.suffix.lower() == ".csv":
+        stem = raw.stem
+        for suffix in ("_tracking", "_tracked"):
+            if stem.endswith(suffix) and len(stem) > len(suffix):
+                stem = stem[: -len(suffix)]
+                break
+        json_dir = raw.parent / stem
+        try:
+            cols = set(pd.read_csv(raw, nrows=0).columns)
+        except Exception:
+            cols = set()
+        csv_path = raw if {"frame_number", "instance_name"}.issubset(cols) else None
+        return raw, csv_path, json_dir, stem
+
+    if raw.is_dir():
+        stem = raw.name
+        pseudo_video = raw.parent / f"{stem}.mp4"
+        csv_path = _tracking_csv_for_video(pseudo_video)
+        return pseudo_video, csv_path, raw, stem
+
+    csv_path = _tracking_csv_for_video(raw)
+    json_dir = raw.with_suffix("")
+    return raw, csv_path, json_dir, raw.stem
+
+
 def find_tracking_gaps(video_path: str) -> dict:
     """
-    Scans for tracking gaps based on a video file and its associated JSON directory.
+    Scans for tracking gaps based on a video file, tracking CSV, or frame JSON directory.
 
     Args:
-        video_path (str): The path to the video file.
+        video_path (str): Path to the video file, tracking CSV, or frame JSON directory.
 
     Returns:
         A dictionary where keys are instance labels and values are lists of gap tuples.
     """
-    video_file = Path(video_path)
-    if not video_file.is_file():
-        logger.error(f"Video file not found: {video_file}")
+    video_file, tracking_csv, json_directory, _ = _resolve_gap_inputs(video_path)
+    has_video_file = video_file.is_file() and video_file.suffix.lower() != ".csv"
+    if not has_video_file and tracking_csv is None and not json_directory.is_dir():
+        logger.error(f"Video or tracking data not found: {video_file}")
         return {}
 
-    tracking_csv = _tracking_csv_for_video(video_file)
-
-    # Infer the JSON directory path from the video filename
-    json_directory = video_file.with_suffix("")
     if tracking_csv is None and not json_directory.is_dir():
         logger.error(f"Associated JSON directory not found at: {json_directory}")
         return {}
 
-    logger.info(f"Analyzing video: {video_file.name}")
+    logger.info(f"Analyzing source: {Path(video_path).name}")
     if tracking_csv is not None:
         logger.info(f"Reading tracking CSV from: {tracking_csv}")
     else:
@@ -85,25 +112,36 @@ def find_tracking_gaps(video_path: str) -> dict:
     # --- 1. Determine the Full Frame Range (The Ground Truth) ---
     min_frame = 0
     max_frame = -1
-    if OPENCV_AVAILABLE:
+    if OPENCV_AVAILABLE and has_video_file:
         cap = cv2.VideoCapture(str(video_file))
-        if not cap.isOpened():
-            logger.error(f"Could not open video file {video_file} with OpenCV.")
-            return {}
-        max_frame = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) - 1
-        cap.release()
-        logger.info(f"Video metadata: Total frames = {max_frame + 1}.")
-    elif tracking_csv is not None:
+        if cap.isOpened():
+            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            cap.release()
+            if frame_count > 0:
+                max_frame = frame_count - 1
+                logger.info(f"Video metadata: Total frames = {max_frame + 1}.")
+            else:
+                logger.warning(
+                    "Video metadata reported 0 frames for %s; inferring frame range from annotations.",
+                    video_file,
+                )
+        else:
+            logger.warning(
+                "Could not open video file %s with OpenCV; falling back to CSV/JSON frame range.",
+                video_file,
+            )
+
+    if max_frame < 0 and tracking_csv is not None:
         _, _, max_frame = _presence_from_tracking_csv(tracking_csv)
         if max_frame < 0:
             logger.warning("No tracking rows found to infer frame range.")
             return {}
-        logger.warning(
-            "OpenCV not found. Inferred max frame is %s from tracking CSV.",
-            max_frame,
-        )
-    else:
-        # Fallback if OpenCV is not installed: infer range from JSON files or AnnotationStore.
+        logger.info("Inferred max frame is %s from tracking CSV.", max_frame)
+    elif max_frame < 0:
+        if not json_directory.is_dir():
+            logger.error(f"Could not determine frame range for {video_file}")
+            return {}
+        # Fallback if OpenCV is unavailable or video metadata unreadable: infer range from JSON files or AnnotationStore.
         from annolid.utils.annotation_store import AnnotationStore
 
         frame_candidates: list[int] = []
@@ -127,9 +165,7 @@ def find_tracking_gaps(video_path: str) -> dict:
             logger.warning("No JSON files found to infer frame range.")
             return {}
         max_frame = max(frame_candidates)
-        logger.warning(
-            f"OpenCV not found. Inferred max frame is {max_frame} from JSON files."
-        )
+        logger.warning(f"Inferred max frame is {max_frame} from JSON files.")
 
     master_frame_index = pd.RangeIndex(
         start=min_frame, stop=max_frame + 1, name="frame_number"
@@ -266,13 +302,122 @@ def find_tracking_gaps(video_path: str) -> dict:
     return gap_report
 
 
+def summarize_tracking_gaps(
+    video_path: str | Path,
+    *,
+    fps: float | None = None,
+) -> dict:
+    """Return structured per-instance coverage and gap statistics for a video, CSV, or directory."""
+    video_file, tracking_csv, json_dir, _ = _resolve_gap_inputs(video_path)
+    gaps_by_label = find_tracking_gaps(str(video_path))
+    total_frames = 0
+    eff_fps = float(fps) if fps and fps > 0 else None
+    has_video_file = video_file.is_file() and video_file.suffix.lower() != ".csv"
+    if OPENCV_AVAILABLE and has_video_file:
+        cap = cv2.VideoCapture(str(video_file))
+        if cap.isOpened():
+            total_frames = max(0, int(cap.get(cv2.CAP_PROP_FRAME_COUNT)))
+            if eff_fps is None:
+                raw_fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+                if raw_fps > 0:
+                    eff_fps = raw_fps
+            cap.release()
+
+    all_labels: set[str] = set(str(k) for k in gaps_by_label.keys())
+    if tracking_csv is not None:
+        _, csv_labels, max_f = _presence_from_tracking_csv(tracking_csv)
+        all_labels.update(str(k) for k in csv_labels)
+        if total_frames <= 0 and max_f >= 0:
+            total_frames = max_f + 1
+    elif json_dir.is_dir():
+        max_f = -1
+        for p in json_dir.glob("*.json"):
+            if p.name.endswith("_tracking_stats.json") or p.name.endswith(
+                "_zones.json"
+            ):
+                continue
+            m = re.search(r"(\d+)(?=\.json$)", p.name)
+            if m:
+                max_f = max(max_f, int(m.group(1)))
+                try:
+                    payload = json.loads(p.read_text(encoding="utf-8"))
+                    for sh in payload.get("shapes", []) or []:
+                        if isinstance(sh, dict) and sh.get("label"):
+                            all_labels.add(str(sh["label"]))
+                except Exception:
+                    pass
+        if total_frames <= 0 and max_f >= 0:
+            total_frames = max_f + 1
+
+    instances_summary = []
+    total_gap_events = 0
+    for label in sorted(all_labels):
+        label_gaps = gaps_by_label.get(
+            label, gaps_by_label.get(_coerce_gap_key(gaps_by_label, label), [])
+        )
+        missing_frames = sum(int(g.get("duration_frames", 0)) for g in label_gaps)
+        total_gap_events += len(label_gaps)
+        eff_total = max(total_frames, missing_frames)
+        observed_frames = max(0, eff_total - missing_frames)
+        coverage_ratio = (
+            float(observed_frames) / float(eff_total) if eff_total > 0 else 1.0
+        )
+        longest_gap = max(
+            (int(g.get("duration_frames", 0)) for g in label_gaps), default=0
+        )
+        enriched_gaps = []
+        for g in label_gaps:
+            sf = int(g["start_frame"])
+            ef = int(g["end_frame"])
+            dur = int(g["duration_frames"])
+            enriched_gaps.append(
+                {
+                    "start_frame": sf,
+                    "end_frame": ef,
+                    "duration_frames": dur,
+                    "duration_seconds": (round(dur / eff_fps, 4) if eff_fps else None),
+                }
+            )
+        instances_summary.append(
+            {
+                "instance": label,
+                "observed_frames": observed_frames,
+                "missing_frames": missing_frames,
+                "coverage_ratio": round(coverage_ratio, 6),
+                "gap_count": len(label_gaps),
+                "longest_gap_frames": longest_gap,
+                "longest_gap_seconds": (
+                    round(longest_gap / eff_fps, 4) if eff_fps else None
+                ),
+                "gaps": enriched_gaps,
+            }
+        )
+
+    return {
+        "schema": "tracking_gap_report/v1",
+        "video_path": str(Path(video_path)),
+        "total_frames": int(total_frames),
+        "fps": round(eff_fps, 4) if eff_fps else None,
+        "total_gap_events": int(total_gap_events),
+        "instances": instances_summary,
+    }
+
+
+def _coerce_gap_key(gaps_by_label: dict, label: str):
+    if label in gaps_by_label:
+        return label
+    for key in gaps_by_label:
+        if str(key) == label:
+            return key
+    return label
+
+
 def generate_reports(gap_report: dict, video_path: str):
     """
     Generates and saves both a human-readable Markdown report and a machine-readable CSV report.
-    (This function remains the same as the previous version)
     """
-    video_file = Path(video_path)
-    output_path = video_file.with_suffix("")
+    _, _, json_dir, stem = _resolve_gap_inputs(video_path)
+    output_path = json_dir.parent / stem
 
     # --- 1. Generate Machine-Readable CSV Report ---
     csv_records = []
@@ -303,7 +448,7 @@ def generate_reports(gap_report: dict, video_path: str):
             f.write("## Analysis Complete: No Tracking Gaps Found\n\n")
             f.write("All tracked instances were present in all analyzed frames.\n")
             logger.info(f"Human-readable report saved to: {md_filename}")
-            return
+            return md_filename
 
         f.write("## Summary of Detected Gaps\n\n")
         f.write(

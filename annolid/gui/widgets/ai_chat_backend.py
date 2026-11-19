@@ -189,6 +189,9 @@ from annolid.services.chat_shape_files import (
 )
 from annolid.services.chat_tracking_stats import (
     analyze_chat_tracking_stats_tool as gui_analyze_chat_tracking_stats_tool,
+    run_chat_qc_slash_tool as gui_run_chat_qc_slash_tool,
+    run_chat_report_slash_tool as gui_run_chat_report_slash_tool,
+    run_chat_stats_slash_tool as gui_run_chat_stats_slash_tool,
 )
 from annolid.services.chat_tracking_correction import (
     correct_chat_tracking_ndjson_tool as gui_correct_tracking_ndjson_tool,
@@ -2745,7 +2748,80 @@ class StreamingChatTask(QRunnable):
             "exec_process": self._tool_gui_exec_process,
             "self_update": self._tool_gui_self_update,
             "open_agent_capabilities": self._tool_gui_open_agent_capabilities,
+            "stats_slash": self._tool_gui_stats_slash,
+            "qc_slash": self._tool_gui_qc_slash,
+            "report_slash": self._tool_gui_report_slash,
         }
+
+    def _resolve_default_analysis_source(self) -> Optional[Path]:
+        host = getattr(self.widget, "host_window_widget", None) if self.widget else None
+        if host is not None:
+            for attr in (
+                "video_file",
+                "video_results_folder",
+                "annotation_dir",
+                "lastOpenDir",
+            ):
+                raw = getattr(host, attr, None)
+                text = str(raw or "").strip()
+                if text:
+                    cand = Path(text).expanduser()
+                    if cand.exists():
+                        return cand
+        ws = Path(self.workspace).expanduser()
+        return ws if ws.exists() else None
+
+    def _tool_gui_stats_slash(
+        self,
+        *,
+        path: str = "",
+        fps: Optional[float] = None,
+        px_per_cm: Optional[float] = None,
+        calibration: str = "",
+    ) -> Dict[str, Any]:
+        return gui_run_chat_stats_slash_tool(
+            path=path,
+            fps=fps,
+            px_per_cm=px_per_cm,
+            calibration=calibration,
+            default_source=self._resolve_default_analysis_source(),
+        )
+
+    def _tool_gui_qc_slash(
+        self,
+        *,
+        path: str = "",
+        fps: Optional[float] = None,
+        schema_path: str = "",
+    ) -> Dict[str, Any]:
+        return gui_run_chat_qc_slash_tool(
+            path=path,
+            fps=fps,
+            schema_path=schema_path,
+            default_source=self._resolve_default_analysis_source(),
+        )
+
+    def _tool_gui_report_slash(
+        self,
+        *,
+        path: str = "",
+        output_dir: str = "",
+        events_csv: str = "",
+        zone_file: str = "",
+        calibration: str = "",
+        fps: Optional[float] = None,
+        px_per_cm: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        return gui_run_chat_report_slash_tool(
+            path=path,
+            output_dir=output_dir,
+            events_csv=events_csv,
+            zone_file=zone_file,
+            calibration=calibration,
+            fps=fps,
+            px_per_cm=px_per_cm,
+            default_source=self._resolve_default_analysis_source(),
+        )
 
     def _tool_gui_open_agent_capabilities(self) -> Dict[str, Any]:
         widget = self.widget

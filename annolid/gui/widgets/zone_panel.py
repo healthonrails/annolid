@@ -628,8 +628,25 @@ class ZonePanelWidget(QtWidgets.QWidget):
         self.metrics_footer_label.setProperty("zoneHint", True)
         layout.addWidget(self.metrics_footer_label)
 
+        self.open_zone_analysis_button = QtWidgets.QPushButton(
+            "Open Zone Analysis Studio…", page
+        )
+        self.open_zone_analysis_button.setToolTip(
+            "Launch Zone Analysis Studio for the open video and zone definitions"
+        )
+        self.open_zone_analysis_button.clicked.connect(
+            self._open_zone_analysis_studio_from_panel
+        )
+        layout.addWidget(self.open_zone_analysis_button)
+
         scroll.setWidget(page)
         return scroll
+
+    def _open_zone_analysis_studio_from_panel(self) -> None:
+        owner = self._owner_window
+        opener = getattr(owner, "place_preference_analyze", None) if owner else None
+        if callable(opener):
+            opener()
 
     def _create_inline_metric(
         self,

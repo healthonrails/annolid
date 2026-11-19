@@ -16,6 +16,16 @@ from annolid.postprocessing.identity_governor import (
     run_identity_governor,
 )
 from annolid.postprocessing.temporal_identity_repair import run_temporal_identity_repair
+from annolid.postprocessing.tracking_reports import (
+    find_tracking_gaps,
+    generate_reports as generate_tracking_gap_reports,
+    summarize_tracking_gaps,
+)
+from annolid.postprocessing.tracking_stats_dashboard import (
+    TrackingStatsArtifacts,
+    analyze_and_visualize_tracking_stats,
+    discover_tracking_stats_files,
+)
 from annolid.postprocessing.track_qc import (
     InstanceTrackSummary,
     ReviewBout,
@@ -38,12 +48,17 @@ __all__ = [
     "InstanceTrackSummary",
     "ReviewBout",
     "TrackQCReport",
+    "TrackingStatsArtifacts",
     "IdentityCorrection",
     "IdentityGovernorResult",
     "run_track_qc",
     "run_track_qc_cli",
     "run_track_repair",
     "run_track_repair_cli",
+    "run_gap_report",
+    "run_gap_report_cli",
+    "run_tracking_stats",
+    "run_tracking_stats_cli",
 ]
 
 
@@ -421,4 +436,223 @@ def run_track_repair_cli(
                 result, mode=str(mode or "temporal").strip().lower()
             )
         )
+    return 0
+
+
+def run_gap_report(
+    source_path: Path | str,
+    *,
+    fps: Optional[float] = None,
+    write_reports: bool = True,
+    out_json: Optional[Path | str] = None,
+) -> Dict[str, Any]:
+    """Scan a video, tracking CSV, or frame JSON directory for per-instance tracking gaps."""
+    resolved = Path(source_path).expanduser().resolve()
+    if not resolved.exists():
+        # Also check if companion CSV or JSON folder exists when a video path is passed
+        stem = resolved.stem
+        has_companion = (
+            (resolved.parent / stem).is_dir()
+            or (resolved.parent / f"{stem}_tracking.csv").is_file()
+            or (resolved.parent / f"{stem}_tracked.csv").is_file()
+        )
+        if not has_companion:
+            raise FileNotFoundError(f"Tracking source not found: {resolved}")
+
+    summary = summarize_tracking_gaps(resolved, fps=fps)
+    gaps = find_tracking_gaps(str(resolved))
+    markdown_path: Optional[Path] = None
+    csv_path: Optional[Path] = None
+    if write_reports:
+        md_result = generate_tracking_gap_reports(gaps, str(resolved))
+        if md_result is not None:
+            markdown_path = Path(md_result)
+            candidate_csv = markdown_path.with_name(
+                markdown_path.name.replace(
+                    "_tracking_gaps_report.md", "_gaps_report.csv"
+                )
+            )
+            if candidate_csv.exists():
+                csv_path = candidate_csv
+
+    payload: Dict[str, Any] = {
+        **summary,
+        "markdown_report": str(markdown_path) if markdown_path else None,
+        "gaps_csv": str(csv_path) if csv_path else None,
+        "provenance": {
+            "annolid_version": str(get_version() or "0.0.0"),
+            "generated_at_utc": _utc_now_iso(),
+        },
+    }
+    if out_json is not None:
+        atomic_write_json(Path(out_json), payload, indent=2, ensure_ascii=False)
+    return payload
+
+
+def _format_gap_report_table(payload: Mapping[str, Any]) -> str:
+    lines: List[str] = [
+        f"Source: {payload.get('video_path', '')}",
+        (
+            f"Total frames: {payload.get('total_frames', 0)} | "
+            f"FPS: {payload.get('fps') or 'n/a'} | "
+            f"Gap events: {payload.get('total_gap_events', 0)}"
+        ),
+    ]
+    instances = payload.get("instances") or []
+    if instances:
+        lines.append("")
+        lines.append(
+            f"{'Instance':<22} {'Observed':>10} {'Missing':>10} {'Coverage':>10} {'Gaps':>8} {'MaxGap(f)':>10}"
+        )
+        lines.append("-" * 76)
+        for inst in instances:
+            cov_pct = float(inst.get("coverage_ratio", 0.0)) * 100.0
+            lines.append(
+                f"{str(inst.get('instance', '')):<22} "
+                f"{int(inst.get('observed_frames', 0)):>10} "
+                f"{int(inst.get('missing_frames', 0)):>10} "
+                f"{cov_pct:>9.2f}% "
+                f"{int(inst.get('gap_count', 0)):>8} "
+                f"{int(inst.get('longest_gap_frames', 0)):>10}"
+            )
+    else:
+        lines.append("No tracked instances discovered.")
+    if payload.get("markdown_report"):
+        lines.append(f"Markdown report: {payload['markdown_report']}")
+    if payload.get("gaps_csv"):
+        lines.append(f"Gaps CSV: {payload['gaps_csv']}")
+    return "\n".join(lines)
+
+
+def run_gap_report_cli(
+    *,
+    source_path: Path | str,
+    fps: Optional[float] = None,
+    write_reports: bool = True,
+    out_json: Optional[Path | str] = None,
+    json_stdout: bool = False,
+) -> int:
+    """Execute ``annolid-run gap-report`` and return an exit code."""
+    try:
+        payload = run_gap_report(
+            source_path,
+            fps=fps,
+            write_reports=write_reports,
+            out_json=out_json,
+        )
+    except (FileNotFoundError, ValueError, OSError) as exc:
+        print(f"[annolid-run] {exc}", file=sys.stderr)
+        return 2
+
+    if json_stdout:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+    else:
+        print(_format_gap_report_table(payload))
+    return 0
+
+
+def run_tracking_stats(
+    root_dir: Path | str,
+    *,
+    output_dir: Optional[Path | str] = None,
+    include_plots: bool = True,
+) -> TrackingStatsArtifacts:
+    """Aggregate ``*_tracking_stats.json`` files recursively into CSVs and optional plots."""
+    resolved_root = Path(root_dir).expanduser().resolve()
+    if not resolved_root.exists():
+        raise FileNotFoundError(f"Root directory not found: {resolved_root}")
+    if not resolved_root.is_dir():
+        raise ValueError(f"Root path must be a directory: {resolved_root}")
+    resolved_out = (
+        Path(output_dir).expanduser().resolve() if output_dir is not None else None
+    )
+    return analyze_and_visualize_tracking_stats(
+        root_dir=resolved_root,
+        output_dir=resolved_out,
+        include_plots=bool(include_plots),
+    )
+
+
+def run_tracking_stats_cli(
+    *,
+    root_dir: Path | str,
+    output_dir: Optional[Path | str] = None,
+    include_plots: bool = True,
+    out_json: Optional[Path | str] = None,
+    json_stdout: bool = False,
+) -> int:
+    """Execute ``annolid-run tracking-stats`` and return an exit code."""
+    try:
+        resolved_root = Path(root_dir).expanduser().resolve()
+        stats_files = discover_tracking_stats_files(resolved_root)
+        artifacts = run_tracking_stats(
+            resolved_root,
+            output_dir=output_dir,
+            include_plots=include_plots,
+        )
+    except (FileNotFoundError, ValueError, OSError) as exc:
+        print(f"[annolid-run] {exc}", file=sys.stderr)
+        return 2
+
+    import pandas as pd
+
+    try:
+        overview_df = pd.read_csv(artifacts.overview_csv)
+    except Exception:
+        overview_df = pd.DataFrame()
+    try:
+        abnormal_df = pd.read_csv(artifacts.abnormal_segments_csv)
+    except Exception:
+        abnormal_df = pd.DataFrame()
+    try:
+        bad_shape_df = pd.read_csv(artifacts.bad_shape_events_csv)
+    except Exception:
+        bad_shape_df = pd.DataFrame()
+
+    payload: Dict[str, Any] = {
+        "schema": "tracking_stats_summary/v1",
+        "root_dir": str(resolved_root),
+        "discovered_stats_files": len(stats_files),
+        "videos_analyzed": int(len(overview_df)),
+        "abnormal_segment_rows": int(len(abnormal_df)),
+        "bad_shape_event_rows": int(len(bad_shape_df)),
+        "output_dir": str(artifacts.output_dir),
+        "overview_csv": str(artifacts.overview_csv),
+        "abnormal_segments_csv": str(artifacts.abnormal_segments_csv),
+        "bad_shape_events_csv": str(artifacts.bad_shape_events_csv),
+        "manual_badshape_plot": (
+            str(artifacts.manual_badshape_plot)
+            if artifacts.manual_badshape_plot
+            else None
+        ),
+        "abnormal_segments_plot": (
+            str(artifacts.abnormal_segments_plot)
+            if artifacts.abnormal_segments_plot
+            else None
+        ),
+        "unresolved_bad_shapes_plot": (
+            str(artifacts.unresolved_bad_shapes_plot)
+            if artifacts.unresolved_bad_shapes_plot
+            else None
+        ),
+        "provenance": {
+            "annolid_version": str(get_version() or "0.0.0"),
+            "generated_at_utc": _utc_now_iso(),
+        },
+    }
+    if out_json is not None:
+        atomic_write_json(Path(out_json), payload, indent=2, ensure_ascii=False)
+
+    if json_stdout:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+    else:
+        print(f"Root directory: {resolved_root}")
+        print(
+            f"Discovered stats files: {len(stats_files)} | "
+            f"Videos: {len(overview_df)} | "
+            f"Abnormal segments: {len(abnormal_df)} | "
+            f"Bad-shape events: {len(bad_shape_df)}"
+        )
+        print(f"Output directory: {artifacts.output_dir}")
+        print(f"Overview CSV: {artifacts.overview_csv}")
     return 0

@@ -21,12 +21,17 @@ AGGRESSION_SUBEVENT_TYPES = (
 
 _SUBEVENT_ALIASES = {
     "slap_face": "slap_face",
+    "slap_in_face": "slap_face",
+    "slap in face": "slap_face",
+    "slap-in-face": "slap_face",
     "slap in the face": "slap_face",
     "slap-in-the-face": "slap_face",
     "run_away": "run_away",
     "run away": "run_away",
+    "run-away": "run_away",
     "fight_initiation": "fight_initiation",
     "fight initiation": "fight_initiation",
+    "fight-initiation": "fight_initiation",
     "initiation_of_bigger_fights": "fight_initiation",
     "initiation of bigger fights": "fight_initiation",
 }

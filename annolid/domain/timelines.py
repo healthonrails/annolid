@@ -2,12 +2,13 @@
 
 from annolid.behavior.cohort import (
     CohortBehaviorReport,
+    CohortComparisonRow,
     CohortGroupSummaryRow,
     CohortRecordingSpec,
     CohortSubjectRow,
     TransitionEdge,
 )
-from annolid.behavior.irr import BehaviorIRRRow, IRRReport
+from annolid.behavior.irr import BehaviorIRRRow, IRRDisagreementBout, IRRReport
 from annolid.behavior.qc import EthogramIssue, EthogramQCReport, PointBehaviorEvent
 from annolid.behavior.time_budget import (
     BehaviorInterval,
@@ -25,12 +26,14 @@ __all__ = [
     "BoutDefinition",
     "BoutSummaryRow",
     "CohortBehaviorReport",
+    "CohortComparisonRow",
     "CohortGroupSummaryRow",
     "CohortRecordingSpec",
     "CohortSubjectRow",
     "EthogramIssue",
     "EthogramQCReport",
     "FrameRef",
+    "IRRDisagreementBout",
     "IRRReport",
     "PointBehaviorEvent",
     "TimeBudgetRow",

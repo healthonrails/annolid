@@ -3024,6 +3024,55 @@ class AgentLoop:
         "git_cli",
         "gh_cli",
     )
+    _ANALYTICS_INTENT_TOKENS = frozenset(
+        {
+            "stats",
+            "statistics",
+            "statistical",
+            "qc",
+            "quality",
+            "kinematics",
+            "velocity",
+            "speed",
+            "freezing",
+            "immobility",
+            "tortuosity",
+            "zone",
+            "zones",
+            "occupancy",
+            "preference",
+            "ethogram",
+            "budget",
+            "irr",
+            "kappa",
+            "krippendorff",
+            "rater",
+            "raters",
+            "cohort",
+            "anova",
+            "pvalue",
+            "fdr",
+            "transitions",
+            "markov",
+            "report",
+            "gaps",
+        }
+    )
+    _ANALYTICS_TOOL_NAMES = frozenset(
+        {
+            "annolid_generate_report",
+            "annolid_track_qc",
+            "annolid_kinematics_stats",
+            "annolid_zone_analysis",
+            "annolid_behavior_time_budget",
+            "annolid_behavior_qc",
+            "annolid_behavior_irr",
+            "annolid_behavior_cohort",
+            "annolid_tracking_stats",
+            "gui_analyze_tracking_stats",
+            "annolid_eval_report",
+        }
+    )
     _DEFAULT_TOOL_PRIORITY = (
         "mcp_browser",
         "mcp_browser_navigate",
@@ -3243,8 +3292,13 @@ class AgentLoop:
         fast_web_data_intent = has_fast_web_data_intent(query_tokens)
         weather_intent = bool(WEATHER_INTENT_TOKENS.intersection(query_tokens))
         vcs_intent = bool(self._VCS_INTENT_TOKENS.intersection(query_tokens))
+        analytics_intent = bool(
+            self._ANALYTICS_INTENT_TOKENS.intersection(query_tokens)
+        )
         for entry in entries:
             score = self._score_tool_schema(entry, query_tokens)
+            if analytics_intent and entry.name in self._ANALYTICS_TOOL_NAMES:
+                score += 14
             if self._browser_first_for_web and web_intent:
                 if fast_web_data_intent and entry.name in {"web_search", "web_fetch"}:
                     score += 22

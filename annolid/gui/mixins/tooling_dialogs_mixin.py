@@ -247,11 +247,16 @@ class ToolingDialogsMixin:
             self.optical_flow_manager.configure_tool()
 
     def trigger_gap_analysis(self):
+        default_dir = str(getattr(self, "video_file", "") or "").strip() or str(
+            getattr(self, "lastOpenDir", "") or ""
+        )
         video_path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self,
-            self.tr("Select Video File to Analyze"),
-            self.lastOpenDir,
-            self.tr("Video Files (*.mp4 *.avi *.mov *.mkv)"),
+            self.tr("Select Video or Tracking CSV to Analyze"),
+            default_dir,
+            self.tr(
+                "Videos & Tracking CSVs (*.mp4 *.avi *.mov *.mkv *.csv);;All Files (*)"
+            ),
         )
 
         if not video_path:
@@ -262,16 +267,20 @@ class ToolingDialogsMixin:
             QtWidgets.QMessageBox.warning(
                 self,
                 "File Not Found",
-                f"The selected video file does not exist:\n{video_path}",
+                f"The selected file does not exist:\n{video_path}",
             )
             return
 
+        has_csv = video_file.suffix.lower() == ".csv" or any(
+            video_file.with_name(f"{video_file.stem}{suf}").is_file()
+            for suf in ("_tracking.csv", "_tracked.csv")
+        )
         json_dir = video_file.with_suffix("")
-        if not json_dir.is_dir():
+        if not has_csv and not json_dir.is_dir():
             QtWidgets.QMessageBox.warning(
                 self,
                 "Results Not Found",
-                f"Could not find the associated tracking results directory:\n{json_dir}\n\n"
+                f"Could not find tracking CSV or results directory:\n{json_dir}\n\n"
                 "Please ensure tracking has been run for this video.",
             )
             return
@@ -287,8 +296,8 @@ class ToolingDialogsMixin:
                 generate_reports,
             )
 
-            gaps = find_tracking_gaps(video_file)
-            md_filepath = generate_reports(gaps, video_file)
+            gaps = find_tracking_gaps(str(video_file))
+            md_filepath = generate_reports(gaps, str(video_file))
             report_path = str(md_filepath)
             self.statusBar().showMessage(self.tr("Gap analysis complete."), 5000)
 
@@ -310,6 +319,13 @@ class ToolingDialogsMixin:
             self.statusBar().showMessage(self.tr("Gap analysis failed."), 5000)
         finally:
             set_widget_busy_cursor(self, False)
+
+    def _handle_dashboard_video_frame_jump(
+        self, stats_or_video_ref: str, frame_index: int
+    ) -> None:
+        jump_fn = getattr(self, "_jump_to_frame_from_log", None)
+        if callable(jump_fn):
+            jump_fn(max(0, int(frame_index)))
 
     def open_tracking_stats_dashboard(self) -> None:
         """Open cross-video tracking stats analysis/visualization dashboard."""
@@ -333,6 +349,9 @@ class ToolingDialogsMixin:
                     initial_root_dir=initial_root,
                     parent=self,
                 )
+                dialog.jumpToVideoFrameRequested.connect(
+                    self._handle_dashboard_video_frame_jump
+                )
                 dialog.finished.connect(
                     lambda *_: setattr(self, "_tracking_stats_dashboard_dialog", None)
                 )
@@ -345,9 +364,41 @@ class ToolingDialogsMixin:
             dialog.setWindowState(dialog.windowState() & ~QtCore.Qt.WindowMinimized)
             dialog.raise_()
             dialog.activateWindow()
-            QtWidgets.QApplication.processEvents()
         except Exception as exc:
             logger.debug("Could not open tracking stats dashboard: %s", exc)
+
+    def open_analysis_studio(self, *, initial_tab: str = "report") -> None:
+        """Open the unified non-modal Analysis, Statistics & Reporting Studio."""
+        try:
+            from annolid.gui.widgets.analysis_studio_dialog import AnalysisStudioDialog
+
+            dialog = getattr(self, "_analysis_studio_dialog", None)
+            if dialog is None:
+                dialog = AnalysisStudioDialog(
+                    owner_window=self,
+                    initial_tab=initial_tab,
+                    parent=self,
+                )
+                jump_fn = getattr(self, "_jump_to_frame_from_log", None)
+                if callable(jump_fn):
+                    dialog.jumpToFrameRequested.connect(jump_fn)
+                dialog.finished.connect(
+                    lambda *_: setattr(self, "_analysis_studio_dialog", None)
+                )
+                dialog.destroyed.connect(
+                    lambda *_: setattr(self, "_analysis_studio_dialog", None)
+                )
+                self._analysis_studio_dialog = dialog
+            else:
+                dialog.studio.apply_owner_context()
+                dialog.studio.select_tab(initial_tab)
+
+            dialog.show()
+            dialog.setWindowState(dialog.windowState() & ~QtCore.Qt.WindowMinimized)
+            dialog.raise_()
+            dialog.activateWindow()
+        except Exception as exc:
+            logger.debug("Could not open Analysis & Reporting Studio: %s", exc)
 
     def _add_real_time_stamps(self):
         folder = QtWidgets.QFileDialog.getExistingDirectory(

@@ -8,8 +8,6 @@ import pycocotools.mask as mask_util
 from annolid.utils import draw
 from annolid.motion import deformation
 
-np.seterr(divide="ignore", invalid="ignore")
-
 
 class FreezingAnalyzer:
     """Estimation of motion by optical flow and mask IOU across frames."""
@@ -92,13 +90,21 @@ class FreezingAnalyzer:
         deep=False,
         pretrained_model=None,
         draw_grid=False,
+        show_window=False,
     ):
         video = cv2.VideoCapture(self.video_file)
         width = int(video.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))
         frames_per_second = video.get(cv2.CAP_PROP_FPS)
         ret, frame1 = video.read()
-        frame_number = int(video.get(cv2.CAP_PROP_POS_FRAMES))
+        if not ret or frame1 is None:
+            video.release()
+            return (
+                self.tracking_results.copy()
+                if isinstance(self.tracking_results, pd.DataFrame)
+                else pd.DataFrame()
+            )
+        frame_number = max(0, int(video.get(cv2.CAP_PROP_POS_FRAMES)) - 1)
         prvs = cv2.cvtColor(frame1, cv2.COLOR_BGR2GRAY)
         prvs = cv2.blur(prvs, (5, 5))
         prvs_instances = self.instances(frame_number)
@@ -122,8 +128,8 @@ class FreezingAnalyzer:
 
         while video.isOpened():
             ret, frame2 = video.read()
-            frame_number = int(video.get(cv2.CAP_PROP_POS_FRAMES))
-            current_instances = self.instances(frame_number - 1)
+            frame_number = max(0, int(video.get(cv2.CAP_PROP_POS_FRAMES)) - 1)
+            current_instances = self.instances(frame_number)
             df_prvs_cur = pd.merge(
                 prvs_instances, current_instances, how="inner", on="instance_name"
             )
@@ -142,10 +148,17 @@ class FreezingAnalyzer:
                 hsv[..., 2] = cv2.normalize(mag, None, 0, 255, cv2.NORM_MINMAX)
                 bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
                 for index, _row in df_prvs_cur.iterrows():
+                    mask_motion = 0.0
                     if _row.segmentation_y:
                         _mask = ast.literal_eval(_row.segmentation_y)
                         _mask = mask_util.decode(_mask)[:, :]
-                        mask_motion = np.sum(_mask * mag) / np.sum(_mask)
+                        with np.errstate(divide="ignore", invalid="ignore"):
+                            denom = float(np.sum(_mask))
+                            mask_motion = (
+                                float(np.sum(_mask * mag) / denom)
+                                if denom > 0.0
+                                else 0.0
+                            )
                         self.motion_values.append(
                             (
                                 _row.frame_number_x,
@@ -182,7 +195,6 @@ class FreezingAnalyzer:
                                 int(instance_status[_row.instance_name] > 0),
                             )
                         )
-                        print("No mask")
 
                     if _row.instance_name == self.target_instance:
                         draw.draw_boxes(
@@ -206,16 +218,19 @@ class FreezingAnalyzer:
                                 draw_track=False,
                             )
                     else:
-                        instance_status[_row.instance_name] -= 3
+                        instance_status[_row.instance_name] = max(
+                            0, instance_status[_row.instance_name] - 3
+                        )
 
                 dst = cv2.addWeighted(frame1, 1, bgr, 1, 0)
                 if not deep and draw_grid:
                     dst = draw.draw_flow(dst, flow)
-                cv2.imshow("frame2", dst)
                 video_writer.write(dst)
-                k = cv2.waitKey(30) & 0xFF
-                if k == 27:
-                    break
+                if show_window:
+                    cv2.imshow("frame2", dst)
+                    k = cv2.waitKey(30) & 0xFF
+                    if k == 27:
+                        break
                 prvs = next
                 frame1 = frame2
                 prvs_instances = current_instances
@@ -224,16 +239,21 @@ class FreezingAnalyzer:
 
         video.release()
         video_writer.release()
-        cv2.destroyAllWindows()
+        if show_window:
+            cv2.destroyAllWindows()
 
-        df_motion = pd.DataFrame(self.motion_values)
-        df_motion.columns = [
+        motion_columns = [
             "frame_number",
             "instance_name",
             "motion_index",
             "mask_iou",
             "freezing",
         ]
+        df_motion = (
+            pd.DataFrame(self.motion_values, columns=motion_columns)
+            if self.motion_values
+            else pd.DataFrame(columns=motion_columns)
+        )
         df_res = pd.merge(
             self.tracking_results,
             df_motion,

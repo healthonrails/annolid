@@ -172,7 +172,13 @@ Check today's weather
 
 /tool cron
 Schedule an email summary for tomorrow morning
+
+/stats /path/to/session_tracking.csv px_per_cm=12.5
+/qc /path/to/session_tracking.csv
+/report /path/to/session.mp4 px_per_cm=12.5
 ```
+
+For dedicated analytics, statistics, QC, and scientific reporting tools (`group:analysis`), see [Reporting, Statistics & Analysis Studio](reporting_and_statistics.md).
 
 Use `agent-capabilities` when you want both tool policy and skill discovery in one report:
 

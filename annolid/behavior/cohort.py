@@ -26,6 +26,13 @@ from pathlib import Path
 from statistics import mean, median, stdev
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
+import numpy as np
+
+try:
+    from scipy import stats as _scipy_stats
+except Exception:  # pragma: no cover - optional scientific tier
+    _scipy_stats = None  # type: ignore[assignment]
+
 from annolid.behavior.event_utils import ParsedEventRow, read_parsed_event_rows
 from annolid.behavior.time_budget import (
     BehaviorInterval,
@@ -40,16 +47,19 @@ __all__ = [
     "CohortRecordingSpec",
     "CohortSubjectRow",
     "CohortGroupSummaryRow",
+    "CohortComparisonRow",
     "TransitionEdge",
     "CohortBehaviorReport",
     "load_cohort_manifest",
     "apply_cohort_metadata_csv",
     "analyze_behavior_cohort",
+    "compute_cohort_comparisons",
     "compute_transition_matrix",
     "format_cohort_report_table",
     "write_cohort_report_json",
     "write_cohort_group_summary_csv",
     "write_cohort_subject_rows_csv",
+    "write_cohort_comparisons_csv",
     "write_transition_matrix_csv",
 ]
 
@@ -204,6 +214,79 @@ class TransitionEdge:
 
 
 @dataclass(frozen=True)
+class CohortComparisonRow:
+    """Inferential group comparison, effect sizes, and survival latency statistics."""
+
+    behavior: str
+    category: str
+    groups: Tuple[str, ...]
+    analysis_unit: str
+    parametric_test: str
+    parametric_stat: float
+    p_parametric: float
+    q_parametric_bh: float
+    nonparametric_test: str
+    nonparametric_stat: float
+    p_nonparametric: float
+    q_nonparametric_bh: float
+    hedges_g: Optional[float]
+    cliffs_delta: Optional[float]
+    mean_diff_s: Optional[float]
+    mean_diff_ci95_low_s: Optional[float]
+    mean_diff_ci95_high_s: Optional[float]
+    responder_p_value: float
+    km_median_latency_s: Dict[str, Optional[float]]
+    logrank_chi2: float
+    logrank_p_value: float
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "behavior": self.behavior,
+            "category": self.category,
+            "groups": list(self.groups),
+            "analysis_unit": self.analysis_unit,
+            "parametric_test": self.parametric_test,
+            "parametric_stat": round(float(self.parametric_stat), 6),
+            "p_parametric": round(float(self.p_parametric), 6),
+            "q_parametric_bh": round(float(self.q_parametric_bh), 6),
+            "nonparametric_test": self.nonparametric_test,
+            "nonparametric_stat": round(float(self.nonparametric_stat), 6),
+            "p_nonparametric": round(float(self.p_nonparametric), 6),
+            "q_nonparametric_bh": round(float(self.q_nonparametric_bh), 6),
+            "hedges_g": (
+                round(float(self.hedges_g), 6) if self.hedges_g is not None else None
+            ),
+            "cliffs_delta": (
+                round(float(self.cliffs_delta), 6)
+                if self.cliffs_delta is not None
+                else None
+            ),
+            "mean_diff_s": (
+                round(float(self.mean_diff_s), 6)
+                if self.mean_diff_s is not None
+                else None
+            ),
+            "mean_diff_ci95_low_s": (
+                round(float(self.mean_diff_ci95_low_s), 6)
+                if self.mean_diff_ci95_low_s is not None
+                else None
+            ),
+            "mean_diff_ci95_high_s": (
+                round(float(self.mean_diff_ci95_high_s), 6)
+                if self.mean_diff_ci95_high_s is not None
+                else None
+            ),
+            "responder_p_value": round(float(self.responder_p_value), 6),
+            "km_median_latency_s": {
+                k: (round(float(v), 6) if v is not None else None)
+                for k, v in self.km_median_latency_s.items()
+            },
+            "logrank_chi2": round(float(self.logrank_chi2), 6),
+            "logrank_p_value": round(float(self.logrank_p_value), 6),
+        }
+
+
+@dataclass(frozen=True)
 class CohortBehaviorReport:
     """Full cohort aggregation and behavioral transition matrix report."""
 
@@ -215,14 +298,18 @@ class CohortBehaviorReport:
     group_summaries: Tuple[CohortGroupSummaryRow, ...]
     transitions: Tuple[TransitionEdge, ...]
     warnings: Tuple[str, ...] = ()
+    comparisons: Tuple[CohortComparisonRow, ...] = ()
+    analysis_unit: str = "subject"
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "recording_count": int(self.recording_count),
             "subject_unit_count": int(self.subject_unit_count),
+            "analysis_unit": self.analysis_unit,
             "groups": list(self.groups),
             "behaviors": list(self.behaviors),
             "group_summaries": [row.to_dict() for row in self.group_summaries],
+            "comparisons": [row.to_dict() for row in self.comparisons],
             "subject_rows": [row.to_dict() for row in self.subject_rows],
             "transitions": [edge.to_dict() for edge in self.transitions],
             "warnings": list(self.warnings),
@@ -701,6 +788,691 @@ def _extract_recording_events(
     return combined, warnings, t_min, t_max
 
 
+def _benjamini_hochberg(p_values: Sequence[float]) -> List[float]:
+    m = len(p_values)
+    if m == 0:
+        return []
+    indexed = sorted(
+        enumerate(max(0.0, min(1.0, float(p))) for p in p_values),
+        key=lambda item: item[1],
+    )
+    adjusted = [1.0] * m
+    running_min = 1.0
+    for rank_rev in range(m - 1, -1, -1):
+        orig_idx, p_val = indexed[rank_rev]
+        rank = rank_rev + 1
+        q_val = min(running_min, p_val * float(m) / float(rank))
+        running_min = q_val
+        adjusted[orig_idx] = max(0.0, min(1.0, q_val))
+    return adjusted
+
+
+def _betainc_cf(a: float, b: float, x: float) -> float:
+    """Modified Lentz continued fraction for regularized incomplete beta ``I_x(a, b)``."""
+    tiny = 1e-30
+    qab = a + b
+    qap = a + 1.0
+    qam = a - 1.0
+    c = 1.0
+    d = 1.0 - qab * x / qap
+    if abs(d) < tiny:
+        d = tiny
+    d = 1.0 / d
+    h = d
+    for m in range(1, 251):
+        m2 = 2 * m
+        aa = m * (b - m) * x / ((qam + m2) * (a + m2))
+        d = 1.0 + aa * d
+        if abs(d) < tiny:
+            d = tiny
+        c = 1.0 + aa / c
+        if abs(c) < tiny:
+            c = tiny
+        d = 1.0 / d
+        h *= d * c
+        aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2))
+        d = 1.0 + aa * d
+        if abs(d) < tiny:
+            d = tiny
+        c = 1.0 + aa / c
+        if abs(c) < tiny:
+            c = tiny
+        d = 1.0 / d
+        delta = d * c
+        h *= delta
+        if abs(delta - 1.0) < 1e-14:
+            break
+    return h
+
+
+def _betainc_reg(a: float, b: float, x: float) -> float:
+    """Exact regularized incomplete beta ``I_x(a, b)`` without SciPy."""
+    if x <= 0.0:
+        return 0.0
+    if x >= 1.0:
+        return 1.0
+    if a <= 0.0 or b <= 0.0:
+        return 0.0
+    if x > (a + 1.0) / (a + b + 2.0):
+        return max(0.0, min(1.0, 1.0 - _betainc_reg(b, a, 1.0 - x)))
+    lbeta = math.lgamma(a) + math.lgamma(b) - math.lgamma(a + b)
+    log_front = a * math.log(x) + b * math.log1p(-x) - lbeta
+    if log_front < -740.0:
+        return 0.0
+    front = math.exp(log_front) / a
+    return max(0.0, min(1.0, front * _betainc_cf(a, b, x)))
+
+
+def _gammaincc_reg(a: float, x: float) -> float:
+    """Exact regularized upper incomplete gamma ``Q(a, x)`` without SciPy."""
+    if x <= 0.0:
+        return 1.0
+    if a <= 0.0:
+        return 0.0
+    lg_a = math.lgamma(a)
+    if x < a + 1.0:
+        ap = a
+        term = 1.0 / a
+        total = term
+        for _ in range(300):
+            ap += 1.0
+            term *= x / ap
+            total += term
+            if abs(term) < abs(total) * 1e-14:
+                break
+        log_pref = -x + a * math.log(x) - lg_a
+        if log_pref < -740.0:
+            return 1.0
+        p_lower = total * math.exp(log_pref)
+        return max(0.0, min(1.0, 1.0 - p_lower))
+
+    tiny = 1e-30
+    b0 = x + 1.0 - a
+    c = 1.0 / tiny
+    d = 1.0 / (b0 if abs(b0) >= tiny else tiny)
+    h = d
+    for idx in range(1, 301):
+        an = -float(idx) * (float(idx) - a)
+        b0 += 2.0
+        d = an * d + b0
+        if abs(d) < tiny:
+            d = tiny
+        c = b0 + an / c
+        if abs(c) < tiny:
+            c = tiny
+        d = 1.0 / d
+        delta = d * c
+        h *= delta
+        if abs(delta - 1.0) < 1e-14:
+            break
+    log_pref = -x + a * math.log(x) - lg_a
+    if log_pref < -740.0:
+        return 0.0
+    return max(0.0, min(1.0, math.exp(log_pref) * h))
+
+
+def _student_t_two_sided_p(t_stat: float, df: float) -> float:
+    """Two-sided p-value for Student's t distribution with real ``df > 0``."""
+    if df <= 0.0 or not math.isfinite(t_stat):
+        return 1.0
+    t_abs = abs(float(t_stat))
+    if t_abs == 0.0:
+        return 1.0
+    if _scipy_stats is not None:
+        return float(max(0.0, min(1.0, 2.0 * _scipy_stats.t.sf(t_abs, df))))
+    x = float(df) / (float(df) + t_abs * t_abs)
+    return _betainc_reg(0.5 * float(df), 0.5, x)
+
+
+def _snedecor_f_sf(f_stat: float, df1: float, df2: float) -> float:
+    """Upper-tail survival probability for Snedecor's F(df1, df2) distribution."""
+    if df1 <= 0.0 or df2 <= 0.0 or not math.isfinite(f_stat) or f_stat <= 0.0:
+        return 1.0
+    if _scipy_stats is not None:
+        return float(max(0.0, min(1.0, _scipy_stats.f.sf(float(f_stat), df1, df2))))
+    x = float(df2) / (float(df2) + float(df1) * float(f_stat))
+    return _betainc_reg(0.5 * float(df2), 0.5 * float(df1), x)
+
+
+def _chi2_sf_fallback(chi2_val: float, df: int) -> float:
+    x = max(0.0, float(chi2_val))
+    if df <= 0 or x == 0.0:
+        return 1.0
+    if _scipy_stats is not None:
+        return float(max(0.0, min(1.0, _scipy_stats.chi2.sf(x, df))))
+    return _gammaincc_reg(0.5 * float(df), 0.5 * x)
+
+
+def _midranks_and_ties(values: np.ndarray) -> Tuple[np.ndarray, float]:
+    """Return 1-based midranks and tie correction sum ``sum(t^3 - t)``."""
+    n = len(values)
+    if n == 0:
+        return np.empty(0, dtype=np.float64), 0.0
+    order = np.argsort(values, kind="mergesort")
+    sorted_vals = values[order]
+    ranks = np.empty(n, dtype=np.float64)
+    tie_sum = 0.0
+    idx = 0
+    while idx < n:
+        end = idx + 1
+        while end < n and sorted_vals[end] == sorted_vals[idx]:
+            end += 1
+        avg_rank = 0.5 * float(idx + 1 + end)
+        ranks[order[idx:end]] = avg_rank
+        t_len = end - idx
+        if t_len > 1:
+            tie_sum += float(t_len * t_len * t_len - t_len)
+        idx = end
+    return ranks, tie_sum
+
+
+def _one_way_anova_exact(groups: Sequence[np.ndarray]) -> Tuple[float, float]:
+    """Compute one-way ANOVA ``(F_stat, p_value)`` with or without SciPy."""
+    valid_g = [np.asarray(g, dtype=np.float64) for g in groups if len(g) >= 1]
+    k = len(valid_g)
+    n_tot = sum(len(g) for g in valid_g)
+    if k < 2 or n_tot <= k:
+        return 0.0, 1.0
+    all_vals = np.concatenate(valid_g)
+    grand_mean = float(np.mean(all_vals))
+    ss_between = sum(
+        float(len(g)) * ((float(np.mean(g)) - grand_mean) ** 2) for g in valid_g
+    )
+    ss_within = sum(float(np.sum((g - np.mean(g)) ** 2)) for g in valid_g)
+    df1 = float(k - 1)
+    df2 = float(n_tot - k)
+    if ss_within <= 1e-24:
+        return (0.0, 1.0) if ss_between <= 1e-24 else (0.0, 0.0)
+    f_stat = (ss_between / df1) / (ss_within / df2)
+    if not math.isfinite(f_stat):
+        return 0.0, 1.0
+    return float(f_stat), _snedecor_f_sf(float(f_stat), df1, df2)
+
+
+def _mann_whitney_u_exact(x1: np.ndarray, x2: np.ndarray) -> Tuple[float, float]:
+    """Compute two-sided Mann-Whitney U ``(U_stat, p_value)`` with exact small-N DP & tie correction."""
+    n1, n2 = len(x1), len(x2)
+    if n1 < 1 or n2 < 1:
+        return 0.0, 1.0
+    if _scipy_stats is not None:
+        try:
+            res_u = _scipy_stats.mannwhitneyu(x1, x2, alternative="two-sided")
+            if math.isfinite(float(res_u.statistic)):
+                return float(res_u.statistic), float(res_u.pvalue)
+        except ValueError:
+            return 0.5 * float(n1 * n2), 1.0
+
+    pooled = np.concatenate([x1, x2])
+    ranks, tie_sum = _midranks_and_ties(pooled)
+    r1 = float(np.sum(ranks[:n1]))
+    u1 = r1 - 0.5 * float(n1 * (n1 + 1))
+    n_tot = n1 + n2
+
+    # Exact discrete distribution via dynamic programming when tie-free and N <= 40
+    if tie_sum == 0.0 and n_tot <= 40:
+        n_small = min(n1, n2)
+        max_u = n1 * n2
+        dp = [[0] * (max_u + 1) for _ in range(n_small + 1)]
+        dp[0][0] = 1
+        for item_idx in range(n_tot):
+            for c in range(min(item_idx + 1, n_small), 0, -1):
+                contrib = item_idx - (c - 1)
+                if contrib < 0:
+                    continue
+                row_prev = dp[c - 1]
+                row_cur = dp[c]
+                for u_prev in range(max_u - contrib + 1):
+                    if row_prev[u_prev]:
+                        row_cur[u_prev + contrib] += row_prev[u_prev]
+        u_int = int(round(u1))
+        u_tail = min(u_int, max_u - u_int)
+        total_ways = math.comb(n_tot, n_small)
+        p_exact = min(
+            1.0, 2.0 * float(sum(dp[n_small][: u_tail + 1])) / float(total_ways)
+        )
+        return float(u1), p_exact
+
+    # Tie-corrected asymptotic normal with continuity correction
+    mu_u = 0.5 * float(n1 * n2)
+    tie_term = tie_sum / float(n_tot * (n_tot - 1)) if n_tot > 1 else 0.0
+    var_u = (float(n1 * n2) / 12.0) * max(0.0, float(n_tot + 1) - tie_term)
+    if var_u <= 1e-24:
+        return float(u1), 1.0
+    z_num = max(0.0, abs(u1 - mu_u) - 0.5)
+    z_u = z_num / math.sqrt(var_u)
+    return float(u1), float(math.erfc(z_u / math.sqrt(2.0)))
+
+
+def _kruskal_wallis_exact(groups: Sequence[np.ndarray]) -> Tuple[float, float]:
+    """Compute tie-corrected Kruskal-Wallis ``(H_stat, p_value)`` with or without SciPy."""
+    valid_g = [np.asarray(g, dtype=np.float64) for g in groups if len(g) >= 1]
+    if len(valid_g) < 2:
+        return 0.0, 1.0
+    pooled = np.concatenate(valid_g)
+    if len(pooled) <= len(valid_g) or float(np.ptp(pooled)) <= 0.0:
+        return 0.0, 1.0
+    if _scipy_stats is not None:
+        try:
+            res_kw = _scipy_stats.kruskal(*valid_g)
+            if math.isfinite(float(res_kw.statistic)):
+                return float(res_kw.statistic), float(res_kw.pvalue)
+        except ValueError:
+            return 0.0, 1.0
+
+    n_tot = len(pooled)
+    ranks, tie_sum = _midranks_and_ties(pooled)
+    denom_ties = float(n_tot * n_tot * n_tot - n_tot)
+    if denom_ties <= 0.0 or tie_sum >= denom_ties - 1e-12:
+        return 0.0, 1.0
+    offset = 0
+    sum_sq_over_n = 0.0
+    for g in valid_g:
+        ng = len(g)
+        rg = float(np.sum(ranks[offset : offset + ng]))
+        sum_sq_over_n += (rg * rg) / float(ng)
+        offset += ng
+    h_raw = (12.0 / float(n_tot * (n_tot + 1))) * sum_sq_over_n - 3.0 * float(n_tot + 1)
+    tie_corr = 1.0 - (tie_sum / denom_ties)
+    h_stat = max(0.0, h_raw / tie_corr)
+    return float(h_stat), _chi2_sf_fallback(float(h_stat), len(valid_g) - 1)
+
+
+def _fisher_exact_2x2(table: np.ndarray) -> float:
+    """Two-sided exact Fisher hypergeometric p-value for a 2x2 contingency table."""
+    if _scipy_stats is not None:
+        try:
+            _, p_val = _scipy_stats.fisher_exact(table, alternative="two-sided")
+            return float(max(0.0, min(1.0, p_val)))
+        except Exception:
+            pass
+    a, b = int(table[0, 0]), int(table[0, 1])
+    c, d = int(table[1, 0]), int(table[1, 1])
+    r1 = a + b
+    r2 = c + d
+    c1 = a + c
+    n_tot = r1 + r2
+    if n_tot <= 0:
+        return 1.0
+    k_min = max(0, c1 - r2)
+    k_max = min(r1, c1)
+
+    def _log_hypergeom(k_val: int) -> float:
+        return (
+            math.lgamma(r1 + 1)
+            - math.lgamma(k_val + 1)
+            - math.lgamma(r1 - k_val + 1)
+            + math.lgamma(r2 + 1)
+            - math.lgamma(c1 - k_val + 1)
+            - math.lgamma(r2 - (c1 - k_val) + 1)
+            - (
+                math.lgamma(n_tot + 1)
+                - math.lgamma(c1 + 1)
+                - math.lgamma(n_tot - c1 + 1)
+            )
+        )
+
+    lp_obs = _log_hypergeom(a)
+    total_p = 0.0
+    for k_val in range(k_min, k_max + 1):
+        lp_k = _log_hypergeom(k_val)
+        if lp_k <= lp_obs + 1e-12:
+            total_p += math.exp(lp_k)
+    return max(0.0, min(1.0, total_p))
+
+
+def _chi2_contingency_exact(table: np.ndarray) -> float:
+    """Pearson chi-square contingency test p-value for a R x C table."""
+    if _scipy_stats is not None:
+        try:
+            _, p_val, _, _ = _scipy_stats.chi2_contingency(table)
+            return float(max(0.0, min(1.0, p_val)))
+        except Exception:
+            return 1.0
+    arr = np.asarray(table, dtype=np.float64)
+    if arr.ndim != 2 or arr.shape[0] < 2 or arr.shape[1] < 2:
+        return 1.0
+    row_sums = arr.sum(axis=1)
+    col_sums = arr.sum(axis=0)
+    n_tot = float(row_sums.sum())
+    if n_tot <= 0.0 or np.any(row_sums <= 0.0) or np.any(col_sums <= 0.0):
+        return 1.0
+    expected = np.outer(row_sums, col_sums) / n_tot
+    chi2_stat = float(np.sum(((arr - expected) ** 2) / expected))
+    df = int((arr.shape[0] - 1) * (arr.shape[1] - 1))
+    return _chi2_sf_fallback(chi2_stat, df)
+
+
+def _kaplan_meier_median(
+    times: Sequence[float], events: Sequence[bool]
+) -> Optional[float]:
+    if not times:
+        return None
+    pairs = sorted(zip((float(t) for t in times), (bool(e) for e in events)))
+    n_at_risk = len(pairs)
+    surv = 1.0
+    idx = 0
+    m = len(pairs)
+    while idx < m and n_at_risk > 0:
+        t_cur = pairs[idx][0]
+        d_j = 0
+        c_j = 0
+        while idx < m and abs(pairs[idx][0] - t_cur) <= 1e-12:
+            if pairs[idx][1]:
+                d_j += 1
+            else:
+                c_j += 1
+            idx += 1
+        if d_j > 0:
+            surv *= 1.0 - float(d_j) / float(n_at_risk)
+            if surv <= 0.5 + 1e-12:
+                return float(t_cur)
+        n_at_risk -= d_j + c_j
+    return None
+
+
+def _logrank_test(
+    grouped_survival: Mapping[str, Sequence[Tuple[float, bool]]],
+    ordered_groups: Sequence[str],
+) -> Tuple[float, float]:
+    k = len(ordered_groups)
+    if k < 2:
+        return 0.0, 1.0
+    event_times = sorted(
+        {
+            float(t)
+            for g in ordered_groups
+            for t, ev in grouped_survival.get(g, ())
+            if ev
+        }
+    )
+    if not event_times:
+        return 0.0, 1.0
+
+    obs_minus_exp = np.zeros(k - 1, dtype=np.float64)
+    cov = np.zeros((k - 1, k - 1), dtype=np.float64)
+    group_arrays = [
+        [(float(t), bool(ev)) for t, ev in grouped_survival.get(g, ())]
+        for g in ordered_groups
+    ]
+
+    for t_ev in event_times:
+        n_vec = np.zeros(k, dtype=np.float64)
+        d_vec = np.zeros(k, dtype=np.float64)
+        for g_idx, items in enumerate(group_arrays):
+            for t_val, is_ev in items:
+                if t_val >= t_ev - 1e-12:
+                    n_vec[g_idx] += 1.0
+                    if is_ev and abs(t_val - t_ev) <= 1e-12:
+                        d_vec[g_idx] += 1.0
+        n_tot = float(n_vec.sum())
+        d_tot = float(d_vec.sum())
+        if n_tot <= 1.0 or d_tot <= 0.0:
+            continue
+        e_vec = n_vec * (d_tot / n_tot)
+        obs_minus_exp += (d_vec - e_vec)[: k - 1]
+        factor = (d_tot * (n_tot - d_tot)) / (n_tot * n_tot * (n_tot - 1.0))
+        if factor > 0.0:
+            p_vec = n_vec[: k - 1]
+            v_step = -np.outer(p_vec, p_vec) * factor
+            for idx_d in range(k - 1):
+                v_step[idx_d, idx_d] = p_vec[idx_d] * (n_tot - p_vec[idx_d]) * factor
+            cov += v_step
+
+    try:
+        inv_cov = np.linalg.pinv(cov)
+        chi2_stat = float(max(0.0, obs_minus_exp @ inv_cov @ obs_minus_exp))
+    except Exception:
+        chi2_stat = 0.0
+    p_val = _chi2_sf_fallback(chi2_stat, k - 1)
+    return chi2_stat, p_val
+
+
+def compute_cohort_comparisons(
+    rows: Sequence[CohortSubjectRow],
+    *,
+    ordered_groups: Sequence[str],
+    ordered_behaviors: Sequence[str],
+    category_lookup: Mapping[str, str],
+    analysis_unit: str = "subject",
+) -> Tuple[CohortComparisonRow, ...]:
+    """Compute parametric, nonparametric, effect-size, and survival comparisons across groups."""
+    if len(ordered_groups) < 2 or not ordered_behaviors:
+        return ()
+
+    by_beh_group: Dict[Tuple[str, str], List[CohortSubjectRow]] = defaultdict(list)
+    for r in rows:
+        by_beh_group[(r.behavior, r.group)].append(r)
+
+    raw_rows: List[Dict[str, Any]] = []
+    rng = np.random.default_rng(42)
+
+    for beh in ordered_behaviors:
+        active_groups = [
+            g for g in ordered_groups if len(by_beh_group.get((beh, g), ())) > 0
+        ]
+        if len(active_groups) < 2:
+            continue
+
+        group_vals = [
+            np.asarray(
+                [float(r.total_duration_s) for r in by_beh_group[(beh, g)]],
+                dtype=np.float64,
+            )
+            for g in active_groups
+        ]
+        k = len(active_groups)
+
+        # Parametric test (Welch t for 2 groups, One-way ANOVA for >=3)
+        param_name = "welch_t" if k == 2 else "one_way_anova"
+        param_stat = 0.0
+        p_param = 1.0
+        if k == 2:
+            x1, x2 = group_vals[0], group_vals[1]
+            n1_v, n2_v = len(x1), len(x2)
+            if n1_v >= 2 and n2_v >= 2:
+                v1 = float(np.var(x1, ddof=1))
+                v2 = float(np.var(x2, ddof=1))
+                term1 = v1 / float(n1_v)
+                term2 = v2 / float(n2_v)
+                se = math.sqrt(term1 + term2)
+                if se > 1e-12:
+                    param_stat = float((np.mean(x1) - np.mean(x2)) / se)
+                    df_denom = (term1 * term1) / float(n1_v - 1) + (
+                        term2 * term2
+                    ) / float(n2_v - 1)
+                    df_welch = (
+                        ((term1 + term2) ** 2) / df_denom
+                        if df_denom > 1e-24
+                        else float(n1_v + n2_v - 2)
+                    )
+                    p_param = _student_t_two_sided_p(param_stat, df_welch)
+        else:
+            param_stat, p_param = _one_way_anova_exact(group_vals)
+
+        # Nonparametric test (Mann-Whitney U for 2 groups, Kruskal-Wallis for >=3)
+        nonparam_name = "mann_whitney_u" if k == 2 else "kruskal_wallis"
+        if k == 2:
+            nonparam_stat, p_nonparam = _mann_whitney_u_exact(
+                group_vals[0], group_vals[1]
+            )
+        else:
+            nonparam_stat, p_nonparam = _kruskal_wallis_exact(group_vals)
+
+        # Effect sizes & bootstrap 95% CI for 2-group comparison
+        hedges_g: Optional[float] = None
+        cliffs_d: Optional[float] = None
+        mean_diff: Optional[float] = None
+        ci_low: Optional[float] = None
+        ci_high: Optional[float] = None
+        if k == 2:
+            x1, x2 = group_vals[0], group_vals[1]
+            n1, n2 = len(x1), len(x2)
+            if n1 >= 1 and n2 >= 1:
+                mean_diff = float(np.mean(x1) - np.mean(x2))
+                gt = float(np.sum(x1[:, None] > x2[None, :]))
+                lt = float(np.sum(x1[:, None] < x2[None, :]))
+                cliffs_d = (gt - lt) / float(n1 * n2)
+                if n1 + n2 >= 3:
+                    ss1 = float(np.sum((x1 - np.mean(x1)) ** 2)) if n1 > 1 else 0.0
+                    ss2 = float(np.sum((x2 - np.mean(x2)) ** 2)) if n2 > 1 else 0.0
+                    s_pool = math.sqrt((ss1 + ss2) / float(n1 + n2 - 2))
+                    if s_pool > 1e-12:
+                        cohen_d = mean_diff / s_pool
+                        j_corr = 1.0 - (3.0 / (4.0 * float(n1 + n2 - 2) - 1.0))
+                        hedges_g = cohen_d * j_corr
+                    elif abs(mean_diff) <= 1e-12:
+                        hedges_g = 0.0
+                # Deterministic percentile bootstrap (n_boot=500)
+                idx1 = rng.integers(0, n1, size=(500, n1))
+                idx2 = rng.integers(0, n2, size=(500, n2))
+                boot_diffs = x1[idx1].mean(axis=1) - x2[idx2].mean(axis=1)
+                ci_low = float(np.percentile(boot_diffs, 2.5))
+                ci_high = float(np.percentile(boot_diffs, 97.5))
+
+        # Responder contingency test
+        resp_table = np.asarray(
+            [
+                [
+                    sum(1 for r in by_beh_group[(beh, g)] if not r.censored),
+                    sum(1 for r in by_beh_group[(beh, g)] if r.censored),
+                ]
+                for g in active_groups
+            ],
+            dtype=np.int64,
+        )
+        resp_p = (
+            _fisher_exact_2x2(resp_table)
+            if k == 2
+            else _chi2_contingency_exact(resp_table)
+        )
+
+        # Kaplan-Meier median survival & Mantel-Cox log-rank test
+        km_medians: Dict[str, Optional[float]] = {}
+        surv_by_group: Dict[str, List[Tuple[float, bool]]] = {}
+        for g in active_groups:
+            g_rows = by_beh_group[(beh, g)]
+            t_list = [float(r.censored_latency_s) for r in g_rows]
+            e_list = [not bool(r.censored) for r in g_rows]
+            km_medians[g] = _kaplan_meier_median(t_list, e_list)
+            surv_by_group[g] = list(zip(t_list, e_list))
+        lr_chi2, lr_p = _logrank_test(surv_by_group, active_groups)
+
+        raw_rows.append(
+            {
+                "behavior": beh,
+                "category": category_lookup.get(beh, ""),
+                "groups": tuple(active_groups),
+                "analysis_unit": analysis_unit,
+                "parametric_test": param_name,
+                "parametric_stat": param_stat,
+                "p_parametric": max(0.0, min(1.0, p_param)),
+                "nonparametric_test": nonparam_name,
+                "nonparametric_stat": nonparam_stat,
+                "p_nonparametric": max(0.0, min(1.0, p_nonparam)),
+                "hedges_g": hedges_g,
+                "cliffs_delta": cliffs_d,
+                "mean_diff_s": mean_diff,
+                "mean_diff_ci95_low_s": ci_low,
+                "mean_diff_ci95_high_s": ci_high,
+                "responder_p_value": max(0.0, min(1.0, resp_p)),
+                "km_median_latency_s": km_medians,
+                "logrank_chi2": lr_chi2,
+                "logrank_p_value": max(0.0, min(1.0, lr_p)),
+            }
+        )
+
+    if not raw_rows:
+        return ()
+
+    q_param = _benjamini_hochberg([r["p_parametric"] for r in raw_rows])
+    q_nonparam = _benjamini_hochberg([r["p_nonparametric"] for r in raw_rows])
+
+    out: List[CohortComparisonRow] = []
+    for idx, r in enumerate(raw_rows):
+        out.append(
+            CohortComparisonRow(
+                behavior=r["behavior"],
+                category=r["category"],
+                groups=r["groups"],
+                analysis_unit=r["analysis_unit"],
+                parametric_test=r["parametric_test"],
+                parametric_stat=r["parametric_stat"],
+                p_parametric=r["p_parametric"],
+                q_parametric_bh=q_param[idx],
+                nonparametric_test=r["nonparametric_test"],
+                nonparametric_stat=r["nonparametric_stat"],
+                p_nonparametric=r["p_nonparametric"],
+                q_nonparametric_bh=q_nonparam[idx],
+                hedges_g=r["hedges_g"],
+                cliffs_delta=r["cliffs_delta"],
+                mean_diff_s=r["mean_diff_s"],
+                mean_diff_ci95_low_s=r["mean_diff_ci95_low_s"],
+                mean_diff_ci95_high_s=r["mean_diff_ci95_high_s"],
+                responder_p_value=r["responder_p_value"],
+                km_median_latency_s=r["km_median_latency_s"],
+                logrank_chi2=r["logrank_chi2"],
+                logrank_p_value=r["logrank_p_value"],
+            )
+        )
+    return tuple(out)
+
+
+def _aggregate_subject_rows_by_recording(
+    subject_rows: Sequence[CohortSubjectRow],
+) -> List[CohortSubjectRow]:
+    """Collapse nested subjects within the same ``(recording_id, group, behavior)``."""
+    buckets: Dict[Tuple[str, str, str], List[CohortSubjectRow]] = defaultdict(list)
+    for row in subject_rows:
+        buckets[(row.recording_id, row.group, row.behavior)].append(row)
+
+    collapsed: List[CohortSubjectRow] = []
+    for (rec_id, grp, beh), items in sorted(buckets.items()):
+        if len(items) == 1:
+            collapsed.append(items[0])
+            continue
+        dur_s = float(mean(r.session_duration_s for r in items))
+        occ = int(round(mean(r.occurrences for r in items)))
+        rate = float(mean(r.rate_per_min for r in items))
+        tot_dur = float(mean(r.total_duration_s for r in items))
+        pct = float(mean(r.percent_of_session for r in items))
+        m_bout = float(mean(r.mean_bout_duration_s for r in items))
+        med_bout = float(median(r.median_bout_duration_s for r in items))
+        resp_lats = [
+            r.latency_to_first_s
+            for r in items
+            if r.latency_to_first_s is not None and not r.censored
+        ]
+        if resp_lats:
+            lat_first: Optional[float] = float(min(resp_lats))
+            censored = False
+            cens_lat = lat_first
+        else:
+            lat_first = None
+            censored = True
+            cens_lat = dur_s
+        collapsed.append(
+            CohortSubjectRow(
+                recording_id=rec_id,
+                subject="__recording_mean__",
+                group=grp,
+                behavior=beh,
+                category=items[0].category,
+                session_duration_s=dur_s,
+                occurrences=occ,
+                rate_per_min=rate,
+                total_duration_s=tot_dur,
+                percent_of_session=pct,
+                mean_bout_duration_s=m_bout,
+                median_bout_duration_s=med_bout,
+                latency_to_first_s=lat_first,
+                censored_latency_s=cens_lat,
+                censored=censored,
+                metadata=dict(items[0].metadata),
+            )
+        )
+    return collapsed
+
+
 def analyze_behavior_cohort(
     recordings: Sequence[CohortRecordingSpec],
     *,
@@ -710,6 +1482,7 @@ def analyze_behavior_cohort(
     include_self_transitions: bool = True,
     include_schema_behaviors: bool = False,
     strict: bool = False,
+    analysis_unit: str = "subject",
 ) -> CohortBehaviorReport:
     """Aggregate behavioral metrics and transition matrices across a cohort of recordings."""
     if not recordings:
@@ -864,9 +1637,36 @@ def analyze_behavior_cohort(
                     )
                 )
 
-    # Aggregate Group × Behavior summary rows across ALL subject units in each group.
-    rows_by_group_beh: Dict[Tuple[str, str], List[CohortSubjectRow]] = defaultdict(list)
+    unit_norm = str(analysis_unit or "subject").strip().lower()
+    if unit_norm not in {"subject", "recording"}:
+        raise CohortComputationError(
+            f"Unsupported analysis_unit '{analysis_unit}'. Expected 'subject' or 'recording'."
+        )
+
+    # Check nested pseudoreplication when unit == 'subject'
+    subjects_per_rec_group: Counter[Tuple[str, str]] = Counter()
+    seen_rec_subj: set[Tuple[str, str, str]] = set()
     for s_row in subject_rows:
+        key3 = (s_row.recording_id, s_row.group, s_row.subject)
+        if key3 not in seen_rec_subj:
+            seen_rec_subj.add(key3)
+            subjects_per_rec_group[(s_row.recording_id, s_row.group)] += 1
+    if unit_norm == "subject" and any(c > 1 for c in subjects_per_rec_group.values()):
+        warnings_out.append(
+            "Nested subjects detected (potential pseudoreplication): multiple subjects share a "
+            "recording_id within the same group; consider analysis_unit='recording' (--unit recording) "
+            "if cage/dyad is the independent experimental unit."
+        )
+
+    summary_input_rows = (
+        _aggregate_subject_rows_by_recording(subject_rows)
+        if unit_norm == "recording"
+        else subject_rows
+    )
+
+    # Aggregate Group × Behavior summary rows across ALL units in each group.
+    rows_by_group_beh: Dict[Tuple[str, str], List[CohortSubjectRow]] = defaultdict(list)
+    for s_row in summary_input_rows:
         rows_by_group_beh[(s_row.group, s_row.behavior)].append(s_row)
 
     ordered_groups = tuple(sorted(groups_seen))
@@ -933,6 +1733,13 @@ def analyze_behavior_cohort(
         max_transition_gap_s=max_transition_gap_s,
         include_self_transitions=include_self_transitions,
     )
+    comparisons = compute_cohort_comparisons(
+        summary_input_rows,
+        ordered_groups=ordered_groups,
+        ordered_behaviors=ordered_behaviors,
+        category_lookup=category_lookup,
+        analysis_unit=unit_norm,
+    )
 
     return CohortBehaviorReport(
         recording_count=len(recordings),
@@ -943,6 +1750,8 @@ def analyze_behavior_cohort(
         group_summaries=tuple(group_summaries),
         transitions=transitions,
         warnings=tuple(warnings_out),
+        comparisons=comparisons,
+        analysis_unit=unit_norm,
     )
 
 
@@ -979,6 +1788,24 @@ def format_cohort_report_table(report: CohortBehaviorReport) -> str:
     else:
         lines.append("")
         lines.append("No behavioral events observed across the cohort.")
+
+    if report.comparisons:
+        lines.append("")
+        lines.append(f"Statistical Group Comparisons (unit={report.analysis_unit}):")
+        lines.append(
+            f"{'Behavior':<18} {'p(param)':>9} {'q(BH)':>8} {'p(nonp)':>9} "
+            f"{'Hedges g':>9} {'Cliffs d':>9} {'LogRank p':>10}"
+        )
+        lines.append("-" * 80)
+        for comp in report.comparisons:
+            g_str = f"{comp.hedges_g:+.3f}" if comp.hedges_g is not None else "n/a"
+            d_str = (
+                f"{comp.cliffs_delta:+.3f}" if comp.cliffs_delta is not None else "n/a"
+            )
+            lines.append(
+                f"{comp.behavior:<18} {comp.p_parametric:>9.4f} {comp.q_parametric_bh:>8.4f} "
+                f"{comp.p_nonparametric:>9.4f} {g_str:>9} {d_str:>9} {comp.logrank_p_value:>10.4f}"
+            )
 
     non_pooled_edges = [e for e in report.transitions if e.group != "__all__"]
     if non_pooled_edges:
@@ -1126,6 +1953,76 @@ def write_cohort_subject_rows_csv(
                 f"{r.censored_latency_s:.6f}",
                 str(bool(r.censored)).lower(),
                 *[r.metadata.get(k, "") for k in extra_keys],
+            ]
+        )
+    atomic_write_text(dst, buf.getvalue(), encoding="utf-8")
+    return dst
+
+
+def write_cohort_comparisons_csv(
+    comparisons: Iterable[CohortComparisonRow], output_path: Path | str
+) -> Path:
+    """Atomically write inferential group comparison rows to CSV."""
+    dst = Path(output_path)
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(
+        [
+            "Behavior",
+            "Category",
+            "Groups",
+            "AnalysisUnit",
+            "ParametricTest",
+            "ParametricStat",
+            "PParametric",
+            "QParametricBH",
+            "NonparametricTest",
+            "NonparametricStat",
+            "PNonparametric",
+            "QNonparametricBH",
+            "HedgesG",
+            "CliffsDelta",
+            "MeanDiffSeconds",
+            "MeanDiffCI95LowSeconds",
+            "MeanDiffCI95HighSeconds",
+            "ResponderPValue",
+            "LogRankChi2",
+            "LogRankPValue",
+            "KMMedianLatencyJSON",
+        ]
+    )
+    for c in comparisons:
+        writer.writerow(
+            [
+                c.behavior,
+                c.category,
+                "|".join(c.groups),
+                c.analysis_unit,
+                c.parametric_test,
+                f"{c.parametric_stat:.6f}",
+                f"{c.p_parametric:.6f}",
+                f"{c.q_parametric_bh:.6f}",
+                c.nonparametric_test,
+                f"{c.nonparametric_stat:.6f}",
+                f"{c.p_nonparametric:.6f}",
+                f"{c.q_nonparametric_bh:.6f}",
+                f"{c.hedges_g:.6f}" if c.hedges_g is not None else "",
+                f"{c.cliffs_delta:.6f}" if c.cliffs_delta is not None else "",
+                f"{c.mean_diff_s:.6f}" if c.mean_diff_s is not None else "",
+                (
+                    f"{c.mean_diff_ci95_low_s:.6f}"
+                    if c.mean_diff_ci95_low_s is not None
+                    else ""
+                ),
+                (
+                    f"{c.mean_diff_ci95_high_s:.6f}"
+                    if c.mean_diff_ci95_high_s is not None
+                    else ""
+                ),
+                f"{c.responder_p_value:.6f}",
+                f"{c.logrank_chi2:.6f}",
+                f"{c.logrank_p_value:.6f}",
+                json.dumps(c.km_median_latency_s, sort_keys=True),
             ]
         )
     atomic_write_text(dst, buf.getvalue(), encoding="utf-8")

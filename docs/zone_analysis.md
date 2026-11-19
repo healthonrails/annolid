@@ -13,6 +13,8 @@ New zone shapes should include explicit metadata:
 - `occupant_role`
 - `access_state`
 
+Polygon, rectangle, and 2-point LabelMe `circle` (`[center, circumference_point]`) zone shapes are all supported seamlessly across geometric occupancy, visit dwell (`mean_visit_seconds__<zone>`, `max_visit_seconds__<zone>`), and signed boundary-distance calculations. You can also run headless zone exports via `annolid-run zone-analysis <video_or_csv> --zone-file <zones.json> [--events-csv zone_visits.csv]`.
+
 For three-chamber social setups, mark connecting tubes as neutral transit with either:
 
 - `zone_kind=connector_tube`, or

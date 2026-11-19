@@ -400,6 +400,72 @@ def _parse_dream_restore_command(text: str) -> Dict[str, Any]:
     return {"name": "dream_memory", "args": {"action": "restore", "run_id": run_id}}
 
 
+def _parse_kv_and_path_args(raw_rest: str) -> Dict[str, Any]:
+    try:
+        tokens = shlex.split(raw_rest) if raw_rest else []
+    except ValueError:
+        tokens = raw_rest.split() if raw_rest else []
+    positional: list[str] = []
+    kv: dict[str, str] = {}
+    for tok in tokens:
+        if "=" in tok:
+            k, v = tok.split("=", 1)
+            kv[str(k).strip().lower()] = _strip_wrapping_quotes(v)
+        else:
+            positional.append(_strip_wrapping_quotes(tok))
+    out: Dict[str, Any] = {
+        "path": kv.get("path")
+        or kv.get("source")
+        or kv.get("video")
+        or kv.get("file")
+        or (positional[0] if positional else ""),
+    }
+    if "output_dir" in kv or "out" in kv:
+        out["output_dir"] = kv.get("output_dir") or kv.get("out") or ""
+    if "events_csv" in kv or "events" in kv:
+        out["events_csv"] = kv.get("events_csv") or kv.get("events") or ""
+    if "zone_file" in kv or "zones" in kv:
+        out["zone_file"] = kv.get("zone_file") or kv.get("zones") or ""
+    if "calibration" in kv or "calibration_json" in kv:
+        out["calibration"] = kv.get("calibration") or kv.get("calibration_json") or ""
+    if "schema" in kv or "schema_path" in kv:
+        out["schema_path"] = kv.get("schema") or kv.get("schema_path") or ""
+    for num_key in ("fps", "px_per_cm"):
+        if num_key in kv and kv[num_key]:
+            try:
+                out[num_key] = float(kv[num_key])
+            except ValueError:
+                pass
+    return out
+
+
+def _parse_stats_command(text: str) -> Dict[str, Any]:
+    trimmed = str(text or "").strip()
+    lowered = trimmed.lower()
+    if lowered != "/stats" and not lowered.startswith("/stats "):
+        return {}
+    rest = trimmed[len("/stats") :].strip()
+    return {"name": "stats_slash", "args": _parse_kv_and_path_args(rest)}
+
+
+def _parse_qc_command(text: str) -> Dict[str, Any]:
+    trimmed = str(text or "").strip()
+    lowered = trimmed.lower()
+    if lowered != "/qc" and not lowered.startswith("/qc "):
+        return {}
+    rest = trimmed[len("/qc") :].strip()
+    return {"name": "qc_slash", "args": _parse_kv_and_path_args(rest)}
+
+
+def _parse_report_command(text: str) -> Dict[str, Any]:
+    trimmed = str(text or "").strip()
+    lowered = trimmed.lower()
+    if lowered != "/report" and not lowered.startswith("/report "):
+        return {}
+    rest = trimmed[len("/report") :].strip()
+    return {"name": "report_slash", "args": _parse_kv_and_path_args(rest)}
+
+
 DIRECT_SLASH_COMMAND_SPECS: Tuple[SlashCommandSpec, ...] = (
     SlashCommandSpec(
         name="behavior",
@@ -547,6 +613,43 @@ DIRECT_SLASH_COMMAND_SPECS: Tuple[SlashCommandSpec, ...] = (
         insert="/gh ",
         examples=("'/gh status'", "'/gh checks'"),
         parser=_parse_github_command,
+    ),
+    SlashCommandSpec(
+        name="stats",
+        aliases=("stats",),
+        display="/stats",
+        description="Compute kinematics or tracking telemetry stats",
+        insert="/stats ",
+        examples=(
+            "'/stats'",
+            "'/stats /path/to/video_tracking.csv px_per_cm=12.5'",
+        ),
+        parser=_parse_stats_command,
+    ),
+    SlashCommandSpec(
+        name="qc",
+        aliases=("qc",),
+        display="/qc",
+        description="Audit multi-animal tracks or behavior event CSV quality",
+        insert="/qc ",
+        examples=(
+            "'/qc'",
+            "'/qc /path/to/video_tracking.csv'",
+            "'/qc /path/to/events.csv'",
+        ),
+        parser=_parse_qc_command,
+    ),
+    SlashCommandSpec(
+        name="report",
+        aliases=("report",),
+        display="/report",
+        description="Generate unified HTML5 + SVG + Markdown + JSON scientific report",
+        insert="/report ",
+        examples=(
+            "'/report'",
+            "'/report /path/to/video.mp4 px_per_cm=12.5'",
+        ),
+        parser=_parse_report_command,
     ),
     SlashCommandSpec(
         name="capabilities",

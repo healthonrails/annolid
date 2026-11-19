@@ -534,6 +534,16 @@ class MenuController:
                 ),
             },
             {
+                "name": "analysis_studio",
+                "text": w.tr("Analysis && &Reporting Studio…"),
+                "slot": w.open_analysis_studio,
+                "shortcut": "Ctrl+Shift+R",
+                "tip": w.tr(
+                    "Open unified workbench for Track QC, Kinematics, Freezing, Ethograms, IRR, Cohort Stats, and HTML5/SVG Reports"
+                ),
+                "icon_name": "visualization",
+            },
+            {
                 "name": "tracking_stats_dashboard",
                 "text": w.tr("Tracking Stats &Dashboard…"),
                 "slot": w.open_tracking_stats_dashboard,
@@ -1436,6 +1446,7 @@ class MenuController:
         # ============================================================
         analysis_sections = [
             (
+                actions["analysis_studio"],
                 actions["labeling_progress_dashboard"],
                 actions["tracking_stats_dashboard"],
                 actions["tracking_reports"],

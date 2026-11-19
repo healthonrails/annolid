@@ -83,14 +83,23 @@ class AnalysisCodingAgent:
         segments: list[BehaviorSegment],
     ) -> CodingResult:
         code, generation_meta = self._generate_code_with_meta(plan)
+        bout_count = sum(
+            1
+            for seg in segments
+            if "bout" in str(getattr(seg, "label", "") or "").lower()
+        ) or int(len(segments))
         inputs = {
             "assay_type": str(plan.assay_type),
             "artifact_count": int(len(artifacts)),
             "segment_count": int(len(segments)),
+            "bout_count": int(bout_count),
         }
         exec_output = execute_generated_analysis(code, inputs)
         metrics = self._derive_metrics(
-            plan=plan, artifacts=artifacts, segments=segments
+            plan=plan,
+            artifacts=artifacts,
+            segments=segments,
+            exec_output=exec_output,
         )
         evidence_row: dict[str, object] = {
             "stage": "analysis_coding",
@@ -123,13 +132,23 @@ class AnalysisCodingAgent:
         self,
         plan: TaskPlan,
     ) -> tuple[str, dict[str, str]]:
+        settings = self._resolved_settings()
+        explicit_provider = (
+            self._provider_override or str(settings.get("provider") or "").strip()
+        ).lower()
+        if explicit_provider in {"none", "deterministic", "offline", "disabled"}:
+            return self._deterministic_code(plan), {
+                "mode": "deterministic_fallback",
+                "provider": explicit_provider,
+                "model": self._model_override or "",
+                "fallback_reason": f"explicit_{explicit_provider}_mode",
+            }
         config = resolve_llm_config(
             profile=None,
             provider=self._provider_override,
             model=self._model_override,
             persist=False,
         )
-        settings = self._resolved_settings()
         kind = provider_kind(settings, config.provider)
         fallback_meta = {
             "mode": "deterministic_fallback",
@@ -388,6 +407,7 @@ class AnalysisCodingAgent:
         plan: TaskPlan,
         artifacts: list[TrackArtifact],
         segments: list[BehaviorSegment],
+        exec_output: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = [
             {
@@ -407,6 +427,15 @@ class AnalysisCodingAgent:
                         **row.to_dict(),
                     }
                 )
+        if isinstance(exec_output, dict):
+            reserved = {"status", "assay_type", "artifact_count", "segment_count"}
+            seen_metrics = {str(r.get("metric")) for r in rows}
+            for key in sorted(exec_output.keys()):
+                if key in reserved or key in seen_metrics:
+                    continue
+                val = exec_output[key]
+                if isinstance(val, (int, float, str, bool)):
+                    rows.append({"metric": str(key), "value": val})
         return rows
 
 

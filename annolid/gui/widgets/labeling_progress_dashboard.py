@@ -292,6 +292,10 @@ class _BarsWidget(QtWidgets.QWidget):
     def set_series(self, rows: Sequence[tuple[str, int]]) -> None:
         self._labels = [str(k) for k, _ in rows]
         self._values = [int(v) for _, v in rows]
+        if rows:
+            self.setToolTip("\n".join(f"{k}: {v}" for k, v in rows))
+        else:
+            self.setToolTip("")
         self.update()
 
     def paintEvent(
@@ -300,13 +304,14 @@ class _BarsWidget(QtWidgets.QWidget):
         super().paintEvent(event)
         painter = QtGui.QPainter(self)
         painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
-        rect = self.rect().adjusted(6, 8, -6, -18)
+        rect = self.rect().adjusted(6, 16, -6, -20)
         if rect.width() <= 10 or rect.height() <= 10 or not self._values:
             return
         vmax = max(self._values) or 1
         n = len(self._values)
         gap = 6
         bar_w = max(4, int((rect.width() - gap * (n - 1)) / max(1, n)))
+        metrics = painter.fontMetrics()
         for i, val in enumerate(self._values):
             h = int((val / vmax) * rect.height())
             x = rect.x() + i * (bar_w + gap)
@@ -316,9 +321,18 @@ class _BarsWidget(QtWidgets.QWidget):
             painter.drawRoundedRect(QtCore.QRectF(x, y, bar_w, h), 3, 3)
             painter.setPen(QtGui.QColor("#334e68"))
             painter.drawText(
-                QtCore.QRectF(x - 6, rect.bottom() + 2, bar_w + 12, 14),
+                QtCore.QRectF(x - 4, max(0, y - 14), bar_w + 8, 12),
+                QtCore.Qt.AlignHCenter | QtCore.Qt.AlignBottom,
+                str(val),
+            )
+            raw_lbl = self._labels[i] if i < len(self._labels) else str(i + 1)
+            elided = metrics.elidedText(
+                raw_lbl, QtCore.Qt.ElideRight, max(16, bar_w + 8)
+            )
+            painter.drawText(
+                QtCore.QRectF(x - 4, rect.bottom() + 2, bar_w + 8, 16),
                 QtCore.Qt.AlignHCenter | QtCore.Qt.AlignTop,
-                str(i + 1),
+                elided,
             )
 
 
@@ -514,6 +528,7 @@ class LabelingProgressDashboardWidget(QtWidgets.QWidget):
         browse_project = QtWidgets.QPushButton("Browse Project", self)
         browse_annotations = QtWidgets.QPushButton("Browse Annotations", self)
         self.refresh_btn = QtWidgets.QPushButton("Refresh", self)
+        self.export_btn = QtWidgets.QPushButton("Export JSON…", self)
         self.refresh_busy = QtWidgets.QProgressBar(self)
         self.refresh_busy.setRange(0, 0)
         self.refresh_busy.setTextVisible(False)
@@ -522,12 +537,14 @@ class LabelingProgressDashboardWidget(QtWidgets.QWidget):
         browse_project.clicked.connect(self._browse_project_root)
         browse_annotations.clicked.connect(self._browse_annotation_root)
         self.refresh_btn.clicked.connect(self.refresh_stats)
+        self.export_btn.clicked.connect(lambda: self.export_stats_json())
         path_row.addWidget(self.project_path_edit, 2)
         path_row.addWidget(browse_project)
         path_row.addWidget(self.annotation_path_edit, 2)
         path_row.addWidget(browse_annotations)
         path_row.addWidget(self.refresh_busy)
         path_row.addWidget(self.refresh_btn)
+        path_row.addWidget(self.export_btn)
         layout.addLayout(path_row)
 
         cards_layout = QtWidgets.QHBoxLayout()
@@ -788,6 +805,57 @@ class LabelingProgressDashboardWidget(QtWidgets.QWidget):
         self.status_label.setText(
             f"Source={source} | project={stats.project_root} | annotations={stats.annotation_root}"
         )
+
+    def export_stats_json(self, output_path: Path | str | None = None) -> Path | None:
+        stats = self._last_stats
+        if stats is None:
+            return None
+        if output_path is None:
+            chosen, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self,
+                "Export Labeling Progress Stats",
+                str(stats.project_root / "labeling_progress_stats.json"),
+                "JSON Files (*.json)",
+            )
+            if not chosen:
+                return None
+            target = Path(chosen)
+        else:
+            target = Path(output_path)
+
+        from annolid.utils.atomic_io import atomic_write_json
+
+        payload = {
+            "schema": "labeling_progress_stats/v1",
+            "project_root": str(stats.project_root),
+            "annotation_root": str(stats.annotation_root),
+            "total_images": int(stats.total_images),
+            "total_annotation_files": int(stats.total_annotation_files),
+            "labeled_files": int(stats.labeled_files),
+            "total_shapes": int(stats.total_shapes),
+            "created_files": int(stats.created_files),
+            "edited_files": int(stats.edited_files),
+            "coverage_percent": round(float(stats.coverage_percent), 4),
+            "top_labels": [[k, int(v)] for k, v in stats.top_labels],
+            "shape_type_counts": [[k, int(v)] for k, v in stats.shape_type_counts],
+            "annotator_file_counts": [
+                [k, int(v)] for k, v in stats.annotator_file_counts
+            ],
+            "annotator_shape_counts": [
+                [k, int(v)] for k, v in stats.annotator_shape_counts
+            ],
+            "activity_last_7_days": [
+                [d.isoformat(), int(c)] for d, c in stats.activity_last_7_days
+            ],
+            "gamification": {
+                "score": int(stats.gamification.score),
+                "level": int(stats.gamification.level),
+                "streak_days": int(stats.gamification.streak_days),
+            },
+        }
+        atomic_write_json(target, payload, indent=2, ensure_ascii=False)
+        self.status_label.setText(f"Exported stats JSON to {target}")
+        return target
 
     def apply_index_stats_snapshot(self, payload: Dict[str, object]) -> None:
         project_root = Path(self.project_path_edit.text().strip() or ".").expanduser()

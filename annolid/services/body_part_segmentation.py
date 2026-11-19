@@ -36,7 +36,10 @@ def _load_skeleton_edges(
     if not resolved.exists():
         raise FileNotFoundError(f"Pose schema file not found: {resolved}")
     schema = PoseSchema.load(resolved)
-    return tuple((str(a), str(b)) for a, b in (schema.skeleton or ()))
+    raw_edges = (
+        getattr(schema, "edges", None) or getattr(schema, "skeleton", None) or ()
+    )
+    return tuple((str(a), str(b)) for a, b in raw_edges)
 
 
 def _parse_keypoint_part_map(

@@ -19,7 +19,7 @@ import math
 from typing import Deque, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from annolid.behavior.event_utils import (
-    normalize_event_label,
+    classify_event_label,
     parse_recording_seconds,
 )
 from annolid.core.behavior.spec import ProjectSchema, load_behavior_spec
@@ -215,10 +215,20 @@ def extract_behavior_intervals(
             )
             continue
 
-        event_type = normalize_event_label(str(label))
+        event_type = classify_event_label(str(label))
         if event_type is None:
             warnings.append(
                 f"Ignoring unrecognised event label '{label}' for subject '{subject}', behavior '{behavior}'."
+            )
+            continue
+        if event_type == "point":
+            intervals.append(
+                BehaviorInterval(
+                    subject=subject,
+                    behavior=behavior,
+                    start=recording_time,
+                    end=recording_time,
+                )
             )
             continue
 
@@ -288,7 +298,30 @@ def extract_behavior_intervals(
     return intervals, warnings
 
 
-def summarize_intervals(intervals: Iterable[BehaviorInterval]) -> List[TimeBudgetRow]:
+def _merge_overlapping_intervals(
+    items: Sequence[BehaviorInterval],
+) -> List[Tuple[float, float]]:
+    positive = sorted(
+        [(float(i.start), float(i.end)) for i in items if i.end > i.start],
+        key=lambda pair: (pair[0], pair[1]),
+    )
+    if not positive:
+        return []
+    merged: List[Tuple[float, float]] = [positive[0]]
+    for s_val, e_val in positive[1:]:
+        prev_s, prev_e = merged[-1]
+        if s_val <= prev_e + 1e-9:
+            merged[-1] = (prev_s, max(prev_e, e_val))
+        else:
+            merged.append((s_val, e_val))
+    return merged
+
+
+def summarize_intervals(
+    intervals: Iterable[BehaviorInterval],
+    *,
+    session_duration: Optional[float] = None,
+) -> List[TimeBudgetRow]:
     """Aggregate durations per subject/behavior for the provided intervals."""
 
     interval_list = list(intervals)
@@ -301,7 +334,12 @@ def summarize_intervals(intervals: Iterable[BehaviorInterval]) -> List[TimeBudge
 
     session_start = min(i.start for i in interval_list)
     session_end = max(i.end for i in interval_list)
-    session_duration = max(0.0, session_end - session_start)
+    observed_span = max(0.0, session_end - session_start)
+    eff_session_duration = (
+        max(0.0, float(session_duration))
+        if session_duration is not None and float(session_duration) > 0.0
+        else observed_span
+    )
 
     summary: List[TimeBudgetRow] = []
     for (subject, behavior), items in sorted(grouped.items()):
@@ -309,8 +347,12 @@ def summarize_intervals(intervals: Iterable[BehaviorInterval]) -> List[TimeBudge
         if not durations:
             continue
         total_duration = sum(durations)
+        merged_spans = _merge_overlapping_intervals(items)
+        union_duration = sum(e_val - s_val for s_val, e_val in merged_spans)
         percent = (
-            (total_duration / session_duration * 100.0) if session_duration > 0 else 0.0
+            min(100.0, union_duration / eff_session_duration * 100.0)
+            if eff_session_duration > 0
+            else 0.0
         )
         summary.append(
             TimeBudgetRow(
@@ -331,10 +373,12 @@ def summarize_intervals(intervals: Iterable[BehaviorInterval]) -> List[TimeBudge
 
 def compute_time_budget(
     rows: str | Path | Iterable[Dict[str, object]],
+    *,
+    session_duration: Optional[float] = None,
 ) -> Tuple[List[TimeBudgetRow], List[str]]:
     """Compute aggregated time-budget metrics from raw event rows or a CSV path."""
     intervals, warnings = extract_behavior_intervals(rows)
-    summary = summarize_intervals(intervals)
+    summary = summarize_intervals(intervals, session_duration=session_duration)
     return summary, warnings
 
 
@@ -389,21 +433,26 @@ def compute_binned_time_budget(
     epsilon = 1e-9
     bin_totals: Dict[Tuple[str, str, float, float], float] = defaultdict(float)
 
+    grouped_for_bins: Dict[Tuple[str, str], List[BehaviorInterval]] = defaultdict(list)
     for interval in interval_list:
-        start_idx = max(0, int(math.floor((interval.start - session_start) / bin_size)))
-        end_idx = max(
-            0,
-            int(math.floor((interval.end - session_start - epsilon) / bin_size)),
-        )
-        for idx in range(start_idx, end_idx + 1):
-            bin_start = session_start + idx * bin_size
-            bin_end = min(bin_start + bin_size, session_end)
-            overlap_start = max(interval.start, bin_start)
-            overlap_end = min(interval.end, bin_end)
-            duration = overlap_end - overlap_start
-            if duration > epsilon:
-                key = (interval.subject, interval.behavior, bin_start, bin_end)
-                bin_totals[key] += duration
+        grouped_for_bins[(interval.subject, interval.behavior)].append(interval)
+
+    for (subject, behavior), items in grouped_for_bins.items():
+        for span_start, span_end in _merge_overlapping_intervals(items):
+            start_idx = max(0, int(math.floor((span_start - session_start) / bin_size)))
+            end_idx = max(
+                0,
+                int(math.floor((span_end - session_start - epsilon) / bin_size)),
+            )
+            for idx in range(start_idx, end_idx + 1):
+                bin_start = session_start + idx * bin_size
+                bin_end = min(bin_start + bin_size, session_end)
+                overlap_start = max(span_start, bin_start)
+                overlap_end = min(span_end, bin_end)
+                duration = overlap_end - overlap_start
+                if duration > epsilon:
+                    key = (subject, behavior, bin_start, bin_end)
+                    bin_totals[key] += duration
 
     rows = [
         BinnedTimeBudgetRow(

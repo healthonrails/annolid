@@ -1,6 +1,10 @@
-from qtpy import QtWidgets, QtCore, QtGui
+import csv
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import Any, Dict, List, Optional
+
+from qtpy import QtCore, QtGui, QtWidgets
+
+from annolid.utils.atomic_io import atomic_write_text
 
 
 class FileAuditWidget(QtWidgets.QWidget):
@@ -11,7 +15,7 @@ class FileAuditWidget(QtWidgets.QWidget):
         self.layout = QtWidgets.QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
 
-        # Filters
+        # Filters & Export
         filter_layout = QtWidgets.QHBoxLayout()
         self.btn_all = QtWidgets.QRadioButton("All")
         self.btn_valid = QtWidgets.QRadioButton("Valid")
@@ -22,11 +26,16 @@ class FileAuditWidget(QtWidgets.QWidget):
         self.btn_valid.toggled.connect(self._apply_filter)
         self.btn_issues.toggled.connect(self._apply_filter)
 
+        self.btn_export_csv = QtWidgets.QPushButton("Export CSV…")
+        self.btn_export_csv.setToolTip("Export displayed file audit rows to CSV")
+        self.btn_export_csv.clicked.connect(lambda: self.export_csv())
+
         filter_layout.addWidget(QtWidgets.QLabel("Filter:"))
         filter_layout.addWidget(self.btn_all)
         filter_layout.addWidget(self.btn_valid)
         filter_layout.addWidget(self.btn_issues)
         filter_layout.addStretch()
+        filter_layout.addWidget(self.btn_export_csv)
         self.layout.addLayout(filter_layout)
 
         # Table
@@ -36,6 +45,7 @@ class FileAuditWidget(QtWidgets.QWidget):
         self.table.horizontalHeader().setSectionResizeMode(
             1, QtWidgets.QHeaderView.Stretch
         )
+        self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._show_context_menu)
@@ -48,14 +58,12 @@ class FileAuditWidget(QtWidgets.QWidget):
         self.items = items
         self._apply_filter()
 
-    def _apply_filter(self):
+    def _filtered_items(self) -> List[Dict[str, Any]]:
         mode = "all"
         if self.btn_valid.isChecked():
             mode = "valid"
         elif self.btn_issues.isChecked():
             mode = "issues"
-
-        self.table.setRowCount(0)
 
         filtered = []
         for item in self.items:
@@ -65,10 +73,13 @@ class FileAuditWidget(QtWidgets.QWidget):
             if mode == "issues" and is_valid:
                 continue
             filtered.append(item)
+        return filtered
 
+    def _apply_filter(self):
+        self.table.setRowCount(0)
+        filtered = self._filtered_items()
         self.table.setRowCount(len(filtered))
         for row, item in enumerate(filtered):
-            # Status Icon
             status_item = QtWidgets.QTableWidgetItem()
             if item["status"] == "valid":
                 status_item.setText("✅")
@@ -82,24 +93,52 @@ class FileAuditWidget(QtWidgets.QWidget):
             status_item.setTextAlignment(QtCore.Qt.AlignCenter)
             self.table.setItem(row, 0, status_item)
 
-            # Filename
             fname_item = QtWidgets.QTableWidgetItem(item["json_path"].name)
             fname_item.setToolTip(str(item["json_path"]))
             self.table.setItem(row, 1, fname_item)
 
-            # Image existing?
             img_text = "Yes" if item.get("image_path") else "Missing"
             img_item = QtWidgets.QTableWidgetItem(img_text)
             if not item.get("image_path"):
                 img_item.setForeground(QtGui.QColor("red"))
             self.table.setItem(row, 2, img_item)
 
-            # Shape count
             shape_item = QtWidgets.QTableWidgetItem(str(item.get("shape_count", 0)))
             self.table.setItem(row, 3, shape_item)
 
-            # Store data user role
             fname_item.setData(QtCore.Qt.UserRole, item)
+
+    def export_csv(self, output_path: Optional[Path | str] = None) -> Optional[Path]:
+        rows = self._filtered_items()
+        if output_path is None:
+            chosen, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self,
+                "Export File Audit CSV",
+                "file_audit.csv",
+                "CSV Files (*.csv)",
+            )
+            if not chosen:
+                return None
+            target = Path(chosen)
+        else:
+            target = Path(output_path)
+
+        import io
+
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(["status", "json_path", "image_path", "shape_count"])
+        for item in rows:
+            writer.writerow(
+                [
+                    item.get("status", ""),
+                    str(item.get("json_path", "")),
+                    str(item.get("image_path") or ""),
+                    int(item.get("shape_count", 0) or 0),
+                ]
+            )
+        atomic_write_text(target, buf.getvalue(), encoding="utf-8")
+        return target
 
     def _show_context_menu(self, position):
         menu = QtWidgets.QMenu()
@@ -107,7 +146,6 @@ class FileAuditWidget(QtWidgets.QWidget):
         if not selected:
             return
 
-        # Get item data from the Filename column (column 1)
         row = selected[0].row()
         item_data = self.table.item(row, 1).data(QtCore.Qt.UserRole)
         json_path: Path = item_data["json_path"]
@@ -137,9 +175,7 @@ class FileAuditWidget(QtWidgets.QWidget):
             try:
                 path.unlink()
                 self.table.removeRow(row)
-                # Remove from internal list
                 self.items = [i for i in self.items if i["json_path"] != path]
-                # Re-apply filter to update view correctly
                 self._apply_filter()
             except Exception as e:
                 QtWidgets.QMessageBox.critical(self, "Error", f"Failed to delete: {e}")

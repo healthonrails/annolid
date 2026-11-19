@@ -6,21 +6,20 @@ metadata: '{"annolid":{"always":false}}'
 
 # Sandboxed Analysis
 
-Use this skill when the bot needs to derive metrics or summaries by generating
-code.
+Use this skill when custom metrics must be computed via deterministic Python scripts after checking whether built-in Annolid analytics tools already cover the request.
 
-## Rules
+## Prefer Built-In Tools First
 
-1. Generate the smallest analysis program that answers the question.
-2. Keep inputs and outputs explicit.
-3. Prefer deterministic aggregation over heuristic post-processing.
-4. Do not depend on network access or non-approved packages.
-5. Preserve replayability: code should be valid against stored artifacts.
+Before writing custom scripts, check whether one of Annolid's validated tools solves the task directly:
+- `annolid_kinematics_stats` (distance, speed, acceleration, tortuosity, freezing bouts, pairwise distance)
+- `annolid_zone_analysis` (polygon/rectangle/circle ROI occupancy, entries, latency, assay profiles)
+- `annolid_behavior_time_budget` / `annolid_behavior_qc` / `annolid_behavior_irr` / `annolid_behavior_cohort`
+- `annolid_generate_report` (HTML5 + inline SVG + Markdown + JSON report bundle)
 
-## Typical outputs
+## Rules for Custom Sandboxed Code
 
-- dwell time,
-- bout counts,
-- transition matrices,
-- proximity summaries,
-- assay-specific comparison metrics.
+1. Generate the smallest deterministic Python program using core dependencies (`numpy`, `pandas`, `shapely`, standard library `math`/`statistics`/`csv`/`json`); guard optional imports like `scipy` or `matplotlib`.
+2. Keep input paths, column names (`frame_number`, `instance_name`, `cx`, `cy`, `Recording time`, `Subject`, `Behavior`, `Event`), and output units explicit.
+3. Never mutate raw tracking CSVs or frame JSON annotations in place; write derived summaries to new files.
+4. Do not depend on network access or interactive GUI windows (`cv2.imshow`, `plt.show`).
+5. Record seed values (e.g. `rng = random.Random(42)`) for any bootstrap or permutation calculations.

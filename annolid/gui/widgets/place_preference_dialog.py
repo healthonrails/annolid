@@ -98,6 +98,7 @@ class TrackingAnalyzerDialog(QDialog):
         self._active_status_prefix: str | None = None
         self._active_export_started: float | None = None
         self._cancel_requested = False
+        self._last_output_path: str | None = None
 
         self._build_ui()
         self._bind_live_updates()
@@ -423,6 +424,28 @@ class TrackingAnalyzerDialog(QDialog):
         self.status_label.setProperty("analysisHint", True)
         content_layout.addWidget(self.status_label)
 
+        preview_box = QtWidgets.QGroupBox("Latest Export Preview", container)
+        preview_layout = QtWidgets.QVBoxLayout(preview_box)
+        preview_btn_row = QtWidgets.QHBoxLayout()
+        self.open_report_button = QtWidgets.QPushButton("Open Output")
+        self.open_report_button.setEnabled(False)
+        self.open_report_button.clicked.connect(self._open_last_output)
+        self.open_folder_button = QtWidgets.QPushButton("Open Folder")
+        self.open_folder_button.setEnabled(False)
+        self.open_folder_button.clicked.connect(self._open_last_output_folder)
+        preview_btn_row.addWidget(self.open_report_button)
+        preview_btn_row.addWidget(self.open_folder_button)
+        preview_btn_row.addStretch(1)
+        preview_layout.addLayout(preview_btn_row)
+        self.results_preview_table = QtWidgets.QTableWidget(0, 0, preview_box)
+        self.results_preview_table.setEditTriggers(
+            QtWidgets.QAbstractItemView.NoEditTriggers
+        )
+        self.results_preview_table.setAlternatingRowColors(True)
+        self.results_preview_table.setMinimumHeight(140)
+        preview_layout.addWidget(self.results_preview_table)
+        content_layout.addWidget(preview_box)
+
     def _create_inline_metric(
         self,
         parent_layout: QtWidgets.QHBoxLayout,
@@ -445,7 +468,7 @@ class TrackingAnalyzerDialog(QDialog):
 
     def browse_video(self):
         filename, _ = QFileDialog.getOpenFileName(
-            self, "Select Video File", "", "Video Files (*.mp4 *.avi *.mkv *.mov,)"
+            self, "Select Video File", "", "Video Files (*.mp4 *.avi *.mkv *.mov)"
         )
         if filename:
             self.video_path_edit.setText(filename)
@@ -486,7 +509,6 @@ class TrackingAnalyzerDialog(QDialog):
         else:
             self.progress.setRange(0, 1)
             self.progress.setValue(0)
-        QApplication.processEvents()
 
     def _set_output_mode(self, mode_key: str) -> None:
         for index in range(self.output_mode_combo.count()):
@@ -852,10 +874,61 @@ class TrackingAnalyzerDialog(QDialog):
             QtWidgets.QMessageBox.warning(self, f"{status_prefix} failed", str(exc))
             return None
         elapsed = time.monotonic() - start
+        self._record_last_output(str(output_path))
         self._set_status(
             f"{status_prefix} saved to {output_path} ({elapsed:.1f}s).", busy=False
         )
         return output_path
+
+    def _record_last_output(self, output_path: str) -> None:
+        out_p = Path(str(output_path or "").strip())
+        self._last_output_path = str(out_p)
+        exists = out_p.exists()
+        self.open_report_button.setEnabled(exists)
+        self.open_folder_button.setEnabled(exists or out_p.parent.exists())
+
+        csv_target: Path | None = None
+        if out_p.is_file() and out_p.suffix.lower() == ".csv":
+            csv_target = out_p
+        elif out_p.is_file() and out_p.suffix.lower() == ".md":
+            sibling_csv = out_p.with_suffix(".csv")
+            if sibling_csv.is_file():
+                csv_target = sibling_csv
+
+        if csv_target is not None:
+            try:
+                import pandas as pd
+
+                df = pd.read_csv(csv_target).head(50)
+                cols = [str(c) for c in df.columns]
+                self.results_preview_table.clear()
+                self.results_preview_table.setColumnCount(len(cols))
+                self.results_preview_table.setRowCount(len(df))
+                self.results_preview_table.setHorizontalHeaderLabels(cols)
+                for r_idx in range(len(df)):
+                    row = df.iloc[r_idx]
+                    for c_idx, c_name in enumerate(cols):
+                        val = row.get(c_name, "")
+                        txt = "" if pd.isna(val) else str(val)
+                        self.results_preview_table.setItem(
+                            r_idx, c_idx, QtWidgets.QTableWidgetItem(txt)
+                        )
+                self.results_preview_table.resizeColumnsToContents()
+            except Exception:
+                pass
+
+    def _open_last_output(self) -> None:
+        if self._last_output_path and Path(self._last_output_path).exists():
+            QtGui.QDesktopServices.openUrl(
+                QtCore.QUrl.fromLocalFile(str(Path(self._last_output_path).resolve()))
+            )
+
+    def _open_last_output_folder(self) -> None:
+        if not self._last_output_path:
+            return
+        folder = Path(self._last_output_path).resolve().parent
+        if folder.exists():
+            QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(folder)))
 
     def _cleanup_export_worker(self) -> None:
         self._export_thread = None
@@ -870,6 +943,7 @@ class TrackingAnalyzerDialog(QDialog):
         started = self._active_export_started
         elapsed = (time.monotonic() - started) if started is not None else None
         elapsed_suffix = f" ({elapsed:.1f}s)" if elapsed is not None else ""
+        self._record_last_output(output_path)
         if self._cancel_requested:
             self._set_status(
                 f"{status_prefix}: cancellation requested, but current step completed and saved {output_path}{elapsed_suffix}.",

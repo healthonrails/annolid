@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from annolid.behavior.cohort import (
     CohortBehaviorReport,
+    CohortComparisonRow,
     CohortComputationError,
     CohortGroupSummaryRow,
     CohortRecordingSpec,
@@ -21,6 +22,7 @@ from annolid.behavior.cohort import (
     apply_cohort_metadata_csv,
     format_cohort_report_table,
     load_cohort_manifest,
+    write_cohort_comparisons_csv,
     write_cohort_group_summary_csv,
     write_cohort_subject_rows_csv,
     write_transition_matrix_csv,
@@ -28,9 +30,11 @@ from annolid.behavior.cohort import (
 from annolid.behavior.irr import (
     BehaviorIRRRow,
     IRRComputationError,
+    IRRDisagreementBout,
     IRRReport,
     compute_irr_from_csvs,
     format_irr_report_table,
+    write_irr_disagreements_csv,
     write_irr_report_json,
     write_irr_summary_csv,
 )
@@ -68,12 +72,14 @@ __all__ = [
     "EthogramIssue",
     "EthogramQCReport",
     "BehaviorIRRRow",
+    "IRRDisagreementBout",
     "IRRReport",
     "IRRComputationError",
     "CohortComputationError",
     "CohortRecordingSpec",
     "CohortSubjectRow",
     "CohortGroupSummaryRow",
+    "CohortComparisonRow",
     "TransitionEdge",
     "CohortBehaviorReport",
     "run_behavior_qc",
@@ -193,6 +199,7 @@ def run_behavior_irr_cli(
     json_stdout: bool = False,
     out_json: Optional[Path | str] = None,
     csv_out: Optional[Path | str] = None,
+    disagreements_csv: Optional[Path | str] = None,
 ) -> int:
     """Execute ``annolid-run behavior-irr`` and return a process exit code."""
     if len(csv_paths) < 2:
@@ -224,6 +231,8 @@ def run_behavior_irr_cli(
         write_irr_report_json(report, Path(out_json))
     if csv_out is not None:
         write_irr_summary_csv(report, Path(csv_out))
+    if disagreements_csv is not None:
+        write_irr_disagreements_csv(report, Path(disagreements_csv))
 
     if json_stdout:
         print(json.dumps(report.to_dict(), indent=2, ensure_ascii=False))
@@ -248,6 +257,7 @@ def run_behavior_time_budget_cli(
     json_stdout: bool = False,
     strict: bool = False,
     bin_size: Optional[float] = None,
+    session_duration: Optional[float] = None,
     schema_path: Optional[Path | str] = None,
     bout_profile: Optional[str] = None,
     bout_name: str = "custom_bout",
@@ -274,7 +284,7 @@ def run_behavior_time_budget_cli(
         print(f"[annolid-run] Failed to read events file: {exc}", file=sys.stderr)
         return 2
 
-    summary = summarize_intervals(intervals)
+    summary = summarize_intervals(intervals, session_duration=session_duration)
 
     try:
         binned_rows = (
@@ -417,6 +427,32 @@ def run_behavior_time_budget_cli(
                 bout_path,
                 behavior_order=bout_definition.behaviors,
             )
+        if binned_rows is not None:
+            binned_path = out_path.with_name(
+                out_path.stem + "_binned" + out_path.suffix
+            )
+            bin_buf = io.StringIO()
+            bin_writer = csv.writer(bin_buf)
+            bin_writer.writerow(
+                [
+                    "Subject",
+                    "Behavior",
+                    "BinStartSeconds",
+                    "BinEndSeconds",
+                    "DurationSeconds",
+                ]
+            )
+            for b_row in binned_rows:
+                bin_writer.writerow(
+                    [
+                        b_row.subject,
+                        b_row.behavior,
+                        f"{b_row.bin_start:.6f}",
+                        f"{b_row.bin_end:.6f}",
+                        f"{b_row.duration:.6f}",
+                    ]
+                )
+            atomic_write_text(binned_path, bin_buf.getvalue(), encoding="utf-8")
 
     if json_stdout:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
@@ -517,6 +553,7 @@ def run_behavior_cohort(
     include_self_transitions: bool = True,
     include_schema_behaviors: bool = False,
     strict: bool = False,
+    analysis_unit: str = "subject",
     excluded_paths: Optional[Sequence[Path]] = None,
 ) -> CohortBehaviorReport:
     """Aggregate behavioral endpoints and Markov transitions across a cohort."""
@@ -535,6 +572,7 @@ def run_behavior_cohort(
         include_self_transitions=include_self_transitions,
         include_schema_behaviors=include_schema_behaviors,
         strict=strict,
+        analysis_unit=analysis_unit,
     )
 
 
@@ -549,16 +587,18 @@ def run_behavior_cohort_cli(
     exclude_self_transitions: bool = False,
     include_schema_behaviors: bool = False,
     strict: bool = False,
+    analysis_unit: str = "subject",
     json_stdout: bool = False,
     out_json: Optional[Path | str] = None,
     summary_csv: Optional[Path | str] = None,
     subjects_csv: Optional[Path | str] = None,
     transitions_csv: Optional[Path | str] = None,
+    comparisons_csv: Optional[Path | str] = None,
 ) -> int:
     """Execute ``annolid-run behavior-cohort`` and return a process exit code."""
     excluded: List[Path] = [
         Path(p)
-        for p in (out_json, summary_csv, subjects_csv, transitions_csv)
+        for p in (out_json, summary_csv, subjects_csv, transitions_csv, comparisons_csv)
         if p is not None
     ]
     try:
@@ -572,6 +612,7 @@ def run_behavior_cohort_cli(
             include_self_transitions=not bool(exclude_self_transitions),
             include_schema_behaviors=bool(include_schema_behaviors),
             strict=bool(strict),
+            analysis_unit=analysis_unit,
             excluded_paths=excluded,
         )
     except (FileNotFoundError, ValueError, OSError, CohortComputationError) as exc:
@@ -595,6 +636,7 @@ def run_behavior_cohort_cli(
             "include_self_transitions": not bool(exclude_self_transitions),
             "include_schema_behaviors": bool(include_schema_behaviors),
             "strict": bool(strict),
+            "analysis_unit": str(analysis_unit or "subject"),
         },
     }
 
@@ -609,6 +651,8 @@ def run_behavior_cohort_cli(
         write_cohort_subject_rows_csv(report.subject_rows, Path(subjects_csv))
     if transitions_csv is not None:
         write_transition_matrix_csv(report.transitions, Path(transitions_csv))
+    if comparisons_csv is not None:
+        write_cohort_comparisons_csv(report.comparisons, Path(comparisons_csv))
 
     if json_stdout:
         print(json.dumps(payload, indent=2, ensure_ascii=False))

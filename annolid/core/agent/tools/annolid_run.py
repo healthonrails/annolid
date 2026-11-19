@@ -7,6 +7,7 @@ import os
 import shlex
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from threading import Lock
 from typing import Any, Sequence
 
 from annolid.engine.cli import main as annolid_run_main
@@ -18,25 +19,88 @@ from .function_base import FunctionTool
 class AnnolidRunTool(FunctionTool):
     """Run `annolid-run` commands through the in-process CLI entrypoint."""
 
-    _MUTATING_TOKENS = frozenset(
+    _CLI_LOCK = Lock()
+
+    _MUTATING_SUBCOMMANDS = frozenset(
         {
-            "--apply",
-            "--fix",
+            "agent",
+            "agent-behavior",
+            "agent-config-migrate",
+            "agent-cron-add",
+            "agent-cron-enable",
+            "agent-cron-remove",
+            "agent-cron-run",
+            "agent-eval",
+            "agent-meta-learning-maintenance-run",
+            "agent-onboard",
+            "agent-secrets-migrate",
+            "agent-secrets-remove",
+            "agent-secrets-set",
+            "agent-skills-import",
+            "agent-update",
+            "citations-format",
+            "citations-remove",
+            "citations-upsert",
+            "collect-labels",
+            "dino-kpseg-embeddings",
+            "dino-kpseg-precompute",
+            "dino-kpseg-split",
+            "import-deeplabcut-training-data",
+            "index-to-yolo",
+            "predict",
+            "repair-tracks",
+            "report",
+            "segment-body-parts",
+            "tracking-stats",
+            "train",
+            "zone-analysis",
+        }
+    )
+    _MUTATING_OPERATOR_VERBS = frozenset(
+        {
             "add",
             "build-regression",
+            "bundle",
             "flush",
             "gate",
+            "install",
             "migrate",
-            "predict",
             "refresh",
             "remove",
             "rollback",
             "run",
             "set",
             "shadow",
-            "train",
             "upsert",
             "write",
+        }
+    )
+    _MUTATING_FLAGS = frozenset(
+        {
+            "-o",
+            "--apply",
+            "--comparisons-csv",
+            "--csv-out",
+            "--disagreements-csv",
+            "--events-csv",
+            "--execute",
+            "--fix",
+            "--issues-csv",
+            "--json-out",
+            "--out",
+            "--out-json",
+            "--output",
+            "--output-dir",
+            "--output-prefix",
+            "--overwrite",
+            "--persist",
+            "--persist-json",
+            "--report-out",
+            "--review-csv",
+            "--subjects-csv",
+            "--summary-csv",
+            "--transitions-csv",
+            "--update",
         }
     )
     _PREFIXES = (
@@ -153,25 +217,55 @@ class AnnolidRunTool(FunctionTool):
 
     @classmethod
     def _is_mutating(cls, argv: Sequence[str]) -> bool:
-        tokens = {str(part or "").strip().lower() for part in argv}
-        return bool(tokens.intersection(cls._MUTATING_TOKENS))
+        cleaned = [str(part or "").strip() for part in argv if str(part or "").strip()]
+        if not cleaned:
+            return False
+        lowered = [part.lower() for part in cleaned]
+        if any(flag in {"-h", "--help", "--help-model"} for flag in lowered):
+            return False
 
-    @staticmethod
+        subcmd = lowered[0]
+        if subcmd in cls._MUTATING_SUBCOMMANDS:
+            return True
+        if subcmd == "gap-report" and "--no-write-reports" not in lowered:
+            return True
+
+        # Check multi-word operator verbs (e.g. `update run`, `agent skills refresh`, `memory flush`)
+        # only among leading non-flag command tokens that are not file paths.
+        for token in lowered[:4]:
+            if token.startswith("-"):
+                break
+            if "/" in token or "\\" in token or "." in token:
+                continue
+            if token in cls._MUTATING_OPERATOR_VERBS:
+                return True
+
+        for token in lowered:
+            if not token.startswith("-"):
+                continue
+            flag_name = token.split("=", 1)[0]
+            if flag_name in cls._MUTATING_FLAGS:
+                return True
+        return False
+
+    @classmethod
     def _run_cli(
+        cls,
         argv: Sequence[str],
         working_dir: Path | None,
         allow_mutation: bool,
     ) -> str:
         stdout_buffer = io.StringIO()
         stderr_buffer = io.StringIO()
-        prev_cwd = Path.cwd()
-        try:
-            if working_dir is not None:
-                os.chdir(working_dir)
-            with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
-                exit_code = annolid_run_main(list(argv))
-        finally:
-            os.chdir(prev_cwd)
+        with cls._CLI_LOCK:
+            prev_cwd = Path.cwd()
+            try:
+                if working_dir is not None:
+                    os.chdir(working_dir)
+                with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
+                    exit_code = annolid_run_main(list(argv))
+            finally:
+                os.chdir(prev_cwd)
         stdout_text = stdout_buffer.getvalue()
         stderr_text = stderr_buffer.getvalue()
         return json.dumps(

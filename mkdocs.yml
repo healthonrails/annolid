@@ -113,6 +113,7 @@ nav:
       - Behavior Agent User Guide: behavior_agent_user_guide.md
       - Draw Zones Quickstart (GUI): tutorials/draw_zones_quickstart.md
       - Zone Analysis Workflow: tutorials/zone_analysis_workflow.md
+      - Reporting and Statistics: reporting_and_statistics.md
       - Identity Repair and Governor: identity_governor.md
       - LabelMe to YOLO Class Map: tutorials/Labelme_to_YOLO_class_map.md
       - Sandboxed Shell: tutorials/sandboxed_shell.md

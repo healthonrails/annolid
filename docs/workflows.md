@@ -10,6 +10,7 @@ This page summarizes the main workflows supported by Annolid today. Start with t
 | Track sparse body-part points without training a pose model | [Sparse Keypoint Tracking Workflow](#sparse-keypoint-tracking-workflow) |
 | Run model training, prediction, or evaluation from scripts | [CLI Model Workflow](#3-cli-model-workflow) |
 | Score behavior events or time budgets | [Behavior Analysis Workflow](#4-behavior-analysis-workflow) |
+| Generate kinematics, IRR, cohort stats, or HTML5/SVG reports | [Reporting, Statistics & Analysis Studio](reporting_and_statistics.md) |
 | Repair identity switches after tracking | [Identity Repair Workflow](#identity-repair-workflow) |
 | Use Annolid Bot or external tools | [Annolid Bot Workflow](#2-annolid-bot-workflow) |
 | Estimate depth or build 3D outputs | [Depth Workflow](#5-depth-workflow) and [Optional 3D Workflows](#6-optional-3d-workflows) |

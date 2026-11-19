@@ -16,7 +16,19 @@ class _AnnolidHelpFormatter(
 
 _ROOT_COMMAND_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Models", ("list-models", "dinov3-models", "train", "predict")),
-    ("Tracking", ("track-qc", "repair-tracks", "segment-body-parts")),
+    (
+        "Tracking",
+        (
+            "track-qc",
+            "repair-tracks",
+            "gap-report",
+            "tracking-stats",
+            "kinematics",
+            "zone-analysis",
+            "segment-body-parts",
+            "body-part-ethogram",
+        ),
+    ),
     (
         "Behavior",
         (
@@ -24,6 +36,7 @@ _ROOT_COMMAND_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "behavior-qc",
             "behavior-irr",
             "behavior-cohort",
+            "report",
         ),
     ),
     (
@@ -102,8 +115,8 @@ def _root_help_epilog() -> str:
         "  annolid-run help train\n\n"
         "Common areas:\n"
         "  Models: train, predict, list-models, dinov3-models\n"
-        "  Tracking: track-qc, repair-tracks, segment-body-parts\n"
-        "  Behavior: time-budget, behavior-qc, behavior-irr, behavior-cohort\n"
+        "  Tracking: track-qc, repair-tracks, gap-report, tracking-stats, kinematics, zone-analysis, segment-body-parts, body-part-ethogram\n"
+        "  Behavior: time-budget, behavior-qc, behavior-irr, behavior-cohort, report\n"
         "  Agent: agent, agent-behavior, agent-status, agent-capabilities, agent-security-*, agent-cron-*\n"
         "  Data: collect-labels, index-to-yolo, import-deeplabcut-training-data\n"
         "  Utilities: citations-*, validate-agent-output, validate-agent-tools"
@@ -472,6 +485,7 @@ def _cmd_time_budget(args: argparse.Namespace) -> int:
             json_stdout=bool(getattr(args, "json", False)),
             strict=bool(getattr(args, "strict", False)),
             bin_size=getattr(args, "bin_size", None),
+            session_duration=getattr(args, "session_duration", None),
             schema_path=getattr(args, "schema", None),
             bout_profile=getattr(args, "bout_profile", None),
             bout_name=str(getattr(args, "bout_name", "custom_bout") or "custom_bout"),
@@ -526,6 +540,7 @@ def _cmd_behavior_irr(args: argparse.Namespace) -> int:
             json_stdout=bool(getattr(args, "json", False)),
             out_json=getattr(args, "out", None),
             csv_out=getattr(args, "csv_out", None),
+            disagreements_csv=getattr(args, "disagreements_csv", None),
         )
     )
 
@@ -547,12 +562,125 @@ def _cmd_behavior_cohort(args: argparse.Namespace) -> int:
             include_schema_behaviors=bool(
                 getattr(args, "include_schema_behaviors", False)
             ),
+            analysis_unit=str(getattr(args, "unit", "subject") or "subject"),
             strict=bool(getattr(args, "strict", False)),
             json_stdout=bool(getattr(args, "json", False)),
             out_json=getattr(args, "out", None),
             summary_csv=getattr(args, "summary_csv", None),
             subjects_csv=getattr(args, "subjects_csv", None),
             transitions_csv=getattr(args, "transitions_csv", None),
+            comparisons_csv=getattr(args, "comparisons_csv", None),
+        )
+    )
+
+
+def _cmd_kinematics(args: argparse.Namespace) -> int:
+    from annolid.services.kinematics_analytics import run_kinematics_cli
+
+    return int(
+        run_kinematics_cli(
+            source_path=args.source_path,
+            fps=getattr(args, "fps", None),
+            px_per_cm=getattr(args, "px_per_cm", None),
+            calibration_path=getattr(args, "calibration", None),
+            smooth_window=int(getattr(args, "smooth_window", 5)),
+            freeze_speed_threshold=getattr(args, "freeze_speed_threshold", None),
+            min_freeze_duration_s=float(getattr(args, "min_freeze_duration", 0.5)),
+            close_contact_distance_px=float(getattr(args, "close_contact_px", 80.0)),
+            output_dir=getattr(args, "output_dir", None),
+            out_json=getattr(args, "out_json", None),
+            events_csv=getattr(args, "events_csv", None),
+            include_plots=not bool(getattr(args, "no_plots", False)),
+            json_stdout=bool(getattr(args, "json", False)),
+        )
+    )
+
+
+def _cmd_zone_analysis(args: argparse.Namespace) -> int:
+    from annolid.services.zone_analytics import run_zone_analysis_cli
+
+    return int(
+        run_zone_analysis_cli(
+            video_path=args.video_path,
+            zone_file=getattr(args, "zone_file", None),
+            zone_policy_file=getattr(args, "zone_policy", None),
+            fps=getattr(args, "fps", None),
+            assay_profile=str(getattr(args, "profile", "generic") or "generic"),
+            mode=str(getattr(args, "mode", "zone_metrics") or "zone_metrics"),
+            anchor_part=getattr(args, "anchor_part", None),
+            latency_reference_frame=getattr(args, "latency_reference_frame", None),
+            output_dir=getattr(args, "output_dir", None),
+            out_json=getattr(args, "out_json", None),
+            events_csv=getattr(args, "events_csv", None),
+            json_stdout=bool(getattr(args, "json", False)),
+        )
+    )
+
+
+def _cmd_body_part_ethogram(args: argparse.Namespace) -> int:
+    from annolid.services.kinematics_analytics import run_body_part_ethogram_cli
+
+    return int(
+        run_body_part_ethogram_cli(
+            annotation_dir=args.annotation_dir,
+            fps=float(getattr(args, "fps", 30.0) or 30.0),
+            contact_margin_px=float(getattr(args, "contact_margin_px", 6.0)),
+            min_bout_frames=int(getattr(args, "min_bout_frames", 1)),
+            max_uncertain_frames=int(getattr(args, "max_uncertain_frames", 10)),
+            camera_view=str(getattr(args, "camera_view", "auto") or "auto"),
+            output_prefix=getattr(args, "output_prefix", None),
+            events_csv=getattr(args, "events_csv", None),
+            out_json=getattr(args, "out_json", None),
+            json_stdout=bool(getattr(args, "json", False)),
+        )
+    )
+
+
+def _cmd_gap_report(args: argparse.Namespace) -> int:
+    from annolid.services.track_analytics import run_gap_report_cli
+
+    return int(
+        run_gap_report_cli(
+            source_path=args.source_path,
+            fps=getattr(args, "fps", None),
+            write_reports=not bool(getattr(args, "no_write_reports", False)),
+            out_json=getattr(args, "out_json", None),
+            json_stdout=bool(getattr(args, "json", False)),
+        )
+    )
+
+
+def _cmd_tracking_stats(args: argparse.Namespace) -> int:
+    from annolid.services.track_analytics import run_tracking_stats_cli
+
+    return int(
+        run_tracking_stats_cli(
+            root_dir=args.root_dir,
+            output_dir=getattr(args, "output_dir", None),
+            include_plots=not bool(getattr(args, "no_plots", False)),
+            out_json=getattr(args, "out_json", None),
+            json_stdout=bool(getattr(args, "json", False)),
+        )
+    )
+
+
+def _cmd_unified_report(args: argparse.Namespace) -> int:
+    from annolid.services.unified_reporting import run_unified_report_cli
+
+    return int(
+        run_unified_report_cli(
+            source_path=args.source_path,
+            output_dir=getattr(args, "output_dir", None),
+            events_csv=getattr(args, "events_csv", None),
+            zone_file=getattr(args, "zone_file", None),
+            calibration_path=getattr(args, "calibration", None),
+            schema_path=getattr(args, "schema", None),
+            pose_schema_path=getattr(args, "pose_schema", None),
+            fps=getattr(args, "fps", None),
+            px_per_cm=getattr(args, "px_per_cm", None),
+            title=getattr(args, "title", None),
+            include_plots=not bool(getattr(args, "no_plots", False)),
+            json_stdout=bool(getattr(args, "json", False)),
         )
     )
 
@@ -2757,6 +2885,12 @@ def _build_root_parser() -> argparse.ArgumentParser:
         help="Optional bin width (seconds) for a binned secondary time-budget table.",
     )
     time_budget_p.add_argument(
+        "--session-duration",
+        type=float,
+        default=None,
+        help="Optional explicit session duration (seconds) for % of session denominator.",
+    )
+    time_budget_p.add_argument(
         "--schema",
         default=None,
         help="Optional project schema file (project.annolid.json or YAML).",
@@ -2915,6 +3049,11 @@ def _build_root_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional CSV path to write per-behavior IRR metrics.",
     )
+    irr_p.add_argument(
+        "--disagreements-csv",
+        default=None,
+        help="Optional CSV path to write contiguous rater disagreement windows for adjudication.",
+    )
     irr_p.set_defaults(_handler=_cmd_behavior_irr)
 
     cohort_p = sub.add_parser(
@@ -2964,6 +3103,12 @@ def _build_root_parser() -> argparse.ArgumentParser:
         help="Include zero-occurrence behaviors declared in --schema across cohort tables.",
     )
     cohort_p.add_argument(
+        "--unit",
+        choices=("subject", "recording"),
+        default="subject",
+        help="Experimental unit for inferential comparisons ('subject' or 'recording' to prevent dyadic pseudoreplication).",
+    )
+    cohort_p.add_argument(
         "--strict",
         action="store_true",
         help="Fail with exit code 2 if unmatched state start/stop events are encountered.",
@@ -2993,7 +3138,350 @@ def _build_root_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional CSV path to write first-order Markov transition probabilities and lift.",
     )
+    cohort_p.add_argument(
+        "--comparisons-csv",
+        default=None,
+        help="Optional CSV path to write inferential between-group hypothesis test and effect-size rows.",
+    )
     cohort_p.set_defaults(_handler=_cmd_behavior_cohort)
+
+    kinematics_p = sub.add_parser(
+        "kinematics",
+        help="Compute calibrated trajectory kinematics, freezing bouts, and pairwise inter-animal metrics.",
+    )
+    kinematics_p.add_argument(
+        "source_path",
+        help="Path to a tracking CSV (*_tracking.csv / *_tracked.csv) or LabelMe frame JSON directory.",
+    )
+    kinematics_p.add_argument(
+        "--fps",
+        type=float,
+        default=None,
+        help="Recording frame rate in Hz (inferred from timestamps when omitted).",
+    )
+    kinematics_p.add_argument(
+        "--px-per-cm",
+        type=float,
+        default=None,
+        help="Spatial calibration factor (pixels per centimeter) for physical distance and cm/s velocity.",
+    )
+    kinematics_p.add_argument(
+        "--smooth-window",
+        type=int,
+        default=5,
+        help="Rolling median/mean smoothing window in frames (default: 5).",
+    )
+    kinematics_p.add_argument(
+        "--freeze-speed-threshold",
+        type=float,
+        default=None,
+        help="Speed threshold (px/s) below which an instance is scored as freezing.",
+    )
+    kinematics_p.add_argument(
+        "--min-freeze-duration",
+        type=float,
+        default=0.5,
+        help="Minimum contiguous immobility duration in seconds for a freezing bout (default: 0.5).",
+    )
+    kinematics_p.add_argument(
+        "--close-contact-px",
+        type=float,
+        default=80.0,
+        help="Inter-animal centroid distance threshold (px) for close-contact percentage (default: 80.0).",
+    )
+    kinematics_p.add_argument(
+        "--output-dir",
+        default=None,
+        help="Optional directory to write kinematics CSVs, JSON, and plot PNGs/SVGs.",
+    )
+    kinematics_p.add_argument(
+        "--calibration",
+        default=None,
+        help="Optional planar perspective homography / arena corner calibration JSON file.",
+    )
+    kinematics_p.add_argument(
+        "--out-json",
+        default=None,
+        help="Optional path to write the structured kinematics JSON report.",
+    )
+    kinematics_p.add_argument(
+        "--events-csv",
+        default=None,
+        help="Optional path to export freezing and high-activity bouts as a Behavior Event CSV.",
+    )
+    kinematics_p.add_argument(
+        "--no-plots",
+        action="store_true",
+        help="Skip matplotlib PNG plot generation when --output-dir is set.",
+    )
+    kinematics_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Print structured JSON kinematics report to stdout.",
+    )
+    kinematics_p.set_defaults(_handler=_cmd_kinematics)
+
+    zone_p = sub.add_parser(
+        "zone-analysis",
+        help="Compute ROI zone occupancy, entries, latencies, place preference, and social proximity summaries.",
+    )
+    zone_p.add_argument(
+        "video_path",
+        help="Path to the video file, tracking CSV, or frame annotation directory.",
+    )
+    zone_p.add_argument(
+        "--zone-file",
+        default=None,
+        help="Optional *_zones.json file defining polygon, rectangle, or circle arena zones.",
+    )
+    zone_p.add_argument(
+        "--zone-policy",
+        default=None,
+        help="Optional zone correction policy JSON/YAML file.",
+    )
+    zone_p.add_argument(
+        "--fps",
+        type=float,
+        default=None,
+        help="Optional frame rate override (Hz).",
+    )
+    zone_p.add_argument(
+        "--profile",
+        default="generic",
+        help="Assay profile name (e.g. generic, open_field, elevated_plus_maze, three_chamber_social).",
+    )
+    zone_p.add_argument(
+        "--mode",
+        choices=(
+            "legacy_csv",
+            "zone_metrics",
+            "assay_summary",
+            "social_summary",
+            "zone_corrected_tracked_csv",
+        ),
+        default="zone_metrics",
+        help="Zone export mode (default: zone_metrics).",
+    )
+    zone_p.add_argument(
+        "--anchor-part",
+        default=None,
+        help="Optional anatomical keypoint anchor (e.g. 'nose') for zone occupancy.",
+    )
+    zone_p.add_argument(
+        "--latency-reference-frame",
+        type=int,
+        default=None,
+        help="Optional reference frame index for first-entry latency calculations.",
+    )
+    zone_p.add_argument(
+        "--output-dir",
+        default=None,
+        help="Optional directory for exported zone CSV and Markdown artifacts.",
+    )
+    zone_p.add_argument(
+        "--out-json",
+        default=None,
+        help="Optional path to write the structured zone analysis JSON summary.",
+    )
+    zone_p.add_argument(
+        "--events-csv",
+        default=None,
+        help="Optional path to export contiguous zone visits as a Behavior Event CSV.",
+    )
+    zone_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Print structured JSON summary to stdout.",
+    )
+    zone_p.set_defaults(_handler=_cmd_zone_analysis)
+
+    bp_ethogram_p = sub.add_parser(
+        "body-part-ethogram",
+        help="Compute standalone anatomical body-part posture and social-contact ethograms.",
+    )
+    bp_ethogram_p.add_argument(
+        "annotation_dir",
+        help="Directory containing LabelMe JSONs or AnnotationStore with body-part polygons.",
+    )
+    bp_ethogram_p.add_argument(
+        "--fps",
+        type=float,
+        default=30.0,
+        help="Frame rate in Hz (default: 30.0).",
+    )
+    bp_ethogram_p.add_argument(
+        "--contact-margin-px",
+        type=float,
+        default=6.0,
+        help="Boundary proximity threshold (px) for directed part-to-part contact bouts (default: 6.0).",
+    )
+    bp_ethogram_p.add_argument(
+        "--min-bout-frames",
+        type=int,
+        default=1,
+        help="Minimum contiguous frames for a contact bout (default: 1).",
+    )
+    bp_ethogram_p.add_argument(
+        "--max-uncertain-frames",
+        type=int,
+        default=10,
+        help="Maximum active-learning uncertain frames to report (default: 10).",
+    )
+    bp_ethogram_p.add_argument(
+        "--camera-view",
+        choices=("auto", "top", "oblique", "side", "bottom"),
+        default="auto",
+        help="Camera viewpoint hint for posture disentanglement (default: auto).",
+    )
+    bp_ethogram_p.add_argument(
+        "--output-prefix",
+        default=None,
+        help="Optional path prefix for exporting kinematics, bouts, and uncertainty CSVs.",
+    )
+    bp_ethogram_p.add_argument(
+        "--events-csv",
+        default=None,
+        help="Optional path to export social-contact and posture bouts as a Behavior Event CSV.",
+    )
+    bp_ethogram_p.add_argument(
+        "--out-json",
+        default=None,
+        help="Optional path to write the structured body-part ethogram JSON summary.",
+    )
+    bp_ethogram_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Print structured JSON summary to stdout.",
+    )
+    bp_ethogram_p.set_defaults(_handler=_cmd_body_part_ethogram)
+
+    gap_report_p = sub.add_parser(
+        "gap-report",
+        help="Scan a video, tracking CSV, or frame JSON directory for per-instance tracking gaps.",
+    )
+    gap_report_p.add_argument(
+        "source_path",
+        help="Path to the video file, tracking CSV, or LabelMe frame JSON directory.",
+    )
+    gap_report_p.add_argument(
+        "--fps",
+        type=float,
+        default=None,
+        help="Optional frame rate override (Hz) for gap durations in seconds.",
+    )
+    gap_report_p.add_argument(
+        "--no-write-reports",
+        action="store_true",
+        help="Do not write sibling Markdown and CSV gap report files.",
+    )
+    gap_report_p.add_argument(
+        "--out-json",
+        default=None,
+        help="Optional path to write the structured tracking gap JSON report.",
+    )
+    gap_report_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Print structured JSON gap report to stdout.",
+    )
+    gap_report_p.set_defaults(_handler=_cmd_gap_report)
+
+    tracking_stats_p = sub.add_parser(
+        "tracking-stats",
+        help="Aggregate *_tracking_stats.json telemetry across videos into CSVs and summary plots.",
+    )
+    tracking_stats_p.add_argument(
+        "root_dir",
+        help="Root directory to recursively scan for *_tracking_stats.json files.",
+    )
+    tracking_stats_p.add_argument(
+        "--output-dir",
+        default=None,
+        help="Output directory for CSVs and plots (defaults to <root_dir>/tracking_stats_dashboard).",
+    )
+    tracking_stats_p.add_argument(
+        "--no-plots",
+        action="store_true",
+        help="Skip matplotlib PNG plot generation.",
+    )
+    tracking_stats_p.add_argument(
+        "--out-json",
+        default=None,
+        help="Optional path to write the tracking stats summary JSON.",
+    )
+    tracking_stats_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Print structured JSON summary to stdout.",
+    )
+    tracking_stats_p.set_defaults(_handler=_cmd_tracking_stats)
+
+    report_p = sub.add_parser(
+        "report",
+        help="Generate a unified self-contained HTML5 + inline SVG + Markdown + JSON scientific report.",
+    )
+    report_p.add_argument(
+        "source_path",
+        help="Path to a video, tracking CSV, frame JSON directory, or workspace directory.",
+    )
+    report_p.add_argument(
+        "--output-dir",
+        default=None,
+        help="Output directory for analysis_report.{html,md,json}.",
+    )
+    report_p.add_argument(
+        "--events-csv",
+        default=None,
+        help="Optional Behavior Event CSV for Time Budget and Ethogram QC sections.",
+    )
+    report_p.add_argument(
+        "--zone-file",
+        default=None,
+        help="Optional *_zones.json file for Spatial Zone & Place-Preference section.",
+    )
+    report_p.add_argument(
+        "--schema",
+        default=None,
+        help="Optional project schema file (project.annolid.json or YAML).",
+    )
+    report_p.add_argument(
+        "--pose-schema",
+        default=None,
+        help="Optional PoseSchema file for anatomical skeleton checks.",
+    )
+    report_p.add_argument(
+        "--fps",
+        type=float,
+        default=None,
+        help="Optional frame rate override in Hz.",
+    )
+    report_p.add_argument(
+        "--px-per-cm",
+        type=float,
+        default=None,
+        help="Optional spatial calibration factor (pixels per cm).",
+    )
+    report_p.add_argument(
+        "--calibration",
+        default=None,
+        help="Optional planar perspective homography / arena corner calibration JSON file.",
+    )
+    report_p.add_argument(
+        "--title",
+        default=None,
+        help="Optional custom report title.",
+    )
+    report_p.add_argument(
+        "--no-plots",
+        action="store_true",
+        help="Skip optional matplotlib PNG plots (deterministic inline SVGs are always included).",
+    )
+    report_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Print structured JSON report manifest to stdout.",
+    )
+    report_p.set_defaults(_handler=_cmd_unified_report)
 
     track_qc_p = sub.add_parser(
         "track-qc",

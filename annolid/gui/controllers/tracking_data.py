@@ -246,6 +246,7 @@ class TrackingDataController:
         w.behavior_log_widget.clear()
         w.pinned_flags = {}
         w._df = None
+        w._labels_df = None
         self._clear_tracking_cache()
 
     def _discover_behavior_files(
@@ -721,4 +722,6 @@ class TrackingDataController:
 
         labels_df = payload.get("labels_df")
         if labels_df is not None and isinstance(labels_df, pd.DataFrame):
-            w._df = labels_df
+            w._labels_df = labels_df
+            if self._tracking_df is None:
+                w._df = labels_df

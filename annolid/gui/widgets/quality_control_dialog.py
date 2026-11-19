@@ -11,6 +11,7 @@ class QualityControlDialog(QtWidgets.QDialog):
         self.video_file = None
         self.tracking_results = None
         self.skip_num_frames = 30
+        self._syncing_skip_controls = False
 
         self.slider()
 
@@ -22,6 +23,7 @@ class QualityControlDialog(QtWidgets.QDialog):
         self.framesLineEdit.setText(str(self.skip_num_frames))
         self.framesLineEdit.setValidator(QtGui.QIntValidator(1, 2_147_483_647, self))
         self.framesLineEdit.setInputMethodHints(QtCore.Qt.ImhDigitsOnly)
+        self.framesLineEdit.textChanged.connect(self.onFramesTextChanged)
 
         qbtn = QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
         self.buttonbox = QtWidgets.QDialogButtonBox(qbtn)
@@ -30,6 +32,9 @@ class QualityControlDialog(QtWidgets.QDialog):
 
         self.groupBoxVideoFiles = QtWidgets.QGroupBox("Please choose a video file")
         self.inputVideoFileLineEdit = QtWidgets.QLineEdit(self)
+        self.inputVideoFileLineEdit.textChanged.connect(
+            lambda txt: setattr(self, "video_file", txt.strip() or None)
+        )
         self.inputVideoFileButton = QtWidgets.QPushButton("Open", self)
         self.inputVideoFileButton.clicked.connect(self.onInputVideoFileButtonClicked)
         video_hboxLayOut = QtWidgets.QHBoxLayout()
@@ -44,6 +49,9 @@ class QualityControlDialog(QtWidgets.QDialog):
             "Please choose tracking results CSV file"
         )
         self.inputFileLineEdit = QtWidgets.QLineEdit(self)
+        self.inputFileLineEdit.textChanged.connect(
+            lambda txt: setattr(self, "tracking_results", txt.strip() or None)
+        )
         self.inputFileButton = QtWidgets.QPushButton("Open", self)
         self.inputFileButton.clicked.connect(self.onInputFileButtonClicked)
         hboxLayOut.addWidget(self.inputFileLineEdit)
@@ -59,40 +67,64 @@ class QualityControlDialog(QtWidgets.QDialog):
         vbox.addWidget(self.buttonbox)
 
         self.setLayout(vbox)
-        self.show()
 
     def onInputVideoFileButtonClicked(self):
-        self.video_file, filter = QtWidgets.QFileDialog.getOpenFileName(
+        selected, _ = QtWidgets.QFileDialog.getOpenFileName(
             parent=self, caption="Open video file", directory=str(Path()), filter="*"
         )
-        if self.video_file is not None:
-            self.inputVideoFileLineEdit.setText(self.video_file)
+        if selected:
+            self.video_file = selected
+            self.inputVideoFileLineEdit.setText(selected)
 
     def onInputFileButtonClicked(self):
-        self.tracking_results, filter = QtWidgets.QFileDialog.getOpenFileName(
+        selected, _ = QtWidgets.QFileDialog.getOpenFileName(
             parent=self,
             caption="Open tracking results CSV file",
             directory=str(Path()),
             filter="*",
         )
-        if self.tracking_results is not None:
-            self.inputFileLineEdit.setText(self.tracking_results)
+        if selected:
+            self.tracking_results = selected
+            self.inputFileLineEdit.setText(selected)
 
     def slider(self):
         self.slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.slider.setMinimum(1)
         self.slider.setMaximum(1000)
-        self.slider.setValue(10)
+        self.slider.setValue(int(self.skip_num_frames))
         self.slider.setTickPosition(QtWidgets.QSlider.TicksBelow)
         self.slider.setTickInterval(1)
         self.slider.valueChanged.connect(self.onSliderChange)
 
     def onSliderChange(self, position):
-        self.skip_num_frames = (
-            int(position) if position and str(position).isdigit() else 1
-        )
-        self.framesLineEdit.setText(str(position))
+        if self._syncing_skip_controls:
+            return
+        self._syncing_skip_controls = True
+        try:
+            self.skip_num_frames = (
+                int(position) if position and str(position).isdigit() else 1
+            )
+            self.framesLineEdit.setText(str(self.skip_num_frames))
+            self.label1.setText(
+                f"You have selected to skip {self.skip_num_frames} frames each time."
+            )
+        finally:
+            self._syncing_skip_controls = False
 
-        self.label1.setText(
-            f"You have selected to skip {str(self.skip_num_frames)} frames each time."
-        )
+    def onFramesTextChanged(self, text: str) -> None:
+        if self._syncing_skip_controls:
+            return
+        cleaned = str(text or "").strip()
+        if not cleaned.isdigit():
+            return
+        value = max(1, int(cleaned))
+        self._syncing_skip_controls = True
+        try:
+            self.skip_num_frames = value
+            if 1 <= value <= self.slider.maximum():
+                self.slider.setValue(value)
+            self.label1.setText(
+                f"You have selected to skip {self.skip_num_frames} frames each time."
+            )
+        finally:
+            self._syncing_skip_controls = False
