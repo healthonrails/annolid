@@ -75,19 +75,20 @@ def _find_video_for_json_folder(json_folder_path: Path):
     return None
 
 
-def convert_shape_to_mask(img_shape, points):
+def convert_shape_to_mask(img_shape, points, shape_type=None):
     """
     Convert shape points to a binary mask.
 
     Parameters:
-    - img_shape (tuple): Image shape (width, height).
+    - img_shape (tuple): Image shape (height, width).
     - points (list): List of points.
+    - shape_type (str | None): Optional LabelMe shape type (e.g. 'polygon', 'circle').
 
     Returns:
     - ndarray: Binary mask.
     """
     mask = shape_to_mask(
-        img_shape, points, shape_type=None, line_width=10, point_size=5
+        img_shape, points, shape_type=shape_type, line_width=10, point_size=5
     )
     return mask
 
@@ -594,9 +595,8 @@ def convert_json_to_csv(
                                     *_zone_occupancy_flags(zone_specs, cx, cy),
                                 ]
                             )
-                        continue
 
-                if shape_type == "point":
+                elif shape_type == "point":
                     if not points:
                         continue
                     point = points[0]
@@ -654,17 +654,30 @@ def convert_json_to_csv(
                                     *_zone_occupancy_flags(zone_specs, x, y),
                                 ]
                             )
-                        continue
 
-                if len(points) > 2:
-                    mask = convert_shape_to_mask(img_shape, points)
+                elif (shape_type == "circle" and len(points) >= 2) or len(points) > 2:
+                    if shape_type == "circle" and (
+                        not isinstance(points[0], (list, tuple))
+                        or not isinstance(points[1], (list, tuple))
+                        or len(points[0]) < 2
+                        or len(points[1]) < 2
+                    ):
+                        continue
+                    mask = convert_shape_to_mask(
+                        img_shape,
+                        points,
+                        shape_type=shape_type or None,
+                    )
                     bboxs = masks_to_bboxes(mask[None, :, :])
                     segmentation = binary_mask_to_coco_rle(mask)
                     class_score = _shape_score(shape)
                     tracking_id = _normalize_tracking_id(shape.get("group_id"))
 
                     if len(bboxs) > 0:
-                        cx, cy = polygon_center(points)
+                        if shape_type == "circle":
+                            cx, cy = float(points[0][0]), float(points[0][1])
+                        else:
+                            cx, cy = polygon_center(points)
                         x1, y1, x2, y2 = bboxs[0]
                         if csv_writer is not None:
                             csv_writer.writerow(

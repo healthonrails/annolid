@@ -275,8 +275,7 @@ def key_frames(
         out_frame_file = (
             out_dir / f"{(video_name).replace(' ', '_')}_{frame_idx:08}.png"
         )
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        cv2.imwrite(str(out_frame_file), frame_rgb)
+        cv2.imwrite(str(out_frame_file), frame)
         logger.info("Saved keyframe preview to %s", out_frame_file)
 
     cap.release()
@@ -555,65 +554,68 @@ def extract_frames(
         out_dir = key_frames(
             video_file,
             out_dir,
-            sub_clip=sub_clip,
-            start_seconds=start_seconds,
-            end_seconds=end_seconds,
+            sub_clip=False,
         )
         yield 100, f"Done. Frames located at {out_dir}."
+        return
 
     cap = cv2.VideoCapture(video_file)
-    n_frames = int(cap.get(7))
+    try:
+        n_frames = int(cap.get(7))
+        current_frame_number = int(cap.get(1))
+        subtractor = cv2.createBackgroundSubtractorMOG2()
+        keeped_frames = []
 
-    current_frame_number = int(cap.get(1))
+        ret, old_frame = cap.read()
+        if not ret or old_frame is None:
+            logger.error("Unable to read initial frame from %s.", video_file)
+            return
 
-    subtractor = cv2.createBackgroundSubtractorMOG2()
-    keeped_frames = []
-
-    ret, old_frame = cap.read()
-
-    if keep_first_frame:
-        # save the first frame
-        out_frame_file = f"{out_dir}{os.sep}{video_name}_{current_frame_number:08}.png"
-        cv2.imwrite(out_frame_file, old_frame)
-
-    if num_frames < -1 or num_frames > n_frames:
-        logger.error(
-            "Invalid num_frames=%s for %s; video has %s frames.",
-            num_frames,
-            video_file,
-            n_frames,
-        )
-        return
-    elif num_frames == 1:
-        logger.info("Please check your first frame here %s", out_dir)
-        return
-    elif num_frames > 2:
-        # if save the first frame and the last frame
-        # so to make the number of extract frames
-        # as the user provided exactly
         if keep_first_frame:
-            num_frames -= 1
+            # save the first frame
+            out_frame_file = (
+                f"{out_dir}{os.sep}{video_name}_{current_frame_number:08}.png"
+            )
+            cv2.imwrite(out_frame_file, old_frame)
 
-    hsv = np.zeros_like(old_frame)
-    hsv[..., 1] = 255
+        if num_frames < -1 or (n_frames > 0 and num_frames > n_frames):
+            logger.error(
+                "Invalid num_frames=%s for %s; video has %s frames.",
+                num_frames,
+                video_file,
+                n_frames,
+            )
+            return
+        elif num_frames == 1:
+            logger.info("Please check your first frame here %s", out_dir)
+            return
+        elif num_frames > 2:
+            # if save the first frame and the last frame
+            # so to make the number of extract frames
+            # as the user provided exactly
+            if keep_first_frame:
+                num_frames -= 1
 
-    # keeped frame index
-    ki = 0
+        hsv = np.zeros_like(old_frame)
+        hsv[..., 1] = 255
 
-    while ret:
-        frame_number = int(cap.get(1))
-        ret, frame = cap.read()
+        # keeped frame index
+        ki = 0
 
-        progress_percent = ((frame_number + 1) / n_frames) * 100
+        while ret:
+            frame_number = int(cap.get(1))
+            ret, frame = cap.read()
+            if not ret or frame is None:
+                break
 
-        if num_frames == -1:
-            out_frame_file = f"{out_dir}{os.sep}{video_name}_{frame_number:08}.png"
-            if ret:
+            progress_percent = ((frame_number + 1) / max(n_frames, 1)) * 100
+
+            if num_frames == -1:
+                out_frame_file = f"{out_dir}{os.sep}{video_name}_{frame_number:08}.png"
                 cv2.imwrite(out_frame_file, frame)
                 logger.info("Saved frame %s to %s", frame_number, out_frame_file)
-            continue
-        if algo == "random" and num_frames != -1:
-            if ret:
+                continue
+            if algo == "random" and num_frames != -1:
                 if len(keeped_frames) < num_frames:
                     keeped_frames.append((ki, frame_number, frame))
                 else:
@@ -622,70 +624,75 @@ def extract_frames(
                         keeped_frames[j] = (j, frame_number, frame)
                 ki += 1
                 yield progress_percent, f"Processed {ki} frames."
-            continue
-        if algo == "flow" and num_frames != -1:
-            mask = subtractor.apply(frame)
-            old_mask = subtractor.apply(old_frame)
+                continue
+            if algo == "flow" and num_frames != -1:
+                mask = subtractor.apply(frame)
+                old_mask = subtractor.apply(old_frame)
 
-            out_frame = cv2.bitwise_and(frame, frame, mask=mask)
-            old_out_frame = cv2.bitwise_and(old_frame, old_frame, mask=old_mask)
-            try:
-                out_frame = cv2.cvtColor(out_frame, cv2.COLOR_BGR2GRAY)
-                old_out_frame = cv2.cvtColor(old_out_frame, cv2.COLOR_BGR2GRAY)
+                out_frame = cv2.bitwise_and(frame, frame, mask=mask)
+                old_out_frame = cv2.bitwise_and(old_frame, old_frame, mask=old_mask)
+                try:
+                    out_frame = cv2.cvtColor(out_frame, cv2.COLOR_BGR2GRAY)
+                    old_out_frame = cv2.cvtColor(old_out_frame, cv2.COLOR_BGR2GRAY)
 
-                flow = cv2.calcOpticalFlowFarneback(
-                    old_out_frame, out_frame, None, 0.5, 3, 15, 3, 5, 1.2, 0
-                )
+                    flow = cv2.calcOpticalFlowFarneback(
+                        old_out_frame, out_frame, None, 0.5, 3, 15, 3, 5, 1.2, 0
+                    )
 
-                if show_flow:
-                    mag, ang = cv2.cartToPolar(flow[..., 0], flow[..., 1])
-                    hsv[..., 0] = ang * 180 / np.pi / 2
-                    hsv[..., 2] = cv2.normalize(mag, None, 0, 255, cv2.NORM_MINMAX)
-                    rgb = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+                    if show_flow:
+                        mag, ang = cv2.cartToPolar(flow[..., 0], flow[..., 1])
+                        hsv[..., 0] = ang * 180 / np.pi / 2
+                        hsv[..., 2] = cv2.normalize(mag, None, 0, 255, cv2.NORM_MINMAX)
+                        rgb = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
 
-                q_score = int(np.abs(np.sum(flow.reshape(-1))))
-                progress_msg = f"processing frame {frame_number}, the diff to prev frame is {q_score}."
+                    q_score = int(np.abs(np.sum(flow.reshape(-1))))
+                    progress_msg = f"processing frame {frame_number}, the diff to prev frame is {q_score}."
 
-                if len(keeped_frames) < num_frames:
-                    heapq.heappush(keeped_frames, ((q_score, frame_number, frame)))
-                else:
-                    heapq.heappushpop(keeped_frames, ((q_score, frame_number, frame)))
+                    if len(keeped_frames) < num_frames:
+                        heapq.heappush(keeped_frames, ((q_score, frame_number, frame)))
+                    else:
+                        heapq.heappushpop(
+                            keeped_frames, ((q_score, frame_number, frame))
+                        )
 
-                if show_flow:
-                    cv2.imshow("Frame", rgb)
-                yield progress_percent, progress_msg
-            except Exception as exc:
-                logger.warning(
-                    "Skipping current frame during optical flow computation: %s", exc
-                )
+                    if show_flow:
+                        cv2.imshow("Frame", rgb)
+                    yield progress_percent, progress_msg
+                except Exception as exc:
+                    logger.warning(
+                        "Skipping current frame during optical flow computation: %s",
+                        exc,
+                    )
 
-            old_frame = frame
-        key = cv2.waitKey(1)
-        if key == 27:
-            break
+                old_frame = frame
+            if show_flow:
+                key = cv2.waitKey(1)
+                if key == 27:
+                    break
 
-    for kf in keeped_frames:
-        s, f, p = kf
-        out_img = f"{out_dir}{os.sep}{video_name}_{f:08}_{s}.png"
-        cv2.imwrite(out_img, p)
-        # default mask rcnn prediction if select less than 5 frames
-        if prediction and num_frames <= 5:
-            try:
-                from annolid.segmentation.maskrcnn import (
-                    inference as _maskrcnn_inference,
-                )
+        for kf in keeped_frames:
+            s, f, p = kf
+            out_img = f"{out_dir}{os.sep}{video_name}_{f:08}_{s}.png"
+            cv2.imwrite(out_img, p)
+            # default mask rcnn prediction if select less than 5 frames
+            if prediction and num_frames <= 5:
+                try:
+                    from annolid.segmentation.maskrcnn import (
+                        inference as _maskrcnn_inference,
+                    )
 
-                _maskrcnn_inference.predict_mask_to_labelme(out_img, 0.7)
-            except Exception as exc:
-                logger.error(
-                    "Auto mask prediction requires torch/torchvision. Please install: "
-                    "pip install torch==1.8.0 torchvision==0.9.0 torchaudio==0.8.0 "
-                    "(error: %s)",
-                    exc,
-                )
-
-    cap.release()
-    cv2.destroyAllWindows()
+                    _maskrcnn_inference.predict_mask_to_labelme(out_img, 0.7)
+                except Exception as exc:
+                    logger.error(
+                        "Auto mask prediction requires torch/torchvision. Please install: "
+                        "pip install torch==1.8.0 torchvision==0.9.0 torchaudio==0.8.0 "
+                        "(error: %s)",
+                        exc,
+                    )
+    finally:
+        cap.release()
+        if show_flow:
+            cv2.destroyAllWindows()
     yield 100, f"Done. Frames located at {out_dir}"
 
 

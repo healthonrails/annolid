@@ -22,17 +22,46 @@ class BatchRelabelResult:
     records_updated: int
 
 
+def _is_non_annotation_json(path: Path) -> bool:
+    name = path.name.lower()
+    return (
+        name == "project.annolid.json"
+        or name.endswith("_zones.json")
+        or name.endswith("_tracking_stats.json")
+    )
+
+
 def _rename_shapes_in_payload(payload: Dict[str, Any], old: str, new: str) -> int:
     shapes = payload.get("shapes")
     if not isinstance(shapes, list):
         return 0
     changed = 0
+    compound_prefix = f"{old}:"
     for shape in shapes:
         if not isinstance(shape, dict):
             continue
+        shape_changed = False
         label = str(shape.get("label") or "")
         if label == old:
             shape["label"] = new
+            shape_changed = True
+        elif label.startswith(compound_prefix):
+            shape["label"] = f"{new}:{label[len(compound_prefix) :]}"
+            shape_changed = True
+
+        for attr_key in ("parent_instance", "instance_label"):
+            if str(shape.get(attr_key) or "").strip() == old:
+                shape[attr_key] = new
+                shape_changed = True
+
+        flags = shape.get("flags")
+        if isinstance(flags, dict):
+            for flag_key in ("parent_instance", "instance_label"):
+                if str(flags.get(flag_key) or "").strip() == old:
+                    flags[flag_key] = new
+                    shape_changed = True
+
+        if shape_changed:
             changed += 1
     return changed
 
@@ -113,7 +142,7 @@ def _process_annotation_store(
         tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_text("\n".join(out_lines) + "\n", encoding="utf-8")
         tmp.replace(path)
-        AnnotationStore._CACHE.pop(path, None)
+        AnnotationStore.invalidate_cache(path)
     return changed_shapes, changed_records, True
 
 
@@ -134,7 +163,7 @@ def collect_label_counts(
 
     if include_json_files:
         for path in root_path.rglob("*.json"):
-            if not path.is_file():
+            if not path.is_file() or _is_non_annotation_json(path):
                 continue
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
@@ -211,7 +240,7 @@ def run_batch_relabel(
 
     if include_json_files:
         for path in root_path.rglob("*.json"):
-            if not path.is_file():
+            if not path.is_file() or _is_non_annotation_json(path):
                 continue
             json_scanned += 1
             changed_shapes, changed_file = _process_labelme_json(

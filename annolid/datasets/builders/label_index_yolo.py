@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import tempfile
@@ -31,8 +32,18 @@ _SPLIT_NAME_PATTERN = re.compile(
 )
 
 
-def _infer_split_from_path(path: Path) -> Optional[str]:
-    parts = Path(path).parts[:-1]
+def _infer_split_from_path(
+    path: Path,
+    *,
+    root: Optional[Path] = None,
+) -> Optional[str]:
+    target = Path(path)
+    if root is not None:
+        try:
+            target = target.relative_to(root)
+        except ValueError:
+            pass
+    parts = target.parts[:-1]
     for part in reversed(parts):
         token = str(part).strip().lower()
         match = _SPLIT_NAME_PATTERN.match(token)
@@ -209,33 +220,31 @@ def build_yolo_from_label_index(
 
     try:
         total = len(pairs)
+        pair_parents = [str(p.json_path.parent) for p in pairs]
+        common_pairs_root = Path(os.path.commonpath(pair_parents))
+        if len({p.json_path.parent for p in pairs}) == 1 and index_file.parent.is_dir():
+            try:
+                shared = Path(
+                    os.path.commonpath([str(index_file.parent), str(common_pairs_root)])
+                )
+                if shared != Path(common_pairs_root.anchor):
+                    common_pairs_root = shared
+            except ValueError:
+                pass
         for i, pair in enumerate(pairs, start=1):
             if stop_event is not None and stop_event.is_set():
                 break
 
             unique = _short_hash(str(pair.json_path))
             stem = f"{pair.json_path.stem}__{unique}"
-            split_name = _infer_split_from_path(pair.json_path)
+            split_name = _infer_split_from_path(pair.json_path, root=common_pairs_root)
             split_dir = staging_dir / split_name if split_name else staging_dir
             split_dir.mkdir(parents=True, exist_ok=True)
             staged_json = split_dir / f"{stem}.json"
             staged_png = split_dir / f"{stem}.png"
 
-            # Ensure the staged image uses .png to satisfy existing Labelme2YOLO filtering.
-            if pair.image_path.suffix.lower() == ".png":
-                _install_file(pair.image_path, staged_png, mode=link_mode)
-            else:
-                try:
-                    from PIL import Image
-
-                    with Image.open(pair.image_path) as img:
-                        img.save(staged_png)
-                except Exception:
-                    # Fallback: copy bytes even if extension mismatches.
-                    _install_file(pair.image_path, staged_png, mode="copy")
-
-            # Write a staged JSON that points at the staged image name so downstream
-            # converters do not rely on the original on-disk layout.
+            # Load and validate the JSON payload before staging the image so
+            # unreadable or malformed records never leave orphan PNGs in staging.
             try:
                 payload = load_labelme_json(pair.json_path)
             except Exception as exc:
@@ -245,6 +254,21 @@ def build_yolo_from_label_index(
                 logger.warning("Skipping non-dict JSON payload: %s", pair.json_path)
                 continue
             payload = dict(payload)
+
+            # Ensure the staged image uses .png to satisfy existing Labelme2YOLO filtering,
+            # baking EXIF orientation so pixel dimensions match LabelMe annotation space.
+            if pair.image_path.suffix.lower() == ".png":
+                _install_file(pair.image_path, staged_png, mode=link_mode)
+            else:
+                try:
+                    from PIL import Image, ImageOps
+
+                    with Image.open(pair.image_path) as img:
+                        transposed = ImageOps.exif_transpose(img)
+                        transposed.save(staged_png)
+                except Exception:
+                    # Fallback: copy bytes even if extension mismatches.
+                    _install_file(pair.image_path, staged_png, mode="copy")
 
             if effective_task == "segmentation":
                 shapes = payload.get("shapes") or []

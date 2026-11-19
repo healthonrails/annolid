@@ -33,6 +33,42 @@ def _bbox_to_rect_points(bbox_xywh: Sequence[object]) -> Optional[List[List[floa
 
 def _segmentation_polygons(segmentation: object) -> List[List[List[float]]]:
     out: List[List[List[float]]] = []
+    if (
+        isinstance(segmentation, dict)
+        and "counts" in segmentation
+        and "size" in segmentation
+    ):
+        try:
+            import numpy as np
+            import pycocotools.mask as mask_util
+            from annolid.annotation.masks import mask_to_polygons
+
+            size = segmentation.get("size")
+            counts = segmentation.get("counts")
+            if isinstance(size, (list, tuple)) and len(size) >= 2:
+                h_rle, w_rle = int(size[0]), int(size[1])
+                if isinstance(counts, list):
+                    rle_obj = mask_util.frPyObjects([segmentation], h_rle, w_rle)[0]
+                else:
+                    rle_obj = dict(segmentation)
+                    if isinstance(counts, str):
+                        rle_obj["counts"] = counts.encode("utf-8")
+                mask_arr = np.asarray(mask_util.decode(rle_obj), dtype=np.uint8)
+                if mask_arr.ndim == 3:
+                    mask_arr = mask_arr[:, :, 0]
+                polys, _ = mask_to_polygons(mask_arr)
+                for poly in polys:
+                    if len(poly) < 6:
+                        continue
+                    pts = [
+                        [_ensure_float(poly[i]), _ensure_float(poly[i + 1])]
+                        for i in range(0, len(poly) - 1, 2)
+                    ]
+                    if len(pts) >= 3:
+                        out.append(pts)
+        except Exception:
+            pass
+        return out
     if not isinstance(segmentation, list):
         return out
     for poly in segmentation:
@@ -62,6 +98,7 @@ def _keypoint_shapes(
         v = _ensure_float(keypoints[idx * 3 + 2])
         if v <= 0:
             continue
+        vis_code = 1 if int(round(v)) == 1 else 2
         label = (
             keypoint_names[idx]
             if keypoint_names and idx < len(keypoint_names)
@@ -73,7 +110,11 @@ def _keypoint_shapes(
                 "points": [[float(x), float(y)]],
                 "group_id": group_id,
                 "shape_type": "point",
-                "flags": {},
+                "kp_visibility": vis_code,
+                "flags": {
+                    "kp_visibility": vis_code,
+                    "kp_visible": bool(vis_code == 2),
+                },
             }
         )
     return out

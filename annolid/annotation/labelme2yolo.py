@@ -111,6 +111,12 @@ def find_bbox_from_shape(shape):
         cx, cy, width, height = find_bbox_from_shape(shape)
     """
     points = shape["points"]
+    shape_type = str(shape.get("shape_type") or "polygon").strip().lower()
+    if shape_type == "circle" and len(points) >= 2:
+        cx = float(points[0][0])
+        cy = float(points[0][1])
+        radius = math.hypot(float(points[1][0]) - cx, float(points[1][1]) - cy)
+        return cx, cy, 2.0 * radius, 2.0 * radius
 
     # Extract x and y coordinates separately
     x_coords = [point[0] for point in points]

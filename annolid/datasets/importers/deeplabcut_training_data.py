@@ -134,11 +134,18 @@ def _resolve_image_path(
         candidates.append(csv_dir / parts[-1])
         if len(parts) >= 2:
             candidates.append(csv_dir / parts[-2] / parts[-1])
+    resolved_source = source_dir.expanduser().resolve()
+    resolved_labeled = labeled_root.expanduser().resolve()
     for candidate in candidates:
         try:
-            candidate = candidate.expanduser()
-            if candidate.exists():
-                return candidate.resolve()
+            resolved = candidate.expanduser().resolve()
+            if not (
+                resolved.is_relative_to(resolved_source)
+                or resolved.is_relative_to(resolved_labeled)
+            ):
+                continue
+            if resolved.exists():
+                return resolved
         except Exception:
             continue
     return None

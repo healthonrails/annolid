@@ -1,6 +1,8 @@
 import json
+import os
 import re
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Set, Tuple, Union
 
@@ -21,12 +23,39 @@ class AnnotationStore:
     STORE_SUFFIX = "_annotations.ndjson"
     STUB_VERSION = 1
     _CACHE: Dict[Path, Dict[str, Any]] = {}
+    _CACHE_LOCK = threading.RLock()
+    _MAX_CACHE_ENTRIES = 32
     _FRAME_PATTERN = re.compile(r'"frame"\s*:\s*(-?\d+)')
     _FRAME_FIRST_PATTERN = re.compile(r'^\s*\{\s*"frame"\s*:\s*(-?\d+)')
     _FRAME_LAST_PATTERN = re.compile(r',\s*"frame"\s*:\s*(-?\d+)\s*\}\s*$')
 
     def __init__(self, store_path: Path):
         self.store_path = store_path
+
+    @classmethod
+    def _cache_get(cls, path: Path) -> Optional[Dict[str, Any]]:
+        with cls._CACHE_LOCK:
+            entry = cls._CACHE.get(path)
+            if entry is not None:
+                cls._CACHE[path] = cls._CACHE.pop(path)
+            return entry
+
+    @classmethod
+    def _cache_set(cls, path: Path, entry: Dict[str, Any]) -> None:
+        with cls._CACHE_LOCK:
+            cls._CACHE.pop(path, None)
+            cls._CACHE[path] = entry
+            while len(cls._CACHE) > cls._MAX_CACHE_ENTRIES:
+                oldest = next(iter(cls._CACHE))
+                cls._CACHE.pop(oldest, None)
+
+    @classmethod
+    def invalidate_cache(cls, path: Optional[Path] = None) -> None:
+        with cls._CACHE_LOCK:
+            if path is None:
+                cls._CACHE.clear()
+            else:
+                cls._CACHE.pop(path, None)
 
     def _discover_manual_seed_frames(self) -> Set[int]:
         seeds: Set[int] = set()
@@ -106,7 +135,7 @@ class AnnotationStore:
                 f"Failed to stat annotation store {self.store_path}: {exc}"
             ) from exc
         initial_signature = (float(initial_stat.st_mtime), int(initial_stat.st_size))
-        cached = AnnotationStore._CACHE.get(self.store_path)
+        cached = AnnotationStore._cache_get(self.store_path)
         if isinstance(cached, dict) and (
             cached.get("explicit_frame_signature") == initial_signature
         ):
@@ -138,7 +167,7 @@ class AnnotationStore:
             cache_entry["mtime"] = initial_stat.st_mtime
             cache_entry["size"] = initial_stat.st_size
             cache_entry["explicit_frame_signature"] = initial_signature
-            AnnotationStore._CACHE[self.store_path] = cache_entry
+            AnnotationStore._cache_set(self.store_path, cache_entry)
             return
 
         try:
@@ -189,13 +218,16 @@ class AnnotationStore:
                 stat = self.store_path.stat()
             except OSError:
                 return
-            AnnotationStore._CACHE[self.store_path] = {
-                "mtime": stat.st_mtime,
-                "size": stat.st_size,
-                "records": dict(cache_records),
-                "records_complete": True,
-                "migration_in_memory": True,
-            }
+            AnnotationStore._cache_set(
+                self.store_path,
+                {
+                    "mtime": stat.st_mtime,
+                    "size": stat.st_size,
+                    "records": dict(cache_records),
+                    "records_complete": True,
+                    "migration_in_memory": True,
+                },
+            )
 
         try:
             lines_with_newline = [f"{line}\n" for line in rewritten_lines]
@@ -218,7 +250,7 @@ class AnnotationStore:
                         still_needs_rewrite = True
                         break
                 if not still_needs_rewrite:
-                    AnnotationStore._CACHE.pop(self.store_path, None)
+                    AnnotationStore.invalidate_cache(self.store_path)
                     return
             except Exception:
                 pass
@@ -240,16 +272,19 @@ class AnnotationStore:
             _cache_rewritten_records()
             return
 
-        AnnotationStore._CACHE.pop(self.store_path, None)
+        AnnotationStore.invalidate_cache(self.store_path)
         try:
             stat = self.store_path.stat()
         except OSError:
             return
-        AnnotationStore._CACHE[self.store_path] = {
-            "mtime": stat.st_mtime,
-            "size": stat.st_size,
-            "explicit_frame_signature": (float(stat.st_mtime), int(stat.st_size)),
-        }
+        AnnotationStore._cache_set(
+            self.store_path,
+            {
+                "mtime": stat.st_mtime,
+                "size": stat.st_size,
+                "explicit_frame_signature": (float(stat.st_mtime), int(stat.st_size)),
+            },
+        )
 
     @classmethod
     def _frame_number_from_raw_line(cls, raw_line: str) -> Optional[int]:
@@ -329,16 +364,19 @@ class AnnotationStore:
                 try:
                     stat = self.store_path.stat()
                 except OSError:
-                    AnnotationStore._CACHE.pop(self.store_path, None)
+                    AnnotationStore.invalidate_cache(self.store_path)
                 else:
-                    AnnotationStore._CACHE[self.store_path] = {
-                        "mtime": stat.st_mtime,
-                        "size": stat.st_size,
-                        "explicit_frame_signature": (
-                            float(stat.st_mtime),
-                            int(stat.st_size),
-                        ),
-                    }
+                    AnnotationStore._cache_set(
+                        self.store_path,
+                        {
+                            "mtime": stat.st_mtime,
+                            "size": stat.st_size,
+                            "explicit_frame_signature": (
+                                float(stat.st_mtime),
+                                int(stat.st_size),
+                            ),
+                        },
+                    )
             return removed
         except OSError as exc:
             logger.error(
@@ -385,7 +423,26 @@ class AnnotationStore:
     def _derive_store_path(frame_path: Path, store_name: Optional[str] = None) -> Path:
         directory = frame_path.parent
         if store_name:
-            return directory / store_name
+            raw_name = str(store_name).strip()
+            cand_rel = Path(raw_name)
+            if (
+                not raw_name
+                or cand_rel.is_absolute()
+                or "/" in raw_name
+                or "\\" in raw_name
+                or cand_rel.name != raw_name
+                or raw_name in {".", ".."}
+            ):
+                raise AnnotationStoreError(
+                    f"Unsafe annotation_store name {store_name!r}; expected a plain filename inside {directory}."
+                )
+            resolved_dir = directory.resolve()
+            target = (directory / raw_name).resolve()
+            if target.parent != resolved_dir:
+                raise AnnotationStoreError(
+                    f"Annotation store path {target} escapes frame directory {resolved_dir}."
+                )
+            return directory / raw_name
         return directory / f"{directory.name}{AnnotationStore.STORE_SUFFIX}"
 
     @staticmethod
@@ -425,7 +482,7 @@ class AnnotationStore:
             fh.write(line)
 
         # Keep the cache in sync without re-reading the entire file (O(1) append).
-        cached = AnnotationStore._CACHE.get(self.store_path)
+        cached = AnnotationStore._cache_get(self.store_path)
         if cached:
             cache_signature_matches = False
             if pre_append_signature is not None:
@@ -450,7 +507,7 @@ class AnnotationStore:
                         except (TypeError, ValueError):
                             cache_signature_matches = False
             if not cache_signature_matches:
-                AnnotationStore._CACHE.pop(self.store_path, None)
+                AnnotationStore.invalidate_cache(self.store_path)
                 return
 
             try:
@@ -473,7 +530,7 @@ class AnnotationStore:
             try:
                 stat = self.store_path.stat()
             except OSError:
-                AnnotationStore._CACHE.pop(self.store_path, None)
+                AnnotationStore.invalidate_cache(self.store_path)
             else:
                 updated_cache = dict(cached)
                 updated_cache["mtime"] = stat.st_mtime
@@ -500,7 +557,7 @@ class AnnotationStore:
                         if offset_frame_key in latest_cache:
                             latest_cache[offset_frame_key] = record
                         updated_cache["latest_frame_cache"] = latest_cache
-                AnnotationStore._CACHE[self.store_path] = updated_cache
+                AnnotationStore._cache_set(self.store_path, updated_cache)
 
     def update_frame(
         self,
@@ -589,7 +646,7 @@ class AnnotationStore:
                 f"Failed to rewrite annotation store {self.store_path}: {exc}"
             ) from exc
 
-        AnnotationStore._CACHE.pop(self.store_path, None)
+        AnnotationStore.invalidate_cache(self.store_path)
         self._load_records(force_reload=True)
 
     def get_frame(self, frame: int) -> Optional[Dict[str, Any]]:
@@ -624,7 +681,7 @@ class AnnotationStore:
         except OSError:
             return None
         signature = (float(stat.st_mtime), int(stat.st_size))
-        cache_entry = AnnotationStore._CACHE.get(self.store_path)
+        cache_entry = AnnotationStore._cache_get(self.store_path)
         if not isinstance(cache_entry, dict):
             cache_entry = {}
 
@@ -635,7 +692,7 @@ class AnnotationStore:
         if cache_entry.get("latest_offset_signature") == signature:
             cached_fast = latest_cache.get(frame_key)
             if isinstance(cached_fast, dict):
-                AnnotationStore._CACHE[self.store_path] = cache_entry
+                AnnotationStore._cache_set(self.store_path, cache_entry)
                 return cached_fast
 
         latest_offsets = cache_entry.get("latest_frame_offsets")
@@ -672,7 +729,7 @@ class AnnotationStore:
 
         offset = latest_offsets.get(frame_key)
         if offset is None:
-            AnnotationStore._CACHE[self.store_path] = cache_entry
+            AnnotationStore._cache_set(self.store_path, cache_entry)
             return None
 
         try:
@@ -685,7 +742,7 @@ class AnnotationStore:
                 return None
             latest_cache[frame_key] = data
             cache_entry["latest_frame_cache"] = latest_cache
-            AnnotationStore._CACHE[self.store_path] = cache_entry
+            AnnotationStore._cache_set(self.store_path, cache_entry)
             return data
         except (OSError, json.JSONDecodeError):
             return None
@@ -771,7 +828,7 @@ class AnnotationStore:
         return frames
 
     def _cached_records_or_empty(self) -> Dict[int, Dict[str, Any]]:
-        cached = AnnotationStore._CACHE.get(self.store_path)
+        cached = AnnotationStore._cache_get(self.store_path)
         if (
             cached
             and isinstance(cached.get("records"), dict)
@@ -791,12 +848,12 @@ class AnnotationStore:
             try:
                 stat = self.store_path.stat()
             except FileNotFoundError:
-                AnnotationStore._CACHE.pop(self.store_path, None)
+                AnnotationStore.invalidate_cache(self.store_path)
                 if attempt == 0:
                     continue
                 return self._cached_records_or_empty()
 
-            cached = AnnotationStore._CACHE.get(self.store_path)
+            cached = AnnotationStore._cache_get(self.store_path)
             cached_records = (
                 cached.get("records")
                 if isinstance(cached, dict) and isinstance(cached.get("records"), dict)
@@ -826,7 +883,7 @@ class AnnotationStore:
             # Only pay the migration cost when the cache is stale or missing.
             # This avoids re-reading large NDJSON stores on every frame render.
             self._ensure_explicit_frame_metadata()
-            cached = AnnotationStore._CACHE.get(self.store_path)
+            cached = AnnotationStore._cache_get(self.store_path)
             cached_records = (
                 cached.get("records")
                 if isinstance(cached, dict) and isinstance(cached.get("records"), dict)
@@ -841,12 +898,12 @@ class AnnotationStore:
             try:
                 stat = self.store_path.stat()
             except FileNotFoundError:
-                AnnotationStore._CACHE.pop(self.store_path, None)
+                AnnotationStore.invalidate_cache(self.store_path)
                 if attempt == 0:
                     continue
                 return self._cached_records_or_empty()
 
-            cached = AnnotationStore._CACHE.get(self.store_path)
+            cached = AnnotationStore._cache_get(self.store_path)
             records: Dict[int, Dict[str, Any]] = {}
             try:
                 with self.store_path.open("r", encoding="utf-8") as fh:
@@ -871,21 +928,24 @@ class AnnotationStore:
                             continue
                         records[int(frame)] = data
             except FileNotFoundError:
-                AnnotationStore._CACHE.pop(self.store_path, None)
+                AnnotationStore.invalidate_cache(self.store_path)
                 if attempt == 0:
                     continue
                 return self._cached_records_or_empty()
 
-            AnnotationStore._CACHE[self.store_path] = {
-                "mtime": stat.st_mtime,
-                "size": stat.st_size,
-                "records": records,
-                "records_complete": True,
-                "explicit_frame_signature": (
-                    float(stat.st_mtime),
-                    int(stat.st_size),
-                ),
-            }
+            AnnotationStore._cache_set(
+                self.store_path,
+                {
+                    "mtime": stat.st_mtime,
+                    "size": stat.st_size,
+                    "records": records,
+                    "records_complete": True,
+                    "explicit_frame_signature": (
+                        float(stat.st_mtime),
+                        int(stat.st_size),
+                    ),
+                },
+            )
             return records
 
         return self._cached_records_or_empty()
@@ -1050,11 +1110,21 @@ def load_labelme_json(path: Union[str, Path]) -> Dict[str, Any]:
 
 def _patched_json_load(fp, *args, **kwargs):
     result = _ORIGINAL_JSON_LOAD(fp, *args, **kwargs)
-    if not isinstance(result, dict) or "annotation_store" not in result:
+    if (
+        not isinstance(result, dict)
+        or "annotation_store" not in result
+        or "shapes" in result
+    ):
+        return result
+    if os.environ.get("ANNOLID_DISABLE_JSON_LOAD_SHIM", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }:
         return result
 
     source_name = getattr(fp, "name", None)
-    if not source_name:
+    if not source_name or not isinstance(source_name, (str, os.PathLike)):
         return result
 
     try:
