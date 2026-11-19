@@ -276,12 +276,14 @@ class GenericZoneEngine:
         point_columns: tuple[str, str] | None = None,
         include_body_parts: bool = False,
         anchor_part: str | None = None,
+        allow_overlapping_point_zones: bool = False,
     ) -> None:
         self.zone_specs = [spec for spec in zone_specs if spec.is_zone]
         self.fps = fps
         self.point_columns = point_columns
         self.include_body_parts = bool(include_body_parts)
         self.anchor_part = str(anchor_part).strip() if anchor_part else None
+        self.allow_overlapping_point_zones = bool(allow_overlapping_point_zones)
         self._ordered_zone_specs = sorted(
             enumerate(self.zone_specs),
             key=lambda item: (_zone_area(item[1]), item[0]),
@@ -475,6 +477,21 @@ class GenericZoneEngine:
         ys = pd.to_numeric(instance_df[y_col], errors="coerce").to_numpy(
             dtype=np.float64
         )
+        if self.allow_overlapping_point_zones:
+            row_sets_xy: list[set[str]] = [set() for _ in range(n_rows)]
+            finite_idx = np.flatnonzero(np.isfinite(xs) & np.isfinite(ys))
+            if finite_idx.size > 0:
+                finite_xs = xs[finite_idx]
+                finite_ys = ys[finite_idx]
+                for _order, spec in self._ordered_zone_specs:
+                    covered = zone_shape_covers_points_xy(spec, finite_xs, finite_ys)
+                    if np.any(covered):
+                        hit_idx = finite_idx[covered]
+                        disp = spec.display_label
+                        for pos in hit_idx.tolist():
+                            row_sets_xy[pos].add(disp)
+            return list(zip(frames, row_sets_xy))
+
         assigned: list[str | None] = [None] * n_rows
         unassigned = np.isfinite(xs) & np.isfinite(ys)
         for _order, spec in self._ordered_zone_specs:
@@ -540,11 +557,11 @@ class GenericZoneEngine:
             else:
                 for zone_label in sorted(zone_labels):
                     occupancy_frames[zone_label] += 1
-                    if zone_label in self._barrier_zone_labels:
-                        barrier_adjacent_frames += 1
-                    for key, labels in self._aggregate_zone_groups.items():
-                        if zone_label in labels:
-                            aggregate_occupancy_frames[key] += 1
+                if zone_labels & self._barrier_zone_labels:
+                    barrier_adjacent_frames += 1
+                for key, labels in self._aggregate_zone_groups.items():
+                    if zone_labels & labels:
+                        aggregate_occupancy_frames[key] += 1
 
             gap_break = prev_frame is not None and frame - prev_frame > 1
             if gap_break:
@@ -554,12 +571,14 @@ class GenericZoneEngine:
                 if zone_label not in zone_labels:
                     finalize_zone_segment(zone_label)
 
+            entered_aggregate_groups: set[str] = set()
             for zone_label in sorted(zone_labels):
                 if zone_label not in active_zone_segments:
                     active_zone_segments[zone_label] = (frame, frame, 1)
                     entry_counts[zone_label] += 1
                     for key, labels in self._aggregate_zone_groups.items():
-                        if zone_label in labels:
+                        if zone_label in labels and key not in entered_aggregate_groups:
+                            entered_aggregate_groups.add(key)
                             aggregate_entry_counts[key] += 1
                     if zone_label not in first_entry_frames:
                         first_entry_frames[zone_label] = frame

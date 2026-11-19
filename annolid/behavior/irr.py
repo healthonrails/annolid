@@ -309,6 +309,8 @@ def _bootstrap_mean_cohens_kappa_ci95(
     per_rater_grids: Mapping[str, Sequence[int]],
     rater_pairs: Sequence[Tuple[str, str]],
     *,
+    bin_seconds: float = 0.1,
+    block_seconds: float = 5.0,
     n_boot: int = 200,
     seed: int = 42,
 ) -> Tuple[float, float]:
@@ -329,7 +331,22 @@ def _bootstrap_mean_cohens_kappa_ci95(
         name: np.asarray(seq, dtype=bool) for name, seq in per_rater_grids.items()
     }
     rng = np.random.default_rng(seed)
-    boot_indices = rng.integers(0, n_bins, size=(n_boot, n_bins))
+    if n_bins >= 8:
+        target_block = max(
+            1, int(round(float(block_seconds) / max(float(bin_seconds), 1e-6)))
+        )
+        block_len = min(max(1, n_bins // 4), target_block)
+    else:
+        block_len = 1
+    if block_len <= 1:
+        boot_indices = rng.integers(0, n_bins, size=(n_boot, n_bins))
+    else:
+        n_blocks = int(math.ceil(float(n_bins) / float(block_len)))
+        starts = rng.integers(0, n_bins, size=(n_boot, n_blocks))
+        offsets = np.arange(block_len, dtype=np.int64)
+        boot_indices = ((starts[:, :, None] + offsets[None, None, :]) % n_bins).reshape(
+            n_boot, n_blocks * block_len
+        )[:, :n_bins]
     pair_boot_kappas = np.zeros(n_boot, dtype=np.float64)
     inv_n = 1.0 / float(n_bins)
 
@@ -803,7 +820,7 @@ def compute_irr(
                 [per_rater_grids[r] for r in rater_names]
             )
             ci_lo, ci_hi = _bootstrap_mean_cohens_kappa_ci95(
-                per_rater_grids, rater_pairs
+                per_rater_grids, rater_pairs, bin_seconds=bin_seconds
             )
             disagreements_all.extend(
                 _extract_disagreement_bouts(

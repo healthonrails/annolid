@@ -12,6 +12,7 @@ from annolid.postprocessing.identity_governor import (
     IdentityCorrection,
     IdentityGovernorResult,
 )
+from annolid.utils.annotation_store import AnnotationStore, _record_to_labelme_payload
 from annolid.utils.body_part_shapes import is_body_part_shape_payload
 from annolid.utils.zone_shapes import is_zone_shape_payload
 
@@ -117,6 +118,12 @@ def _shape_centroid(shape: Mapping[str, Any]) -> tuple[float, float] | None:
             return None
         return ((float(x1) + float(x2)) / 2.0, (float(y1) + float(y2)) / 2.0)
 
+    if isinstance(points, list) and shape_type == "circle" and len(points) >= 2:
+        cx, cy = _point_xy(points[0])
+        if cx is None or cy is None:
+            return None
+        return (float(cx), float(cy))
+
     coords = _shape_points(shape)
     if not coords:
         return None
@@ -162,6 +169,19 @@ def _shape_orientation(shape: Mapping[str, Any]) -> float | None:
 
 
 def _shape_features(shape: Mapping[str, Any]) -> _ShapeFeatures:
+    shape_type = _normalize_text(shape.get("shape_type")).lower()
+    raw_points = shape.get("points")
+    if isinstance(raw_points, list) and shape_type == "circle" and len(raw_points) >= 2:
+        cx, cy = _point_xy(raw_points[0])
+        ex, ey = _point_xy(raw_points[1])
+        if None not in (cx, cy, ex, ey):
+            r = math.hypot(float(ex) - float(cx), float(ey) - float(cy))
+            return _ShapeFeatures(
+                centroid=(float(cx), float(cy)),
+                area=float(math.pi * r * r),
+                bbox=(float(cx) - r, float(cy) - r, float(cx) + r, float(cy) + r),
+                orientation=None,
+            )
     points = _shape_points(shape)
     return _ShapeFeatures(
         centroid=_shape_centroid(shape),
@@ -755,22 +775,90 @@ def _find_next_seen(
 
 def _load_records(
     annotation_dir: Path,
-) -> tuple[list[tuple[int, Path, dict[str, Any]]], int]:
+) -> tuple[
+    list[tuple[int, Path, dict[str, Any]]],
+    int,
+    dict[Path, tuple[AnnotationStore, int, dict[str, Any]]],
+]:
     records: list[tuple[int, Path, dict[str, Any]]] = []
+    store_backed: dict[Path, tuple[AnnotationStore, int, dict[str, Any]]] = {}
+    loaded_frames: set[int] = set()
     scanned_observations = 0
+
     for json_path in sorted(annotation_dir.glob("*.json")):
         frame_number = _frame_number_from_name(json_path)
         if frame_number is None:
             continue
         try:
-            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            raw_payload = json.loads(json_path.read_text(encoding="utf-8"))
         except Exception:
             continue
-        if not isinstance(payload, dict):
+        if not isinstance(raw_payload, dict):
             continue
-        scanned_observations += len(_temporal_track_shapes(payload))
-        records.append((int(frame_number), json_path, payload))
-    return records, scanned_observations
+        if "annotation_store" in raw_payload and not isinstance(
+            raw_payload.get("shapes"), list
+        ):
+            try:
+                stub_frame = int(raw_payload.get("frame", frame_number))
+                store = AnnotationStore.for_frame_path(
+                    json_path, raw_payload.get("annotation_store")
+                )
+                record = store.get_frame(stub_frame)
+            except Exception:
+                continue
+            if not isinstance(record, dict):
+                continue
+            payload = _record_to_labelme_payload(record)
+            store_backed[json_path] = (store, stub_frame, dict(record))
+            loaded_frames.add(stub_frame)
+            scanned_observations += len(_temporal_track_shapes(payload))
+            records.append((stub_frame, json_path, payload))
+            continue
+
+        loaded_frames.add(int(frame_number))
+        scanned_observations += len(_temporal_track_shapes(raw_payload))
+        records.append((int(frame_number), json_path, raw_payload))
+
+    default_store = AnnotationStore.for_frame_path(
+        annotation_dir / f"{annotation_dir.name}_000000000.json"
+    )
+    seen_stores: set[Path] = set()
+    for store_path in [default_store.store_path] + sorted(
+        annotation_dir.glob(f"*{AnnotationStore.STORE_SUFFIX}")
+    ):
+        if not store_path.is_file():
+            continue
+        resolved_store = store_path.resolve()
+        if resolved_store in seen_stores:
+            continue
+        seen_stores.add(resolved_store)
+        store = AnnotationStore(store_path)
+        stem = store_path.name
+        if stem.endswith(AnnotationStore.STORE_SUFFIX):
+            stem = stem[: -len(AnnotationStore.STORE_SUFFIX)]
+        stem = stem or annotation_dir.name
+        try:
+            frame_numbers = sorted(store.iter_frames())
+        except Exception:
+            continue
+        for frame_number in frame_numbers:
+            if int(frame_number) in loaded_frames:
+                continue
+            try:
+                record = store.get_frame(int(frame_number))
+            except Exception:
+                continue
+            if not isinstance(record, dict):
+                continue
+            virtual_path = annotation_dir / f"{stem}_{int(frame_number):09d}.json"
+            payload = _record_to_labelme_payload(record)
+            store_backed[virtual_path] = (store, int(frame_number), dict(record))
+            loaded_frames.add(int(frame_number))
+            scanned_observations += len(_temporal_track_shapes(payload))
+            records.append((int(frame_number), virtual_path, payload))
+
+    records.sort(key=lambda item: item[0])
+    return records, scanned_observations, store_backed
 
 
 def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
@@ -921,7 +1009,7 @@ def run_temporal_identity_repair(
         if expected_instance_count is None or int(expected_instance_count) <= 0
         else int(expected_instance_count)
     )
-    records, scanned_observations = _load_records(resolved_dir)
+    records, scanned_observations, store_backed = _load_records(resolved_dir)
     templates = _choose_reference_templates(
         records,
         start_frame=max(0, int(start_frame)),
@@ -1182,8 +1270,24 @@ def run_temporal_identity_repair(
     updated_files = 0
     updated_shapes = 0
     if apply_changes:
+        store_batches: dict[
+            Path, tuple[AnnotationStore, dict[int, dict[str, Any]]]
+        ] = {}
         for path, payload in sorted(updated_payloads.items()):
-            _write_json_atomic(path, payload)
+            store_info = store_backed.get(path)
+            if store_info is not None:
+                store, frame_num, orig_record = store_info
+                updated_record = dict(orig_record)
+                updated_record["frame"] = int(frame_num)
+                updated_record["shapes"] = list(payload.get("shapes") or [])
+                _, batch = store_batches.setdefault(
+                    store.store_path.resolve(), (store, {})
+                )
+                batch[int(frame_num)] = updated_record
+            else:
+                _write_json_atomic(path, payload)
+        for store, batch in store_batches.values():
+            store.update_frames(batch)
         updated_files = len(updated_payloads)
         updated_shapes = len(corrections)
 

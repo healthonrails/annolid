@@ -199,6 +199,7 @@ class PairwiseKinematicsRow:
     close_contact_seconds: float
     close_contact_bouts: int
     velocity_correlation: Optional[float]
+    close_contact_percent: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -220,6 +221,7 @@ class PairwiseKinematicsRow:
             ),
             "close_contact_frames": int(self.close_contact_frames),
             "close_contact_seconds": round(float(self.close_contact_seconds), 6),
+            "close_contact_percent": round(float(self.close_contact_percent), 6),
             "close_contact_bouts": int(self.close_contact_bouts),
             "velocity_correlation": (
                 round(float(self.velocity_correlation), 6)
@@ -290,6 +292,10 @@ def _polygon_centroid_and_area(
     if stype == "rectangle" and len(coords) >= 2:
         (x1, y1), (x2, y2) = coords[0], coords[1]
         return 0.5 * (x1 + x2), 0.5 * (y1 + y2), abs(x2 - x1) * abs(y2 - y1)
+    if stype == "circle" and len(coords) >= 2:
+        (cx, cy), (px, py) = coords[0], coords[1]
+        radius = math.hypot(px - cx, py - cy)
+        return float(cx), float(cy), float(math.pi * radius * radius)
     if len(coords) < 3:
         xs = [p[0] for p in coords]
         ys = [p[1] for p in coords]
@@ -633,6 +639,23 @@ def _savgol_smooth_1d(arr: np.ndarray, win: int, polyorder: int) -> np.ndarray:
     return out
 
 
+def _savgol_smooth_contiguous(
+    frames: np.ndarray, arr: np.ndarray, win: int, polyorder: int
+) -> np.ndarray:
+    """Apply Savitzky-Golay smoothing strictly within contiguous 1-frame runs."""
+    n = len(arr)
+    if win < 5 or n < win:
+        return arr
+    out = np.asarray(arr, dtype=np.float64).copy()
+    breaks = np.flatnonzero(np.diff(frames) != 1) + 1
+    starts = np.concatenate(([0], breaks))
+    ends = np.concatenate((breaks, [n]))
+    for s_idx, e_idx in zip(starts.tolist(), ends.tolist()):
+        if e_idx - s_idx >= win:
+            out[s_idx:e_idx] = _savgol_smooth_1d(out[s_idx:e_idx], win, polyorder)
+    return out
+
+
 def analyze_kinematics(
     source_path: Path | str,
     *,
@@ -728,15 +751,15 @@ def analyze_kinematics(
         if win >= 3 and win % 2 == 0:
             win += 1
         if win >= 5 and n_obs >= win:
-            xs_eval = _savgol_smooth_1d(xs, win, min(2, win - 1))
-            ys_eval = _savgol_smooth_1d(ys, win, min(2, win - 1))
+            xs_eval = _savgol_smooth_contiguous(frames, xs, win, min(2, win - 1))
+            ys_eval = _savgol_smooth_contiguous(frames, ys, win, min(2, win - 1))
         else:
             xs_eval = xs
             ys_eval = ys
 
-        speeds_px_s = np.zeros(n_obs, dtype=np.float64)
-        accels_px_s2 = np.zeros(n_obs, dtype=np.float64)
-        ang_vel_deg_s = np.zeros(n_obs, dtype=np.float64)
+        speeds_px_s = np.full(n_obs, np.nan, dtype=np.float64)
+        accels_px_s2 = np.full(n_obs, np.nan, dtype=np.float64)
+        ang_vel_deg_s = np.full(n_obs, np.nan, dtype=np.float64)
         step_dists_px = np.zeros(n_obs, dtype=np.float64)
 
         speeds_cm_s: Optional[np.ndarray] = None
@@ -746,7 +769,7 @@ def analyze_kinematics(
         if plan_cal is not None:
             world_x_raw, world_y_raw = plan_cal.project_points(xs, ys)
             world_x_eval, world_y_eval = plan_cal.project_points(xs_eval, ys_eval)
-            speeds_cm_s = np.zeros(n_obs, dtype=np.float64)
+            speeds_cm_s = np.full(n_obs, np.nan, dtype=np.float64)
             step_dists_cm = np.zeros(n_obs, dtype=np.float64)
         else:
             world_x_eval = None
@@ -758,10 +781,10 @@ def analyze_kinematics(
             dx = np.diff(xs_eval)
             dy = np.diff(ys_eval)
             dists = np.hypot(dx, dy)
-            # Only accumulate path distance across reasonable frame gaps (<= 1.0s)
+            # Only accumulate path distance & speed across reasonable frame gaps
             valid_step = df_steps <= max(5.0, eff_fps)
             step_dists_px[1:] = np.where(valid_step, dists, 0.0)
-            step_speeds = np.where(valid_step, dists / dt, 0.0)
+            step_speeds = np.where(valid_step, dists / dt, np.nan)
             speeds_px_s[1:] = step_speeds
             speeds_px_s[0] = step_speeds[0]
 
@@ -774,13 +797,15 @@ def analyze_kinematics(
             ):
                 dists_w = np.hypot(np.diff(world_x_eval), np.diff(world_y_eval))
                 step_dists_cm[1:] = np.where(valid_step, dists_w, 0.0)
-                step_speeds_w = np.where(valid_step, dists_w / dt, 0.0)
+                step_speeds_w = np.where(valid_step, dists_w / dt, np.nan)
                 speeds_cm_s[1:] = step_speeds_w
                 speeds_cm_s[0] = step_speeds_w[0]
 
             if n_obs >= 3:
-                dv = np.diff(speeds_px_s)
-                accels_px_s2[1:] = np.abs(dv) / dt
+                both_valid = valid_step[:-1] & valid_step[1:]
+                accels_px_s2[2:] = np.where(
+                    both_valid, np.abs(np.diff(step_speeds)) / dt[1:], np.nan
+                )
                 headings_dx = (
                     np.diff(world_x_eval)
                     if (plan_cal is not None and world_x_eval is not None)
@@ -794,7 +819,7 @@ def analyze_kinematics(
                 headings = np.degrees(np.arctan2(headings_dy, headings_dx))
                 d_head = (np.diff(headings) + 180.0) % 360.0 - 180.0
                 ang_vel_deg_s[2:] = np.where(
-                    valid_step[1:], np.abs(d_head) / dt[1:], 0.0
+                    both_valid, np.abs(d_head) / dt[1:], np.nan
                 )
 
         tot_dist_px = float(np.sum(step_dists_px))
@@ -829,17 +854,30 @@ def analyze_kinematics(
             else 1.0
         )
 
-        p95_spd = float(np.percentile(speeds_px_s, 95)) if n_obs > 0 else 0.0
+        finite_spd_px_mask = np.isfinite(speeds_px_s)
+        finite_spd_px = speeds_px_s[finite_spd_px_mask]
+        p95_spd = (
+            float(np.percentile(finite_spd_px, 95)) if len(finite_spd_px) > 0 else 0.0
+        )
         if speeds_cm_s is not None and eff_freeze_cm_s is not None:
+            finite_spd_cm_mask = np.isfinite(speeds_cm_s)
+            finite_spd_cm = speeds_cm_s[finite_spd_cm_mask]
             resting_cm_s = eff_freeze_cm_s * 2.0
-            p95_cm_s = float(np.percentile(speeds_cm_s, 95)) if n_obs > 0 else 0.0
+            p95_cm_s = (
+                float(np.percentile(finite_spd_cm, 95))
+                if len(finite_spd_cm) > 0
+                else 0.0
+            )
             high_cm_s = max(resting_cm_s * 2.0, p95_cm_s)
-            is_freezing_raw = speeds_cm_s <= eff_freeze_cm_s
+            is_freezing_raw = finite_spd_cm_mask & (speeds_cm_s <= eff_freeze_cm_s)
+            valid_spd_mask = finite_spd_cm_mask
         else:
+            finite_spd_cm = None
             resting_cm_s = None
             high_cm_s = None
             high_thresh = max(resting_px_s * 2.0, p95_spd)
-            is_freezing_raw = speeds_px_s <= eff_freeze_px_s
+            is_freezing_raw = finite_spd_px_mask & (speeds_px_s <= eff_freeze_px_s)
+            valid_spd_mask = finite_spd_px_mask
 
         freeze_bouts = _extract_contiguous_bouts(
             frames,
@@ -860,8 +898,11 @@ def analyze_kinematics(
             if freeze_frame_set
             else np.zeros(n_obs, dtype=bool)
         )
-        freeze_s = sum(fb.duration_s for fb in freeze_bouts)
         dur_s = float(n_obs) / eff_fps
+        freeze_s = min(dur_s, float(np.sum(freeze_mask)) / eff_fps)
+
+        eval_mask = valid_spd_mask | freeze_mask
+        n_eval = int(np.sum(eval_mask))
 
         if (
             speeds_cm_s is not None
@@ -869,18 +910,32 @@ def analyze_kinematics(
             and high_cm_s is not None
         ):
             high_mask = (
-                (~freeze_mask)
+                eval_mask
+                & (~freeze_mask)
+                & valid_spd_mask
                 & (speeds_cm_s >= high_cm_s)
                 & (speeds_cm_s > resting_cm_s)
             )
-            rest_mask = (~freeze_mask) & (speeds_cm_s <= resting_cm_s)
+            rest_mask = (
+                eval_mask
+                & (~freeze_mask)
+                & valid_spd_mask
+                & (speeds_cm_s <= resting_cm_s)
+            )
         else:
             high_mask = (
-                (~freeze_mask)
+                eval_mask
+                & (~freeze_mask)
+                & valid_spd_mask
                 & (speeds_px_s >= high_thresh)
                 & (speeds_px_s > resting_px_s)
             )
-            rest_mask = (~freeze_mask) & (speeds_px_s <= resting_px_s)
+            rest_mask = (
+                eval_mask
+                & (~freeze_mask)
+                & valid_spd_mask
+                & (speeds_px_s <= resting_px_s)
+            )
 
         high_bouts = _extract_contiguous_bouts(
             frames,
@@ -893,12 +948,19 @@ def analyze_kinematics(
             max_gap_frames=2,
         )
 
-        mod_mask = (~freeze_mask) & (~rest_mask) & (~high_mask)
+        mod_mask = eval_mask & (~freeze_mask) & (~rest_mask) & (~high_mask)
 
-        freeze_pct = float(np.mean(freeze_mask) * 100.0) if n_obs > 0 else 0.0
-        rest_pct = float(np.mean(rest_mask) * 100.0) if n_obs > 0 else 0.0
-        mod_pct = float(np.mean(mod_mask) * 100.0) if n_obs > 0 else 0.0
-        high_pct = float(np.mean(high_mask) * 100.0) if n_obs > 0 else 0.0
+        if n_eval > 0:
+            denom_eval = float(n_eval)
+            freeze_pct = float(np.sum(freeze_mask)) * 100.0 / denom_eval
+            rest_pct = float(np.sum(rest_mask)) * 100.0 / denom_eval
+            mod_pct = float(np.sum(mod_mask)) * 100.0 / denom_eval
+            high_pct = float(np.sum(high_mask)) * 100.0 / denom_eval
+        else:
+            freeze_pct = 0.0
+            rest_pct = 100.0 if n_obs > 0 else 0.0
+            mod_pct = 0.0
+            high_pct = 0.0
 
         med_area_px = float(np.median(areas)) if n_obs > 0 else 0.0
         med_area_cm2: Optional[float] = (
@@ -906,19 +968,21 @@ def analyze_kinematics(
             if (plan_cal is not None and n_obs > 0)
             else (0.0 if plan_cal is not None else None)
         )
-        mean_spd_px = float(np.mean(speeds_px_s)) if n_obs > 0 else 0.0
-        med_spd_px = float(np.median(speeds_px_s)) if n_obs > 0 else 0.0
-        max_spd_px = float(np.max(speeds_px_s)) if n_obs > 0 else 0.0
+        mean_spd_px = float(np.mean(finite_spd_px)) if len(finite_spd_px) > 0 else 0.0
+        med_spd_px = float(np.median(finite_spd_px)) if len(finite_spd_px) > 0 else 0.0
+        max_spd_px = float(np.max(finite_spd_px)) if len(finite_spd_px) > 0 else 0.0
         mean_spd_cm: Optional[float] = (
-            float(np.mean(speeds_cm_s))
-            if (speeds_cm_s is not None and n_obs > 0)
+            float(np.mean(finite_spd_cm))
+            if (finite_spd_cm is not None and len(finite_spd_cm) > 0)
             else (0.0 if speeds_cm_s is not None else None)
         )
         max_spd_cm: Optional[float] = (
-            float(np.max(speeds_cm_s))
-            if (speeds_cm_s is not None and n_obs > 0)
+            float(np.max(finite_spd_cm))
+            if (finite_spd_cm is not None and len(finite_spd_cm) > 0)
             else (0.0 if speeds_cm_s is not None else None)
         )
+        finite_accels = accels_px_s2[np.isfinite(accels_px_s2)]
+        finite_ang_vel = ang_vel_deg_s[np.isfinite(ang_vel_deg_s)]
 
         instance_rows.append(
             InstanceKinematicsRow(
@@ -938,10 +1002,14 @@ def analyze_kinematics(
                 max_speed_px_s=max_spd_px,
                 mean_speed_cm_s=mean_spd_cm,
                 max_speed_cm_s=max_spd_cm,
-                mean_accel_px_s2=float(np.mean(accels_px_s2)) if n_obs > 0 else 0.0,
-                max_accel_px_s2=float(np.max(accels_px_s2)) if n_obs > 0 else 0.0,
+                mean_accel_px_s2=(
+                    float(np.mean(finite_accels)) if len(finite_accels) > 0 else 0.0
+                ),
+                max_accel_px_s2=(
+                    float(np.max(finite_accels)) if len(finite_accels) > 0 else 0.0
+                ),
                 mean_angular_velocity_deg_s=(
-                    float(np.mean(ang_vel_deg_s)) if n_obs > 0 else 0.0
+                    float(np.mean(finite_ang_vel)) if len(finite_ang_vel) > 0 else 0.0
                 ),
                 median_area_px=med_area_px,
                 median_area_cm2=med_area_cm2,
@@ -959,12 +1027,19 @@ def analyze_kinematics(
         # Downsample trajectory points to at most 1500 points per animal for lightweight SVG/plots
         stride = max(1, n_obs // 1500)
         trajectories[str(inst_name)] = [
-            (int(frames[idx]), float(xs[idx]), float(ys[idx]), float(speeds_px_s[idx]))
+            (
+                int(frames[idx]),
+                float(xs[idx]),
+                float(ys[idx]),
+                float(speeds_px_s[idx]) if np.isfinite(speeds_px_s[idx]) else 0.0,
+            )
             for idx in range(0, n_obs, stride)
         ]
         speed_series_by_inst[str(inst_name)] = pd.Series(
-            speeds_cm_s if speeds_cm_s is not None else speeds_px_s, index=frames
-        )
+            speeds_cm_s if speeds_cm_s is not None else speeds_px_s,
+            index=frames,
+            dtype=np.float64,
+        ).dropna()
 
     # Pairwise inter-animal kinematics
     pairwise_rows: List[PairwiseKinematicsRow] = []
@@ -1047,6 +1122,11 @@ def analyze_kinematics(
                 close_contact_seconds=float(close_frames) / eff_fps,
                 close_contact_bouts=len(contact_bouts),
                 velocity_correlation=vel_corr,
+                close_contact_percent=(
+                    100.0 * float(close_frames) / float(len(p_frames))
+                    if len(p_frames) > 0
+                    else 0.0
+                ),
             )
         )
 

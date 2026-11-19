@@ -226,8 +226,10 @@ class PlanarCalibration:
             and abs(arr[2, 1]) <= 1e-12
             and abs(arr[0, 2]) <= 1e-12
             and abs(arr[1, 2]) <= 1e-12
-            and abs(arr[2, 2]) > 1e-12
-            and abs(abs(arr[0, 0]) - abs(arr[1, 1])) <= 1e-12 * max(1.0, abs(arr[0, 0]))
+            and arr[2, 2] > 1e-12
+            and arr[0, 0] > 0.0
+            and arr[1, 1] > 0.0
+            and abs(arr[0, 0] - arr[1, 1]) <= 1e-12 * max(1.0, abs(arr[0, 0]))
         )
         tup = (
             (float(arr[0, 0]), float(arr[0, 1]), float(arr[0, 2])),
@@ -529,6 +531,6 @@ def resolve_planar_calibration(
         return calibration
     if calibration is not None and str(calibration).strip() != "":
         return PlanarCalibration.load(calibration)
-    if px_per_cm is not None and float(px_per_cm) > 0.0:
+    if px_per_cm is not None:
         return PlanarCalibration.from_px_per_cm(float(px_per_cm))
     return None

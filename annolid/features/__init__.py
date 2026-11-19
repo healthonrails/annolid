@@ -22,6 +22,8 @@ _EXPORTS = {
     "Dinov3PCAMapper": ("annolid.features.dinov3_pca", "Dinov3PCAMapper"),
     "PCAMapResult": ("annolid.features.dinov3_pca", "PCAMapResult"),
     "features_to_pca_rgb": ("annolid.features.dinov3_pca", "features_to_pca_rgb"),
+    "CLIPModel": ("annolid.features.legacy_backbones", "CLIPModel"),
+    "Embedding": ("annolid.features.legacy_backbones", "Embedding"),
 }
 
 __all__ = list(_EXPORTS)

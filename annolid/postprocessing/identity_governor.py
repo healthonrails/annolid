@@ -13,6 +13,7 @@ from annolid.postprocessing.zone_schema import (
     zone_shape_covers_point,
     zone_shape_distance_to_point,
 )
+from annolid.utils.annotation_store import AnnotationStore, _record_to_labelme_payload
 from annolid.utils.body_part_shapes import is_body_part_shape_payload
 from annolid.utils.zone_shapes import is_zone_shape_payload
 
@@ -166,6 +167,22 @@ def _shape_centroid_and_area(
         cy = (float(y1) + float(y2)) / 2.0
         area = abs(float(x2) - float(x1)) * abs(float(y2) - float(y1))
         return (cx, cy), float(area)
+
+    if shape_type == "circle" and len(points) >= 2:
+        if (
+            isinstance(points[0], Sequence)
+            and len(points[0]) >= 2
+            and isinstance(points[1], Sequence)
+            and len(points[1]) >= 2
+        ):
+            cx = _safe_float(points[0][0])
+            cy = _safe_float(points[0][1])
+            ex = _safe_float(points[1][0])
+            ey = _safe_float(points[1][1])
+            if None not in (cx, cy, ex, ey):
+                radius = math.hypot(float(ex) - float(cx), float(ey) - float(cy))
+                return (float(cx), float(cy)), float(math.pi * radius * radius)
+        return None, 0.0
 
     coords: list[tuple[float, float]] = []
     for point in points:
@@ -369,6 +386,9 @@ class IdentityGovernor:
         if not self.policy.rules:
             raise ValueError("Governor policy has no valid rules.")
         self.zone_specs = self._load_zone_specs(zone_file)
+        self._store_backed_frames: dict[
+            Path, tuple[AnnotationStore, int, dict[str, Any]]
+        ] = {}
 
     def _load_zone_specs(self, zone_file: str | Path | None) -> list[ZoneShapeSpec]:
         if zone_file is None:
@@ -393,26 +413,45 @@ class IdentityGovernor:
             files.append(path)
         return files
 
+    def _discover_annotation_stores(self) -> list[AnnotationStore]:
+        stores: list[AnnotationStore] = []
+        seen: set[Path] = set()
+        default_store = AnnotationStore.for_frame_path(
+            self.annotation_dir / f"{self.annotation_dir.name}_000000000.json"
+        )
+        candidates = [default_store.store_path] + sorted(
+            self.annotation_dir.glob(f"*{AnnotationStore.STORE_SUFFIX}")
+        )
+        for store_path in candidates:
+            if not store_path.is_file():
+                continue
+            resolved = store_path.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            stores.append(AnnotationStore(store_path))
+        return stores
+
     def _load_observations(
         self,
     ) -> tuple[dict[int, list[_Observation]], dict[Path, dict[str, Any]], int]:
         by_frame: dict[int, list[_Observation]] = {}
         payloads: dict[Path, dict[str, Any]] = {}
+        self._store_backed_frames = {}
+        loaded_frames: set[int] = set()
         count = 0
-        for json_path in self._iter_frame_files():
-            frame_number = _frame_number_from_name(json_path)
-            if frame_number is None:
-                continue
-            try:
-                payload = json.loads(json_path.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-            if not isinstance(payload, dict):
-                continue
+
+        def _ingest_payload(
+            frame_number: int,
+            json_path: Path,
+            payload: dict[str, Any],
+        ) -> None:
+            nonlocal count
             shapes = payload.get("shapes") or []
             if not isinstance(shapes, list):
-                continue
+                return
             payloads[json_path] = payload
+            loaded_frames.add(int(frame_number))
             frame_rows: list[_Observation] = []
             for shape_index, shape in enumerate(shapes):
                 if not isinstance(shape, Mapping):
@@ -440,6 +479,65 @@ class IdentityGovernor:
                 count += 1
             if frame_rows:
                 by_frame[int(frame_number)] = frame_rows
+
+        for json_path in self._iter_frame_files():
+            frame_number = _frame_number_from_name(json_path)
+            if frame_number is None:
+                continue
+            try:
+                raw_payload = json.loads(json_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not isinstance(raw_payload, dict):
+                continue
+            if "annotation_store" in raw_payload and not isinstance(
+                raw_payload.get("shapes"), list
+            ):
+                try:
+                    stub_frame = int(raw_payload.get("frame", frame_number))
+                    store = AnnotationStore.for_frame_path(
+                        json_path, raw_payload.get("annotation_store")
+                    )
+                    record = store.get_frame(stub_frame)
+                except Exception:
+                    continue
+                if not isinstance(record, dict):
+                    continue
+                payload = _record_to_labelme_payload(record)
+                self._store_backed_frames[json_path] = (store, stub_frame, dict(record))
+                _ingest_payload(stub_frame, json_path, payload)
+                continue
+            _ingest_payload(int(frame_number), json_path, raw_payload)
+
+        for store in self._discover_annotation_stores():
+            stem = store.store_path.name
+            if stem.endswith(AnnotationStore.STORE_SUFFIX):
+                stem = stem[: -len(AnnotationStore.STORE_SUFFIX)]
+            stem = stem or self.annotation_dir.name
+            try:
+                frame_numbers = sorted(store.iter_frames())
+            except Exception:
+                continue
+            for frame_number in frame_numbers:
+                if int(frame_number) in loaded_frames:
+                    continue
+                try:
+                    record = store.get_frame(int(frame_number))
+                except Exception:
+                    continue
+                if not isinstance(record, dict):
+                    continue
+                virtual_path = (
+                    self.annotation_dir / f"{stem}_{int(frame_number):09d}.json"
+                )
+                payload = _record_to_labelme_payload(record)
+                self._store_backed_frames[virtual_path] = (
+                    store,
+                    int(frame_number),
+                    dict(record),
+                )
+                _ingest_payload(int(frame_number), virtual_path, payload)
+
         return by_frame, payloads, count
 
     def _populate_features(self, by_frame: dict[int, list[_Observation]]) -> None:
@@ -801,17 +899,81 @@ class IdentityGovernor:
         canonical = self.policy.canonical_track_ids.get(corrected_label)
         if canonical:
             for key in ("track_id", "tracking_id", "instance_id", "group_id"):
-                current = _normalize_id(shape.get(key))
+                raw_val = shape.get(key)
+                current = _normalize_id(raw_val)
                 if current and current != canonical:
-                    shape[key] = canonical
+                    shape[key] = (
+                        int(canonical)
+                        if isinstance(raw_val, int)
+                        and not isinstance(raw_val, bool)
+                        and canonical.lstrip("-").isdigit()
+                        else canonical
+                    )
                     changed = True
             if isinstance(flags, dict):
                 for key in ("track_id", "tracking_id", "instance_id", "group_id"):
-                    current = _normalize_id(flags.get(key))
+                    raw_val = flags.get(key)
+                    current = _normalize_id(raw_val)
                     if current and current != canonical:
-                        flags[key] = canonical
+                        flags[key] = (
+                            int(canonical)
+                            if isinstance(raw_val, int)
+                            and not isinstance(raw_val, bool)
+                            and canonical.lstrip("-").isdigit()
+                            else canonical
+                        )
                         changed = True
         return changed
+
+    def _apply_child_body_part_remaps(
+        self,
+        shapes: list[Any],
+        label_remap: Mapping[str, str],
+    ) -> int:
+        if not label_remap:
+            return 0
+        updated = 0
+        for shape in shapes:
+            if not isinstance(shape, dict) or not is_body_part_shape_payload(shape):
+                continue
+            flags = shape.get("flags") if isinstance(shape.get("flags"), dict) else None
+            label = _normalize_text(shape.get("label"))
+            old_parent = (
+                _normalize_text(shape.get("parent_instance"))
+                or (
+                    _normalize_text(flags.get("parent_instance"))
+                    if flags is not None
+                    else ""
+                )
+                or _normalize_text(shape.get("instance_label"))
+                or (
+                    _normalize_text(flags.get("instance_label"))
+                    if flags is not None
+                    else ""
+                )
+                or (label.split(":", 1)[0].strip() if ":" in label else "")
+            )
+            if not old_parent or old_parent not in label_remap:
+                continue
+            new_parent = label_remap[old_parent]
+            shape_changed = False
+            if ":" in label and label.split(":", 1)[0].strip() == old_parent:
+                suffix = label.split(":", 1)[1].strip()
+                shape["label"] = f"{new_parent}:{suffix}" if suffix else new_parent
+                shape_changed = True
+            for attr_key in ("parent_instance", "instance_label"):
+                if _normalize_text(shape.get(attr_key)) == old_parent:
+                    shape[attr_key] = new_parent
+                    shape_changed = True
+                if (
+                    flags is not None
+                    and _normalize_text(flags.get(attr_key)) == old_parent
+                ):
+                    flags[attr_key] = new_parent
+                    shape_changed = True
+            if shape_changed:
+                updated += 1
+        return updated
 
     def _serialize_report(
         self,
@@ -871,6 +1033,7 @@ class IdentityGovernor:
                 corrections_by_track.setdefault(correction.track_id, []).append(
                     correction
                 )
+            frame_label_remaps: dict[Path, dict[str, str]] = {}
             for rows in by_track.values():
                 if not rows:
                     continue
@@ -904,11 +1067,38 @@ class IdentityGovernor:
                         ):
                             updated_shapes += 1
                             updated_files.add(row.json_path)
+                            frame_label_remaps.setdefault(row.json_path, {})[
+                                row.observed_label
+                            ] = correction.corrected_label
 
+            for path, remap in frame_label_remaps.items():
+                payload = payloads.get(path)
+                shapes = payload.get("shapes") if isinstance(payload, dict) else None
+                if isinstance(shapes, list):
+                    updated_shapes += self._apply_child_body_part_remaps(shapes, remap)
+
+            store_batches: dict[
+                Path, tuple[AnnotationStore, dict[int, dict[str, Any]]]
+            ] = {}
             for path in sorted(updated_files):
                 payload = payloads.get(path)
-                if isinstance(payload, Mapping):
+                if not isinstance(payload, Mapping):
+                    continue
+                store_info = self._store_backed_frames.get(path)
+                if store_info is not None:
+                    store, frame_num, orig_record = store_info
+                    updated_record = dict(orig_record)
+                    updated_record["frame"] = int(frame_num)
+                    updated_record["shapes"] = list(payload.get("shapes") or [])
+                    _, batch = store_batches.setdefault(
+                        store.store_path.resolve(), (store, {})
+                    )
+                    batch[int(frame_num)] = updated_record
+                else:
                     _write_json_atomic(path, payload)
+
+            for store, batch in store_batches.values():
+                store.update_frames(batch)
 
         if report_path is None:
             report_path = self.annotation_dir / "identity_governor_report.json"

@@ -982,7 +982,7 @@ def _one_way_anova_exact(groups: Sequence[np.ndarray]) -> Tuple[float, float]:
     df1 = float(k - 1)
     df2 = float(n_tot - k)
     if ss_within <= 1e-24:
-        return (0.0, 1.0) if ss_between <= 1e-24 else (0.0, 0.0)
+        return (0.0, 1.0) if ss_between <= 1e-24 else (1e9, 0.0)
     f_stat = (ss_between / df1) / (ss_within / df2)
     if not math.isfinite(f_stat):
         return 0.0, 1.0
@@ -1177,46 +1177,51 @@ def _logrank_test(
     k = len(ordered_groups)
     if k < 2:
         return 0.0, 1.0
-    event_times = sorted(
-        {
-            float(t)
-            for g in ordered_groups
-            for t, ev in grouped_survival.get(g, ())
-            if ev
-        }
-    )
-    if not event_times:
+
+    obs_records: List[Tuple[float, int, bool]] = []
+    n_vec = np.zeros(k, dtype=np.float64)
+    for g_idx, g in enumerate(ordered_groups):
+        for t, ev in grouped_survival.get(g, ()):
+            t_f = float(t)
+            if math.isfinite(t_f):
+                obs_records.append((t_f, g_idx, bool(ev)))
+                n_vec[g_idx] += 1.0
+
+    if not any(ev for _, _, ev in obs_records):
         return 0.0, 1.0
 
+    obs_records.sort(key=lambda item: item[0])
     obs_minus_exp = np.zeros(k - 1, dtype=np.float64)
     cov = np.zeros((k - 1, k - 1), dtype=np.float64)
-    group_arrays = [
-        [(float(t), bool(ev)) for t, ev in grouped_survival.get(g, ())]
-        for g in ordered_groups
-    ]
 
-    for t_ev in event_times:
-        n_vec = np.zeros(k, dtype=np.float64)
+    idx = 0
+    m = len(obs_records)
+    while idx < m:
+        t_cur = obs_records[idx][0]
         d_vec = np.zeros(k, dtype=np.float64)
-        for g_idx, items in enumerate(group_arrays):
-            for t_val, is_ev in items:
-                if t_val >= t_ev - 1e-12:
-                    n_vec[g_idx] += 1.0
-                    if is_ev and abs(t_val - t_ev) <= 1e-12:
-                        d_vec[g_idx] += 1.0
+        c_vec = np.zeros(k, dtype=np.float64)
+        while idx < m and abs(obs_records[idx][0] - t_cur) <= 1e-12:
+            _, g_idx, is_ev = obs_records[idx]
+            if is_ev:
+                d_vec[g_idx] += 1.0
+            else:
+                c_vec[g_idx] += 1.0
+            idx += 1
         n_tot = float(n_vec.sum())
         d_tot = float(d_vec.sum())
-        if n_tot <= 1.0 or d_tot <= 0.0:
-            continue
-        e_vec = n_vec * (d_tot / n_tot)
-        obs_minus_exp += (d_vec - e_vec)[: k - 1]
-        factor = (d_tot * (n_tot - d_tot)) / (n_tot * n_tot * (n_tot - 1.0))
-        if factor > 0.0:
-            p_vec = n_vec[: k - 1]
-            v_step = -np.outer(p_vec, p_vec) * factor
-            for idx_d in range(k - 1):
-                v_step[idx_d, idx_d] = p_vec[idx_d] * (n_tot - p_vec[idx_d]) * factor
-            cov += v_step
+        if n_tot > 1.0 and d_tot > 0.0:
+            e_vec = n_vec * (d_tot / n_tot)
+            obs_minus_exp += (d_vec - e_vec)[: k - 1]
+            factor = (d_tot * (n_tot - d_tot)) / (n_tot * n_tot * (n_tot - 1.0))
+            if factor > 0.0:
+                p_vec = n_vec[: k - 1]
+                v_step = -np.outer(p_vec, p_vec) * factor
+                for idx_d in range(k - 1):
+                    v_step[idx_d, idx_d] = (
+                        p_vec[idx_d] * (n_tot - p_vec[idx_d]) * factor
+                    )
+                cov += v_step
+        n_vec -= d_vec + c_vec
 
     try:
         inv_cov = np.linalg.pinv(cov)
@@ -1275,8 +1280,9 @@ def compute_cohort_comparisons(
                 term1 = v1 / float(n1_v)
                 term2 = v2 / float(n2_v)
                 se = math.sqrt(term1 + term2)
+                mean_diff_val = float(np.mean(x1) - np.mean(x2))
                 if se > 1e-12:
-                    param_stat = float((np.mean(x1) - np.mean(x2)) / se)
+                    param_stat = float(mean_diff_val / se)
                     df_denom = (term1 * term1) / float(n1_v - 1) + (
                         term2 * term2
                     ) / float(n2_v - 1)
@@ -1286,6 +1292,9 @@ def compute_cohort_comparisons(
                         else float(n1_v + n2_v - 2)
                     )
                     p_param = _student_t_two_sided_p(param_stat, df_welch)
+                elif abs(mean_diff_val) > 1e-12:
+                    param_stat = math.copysign(1e9, mean_diff_val)
+                    p_param = 0.0
         else:
             param_stat, p_param = _one_way_anova_exact(group_vals)
 
@@ -1431,7 +1440,7 @@ def _aggregate_subject_rows_by_recording(
             collapsed.append(items[0])
             continue
         dur_s = float(mean(r.session_duration_s for r in items))
-        occ = int(round(mean(r.occurrences for r in items)))
+        occ_mean = float(mean(r.occurrences for r in items))
         rate = float(mean(r.rate_per_min for r in items))
         tot_dur = float(mean(r.total_duration_s for r in items))
         pct = float(mean(r.percent_of_session for r in items))
@@ -1450,6 +1459,11 @@ def _aggregate_subject_rows_by_recording(
             lat_first = None
             censored = True
             cens_lat = dur_s
+        occ = (
+            max(1, int(math.floor(occ_mean + 0.5)))
+            if (not censored or occ_mean > 0.0)
+            else 0
+        )
         collapsed.append(
             CohortSubjectRow(
                 recording_id=rec_id,

@@ -1,4 +1,5 @@
 import ast
+import math
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -27,6 +28,31 @@ class _PandasProxy:
 
 
 pd = _PandasProxy()
+
+
+def _is_missing_segmentation(segmentation) -> bool:
+    if segmentation is None:
+        return True
+    if isinstance(segmentation, (float, np.floating)):
+        return math.isnan(float(segmentation))
+    if isinstance(segmentation, str):
+        return segmentation.strip() in {"", "None", "nan", "NaN", "null"}
+    if isinstance(segmentation, dict):
+        return not ("counts" in segmentation and "size" in segmentation)
+    return True
+
+
+def _tracking_id_suffix(tracking_id) -> str:
+    if tracking_id is None:
+        return ""
+    try:
+        tid_float = float(tracking_id)
+    except (TypeError, ValueError):
+        return ""
+    if not math.isfinite(tid_float) or tid_float < 0:
+        return ""
+    tid_int = int(tid_float)
+    return f"_{tid_int}" if tid_float == float(tid_int) else f"_{tracking_id}"
 
 
 def pred_dict_to_labelme(
@@ -66,53 +92,87 @@ def pred_dict_to_labelme(
     except (KeyError, TypeError, ValueError):
         return label_list
 
-    if decode_segmentation and (
-        segmentation
-        and segmentation != "None"
-        and segmentation != "nan"
-        and score >= score_threshold
+    if instance_name is None or (
+        isinstance(instance_name, (float, np.floating))
+        and math.isnan(float(instance_name))
     ):
-        try:
-            _mask = ast.literal_eval(segmentation)
-        except (ValueError, SyntaxError):
-            _mask = segmentation
-        mask_area = mask_util.area(_mask)
-        if mask_area >= keypoint_area_threshold:
-            _mask = mask_util.decode(_mask)[:, :]
-            polys, has_holes = mask_to_polygons(_mask)
-            if polys:
-                polys = polys[0]
-                label_name = instance_name
-                if tracking_id is not None and tracking_id >= 0:
-                    label_name += f"_{tracking_id}"
+        return label_list
+    instance_str = str(instance_name).strip()
+    if not instance_str:
+        return label_list
 
-                shape = Shape(
-                    label=label_name,
-                    shape_type="polygon",
-                    flags={},
-                    visible=True,
-                )
-                all_points = np.array(list(zip(polys[0::2], polys[1::2])))
-                for x, y in all_points:
-                    if x >= 0 and y >= 0:
-                        shape.addPoint((x, y))
-                if shape.points:
-                    # To close the polygon
-                    shape.points.append(shape.points[0])
+    try:
+        score_val = float(score)
+    except (TypeError, ValueError):
+        score_val = float("nan")
+    if math.isfinite(score_val) and score_val < score_threshold:
+        return label_list
+
+    try:
+        x1_f, y1_f, x2_f, y2_f = float(x1), float(y1), float(x2), float(y2)
+        bbox_valid = all(math.isfinite(v) for v in (x1_f, y1_f, x2_f, y2_f))
+    except (TypeError, ValueError):
+        x1_f = y1_f = x2_f = y2_f = float("nan")
+        bbox_valid = False
+
+    tracking_suffix = _tracking_id_suffix(tracking_id)
+    missing_seg = _is_missing_segmentation(segmentation)
+    mask_decoded = False
+
+    if decode_segmentation and not missing_seg:
+        _mask = None
+        if isinstance(segmentation, str):
+            try:
+                _mask = ast.literal_eval(segmentation)
+            except (ValueError, SyntaxError):
+                _mask = None
+        elif isinstance(segmentation, dict):
+            _mask = segmentation
+
+        mask_area = None
+        if isinstance(_mask, dict):
+            try:
+                mask_area = float(mask_util.area(_mask))
+            except (TypeError, ValueError, KeyError):
+                mask_area = None
+
+        if mask_area is not None:
+            mask_decoded = True
+            if mask_area >= keypoint_area_threshold:
+                decoded_arr = mask_util.decode(_mask)[:, :]
+                polys, _has_holes = mask_to_polygons(decoded_arr)
+                if polys:
+                    polys = polys[0]
+                    label_name = f"{instance_str}{tracking_suffix}"
+                    shape = Shape(
+                        label=label_name,
+                        shape_type="polygon",
+                        flags={},
+                        visible=True,
+                    )
+                    all_points = np.array(list(zip(polys[0::2], polys[1::2])))
+                    for x, y in all_points:
+                        if x >= 0 and y >= 0:
+                            shape.addPoint((float(x), float(y)))
+                    if shape.points:
+                        shape.close()
+                        label_list.append(shape)
+            elif bbox_valid:
+                shape = Shape(label=instance_str, shape_type="point", flags={})
+                cx = round((x1_f + x2_f) / 2, 2)
+                cy = round((y1_f + y2_f) / 2, 2)
+                if cx >= 0 and cy >= 0:
+                    shape.addPoint((cx, cy))
                     label_list.append(shape)
-        else:
-            shape = Shape(label=instance_name, shape_type="point", flags={})
-            cx = round((x1 + x2) / 2, 2)
-            cy = round((y1 + y2) / 2, 2)
-            if cx >= 0 and cy >= 0:
-                shape.addPoint((cx, cy))
-                label_list.append(shape)
-    if segmentation is None or segmentation == "None":
+
+    if (not mask_decoded) and bbox_valid:
         rect_shape = Shape(
-            label=f"{instance_name}_{tracking_id}", shape_type="rectangle", flags={}
+            label=f"{instance_str}{tracking_suffix}",
+            shape_type="rectangle",
+            flags={},
         )
-        rect_shape.addPoint((x1, y1))
-        rect_shape.addPoint((x2, y2))
+        rect_shape.addPoint((x1_f, y1_f))
+        rect_shape.addPoint((x2_f, y2_f))
         label_list.append(rect_shape)
 
     return label_list
@@ -147,6 +207,7 @@ class TracksResults:
         keypoint_area_threshold: int = 265,
         key_frames=False,
         skip_frames=30,
+        swap_left_right_by_arena_half: bool = False,
     ) -> str:
         if self.df is None or self.df.empty or self.cap is None:
             yield 100, "No detections available"
@@ -154,13 +215,17 @@ class TracksResults:
             return
 
         width = self.video_width()
-        # Fix the left right based on the middle of
-        # length of the video width
-        if width is not None and width > 0 and "instance_name" in self.df.columns:
-            x_col = "cx" if "cx" in self.df.columns else "x1"
-            if x_col in self.df.columns:
-                inst_str = self.df["instance_name"].astype(str)
-                x_vals = pd.to_numeric(self.df[x_col], errors="coerce")
+        df_export = self.df
+        if (
+            swap_left_right_by_arena_half
+            and width is not None
+            and width > 0
+            and "instance_name" in df_export.columns
+        ):
+            x_col = "cx" if "cx" in df_export.columns else "x1"
+            if x_col in df_export.columns:
+                inst_str = df_export["instance_name"].astype(str)
+                x_vals = pd.to_numeric(df_export[x_col], errors="coerce")
                 half_w = width / 2.0
                 to_right = inst_str.str.contains("Left", regex=False) & (
                     x_vals >= half_w
@@ -178,13 +243,14 @@ class TracksResults:
                         updated.loc[to_left] = inst_str.loc[to_left].str.replace(
                             "Right", "Left", regex=False
                         )
-                    self.df["instance_name"] = updated
+                    df_export = df_export.copy()
+                    df_export["instance_name"] = updated
         height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         num_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
         if not os.path.exists(output_dir):
             os.makedirs(output_dir, exist_ok=True)
 
-        unique_frames = sorted(self.df.frame_number.unique())
+        unique_frames = sorted(df_export.frame_number.unique())
         if not unique_frames:
             yield 100, "No detections available"
             self.clean_up()
@@ -219,24 +285,26 @@ class TracksResults:
                 f"{output_dir}/{Path(self.video_file).stem}_{int(frame_number):09}.png"
             )
             PIL.Image.fromarray(frame).save(img_path)
-            df_cur = self.df[self.df.frame_number == frame_number]
+            df_cur = df_export[df_export.frame_number == frame_number]
             for row in df_cur.to_dict(orient="records"):
                 try:
                     label_list = pred_dict_to_labelme(row, keypoint_area_threshold)
                     frame_label_list += label_list
-                    save_labels(
-                        img_path.replace(".png", ".json"),
-                        img_path,
-                        frame_label_list,
-                        height,
-                        width,
-                        imageData=None,
-                        save_image_to_json=False,
-                    )
-                    yield progress, Path(img_path).stem + ".json"
-                except ValueError:
-                    yield 0, "No predictions"
+                except (ValueError, TypeError):
                     continue
+            if frame_label_list:
+                save_labels(
+                    img_path.replace(".png", ".json"),
+                    img_path,
+                    frame_label_list,
+                    height,
+                    width,
+                    imageData=None,
+                    save_image_to_json=False,
+                )
+                yield progress, Path(img_path).stem + ".json"
+            else:
+                yield 0, "No predictions"
 
         yield 100, "Done"
 

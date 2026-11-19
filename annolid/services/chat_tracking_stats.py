@@ -40,8 +40,12 @@ def _infer_tracking_source(candidate: Path) -> Optional[Path]:
             for p in candidate.glob("*.json")
             if not p.name.endswith("_zones.json")
             and not p.name.endswith("_tracking_stats.json")
+            and p.name != "project.annolid.json"
         ]
-        if frame_jsons or (candidate / "annotations.sqlite").is_file():
+        has_ndjson_store = any(
+            p.is_file() for p in candidate.glob("*_annotations.ndjson")
+        )
+        if frame_jsons or has_ndjson_store:
             return candidate
         for suf in ("*_tracking.csv", "*_tracked.csv"):
             matches = sorted(candidate.glob(suf))

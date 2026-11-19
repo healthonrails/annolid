@@ -95,9 +95,12 @@ def _resolve_recording_bundle(
             for p in source_path.glob("*.json")
             if not p.name.endswith("_zones.json")
             and not p.name.endswith("_tracking_stats.json")
+            and p.name != "project.annolid.json"
         ]
-        store_sqlite = source_path / "annotations.sqlite"
-        if frame_jsons or store_sqlite.is_file():
+        has_ndjson_store = any(
+            p.is_file() for p in source_path.glob("*_annotations.ndjson")
+        )
+        if frame_jsons or has_ndjson_store:
             annotation_dir = source_path
             stem = source_path.name
             for ext in sorted(_VIDEO_SUFFIXES):
@@ -1108,7 +1111,11 @@ def _compose_markdown_report(payload: Mapping[str, Any]) -> str:
                     p.get("shared_frames", 0),
                     _fmt_opt_float(p.get("mean_distance_px"), 1),
                     _fmt_opt_float(p.get("min_distance_px"), 1),
-                    _fmt_opt_float(p.get("close_contact_pct"), 1, "%"),
+                    _fmt_opt_float(
+                        p.get("close_contact_percent", p.get("close_contact_pct")),
+                        1,
+                        "%",
+                    ),
                     _fmt_opt_float(p.get("velocity_correlation"), 3),
                 ]
                 for p in pw
@@ -1442,7 +1449,11 @@ def _compose_html_report(
                     _fmt_opt_float(p.get("mean_distance_px"), 1),
                     _fmt_opt_float(p.get("min_distance_px"), 1),
                     _fmt_opt_float(p.get("mean_distance_cm"), 2),
-                    _fmt_opt_float(p.get("close_contact_pct"), 1, "%"),
+                    _fmt_opt_float(
+                        p.get("close_contact_percent", p.get("close_contact_pct")),
+                        1,
+                        "%",
+                    ),
                     _fmt_opt_float(p.get("velocity_correlation"), 3),
                 ]
                 for p in pw
