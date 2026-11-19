@@ -1,15 +1,32 @@
+import ast
 import os
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+import cv2
+import numpy as np
+import PIL.Image
+import pycocotools.mask as mask_util
+
 from annolid.annotation.keypoints import save_labels
 from annolid.annotation.masks import mask_to_polygons
 from annolid.gui.shape import Shape
-from pathlib import Path
-import cv2
-import pycocotools.mask as mask_util
-import ast
-import PIL.Image
-import numpy as np
-import pandas as pd
 from annolid.utils.annotation_compat import img_pil_to_data
+
+if TYPE_CHECKING:
+    import pandas as pd
+
+
+class _PandasProxy:
+    """Import pandas lazily so GUI startup does not require optional analysis runtimes."""
+
+    def __getattr__(self, name: str):
+        import pandas as pandas
+
+        return getattr(pandas, name)
+
+
+pd = _PandasProxy()
 
 
 def pred_dict_to_labelme(
@@ -105,8 +122,6 @@ class TracksResults:
     """Representing the tracking results."""
 
     def __init__(self, video_file: str = None, tracking_csv: str = None) -> None:
-        import pandas as pd
-
         self.tracking_csv = tracking_csv
         self.video_file = video_file
         if self.tracking_csv and Path(self.tracking_csv).exists():
@@ -294,17 +309,27 @@ class TracksResults:
     @classmethod
     def switch_left_right(cls, row, width=800):
         instance_name = row["instance_name"]
-        if width is None or width <= 0:
+        try:
+            width_val = float(width)
+        except (TypeError, ValueError):
+            return instance_name
+        if not np.isfinite(width_val) or width_val <= 0:
             return instance_name
         if "cx" in row:
-            x_val = row["cx"]
+            x_raw = row["cx"]
+        elif "x1" in row:
+            x_raw = row["x1"]
         else:
-            x_val = row["x1"]
-        if pd.isna(x_val):
             return instance_name
-        if "Left" in str(instance_name) and x_val >= width / 2:
+        try:
+            x_val = float(x_raw)
+        except (TypeError, ValueError):
+            return instance_name
+        if not np.isfinite(x_val):
+            return instance_name
+        if "Left" in str(instance_name) and x_val >= width_val / 2:
             return str(instance_name).replace("Left", "Right")
-        elif "Right" in str(instance_name) and x_val < width / 2:
+        elif "Right" in str(instance_name) and x_val < width_val / 2:
             return str(instance_name).replace("Right", "Left")
         return instance_name
 
@@ -412,8 +437,6 @@ class TracksResults:
         Returns:
             pd.Dataframe: dataframe with filled instances
         """
-        import pandas as pd
-
         fill_rows = []
         missing_frames = list(
             self.get_missing_instance_frames(instance_name=instance_name)
