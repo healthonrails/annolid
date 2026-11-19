@@ -61,14 +61,15 @@ jobs:
     - name: Install dependencies
       run: |
         source .venv/bin/activate
-        uv pip install flake8 pytest
+        uv pip install flake8 ruff pytest
         # Avoid pulling huge CUDA runtime wheels in CI: install CPU-only PyTorch explicitly,
         # then install Annolid (and its declared dependencies) from pyproject.toml.
         uv pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
         uv pip install ".[gui,test]"
-    - name: Lint with flake8
+    - name: Lint with ruff and flake8
       run: |
         source .venv/bin/activate
+        ruff check annolid tests scripts
         FLK_EXCLUDES="annolid/segmentation/SAM,annolid/segmentation/cutie_vos,annolid/detector/countgd,annolid/depth/video_depth_anything"
         # stop the build if there are Python syntax errors or undefined names
         flake8 annolid tests --count --select=E9,F63,F7,F82 --exclude="$FLK_EXCLUDES" --show-source --statistics
@@ -111,13 +112,16 @@ jobs:
           git diff --name-only HEAD~1 HEAD > /tmp/changed_files.txt || true
         fi
         cat > /tmp/agent_eval_traces.jsonl <<'JSONL'
-        {"trace_id":"t1","user_message":"hello","expected_substring":"ok"}
+        {"trace_id":"track_qc","user_message":"run track qc","expected_substring":"track_qc"}
+        {"trace_id":"kinematics","user_message":"compute kinematics","expected_substring":"kinematics"}
         JSONL
         cat > /tmp/agent_eval_baseline.jsonl <<'JSONL'
-        {"trace_id":"t1","content":"ok"}
+        {"trace_id":"track_qc","content":"track_qc report ready"}
+        {"trace_id":"kinematics","content":"kinematics report ready"}
         JSONL
         cat > /tmp/agent_eval_candidate.jsonl <<'JSONL'
-        {"trace_id":"t1","content":"ok"}
+        {"trace_id":"track_qc","content":"track_qc report ready"}
+        {"trace_id":"kinematics","content":"kinematics report ready"}
         JSONL
         annolid-run agent eval run \
           --traces /tmp/agent_eval_traces.jsonl \
@@ -129,7 +133,7 @@ jobs:
           --changed-files /tmp/changed_files.txt \
           --report /tmp/agent_eval_report.json \
           --max-regressions 0 \
-          --min-pass-rate 0.0
+          --min-pass-rate 1.0
     - name: Detect docs changes
       id: docs_changes
       run: |
