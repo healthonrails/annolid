@@ -453,9 +453,16 @@ annolid = [
 extend-exclude = [
     "book/tutorials/*.ipynb",
     "docs/tutorials/*.ipynb",
-    # Vendored external projects keep upstream style/structure.
+    # Vendored external projects and git submodules keep upstream style/structure.
     "annolid/detector/countgd/**",
+    "annolid/detector/yolov5/**",
     "annolid/segmentation/cutie_vos/**",
     "annolid/segmentation/SAM/**",
+    "annolid/segmentation/yolact/**",
     "annolid/depth/video_depth_anything/**",
 ]
+
+[tool.ruff.lint]
+# Explicitly pin the baseline rule set (pycodestyle errors + Pyflakes) so
+# local pre-commit and CI remain deterministic across Ruff versions.
+select = ["E4", "E7", "E9", "F"]
