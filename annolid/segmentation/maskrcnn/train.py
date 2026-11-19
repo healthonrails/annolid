@@ -21,6 +21,7 @@ from annolid.segmentation.maskrcnn import transforms as T
 from annolid.segmentation.maskrcnn.coco_utils import get_coco, get_coco_kp
 from annolid.segmentation.maskrcnn import utils
 from annolid.segmentation.maskrcnn.model import get_maskrcnn_model
+from annolid.utils.safe_torch_load import safe_torch_load
 
 
 def get_transform(train):
@@ -127,7 +128,7 @@ def main(args):
     )
 
     if args.resume:
-        checkpoint = torch.load(args.resume, map_location="cpu")
+        checkpoint = safe_torch_load(args.resume, map_location="cpu")
         model_without_ddp.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
         lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])

@@ -44,6 +44,8 @@ class FunctionTool(ABC):
     def _validate(self, val: Any, schema: dict[str, Any], path: str) -> list[str]:
         t = schema.get("type")
         label = path or "parameter"
+        if t in ("integer", "number") and isinstance(val, bool):
+            return [f"{label} should be {t}"]
         if t in self._TYPE_MAP and not isinstance(val, self._TYPE_MAP[t]):
             return [f"{label} should be {t}"]
 
@@ -53,8 +55,12 @@ class FunctionTool(ABC):
         if t in ("integer", "number"):
             if "minimum" in schema and val < schema["minimum"]:
                 errors.append(f"{label} must be >= {schema['minimum']}")
+            if "exclusiveMinimum" in schema and val <= schema["exclusiveMinimum"]:
+                errors.append(f"{label} must be > {schema['exclusiveMinimum']}")
             if "maximum" in schema and val > schema["maximum"]:
                 errors.append(f"{label} must be <= {schema['maximum']}")
+            if "exclusiveMaximum" in schema and val >= schema["exclusiveMaximum"]:
+                errors.append(f"{label} must be < {schema['exclusiveMaximum']}")
         if t == "string":
             if "minLength" in schema and len(val) < schema["minLength"]:
                 errors.append(f"{label} must be at least {schema['minLength']} chars")
@@ -71,10 +77,19 @@ class FunctionTool(ABC):
                 if key in props:
                     child_path = path + "." + key if path else key
                     errors.extend(self._validate(value, props[key], child_path))
-        if t == "array" and "items" in schema:
-            for i, item in enumerate(val):
-                idx_path = f"{path}[{i}]" if path else f"[{i}]"
-                errors.extend(self._validate(item, schema["items"], idx_path))
+        if t == "array":
+            if "minItems" in schema and len(val) < schema["minItems"]:
+                errors.append(
+                    f"{label} must contain at least {schema['minItems']} items"
+                )
+            if "maxItems" in schema and len(val) > schema["maxItems"]:
+                errors.append(
+                    f"{label} must contain at most {schema['maxItems']} items"
+                )
+            if "items" in schema:
+                for i, item in enumerate(val):
+                    idx_path = f"{path}[{i}]" if path else f"[{i}]"
+                    errors.extend(self._validate(item, schema["items"], idx_path))
         return errors
 
     def to_schema(self) -> dict[str, Any]:

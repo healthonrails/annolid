@@ -12,6 +12,7 @@ import torch
 from raft import RAFT
 from annolid.motion import flow_viz
 from annolid.motion.utils import InputPadder
+from annolid.utils.safe_torch_load import safe_torch_load
 from torch.utils.data import DataLoader, IterableDataset
 
 
@@ -87,7 +88,7 @@ def main():
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
     model = torch.nn.DataParallel(RAFT(args))
-    model.load_state_dict(torch.load(args.model, map_location=torch.device("cpu")))
+    model.load_state_dict(safe_torch_load(args.model, map_location=torch.device("cpu")))
 
     model = model.module
     model.to(DEVICE)

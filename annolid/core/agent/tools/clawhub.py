@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import tempfile
 import urllib.parse
 import urllib.request
@@ -36,7 +37,17 @@ def _api_url(path: str, params: dict[str, str] | None = None) -> str:
     return f"{base}{suffix}"
 
 
-def _http_get_json(url: str, timeout_sec: int = 20) -> Any:
+_MAX_JSON_RESPONSE_BYTES = 5 * 1024 * 1024
+_MAX_SKILL_DOWNLOAD_BYTES = 50 * 1024 * 1024
+_MAX_UNCOMPRESSED_ZIP_BYTES = 100 * 1024 * 1024
+
+
+def _http_get_json(
+    url: str,
+    timeout_sec: int = 20,
+    *,
+    max_bytes: int = _MAX_JSON_RESPONSE_BYTES,
+) -> Any:
     req = urllib.request.Request(
         url,
         headers={
@@ -45,26 +56,60 @@ def _http_get_json(url: str, timeout_sec: int = 20) -> Any:
         },
     )
     with urllib.request.urlopen(req, timeout=timeout_sec) as response:
-        raw = response.read()
+        raw = response.read(max_bytes + 1)
+    if len(raw) > max_bytes:
+        raise ValueError(f"ClawHub JSON response exceeded {max_bytes} byte limit.")
     return json.loads(raw.decode("utf-8"))
 
 
-def _http_get_bytes(url: str, timeout_sec: int = 60) -> bytes:
+def _http_get_bytes(
+    url: str,
+    timeout_sec: int = 60,
+    *,
+    max_bytes: int = _MAX_SKILL_DOWNLOAD_BYTES,
+) -> bytes:
     req = urllib.request.Request(
         url,
         headers={"User-Agent": "annolid-clawhub/1.0"},
     )
     with urllib.request.urlopen(req, timeout=timeout_sec) as response:
-        return bytes(response.read())
+        raw = response.read(max_bytes + 1)
+    if len(raw) > max_bytes:
+        raise ValueError(f"ClawHub archive download exceeded {max_bytes} byte limit.")
+    return bytes(raw)
 
 
 def _safe_extract_zip(zip_path: Path, dest_dir: Path) -> None:
+    dest_resolved = dest_dir.resolve()
+    total_uncompressed = 0
     with zipfile.ZipFile(zip_path, "r") as zf:
         for member in zf.infolist():
+            mode = member.external_attr >> 16
+            if stat.S_ISLNK(mode):
+                raise ValueError(f"Unsafe symlink in zip archive: {member.filename}")
             member_path = Path(member.filename)
-            if member_path.is_absolute() or ".." in member_path.parts:
+            if (
+                member_path.is_absolute()
+                or member_path.drive
+                or ".." in member_path.parts
+            ):
                 raise ValueError(f"Unsafe zip member path: {member.filename}")
-        zf.extractall(dest_dir)
+            target_resolved = (dest_resolved / member_path).resolve()
+            if target_resolved != dest_resolved and not target_resolved.is_relative_to(
+                dest_resolved
+            ):
+                raise ValueError(
+                    f"Zip member escapes extraction root: {member.filename}"
+                )
+            total_uncompressed += max(0, int(member.file_size))
+            if total_uncompressed > _MAX_UNCOMPRESSED_ZIP_BYTES:
+                raise ValueError(
+                    f"Uncompressed skill archive exceeds {_MAX_UNCOMPRESSED_ZIP_BYTES} byte limit."
+                )
+        zf.extractall(dest_resolved)
+    for extracted in dest_resolved.rglob("*"):
+        if extracted.is_symlink():
+            raise ValueError(f"Unsafe symlink extracted from archive: {extracted.name}")
 
 
 def _locate_skill_root(root_dir: Path) -> Path | None:
@@ -114,7 +159,18 @@ async def run_clawhub_command(
         if "--workdir" in argv:
             idx = argv.index("--workdir")
             if idx + 1 < len(argv):
-                resolved_workspace = argv[idx + 1]
+                raw_workdir = argv[idx + 1]
+                cand_ws = _resolve_workspace(raw_workdir)
+                if workspace is not None:
+                    allowed_ws = _resolve_workspace(workspace)
+                    if cand_ws != allowed_ws and not cand_ws.is_relative_to(allowed_ws):
+                        return {
+                            "ok": False,
+                            "error": (
+                                f"--workdir '{raw_workdir}' resolves outside allowed workspace '{allowed_ws}'."
+                            ),
+                        }
+                resolved_workspace = cand_ws
         return await clawhub_install_skill(
             slug,
             workspace=resolved_workspace,
@@ -212,6 +268,10 @@ async def clawhub_install_skill(
             asyncio.to_thread(_http_get_bytes, download_url, 90),
             timeout=95.0,
         )
+        if len(zip_bytes) > _MAX_SKILL_DOWNLOAD_BYTES:
+            raise ValueError(
+                f"ClawHub archive download exceeded {_MAX_SKILL_DOWNLOAD_BYTES} byte limit."
+            )
     except Exception as exc:
         return {
             "ok": False,
@@ -253,11 +313,15 @@ async def clawhub_install_skill(
                     "workspace": str(ws),
                     "source": "clawhub",
                 }
-            target_dir = skills_dir / slug_text
-            replaced = target_dir.exists()
-            if target_dir.exists():
+            target_dir = (skills_dir / slug_text).resolve()
+            if not target_dir.is_relative_to(skills_dir.resolve()):
+                raise ValueError(f"Skill target escapes skills directory: {slug_text}")
+            replaced = target_dir.exists() or target_dir.is_symlink()
+            if target_dir.is_symlink():
+                target_dir.unlink()
+            elif target_dir.exists():
                 shutil.rmtree(target_dir)
-            shutil.copytree(source_root, target_dir)
+            shutil.copytree(source_root, target_dir, symlinks=True)
     except Exception as exc:
         emit_governance_event(
             event_type="skills",

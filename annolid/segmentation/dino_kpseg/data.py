@@ -30,6 +30,7 @@ from annolid.tracking.overlap_assignment import (
     resolve_overlapping_point_instances,
 )
 from annolid.utils.logger import logger
+from annolid.utils.safe_torch_load import safe_torch_load
 
 
 _IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
@@ -2321,7 +2322,7 @@ class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
         cache_path = self._cache_path(image_path, cache_salt=cache_salt)
         if cache_path.exists():
             try:
-                payload = torch.load(cache_path, map_location="cpu")
+                payload = safe_torch_load(cache_path, map_location="cpu")
                 if isinstance(payload, torch.Tensor):
                     cached = merge_feature_layers(payload, mode=self.feature_merge)
                     if self._is_compatible_cached_features(cached):

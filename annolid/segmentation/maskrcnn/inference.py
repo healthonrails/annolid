@@ -11,8 +11,8 @@ here = Path(__file__).parent
 
 
 def get_coco_labels(config_file=str(here.parent.parent / "configs/coco_labels.yaml")):
-    with open(config_file, "r") as cfg:
-        coco_labels = yaml.load(cfg, Loader=yaml.FullLoader)
+    with open(config_file, "r", encoding="utf-8") as cfg:
+        coco_labels = yaml.safe_load(cfg)
     return coco_labels.split()
 
 

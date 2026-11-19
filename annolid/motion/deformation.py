@@ -6,6 +6,8 @@ import torch.nn.functional as F
 import numpy as np
 from torch.distributions.normal import Normal
 
+from annolid.utils.safe_torch_load import safe_torch_load
+
 
 class ConvBlock(nn.Module):
     """
@@ -239,7 +241,7 @@ def build_model(
     fpnet = FramePredNet(vol_shape, nb_enc_features, nb_dec_features)
     fpnet.to(device)
     if pretrained_model is not None and os.path.exists(pretrained_model):
-        fpnet.load_state_dict(torch.load(pretrained_model, map_location=device))
+        fpnet.load_state_dict(safe_torch_load(pretrained_model, map_location=device))
         return fpnet
     else:
         return None

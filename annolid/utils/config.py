@@ -5,8 +5,8 @@ from easydict import EasyDict
 
 def get_config(config_file):
     assert os.path.isfile(config_file)
-    with open(config_file, "r") as cf:
-        parsed_yaml = yaml.load(cf, Loader=yaml.FullLoader)
+    with open(config_file, "r", encoding="utf-8") as cf:
+        parsed_yaml = yaml.safe_load(cf)
     return EasyDict(parsed_yaml)
 
 

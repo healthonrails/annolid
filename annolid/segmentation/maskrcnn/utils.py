@@ -3,8 +3,9 @@ Modified from here
 https://github.com/pytorch/vision/blob/master/references/detection/utils.py
 """
 
-from collections import defaultdict, deque
+from collections import OrderedDict, defaultdict, deque
 import datetime
+import io
 import pickle
 import time
 
@@ -78,6 +79,59 @@ class SmoothedValue(object):
         )
 
 
+_SAFE_IPC_BUILTINS = {
+    "bool": bool,
+    "bytearray": bytearray,
+    "bytes": bytes,
+    "complex": complex,
+    "dict": dict,
+    "float": float,
+    "frozenset": frozenset,
+    "int": int,
+    "list": list,
+    "set": set,
+    "slice": slice,
+    "str": str,
+    "tuple": tuple,
+}
+_SAFE_IPC_COLLECTIONS = {
+    "OrderedDict": OrderedDict,
+    "defaultdict": defaultdict,
+    "deque": deque,
+}
+_SAFE_IPC_MODULE_PREFIXES = ("numpy", "torch")
+
+
+class _RestrictedIPCUnpickler(pickle.Unpickler):
+    """Restricted unpickler for distributed metric/result tensors and containers."""
+
+    def find_class(self, module: str, name: str):
+        if module in ("builtins", "__builtin__"):
+            if name in _SAFE_IPC_BUILTINS:
+                return _SAFE_IPC_BUILTINS[name]
+            raise pickle.UnpicklingError(f"Blocked unsafe builtin in IPC: {name}")
+        if module == "collections":
+            if name in _SAFE_IPC_COLLECTIONS:
+                return _SAFE_IPC_COLLECTIONS[name]
+            raise pickle.UnpicklingError(
+                f"Blocked unsafe collections symbol in IPC: {name}"
+            )
+        if module == "_codecs" and name == "encode":
+            import _codecs
+
+            return _codecs.encode
+        root_mod = module.split(".", 1)[0]
+        if root_mod in _SAFE_IPC_MODULE_PREFIXES:
+            return super().find_class(module, name)
+        raise pickle.UnpicklingError(
+            f"Blocked untrusted global in distributed IPC: {module}.{name}"
+        )
+
+
+def _safe_pickle_loads(buffer: bytes):
+    return _RestrictedIPCUnpickler(io.BytesIO(buffer)).load()
+
+
 def all_gather(data):
     """
     Run all_gather on arbitrary picklable data (not necessarily tensors)
@@ -118,7 +172,7 @@ def all_gather(data):
     data_list = []
     for size, tensor in zip(size_list, tensor_list):
         buffer = tensor.cpu().numpy().tobytes()[:size]
-        data_list.append(pickle.loads(buffer))
+        data_list.append(_safe_pickle_loads(buffer))
 
     return data_list
 

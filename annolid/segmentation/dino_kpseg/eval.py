@@ -30,6 +30,7 @@ from annolid.segmentation.dino_kpseg.keypoints import (
 )
 from annolid.segmentation.dino_kpseg.model import checkpoint_unpack
 from annolid.utils.annotation_store import load_labelme_json
+from annolid.utils.safe_torch_load import safe_torch_load
 
 _AP_OKS_THRESHOLDS: Tuple[float, ...] = tuple(0.50 + 0.05 * i for i in range(10))
 
@@ -755,7 +756,7 @@ def evaluate(
     if not image_paths:
         raise ValueError(f"No images found for split '{split_norm}'")
 
-    payload = torch.load(weights, map_location="cpu")
+    payload = safe_torch_load(weights, map_location="cpu")
     head, meta = checkpoint_unpack(payload)
     if int(kpt_count) != int(meta.num_parts):
         raise ValueError(
@@ -970,7 +971,7 @@ def calibrate_thresholds(
     if not image_paths:
         raise ValueError(f"No images found for split '{split_norm}'")
 
-    payload = torch.load(weights, map_location="cpu")
+    payload = safe_torch_load(weights, map_location="cpu")
     head, meta = checkpoint_unpack(payload)
     if int(kpt_count) != int(meta.num_parts):
         raise ValueError(

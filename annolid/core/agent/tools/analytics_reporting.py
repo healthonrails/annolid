@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import pandas as pd
 
+from annolid.behavior.cohort import load_cohort_manifest
 from annolid.behavior.time_budget import (
     _read_event_rows,
     compute_binned_time_budget,
@@ -769,6 +770,9 @@ class AnnolidBehaviorCohortTool(_SandboxedAnalyticsTool):
         out_json = self._opt_write_path(kwargs.get("out_json"))
         if not csv_paths and manifest_p is None:
             raise ValueError("Provide `events_csvs` or `manifest_path`.")
+        if manifest_p is not None:
+            for spec in load_cohort_manifest(manifest_p):
+                self._read_path(str(spec.events_csv))
         sess_dur = (
             float(kwargs["session_duration"])
             if kwargs.get("session_duration") is not None

@@ -12,7 +12,12 @@ from typing import Any, Sequence
 
 from annolid.engine.cli import main as annolid_run_main
 
-from .common import _normalize_allowed_read_roots, _resolve_read_path
+from .common import (
+    _is_within_root,
+    _normalize_allowed_read_roots,
+    _resolve_read_path,
+    _resolve_write_path,
+)
 from .function_base import FunctionTool
 
 
@@ -103,6 +108,47 @@ class AnnolidRunTool(FunctionTool):
             "--update",
         }
     )
+    _WRITE_PATH_FLAGS = frozenset(
+        {
+            "-o",
+            "--comparisons-csv",
+            "--csv-out",
+            "--disagreements-csv",
+            "--issues-csv",
+            "--json-out",
+            "--out",
+            "--out-json",
+            "--output",
+            "--output-dir",
+            "--output-prefix",
+            "--report-out",
+            "--review-csv",
+            "--subjects-csv",
+            "--summary-csv",
+            "--transitions-csv",
+        }
+    )
+    _READ_PATH_FLAGS = frozenset(
+        {
+            "--bib-file",
+            "--calibration",
+            "--checkpoint",
+            "--config",
+            "--data",
+            "--events-csv",
+            "--input",
+            "--manifest",
+            "--metadata-csv",
+            "--ndjson",
+            "--pose-schema",
+            "--run-config",
+            "--schema",
+            "--video",
+            "--weights",
+            "--workspace",
+            "--zone-file",
+        }
+    )
     _PREFIXES = (
         ("annolid-run",),
         ("python", "-m", "annolid.engine.cli"),
@@ -170,6 +216,19 @@ class AnnolidRunTool(FunctionTool):
                 ensure_ascii=False,
             )
         working_dir = self._resolve_working_dir(kwargs.get("working_dir"))
+        try:
+            self._validate_argv_paths(
+                argv, working_dir=working_dir, allow_mutation=allow_mutation
+            )
+        except PermissionError as exc:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "argv": argv,
+                    "error": str(exc),
+                },
+                ensure_ascii=False,
+            )
         return await asyncio.to_thread(
             self._run_cli,
             argv,
@@ -215,6 +274,71 @@ class AnnolidRunTool(FunctionTool):
             allowed_read_roots=self._allowed_read_roots,
         )
 
+    def _validate_argv_paths(
+        self,
+        argv: Sequence[str],
+        *,
+        working_dir: Path | None,
+        allow_mutation: bool,
+    ) -> None:
+        if self._allowed_dir is None:
+            return
+        if any(
+            str(tok or "").strip().lower() in {"-h", "--help", "--help-model"}
+            for tok in argv
+        ):
+            return
+        base_dir = (working_dir or self._allowed_dir).resolve()
+
+        def _check_candidate(raw_val: str, *, write_target: bool) -> None:
+            val = str(raw_val or "").strip()
+            if not val:
+                return
+            cand = Path(val).expanduser()
+            resolved = (cand if cand.is_absolute() else (base_dir / cand)).resolve()
+            if write_target:
+                _resolve_write_path(str(resolved), allowed_dir=self._allowed_dir)
+                return
+            if not any(
+                _is_within_root(resolved, root) for root in self._allowed_read_roots
+            ):
+                allowed_text = ", ".join(str(r) for r in self._allowed_read_roots)
+                raise PermissionError(
+                    f"Path {val} resolves outside allowed roots ({allowed_text})"
+                )
+
+        idx = 0
+        tokens = [str(part or "").strip() for part in argv if str(part or "").strip()]
+        while idx < len(tokens):
+            tok = tokens[idx]
+            if tok.startswith("-"):
+                flag_name, has_eq, inline_val = tok.partition("=")
+                flag_low = flag_name.lower()
+                if flag_low in self._WRITE_PATH_FLAGS:
+                    if has_eq:
+                        _check_candidate(inline_val, write_target=True)
+                    elif idx + 1 < len(tokens) and not tokens[idx + 1].startswith("-"):
+                        _check_candidate(tokens[idx + 1], write_target=True)
+                        idx += 1
+                elif flag_low in self._READ_PATH_FLAGS:
+                    write_ws = flag_low == "--workspace" and allow_mutation
+                    if has_eq:
+                        _check_candidate(inline_val, write_target=write_ws)
+                    elif idx + 1 < len(tokens) and not tokens[idx + 1].startswith("-"):
+                        _check_candidate(tokens[idx + 1], write_target=write_ws)
+                        idx += 1
+                idx += 1
+                continue
+
+            if (
+                tok.startswith(("/", "~", "./", "../"))
+                or "/" in tok
+                or "\\" in tok
+                or tok in {".", ".."}
+            ):
+                _check_candidate(tok, write_target=False)
+            idx += 1
+
     @classmethod
     def _is_mutating(cls, argv: Sequence[str]) -> bool:
         cleaned = [str(part or "").strip() for part in argv if str(part or "").strip()]
@@ -224,16 +348,23 @@ class AnnolidRunTool(FunctionTool):
         if any(flag in {"-h", "--help", "--help-model"} for flag in lowered):
             return False
 
-        subcmd = lowered[0]
+        non_flag_tokens = [tok for tok in lowered if not tok.startswith("-")]
+        subcmd = non_flag_tokens[0] if non_flag_tokens else ""
         if subcmd in cls._MUTATING_SUBCOMMANDS:
             return True
         if subcmd == "gap-report" and "--no-write-reports" not in lowered:
             return True
 
         # Check multi-word operator verbs (e.g. `update run`, `agent skills refresh`, `memory flush`)
-        # only among leading non-flag command tokens that are not file paths.
-        for token in lowered[:4]:
+        # among leading non-flag command tokens that are not file paths.
+        seen_cmd_tokens = 0
+        for token in lowered:
             if token.startswith("-"):
+                if seen_cmd_tokens > 0:
+                    break
+                continue
+            seen_cmd_tokens += 1
+            if seen_cmd_tokens > 4:
                 break
             if "/" in token or "\\" in token or "." in token:
                 continue
@@ -257,13 +388,23 @@ class AnnolidRunTool(FunctionTool):
     ) -> str:
         stdout_buffer = io.StringIO()
         stderr_buffer = io.StringIO()
+        exit_code: Any = 0
         with cls._CLI_LOCK:
             prev_cwd = Path.cwd()
             try:
                 if working_dir is not None:
                     os.chdir(working_dir)
                 with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
-                    exit_code = annolid_run_main(list(argv))
+                    try:
+                        exit_code = annolid_run_main(list(argv))
+                    except SystemExit as exc:
+                        if exc.code is None:
+                            exit_code = 0
+                        elif isinstance(exc.code, int):
+                            exit_code = exc.code
+                        else:
+                            stderr_buffer.write(f"{exc.code}\n")
+                            exit_code = 1
             finally:
                 os.chdir(prev_cwd)
         stdout_text = stdout_buffer.getvalue()

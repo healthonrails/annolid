@@ -29,6 +29,7 @@ from annolid.services.export import (
 from annolid.utils.annotation_store import load_labelme_json
 
 from .common import (
+    _is_within_root,
     _normalize_allowed_read_roots,
     _resolve_read_path,
     _resolve_write_path,
@@ -50,7 +51,7 @@ def _resolve_yaml_output_path(
     allowed_dir: Path | None,
 ) -> Path:
     if not str(raw_output or "").strip():
-        return default_path
+        return _resolve_write_path(str(default_path), allowed_dir=allowed_dir)
     resolved = _resolve_write_path(raw_output, allowed_dir=allowed_dir)
     if resolved.exists() and resolved.is_dir():
         return resolved / default_path.name
@@ -588,9 +589,14 @@ class AnnolidDatasetPrepareTool(FunctionTool):
             )
             mode_name = str(mode or "").strip().lower()
             if mode_name == "labelme_spec":
+                spec_root = (
+                    _resolve_write_path(output_dir, allowed_dir=self._allowed_dir)
+                    if str(output_dir or "").strip()
+                    else _resolve_write_path(str(root), allowed_dir=self._allowed_dir)
+                )
                 result = generate_labelme_spec_and_splits(
                     sources=[root],
-                    dataset_root=root,
+                    dataset_root=spec_root,
                     recursive=True,
                     include_empty=bool(include_empty),
                     val_size=float(val_size),
@@ -607,23 +613,48 @@ class AnnolidDatasetPrepareTool(FunctionTool):
                     source="annolid_bot",
                 )
             elif mode_name == "yolo_from_labelme":
-                index_dir = root / DEFAULT_LABEL_INDEX_DIRNAME
-                index_file = index_dir / DEFAULT_LABEL_INDEX_NAME
+                destination = (
+                    _resolve_write_path(output_dir, allowed_dir=self._allowed_dir)
+                    if str(output_dir or "").strip()
+                    else _resolve_write_path(str(root), allowed_dir=self._allowed_dir)
+                )
+                if str(index_file or "").strip():
+                    raw_index = Path(index_file).expanduser()
+                    index_candidate = (
+                        raw_index
+                        if raw_index.is_absolute()
+                        else destination / raw_index
+                    )
+                    resolved_index_file = _resolve_write_path(
+                        str(index_candidate), allowed_dir=self._allowed_dir
+                    )
+                else:
+                    index_base = (
+                        root
+                        if (
+                            self._allowed_dir is None
+                            or _is_within_root(root, self._allowed_dir)
+                        )
+                        else destination
+                    )
+                    resolved_index_file = _resolve_write_path(
+                        str(
+                            index_base
+                            / DEFAULT_LABEL_INDEX_DIRNAME
+                            / DEFAULT_LABEL_INDEX_NAME
+                        ),
+                        allowed_dir=self._allowed_dir,
+                    )
                 index_summary = index_labelme_dataset(
                     [root],
-                    index_file=index_file,
+                    index_file=resolved_index_file,
                     recursive=True,
                     include_empty=bool(include_empty),
                     dedupe=True,
                     source="annolid_bot",
                 )
-                destination = (
-                    _resolve_write_path(output_dir, allowed_dir=self._allowed_dir)
-                    if str(output_dir or "").strip()
-                    else root
-                )
                 export_summary = build_yolo_dataset_from_index(
-                    index_file=index_file,
+                    index_file=resolved_index_file,
                     output_dir=destination,
                     dataset_name=str(dataset_name or "YOLO_dataset").strip()
                     or "YOLO_dataset",
@@ -633,20 +664,51 @@ class AnnolidDatasetPrepareTool(FunctionTool):
                     include_empty=bool(include_empty),
                 )
                 result = {
-                    "index_file": str(index_file.resolve()),
+                    "index_file": str(resolved_index_file.resolve()),
                     "index_summary": index_summary,
                     **export_summary,
                 }
             elif mode_name == "deeplabcut_import":
-                schema_out_path = (
-                    Path(pose_schema_out)
+                writable_root = _resolve_write_path(
+                    str(root), allowed_dir=self._allowed_dir
+                )
+                labeled_raw = Path(str(labeled_data or "labeled-data")).expanduser()
+                labeled_candidate = (
+                    labeled_raw
+                    if labeled_raw.is_absolute()
+                    else writable_root / labeled_raw
+                )
+                labeled_root_resolved = _resolve_write_path(
+                    str(labeled_candidate), allowed_dir=self._allowed_dir
+                )
+                schema_raw = (
+                    Path(pose_schema_out).expanduser()
                     if str(pose_schema_out or "").strip()
-                    else Path(str(labeled_data or "labeled-data")) / "pose_schema.json"
+                    else labeled_root_resolved / "pose_schema.json"
+                )
+                schema_candidate = (
+                    schema_raw
+                    if schema_raw.is_absolute()
+                    else writable_root / schema_raw
+                )
+                schema_out_path = _resolve_write_path(
+                    str(schema_candidate), allowed_dir=self._allowed_dir
+                )
+                idx_raw = (
+                    Path(index_file).expanduser()
+                    if str(index_file or "").strip()
+                    else Path(DEFAULT_LABEL_INDEX_DIRNAME) / DEFAULT_LABEL_INDEX_NAME
+                )
+                idx_candidate = (
+                    idx_raw if idx_raw.is_absolute() else writable_root / idx_raw
+                )
+                resolved_index_file = _resolve_write_path(
+                    str(idx_candidate), allowed_dir=self._allowed_dir
                 )
                 import_summary = import_deeplabcut_dataset(
                     DeepLabCutTrainingImportConfig(
-                        source_dir=root,
-                        labeled_data_root=Path(str(labeled_data or "labeled-data")),
+                        source_dir=writable_root,
+                        labeled_data_root=labeled_root_resolved,
                         instance_label=str(instance_label or "mouse"),
                         overwrite=bool(overwrite),
                         recursive=True,
@@ -656,16 +718,9 @@ class AnnolidDatasetPrepareTool(FunctionTool):
                     pose_schema_preset=str(pose_schema_preset or "mouse"),
                     instance_separator=str(instance_separator or "_"),
                 )
-                resolved_index_file = (
-                    Path(index_file)
-                    if str(index_file or "").strip()
-                    else Path(DEFAULT_LABEL_INDEX_DIRNAME) / DEFAULT_LABEL_INDEX_NAME
-                )
-                if not resolved_index_file.is_absolute():
-                    resolved_index_file = root / resolved_index_file
                 if write_index:
                     index_summary = index_labelme_dataset(
-                        sources=[root / str(labeled_data or "labeled-data")],
+                        sources=[labeled_root_resolved],
                         index_file=resolved_index_file,
                         recursive=True,
                         include_empty=False,
@@ -708,15 +763,28 @@ class AnnolidDatasetPrepareTool(FunctionTool):
                     raise ValueError(
                         "Could not infer a COCO dataset layout from dataset_folder."
                     )
-                spec_path = root / "coco_spec.yaml"
-                spec_path.write_text(
-                    yaml.safe_dump(payload, sort_keys=False),
-                    encoding="utf-8",
-                )
                 destination = (
                     _resolve_write_path(output_dir, allowed_dir=self._allowed_dir)
                     if str(output_dir or "").strip()
-                    else root / "YOLO_dataset"
+                    else _resolve_write_path(
+                        str(root / "YOLO_dataset"), allowed_dir=self._allowed_dir
+                    )
+                )
+                spec_base = (
+                    root
+                    if (
+                        self._allowed_dir is None
+                        or _is_within_root(root, self._allowed_dir)
+                    )
+                    else destination
+                )
+                spec_path = _resolve_write_path(
+                    str(spec_base / "coco_spec.yaml"), allowed_dir=self._allowed_dir
+                )
+                spec_path.parent.mkdir(parents=True, exist_ok=True)
+                spec_path.write_text(
+                    yaml.safe_dump(payload, sort_keys=False),
+                    encoding="utf-8",
                 )
                 data_yaml = materialize_coco_spec_as_yolo(
                     config_path=spec_path,

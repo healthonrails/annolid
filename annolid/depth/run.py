@@ -18,6 +18,7 @@ from matplotlib import cm
 from annolid.core.media.video import CV2Video
 from annolid.utils.logger import logger
 from annolid.utils.annotation_store import AnnotationStore
+from annolid.utils.safe_torch_load import safe_torch_load
 
 from .download_weights import ensure_checkpoints
 from .utils import save_video
@@ -440,7 +441,7 @@ def _load_model(
     cfg = model_configs[encoder]
     model_cls = StreamingVideoDepthAnything if streaming else BatchVideoDepthAnything
     model = model_cls(**cfg, metric=metric)
-    state = torch.load(str(expected_checkpoint), map_location="cpu")
+    state = safe_torch_load(expected_checkpoint, map_location="cpu")
     model.load_state_dict(state, strict=True)
     model = model.to(device).eval()
     return model
