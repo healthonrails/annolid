@@ -769,12 +769,21 @@ class DinoKPSEGVideoProcessor:
             x1, y1, x2, y2 = bbox
             crop_bgr = frame_bgr[y1:y2, x1:x2]
             crop_mask = self._crop_mask_for_instance(instance, x1, y1, x2, y2)
-            pred = self.predictor.predict(
-                crop_bgr,
-                mask=crop_mask,
-                stabilize_lr=False,
-                instance_id=int(gid),
-            )
+            try:
+                pred = self.predictor.predict(
+                    crop_bgr,
+                    mask=crop_mask,
+                    stabilize_lr=False,
+                    instance_id=int(gid),
+                    offset_xy=(float(x1), float(y1)),
+                )
+            except TypeError:
+                pred = self.predictor.predict(
+                    crop_bgr,
+                    mask=crop_mask,
+                    stabilize_lr=False,
+                    instance_id=int(gid),
+                )
             coords = [
                 (float(x) + float(x1), float(y) + float(y1))
                 for x, y in pred.keypoints_xy

@@ -155,6 +155,7 @@ def _require_onnxruntime():
 class _SeedMask:
     label: str
     mask: np.ndarray  # bool [H, W] at model input resolution
+    group_id: int | None = None
 
 
 def _infer_videomt_input_mode(input_shape: list[Any]) -> str:
@@ -503,7 +504,7 @@ class VideoMTOnnxVideoProcessor:
         shapes = payload.get("shapes", []) or []
         sx = float(self.input_width) / float(max(self.video_width, 1))
         sy = float(self.input_height) / float(max(self.video_height, 1))
-        by_label: dict[str, np.ndarray] = {}
+        by_instance: dict[tuple[str, int | None], np.ndarray] = {}
         for shape in shapes:
             if str(shape.get("shape_type") or "").lower() != "polygon":
                 continue
@@ -511,6 +512,13 @@ class VideoMTOnnxVideoProcessor:
             points = shape.get("points") or []
             if not label or len(points) < 3:
                 continue
+            raw_gid = shape.get("group_id")
+            group_id: int | None = None
+            if raw_gid is not None:
+                try:
+                    group_id = int(raw_gid)
+                except (TypeError, ValueError):
+                    group_id = None
             pts = np.asarray(points, dtype=np.float32)
             if pts.ndim != 2 or pts.shape[1] < 2:
                 continue
@@ -519,13 +527,14 @@ class VideoMTOnnxVideoProcessor:
             polygon = np.round(pts[:, :2]).astype(np.int32)
             mask = np.zeros((self.input_height, self.input_width), dtype=np.uint8)
             cv2.fillPoly(mask, [polygon], 1)
-            if label in by_label:
-                by_label[label] = np.logical_or(by_label[label], mask > 0)
+            inst_key = (label, group_id)
+            if inst_key in by_instance:
+                by_instance[inst_key] = np.logical_or(by_instance[inst_key], mask > 0)
             else:
-                by_label[label] = mask > 0
+                by_instance[inst_key] = mask > 0
         return [
-            _SeedMask(label=label, mask=mask.astype(bool))
-            for label, mask in by_label.items()
+            _SeedMask(label=label, mask=mask.astype(bool), group_id=group_id)
+            for (label, group_id), mask in by_instance.items()
         ]
 
     @staticmethod
@@ -644,18 +653,18 @@ class VideoMTOnnxVideoProcessor:
         union = float(np.logical_or(mask_a, mask_b).sum())
         return inter / max(union, 1.0)
 
-    def _build_query_label_map(
+    def _build_query_seed_map(
         self,
         binary_masks: np.ndarray,
         scores: np.ndarray,
         seed_masks: list[_SeedMask],
         *,
         seed_timestep: int = 0,
-    ) -> dict[int, str]:
-        query_map: dict[int, str] = {}
+    ) -> dict[int, tuple[str, int | None]]:
+        query_map: dict[int, tuple[str, int | None]] = {}
         if not seed_masks or binary_masks.shape[1] < 1:
             return query_map
-        used_labels: set[str] = set()
+        used_targets: set[tuple[str, int | None]] = set()
         used_queries: set[int] = set()
         t = int(np.clip(int(seed_timestep), 0, max(binary_masks.shape[1] - 1, 0)))
         frame0 = binary_masks[:, t, :, :]
@@ -664,30 +673,36 @@ class VideoMTOnnxVideoProcessor:
         for query_idx in np.argsort(scores)[::-1]:
             if float(scores[query_idx]) < self.logit_threshold:
                 continue
-            best_label = None
+            best_target: tuple[str, int | None] | None = None
             best_iou = 0.0
             query_mask = frame0[int(query_idx)]
             if not np.any(query_mask):
                 continue
             for seed in seed_masks:
-                if seed.label in used_labels:
+                target_key = (seed.label, seed.group_id)
+                if target_key in used_targets:
                     continue
                 iou = self._iou(query_mask, seed.mask)
                 if iou > best_iou:
                     best_iou = iou
-                    best_label = seed.label
-            if best_label is None or best_iou < self.seed_iou_threshold:
+                    best_target = target_key
+            if best_target is None or best_iou < self.seed_iou_threshold:
                 continue
-            query_map[int(query_idx)] = best_label
-            used_labels.add(best_label)
+            query_map[int(query_idx)] = best_target
+            used_targets.add(best_target)
             used_queries.add(int(query_idx))
 
-        # Second pass: recover still-unmatched labels by best IoU, even when
+        # Second pass: recover still-unmatched instances by best IoU, even when
         # logits are weak, so seeded instances are less likely to disappear.
-        remaining = [seed for seed in seed_masks if seed.label not in used_labels]
+        remaining = [
+            seed
+            for seed in seed_masks
+            if (seed.label, seed.group_id) not in used_targets
+        ]
         if remaining:
             candidate_queries = list(np.argsort(scores)[::-1])
             for seed in remaining:
+                target_key = (seed.label, seed.group_id)
                 best_query = None
                 best_iou = 0.0
                 for query_idx in candidate_queries:
@@ -703,10 +718,23 @@ class VideoMTOnnxVideoProcessor:
                         best_query = q_idx
                 if best_query is None or best_iou <= 0.0:
                     continue
-                query_map[best_query] = seed.label
+                query_map[best_query] = target_key
                 used_queries.add(best_query)
-                used_labels.add(seed.label)
+                used_targets.add(target_key)
         return query_map
+
+    def _build_query_label_map(
+        self,
+        binary_masks: np.ndarray,
+        scores: np.ndarray,
+        seed_masks: list[_SeedMask],
+        *,
+        seed_timestep: int = 0,
+    ) -> dict[int, str]:
+        seed_map = self._build_query_seed_map(
+            binary_masks, scores, seed_masks, seed_timestep=seed_timestep
+        )
+        return {q_idx: label for q_idx, (label, _gid) in seed_map.items()}
 
     @staticmethod
     def _should_skip_saving_frame(
@@ -734,12 +762,18 @@ class VideoMTOnnxVideoProcessor:
         return resized > 0
 
     def _save_frame_masks(
-        self, frame_idx: int, masks_by_label: dict[str, np.ndarray]
+        self,
+        frame_idx: int,
+        masks_by_label: dict[str | tuple[str, int | None], np.ndarray],
     ) -> bool:
         if not masks_by_label:
             return False
         label_list: list[Shape] = []
-        for label, mask in masks_by_label.items():
+        for raw_key, mask in masks_by_label.items():
+            if isinstance(raw_key, tuple):
+                label, group_id = raw_key
+            else:
+                label, group_id = str(raw_key), None
             if not np.any(mask):
                 continue
             polygons, _ = mask_to_polygons(mask.astype(np.uint8))
@@ -749,6 +783,7 @@ class VideoMTOnnxVideoProcessor:
                     continue
                 shape = Shape(
                     label=label,
+                    group_id=group_id,
                     shape_type="polygon",
                     flags={},
                     description=self.description,
@@ -974,7 +1009,7 @@ class VideoMTOnnxVideoProcessor:
                 "Please label at least one polygon on the seed frame."
             )
 
-        query_map: dict[int, str] = {}
+        query_map: dict[int, tuple[str, int | None]] = {}
         saved = 0
 
         try:
@@ -998,7 +1033,7 @@ class VideoMTOnnxVideoProcessor:
                         seed_timestep = 0
                         if seed_frame_idx in frame_indices:
                             seed_timestep = frame_indices.index(seed_frame_idx)
-                        query_map = self._build_query_label_map(
+                        query_map = self._build_query_seed_map(
                             binary_masks,
                             scores,
                             seed_masks,
@@ -1015,8 +1050,8 @@ class VideoMTOnnxVideoProcessor:
                             global_idx, start, seed_frame_idx
                         ):
                             continue
-                        masks_by_label: dict[str, np.ndarray] = {}
-                        for query_idx, label in query_map.items():
+                        masks_by_label: dict[tuple[str, int | None], np.ndarray] = {}
+                        for query_idx, inst_key in query_map.items():
                             if (
                                 query_idx >= binary_masks.shape[0]
                                 or local_idx >= binary_masks.shape[1]
@@ -1026,12 +1061,12 @@ class VideoMTOnnxVideoProcessor:
                             if not np.any(mask):
                                 continue
                             resized = self._mask_to_video_size(mask)
-                            if label in masks_by_label:
-                                masks_by_label[label] = np.logical_or(
-                                    masks_by_label[label], resized
+                            if inst_key in masks_by_label:
+                                masks_by_label[inst_key] = np.logical_or(
+                                    masks_by_label[inst_key], resized
                                 )
                             else:
-                                masks_by_label[label] = resized
+                                masks_by_label[inst_key] = resized
                         if self._save_frame_masks(global_idx, masks_by_label):
                             saved += 1
             elif self.input_mode in {"clip_4d_nchw", "clip_4d_nhwc"}:
@@ -1058,7 +1093,7 @@ class VideoMTOnnxVideoProcessor:
                         seed_timestep = 0
                         if seed_frame_idx in frame_indices:
                             seed_timestep = frame_indices.index(seed_frame_idx)
-                        query_map = self._build_query_label_map(
+                        query_map = self._build_query_seed_map(
                             binary_masks,
                             scores,
                             seed_masks,
@@ -1074,7 +1109,7 @@ class VideoMTOnnxVideoProcessor:
                     ):
                         continue
                     masks_by_label = {}
-                    for query_idx, label in query_map.items():
+                    for query_idx, inst_key in query_map.items():
                         if (
                             query_idx >= binary_masks.shape[0]
                             or local_idx >= binary_masks.shape[1]
@@ -1084,12 +1119,12 @@ class VideoMTOnnxVideoProcessor:
                         if not np.any(mask):
                             continue
                         resized = self._mask_to_video_size(mask)
-                        if label in masks_by_label:
-                            masks_by_label[label] = np.logical_or(
-                                masks_by_label[label], resized
+                        if inst_key in masks_by_label:
+                            masks_by_label[inst_key] = np.logical_or(
+                                masks_by_label[inst_key], resized
                             )
                         else:
-                            masks_by_label[label] = resized
+                            masks_by_label[inst_key] = resized
                     if self._save_frame_masks(global_idx, masks_by_label):
                         saved += 1
             else:
@@ -1103,7 +1138,7 @@ class VideoMTOnnxVideoProcessor:
                     if binary_masks.shape[1] < 1:
                         continue
                     if not query_map:
-                        query_map = self._build_query_label_map(
+                        query_map = self._build_query_seed_map(
                             binary_masks, scores, seed_masks
                         )
                         if not query_map:
@@ -1114,19 +1149,19 @@ class VideoMTOnnxVideoProcessor:
                     if self._should_skip_saving_frame(frame_idx, start, seed_frame_idx):
                         continue
                     masks_by_label = {}
-                    for query_idx, label in query_map.items():
+                    for query_idx, inst_key in query_map.items():
                         if query_idx >= binary_masks.shape[0]:
                             continue
                         mask = binary_masks[query_idx, 0]
                         if not np.any(mask):
                             continue
                         resized = self._mask_to_video_size(mask)
-                        if label in masks_by_label:
-                            masks_by_label[label] = np.logical_or(
-                                masks_by_label[label], resized
+                        if inst_key in masks_by_label:
+                            masks_by_label[inst_key] = np.logical_or(
+                                masks_by_label[inst_key], resized
                             )
                         else:
-                            masks_by_label[label] = resized
+                            masks_by_label[inst_key] = resized
                     if self._save_frame_masks(frame_idx, masks_by_label):
                         saved += 1
         except InferenceCancelledError:

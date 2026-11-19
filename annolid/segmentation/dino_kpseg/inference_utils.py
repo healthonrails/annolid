@@ -112,7 +112,7 @@ def predict_on_instance_crops(
     results: List[Tuple[int, DinoKPSEGPrediction]] = []
     for crop in crops:
         feats = predictor.extract_features(crop.crop_bgr)
-        kwargs = dict(
+        kwargs: dict[str, object] = dict(
             frame_shape=(int(crop.crop_bgr.shape[0]), int(crop.crop_bgr.shape[1])),
             mask=crop.crop_mask,
             threshold=threshold,
@@ -122,13 +122,22 @@ def predict_on_instance_crops(
             instance_id=int(crop.instance_id),
             tta_hflip=bool(tta_hflip),
             tta_merge=str(tta_merge),
+            offset_xy=(float(crop.offset_xy[0]), float(crop.offset_xy[1])),
         )
-        try:
-            pred = predictor.predict_from_features(feats, **kwargs)
-        except TypeError:
-            kwargs.pop("tta_hflip", None)
-            kwargs.pop("tta_merge", None)
-            pred = predictor.predict_from_features(feats, **kwargs)
+        compat_call = getattr(predictor, "_call_predict_from_features_compat", None)
+        if callable(compat_call):
+            pred = compat_call(feats, **kwargs)
+        else:
+            try:
+                pred = predictor.predict_from_features(feats, **kwargs)  # type: ignore[arg-type]
+            except TypeError:
+                kwargs.pop("offset_xy", None)
+                try:
+                    pred = predictor.predict_from_features(feats, **kwargs)  # type: ignore[arg-type]
+                except TypeError:
+                    kwargs.pop("tta_hflip", None)
+                    kwargs.pop("tta_merge", None)
+                    pred = predictor.predict_from_features(feats, **kwargs)  # type: ignore[arg-type]
         shifted_xy = [
             (float(x) + float(crop.offset_xy[0]), float(y) + float(crop.offset_xy[1]))
             for x, y in pred.keypoints_xy

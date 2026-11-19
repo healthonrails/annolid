@@ -22,6 +22,7 @@ from annolid.segmentation.dino_kpseg.model import (
     DinoKPSEGCheckpointMeta,
     checkpoint_unpack,
 )
+from annolid.utils.safe_torch_load import safe_torch_load
 
 
 @dataclass(frozen=True)
@@ -183,7 +184,7 @@ class DinoKPSEGPredictor:
         temporal_fusion: Optional[object] = None,
     ) -> None:
         weight_path = self._resolve_checkpoint_path(weight_path)
-        payload = torch.load(weight_path, map_location="cpu")
+        payload = safe_torch_load(weight_path, map_location="cpu")
         head, meta = checkpoint_unpack(payload)
 
         self.meta: DinoKPSEGCheckpointMeta = meta
@@ -730,6 +731,38 @@ class DinoKPSEGPredictor:
             )
         return feats
 
+    @staticmethod
+    def _sanitize_offset_xy(
+        offset_xy: Optional[Sequence[float]],
+    ) -> Tuple[float, float]:
+        if offset_xy is None or len(offset_xy) < 2:
+            return (0.0, 0.0)
+        ox = float(offset_xy[0])
+        oy = float(offset_xy[1])
+        return (
+            ox if math.isfinite(ox) else 0.0,
+            oy if math.isfinite(oy) else 0.0,
+        )
+
+    def _call_predict_from_features_compat(
+        self, feats: torch.Tensor, **kwargs: object
+    ) -> DinoKPSEGPrediction:
+        try:
+            return self.predict_from_features(feats, **kwargs)  # type: ignore[arg-type]
+        except TypeError:
+            if "offset_xy" in kwargs:
+                no_offset = dict(kwargs)
+                no_offset.pop("offset_xy", None)
+                try:
+                    return self.predict_from_features(feats, **no_offset)  # type: ignore[arg-type]
+                except TypeError:
+                    kwargs = no_offset
+            # Backward compatibility for monkeypatched or legacy callables.
+            legacy_kwargs = dict(kwargs)
+            legacy_kwargs.pop("tta_hflip", None)
+            legacy_kwargs.pop("tta_merge", None)
+            return self.predict_from_features(feats, **legacy_kwargs)  # type: ignore[arg-type]
+
     def seed_instance_state(
         self,
         instance_id: int,
@@ -766,8 +799,13 @@ class DinoKPSEGPredictor:
         instance_id: Optional[int] = None,
         tta_hflip: bool = False,
         tta_merge: str = "mean",
+        offset_xy: Optional[Tuple[float, float]] = None,
     ) -> DinoKPSEGPrediction:
-        prev_xy, prev_scores = self._track_state.get(instance_id=instance_id)
+        ox, oy = self._sanitize_offset_xy(offset_xy)
+        prev_global_xy, prev_scores = self._track_state.get(instance_id=instance_id)
+        prev_xy: Optional[List[Tuple[float, float]]] = None
+        if prev_global_xy is not None:
+            prev_xy = [(float(px) - ox, float(py) - oy) for px, py in prev_global_xy]
 
         probs_raw, (resized_h, resized_w), patch_size = self._compute_probs(
             feats,
@@ -828,9 +866,10 @@ class DinoKPSEGPredictor:
             mask=mask,
         )
 
+        global_xy = [(float(x) + ox, float(y) + oy) for x, y in keypoints_xy]
         self._track_state.set(
             instance_id=instance_id,
-            keypoints_xy=keypoints_xy,
+            keypoints_xy=global_xy,
             keypoint_scores=state_scores,
         )
         self._track_state.prune_to_max_instances(
@@ -858,9 +897,10 @@ class DinoKPSEGPredictor:
         instance_id: Optional[int] = None,
         tta_hflip: bool = False,
         tta_merge: str = "mean",
+        offset_xy: Optional[Tuple[float, float]] = None,
     ) -> DinoKPSEGPrediction:
         feats = self.extract_features(frame_bgr)
-        kwargs = dict(
+        kwargs: dict[str, object] = dict(
             frame_shape=(int(frame_bgr.shape[0]), int(frame_bgr.shape[1])),
             mask=mask,
             threshold=threshold,
@@ -871,13 +911,9 @@ class DinoKPSEGPredictor:
             tta_hflip=bool(tta_hflip),
             tta_merge=str(tta_merge),
         )
-        try:
-            return self.predict_from_features(feats, **kwargs)
-        except TypeError:
-            # Backward compatibility for monkeypatched or legacy callables.
-            kwargs.pop("tta_hflip", None)
-            kwargs.pop("tta_merge", None)
-            return self.predict_from_features(feats, **kwargs)
+        if offset_xy is not None:
+            kwargs["offset_xy"] = offset_xy
+        return self._call_predict_from_features_compat(feats, **kwargs)
 
     def predict_instances(
         self,
@@ -939,13 +975,9 @@ class DinoKPSEGPredictor:
                 instance_id=int(instance_id),
                 tta_hflip=bool(tta_hflip),
                 tta_merge=str(tta_merge),
+                offset_xy=(float(rx1), float(ry1)),
             )
-            try:
-                pred = self.predict_from_features(feats, **kwargs)
-            except TypeError:
-                kwargs.pop("tta_hflip", None)
-                kwargs.pop("tta_merge", None)
-                pred = self.predict_from_features(feats, **kwargs)
+            pred = self._call_predict_from_features_compat(feats, **kwargs)
             shifted_xy = [
                 (float(x) + float(rx1), float(y) + float(ry1))
                 for x, y in pred.keypoints_xy
