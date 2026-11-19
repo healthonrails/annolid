@@ -49,11 +49,16 @@ def select_model_mode_config(
 ) -> Dict[str, Any]:
     candidates: List[Any] = [
         get_cfg_value(payload, f"models.{model_name}.{mode}"),
-        get_cfg_value(payload, f"models.{model_name}.train"),
-        get_cfg_value(payload, f"{model_name}.{mode}"),
-        get_cfg_value(payload, f"{mode}"),
-        payload,
     ]
+    if mode == "train":
+        candidates.append(get_cfg_value(payload, f"models.{model_name}.train"))
+    candidates.extend(
+        [
+            get_cfg_value(payload, f"{model_name}.{mode}"),
+            get_cfg_value(payload, f"{mode}"),
+            payload,
+        ]
+    )
     for candidate in candidates:
         if isinstance(candidate, dict):
             return dict(candidate)

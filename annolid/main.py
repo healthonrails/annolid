@@ -7,7 +7,18 @@ from annolid.data.videos import extract_frames, track
 from annolid.postprocessing.glitter import tracks2nix
 
 
-def parse_args():
+def _str2bool(value):
+    if isinstance(value, bool):
+        return value
+    lowered = str(value).strip().lower()
+    if lowered in {"1", "true", "t", "yes", "y", "on"}:
+        return True
+    if lowered in {"0", "false", "f", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(f"Expected boolean value, got {value!r}.")
+
+
+def parse_args(argv=None):
     arg_builder = argparse.ArgumentParser(description="Multiple Animal Tracking")
     arg_builder.add_argument(
         "-v", "--video", type=str, default=None, help="path to a input video file"
@@ -43,7 +54,9 @@ def parse_args():
     )
     arg_builder.add_argument(
         "--show_flow",
-        type=bool,
+        type=_str2bool,
+        nargs="?",
+        const=True,
         default=False,
         help="Display optical flow while extracting",
     )
@@ -133,7 +146,9 @@ def parse_args():
     )
     arg_builder.add_argument(
         "--multiple_animals",
-        type=bool,
+        type=_str2bool,
+        nargs="?",
+        const=True,
         default=True,
         help="dataset contains labeled multiple animals",
     )
@@ -145,7 +160,12 @@ def parse_args():
         help="text file with all the class names ",
     )
     arg_builder.add_argument(
-        "--vis", type=bool, default=False, help="Visualize the labeled images"
+        "--vis",
+        type=_str2bool,
+        nargs="?",
+        const=True,
+        default=False,
+        help="Visualize the labeled images",
     )
     arg_builder.add_argument(
         "--tracks2glitter", type=str, default=None, help="tracking results csv file."
@@ -157,7 +177,7 @@ def parse_args():
         help="create segmentation dataset or detection dataset",
     )
 
-    args = vars(arg_builder.parse_args())
+    args = vars(arg_builder.parse_args(argv))
     return args
 
 
@@ -199,16 +219,16 @@ def main():
     if args["labelme2coco"] is not None:
         from annolid.annotation import labelme2coco
 
+        coco_out_dir = args["to"] or os.path.join(args["labelme2coco"], "coco_dataset")
         label_gen = labelme2coco.convert(
             args["labelme2coco"],
-            output_annotated_dir=args["to"],
+            output_annotated_dir=coco_out_dir,
             labels_file=args["labels"],
             vis=args["vis"],
         )
-        for image_id, content in label_gen:
-            print(
-                f"Converting {content} as {image_id % 100:.2f} % of the labeled images."
-            )
+        for progress_pct, content in label_gen:
+            pct_val = max(0.0, min(100.0, float(progress_pct)))
+            print(f"Converting {content} as {pct_val:.2f} % of the labeled images.")
 
     if args["tracks2glitter"] is not None:
         assert os.path.isfile(args["tracks2glitter"]), (

@@ -19,7 +19,10 @@ QT5 = True
 try:
     __version__ = metadata.version("annolid")
 except Exception:
-    __version__ = "unknown"
+    try:
+        from annolid.version import __version__
+    except Exception:
+        __version__ = "unknown"
 
 
 def get_ai_models() -> list[Any]:

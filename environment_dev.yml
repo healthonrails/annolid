@@ -37,4 +37,4 @@ dependencies:
     - imageio-ffmpeg>=0.4.2
     - dataclasses>=0.6; python_version < '3.7'
     - jupyter-book==0.12.1
-    - e .
+    - -e .

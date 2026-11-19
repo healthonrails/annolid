@@ -404,6 +404,7 @@ annolid = [
     "**/*.css",
     "**/*.html",
     "**/*.txt",
+    "**/*.txt.gz",
     "**/*.yaml",
     "**/*.yml",
     "annotation/labels_interaction",

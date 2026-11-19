@@ -4909,7 +4909,15 @@ def _dispatch_model_subcommand(
         if base_args.help_model:
             p.print_help()
             return 0
-        args = p.parse_args(argv)
+        from annolid.engine.run_config import expand_argv_with_run_config
+
+        resolved_argv = expand_argv_with_run_config(
+            parser=p,
+            argv=argv,
+            model_name=model_name,
+            mode="predict",
+        )
+        args = p.parse_args(list(resolved_argv))
         get_caps = getattr(plugin, "get_required_capabilities", None)
         if callable(get_caps):
             from annolid.infrastructure.capabilities import ensure_capability

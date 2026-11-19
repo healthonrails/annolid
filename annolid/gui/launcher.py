@@ -21,7 +21,12 @@ def _print_version() -> None:
     try:
         version = metadata.version("annolid")
     except metadata.PackageNotFoundError:
-        version = "unknown"
+        try:
+            from annolid.version import __version__ as fallback_version
+
+            version = str(fallback_version)
+        except Exception:
+            version = "unknown"
     print(version)
 
 

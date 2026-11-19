@@ -1,4 +1,4 @@
-# Installs dependencies for Annolid managed by Anaconda.
+# Installs dependencies for Annolid managed by Conda (Python >= 3.10).
 #
 name: annolid
 #prefix: /path/to/my/envs/annolid-env
@@ -7,7 +7,7 @@ channels:
   - pytorch
   - defaults
 dependencies:
-  - python==3.10
+  - python>=3.10
   - pip
   - cython
   - pytorch::torchvision>=0.19
@@ -18,11 +18,10 @@ dependencies:
   - matplotlib
   - git
   - curl
-  - pyqt
+  - pyside6
   - qtpy
   - opencv
-  - pyqtwebengine
-  - numpy>=1.18.2
+  - numpy>=1.24
   - scipy>=1.5.2
   - easydict>=1.9
   - pip:
@@ -35,5 +34,4 @@ dependencies:
     - tensorboard>=2.3.0
     - imageio>=2.8.0
     - imageio-ffmpeg>=0.4.2
-    - dataclasses>=0.6; python_version < '3.7'
     - -e .

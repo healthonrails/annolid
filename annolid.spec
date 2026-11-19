@@ -3,6 +3,7 @@
 
 from pathlib import Path
 import sys
+from PyInstaller.utils.hooks import copy_metadata
 
 
 sys.setrecursionlimit(5000)  # required on Windows
@@ -222,9 +223,15 @@ a = Analysis(
     pathex=[str(ROOT)],
     binaries=[],
     datas=[
-        ("annolid/configs/default_config.yaml", "annolid/configs"),
+        ("annolid/configs/*.yaml", "annolid/configs"),
+        ("annolid/configs/*.json", "annolid/configs"),
+        ("annolid/annotation/labels.txt", "annolid/annotation"),
+        ("annolid/annotation/labels_interaction", "annolid/annotation"),
+        ("annolid/core/output/schema/*.json", "annolid/core/output/schema"),
         ("annolid/icons/*", "annolid/icons"),
+        ("annolid/gui/icons/*", "annolid/gui/icons"),
         ("annolid/gui/assets/*", "annolid/gui/assets"),
+        *copy_metadata("annolid"),
     ],
     # The launcher and stable namespace packages defer imports with importlib.
     hiddenimports=[

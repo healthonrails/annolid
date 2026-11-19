@@ -11,7 +11,7 @@ prune docs/source/_templates
 prune docs/tutorials/Untitled.ipynb
 prune docs/tutorials/.ipynb_checkpoints
 include environment.yml
-recursive-include annolid *.yaml *.yml *.json *.txt *.md *.qrc
+recursive-include annolid *.yaml *.yml *.json *.txt *.txt.gz *.md *.qrc *.html *.css *.sh
 recursive-include annolid *.js
 recursive-include annolid *.png *.jpg *.jpeg *.gif *.svg *.ico *.icns
 include annolid/annotation/labels_interaction
@@ -47,6 +47,7 @@ exclude .webui_secret_key
 exclude annolid/project.annolid.json
 global-exclude project.annolid.json
 global-exclude *.py[cod]
+global-exclude *.swp
 global-exclude __pycache__/*
 global-exclude .DS_Store
 global-exclude *.bin
