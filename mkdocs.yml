@@ -97,6 +97,8 @@ nav:
       - Two-Mouse 3D Simulation: two_mice_simulation.md
       - COCO Data Flow: coco_data_flow.md
       - Tutorials Overview: tutorials.md
+      - Merge Canvas Shapes (GUI): tutorials/merge_canvas_shapes.md
+      - Reorder Annotation Lists (GUI): tutorials/reorder_annotation_lists.md
       - Video Downsample Workflow (GUI): tutorials/video_downsample_workflow.md
       - Behavior Labeling (Timeline + Flags + Bot): tutorials/behavior_timeline_flags_bot.md
       - Polygon TCN Video Collection: tutorials/polygon_tcn_video_collection.md
