@@ -3675,6 +3675,11 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
     def deleteSelected(self):
         deleted_shapes = []
         if self.selectedShapes:
+            deleted_ids = {id(s) for s in self.selectedShapes}
+            if self.hShape is not None and id(self.hShape) in deleted_ids:
+                self.unHighlight()
+            if self.prevhShape is not None and id(self.prevhShape) in deleted_ids:
+                self.prevhShape = self.prevhVertex = self.prevhEdge = None
             for shape in self.selectedShapes:
                 # Remove by identity (Shape implements fuzzy __eq__).
                 for idx, s in enumerate(list(self.shapes)):
@@ -3685,6 +3690,7 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
             self._shared_finalize_topology_edit()
             self.storeShapes()
             self.selectedShapes = []
+            self.hShapeIsSelected = False
             # Keep the rest of the UI in sync (toolbar actions, label list).
             try:
                 self.selectionChanged.emit([])
@@ -3694,6 +3700,10 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
         return deleted_shapes
 
     def deleteShape(self, shape):
+        if self.hShape is shape:
+            self.unHighlight()
+        if self.prevhShape is shape:
+            self.prevhShape = self.prevhVertex = self.prevhEdge = None
         if self.selectedShapes:
             shape_id = id(shape)
             self.selectedShapes = [s for s in self.selectedShapes if id(s) != shape_id]
@@ -3705,6 +3715,7 @@ class Canvas(SharedPolygonEditMixin, QtWidgets.QWidget):
         self._shared_finalize_topology_edit()
         self.storeShapes()
         if not self.selectedShapes:
+            self.hShapeIsSelected = False
             try:
                 self.selectionChanged.emit([])
             except Exception:

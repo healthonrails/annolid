@@ -48,6 +48,8 @@ class LabelFile(object):
         self.shapes = []
         self.imagePath = None
         self.imageData = None
+        self.imageHeight = None
+        self.imageWidth = None
         self.is_video_frame = is_video_frame
         self.caption = None
         if filename is not None:
@@ -132,14 +134,16 @@ class LabelFile(object):
                         resolved_image_path,
                     )
             flags = data.get("flags") or {}
-            if self.is_video_frame is None and data.get("imagePath") is not None:
+            imageHeight = data.get("imageHeight")
+            imageWidth = data.get("imageWidth")
+            if data.get("imagePath") is not None:
                 imagePath = data["imagePath"]
-                if imageData is not None:
-                    self._check_image_height_and_width(
-                        base64.b64encode(imageData).decode("utf-8"),
-                        data.get("imageHeight"),
-                        data.get("imageWidth"),
-                    )
+            if self.is_video_frame is None and imageData is not None:
+                imageHeight, imageWidth = self._check_image_height_and_width(
+                    base64.b64encode(imageData).decode("utf-8"),
+                    imageHeight,
+                    imageWidth,
+                )
             shapes = [
                 dict(
                     label=s["label"],
@@ -182,6 +186,8 @@ class LabelFile(object):
         self.shapes = shapes
         self.imagePath = imagePath
         self.imageData = imageData
+        self.imageHeight = imageHeight
+        self.imageWidth = imageWidth
         self.filename = filename
         self.otherData = otherData
         self.caption = caption

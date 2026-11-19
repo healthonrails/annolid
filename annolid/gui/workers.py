@@ -25,7 +25,7 @@ try:
 except ImportError:  # Optional dependency (annolid[realtime])
     zmq = None  # type: ignore[assignment]
 
-from annolid.data.videos import extract_frames_from_videos
+from annolid.data.videos import extract_frames_from_video
 from annolid.gui.label_file import LabelFile
 from annolid.jobs.tracking_jobs import TrackingSegment
 from annolid.services.tracking import (
@@ -112,8 +112,14 @@ class TrackAllWorker(QThread):
     # video_path (or output_folder_path)
     video_processing_finished = Signal(str)
 
+    _SUPPORTED_VIDEO_SUFFIXES = frozenset(
+        {".mp4", ".avi", ".mov", ".mkv", ".mpg", ".mpeg", ".m4v"}
+    )
+
     def __init__(self, video_paths, config=None, parent=None):
         super().__init__(parent)
+        self.logger = logging.getLogger(__name__)
+        self._active_pred_worker: Optional[PredictionWorker] = None
         self.video_paths = self._validate_video_paths(video_paths)
         default_config = {
             "mem_every": 5,
@@ -128,8 +134,6 @@ class TrackAllWorker(QThread):
         }
         self.config = {**default_config, **(config or {})}
         self.is_running = True
-        logging.basicConfig(level=logging.INFO)
-        self.logger = logging.getLogger(__name__)
 
     def _validate_video_paths(self, video_paths):
         """Validate video paths and return a list of valid paths."""
@@ -138,7 +142,7 @@ class TrackAllWorker(QThread):
         valid_paths = []
         for path in video_paths:
             path = Path(path)
-            if path.is_file() and path.suffix.lower() in {".mp4", ".avi", ".mov"}:
+            if path.is_file() and path.suffix.lower() in self._SUPPORTED_VIDEO_SUFFIXES:
                 valid_paths.append(str(path))
             else:
                 self.logger.warning(f"Invalid or non-existent video path: {path}")
@@ -322,6 +326,13 @@ class TrackAllWorker(QThread):
                 pass
 
         if successful_segments > 0:
+            if not self.is_running:
+                self.progress.emit(
+                    int(((idx - 1) / max(total_videos, 1)) * 100),
+                    f"Stopped {video_name}.",
+                )
+                return False
+
             try:
                 from annolid.annotation.labelme2csv import convert_json_to_csv
 
@@ -552,6 +563,9 @@ class TrackAllWorker(QThread):
                 return False
 
             pred_worker = PredictionWorker()
+            self._active_pred_worker = pred_worker
+            if not self.is_running:
+                pred_worker.stop()
             self.logger.info(
                 f"Created new pred_worker for {video_name}: {id(pred_worker)}"
             )
@@ -595,6 +609,13 @@ class TrackAllWorker(QThread):
                 self.error.emit(f"Failed to process {video_name}: {message}")
                 return False
 
+            if not self.is_running:
+                self.progress.emit(
+                    int(((idx - 1) / max(total_videos, 1)) * 100),
+                    f"Stopped {video_name}.",
+                )
+                return False
+
             try:
                 from annolid.annotation.labelme2csv import convert_json_to_csv
 
@@ -613,6 +634,7 @@ class TrackAllWorker(QThread):
             return True
 
         finally:
+            self._active_pred_worker = None
             self.cleanup_processor(processor, device)
             self.log_gpu_memory(video_name, f"After ({device.type})")
 
@@ -663,6 +685,9 @@ class TrackAllWorker(QThread):
     def stop(self):
         """Stop the worker thread."""
         self.is_running = False
+        pred_worker = self._active_pred_worker
+        if pred_worker is not None:
+            pred_worker.stop()
 
     def is_stopped(self) -> bool:
         """Interface for segmented executors to query stop state."""
@@ -1031,19 +1056,27 @@ class FrameExtractorWorker(QThread):
 
     def __init__(self, videos, output_folder, num_frames=5):
         super().__init__()
-        self.videos = videos
+        self.videos = list(videos or [])
         self.output_folder = output_folder
         self.num_frames = num_frames
+        self.is_running = True
+
+    def stop(self):
+        self.is_running = False
 
     def run(self):
         try:
+            os.makedirs(self.output_folder, exist_ok=True)
+            total = len(self.videos)
             for idx, video in enumerate(self.videos, 1):
-                extract_frames_from_videos(
-                    input_folder=os.path.dirname(video),
-                    output_folder=self.output_folder,
+                if not self.is_running:
+                    break
+                extract_frames_from_video(
+                    str(video),
+                    self.output_folder,
                     num_frames=self.num_frames,
                 )
-                progress_value = int((idx / len(self.videos)) * 100)
+                progress_value = int((idx / max(total, 1)) * 100)
                 self.progress.emit(progress_value)
             self.finished.emit(self.output_folder)
         except Exception as e:

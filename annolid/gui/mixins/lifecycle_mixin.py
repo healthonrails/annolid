@@ -172,12 +172,13 @@ class LifecycleMixin:
                 self.ai_chat_manager.cleanup()
             except (AttributeError, RuntimeError, TypeError) as exc:
                 logger.debug("Failed cleaning up AI chat manager: %s", exc)
-        try:
-            dialog = getattr(self, "_training_dashboard_dialog", None)
-            if dialog is not None:
-                dialog.close()
-        except (AttributeError, RuntimeError, TypeError) as exc:
-            logger.debug("Failed closing training dashboard dialog: %s", exc)
+        for dialog_attr in ("_training_dashboard_dialog", "_analysis_studio_dialog"):
+            try:
+                dialog = getattr(self, dialog_attr, None)
+                if dialog is not None:
+                    dialog.close()
+            except (AttributeError, RuntimeError, TypeError) as exc:
+                logger.debug("Failed closing %s during cleanup: %s", dialog_attr, exc)
         try:
             from annolid.gui.tensorboard import stop_tensorboard
 

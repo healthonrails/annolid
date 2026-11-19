@@ -6,6 +6,9 @@ import sys
 # Select PySide6 as the default Qt backend for tests to avoid collection errors
 # when PyQt5 is missing or mis-detected.
 os.environ.setdefault("QT_API", "pyside6")
+# Use Qt's headless offscreen QPA (with real font metrics, matching CI) unless
+# overridden by the caller, preventing early test modules from pinning 'minimal'.
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 # Keep headless tests from implicitly selecting QtAgg once Qt modules are loaded.
 os.environ.setdefault("MPLBACKEND", "Agg")
 

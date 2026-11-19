@@ -6,7 +6,7 @@ import csv
 import io
 from pathlib import Path
 import tempfile
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Sequence
 
 from qtpy import QtCore, QtGui, QtWidgets
 
@@ -18,19 +18,24 @@ from annolid.behavior.time_budget import (
     extract_behavior_intervals,
     summarize_intervals,
 )
-from annolid.postprocessing.kinematics_stats import write_kinematics_events_csv
-from annolid.postprocessing.tracking_reports import summarize_tracking_gaps
 from annolid.services.behavior_analytics import (
     run_behavior_cohort,
     run_behavior_irr,
     run_behavior_qc,
 )
-from annolid.services.kinematics_analytics import run_kinematics_analysis
-from annolid.services.track_analytics import run_track_qc
-from annolid.services.unified_reporting import (
-    UnifiedReportArtifacts,
-    build_unified_analysis_report,
-)
+
+if TYPE_CHECKING:
+    from annolid.services.unified_reporting import UnifiedReportArtifacts
+
+
+def _require_pandas_analytics(feature_label: str) -> None:
+    try:
+        import pandas  # noqa: F401
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            f"{feature_label} requires the 'pandas' analysis runtime. "
+            "Install it in your Python environment with: pip install pandas"
+        ) from exc
 
 
 class _CallableWorker(QtCore.QObject):
@@ -125,6 +130,7 @@ class AnalysisStudioWidget(QtWidgets.QWidget):
         self._owner_window = owner_window
         self._active_thread: Optional[QtCore.QThread] = None
         self._active_worker: Optional[_CallableWorker] = None
+        self._shutting_down: bool = False
         self._last_report_artifacts: Optional[UnifiedReportArtifacts] = None
         self._last_kinematics_report: Any = None
         self._last_irr_report: Any = None
@@ -294,7 +300,9 @@ class AnalysisStudioWidget(QtWidgets.QWidget):
             btn.setEnabled(False)
 
         self.run_report_btn.clicked.connect(
-            lambda: self._dispatch_task("report", self._compute_report_job)
+            lambda: self._dispatch_task(
+                "report", self._prepare_report_job, is_preparer=True
+            )
         )
         self.open_html_btn.clicked.connect(self._open_report_html)
         self.open_md_btn.clicked.connect(self._open_report_md)
@@ -339,7 +347,9 @@ class AnalysisStudioWidget(QtWidgets.QWidget):
         self.expected_instances_spin.setSpecialValueText("Auto")
         self.run_track_qc_btn = QtWidgets.QPushButton("Run Track QC & Gap Audit", page)
         self.run_track_qc_btn.clicked.connect(
-            lambda: self._dispatch_task("track_qc", self._compute_track_qc_job)
+            lambda: self._dispatch_task(
+                "track_qc", self._prepare_track_qc_job, is_preparer=True
+            )
         )
         ctrl.addWidget(QtWidgets.QLabel("Expected Instances:"))
         ctrl.addWidget(self.expected_instances_spin)
@@ -416,7 +426,9 @@ class AnalysisStudioWidget(QtWidgets.QWidget):
         )
         self.export_kin_events_btn.setEnabled(False)
         self.run_kinematics_btn.clicked.connect(
-            lambda: self._dispatch_task("kinematics", self._compute_kinematics_job)
+            lambda: self._dispatch_task(
+                "kinematics", self._prepare_kinematics_job, is_preparer=True
+            )
         )
         self.export_kin_events_btn.clicked.connect(self._export_kinematics_events_csv)
 
@@ -503,7 +515,9 @@ class AnalysisStudioWidget(QtWidgets.QWidget):
             "Run Time Budget & Ethogram QC", page
         )
         self.run_behavior_btn.clicked.connect(
-            lambda: self._dispatch_task("behavior", self._compute_behavior_job)
+            lambda: self._dispatch_task(
+                "behavior", self._prepare_behavior_job, is_preparer=True
+            )
         )
         ctrl.addWidget(QtWidgets.QLabel("Session Duration (s):"))
         ctrl.addWidget(self.beh_session_dur_spin)
@@ -599,7 +613,7 @@ class AnalysisStudioWidget(QtWidgets.QWidget):
         )
         self.export_irr_dis_btn.setEnabled(False)
         self.run_irr_btn.clicked.connect(
-            lambda: self._dispatch_task("irr", self._compute_irr_job)
+            lambda: self._dispatch_task("irr", self._prepare_irr_job, is_preparer=True)
         )
         self.export_irr_dis_btn.clicked.connect(self._export_irr_disagreements_csv)
 
@@ -708,7 +722,9 @@ class AnalysisStudioWidget(QtWidgets.QWidget):
         )
         self.export_cohort_cmp_btn.setEnabled(False)
         self.run_cohort_btn.clicked.connect(
-            lambda: self._dispatch_task("cohort", self._compute_cohort_job)
+            lambda: self._dispatch_task(
+                "cohort", self._prepare_cohort_job, is_preparer=True
+            )
         )
         self.export_cohort_cmp_btn.clicked.connect(self._export_cohort_comparisons_csv)
 
@@ -914,15 +930,15 @@ class AnalysisStudioWidget(QtWidgets.QWidget):
                 return cand_dir
         return p
 
-    def _resolve_events_csv_or_temp(self) -> Path:
+    def _resolve_events_csv_source(self) -> tuple[Path, bool]:
         explicit = self.events_csv_edit.text().strip()
         if explicit:
             p = Path(explicit).expanduser().resolve()
             if not p.is_file():
                 raise FileNotFoundError(f"Events CSV not found: {p}")
-            return p
+            return p, False
 
-        # Fallback: export active BehaviorController events from main window if present
+        # Fallback: export active BehaviorController events from main window on GUI thread
         w = self._owner_window
         beh_ctrl = getattr(w, "behavior_controller", None) if w is not None else None
         if beh_ctrl is not None and getattr(beh_ctrl, "events_count", 0) > 0:
@@ -940,9 +956,17 @@ class AnalysisStudioWidget(QtWidgets.QWidget):
                 )
                 for r in rows:
                     writer.writerow(list(r))
-                tmp = Path(tempfile.gettempdir()) / "annolid_active_session_events.csv"
-                tmp.write_text(buf.getvalue(), encoding="utf-8")
-                return tmp
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    prefix="annolid_session_events_",
+                    suffix=".csv",
+                    encoding="utf-8",
+                    newline="",
+                    delete=False,
+                ) as tmp_fh:
+                    tmp_fh.write(buf.getvalue())
+                    tmp_path = Path(tmp_fh.name)
+                return tmp_path, True
 
         src_text = self.source_edit.text().strip()
         if src_text:
@@ -956,11 +980,15 @@ class AnalysisStudioWidget(QtWidgets.QWidget):
             for cand_name in (f"{stem}_events.csv", f"{stem}_behavior_events.csv"):
                 cand = parent / cand_name
                 if cand.is_file():
-                    return cand
+                    return cand, False
 
         raise ValueError(
             "Provide a Behavior Event CSV or record behavior events in the main window."
         )
+
+    def _resolve_events_csv_or_temp(self) -> Path:
+        path, _ = self._resolve_events_csv_source()
+        return path
 
     def _emit_row_frame(
         self, table: QtWidgets.QTableWidget, row: int, *, fallback_col: int = 0
@@ -979,84 +1007,136 @@ class AnalysisStudioWidget(QtWidgets.QWidget):
                 pass
 
     # ------------------------------------------------------------------
-    # Synchronous Job Computations (Callable directly in tests or QThread)
+    # GUI-Thread Parameter Snapshots & Background-Safe Job Builders
     # ------------------------------------------------------------------
-    def _compute_report_job(self) -> UnifiedReportArtifacts:
+    def _prepare_report_job(self) -> Callable[[], UnifiedReportArtifacts]:
         raw = self.source_edit.text().strip()
         if not raw:
             raise ValueError("Please specify a Source path first.")
+        src_path = Path(raw).expanduser().resolve()
         ev_text = self.events_csv_edit.text().strip()
+        ev_path = Path(ev_text).expanduser().resolve() if ev_text else None
         z_text = self.zone_file_edit.text().strip()
+        zone_path = Path(z_text).expanduser().resolve() if z_text else None
+        cal_path = self._effective_calibration_path()
+        fps_val = self._effective_fps()
+        ppc_val = self._effective_px_per_cm()
         title = self.report_title_edit.text().strip() or None
-        return build_unified_analysis_report(
-            Path(raw).expanduser().resolve(),
-            events_csv=Path(ev_text).expanduser().resolve() if ev_text else None,
-            zone_file=Path(z_text).expanduser().resolve() if z_text else None,
-            calibration_path=self._effective_calibration_path(),
-            fps=self._effective_fps(),
-            px_per_cm=self._effective_px_per_cm(),
-            title=title,
-            include_plots=True,
-        )
 
-    def _compute_track_qc_job(self) -> Dict[str, Any]:
+        def _job() -> UnifiedReportArtifacts:
+            _require_pandas_analytics("Unified Report generation")
+            from annolid.services.unified_reporting import (
+                build_unified_analysis_report,
+            )
+
+            return build_unified_analysis_report(
+                src_path,
+                events_csv=ev_path,
+                zone_file=zone_path,
+                calibration_path=cal_path,
+                fps=fps_val,
+                px_per_cm=ppc_val,
+                title=title,
+                include_plots=True,
+            )
+
+        return _job
+
+    def _prepare_track_qc_job(self) -> Callable[[], Dict[str, Any]]:
         track_in = self._resolve_tracking_input()
         exp = int(self.expected_instances_spin.value())
-        tqc = run_track_qc(
-            track_in,
-            expected_instances=exp if exp > 0 else None,
-            fps=self._effective_fps(),
-            top_k_review=30,
-        )
+        fps_val = self._effective_fps()
         raw_src = Path(self.source_edit.text().strip()).expanduser().resolve()
-        gaps = summarize_tracking_gaps(raw_src, fps=self._effective_fps())
-        return {"track_qc": tqc, "gaps": gaps}
 
-    def _compute_kinematics_job(self) -> Any:
+        def _job() -> Dict[str, Any]:
+            _require_pandas_analytics("Track QC & Gap Audit")
+            from annolid.postprocessing.tracking_reports import summarize_tracking_gaps
+            from annolid.services.track_analytics import run_track_qc
+
+            tqc = run_track_qc(
+                track_in,
+                expected_instances=exp if exp > 0 else None,
+                fps=fps_val,
+                top_k_review=30,
+            )
+            gaps = summarize_tracking_gaps(raw_src, fps=fps_val)
+            return {"track_qc": tqc, "gaps": gaps}
+
+        return _job
+
+    def _prepare_kinematics_job(self) -> Callable[[], Any]:
         track_in = self._resolve_tracking_input()
+        fps_val = self._effective_fps()
+        ppc_val = self._effective_px_per_cm()
+        cal_path = self._effective_calibration_path()
         freeze_thr = float(self.freeze_thresh_spin.value())
-        return run_kinematics_analysis(
-            track_in,
-            fps=self._effective_fps(),
-            px_per_cm=self._effective_px_per_cm(),
-            calibration=self._effective_calibration_path(),
-            freeze_speed_threshold=freeze_thr if freeze_thr > 0 else None,
-            min_freeze_duration_s=float(self.min_freeze_dur_spin.value()),
-        )
+        min_freeze_s = float(self.min_freeze_dur_spin.value())
 
-    def _compute_behavior_job(self) -> Dict[str, Any]:
-        ev_path = self._resolve_events_csv_or_temp()
+        def _job() -> Any:
+            _require_pandas_analytics("Kinematics & Freezing analysis")
+            from annolid.services.kinematics_analytics import run_kinematics_analysis
+
+            return run_kinematics_analysis(
+                track_in,
+                fps=fps_val,
+                px_per_cm=ppc_val,
+                calibration=cal_path,
+                freeze_speed_threshold=freeze_thr if freeze_thr > 0 else None,
+                min_freeze_duration_s=min_freeze_s,
+            )
+
+        return _job
+
+    def _prepare_behavior_job(self) -> Callable[[], Dict[str, Any]]:
+        ev_path, is_temp = self._resolve_events_csv_source()
         sess_dur = float(self.beh_session_dur_spin.value())
         bin_w = float(self.beh_bin_spin.value())
-        rows = _read_event_rows(ev_path)
-        intervals, warnings = extract_behavior_intervals(rows)
-        summary = summarize_intervals(
-            intervals, session_duration=sess_dur if sess_dur > 0 else None
-        )
-        binned = compute_binned_time_budget(intervals, bin_w) if bin_w > 0 else []
-        qc_report = run_behavior_qc(ev_path)
-        return {
-            "summary": summary,
-            "binned": binned,
-            "warnings": warnings,
-            "qc": qc_report,
-        }
 
-    def _compute_irr_job(self) -> Any:
+        def _job() -> Dict[str, Any]:
+            try:
+                rows = _read_event_rows(ev_path)
+                intervals, warnings = extract_behavior_intervals(rows)
+                summary = summarize_intervals(
+                    intervals, session_duration=sess_dur if sess_dur > 0 else None
+                )
+                binned = (
+                    compute_binned_time_budget(intervals, bin_w) if bin_w > 0 else []
+                )
+                qc_report = run_behavior_qc(ev_path)
+                return {
+                    "summary": summary,
+                    "binned": binned,
+                    "warnings": warnings,
+                    "qc": qc_report,
+                }
+            finally:
+                if is_temp:
+                    ev_path.unlink(missing_ok=True)
+
+        return _job
+
+    def _prepare_irr_job(self) -> Callable[[], Any]:
         csv_paths = [
             Path(self.irr_files_list.item(i).text()).expanduser().resolve()
             for i in range(self.irr_files_list.count())
         ]
         if len(csv_paths) < 2:
             raise ValueError("Add at least 2 rater Behavior Event CSVs.")
-        return run_behavior_irr(
-            csv_paths,
-            bin_seconds=float(self.irr_bin_spin.value()),
-            onset_tolerance_seconds=float(self.irr_tol_spin.value()),
-            pool_subjects=bool(self.irr_pool_chk.isChecked()),
-        )
+        bin_s = float(self.irr_bin_spin.value())
+        tol_s = float(self.irr_tol_spin.value())
+        pool_subjs = bool(self.irr_pool_chk.isChecked())
 
-    def _compute_cohort_job(self) -> Any:
+        def _job() -> Any:
+            return run_behavior_irr(
+                csv_paths,
+                bin_seconds=bin_s,
+                onset_tolerance_seconds=tol_s,
+                pool_subjects=pool_subjs,
+            )
+
+        return _job
+
+    def _prepare_cohort_job(self) -> Callable[[], Any]:
         target_str = self.cohort_manifest_edit.text().strip()
         if not target_str:
             raise ValueError(
@@ -1066,17 +1146,39 @@ class AnalysisStudioWidget(QtWidgets.QWidget):
         meta_str = self.cohort_meta_edit.text().strip()
         meta_p = Path(meta_str).expanduser().resolve() if meta_str else None
         unit = str(self.cohort_unit_combo.currentData() or "recording")
-        if target.is_dir():
+
+        def _job() -> Any:
+            if target.is_dir():
+                return run_behavior_cohort(
+                    events_csvs=[target],
+                    metadata_csv=meta_p,
+                    analysis_unit=unit,
+                )
             return run_behavior_cohort(
-                events_csvs=[target],
+                manifest_path=target,
                 metadata_csv=meta_p,
                 analysis_unit=unit,
             )
-        return run_behavior_cohort(
-            manifest_path=target,
-            metadata_csv=meta_p,
-            analysis_unit=unit,
-        )
+
+        return _job
+
+    def _compute_report_job(self) -> UnifiedReportArtifacts:
+        return self._prepare_report_job()()
+
+    def _compute_track_qc_job(self) -> Dict[str, Any]:
+        return self._prepare_track_qc_job()()
+
+    def _compute_kinematics_job(self) -> Any:
+        return self._prepare_kinematics_job()()
+
+    def _compute_behavior_job(self) -> Dict[str, Any]:
+        return self._prepare_behavior_job()()
+
+    def _compute_irr_job(self) -> Any:
+        return self._prepare_irr_job()()
+
+    def _compute_cohort_job(self) -> Any:
+        return self._prepare_cohort_job()()
 
     # Direct synchronous entrypoints for deterministic tests & callers
     def run_unified_report_sync(self) -> UnifiedReportArtifacts:
@@ -1112,23 +1214,43 @@ class AnalysisStudioWidget(QtWidgets.QWidget):
     # ------------------------------------------------------------------
     # Async Worker Dispatch & Result Rendering
     # ------------------------------------------------------------------
-    def _dispatch_task(self, task_name: str, fn: Callable[[], Any]) -> None:
+    def _dispatch_task(
+        self,
+        task_name: str,
+        fn: Callable[[], Any],
+        *,
+        is_preparer: bool = False,
+    ) -> None:
+        if self._active_thread is not None:
+            self.status_label.setText("Another analysis task is currently running…")
+            return
+
+        if is_preparer:
+            try:
+                job_fn = fn()
+            except Exception as exc:
+                self.status_label.setText(f"{task_name} failed: {exc}")
+                if self.isVisible():
+                    QtWidgets.QMessageBox.warning(
+                        self, "Analysis Error", f"{task_name} failed:\n\n{exc}"
+                    )
+                return
+        else:
+            job_fn = fn
+
         if not self.isVisible():
             try:
-                result = fn()
+                result = job_fn()
                 self._apply_task_result(task_name, result)
             except Exception as exc:
                 self.status_label.setText(f"{task_name} failed: {exc}")
             return
 
-        if self._active_thread is not None:
-            self.status_label.setText("Another analysis task is currently running…")
-            return
-
+        self._shutting_down = False
         self.busy_bar.setVisible(True)
         self.status_label.setText(f"Running {task_name} in background…")
         thread = QtCore.QThread(self)
-        worker = _CallableWorker(task_name, fn)
+        worker = _CallableWorker(task_name, job_fn)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.finished.connect(self._on_worker_finished)
@@ -1144,8 +1266,38 @@ class AnalysisStudioWidget(QtWidgets.QWidget):
         self._active_thread = None
         self._active_worker = None
 
+    def shutdown(self, wait_ms: int = 5000) -> None:
+        """Disconnect and wait for any active background worker thread before close."""
+        self._shutting_down = True
+        worker = self._active_worker
+        thread = self._active_thread
+        if worker is not None:
+            try:
+                worker.finished.disconnect(self._on_worker_finished)
+            except (RuntimeError, TypeError):
+                pass
+        if thread is not None:
+            try:
+                thread.finished.disconnect(self._clear_worker)
+            except (RuntimeError, TypeError):
+                pass
+            try:
+                if thread.isRunning():
+                    thread.quit()
+                    thread.wait(max(0, int(wait_ms)))
+            except RuntimeError:
+                pass
+        self._active_thread = None
+        self._active_worker = None
+
+    def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        self.shutdown()
+        super().closeEvent(event)
+
     @QtCore.Slot(str, object, str)
     def _on_worker_finished(self, task_name: str, result: object, error: str) -> None:
+        if self._shutting_down:
+            return
         self.busy_bar.setVisible(False)
         if error:
             self.status_label.setText(f"{task_name} failed: {error}")
@@ -1158,7 +1310,11 @@ class AnalysisStudioWidget(QtWidgets.QWidget):
     def _apply_task_result(self, task_name: str, result: Any) -> None:
         eff_fps = self._effective_fps() or 30.0
 
-        if task_name == "report" and isinstance(result, UnifiedReportArtifacts):
+        if (
+            task_name == "report"
+            and hasattr(result, "payload")
+            and hasattr(result, "html_path")
+        ):
             self._last_report_artifacts = result
             payload = result.payload
             src = payload.get("source") or {}
@@ -1255,8 +1411,10 @@ class AnalysisStudioWidget(QtWidgets.QWidget):
                         _fmt_num(r.get("mean_speed_px_s"), 2),
                         _fmt_num(r.get("mean_speed_cm_s"), 2),
                         _fmt_num(r.get("p95_speed_px_s"), 2),
-                        _fmt_num(r.get("freezing_pct"), 1, "%"),
-                        r.get("freezing_bouts", 0),
+                        _fmt_num(
+                            r.get("freezing_percent", r.get("freezing_pct")), 1, "%"
+                        ),
+                        r.get("freezing_bout_count", r.get("freezing_bouts", 0)),
                         _fmt_num(r.get("straightness_index"), 3),
                         _fmt_num(r.get("tortuosity"), 2),
                     ]
@@ -1269,12 +1427,12 @@ class AnalysisStudioWidget(QtWidgets.QWidget):
                 [
                     [
                         b.get("instance", ""),
-                        b.get("kind", ""),
+                        b.get("bout_type", b.get("kind", "")),
                         b.get("start_frame", 0),
                         b.get("end_frame", 0),
                         _fmt_num(b.get("start_s"), 2),
                         _fmt_num(b.get("duration_s"), 2),
-                        _fmt_num(b.get("mean_speed_px_s"), 2),
+                        _fmt_num(b.get("mean_value", b.get("mean_speed_px_s")), 2),
                     ]
                     for b in bouts
                 ],
@@ -1289,7 +1447,11 @@ class AnalysisStudioWidget(QtWidgets.QWidget):
                         _fmt_num(p.get("mean_distance_px"), 1),
                         _fmt_num(p.get("min_distance_px"), 1),
                         _fmt_num(p.get("mean_distance_cm"), 2),
-                        _fmt_num(p.get("close_contact_pct"), 1, "%"),
+                        _fmt_num(
+                            p.get("close_contact_percent", p.get("close_contact_pct")),
+                            1,
+                            "%",
+                        ),
                         _fmt_num(p.get("velocity_correlation"), 3),
                     ]
                     for p in (d.get("pairwise") or [])
@@ -1523,6 +1685,11 @@ class AnalysisStudioWidget(QtWidgets.QWidget):
             "CSV Files (*.csv)",
         )
         if chosen:
+            _require_pandas_analytics("Kinematics events export")
+            from annolid.postprocessing.kinematics_stats import (
+                write_kinematics_events_csv,
+            )
+
             write_kinematics_events_csv(self._last_kinematics_report, Path(chosen))
             self.status_label.setText(f"Exported kinematics bouts to {chosen}")
 
@@ -1583,3 +1750,10 @@ class AnalysisStudioDialog(QtWidgets.QDialog):
         self.studio.jumpToFrameRequested.connect(self.jumpToFrameRequested.emit)
         self.studio.select_tab(initial_tab)
         lay.addWidget(self.studio)
+
+    def shutdown(self, wait_ms: int = 5000) -> None:
+        self.studio.shutdown(wait_ms=wait_ms)
+
+    def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        self.studio.shutdown()
+        super().closeEvent(event)

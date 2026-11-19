@@ -146,7 +146,16 @@ def test_analysis_studio_dialog_all_six_tabs_and_jump_signal(tmp_path: Path) -> 
             kin_res.calibration is not None and kin_res.calibration.mode == "homography"
         )
         assert studio.kin_instances_table.rowCount() == 1
+        assert studio.kin_instances_table.item(0, 6).text().endswith("%")
+        assert studio.kin_instances_table.item(0, 6).text() != "—"
+        assert int(studio.kin_instances_table.item(0, 7).text()) >= 1
         assert studio.kin_bouts_table.rowCount() >= 1
+        assert studio.kin_bouts_table.item(0, 1).text() in {
+            "freezing",
+            "high_activity",
+            "close_contact",
+        }
+        assert studio.kin_bouts_table.item(0, 6).text() != "—"
         studio.kin_bouts_table.cellDoubleClicked.emit(0, 0)
         assert len(jumped_frames) >= 2
 
@@ -284,3 +293,71 @@ def test_quality_control_file_audit_labeling_and_stats_dashboard_fixes(
         assert jumps[-1][1] == 42
     finally:
         ts_dlg.deleteLater()
+
+
+def test_analysis_studio_pairwise_contact_temp_cleanup_and_thread_shutdown(
+    tmp_path: Path,
+) -> None:
+    import time
+
+    _ensure_qapp()
+
+    track_csv = tmp_path / "dyad_tracking.csv"
+    lines = ["frame_number,instance_name,x1,y1,x2,y2,cx,cy,class_score"]
+    for f in range(25):
+        lines.append(f"{f},mouse_a,10,10,20,20,15.0,15.0,0.95")
+        lines.append(f"{f},mouse_b,25,10,35,20,30.0,15.0,0.95")
+    track_csv.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    class _DummyBehaviorController:
+        events_count = 2
+
+        @staticmethod
+        def export_rows(timestamp_fallback=None):  # noqa: ANN001, ARG004
+            return [
+                (0.0, 0.0, "mouse_a", "sniff", "start"),
+                (1.5, 1.5, "mouse_a", "sniff", "stop"),
+            ]
+
+    class _DummyOwner(QtWidgets.QWidget):
+        def __init__(self) -> None:
+            super().__init__()
+            self.behavior_controller = _DummyBehaviorController()
+
+    owner = _DummyOwner()
+    dlg = AnalysisStudioDialog(
+        owner_window=owner, initial_source=track_csv, initial_tab="kinematics"
+    )
+    try:
+        studio = dlg.studio
+        studio.fps_spin.setValue(20.0)
+        studio.run_kinematics_sync()
+        assert studio.kin_pairwise_table.rowCount() == 1
+        contact_cell = studio.kin_pairwise_table.item(0, 5).text()
+        assert contact_cell == "100.0%"
+
+        # Verify GUI-thread behavior snapshot writes a unique temp file and unlinks it in finally
+        ev_path, is_temp = studio._resolve_events_csv_source()
+        assert is_temp is True
+        assert ev_path.is_file()
+        assert ev_path.name != "annolid_active_session_events.csv"
+        ev_path.unlink(missing_ok=True)
+
+        beh_job = studio._prepare_behavior_job()
+        # Mutate widget text after preparing job: worker closure must use GUI-thread snapshot
+        studio.beh_bin_spin.setValue(999.0)
+        beh_out = beh_job()
+        assert len(beh_out["summary"]) == 1
+        # Temp file created inside _prepare_behavior_job must be cleaned up after beh_job()
+        leftover = list(Path(ev_path.parent).glob(f"{ev_path.stem[:23]}*.csv"))
+        assert not [p for p in leftover if p == ev_path]
+
+        # Verify closeEvent / shutdown cleanly stops an active background QThread
+        dlg.show()
+        studio._dispatch_task("custom_slow", lambda: (time.sleep(0.05), {})[1])
+        assert studio._active_thread is not None
+        dlg.close()
+        assert studio._active_thread is None
+    finally:
+        dlg.deleteLater()
+        owner.deleteLater()

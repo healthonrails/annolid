@@ -195,9 +195,15 @@ class PersistenceLifecycleMixin:
             return f"{text}, manul"
 
         def format_shape(s):
+            nonlocal has_zone_shapes
             data = s.other_data.copy()
-            if s.description and "zone" in s.description.lower():
-                pass
+            s_flags = getattr(s, "flags", None) or {}
+            if (
+                (s.description and "zone" in s.description.lower())
+                or bool(s_flags.get("zone"))
+                or str(s_flags.get("semantic_type") or "").strip().lower() == "zone"
+            ):
+                has_zone_shapes = True
             if len(s.points) <= 1:
                 s.shape_type = "point"
             data.update(
@@ -254,13 +260,31 @@ class PersistenceLifecycleMixin:
             if hasattr(self, "_has_large_image_page_navigation") and bool(
                 self._has_large_image_page_navigation()
             ):
+                label_dir = osp.dirname(osp.abspath(str(filename)))
+                raw_source = str(getattr(self, "imagePath", "") or "")
+                rel_source = ""
+                if raw_source:
+                    try:
+                        rel_source = osp.relpath(raw_source, label_dir)
+                    except ValueError:
+                        rel_source = Path(raw_source).name
                 page_meta = dict(other_data.get("large_image_page") or {})
+                if isinstance(page_meta.get("source_label_paths"), list):
+                    clean_srcs = []
+                    for sp in page_meta["source_label_paths"]:
+                        sp_str = str(sp or "")
+                        if sp_str:
+                            try:
+                                clean_srcs.append(osp.relpath(sp_str, label_dir))
+                            except ValueError:
+                                clean_srcs.append(Path(sp_str).name)
+                    page_meta["source_label_paths"] = clean_srcs
                 page_meta.update(
                     {
                         "page_index": int(getattr(self, "frame_number", 0) or 0),
                         "page_count": int(getattr(self, "num_frames", 1) or 1),
-                        "label_path": str(filename),
-                        "source_path": str(getattr(self, "imagePath", "") or ""),
+                        "label_path": Path(str(filename)).name,
+                        "source_path": rel_source,
                     }
                 )
                 other_data["large_image_page"] = page_meta

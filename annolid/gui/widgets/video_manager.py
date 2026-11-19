@@ -18,7 +18,7 @@ from qtpy.QtWidgets import (
     QTextEdit,
 )
 from qtpy.QtCore import Signal, Qt, Slot
-from annolid.data.videos import extract_frames_from_videos
+from annolid.data.videos import extract_frames_from_video
 from annolid.gui.qt_compat import configure_compact_combo
 from annolid.gui.workers import (
     FrameExtractorWorker,
@@ -92,7 +92,7 @@ class VideoManagerWidget(QWidget):
         )
         configure_compact_combo(
             self.cutie_model_combo,
-            min_chars=11,
+            min_chars=6,
             popup_min_width=300,
         )
         self.cutie_model_combo.setToolTip(
@@ -593,8 +593,7 @@ class VideoManagerWidget(QWidget):
             total_videos = len(self.imported_videos)
             for idx, video_path in enumerate(self.imported_videos, start=1):
                 # Extract frames for the current video
-                video_folder = os.path.dirname(video_path)
-                extract_frames_from_videos(video_folder, output_folder, num_frames=5)
+                extract_frames_from_video(video_path, output_folder, num_frames=5)
 
                 # Update progress bar
                 progress = int((idx / total_videos) * 100)
