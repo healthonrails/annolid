@@ -18,6 +18,7 @@ THREEJS_EXAMPLE_IDS = (
     "flybody_simulation_json",
     "brain_viewer_html",
     "two_mice_html",
+    "fly_brain_mouse_html",
     "swarm_visualizer_html",
 )
 
@@ -135,6 +136,7 @@ def generate_threejs_example(example_id: str, out_dir: str | Path) -> Path:
         "flybody_simulation_json": _build_flybody_simulation_json,
         "brain_viewer_html": _build_brain_viewer_html,
         "two_mice_html": _build_two_mice_html,
+        "fly_brain_mouse_html": _build_fly_brain_mouse_html,
         "swarm_visualizer_html": _build_swarm_visualizer_html,
     }
     builder = builders.get(example_id)
@@ -156,6 +158,14 @@ def _build_two_mice_html(_out: Path) -> Path:
         "two_mice.html",
         _out,
         title="Annolid Three.js Two Mice Example",
+    )
+
+
+def _build_fly_brain_mouse_html(_out: Path) -> Path:
+    return _resolve_or_generate_bundled_html(
+        "fly_brain_mouse.html",
+        _out,
+        title="Annolid Three.js Fly-Brain Mouse Example",
     )
 
 

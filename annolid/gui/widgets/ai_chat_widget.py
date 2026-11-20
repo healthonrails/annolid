@@ -5694,10 +5694,15 @@ class AIChatWidget(QtWidgets.QWidget):
             "brain_viewer_html": "brain_viewer_html",
             "two_mice": "two_mice_html",
             "two_mice_html": "two_mice_html",
+            "fly_brain": "fly_brain_mouse_html",
+            "fly_brain_mouse": "fly_brain_mouse_html",
+            "fly_brain_mouse_html": "fly_brain_mouse_html",
         }
         normalized = re.sub(r"[^a-z0-9]+", "_", raw).strip("_")
         if normalized in mapping:
             return mapping[normalized]
+        if "fly" in raw and ("brain" in raw or "mouse" in raw or "mice" in raw):
+            return "fly_brain_mouse_html"
         if "two" in raw and "mice" in raw:
             return "two_mice_html"
         if "brain" in raw:

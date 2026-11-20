@@ -21,9 +21,19 @@ import {
   getMouseActionSpec,
   sanitizeMotorCommand,
 } from './two_mice_control.js';
+import {
+  FLY_BRAIN_METADATA,
+  FLY_NEURON_GROUPS,
+  FLY_OPTOGENETIC_PRESETS,
+  FlyBrainMouseController,
+} from './two_mice_fly_brain.js';
 
 const datasetQuery = new URLSearchParams(window.location.search);
 const DATASET_CAPTURE = datasetQuery.get('dataset') === '1';
+const FLY_BRAIN_DEFAULT = !DATASET_CAPTURE && (
+  datasetQuery.get('fly_brain') === '1'
+  || datasetQuery.get('fly_brain') === 'true'
+);
 const DATASET_FRAME_INDEX = Math.max(0, Math.min(10000, Number.parseInt(datasetQuery.get('frame') || '0', 10) || 0));
 const DATASET_CAPTURE_FPS = Math.max(1, Math.min(30, Number.parseInt(datasetQuery.get('fps') || '5', 10) || 5));
 const DATASET_SEED = Number.parseInt(datasetQuery.get('seed') || '20260710', 10) >>> 0;
@@ -69,7 +79,7 @@ const IS_SOFTWARE_WEBGL = /SwiftShader|llvmpipe|Software|Basic Render Driver/i.t
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 0.92;
+renderer.toneMappingExposure = 0.94;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.setPixelRatio((DATASET_CAPTURE || IS_SOFTWARE_WEBGL) ? 1 : Math.min(window.devicePixelRatio, 2));
 
@@ -98,7 +108,7 @@ const pmremGenerator = new THREE.PMREMGenerator(renderer);
 pmremGenerator.compileEquirectangularShader();
 const roomEnvironment = new RoomEnvironment();
 scene.environment = pmremGenerator.fromScene(roomEnvironment).texture;
-scene.environmentIntensity = 0.70;
+scene.environmentIntensity = 0.58;
 roomEnvironment.dispose();
 pmremGenerator.dispose();
 
@@ -108,6 +118,7 @@ pmremGenerator.dispose();
 const annolidShaders = new AnnolidShaders(THREE);
 const {
   PROP,
+  tailAlbedoMap,
   tailRoughnessMap,
   tailNormalMap,
   earNormalMap,
@@ -334,9 +345,13 @@ function getMinimumMouseClearance(subjects) {
 
 function tailSurfaceRadiusAt(p, thickness = 1.0) {
   const fraction = THREE.MathUtils.clamp(p, 0, 1);
-  const taper = Math.max(0.08, 1.0 - fraction * PROP.tailTaper);
-  const rootBlend = 1.0 - THREE.MathUtils.smoothstep(fraction, 0.0, 0.20);
-  return Math.max(0.008, 0.08 * taper * (1.0 + rootBlend * 0.45) * thickness);
+  // Organic murine caudal profile: muscular sacral root, gradual supple shaft
+  // taper, and a softly rounded fleshy distal tip instead of a needle spike.
+  const taperAmount = THREE.MathUtils.clamp(PROP.tailTaper * 0.84, 0.25, 0.82);
+  const shaftTaper = Math.max(0.18, 1.0 - Math.pow(fraction, 0.88) * taperAmount);
+  const rootBlend = 1.0 - THREE.MathUtils.smoothstep(fraction, 0.0, 0.24);
+  const tipRound = 1.0 - THREE.MathUtils.smoothstep(fraction, 0.92, 1.0) * 0.34;
+  return Math.max(0.012, 0.084 * shaftTaper * (1.0 + rootBlend * 0.44) * tipRound * thickness);
 }
 
 function createDynamicTailTubeGeometry(segmentCount, radialSegments = 14) {
@@ -418,12 +433,14 @@ function createDynamicTailTubeGeometry(segmentCount, radialSegments = 14) {
   return geometry;
 }
 
-function updateDynamicTailTubeGeometry(geometry, points, thickness = 1.0) {
+function updateDynamicTailTubeGeometry(geometry, points, thickness = 1.0, shading = null) {
   const state = geometry.userData.tailTube;
   if (!state || points.length < state.ringCount) return;
   const positions = geometry.attributes.position.array;
   const vertexNormals = geometry.attributes.normal.array;
   const vertexColors = geometry.attributes.color.array;
+  const isDark = Boolean(shading?.isDark);
+  const isMid = Boolean(shading?.isMid);
   const {
     tangents,
     normals,
@@ -502,53 +519,101 @@ function updateDynamicTailTubeGeometry(geometry, points, thickness = 1.0) {
 
     const frac = ring / (ringCount - 1);
     const radius = tailSurfaceRadiusAt(frac, thickness);
-    const tipWarmth = THREE.MathUtils.smoothstep(frac, 0.72, 1.0);
+    // Subtle dorsoventral muscular ovality at sacral base fading to circular distally.
+    const ovality = 1.0 - THREE.MathUtils.smoothstep(frac, 0.0, 0.30);
+    const dorsalScale = 1.0 - ovality * 0.07;
+    const lateralScale = 1.0 + ovality * 0.07;
+    const rootBlend = 1.0 - THREE.MathUtils.smoothstep(frac, 0.0, 0.16);
+    const tipFade = THREE.MathUtils.smoothstep(frac, 0.68, 1.0);
     for (let side = 0; side <= radialSegments; side++) {
       const angle = side / radialSegments * Math.PI * 2;
       const cosine = Math.cos(angle);
       const sine = Math.sin(angle);
-      const rx = nx * cosine + bx * sine;
-      const ry = ny * cosine + by * sine;
-      const rz = nz * cosine + bz * sine;
+      const posN = cosine * dorsalScale;
+      const posB = sine * lateralScale;
+      const px = nx * posN + bx * posB;
+      const py = ny * posN + by * posB;
+      const pz = nz * posN + bz * posB;
+      let rnx = nx * (cosine / dorsalScale) + bx * (sine / lateralScale);
+      let rny = ny * (cosine / dorsalScale) + by * (sine / lateralScale);
+      let rnz = nz * (cosine / dorsalScale) + bz * (sine / lateralScale);
+      const rnLen = Math.max(Math.hypot(rnx, rny, rnz), 1e-7);
+      rnx /= rnLen; rny /= rnLen; rnz /= rnLen;
+
       const vertexOffset = (ring * ringStride + side) * 3;
-      positions[vertexOffset] = points[ring].x + rx * radius;
-      positions[vertexOffset + 1] = points[ring].y + ry * radius;
-      positions[vertexOffset + 2] = points[ring].z + rz * radius;
-      vertexNormals[vertexOffset] = rx;
-      vertexNormals[vertexOffset + 1] = ry;
-      vertexNormals[vertexOffset + 2] = rz;
-      // Murine dorsoventral tail countershading: darker dorsal scale band, paler ventral aspect
-      const dorsalShade = THREE.MathUtils.clamp(0.96 - ry * 0.14, 0.80, 1.10);
-      vertexColors[vertexOffset] = Math.min(1.14, dorsalShade + tipWarmth * 0.05);
-      vertexColors[vertexOffset + 1] = dorsalShade - tipWarmth * 0.01;
-      vertexColors[vertexOffset + 2] = dorsalShade - tipWarmth * 0.02;
+      positions[vertexOffset] = points[ring].x + px * radius;
+      positions[vertexOffset + 1] = points[ring].y + py * radius;
+      positions[vertexOffset + 2] = points[ring].z + pz * radius;
+      vertexNormals[vertexOffset] = rnx;
+      vertexNormals[vertexOffset + 1] = rny;
+      vertexNormals[vertexOffset + 2] = rnz;
+
+      // Strain-aware murine countershading + subtle vascular lateral blush + root/tip gradient.
+      const lateralBand = Math.pow(Math.abs(sine), 1.6) * (1.0 - frac * 0.42);
+      if (isDark) {
+        const dorsalShade = THREE.MathUtils.clamp(0.95 - rny * 0.21, 0.72, 1.15);
+        const rootDarken = 1.0 - rootBlend * 0.18;
+        vertexColors[vertexOffset] = Math.min(1.16, dorsalShade * rootDarken + tipFade * 0.09);
+        vertexColors[vertexOffset + 1] = Math.min(1.12, dorsalShade * rootDarken + tipFade * 0.04);
+        vertexColors[vertexOffset + 2] = Math.min(1.12, dorsalShade * rootDarken + tipFade * 0.04);
+      } else if (isMid) {
+        const dorsalShade = THREE.MathUtils.clamp(0.96 - rny * 0.18, 0.76, 1.14);
+        const rootDarken = 1.0 - rootBlend * 0.12;
+        vertexColors[vertexOffset] = Math.min(1.16, dorsalShade * rootDarken + tipFade * 0.07 + lateralBand * 0.025);
+        vertexColors[vertexOffset + 1] = Math.min(1.12, dorsalShade * rootDarken + tipFade * 0.02);
+        vertexColors[vertexOffset + 2] = Math.min(1.12, dorsalShade * rootDarken + tipFade * 0.01);
+      } else {
+        // Pale/albino vascular tail: delicate warm coral lateral vein glow + soft ivory root + rose tip.
+        const dorsalShade = THREE.MathUtils.clamp(0.98 - rny * 0.08, 0.88, 1.08);
+        const rootLift = 1.0 + rootBlend * 0.04;
+        const vein = lateralBand * 0.055;
+        vertexColors[vertexOffset] = Math.min(1.14, dorsalShade * rootLift + vein + tipFade * 0.04);
+        vertexColors[vertexOffset + 1] = Math.min(1.12, dorsalShade * rootLift - vein * 0.45 - tipFade * 0.025);
+        vertexColors[vertexOffset + 2] = Math.min(1.12, dorsalShade * rootLift - vein * 0.42 - tipFade * 0.025);
+      }
     }
   }
 
+  const tipDomeExtrude = tailSurfaceRadiusAt(1.0, thickness) * 0.85;
   for (const cap of [
-    { ring: 0, offset: state.startCapOffset, center: state.startCenter, sign: -1 },
-    { ring: ringCount - 1, offset: state.endCapOffset, center: state.endCenter, sign: 1 },
+    { ring: 0, offset: state.startCapOffset, center: state.startCenter, sign: -1, extrude: 0 },
+    { ring: ringCount - 1, offset: state.endCapOffset, center: state.endCenter, sign: 1, extrude: tipDomeExtrude },
   ]) {
     const frameOffset = cap.ring * 3;
     const centerOffset = cap.center * 3;
-    positions[centerOffset] = points[cap.ring].x;
-    positions[centerOffset + 1] = points[cap.ring].y;
-    positions[centerOffset + 2] = points[cap.ring].z;
-    vertexNormals[centerOffset] = tangents[frameOffset] * cap.sign;
-    vertexNormals[centerOffset + 1] = tangents[frameOffset + 1] * cap.sign;
-    vertexNormals[centerOffset + 2] = tangents[frameOffset + 2] * cap.sign;
-    vertexColors[centerOffset] = 0.96;
-    vertexColors[centerOffset + 1] = 0.95;
-    vertexColors[centerOffset + 2] = 0.94;
+    const capNx = tangents[frameOffset] * cap.sign;
+    const capNy = tangents[frameOffset + 1] * cap.sign;
+    const capNz = tangents[frameOffset + 2] * cap.sign;
+    positions[centerOffset] = points[cap.ring].x + capNx * cap.extrude;
+    positions[centerOffset + 1] = points[cap.ring].y + capNy * cap.extrude;
+    positions[centerOffset + 2] = points[cap.ring].z + capNz * cap.extrude;
+    vertexNormals[centerOffset] = capNx;
+    vertexNormals[centerOffset + 1] = capNy;
+    vertexNormals[centerOffset + 2] = capNz;
+    const sampleOffset = (cap.ring * ringStride) * 3;
+    vertexColors[centerOffset] = vertexColors[sampleOffset];
+    vertexColors[centerOffset + 1] = vertexColors[sampleOffset + 1];
+    vertexColors[centerOffset + 2] = vertexColors[sampleOffset + 2];
     for (let side = 0; side < radialSegments; side++) {
       const sourceOffset = (cap.ring * ringStride + side) * 3;
       const targetOffset = (cap.offset + side) * 3;
       positions[targetOffset] = positions[sourceOffset];
       positions[targetOffset + 1] = positions[sourceOffset + 1];
       positions[targetOffset + 2] = positions[sourceOffset + 2];
-      vertexNormals[targetOffset] = vertexNormals[centerOffset];
-      vertexNormals[targetOffset + 1] = vertexNormals[centerOffset + 1];
-      vertexNormals[targetOffset + 2] = vertexNormals[centerOffset + 2];
+      if (cap.extrude > 0) {
+        // Blend distal cap rim normal between tube radial normal and tip tangent for a rounded dome.
+        let rnx = vertexNormals[sourceOffset] * 0.55 + capNx * 0.45;
+        let rny = vertexNormals[sourceOffset + 1] * 0.55 + capNy * 0.45;
+        let rnz = vertexNormals[sourceOffset + 2] * 0.55 + capNz * 0.45;
+        const rnLen = Math.max(Math.hypot(rnx, rny, rnz), 1e-7);
+        vertexNormals[targetOffset] = rnx / rnLen;
+        vertexNormals[targetOffset + 1] = rny / rnLen;
+        vertexNormals[targetOffset + 2] = rnz / rnLen;
+      } else {
+        vertexNormals[targetOffset] = capNx;
+        vertexNormals[targetOffset + 1] = capNy;
+        vertexNormals[targetOffset + 2] = capNz;
+      }
       vertexColors[targetOffset] = vertexColors[sourceOffset];
       vertexColors[targetOffset + 1] = vertexColors[sourceOffset + 1];
       vertexColors[targetOffset + 2] = vertexColors[sourceOffset + 2];
@@ -783,6 +848,8 @@ class ExpertMouse {
     };
     this.spineHeadYaw = 0;
     this.tailWorldPoints = null;
+    this.tailWorldVel = null;
+    this.tailIdleTime = (this.timeOffset * 0.23) % 100.0;
     this.tailPrevRootWorld = new THREE.Vector3(1e6, 1e6, 1e6);
     this.boutState = {
       mode: 'explore-walk',
@@ -973,15 +1040,14 @@ class ExpertMouse {
     cervicalCore.castShadow = false;
     cervicalCore.receiveShadow = true;
     neckMesh.add(cervicalCore);
-    // Neck coat: the same two-layer pelage generator (materials, strand shading,
-    // and caudal flow) as the body and head, seated on the cervical core, so the
-    // head -> neck -> shoulder transition has no shading collar.
+    // Neck coat: dense two-layer pelage bridging head occiput and shoulders
+    // cleanly so no smooth collar stripe appears in side or oblique views.
     const cervicalCoat = generateMultiLayerFur(
       deformCervicalCore,
-      density * 0.11,
+      density * 0.24,
       furColor,
       false,
-      { ...params, furLength: (params.furLength ?? 1.0) * 0.68 }
+      { ...params, furLength: (params.furLength ?? 1.0) * 0.96 }
     );
     const [cervicalUndercoat = null, cervicalGuardHairs = null] = cervicalCoat.children;
     if (cervicalUndercoat) cervicalUndercoat.name = 'cervical-undercoat';
@@ -1049,6 +1115,7 @@ class ExpertMouse {
     // The head overlaps the cervical volume; casting into that overlap
     // creates an artificial dark collar around the posterior skull.
     this.head.castShadow = false;
+    this.head.receiveShadow = true;
     this.headGroup.add(this.head);
     this.headFur = generateMultiLayerFur(deformHead, density, furColor, true, params);
     this.headFur.name = 'head-fur-coat';
@@ -1550,6 +1617,9 @@ class ExpertMouse {
       jitter: (((this.timeOffset * 0.37) % 1) - 0.5) * 0.08,
     });
     this.externalCommand = null;
+    this.flyBrain = null;
+    this.flyBrainEnabled = false;
+    this.flyBrainBehaviorCooldown = 0;
     this.jointBindings = this.createJointBindings();
     this.contactFrame = {
       limbStance: { LF: true, RF: true, LH: true, RH: true },
@@ -1576,21 +1646,26 @@ class ExpertMouse {
     this.contactShadow = createContactShadow();
     this.mesh.add(this.contactShadow);
 
-    // TAIL — Countershaded annular epidermal scale rings + normal relief
+    // TAIL — Countershaded annular epidermal scale rings + albedo/normal/roughness relief
     this.tailCount = 45;
     const tailMat = this.fleshMat.clone();
     tailMat.color.set(strain.tailColor ?? skinColor);
     applySkinShaderStack(tailMat, 0.52);
     const tailHSL = {}; tailMat.color.getHSL(tailHSL);
+    this.tailShadingProfile = {
+      isDark: tailHSL.l < 0.42,
+      isMid: tailHSL.l >= 0.42 && tailHSL.l < 0.62,
+    };
     tailMat.attenuationColor.setHSL(tailHSL.h, Math.min(1, tailHSL.s * 1.15), tailHSL.l * 0.55);
-    tailMat.roughness = 0.56;
+    tailMat.map = tailAlbedoMap;
+    tailMat.roughness = 0.62;
     tailMat.transmission = strain.tailTransmission ?? 0.20;
     tailMat.thickness = 0.36;
-    tailMat.clearcoat = 0.12;
-    tailMat.clearcoatRoughness = 0.36;
+    tailMat.clearcoat = 0.08;
+    tailMat.clearcoatRoughness = 0.44;
     tailMat.roughnessMap = tailRoughnessMap;
     tailMat.normalMap = tailNormalMap;
-    tailMat.normalScale = new THREE.Vector2(0.30, 0.38);
+    tailMat.normalScale = new THREE.Vector2(0.38, 0.48);
     tailMat.vertexColors = true;
     const tGeo = createDynamicTailTubeGeometry(this.tailCount, 14);
     this.tailMesh = new THREE.Mesh(tGeo, tailMat);
@@ -1599,16 +1674,18 @@ class ExpertMouse {
     this.tailMesh.receiveShadow = true;
     this.tailMesh.frustumCulled = false;
     this.mesh.add(this.tailMesh);
-    // Fur-to-skin sacral root bridge blending tail emergence into the rump.
-    const tailRootMat = tailMat.clone();
-    tailRootMat.vertexColors = false;
-    applySkinShaderStack(tailRootMat, 0.52);
-    const tailRootGeo = new THREE.CylinderGeometry(0.105, 0.132, 0.28, 14);
-    tailRootGeo.translate(0, 0.14, 0);
+    // Fur-to-skin sacral root anchor tucked cleanly inside the proximal tail tube
+    // so the feathered sacral collar bridges smoothly from rump pelage onto the shaft.
+    const tailRootGeo = new THREE.CylinderGeometry(0.064, 0.098, 0.24, 12);
+    tailRootGeo.translate(0, 0.12, 0);
     tailRootGeo.rotateX(Math.PI / 2);
-    this.tailRoot = new THREE.Mesh(tailRootGeo, tailRootMat);
+    const rootColorCount = tailRootGeo.attributes.position.count;
+    const rootColors = new Float32Array(rootColorCount * 3);
+    rootColors.fill(this.tailShadingProfile.isDark ? 0.80 : 0.98);
+    tailRootGeo.setAttribute('color', new THREE.BufferAttribute(rootColors, 3));
+    this.tailRoot = new THREE.Mesh(tailRootGeo, tailMat);
     this.tailRoot.castShadow = true;
-    this.tailRoot.scale.set(1.0, 0.74, 1.16);
+    this.tailRoot.scale.set(0.96, 0.88, 1.0);
     const tailBaseFur = createTailBaseFur(furColor, density);
     this.tailBaseFur = tailBaseFur;
     this.tailRoot.add(tailBaseFur);
@@ -2721,8 +2798,25 @@ class ExpertMouse {
     const clampedLatAccel = THREE.MathUtils.clamp(lateralAccel || 0, -18.0, 18.0);
     const clampedTurnRate = THREE.MathUtils.clamp(turnRate || 0, -12.0, 12.0);
     const clampedFwdAccel = THREE.MathUtils.clamp(forwardAccel || 0, -18.0, 18.0);
-    const speedNorm = Math.min(this.velocity.length() / Math.max(this.maxSpeed, 0.1), 1.0);
-    const restDrape = (1.0 - speedNorm * 0.55) * 0.34 + this.rearAmount * 0.12;
+    const speed = this.velocity.length();
+    const speedNorm = Math.min(speed / Math.max(this.maxSpeed, 0.1), 1.0);
+    const signedForward = this.velocity.x * this.heading.x + this.velocity.y * this.heading.y;
+    const backwardNorm = THREE.MathUtils.clamp(-signedForward / Math.max(this.maxSpeed * 0.45, 0.25), 0, 1);
+    const rearNorm = THREE.MathUtils.clamp(
+      this.rearAmount / Math.max(this.rearing.peakAmount || 1.0, 0.01),
+      0,
+      1
+    );
+    const groomNorm = THREE.MathUtils.clamp(
+      this.groomAmount / Math.max(this.grooming.peakAmount || 1.0, 0.01),
+      0,
+      1
+    );
+    const stepDt = THREE.MathUtils.clamp(dt, 0, 0.05);
+    if (!guiParams.isPaused && stepDt > 0) {
+      this.tailIdleTime += stepDt;
+    }
+
     const swayPolarity = (this.trackId || 1) % 2 === 0 ? -1 : 1;
     const chonk = this.guiParams.chonkiness || 1.0;
     const bodyLenScale = this.guiParams.bodyLength || 1.0;
@@ -2747,35 +2841,122 @@ class ExpertMouse {
     const tailLenMul = this.guiParams.tailLength;
     const segLen = this.tailSegLen * tailLenMul;
 
-    // Build ideal caudal rest/muscle curve in mesh-local space aligned with sacral spine yaw
+    // Choose a smooth open-side tripod arc during rearing if another mouse sits behind.
+    let rearSweepSign = swayPolarity;
+    let rearObstacleAhead = 0;
+    if (rearNorm > 0.05 && otherMice.length > 1) {
+      const localOther = new THREE.Vector3();
+      let closestBehindDist = 9.0;
+      for (const other of otherMice) {
+        if (other === this) continue;
+        localOther.copy(other.mesh.position);
+        this.mesh.worldToLocal(localOther);
+        if (localOther.z < 0.8 && localOther.z > -9.0) {
+          const dist = Math.hypot(localOther.x, localOther.z);
+          if (dist < closestBehindDist) {
+            closestBehindDist = dist;
+            rearSweepSign = Math.abs(localOther.x) > 0.25
+              ? -Math.sign(localOther.x)
+              : swayPolarity;
+            rearObstacleAhead = THREE.MathUtils.smoothstep(9.0 - dist, 0.0, 4.5);
+          }
+        }
+      }
+    }
+
+    // Couple lateral counterbalance wave to the hindlimb CPG phase for stride-locked fluidity.
+    const lhIndex = this.motor?.cpg ? this.motor.cpg.limbIndex('LH') : -1;
+    const lhPhase = lhIndex >= 0
+      ? this.motor.cpg.phases[lhIndex]
+      : ((this.locomotionTime * 0.58 * this.motion.tailWaveFreqMul) % 1.0);
+    const motorAmp = this.motor ? THREE.MathUtils.clamp(this.motor.amplitude, 0, 1.2) : speedNorm;
+    const gaitDrive = Math.max(speedNorm, motorAmp * 0.85)
+      * (1.0 - rearNorm * 0.92)
+      * (1.0 - groomNorm * 0.90);
+    const trotCarry = THREE.MathUtils.smoothstep(speedNorm, 0.34, 0.92)
+      * (1.0 - rearNorm)
+      * (1.0 - groomNorm);
+    const alertCarry = (this.boutState.mode === 'dart-trot' ? 0.12 : 0)
+      + (this.socialContact ? 0.06 : 0);
+    const restDrape = (1.0 - trotCarry * 0.72) * 0.44 + rearNorm * 0.24 + groomNorm * 0.22;
+
+    // Build ideal caudal rest/muscle curve in mesh-local space aligned with sacral spine yaw.
     const sacralYaw = spSacral.yaw;
     const cosSac = Math.cos(sacralYaw);
     const sinSac = Math.sin(sacralYaw);
     const idealLocal = [];
+    const groomSide = this.grooming.mode === 'flank-groom'
+      ? -this.grooming.side
+      : swayPolarity;
     for (let i = 0; i <= this.tailCount; i++) {
       const p = i / this.tailCount;
       const lag = p * p;
-      const transmit = Math.pow(p, 1.35);
+      const transmit = Math.pow(p, 1.28);
       const midCurve = p * (1.0 - p);
-      const travelWave = Math.sin(
-        this.locomotionTime * 3.4 * this.motion.tailWaveFreqMul - p * 3.8
-      ) * 0.10 * speedNorm * this.motion.tailWaveAmpMul * transmit;
+
+      // 1. Stride-coupled traveling counterbalance wave propagating root -> tip.
+      const wavePhase = lhPhase * Math.PI * 2 - p * 4.9;
+      const travelWave = Math.sin(wavePhase)
+        * (0.18 + 0.14 * speedNorm)
+        * gaitDrive
+        * this.motion.tailWaveAmpMul
+        * Math.pow(p, 1.12);
+      const verticalStrideBounce = Math.sin(lhPhase * Math.PI * 4 - p * 3.4)
+        * 0.032 * speedNorm * trotCarry * transmit;
+
+      // 2. Inertial & pelvic forces from roll, turn rate, and acceleration.
       const bodyForceX = (
-        this.bodyDyn.roll * 0.34 + clampedLatAccel * 0.012 - clampedTurnRate * 0.024
+        this.bodyDyn.roll * 0.36 + clampedLatAccel * 0.015 - clampedTurnRate * 0.034
       ) * transmit;
       const bodyForceY = (
-        this.bodyDyn.pitch * 0.32 - clampedFwdAccel * 0.008
+        this.bodyDyn.pitch * 0.30 - clampedFwdAccel * 0.008
       ) * transmit;
-      const naturalSway = (
-        Math.sin(p * Math.PI * 1.35) * (0.14 + this.rearAmount * 0.24)
-        + Math.sin(p * Math.PI * 0.65) * (0.06 + this.rearAmount * 0.16)
-      ) * swayPolarity * (1.0 - speedNorm * 0.45);
-      const localX = this.tailDyn.sway * lag + bodyForceX + naturalSway + travelWave
-        + midCurve * 0.16 * Math.sign(this.tailDyn.sway || bodyForceX || swayPolarity);
-      const distalCurl = Math.pow(Math.max(0, p - 0.72) / 0.28, 2.0) * 0.030;
-      let waveY = -i * PROP.tailSag * p - restDrape * Math.pow(p, 1.15)
-        + this.tailDyn.lift * lag + bodyForceY + midCurve * 0.05 + distalCurl;
-      waveY = Math.max(waveY, -1.35);
+
+      // 3. Organic resting/walking S-curve + living idle tip drift (never a ramrod ruler).
+      const idleMicroWave = Math.sin(this.tailIdleTime * 1.25 - p * 2.8)
+        * 0.055 * (1.0 - speedNorm * 0.75) * (1.0 - rearNorm * 0.85) * Math.pow(p, 1.35);
+      const organicCurve = (
+        Math.sin(p * Math.PI * 1.08) * 0.30
+        - Math.sin(p * Math.PI * 2.02) * 0.13
+      ) * swayPolarity * (1.0 - speedNorm * 0.36) * (1.0 - rearNorm) * (1.0 - groomNorm);
+
+      // 4. Behavior-specific lateral geometry: rearing tripod sweep, grooming curl, moonwalk side-deflect.
+      const rearSweepGain = 1.0 + rearObstacleAhead * 1.15;
+      const rearTripodSweep = rearNorm * rearSweepSign * rearSweepGain
+        * (Math.sin(p * Math.PI * 0.82) * 0.62 + Math.pow(p, 1.45) * 0.56);
+      const groomCurl = groomNorm * groomSide
+        * (Math.sin(p * Math.PI * 0.92) * 0.62 + Math.pow(p, 1.45) * 0.58);
+      const backwardDeflect = backwardNorm * swayPolarity
+        * (Math.sin(p * Math.PI * 0.85) * 0.78 + Math.pow(p, 1.3) * 0.68);
+
+      const primaryDirection = this.tailDyn.sway || bodyForceX || swayPolarity;
+      const localX = this.tailDyn.sway * lag
+        + bodyForceX
+        + organicCurve
+        + travelWave
+        + idleMicroWave
+        + rearTripodSweep
+        + groomCurl
+        + backwardDeflect
+        + midCurve * 0.18 * Math.sign(primaryDirection) * (1.0 - rearNorm * 0.7);
+
+      // 5. Vertical carriage: elevated horizontal counterbalance in brisk trot/dart;
+      //    smooth floor-draped tripod support in rearing/grooming/slow walk.
+      const carryArch = (trotCarry * 0.28 + alertCarry * trotCarry)
+        * Math.sin(p * Math.PI * 0.88);
+      const distalTipUp = Math.pow(Math.max(0, p - 0.68) / 0.32, 1.85)
+        * (0.028 + trotCarry * 0.085) * (1.0 - rearNorm);
+      const rearFloorBrace = -rearNorm * (0.38 * Math.pow(p, 0.70) + 0.20 * p);
+      let waveY = -i * PROP.tailSag * p
+        - restDrape * Math.pow(p, 1.08)
+        + rearFloorBrace
+        + carryArch
+        + this.tailDyn.lift * lag
+        + bodyForceY
+        + verticalStrideBounce
+        + midCurve * (0.045 + trotCarry * 0.08) * (1.0 - rearNorm)
+        + distalTipUp;
+      waveY = Math.max(waveY, -1.45);
       const localZ = -i * segLen;
       idealLocal.push(new THREE.Vector3(
         tailBase.x + localX * cosSac + localZ * sinSac,
@@ -2784,10 +2965,14 @@ class ExpertMouse {
       ));
     }
 
-    // World-space viscoelastic path-trailing chain: preserves S/J curves along the mouse's trajectory
+    // World-space floor-friction viscoelastic path-trailing chain:
+    // proximal third tracks the sacrum crisply while the distal floor-resting shaft
+    // drags with real ground friction to trace authentic S/J turning curves.
     const rootJump = tailBaseWorld.distanceTo(this.tailPrevRootWorld);
     const shouldReinitWorld = !this.tailWorldPoints
       || this.tailWorldPoints.length !== this.tailCount + 1
+      || !this.tailWorldVel
+      || this.tailWorldVel.length !== this.tailCount + 1
       || rootJump > 1.35
       || CONTACT_QA === 'tail';
     const tailCurve = [];
@@ -2797,34 +2982,91 @@ class ExpertMouse {
         this.mesh.localToWorld(wp);
         return wp;
       });
+      this.tailWorldVel = idealLocal.map(() => new THREE.Vector3());
       for (let i = 0; i <= this.tailCount; i++) {
         tailCurve.push(idealLocal[i].clone());
       }
     } else {
-      const stepDt = THREE.MathUtils.clamp(dt, 0, 0.05);
       this.tailWorldPoints[0].copy(tailBaseWorld);
+      this.tailWorldVel[0].set(0, 0, 0);
       const idealWorld = new THREE.Vector3();
       const segVec = new THREE.Vector3();
+      const prevWorldPos = new THREE.Vector3();
       if (!guiParams.isPaused && stepDt > 0) {
+        const invStepDt = 1.0 / Math.max(stepDt, 1e-4);
         for (let i = 1; i <= this.tailCount; i++) {
           const p = i / this.tailCount;
+          const surfRad = tailSurfaceRadiusAt(p, this.guiParams.tailThickness);
+          const floorY = surfRad + 0.012;
+          prevWorldPos.copy(this.tailWorldPoints[i]);
           idealWorld.copy(idealLocal[i]);
           this.mesh.localToWorld(idealWorld);
 
-          // 1. Follow-the-leader advection along previous world trajectory
+          // Floor-contact friction factor: elevated trotting tails whip freely;
+          // floor-resting distal tails resist sideways skating and trace true path curves.
+          const heightAboveFloor = Math.max(0, prevWorldPos.y - floorY);
+          const groundProx = 1.0 - THREE.MathUtils.smoothstep(heightAboveFloor, 0.0, 0.16);
+          const frictionResist = groundProx * THREE.MathUtils.smoothstep(p, 0.22, 0.78);
+
+          // 1. Damped inertial momentum (stronger damping when dragging on floor).
+          const velDamp = Math.exp(-(5.8 + groundProx * 12.5) * stepDt);
+          this.tailWorldVel[i].multiplyScalar(velDamp);
+          const inertiaWeight = THREE.MathUtils.lerp(0.18, 0.52, p) * (1.0 - groundProx * 0.72);
+          this.tailWorldPoints[i].addScaledVector(this.tailWorldVel[i], stepDt * inertiaWeight);
+
+          // 2. Follow-the-leader inextensible advection along previous world trajectory.
+          //    When backing up or compressed axially, bias deflection laterally along
+          //    the floor instead of letting the chain buckle vertically into the air.
           segVec.copy(this.tailWorldPoints[i]).sub(this.tailWorldPoints[i - 1]);
-          if (segVec.lengthSq() < 1e-8) {
+          const rawSegLen = segVec.length();
+          if (rawSegLen < 1e-4) {
             segVec.copy(idealWorld).sub(this.tailWorldPoints[i - 1]);
-            if (segVec.lengthSq() < 1e-8) segVec.set(0, 0, -1);
+            if (segVec.lengthSq() < 1e-8) segVec.set(-this.heading.x, 0, -this.heading.y);
+          } else if (rawSegLen < segLen * 0.90 || backwardNorm > 0.05) {
+            const compress = THREE.MathUtils.clamp(
+              (segLen - rawSegLen) / Math.max(segLen, 1e-4),
+              0,
+              1
+            );
+            const sidePush = (compress * 0.45 + backwardNorm * 0.14) * segLen * swayPolarity;
+            segVec.x += this.heading.y * sidePush;
+            segVec.z -= this.heading.x * sidePush;
+            segVec.y *= 1.0 - Math.min(0.65, compress * 0.75 + backwardNorm * 0.35);
           }
           segVec.normalize().multiplyScalar(segLen);
           this.tailWorldPoints[i].copy(this.tailWorldPoints[i - 1]).add(segVec);
 
-          // 2. Proximal-to-distal caudal muscular tone (root aligns with sacrum; tip trails fluidly)
-          const rate = THREE.MathUtils.lerp(13.5, 2.6, Math.pow(p, 0.68));
-          const muscleBlend = (1.0 - Math.exp(-rate * stepDt))
-            * THREE.MathUtils.lerp(0.82, 0.22, p);
-          this.tailWorldPoints[i].lerp(idealWorld, muscleBlend);
+          // 3. Graded caudal muscular tone: crisp sacral alignment proximally,
+          //    supple ground-friction-modulated path trailing distally.
+          const baseRate = THREE.MathUtils.lerp(13.8, 1.55, Math.pow(p, 0.62));
+          const lateralRate = baseRate * (1.0 - frictionResist * 0.64);
+          const lateralBlend = (1.0 - Math.exp(-lateralRate * stepDt))
+            * THREE.MathUtils.lerp(0.84, 0.18, Math.pow(p, 0.80));
+          const verticalBlend = (1.0 - Math.exp(-(baseRate * 1.15) * stepDt))
+            * THREE.MathUtils.lerp(0.86, 0.34, p);
+          this.tailWorldPoints[i].x = THREE.MathUtils.lerp(
+            this.tailWorldPoints[i].x,
+            idealWorld.x,
+            lateralBlend
+          );
+          this.tailWorldPoints[i].z = THREE.MathUtils.lerp(
+            this.tailWorldPoints[i].z,
+            idealWorld.z,
+            lateralBlend
+          );
+          this.tailWorldPoints[i].y = THREE.MathUtils.lerp(
+            this.tailWorldPoints[i].y,
+            idealWorld.y,
+            verticalBlend
+          );
+
+          // Track clamped node velocity for next-step fluid follow-through.
+          this.tailWorldVel[i]
+            .copy(this.tailWorldPoints[i])
+            .sub(prevWorldPos)
+            .multiplyScalar(invStepDt);
+          const velMag = this.tailWorldVel[i].length();
+          if (velMag > 12.0) this.tailWorldVel[i].multiplyScalar(12.0 / velMag);
         }
       }
       for (let i = 0; i <= this.tailCount; i++) {
@@ -2865,7 +3107,33 @@ class ExpertMouse {
       const p = index / this.tailCount;
       return tailSurfaceRadiusAt(p, this.guiParams.tailThickness) + 0.035;
     };
-    const clampPointToArena = (point, index) => {
+    const featherWorldLateralShift = (centerIndex, shiftX, shiftZ) => {
+      const weights = [
+        [-5, 0.05],
+        [-4, 0.10],
+        [-3, 0.17],
+        [-2, 0.26],
+        [-1, 0.40],
+        [1, 0.40],
+        [2, 0.26],
+        [3, 0.17],
+        [4, 0.10],
+        [5, 0.05],
+      ];
+      for (const [offset, weight] of weights) {
+        const idx = centerIndex + offset;
+        if (idx <= 0 || idx > this.tailCount) continue;
+        worldPoint.copy(tailCurve[idx]);
+        this.mesh.localToWorld(worldPoint);
+        worldPoint.x += shiftX * weight;
+        worldPoint.z += shiftZ * weight;
+        localPoint.copy(worldPoint);
+        this.mesh.worldToLocal(localPoint);
+        tailCurve[idx].x = localPoint.x;
+        tailCurve[idx].z = localPoint.z;
+      }
+    };
+    const clampPointToArena = (point, index, feather = false) => {
       worldPoint.copy(point);
       this.mesh.localToWorld(worldPoint);
       const surfaceRadius = tailSurfaceRadiusAt(
@@ -2875,6 +3143,8 @@ class ExpertMouse {
       const horizontalMargin = surfaceRadius + 0.018;
       const minimumY = surfaceRadius + 0.012;
       let changed = false;
+      let wallShiftX = 0;
+      let wallShiftZ = 0;
       if (worldPoint.y < minimumY) {
         worldPoint.y = minimumY;
         changed = true;
@@ -2890,21 +3160,29 @@ class ExpertMouse {
           -ENCLOSURE_HALF_Z + horizontalMargin,
           ENCLOSURE_HALF_Z - horizontalMargin
         );
-        changed = changed || clampedX !== worldPoint.x || clampedZ !== worldPoint.z;
+        wallShiftX = clampedX - worldPoint.x;
+        wallShiftZ = clampedZ - worldPoint.z;
+        changed = changed || wallShiftX !== 0 || wallShiftZ !== 0;
         worldPoint.x = clampedX;
         worldPoint.z = clampedZ;
       }
-      if (!changed) return false;
+      if (!changed) return 0;
       localPoint.copy(worldPoint);
       this.mesh.worldToLocal(localPoint);
       point.copy(localPoint);
-      return true;
+      const hitWall = index > 0 && (wallShiftX !== 0 || wallShiftZ !== 0);
+      if (feather && hitWall) {
+        featherWorldLateralShift(index, wallShiftX * 0.45, wallShiftZ * 0.45);
+      }
+      return hitWall ? 2 : 1;
     };
-    const projectPointOutsideBodies = (point, index) => {
+    const projectPointOutsideBodies = (point, index, feather = false) => {
       worldPoint.copy(point);
       this.mesh.localToWorld(worldPoint);
       const tailRadius = tailRadiusAt(index);
       let changed = false;
+      let totalShiftX = 0;
+      let totalShiftZ = 0;
       for (const body of obstacleBodies) {
         const penetratesBody = body.discs.some(disc => (
           Math.hypot(worldPoint.x - disc.x, worldPoint.z - disc.z)
@@ -2931,8 +3209,13 @@ class ExpertMouse {
             + Math.sqrt(requiredDistance * requiredDistance - perpendicularSq);
           if (farIntersection > requiredShift) requiredShift = farIntersection;
         }
-        worldPoint.x += body.directionX * (requiredShift + 0.006);
-        worldPoint.z += body.directionZ * (requiredShift + 0.006);
+        const push = requiredShift + 0.006;
+        const sx = body.directionX * push;
+        const sz = body.directionZ * push;
+        worldPoint.x += sx;
+        worldPoint.z += sz;
+        totalShiftX += sx;
+        totalShiftZ += sz;
         changed = true;
       }
       if (!changed) return false;
@@ -2940,6 +3223,7 @@ class ExpertMouse {
       this.mesh.worldToLocal(localPoint);
       point.x = localPoint.x;
       point.z = localPoint.z;
+      if (feather) featherWorldLateralShift(index, totalShiftX, totalShiftZ);
       return true;
     };
 
@@ -3049,11 +3333,273 @@ class ExpertMouse {
       return true;
     };
 
+    let hadObstacleContact = false;
     for (let i = 0; i <= this.tailCount; i++) {
-      clampPointToArena(tailCurve[i], i);
+      if (clampPointToArena(tailCurve[i], i, true) === 2) hadObstacleContact = true;
     }
     const fixedRoot = tailCurve[0].clone();
     const bendTarget = new THREE.Vector3();
+    const prevSegDir = new THREE.Vector3();
+    const currSegDir = new THREE.Vector3();
+    const perpSegDir = new THREE.Vector3();
+    const segPrevWorld = new THREE.Vector3();
+    const segCurrWorld = new THREE.Vector3();
+    const prevDirWorld = new THREE.Vector3();
+    const candidateAngles = new Float64Array(9);
+
+    const wrapAngleDelta = angle => {
+      let a = angle;
+      while (a > Math.PI) a -= Math.PI * 2;
+      while (a < -Math.PI) a += Math.PI * 2;
+      return a;
+    };
+
+    const enforceTailBendLimit = (prevDir, nextDir, maxRad, blend) => {
+      const cosAngle = THREE.MathUtils.clamp(prevDir.dot(nextDir), -1, 1);
+      const cosMax = Math.cos(maxRad);
+      if (cosAngle >= cosMax) return false;
+      perpSegDir.copy(nextDir).addScaledVector(prevDir, -cosAngle);
+      const perpLen = perpSegDir.length();
+      if (perpLen < 1e-6) {
+        perpSegDir
+          .set(Math.abs(prevDir.y) < 0.9 ? 0 : 1, Math.abs(prevDir.y) < 0.9 ? 1 : 0, 0)
+          .cross(prevDir)
+          .normalize();
+      } else {
+        perpSegDir.divideScalar(perpLen);
+      }
+      const sinMax = Math.sin(maxRad);
+      const tx = prevDir.x * cosMax + perpSegDir.x * sinMax;
+      const ty = prevDir.y * cosMax + perpSegDir.y * sinMax;
+      const tz = prevDir.z * cosMax + perpSegDir.z * sinMax;
+      nextDir.set(
+        THREE.MathUtils.lerp(nextDir.x, tx, blend),
+        THREE.MathUtils.lerp(nextDir.y, ty, blend),
+        THREE.MathUtils.lerp(nextDir.z, tz, blend)
+      ).normalize();
+      return true;
+    };
+
+    // Unified inextensible, 3D curvature-bounded, wall/corner/floor-safe chain propagation.
+    // Guarantees exact segment length (||P[i]-P[i-1]|| === segLen) inside the arena
+    // using floor-landing vertical flare, an analytical turning-radius wall/corner barrier,
+    // and an exact analytical circle-box fallback.
+    const propagateCurvatureSafeChain = (steerWallLookahead, bendBlend) => {
+      let wallTouched = false;
+      let bendClamped = false;
+
+      // Seed root exit tangent from the mouse's backward heading in world space.
+      prevDirWorld.set(-this.heading.x, 0, -this.heading.y).normalize();
+
+      for (let i = 1; i <= this.tailCount; i++) {
+        segPrevWorld.copy(tailCurve[i - 1]);
+        segCurrWorld.copy(tailCurve[i]);
+        this.mesh.localToWorld(segPrevWorld);
+        this.mesh.localToWorld(segCurrWorld);
+
+        currSegDir.copy(segCurrWorld).sub(segPrevWorld);
+        if (currSegDir.lengthSq() < 1e-12) {
+          currSegDir.copy(prevDirWorld);
+        } else {
+          currSegDir.normalize();
+        }
+
+        const p = i / this.tailCount;
+        const surfaceRadius = tailSurfaceRadiusAt(p, this.guiParams.tailThickness);
+        const horizontalMargin = surfaceRadius + 0.018;
+        const minY = surfaceRadius + 0.012;
+        const maxX = ENCLOSURE_HALF_X - horizontalMargin;
+        const maxZ = ENCLOSURE_HALF_Z - horizontalMargin;
+        const maxRad = THREE.MathUtils.degToRad(THREE.MathUtils.lerp(9.5, 13.0, p));
+
+        // 1. Suppress non-physical aerial rope buckling + flare downward pitch smoothly
+        //    before floor touchdown so the tail lands tangentially instead of dive-kinking.
+        const heightAboveFloor = Math.max(0, segPrevWorld.y - minY);
+        const maxDownSlope = -THREE.MathUtils.smoothstep(heightAboveFloor, 0.0, 0.42) * 0.30;
+        const maxUpSlope = THREE.MathUtils.lerp(0.24, 0.18, p);
+        if (currSegDir.y < maxDownSlope || currSegDir.y > maxUpSlope) {
+          currSegDir.y = THREE.MathUtils.clamp(currSegDir.y, maxDownSlope, maxUpSlope);
+          const hLen = Math.hypot(currSegDir.x, currSegDir.z);
+          const hTarget = Math.sqrt(Math.max(1e-6, 1.0 - currSegDir.y * currSegDir.y));
+          if (hLen < 1e-6) {
+            currSegDir.x = prevDirWorld.x * hTarget;
+            currSegDir.z = prevDirWorld.z * hTarget;
+          } else {
+            currSegDir.x = (currSegDir.x / hLen) * hTarget;
+            currSegDir.z = (currSegDir.z / hLen) * hTarget;
+          }
+          currSegDir.normalize();
+        }
+
+        // 2. Enforce 3D anatomical bend cone relative to previous segment (i >= 2).
+        if (i >= 2 && enforceTailBendLimit(prevDirWorld, currSegDir, maxRad, bendBlend)) {
+          bendClamped = true;
+        }
+
+        // 3. Exact length-preserving floor clamp + remaining 3D horizontal turn budget.
+        let stepY = currSegDir.y * segLen;
+        if (segPrevWorld.y + stepY < minY) {
+          stepY = THREE.MathUtils.clamp(minY - segPrevWorld.y, -segLen * 0.98, segLen * 0.98);
+        }
+        const newPitch = Math.asin(THREE.MathUtils.clamp(stepY / segLen, -1, 1));
+        const prevPitch = i >= 2
+          ? Math.asin(THREE.MathUtils.clamp(prevDirWorld.y, -1, 1))
+          : newPitch;
+        const pitchDelta = Math.abs(newPitch - prevPitch);
+        const horizMaxRad = Math.sqrt(Math.max(1e-5, Math.pow(maxRad * 0.95, 2) - pitchDelta * pitchDelta));
+
+        const horizR = Math.sqrt(Math.max(1e-8, segLen * segLen - stepY * stepY));
+        const horizLen = Math.hypot(currSegDir.x, currSegDir.z);
+        let hdx;
+        let hdz;
+        if (horizLen < 1e-7) {
+          const fallbackAngle = Math.atan2(
+            -Math.sign(segPrevWorld.z || 1),
+            -Math.sign(segPrevWorld.x || 1)
+          );
+          hdx = Math.cos(fallbackAngle);
+          hdz = Math.sin(fallbackAngle);
+        } else {
+          hdx = currSegDir.x / horizLen;
+          hdz = currSegDir.z / horizLen;
+        }
+
+        // 4. Analytical turning-radius wall & corner barrier using true horizontal budget.
+        if (steerWallLookahead) {
+          const distX = maxX - Math.abs(segPrevWorld.x);
+          const distZ = maxZ - Math.abs(segPrevWorld.z);
+          const wallSignX = Math.sign(segPrevWorld.x || 1);
+          const wallSignZ = Math.sign(segPrevWorld.z || 1);
+          const turnRadius = horizR / Math.max(horizMaxRad * 0.80, 0.08);
+          const intoX = hdx * wallSignX;
+          const intoZ = hdz * wallSignZ;
+          const reqX = intoX > 0
+            ? turnRadius * (1.0 - Math.sqrt(Math.max(0, 1.0 - intoX * intoX))) + 0.34
+            : 0;
+          const reqZ = intoZ > 0
+            ? turnRadius * (1.0 - Math.sqrt(Math.max(0, 1.0 - intoZ * intoZ))) + 0.34
+            : 0;
+          const trigX = intoX > 0 && distX < reqX;
+          const trigZ = intoZ > 0 && distZ < reqZ;
+          const nearCorner = distX < turnRadius + 0.55 && distZ < turnRadius + 0.55;
+          if (trigX || trigZ || (nearCorner && (intoX > -0.15 || intoZ > -0.15))) {
+            wallTouched = true;
+            let safeX = 0;
+            let safeZ = 0;
+            if ((trigX && trigZ) || nearCorner) {
+              safeX = -wallSignX;
+              safeZ = -wallSignZ;
+            } else if (trigX) {
+              const prevHz = i >= 2 ? prevDirWorld.z : hdz;
+              const openZ = Math.abs(segPrevWorld.z) > maxZ - (turnRadius + 1.0)
+                ? -wallSignZ
+                : (Math.abs(prevHz) > 0.14 ? Math.sign(prevHz) : -Math.sign(segPrevWorld.z || swayPolarity));
+              safeX = -wallSignX * 0.22;
+              safeZ = openZ;
+            } else {
+              const prevHx = i >= 2 ? prevDirWorld.x : hdx;
+              const openX = Math.abs(segPrevWorld.x) > maxX - (turnRadius + 1.0)
+                ? -wallSignX
+                : (Math.abs(prevHx) > 0.14 ? Math.sign(prevHx) : -Math.sign(segPrevWorld.x || swayPolarity));
+              safeX = openX;
+              safeZ = -wallSignZ * 0.22;
+            }
+            const targetTheta = Math.atan2(safeZ, safeX);
+            if (i === 1) {
+              // Root segment (0->1) has no upstream tail bend angle; exit cleanly parallel to wall.
+              const rootMaxStep = distX < 1.15 || distZ < 1.15 ? Math.PI : maxRad * 2.5;
+              const curTheta = Math.atan2(hdz, hdx);
+              const newTheta = curTheta + THREE.MathUtils.clamp(
+                wrapAngleDelta(targetTheta - curTheta),
+                -rootMaxStep,
+                rootMaxStep
+              );
+              hdx = Math.cos(newTheta);
+              hdz = Math.sin(newTheta);
+            } else {
+              const prevHorizLen = Math.hypot(prevDirWorld.x, prevDirWorld.z);
+              const baseTheta = prevHorizLen > 1e-5
+                ? Math.atan2(prevDirWorld.z, prevDirWorld.x)
+                : Math.atan2(hdz, hdx);
+              const newTheta = baseTheta + THREE.MathUtils.clamp(
+                wrapAngleDelta(targetTheta - baseTheta),
+                -horizMaxRad,
+                horizMaxRad
+              );
+              hdx = Math.cos(newTheta);
+              hdz = Math.sin(newTheta);
+            }
+          }
+        }
+
+        // 5. Hard exact circle-box containment fallback (preserves exact segLen).
+        let stepX = hdx * horizR;
+        let stepZ = hdz * horizR;
+        const safeMaxX = maxX - 1e-4;
+        const safeMaxZ = maxZ - 1e-4;
+        if (
+          Math.abs(segPrevWorld.x + stepX) > maxX
+          || Math.abs(segPrevWorld.z + stepZ) > maxZ
+        ) {
+          wallTouched = true;
+          const theta0 = Math.atan2(hdz, hdx);
+          let count = 0;
+          const openAngle = Math.atan2(
+            -Math.sign(segPrevWorld.z || 1),
+            -Math.sign(segPrevWorld.x || 1)
+          );
+          candidateAngles[count++] = openAngle;
+          for (const bx of [safeMaxX, -safeMaxX]) {
+            const ratio = (bx - segPrevWorld.x) / horizR;
+            if (Math.abs(ratio) <= 1.0) {
+              const a = Math.acos(THREE.MathUtils.clamp(ratio, -1, 1));
+              candidateAngles[count++] = a;
+              candidateAngles[count++] = -a;
+            }
+          }
+          for (const bz of [safeMaxZ, -safeMaxZ]) {
+            const ratio = (bz - segPrevWorld.z) / horizR;
+            if (Math.abs(ratio) <= 1.0) {
+              const a = Math.asin(THREE.MathUtils.clamp(ratio, -1, 1));
+              candidateAngles[count++] = a;
+              candidateAngles[count++] = Math.PI - a;
+            }
+          }
+          let bestAngle = openAngle;
+          let bestScore = Infinity;
+          for (let c = 0; c < count; c++) {
+            const ang = candidateAngles[c];
+            const cx = segPrevWorld.x + Math.cos(ang) * horizR;
+            const cz = segPrevWorld.z + Math.sin(ang) * horizR;
+            if (Math.abs(cx) > maxX + 1e-5 || Math.abs(cz) > maxZ + 1e-5) continue;
+            const angDist = Math.abs(wrapAngleDelta(ang - theta0));
+            const cornerPenalty = (
+              Math.max(0, Math.abs(cx) - (maxX - 1.2))
+              + Math.max(0, Math.abs(cz) - (maxZ - 1.2))
+            ) * 0.08;
+            const score = angDist + cornerPenalty;
+            if (score < bestScore) {
+              bestScore = score;
+              bestAngle = ang;
+            }
+          }
+          stepX = Math.cos(bestAngle) * horizR;
+          stepZ = Math.sin(bestAngle) * horizR;
+        }
+
+        segCurrWorld.set(
+          segPrevWorld.x + stepX,
+          segPrevWorld.y + stepY,
+          segPrevWorld.z + stepZ
+        );
+        prevDirWorld.set(stepX / segLen, stepY / segLen, stepZ / segLen);
+        this.mesh.worldToLocal(segCurrWorld);
+        tailCurve[i].copy(segCurrWorld);
+      }
+
+      return { wallTouched, bendClamped };
+    };
+
     for (let pass = 0; pass < 28; pass++) {
       let corrected = false;
       if (pass > 0) {
@@ -3070,32 +3616,52 @@ class ExpertMouse {
       }
       tailCurve[0].copy(fixedRoot);
 
-      // A light bend constraint removes contact-induced kinks before the
-      // inextensible centerline and collision constraints are projected.
+      // Stiffness-graded bend relaxation eliminates contact- and floor-induced
+      // kinks (firmer muscular proximal shaft, supple whip-like distal third).
+      const passScale = pass < 10 ? 1.0 : 0.65;
       for (let parity = 0; parity < 2; parity++) {
         for (let i = 1 + parity; i < this.tailCount; i += 2) {
+          const p = i / this.tailCount;
+          const bendAlpha = THREE.MathUtils.lerp(0.28, 0.14, p) * passScale;
           bendTarget.copy(tailCurve[i - 1]).add(tailCurve[i + 1]).multiplyScalar(0.5);
-          tailCurve[i].lerp(bendTarget, pass < 6 ? 0.18 : 0.11);
+          tailCurve[i].lerp(bendTarget, bendAlpha);
         }
       }
-      for (let i = 1; i <= this.tailCount; i++) {
-        delta.copy(tailCurve[i]).sub(tailCurve[i - 1]);
-        if (delta.lengthSq() < 1e-8) delta.set(0, 0, -1);
-        tailCurve[i].copy(tailCurve[i - 1]).addScaledVector(delta.normalize(), segLen);
-        corrected = clampPointToArena(tailCurve[i], i) || corrected;
+
+      const { wallTouched, bendClamped } = propagateCurvatureSafeChain(
+        true,
+        pass < 10 ? 0.80 : 1.0
+      );
+      if (wallTouched || bendClamped) {
+        hadObstacleContact = true;
+        if (wallTouched) corrected = true;
       }
+
+      const useFeather = pass < 10;
+      let passBodyHit = false;
       for (let i = 1; i <= this.tailCount; i++) {
-        corrected = projectPointOutsideBodies(tailCurve[i], i) || corrected;
-        corrected = clampPointToArena(tailCurve[i], i) || corrected;
+        const hitBody = projectPointOutsideBodies(tailCurve[i], i, useFeather);
+        if (hitBody) {
+          hadObstacleContact = true;
+          passBodyHit = true;
+          corrected = true;
+          clampPointToArena(tailCurve[i], i, false);
+        }
       }
       for (let i = 0; i < this.tailCount; i++) {
-        corrected = projectSegmentOutsideBodies(tailCurve[i], tailCurve[i + 1], i)
-          || corrected;
+        const hitSeg = projectSegmentOutsideBodies(tailCurve[i], tailCurve[i + 1], i);
+        if (hitSeg) {
+          hadObstacleContact = true;
+          passBodyHit = true;
+          corrected = true;
+        }
       }
-      for (let i = 1; i <= this.tailCount; i++) {
-        corrected = clampPointToArena(tailCurve[i], i) || corrected;
+      if (passBodyHit) {
+        for (let i = 1; i <= this.tailCount; i++) {
+          corrected = Boolean(clampPointToArena(tailCurve[i], i, false)) || corrected;
+        }
       }
-      if (!corrected) break;
+      if (!corrected && !bendClamped && (!hadObstacleContact || pass >= 8)) break;
     }
 
     // Finish on contact constraints so every chord of the continuous tube
@@ -3103,7 +3669,7 @@ class ExpertMouse {
     for (let pass = 0; pass < this.tailCount * 2; pass++) {
       let corrected = false;
       for (let i = 1; i <= this.tailCount; i++) {
-        corrected = projectPointOutsideBodies(tailCurve[i], i) || corrected;
+        corrected = projectPointOutsideBodies(tailCurve[i], i, false) || corrected;
         corrected = clampPointToArena(tailCurve[i], i) || corrected;
       }
       for (let i = 0; i < this.tailCount; i++) {
@@ -3176,7 +3742,8 @@ class ExpertMouse {
     updateDynamicTailTubeGeometry(
       this.tailMesh.geometry,
       tailCurve,
-      this.guiParams.tailThickness
+      this.guiParams.tailThickness,
+      this.tailShadingProfile
     );
     if (this.tailWorldPoints && this.tailWorldPoints.length === this.tailCount + 1) {
       for (let i = 0; i <= this.tailCount; i++) {
@@ -3191,17 +3758,18 @@ class ExpertMouse {
     this.poseNodes.tailmid.visible = guiParams.showTrackingKeypoints && isTailVisible;
     this.poseNodes.tailend.position.copy(tailCurve[this.tailCount]);
     this.poseNodes.tailend.visible = guiParams.showTrackingKeypoints && isTailVisible;
-    if (this.tailRoot && tailCurve.length > 4) {
+    if (this.tailRoot && tailCurve.length > 6) {
       const thickMul = this.guiParams.tailThickness;
-      const dir = tailCurve[3].clone().sub(tailCurve[0]);
+      const dir = tailCurve[5].clone().sub(tailCurve[1]);
       if (dir.lengthSq() < 1e-8) dir.set(0, 0, -1);
       else dir.normalize();
-      this.tailRoot.position.copy(tailCurve[0]).addScaledVector(dir, segLen * 0.25);
-      worldPoint.copy(tailCurve[0]).addScaledVector(dir, segLen * 3.0);
+      // Place sacral base fur right at the rump surface exit so feathered hairs overlap the visible shaft.
+      this.tailRoot.position.copy(tailCurve[0]).addScaledVector(dir, segLen * 1.85);
+      worldPoint.copy(tailCurve[0]).addScaledVector(dir, segLen * 5.2);
       this.mesh.localToWorld(worldPoint);
       this.tailRoot.lookAt(worldPoint);
       const scale = 1.0 + (thickMul - 1.0) * 0.7;
-      this.tailRoot.scale.set(0.95 * scale, 0.68 * scale, 1.15 * scale);
+      this.tailRoot.scale.set(scale, scale, 1.0);
     }
   }
 
@@ -4227,6 +4795,31 @@ class ExpertMouse {
         stateText = "WALL THIGMOTAXIS";
         stateColor = "#526247";
       }
+      if (this.flyBrainEnabled && this.flyBrain) {
+        const circuitLabels = {
+          escape_giant_fiber: 'FLY · DNp01 ESCAPE',
+          grooming_aDN1: 'FLY · aDN1 GROOM',
+          moonwalk_MDN: 'FLY · MDN MOONWALK',
+          rear_DNg02: 'FLY · DNg02 REAR',
+          freeze_Pair1: 'FLY · Pair1 FREEZE',
+          steering_DNa02: 'FLY · DNa02 STEER',
+          forward_DNp09: 'FLY · DNp09 WALK',
+          resting_baseline: 'FLY · RESTING',
+        };
+        const dominant = this.flyBrain.lastMotorOutput?.dominantCircuit || 'resting_baseline';
+        if (this.grooming.mode !== 'none') {
+          stateText = 'FLY · aDN1 GROOM';
+          stateColor = '#6e4d2f';
+        } else if (this.rearing.mode !== 'none') {
+          stateText = 'FLY · DNg02 REAR';
+          stateColor = '#6e4d2f';
+        } else {
+          stateText = circuitLabels[dominant] || 'FLY · CONNECTOME';
+          stateColor = dominant === 'escape_giant_fiber' || dominant === 'moonwalk_MDN'
+            ? '#7a3e34'
+            : '#2b5946';
+        }
+      }
       hudRef.state.innerText = stateText;
       hudRef.state.style.color = stateColor;
       hudRef.hr.innerText = isMoving && !isPausing ? "560 BPM" : "415 BPM";
@@ -4373,33 +4966,43 @@ class ExpertMouse {
         : (this.socialContact ? 0.08 : 0.0);
       this.earPinAmount += (targetEarPin - this.earPinAmount) * Math.min(1.0, dt * 8.0);
 
-      // Tail inertial follow-through.
-      const groomingTailSway = this.grooming.mode === 'flank-groom'
-        ? this.grooming.side * this.groomAmount * 0.18
-        : 0;
+      // Tail inertial follow-through, counterbalance carriage, and behavior posture.
+      const tailPolarity = (this.trackId || 1) % 2 === 0 ? -1 : 1;
+      const signedFwd = this.velocity.x * this.heading.x + this.velocity.y * this.heading.y;
+      const backwardAmount = THREE.MathUtils.clamp(-signedFwd / Math.max(this.maxSpeed * 0.45, 0.25), 0, 1);
+      const groomingTailSway = isFlankGroom
+        ? -this.grooming.side * groomPoseNorm * 0.36
+        : (isFaceWash ? tailPolarity * groomPoseNorm * 0.26 : 0);
       const targetTailSway = THREE.MathUtils.clamp(
-        -turnRate * 0.065 - lateralAccel * 0.012 + groomingTailSway,
-        -0.9,
-        0.9
+        -turnRate * 0.115
+          - lateralAccel * 0.018
+          + groomingTailSway
+          + tailPolarity * backwardAmount * 0.62,
+        -1.15,
+        1.15
       );
+      const trotElevate = THREE.MathUtils.smoothstep(speedNorm, 0.32, 0.92)
+        * rearPoseSuppress
+        * (1.0 - groomPoseNorm);
+      const dartAlert = (this.boutState.mode === 'dart-trot' && speedNorm > 0.5 ? 0.08 : 0)
+        + (this.socialContact ? 0.05 : 0);
       const targetTailLift = THREE.MathUtils.clamp(
-        -0.05 - forwardAccel * 0.004 + speedNorm * 0.035
-          + this.rearAmount * 0.10 + this.groomAmount * 0.025,
-        -0.18,
-        0.15
+        -0.08
+          - forwardAccel * 0.005
+          + trotElevate * 0.24
+          + dartAlert
+          - (1.0 - rearPoseSuppress) * 0.12
+          - groomPoseNorm * 0.08
+          + backwardAmount * 0.08,
+        -0.22,
+        0.26
       );
-      const tailK = 14.0, tailD = 4.8;
+      const tailK = 15.0;
+      const tailD = speed < 0.45 && this.lowSpeedTimer > 0.6 ? 7.2 : 5.2;
       this.tailDyn.swayV += (tailK * (targetTailSway - this.tailDyn.sway) - tailD * this.tailDyn.swayV) * dt;
       this.tailDyn.liftV += (tailK * (targetTailLift - this.tailDyn.lift) - tailD * this.tailDyn.liftV) * dt;
       this.tailDyn.sway += this.tailDyn.swayV * dt;
       this.tailDyn.lift += this.tailDyn.liftV * dt;
-      if (speed < 0.45 && this.lowSpeedTimer > 0.6) {
-        const calm = Math.exp(-8.0 * dt);
-        this.tailDyn.sway *= calm;
-        this.tailDyn.lift *= calm;
-        this.tailDyn.swayV *= calm;
-        this.tailDyn.liftV *= calm;
-      }
     }
 
     this.rig.position.y = this.bodyDyn.y;
@@ -5436,15 +6039,15 @@ scene.add(grid);
 // ═══════════════════════════════════════════════════════════════
 // 12. LIGHTING (3-point photographic behavioral-arena studio setup)
 // ═══════════════════════════════════════════════════════════════
-const ambientLight = new THREE.AmbientLight(0xf7f2ea, 0.26);
+const ambientLight = new THREE.AmbientLight(0xf7f2ea, 0.20);
 scene.add(ambientLight);
 
-const hemiLight = new THREE.HemisphereLight(0xf6f8fc, 0xb2a696, 0.44);
+const hemiLight = new THREE.HemisphereLight(0xf6f8fc, 0xaba090, 0.38);
 hemiLight.position.set(0, 20, 0); scene.add(hemiLight);
 
 // Key light (overhead diffused lab panel)
 const defaultShadowMapSize = (!DATASET_CAPTURE && IS_SOFTWARE_WEBGL) ? 1024 : 4096;
-const keyLight = new THREE.DirectionalLight(0xfff5ea, 0.98);
+const keyLight = new THREE.DirectionalLight(0xfff5ea, 1.08);
 keyLight.position.set(-5, 17, 6); keyLight.castShadow = true;
 keyLight.shadow.mapSize.width = defaultShadowMapSize;
 keyLight.shadow.mapSize.height = defaultShadowMapSize;
@@ -5455,16 +6058,16 @@ keyLight.shadow.bias = -0.0008; keyLight.shadow.normalBias = 0.018;
 scene.add(keyLight);
 
 // Fill light (soft cool bounce from acrylic enclosure)
-const fillLight = new THREE.DirectionalLight(0xeaf2ff, 0.24);
+const fillLight = new THREE.DirectionalLight(0xeaf2ff, 0.21);
 fillLight.position.set(8, 7, 8); fillLight.castShadow = false;
 scene.add(fillLight);
 
 // Rim light (crisp dorsal guard-hair specular separation for dark & white coats)
-const rimLight = new THREE.DirectionalLight(0xf9fcff, 0.34);
+const rimLight = new THREE.DirectionalLight(0xf9fcff, 0.40);
 rimLight.position.set(6, 8.5, -9); rimLight.castShadow = false;
 scene.add(rimLight);
 
-const softbox = new THREE.RectAreaLight(0xfff2e4, 0.88, 16, 10);
+const softbox = new THREE.RectAreaLight(0xfff2e4, 0.72, 16, 10);
 softbox.position.set(-2, 9, 5);
 softbox.lookAt(0, 1.0, 0);
 scene.add(softbox);
@@ -5474,6 +6077,7 @@ scene.add(softbox);
 // ═══════════════════════════════════════════════════════════════
 const mice = [];
 let nextTrackId = 1;
+let flyBrainRuntimeReady = false;
 const hudElements = {
   count: document.getElementById('hud-count'),
   state: document.getElementById('hud-state'),
@@ -5649,8 +6253,8 @@ const guiParams = {
   qualityMode: 'Photo', furDetailLevel: 'Med',
   enableVignette: false, enableGrain: false, enableAO: true,
   // Lighting
-  keyIntensity: 0.96, fillIntensity: 0.20, rimIntensity: 0.30, softboxIntensity: 0.92,
-  keyColorTemp: 5600, ambientIntensity: 0.24,
+  keyIntensity: 1.08, fillIntensity: 0.21, rimIntensity: 0.40, softboxIntensity: 0.72,
+  keyColorTemp: 5600, ambientIntensity: 0.20,
   // Proportions (exposed)
   propBodyLength: PROP.bodyLength, propBodyGirthX: PROP.bodyGirthX,
   propWaistTaper: PROP.waistTaper, propHaunchWidth: PROP.haunchWidth,
@@ -5673,6 +6277,13 @@ const guiParams = {
   postVignette: DATASET_LIGHTING === 'calms_gray' ? 0.18 : 0.16,
   postGrain: DATASET_LIGHTING === 'calms_gray' ? 0.010 : 0.004,
   postSaturation: DATASET_LIGHTING === 'calms_gray' ? 0.03 : 0.98,
+  // Fly-brain connectome controller (OFF by default unless ?fly_brain=1)
+  flyBrainEnabled: FLY_BRAIN_DEFAULT,
+  flyBrainTarget: 'black',
+  flyBrainDynamics: 'spiking',
+  flyBrainPlasticity: true,
+  flyBrainShowZones: true,
+  resetFlyPlasticity: () => resetAllFlyBrainPlasticity(),
 };
 postFX.enabled = guiParams.enablePostFX;
 postFX.uniforms.uVigIntensity.value = guiParams.postVignette;
@@ -5754,9 +6365,9 @@ function getStrainProfile(presetName) {
 function applyStrainPreset(name) {
   guiParams.presets = name;
   const earScale = isHomeCageDefault ? 1.18 : 1.0;
-  if (name === 'BALB/c (White)') { guiParams.furColor = '#efebe2'; guiParams.skinColor = '#ebb4b0'; guiParams.furDensity = 0.90; guiParams.earSize = 0.70 * earScale; }
-  if (name === 'C57BL/6 (Black)') { guiParams.furColor = '#171618'; guiParams.skinColor = '#483b3d'; guiParams.furDensity = 0.95; guiParams.earSize = 0.68 * earScale; }
-  if (name === 'CBA (Brown)') { guiParams.furColor = '#6d4d38'; guiParams.skinColor = '#cfa090'; guiParams.furDensity = 0.88; guiParams.earSize = 0.68 * earScale; }
+  if (name === 'BALB/c (White)') { guiParams.furColor = '#eae3d7'; guiParams.skinColor = '#e7aea8'; guiParams.furDensity = 0.92; guiParams.earSize = 0.70 * earScale; }
+  if (name === 'C57BL/6 (Black)') { guiParams.furColor = '#151416'; guiParams.skinColor = '#4c3e40'; guiParams.furDensity = 0.96; guiParams.earSize = 0.68 * earScale; }
+  if (name === 'CBA (Brown)') { guiParams.furColor = '#684834'; guiParams.skinColor = '#cca090'; guiParams.furDensity = 0.90; guiParams.earSize = 0.68 * earScale; }
   if (name === 'Nude/Hairless') { guiParams.furColor = '#ffd0c8'; guiParams.skinColor = '#ffc0b8'; guiParams.furDensity = 0.0; guiParams.earSize = 0.75 * earScale; }
 }
 
@@ -5832,6 +6443,29 @@ neuroscienceFolder.add(guiParams, 'wireframeMode').name('Wireframe Bodies').onCh
 neuroscienceFolder.add(guiParams, 'implantHeadstage').name('Neural Headstage').onChange(v => {
   if (mice[0]) mice[0].setHeadstageEnabled(v);
 });
+
+const flyBrainFolder = gui.addFolder('Fly Brain Control');
+flyBrainFolder.add(guiParams, 'flyBrainEnabled').name('Enable Fly Brain').onChange(() => {
+  syncFlyBrainMode();
+});
+flyBrainFolder.add(guiParams, 'flyBrainTarget', ['black', 'white', 'both']).name('Fly Subject').onChange(() => {
+  syncFlyBrainMode();
+});
+flyBrainFolder.add(guiParams, 'flyBrainDynamics', ['spiking', 'rate']).name('Neural Dynamics').onChange(mode => {
+  mice.forEach(m => {
+    if (m.flyBrain) m.flyBrain.setDynamics(mode);
+  });
+});
+flyBrainFolder.add(guiParams, 'flyBrainPlasticity').name('Dopamine Learning').onChange(enabled => {
+  mice.forEach(m => {
+    if (m.flyBrain) m.flyBrain.plasticityEnabled = Boolean(enabled);
+  });
+});
+flyBrainFolder.add(guiParams, 'flyBrainShowZones').name('Show Reward/Hazard Zones').onChange(() => {
+  syncFlyArenaZonesVisibility();
+});
+flyBrainFolder.add(guiParams, 'resetFlyPlasticity').name('Reset Synaptic Weights');
+if (!FLY_BRAIN_DEFAULT) flyBrainFolder.close();
 
 const syncPausedAnatomy = () => {
   if (guiParams.isPaused) {
@@ -6142,6 +6776,7 @@ function spawnMouse(options = {}) {
   m.syncTrackingVisibility(guiParams.showTrackingKeypoints);
   mice.push(m);
   hudElements.count.innerText = mice.length;
+  if (guiParams.flyBrainEnabled && flyBrainRuntimeReady) syncFlyBrainMode();
 }
 
 function clearMice() {
@@ -6156,6 +6791,9 @@ function clearMice() {
   hudElements.resp.innerText = "-- BPM";
   hudElements.coord.innerText = "0.00, 0.00";
   if (hudElements.gait) hudElements.gait.innerText = "--";
+  if (flyBrainRuntimeReady && guiParams.flyBrainEnabled) {
+    renderFlyBrainMonitor(accumulatedTime, true);
+  }
 }
 
 // Spawn initial subjects
@@ -6196,6 +6834,571 @@ if (DATASET_HEADSTAGE) {
   }
   if ((DATASET_HEADSTAGE === 'intruder' || DATASET_HEADSTAGE === 'both') && mice[1]) {
     mice[1].setHeadstageEnabled(true);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 14B. DROSOPHILA CONNECTOME -> MOUSE CONTROLLER & LIVE HUD
+// ═══════════════════════════════════════════════════════════════
+const FLY_ARENA_ZONES = Object.freeze({
+  reward: Object.freeze({ x: 6.8, z: -4.8, radius: 2.75, color: 0xe6af42 }),
+  hazard: Object.freeze({ x: -6.8, z: 4.8, radius: 2.75, color: 0xd95656 }),
+});
+
+const FLY_MONITOR_BARS = Object.freeze([
+  { id: 'dnp09', label: 'DNp09 Walk', color: '#5be3a6', read: b => 0.5 * (b.rate('DNp09_L') + b.rate('DNp09_R')) },
+  { id: 'dna02', label: 'DNa02 Steer', color: '#6cb8ff', read: b => Math.abs(b.rate('DNa02_L') - b.rate('DNa02_R')) },
+  { id: 'mdn', label: 'MDN Back', color: '#ff9b6a', read: b => b.rate('MDN') },
+  { id: 'pair1', label: 'Pair1 Freeze', color: '#b4c0d4', read: b => b.rate('Pair1') },
+  { id: 'adn1', label: 'aDN1 Groom', color: '#e6a8ff', read: b => b.rate('aDN1') },
+  { id: 'dng02', label: 'DNg02 Rear', color: '#84e8ff', read: b => b.rate('DNg02') },
+  { id: 'dnp01', label: 'DNp01 Escape', color: '#ff6470', read: b => b.rate('DNp01') },
+  { id: 'da', label: 'PAM / PPL1 DA', color: '#f5c256', read: b => Math.max(b.rate('PAM'), b.rate('PPL1')) },
+]);
+
+const FLY_REGION_COLORS = Object.freeze({
+  sensory: '#56d6f5',
+  mushroom_body: '#f5c256',
+  dopamine: '#ff7db8',
+  central_complex: '#b987ff',
+  lal: '#9d7bff',
+  sez: '#e59eff',
+  descending: '#5be3a6',
+  vnc: '#ff9b6a',
+});
+
+let flyZonesGroup = null;
+let flyRewardPulseMesh = null;
+let flyHazardPulseMesh = null;
+let lastFlyHudUpdate = -1;
+
+const flyHudRefs = {
+  panel: document.getElementById('fly-brain-panel'),
+  meta: document.getElementById('fb-meta'),
+  targetSelect: document.getElementById('fb-target-select'),
+  circuit: document.getElementById('fb-circuit'),
+  raster: document.getElementById('fly-raster'),
+  cmdReadout: document.getElementById('fb-cmd-readout'),
+  barsContainer: document.getElementById('fb-bars'),
+  rewardWeight: document.getElementById('fb-plast-reward'),
+  hazardWeight: document.getElementById('fb-plast-hazard'),
+  optoGrid: document.getElementById('fb-opto-grid'),
+  collapseBtn: document.getElementById('fb-collapse-btn'),
+  resetPlasticityBtn: document.getElementById('fb-reset-plast'),
+  clearStimBtn: document.getElementById('fb-clear-stim'),
+  barFills: new Map(),
+  barValues: new Map(),
+};
+
+function ensureFlyArenaZones() {
+  if (flyZonesGroup) return flyZonesGroup;
+  flyZonesGroup = new THREE.Group();
+  flyZonesGroup.name = 'fly-brain-sensory-zones';
+
+  const makeZoneVisual = (zone) => {
+    const sub = new THREE.Group();
+    sub.position.set(zone.x, 0.036, zone.z);
+
+    const fillGeo = new THREE.CircleGeometry(zone.radius, 40);
+    fillGeo.rotateX(-Math.PI / 2);
+    const fillMat = new THREE.MeshBasicMaterial({
+      color: zone.color,
+      transparent: true,
+      opacity: 0.13,
+      depthWrite: false,
+    });
+    const fillMesh = new THREE.Mesh(fillGeo, fillMat);
+    fillMesh.renderOrder = 4;
+    sub.add(fillMesh);
+
+    const outerGeo = new THREE.RingGeometry(zone.radius - 0.12, zone.radius, 48);
+    outerGeo.rotateX(-Math.PI / 2);
+    const outerMat = new THREE.MeshBasicMaterial({
+      color: zone.color,
+      transparent: true,
+      opacity: 0.62,
+      depthWrite: false,
+    });
+    const outerMesh = new THREE.Mesh(outerGeo, outerMat);
+    outerMesh.position.y = 0.004;
+    outerMesh.renderOrder = 5;
+    sub.add(outerMesh);
+
+    const innerGeo = new THREE.RingGeometry(zone.radius * 0.42, zone.radius * 0.48, 36);
+    innerGeo.rotateX(-Math.PI / 2);
+    const innerMat = new THREE.MeshBasicMaterial({
+      color: zone.color,
+      transparent: true,
+      opacity: 0.36,
+      depthWrite: false,
+    });
+    const innerMesh = new THREE.Mesh(innerGeo, innerMat);
+    innerMesh.position.y = 0.006;
+    innerMesh.renderOrder = 5;
+    sub.add(innerMesh);
+
+    flyZonesGroup.add(sub);
+    return innerMesh;
+  };
+
+  flyRewardPulseMesh = makeZoneVisual(FLY_ARENA_ZONES.reward);
+  flyHazardPulseMesh = makeZoneVisual(FLY_ARENA_ZONES.hazard);
+  flyZonesGroup.visible = false;
+  scene.add(flyZonesGroup);
+  return flyZonesGroup;
+}
+
+function syncFlyArenaZonesVisibility() {
+  const anyFlyActive = mice.some(m => m.flyBrainEnabled && m.flyBrain);
+  const show = Boolean((guiParams.flyBrainEnabled || anyFlyActive) && guiParams.flyBrainShowZones && !DATASET_CAPTURE);
+  if (show) {
+    ensureFlyArenaZones();
+  }
+  if (flyZonesGroup) {
+    flyZonesGroup.visible = show;
+  }
+}
+
+function attachFlyBrainToMouse(mouse, options = {}) {
+  const dynamics = options.dynamics ?? guiParams.flyBrainDynamics ?? 'spiking';
+  const plasticityEnabled = options.plasticityEnabled ?? guiParams.flyBrainPlasticity ?? true;
+  if (!mouse.flyBrain) {
+    const seed = (simulationSeed ^ (mouse.trackId * 2654435761)) >>> 0;
+    mouse.flyBrain = new FlyBrainMouseController({
+      seed,
+      dynamics,
+      plasticityEnabled,
+    });
+  } else {
+    mouse.flyBrain.setDynamics(dynamics);
+    mouse.flyBrain.plasticityEnabled = Boolean(plasticityEnabled);
+  }
+  mouse.flyBrainEnabled = true;
+  mouse.flyBrainBehaviorCooldown = 0;
+  return mouse.flyBrain;
+}
+
+function detachFlyBrainFromMouse(mouse) {
+  mouse.flyBrainEnabled = false;
+  if (mouse.externalCommand && mouse.externalCommand.source === 'fly_brain') {
+    mouse.clearMotorCommand();
+  }
+}
+
+function getActiveFlyMice() {
+  return mice.filter(m => m.flyBrainEnabled && m.flyBrain);
+}
+
+function getPrimaryFlyMouse() {
+  if (guiParams.flyBrainTarget === 'white' && mice[1]?.flyBrainEnabled && mice[1]?.flyBrain) {
+    return mice[1];
+  }
+  return mice.find(m => m.flyBrainEnabled && m.flyBrain) || null;
+}
+
+function resetAllFlyBrainPlasticity() {
+  for (const m of mice) {
+    if (m.flyBrain) m.flyBrain.resetPlasticity();
+  }
+  renderFlyBrainMonitor(accumulatedTime, true);
+}
+
+function syncFlyBrainMode() {
+  const enabled = Boolean(guiParams.flyBrainEnabled && !DATASET_CAPTURE);
+  if (!enabled) {
+    mice.forEach(m => detachFlyBrainFromMouse(m));
+  } else {
+    const target = guiParams.flyBrainTarget || 'black';
+    mice.forEach((m, index) => {
+      const shouldEnable = target === 'both'
+        || (target === 'black' && index === 0)
+        || (target === 'white' && index === 1)
+        || (mice.length === 1 && index === 0);
+      if (shouldEnable) attachFlyBrainToMouse(m);
+      else detachFlyBrainFromMouse(m);
+    });
+  }
+  const anyActive = mice.some(m => m.flyBrainEnabled && m.flyBrain);
+  document.body.classList.toggle('fly-brain-active', anyActive && !DATASET_CAPTURE);
+  if (flyHudRefs.targetSelect) {
+    flyHudRefs.targetSelect.value = guiParams.flyBrainTarget || 'black';
+  }
+  syncFlyArenaZonesVisibility();
+  renderFlyBrainMonitor(accumulatedTime, true);
+}
+
+function encodeMouseSensoryForFlyBrain(mouse, allMice) {
+  const brain = mouse.flyBrain;
+  const mx = mouse.mesh.position.x;
+  const mz = mouse.mesh.position.z;
+  const fx = Math.sin(mouse.yawAngle);
+  const fz = Math.cos(mouse.yawAngle);
+  // Left unit vector (U x F) in Three.js XZ plane: turning left increases yawAngle.
+  const lx = Math.cos(mouse.yawAngle);
+  const lz = -Math.sin(mouse.yawAngle);
+
+  const project = (tx, tz) => {
+    const dx = tx - mx;
+    const dz = tz - mz;
+    const dist = Math.hypot(dx, dz);
+    const inv = 1 / Math.max(dist, 1e-4);
+    return {
+      dist,
+      fwd: (dx * fx + dz * fz) * inv,
+      left: (dx * lx + dz * lz) * inv,
+    };
+  };
+
+  let odorLeft = 0;
+  let odorRight = 0;
+  let visualLeft = 0;
+  let visualRight = 0;
+  let looming = 0;
+  let wallAhead = 0;
+
+  // 1. Reward Zone sucrose odor plume + PAM reward dopamine
+  const reward = FLY_ARENA_ZONES.reward;
+  const rProj = project(reward.x, reward.z);
+  const inReward = rProj.dist < reward.radius;
+  const rewardProximity = Math.exp(-Math.max(0, rProj.dist - reward.radius * 0.65) / 8.5);
+  const appScale = brain.plasticPathways.get('reward_approach')?.scale ?? 1.0;
+  const avScale = brain.plasticPathways.get('reward_avoid')?.scale ?? 1.0;
+  const rewardGain = THREE.MathUtils.clamp(0.48 + (appScale - avScale) * 0.36, 0.15, 1.35);
+  if (!inReward) {
+    const plume = rewardProximity * rewardGain * 0.92;
+    if (rProj.left >= 0) {
+      odorLeft += plume * (0.28 + 0.78 * rProj.left);
+      odorRight += plume * 0.14;
+    } else {
+      odorRight += plume * (0.28 + 0.78 * (-rProj.left));
+      odorLeft += plume * 0.14;
+    }
+    if (rProj.fwd < -0.6 && Math.abs(rProj.left) < 0.25) {
+      odorLeft += plume * 0.55;
+    }
+  }
+  const rewardCue = inReward ? 1.25 : rewardProximity * 0.60;
+  const rewardDopamine = inReward ? 1.35 : 0.0;
+
+  // 2. Hazard Zone aversive cue + PPL1 punishment dopamine
+  const hazard = FLY_ARENA_ZONES.hazard;
+  const hProj = project(hazard.x, hazard.z);
+  const inHazard = hProj.dist < hazard.radius;
+  const hazardOuter = hazard.radius * 2.15;
+  const hazardProximity = hProj.dist < hazardOuter
+    ? THREE.MathUtils.clamp(1 - (hProj.dist - hazard.radius) / (hazardOuter - hazard.radius), 0, 1)
+    : 0;
+  const hazardCue = inHazard ? 1.35 : hazardProximity * 0.92;
+  const punishDopamine = inHazard ? 1.45 : 0.0;
+  if (hazardProximity > 0.08 && hProj.fwd > 0.1) {
+    const hazAvoidScale = brain.plasticPathways.get('hazard_avoid')?.scale ?? 1.0;
+    const evade = hazardProximity * Math.min(1.2, 0.42 * hazAvoidScale);
+    if (hProj.left >= 0) odorRight += evade;
+    else odorLeft += evade;
+  }
+
+  // 3. Partner mouse LC10a visual tracking & LC4 looming threat
+  let partnerCue = 0;
+  let nearestOther = null;
+  let nearestDist = Infinity;
+  for (const other of allMice) {
+    if (other === mouse) continue;
+    const d = Math.hypot(other.mesh.position.x - mx, other.mesh.position.z - mz);
+    if (d < nearestDist) {
+      nearestDist = d;
+      nearestOther = other;
+    }
+  }
+  if (nearestOther && nearestDist < 13.0) {
+    const pProj = project(nearestOther.mesh.position.x, nearestOther.mesh.position.z);
+    const visGain = Math.exp(-pProj.dist / 7.5) * 0.52;
+    if (pProj.left >= 0) visualLeft += visGain * (0.22 + 0.78 * pProj.left);
+    else visualRight += visGain * (0.22 + 0.78 * (-pProj.left));
+    if (pProj.dist < 6.0) {
+      partnerCue = (1 - pProj.dist / 6.0) * 0.85;
+    }
+    const relVx = nearestOther.velocity.x - mouse.velocity.x;
+    const relVz = nearestOther.velocity.y - mouse.velocity.y;
+    const toMouseX = (mx - nearestOther.mesh.position.x) / Math.max(pProj.dist, 1e-4);
+    const toMouseZ = (mz - nearestOther.mesh.position.z) / Math.max(pProj.dist, 1e-4);
+    const closingSpeed = relVx * toMouseX + relVz * toMouseZ;
+    if (pProj.dist < 3.8 && closingSpeed > 2.4 && pProj.fwd > 0.15) {
+      looming = THREE.MathUtils.clamp((closingSpeed - 2.0) * 0.45, 0, 1.3);
+    }
+  }
+
+  // 4. Anterior whiskers -> Tactile_Ant (MDN moonwalk + turn back toward open field)
+  const probeX = mx + fx * 2.15;
+  const probeZ = mz + fz * 2.15;
+  const clearX = ENCLOSURE_HALF_X - Math.abs(probeX);
+  const clearZ = ENCLOSURE_HALF_Z - Math.abs(probeZ);
+  const minClear = Math.min(clearX, clearZ);
+  if (minClear < 1.35) {
+    wallAhead = THREE.MathUtils.clamp((1.35 - minClear) / 1.15, 0, 1.55);
+    const centerProj = project(0, 0);
+    if (centerProj.left >= 0) odorLeft += 0.55;
+    else odorRight += 0.55;
+  }
+
+  // 5. Proprioceptive limb stance load (FeCO)
+  let plantedLeft = 0;
+  let plantedRight = 0;
+  for (const foot of mouse.footPlants) {
+    if (!foot.planted) continue;
+    if (foot.side < 0) plantedLeft += 1;
+    else plantedRight += 1;
+  }
+
+  return {
+    odorLeft,
+    odorRight,
+    visualLeft,
+    visualRight,
+    looming,
+    wallAhead,
+    groomUrge: 0,
+    pawLoadLeft: plantedLeft * 0.45,
+    pawLoadRight: plantedRight * 0.45,
+    rewardCue,
+    hazardCue,
+    partnerCue,
+    rewardDopamine,
+    punishDopamine,
+    exploreDrive: 0.58,
+  };
+}
+
+function stepFlyBrainForMouse(mouse, allMice, time, dt) {
+  if (!mouse.flyBrainEnabled || !mouse.flyBrain) return;
+  const sensory = encodeMouseSensoryForFlyBrain(mouse, allMice);
+  const motorOut = mouse.flyBrain.step(dt, sensory, { maxSpeed: mouse.guiParams.maxSpeed });
+
+  if (mouse.grooming.mode === 'none' && mouse.rearing.mode === 'none') {
+    mouse.flyBrainBehaviorCooldown = Math.max(0, mouse.flyBrainBehaviorCooldown - dt);
+  }
+
+  // Behavioral triggers from Drosophila descending circuits
+  if (motorOut.behaviorTrigger === 'escape') {
+    if (mouse.grooming.mode !== 'none' && mouse.grooming.phase !== 'settle') {
+      mouse.grooming.phase = 'settle';
+      mouse.grooming.phaseTime = 0;
+    }
+  } else if (motorOut.behaviorTrigger === 'groom') {
+    if (mouse.grooming.mode === 'none' && mouse.rearing.mode === 'none' && mouse.flyBrainBehaviorCooldown <= 0) {
+      mouse.startGrooming('face-wash', 2.2);
+      mouse.flyBrainBehaviorCooldown = 0.7;
+    }
+  } else if (motorOut.behaviorTrigger === 'rear') {
+    if (mouse.rearing.mode === 'none' && mouse.grooming.mode === 'none' && mouse.flyBrainBehaviorCooldown <= 0) {
+      mouse.startRearing('unsupported', null, 1.9);
+      mouse.flyBrainBehaviorCooldown = 0.7;
+    }
+  }
+
+  // Smooth continuous command update preserving integrated heading across 30 Hz steps.
+  const sanitized = sanitizeMotorCommand(
+    {
+      forwardSpeed: motorOut.forwardSpeed,
+      turnRate: motorOut.turnRate,
+      gait: motorOut.gait,
+      durationSec: 0.25,
+    },
+    { maxSpeed: mouse.guiParams.maxSpeed }
+  );
+  if (mouse.externalCommand && mouse.externalCommand.source === 'fly_brain') {
+    const cmd = mouse.externalCommand;
+    cmd.forwardSpeed = sanitized.forwardSpeed;
+    cmd.turnRate = sanitized.turnRate;
+    cmd.gait = sanitized.gait;
+    cmd.expiresAt = time + sanitized.durationSec;
+    const drift = Math.atan2(
+      Math.sin(cmd.heading - mouse.yawAngle),
+      Math.cos(cmd.heading - mouse.yawAngle)
+    );
+    if (Math.abs(drift) > 0.55) {
+      cmd.heading = mouse.yawAngle + Math.sign(drift) * 0.55;
+    }
+  } else {
+    mouse.setMotorCommand(sanitized, time);
+    if (mouse.externalCommand) mouse.externalCommand.source = 'fly_brain';
+  }
+}
+
+function initFlyBrainMonitorUI() {
+  if (!flyHudRefs.panel) return;
+  if (flyHudRefs.barsContainer && flyHudRefs.barsContainer.childElementCount === 0) {
+    for (const bar of FLY_MONITOR_BARS) {
+      const row = document.createElement('div');
+      row.className = 'fb-bar-row';
+      const head = document.createElement('div');
+      head.className = 'fb-bar-head';
+      const nameSpan = document.createElement('span');
+      nameSpan.textContent = bar.label;
+      const valSpan = document.createElement('span');
+      valSpan.textContent = '0%';
+      head.append(nameSpan, valSpan);
+      const track = document.createElement('div');
+      track.className = 'fb-bar-track';
+      const fill = document.createElement('div');
+      fill.className = 'fb-bar-fill';
+      fill.style.background = bar.color;
+      track.appendChild(fill);
+      row.append(head, track);
+      flyHudRefs.barsContainer.appendChild(row);
+      flyHudRefs.barFills.set(bar.id, fill);
+      flyHudRefs.barValues.set(bar.id, valSpan);
+    }
+  }
+
+  if (flyHudRefs.optoGrid && flyHudRefs.optoGrid.childElementCount === 0) {
+    for (const preset of FLY_OPTOGENETIC_PRESETS) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'fb-opto-btn'
+        + (preset.dopamine === 'PAM' ? ' da-reward' : '')
+        + (preset.dopamine === 'PPL1' ? ' da-punish' : '');
+      btn.dataset.presetId = preset.id;
+      btn.textContent = preset.label;
+      btn.addEventListener('click', () => {
+        const targets = getActiveFlyMice();
+        const chosen = targets.length > 0 ? targets : (mice[0] ? [mice[0]] : []);
+        for (const m of chosen) {
+          if (!m.flyBrainEnabled) attachFlyBrainToMouse(m);
+          m.flyBrainBehaviorCooldown = 0;
+          m.flyBrain.applyPreset(preset.id);
+        }
+        renderFlyBrainMonitor(accumulatedTime, true);
+      });
+      flyHudRefs.optoGrid.appendChild(btn);
+    }
+  }
+
+  flyHudRefs.collapseBtn?.addEventListener('click', () => {
+    const collapsed = flyHudRefs.panel.classList.toggle('collapsed');
+    flyHudRefs.collapseBtn.textContent = collapsed ? '+' : '−';
+  });
+
+  flyHudRefs.targetSelect?.addEventListener('change', (ev) => {
+    guiParams.flyBrainTarget = ev.target.value;
+    guiParams.flyBrainEnabled = true;
+    syncFlyBrainMode();
+    gui.controllersRecursive().forEach(c => c.updateDisplay());
+  });
+
+  flyHudRefs.resetPlasticityBtn?.addEventListener('click', () => {
+    resetAllFlyBrainPlasticity();
+  });
+
+  flyHudRefs.clearStimBtn?.addEventListener('click', () => {
+    for (const m of mice) {
+      if (m.flyBrain) m.flyBrain.clearStimulations();
+    }
+  });
+}
+
+function renderFlyBrainMonitor(time, force = false) {
+  if (DATASET_CAPTURE || !flyHudRefs.panel) return;
+  const primary = getPrimaryFlyMouse();
+  if (!primary || !primary.flyBrain) {
+    if (force || mice.length === 0) {
+      if (flyHudRefs.meta) flyHudRefs.meta.textContent = 'No active subject';
+      if (flyHudRefs.circuit) flyHudRefs.circuit.textContent = 'NO SUBJECT';
+      if (flyHudRefs.cmdReadout) flyHudRefs.cmdReadout.textContent = 'v=0.0 ω=0.0';
+      for (const bar of FLY_MONITOR_BARS) {
+        const fill = flyHudRefs.barFills.get(bar.id);
+        const label = flyHudRefs.barValues.get(bar.id);
+        if (fill) fill.style.width = '0%';
+        if (label) label.textContent = '0%';
+      }
+      if (flyHudRefs.raster) {
+        const ctx = flyHudRefs.raster.getContext('2d');
+        ctx.fillStyle = '#0d1015';
+        ctx.fillRect(0, 0, flyHudRefs.raster.width, flyHudRefs.raster.height);
+      }
+    }
+    return;
+  }
+  if (!force && time - lastFlyHudUpdate < 0.08) return;
+  lastFlyHudUpdate = time;
+
+  const brain = primary.flyBrain;
+  const snap = brain.snapshot();
+  const windowSec = 1.5;
+  const recentCount = brain.recentSpikes.length;
+  const spikeRateHz = brain.dynamics === 'spiking'
+    ? Math.round(recentCount / windowSec)
+    : 0;
+
+  if (flyHudRefs.meta) {
+    const modeLabel = brain.dynamics === 'spiking' ? 'LIF Spiking' : 'Rate Model';
+    flyHudRefs.meta.textContent = brain.dynamics === 'spiking'
+      ? `${modeLabel} · ${snap.numNeurons} neurons · ${spikeRateHz} spk/s`
+      : `${modeLabel} · ${snap.numNeurons} neurons · continuous`;
+  }
+  if (flyHudRefs.circuit) {
+    flyHudRefs.circuit.textContent = snap.dominantCircuit.replace(/_/g, ' ');
+  }
+  if (flyHudRefs.cmdReadout) {
+    flyHudRefs.cmdReadout.textContent = `v=${snap.motor.forwardSpeed.toFixed(1)} ω=${snap.motor.turnRate.toFixed(1)}`;
+  }
+
+  for (const bar of FLY_MONITOR_BARS) {
+    const value = THREE.MathUtils.clamp(bar.read(brain), 0, 1);
+    const fill = flyHudRefs.barFills.get(bar.id);
+    const label = flyHudRefs.barValues.get(bar.id);
+    if (fill) fill.style.width = `${Math.round(value * 100)}%`;
+    if (label) label.textContent = `${Math.round(value * 100)}%`;
+  }
+
+  if (flyHudRefs.rewardWeight && snap.plasticity.reward_approach && snap.plasticity.reward_avoid) {
+    flyHudRefs.rewardWeight.textContent = `App ${snap.plasticity.reward_approach.scale.toFixed(2)}× · Av ${snap.plasticity.reward_avoid.scale.toFixed(2)}×`;
+  }
+  if (flyHudRefs.hazardWeight && snap.plasticity.hazard_approach && snap.plasticity.hazard_avoid) {
+    flyHudRefs.hazardWeight.textContent = `App ${snap.plasticity.hazard_approach.scale.toFixed(2)}× · Av ${snap.plasticity.hazard_avoid.scale.toFixed(2)}×`;
+  }
+
+  // Draw live scrolling LIF spike raster (or rate activity heatstrip in rate mode)
+  const rasterCanvas = flyHudRefs.raster;
+  if (rasterCanvas && !flyHudRefs.panel.classList.contains('collapsed')) {
+    const ctx = rasterCanvas.getContext('2d');
+    const w = rasterCanvas.width;
+    const h = rasterCanvas.height;
+    ctx.fillStyle = '#0d1015';
+    ctx.fillRect(0, 0, w, h);
+
+    // Subtle neuropil divider guide lines
+    ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+    ctx.lineWidth = 1;
+    for (let k = 1; k < 4; k++) {
+      const gy = Math.round((h * k) / 4) + 0.5;
+      ctx.beginPath();
+      ctx.moveTo(0, gy);
+      ctx.lineTo(w, gy);
+      ctx.stroke();
+    }
+
+    if (brain.dynamics === 'spiking') {
+      const tEnd = brain.simTime;
+      const tStart = tEnd - windowSec;
+      const invN = 1 / Math.max(1, brain.numNeurons);
+      for (const sp of brain.recentSpikes) {
+        const u = (sp.t - tStart) / windowSec;
+        if (u < 0 || u > 1) continue;
+        const px = Math.floor(u * (w - 2));
+        const py = Math.floor((sp.neuron * invN) * (h - 2));
+        ctx.fillStyle = FLY_REGION_COLORS[sp.region] || '#8ee6ff';
+        ctx.fillRect(px, py, 2, 2);
+      }
+    } else {
+      const groupCount = FLY_NEURON_GROUPS.length;
+      const rowH = h / Math.max(1, groupCount);
+      for (let g = 0; g < groupCount; g++) {
+        const rate = brain.groupRates[g];
+        if (rate <= 0.01) continue;
+        ctx.fillStyle = FLY_REGION_COLORS[FLY_NEURON_GROUPS[g].region] || '#8ee6ff';
+        ctx.fillRect(0, g * rowH, w * rate, Math.max(1.5, rowH - 0.5));
+      }
+    }
   }
 }
 
@@ -6726,6 +7929,71 @@ window.annolidTwoMice = Object.freeze({
   clearCommand: trackId => {
     findSubjectByTrackId(trackId).clearMotorCommand();
     return null;
+  },
+  getFlyBrainMetadata: () => ({
+    ...FLY_BRAIN_METADATA,
+    groups: FLY_NEURON_GROUPS.map(g => ({ id: g.id, region: g.region, nt: g.nt, count: g.count, label: g.label })),
+    presets: FLY_OPTOGENETIC_PRESETS.map(p => ({ id: p.id, label: p.label, durationSec: p.durationSec })),
+    zones: FLY_ARENA_ZONES,
+  }),
+  enableFlyBrain: (trackId, options = {}) => {
+    const subject = findSubjectByTrackId(trackId);
+    attachFlyBrainToMouse(subject, options);
+    guiParams.flyBrainEnabled = true;
+    if (options.dynamics) guiParams.flyBrainDynamics = subject.flyBrain.dynamics;
+    if (options.plasticityEnabled != null) {
+      guiParams.flyBrainPlasticity = subject.flyBrain.plasticityEnabled;
+    }
+    document.body.classList.toggle('fly-brain-active', !DATASET_CAPTURE);
+    syncFlyArenaZonesVisibility();
+    gui.controllersRecursive().forEach(c => c.updateDisplay());
+    renderFlyBrainMonitor(accumulatedTime, true);
+    return subject.flyBrain.snapshot();
+  },
+  disableFlyBrain: trackId => {
+    const subject = findSubjectByTrackId(trackId);
+    detachFlyBrainFromMouse(subject);
+    const anyActive = mice.some(m => m.flyBrainEnabled && m.flyBrain);
+    guiParams.flyBrainEnabled = anyActive;
+    document.body.classList.toggle('fly-brain-active', anyActive && !DATASET_CAPTURE);
+    syncFlyArenaZonesVisibility();
+    gui.controllersRecursive().forEach(c => c.updateDisplay());
+    renderFlyBrainMonitor(accumulatedTime, true);
+    return null;
+  },
+  getFlyBrainState: trackId => {
+    const subject = findSubjectByTrackId(trackId);
+    return subject.flyBrain ? { enabled: subject.flyBrainEnabled, ...subject.flyBrain.snapshot() } : null;
+  },
+  stimulateFlyNeuron: (trackId, cellType, current = 1.6, durationSec = 1.8) => {
+    const subject = findSubjectByTrackId(trackId);
+    if (!subject.flyBrainEnabled || !subject.flyBrain) {
+      attachFlyBrainToMouse(subject);
+      guiParams.flyBrainEnabled = true;
+      document.body.classList.toggle('fly-brain-active', !DATASET_CAPTURE);
+      syncFlyArenaZonesVisibility();
+      gui.controllersRecursive().forEach(c => c.updateDisplay());
+    }
+    subject.flyBrainBehaviorCooldown = 0;
+    return subject.flyBrain.stimulate(cellType, current, durationSec);
+  },
+  applyFlyOptoPreset: (trackId, presetId) => {
+    const subject = findSubjectByTrackId(trackId);
+    if (!subject.flyBrainEnabled || !subject.flyBrain) {
+      attachFlyBrainToMouse(subject);
+      guiParams.flyBrainEnabled = true;
+      document.body.classList.toggle('fly-brain-active', !DATASET_CAPTURE);
+      syncFlyArenaZonesVisibility();
+      gui.controllersRecursive().forEach(c => c.updateDisplay());
+    }
+    subject.flyBrainBehaviorCooldown = 0;
+    return subject.flyBrain.applyPreset(presetId);
+  },
+  resetFlyBrainPlasticity: trackId => {
+    const subject = findSubjectByTrackId(trackId);
+    if (subject.flyBrain) subject.flyBrain.resetPlasticity();
+    renderFlyBrainMonitor(accumulatedTime, true);
+    return subject.flyBrain ? subject.flyBrain.snapshot().plasticity : null;
   },
 });
 
@@ -7521,11 +8789,22 @@ function animate() {
     simulationClock.advance(frameDt * guiParams.playbackSpeed, (time, dt) => {
       accumulatedTime = time;
       mice.forEach((m, i) => {
+        if (m.flyBrainEnabled && m.flyBrain) {
+          stepFlyBrainForMouse(m, mice, time, dt);
+        }
         m.update(time, mice, i === 0 ? hudElements : null, dt);
       });
       resolveAllMouseContacts(mice, dt);
     }, guiParams.isPaused || document.hidden);
     simulationDurationMs = performance.now() - simulationStart;
+    if (flyZonesGroup && flyZonesGroup.visible) {
+      const pulse = 1.0 + Math.sin(accumulatedTime * 2.8) * 0.08;
+      if (flyRewardPulseMesh) flyRewardPulseMesh.scale.set(pulse, 1, pulse);
+      if (flyHazardPulseMesh) flyHazardPulseMesh.scale.set(1.0 + Math.cos(accumulatedTime * 3.4) * 0.08, 1, 1.0 + Math.cos(accumulatedTime * 3.4) * 0.08);
+    }
+    if (guiParams.flyBrainEnabled || mice.some(m => m.flyBrainEnabled && m.flyBrain)) {
+      renderFlyBrainMonitor(accumulatedTime);
+    }
     followCamera(frameDt);
     // Contact solving runs every physics step; expensive DOM diagnostics run at 5 Hz.
     if (accumulatedTime - lastTelemetryTime >= 0.2) {
@@ -7542,5 +8821,10 @@ function animate() {
   if (DATASET_CAPTURE) canvas.dataset.datasetReady = 'true';
   canvas.dataset.sceneReady = 'true';
   document.getElementById('scene-status').textContent = '';
+}
+initFlyBrainMonitorUI();
+flyBrainRuntimeReady = true;
+if (FLY_BRAIN_DEFAULT) {
+  syncFlyBrainMode();
 }
 animate();

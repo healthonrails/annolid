@@ -119,21 +119,62 @@ api.clearCommand(1);            // return to autonomous behavior
   already in progress finishes first.
 - Seeded dataset captures remain reproducible as long as no command is issued.
 
+## Fly-brain connectome mode (`?fly_brain=1`)
+
+Open **3D Examples → Fly-Brain Mouse**, open `two_mice.html?fly_brain=1`, toggle
+**Fly Brain Control → Enable Fly Brain** in the controls panel, or ask Annolid Bot:
+
+```text
+open threejs example fly brain mouse
+```
+
+This mode runs a live biophysical *Drosophila* LIF spiking connectome
+(`two_mice_fly_brain.js`, using Shiu et al. 2024 / FlyWire / MaleCNS LIF parameters
+and canonical pathways from `annolid/simulation/fly_brain.py`) in a closed
+sensorimotor loop driving the 3D mouse rig through `two_mice_control.js`:
+
+- **Sensory → Descending circuits**:
+  - Golden **Sucrose Reward Zone** radiates an olfactory gradient into `ORN_L/R` → `PFL3_L/R` → `LAL_Inh` → `DNa02_L/R` (left/right chemotaxis steering) and `CX_Forward_Goal` → `DNp09` (forward walking/trotting).
+  - Partner mouse bearing projects onto `Visual_Target_L/R` (`LC10a`) and rapid approach excites `LC4_Looming` → `DNp01` (Giant Fiber escape gallop).
+  - Anterior wall proximity excites `Tactile_Ant` → `MDN` → `VNC_MDN_Inh` (inhibits `DNp09` and drives backward moonwalking).
+  - `Pair1` GABAergic arrest freezes locomotion; `aDN1` triggers 3D face-wash grooming; `DNg02` triggers vertical rearing.
+- **Online dopamine plasticity (`KC → MBON`)**: inspired by `nftechie/stonkfly`,
+  entering the Reward Zone fires `PAM` dopamine (strengthening `KC_Reward_Zone → MBON_Approach`
+  and depressing `MBON_Avoid`), while entering the red Hazard Zone fires `PPL1`
+  aversive dopamine (strengthening `KC_Hazard_Zone → MBON_Avoid` to promote retreat).
+- **Live Connectome Monitor & Optogenetics**: displays a real-time scrolling LIF
+  spike raster, descending-neuron activity bars, live `KC → MBON` synaptic weight
+  multipliers, and one-click Chrimson stimulation buttons (`Walk`, `Turn L/R`,
+  `Moonwalk`, `Freeze`, `Groom`, `Rear`, `Escape`, `PAM DA`, `PPL1 DA`).
+- **JavaScript API** (`window.annolidTwoMice`):
+  - `getFlyBrainMetadata()`
+  - `enableFlyBrain(trackId, { dynamics, plasticityEnabled })` / `disableFlyBrain(trackId)`
+  - `getFlyBrainState(trackId)`
+  - `stimulateFlyNeuron(trackId, cellType, current, durationSec)`
+  - `applyFlyOptoPreset(trackId, presetId)`
+  - `resetFlyBrainPlasticity(trackId)`
+
+Fly Brain mode is **off by default** in `two_mice.html` so seeded trajectories and
+pose dataset captures remain unchanged. This cross-species controller is an
+illustrative NeuroAI visualization, not a validated mouse brain model.
+
 ## Validation and maintenance
 
 The HTML is the presentation shell. `two_mice_scene.js` owns scene assembly,
 articulation, behavior, and pose export; `two_mice_model.js` owns procedural model
 construction and GPU resource ownership; `two_mice_control.js` owns the joint/action
-spec, gait library, limb CPG, and motor decoder; `two_mice_simulation.js` supplies
-the independent timing, random-stream, and wall-force helpers. All four modules
-are served by Annolid's desktop asset server and included by the package's JS rules.
+spec, gait library, limb CPG, and motor decoder; `two_mice_fly_brain.js` owns the
+dependency-free *Drosophila* LIF connectome and dopamine plasticity controller;
+`two_mice_simulation.js` supplies the independent timing, random-stream, and
+wall-force helpers. All modules are served by Annolid's desktop asset server and
+included by the package's JS rules.
 
 Run deterministic checks without a browser (uses `node` on `PATH` or Playwright's
 bundled Node runtime when installed in `.venv`):
 
 ```bash
 source .venv/bin/activate
-pytest tests/test_two_mice_control.py tests/test_two_mice_simulation.py tests/test_threejs_examples.py
+pytest tests/test_two_mice_fly_brain.py tests/test_two_mice_control.py tests/test_two_mice_simulation.py tests/test_threejs_examples.py
 ```
 
 Run the optional offline browser checks with Playwright Chromium installed:

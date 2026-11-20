@@ -130,10 +130,12 @@ def test_threejs_allowed_assets_include_runtime_modules() -> None:
     "filename",
     [
         "two_mice.html",
+        "fly_brain_mouse.html",
         "two_mice_scene.js",
         "two_mice_model.js",
         "two_mice_simulation.js",
         "two_mice_control.js",
+        "two_mice_fly_brain.js",
         "annolid_shaders.js",
         "annolid_threejs_runtime.js",
         "annolid_threejs_css2d.js",
@@ -154,6 +156,42 @@ def test_two_mice_modules_are_served_by_the_desktop_viewer(filename):
         assert response.read().decode("utf-8") == srv._threejs_asset_path(
             filename
         ).read_text(encoding="utf-8")
+
+
+def test_threejs_server_handles_concurrent_module_bursts_over_http11():
+    from concurrent.futures import ThreadPoolExecutor
+    from http.client import HTTPConnection
+    from urllib.parse import urlparse
+
+    base_url = srv._ensure_threejs_http_server()  # noqa: SLF001
+    parsed = urlparse(base_url)
+    assets = [
+        "two_mice.html",
+        "two_mice_scene.js",
+        "two_mice_model.js",
+        "two_mice_simulation.js",
+        "two_mice_control.js",
+        "two_mice_fly_brain.js",
+        "annolid_shaders.js",
+        "annolid_threejs_runtime.js",
+    ] * 3
+
+    def fetch_pair(name: str) -> tuple[int, int]:
+        conn = HTTPConnection(parsed.hostname, parsed.port, timeout=5)
+        try:
+            conn.request("GET", f"/threejs/{name}")
+            r1 = conn.getresponse()
+            b1 = r1.read()
+            conn.request("GET", f"/threejs/{name}")
+            r2 = conn.getresponse()
+            b2 = r2.read()
+            return r1.status, len(b1) if r2.status == 200 and b1 == b2 else -1
+        finally:
+            conn.close()
+
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        results = list(pool.map(fetch_pair, assets))
+    assert all(status == 200 and size > 0 for status, size in results)
 
 
 def test_update_swarm_node_preserves_turn_latency() -> None:

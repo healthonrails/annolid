@@ -126,9 +126,10 @@ def test_spine_flex_arc_kinematics_and_oriented_wall_margin():
         const stretched = evaluateSpinePoint(0.50, 0.30, 2.4, { bend: 0.0, sCurve: 0.0, arch: 0.0, stretch: 0.20 }, 2.68);
         const bunched = evaluateSpinePoint(0.50, 0.30, 2.4, { bend: 0.0, sCurve: 0.0, arch: 0.0, stretch: -0.18 }, 2.68);
 
-        // Parallel to North wall (normal = [0, 1], heading = [1, 0]) vs nose-first into wall (heading = [0, -1])
+        // Parallel to North wall (normal = [0, 1], heading = [1, 0]) vs nose-first / rump-first into wall
         const parallelMargin = computeOrientedWallMargin(1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0);
         const headOnMargin = computeOrientedWallMargin(0.0, -1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0);
+        const rumpFirstMargin = computeOrientedWallMargin(0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0);
         const stretchedHeadOn = computeOrientedWallMargin(0.0, -1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.20);
 
         console.log(JSON.stringify({
@@ -146,6 +147,7 @@ def test_spine_flex_arc_kinematics_and_oriented_wall_margin():
           bunchedWiderX: bunched.x > 0.50,
           parallelCloserThanHeadOn: parallelMargin < headOnMargin - 0.75,
           parallelCloseThigmotaxis: parallelMargin < 1.75 && parallelMargin > 1.25,
+          rumpKeepsSacralRootInsideWall: rumpFirstMargin >= 2.75,
           stretchedIncreasesHeadOn: stretchedHeadOn > headOnMargin,
         }));
         """
@@ -296,10 +298,12 @@ def test_threejs_runtime_and_two_mice_assets_have_no_external_cdn_imports():
         "annolid_threejs_css2d.js",
         "annolid_shaders.js",
         "two_mice.html",
+        "fly_brain_mouse.html",
         "two_mice_scene.js",
         "two_mice_model.js",
         "two_mice_simulation.js",
         "two_mice_control.js",
+        "two_mice_fly_brain.js",
         "swarm_visualizer.html",
     )
     for name in offline_files:

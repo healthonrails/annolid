@@ -101,21 +101,27 @@ const FUR_FRAGMENT_MAIN_GLSL = /* glsl */ `
     float anisoRim       = pow(sinTHR, max(14.0, specExp * 0.60)) * specScale * 0.35 * rimFacing;
 
     // Subtle dorsal-to-ventral / root-to-tip tonal richness + cylindrical velvet flank roll-off
-    // so both top-down snow-white BALB/c and jet-black C57BL/6 coats show crisp 3D body roundness.
+    // so both top-down warm-ivory BALB/c and sleek jet-sable C57BL/6 coats show crisp 3D body roundness.
     float dorsalFactor = clamp(nrm.y * 0.5 + 0.5, 0.0, 1.0);
     vec3 fiberTint = mix(uFurRootColor, uFurTipColor, dorsalFactor);
     float coatLuma = dot(fiberTint, vec3(0.299, 0.587, 0.114));
     float viewFacing = clamp(abs(dot(viewDir, nrm)), 0.0, 1.0);
-    float cylRollOff = mix(0.84, 1.04, pow(viewFacing, 0.58));
+    float cylRollOff = mix(0.80, 1.03, pow(viewFacing, 0.56));
     float paleMask = smoothstep(0.45, 0.80, coatLuma);
 
-    vec3 pigmentSafeCuticle = mix(fiberTint * 1.45 + vec3(0.042), vec3(0.78, 0.77, 0.75), 0.38);
-    vec3 sheenCuticle = pigmentSafeCuticle * (anisoPrimary * 1.15 + anisoRim * 0.62);
-    vec3 sheenCortex  = fiberTint * (anisoSecondary + graze * specScale * 0.24);
+    // Keep dark-coat cuticle highlights silky sable-charcoal rather than chalky grey glare.
+    vec3 cuticleNeutral = mix(vec3(0.56, 0.53, 0.50), vec3(0.86, 0.84, 0.80), paleMask);
+    vec3 pigmentSafeCuticle = mix(
+      fiberTint * 1.60 + vec3(0.026, 0.024, 0.023),
+      cuticleNeutral,
+      mix(0.20, 0.42, paleMask)
+    );
+    vec3 sheenCuticle = pigmentSafeCuticle * (anisoPrimary * 1.08 + anisoRim * 0.58);
+    vec3 sheenCortex  = fiberTint * (anisoSecondary + graze * specScale * 0.22);
 
     gl_FragColor.rgb = gl_FragColor.rgb
-      * mix(vec3(1.0), fiberTint, 0.12)
-      * mix(1.0, cylRollOff, 0.55 + 0.45 * paleMask)
+      * mix(vec3(1.0), fiberTint, 0.14)
+      * mix(1.0, cylRollOff, 0.58 + 0.42 * paleMask)
       + sheenCuticle + sheenCortex;
   }
 `;

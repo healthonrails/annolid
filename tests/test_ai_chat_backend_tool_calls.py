@@ -4294,6 +4294,14 @@ def test_parse_direct_gui_command_variants() -> None:
     assert parsed_threejs_example_brain["name"] == "open_threejs_example"
     assert parsed_threejs_example_brain["args"]["example_id"] == "brain_viewer_html"
 
+    parsed_threejs_example_fly_brain = task._parse_direct_gui_command(
+        "open threejs example fly brain mouse"
+    )
+    assert parsed_threejs_example_fly_brain["name"] == "open_threejs_example"
+    assert (
+        parsed_threejs_example_fly_brain["args"]["example_id"] == "fly_brain_mouse_html"
+    )
+
     parsed_threejs_html = task._parse_direct_gui_command(
         "open threejs html /tmp/annolid_threejs_examples/two_mice.html"
     )

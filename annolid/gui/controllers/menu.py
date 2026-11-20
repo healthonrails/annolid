@@ -1118,6 +1118,13 @@ class MenuController:
             lambda: w.open_threejs_example("two_mice_html"),
             tip=w.tr("Open an animated importmap-based Three.js point cloud"),
         )
+        w.threejs_example_fly_brain_mouse_action = self._action_factory(
+            w.tr("Fly-Brain Mouse"),
+            lambda: w.open_threejs_example("fly_brain_mouse_html"),
+            tip=w.tr(
+                "Control the 3D mouse simulation with a live spiking Drosophila connectome, dopamine plasticity, and optogenetics"
+            ),
+        )
         w.threejs_example_swarm_visualizer_action = self._action_factory(
             w.tr("3D Swarm Visualizer"),
             lambda: w.open_threejs_example("swarm_visualizer_html"),
@@ -1136,6 +1143,7 @@ class MenuController:
         w.threejs_examples_menu.addSeparator()
         w.threejs_examples_menu.addAction(w.threejs_example_brain_viewer_action)
         w.threejs_examples_menu.addAction(w.threejs_example_two_mice_action)
+        w.threejs_examples_menu.addAction(w.threejs_example_fly_brain_mouse_action)
         w.threejs_examples_menu.addAction(w.threejs_example_swarm_visualizer_action)
 
         # ------------------------------------------------------------------

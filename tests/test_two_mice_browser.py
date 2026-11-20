@@ -64,8 +64,8 @@ def scene_page(browser):
     page.add_init_script("window.originalRandom = Math.random;")
     base = _ensure_threejs_http_server()
 
-    def load(query):
-        page.goto(f"{base}/threejs/two_mice.html?{query}", timeout=120_000)
+    def load(query, filename="two_mice.html"):
+        page.goto(f"{base}/threejs/{filename}?{query}", timeout=120_000)
         page.wait_for_selector("#c[data-scene-ready='true']", timeout=120_000)
         return page
 
@@ -89,6 +89,8 @@ def test_seeded_capture_is_repeatable_and_keeps_pose_contract(scene_page):
         assert payload["image"]["frame_id"] == frame
         assert not payload["image"]["subject_overlap"]
         assert not payload["image"]["tail_overlap"]
+        assert payload["image"]["maximum_tail_segment_length_error"] <= 0.05
+        assert payload["image"]["maximum_tail_bend_angle_degrees"] <= 16.0
         assert payload["image"]["maximum_foot_slip"] <= 0.075
         assert payload["image"]["maximum_paw_ground_error"] <= 0.1
         assert {item["track_id"] for item in payload["annotations"]} == {1, 2}
@@ -256,10 +258,15 @@ def test_anatomy_and_behavior_poses_render(scene_page, query):
     assert telemetry["tailOverlap"] == "false"
     if "grooming_qa" in query:
         assert telemetry["groomingActive"] == "true"
+    if "contact_qa=tail" in query:
+        frame = page.evaluate("window.annolidPoseDataset.getFrame()")
+        assert frame["image"]["maximum_tail_segment_length_error"] <= 0.05
+        assert frame["image"]["maximum_tail_bend_angle_degrees"] <= 16.0
     if "rearing_qa" in query:
         assert telemetry["rearingActive"] == "true"
         frame = page.evaluate("window.annolidPoseDataset.getFrame()")
-        assert frame["image"]["maximum_tail_segment_length_error"] <= 0.5
+        assert frame["image"]["maximum_tail_segment_length_error"] <= 0.05
+        assert frame["image"]["maximum_tail_bend_angle_degrees"] <= 16.0
         subject_ann = frame["annotations"][0]
         kp_names = frame["category"]["keypoints"]
         kp_y = {
@@ -333,6 +340,25 @@ def test_motor_control_api_turns_in_place_and_walks_on_command(scene_page):
             gaits.add(obs.motor.gait);
           }
           const commanded = api.getObservation(1);
+
+          // Extreme reverse+turn stress toward enclosure walls/corners must preserve
+          // exact segment length, smooth curvature, and zero tail overlap.
+          api.setCommand(1, { forwardSpeed: -4.8, turnRate: 2.0 });
+          let maxReverseTailBend = 0;
+          let maxReverseTailLenErr = 0;
+          let reverseTailOverlap = false;
+          for (let i = 0; i < 12; i++) {
+            const payload = dataset.setFrame(++frame);
+            maxReverseTailBend = Math.max(
+              maxReverseTailBend,
+              payload.image.maximum_tail_bend_angle_degrees
+            );
+            maxReverseTailLenErr = Math.max(
+              maxReverseTailLenErr,
+              payload.image.maximum_tail_segment_length_error
+            );
+            reverseTailOverlap = reverseTailOverlap || Boolean(payload.image.tail_overlap);
+          }
           api.clearCommand(1);
           return {
             joints: spec.names.length,
@@ -350,6 +376,9 @@ def test_motor_control_api_turns_in_place_and_walks_on_command(scene_page):
             commandDuring: commanded.command,
             commandAfter: api.getObservation(1).command,
             commandedFlag: api.getDiagnostics().subjects[0].commanded,
+            maxReverseTailBend,
+            maxReverseTailLenErr,
+            reverseTailOverlap,
             json: JSON.stringify(commanded).length > 0,
           };
         }"""
@@ -370,6 +399,9 @@ def test_motor_control_api_turns_in_place_and_walks_on_command(scene_page):
     assert result["commandDuring"]["gait"] == "walk"
     assert result["commandAfter"] is None
     assert result["commandedFlag"] is False
+    assert result["maxReverseTailBend"] <= 15.0
+    assert result["maxReverseTailLenErr"] <= 0.02
+    assert result["reverseTailOverlap"] is False
     assert result["json"] is True
 
 
@@ -412,3 +444,69 @@ def test_dataset_segmentation_masks_match_viewport_and_subjects(scene_page):
     # Oblique rearing scene exposes all 4 coarse parts (head, torso, limbs, tail) and fine limb IDs.
     assert {1, 2, 3, 4}.issubset(set(np.unique(coarse_map).tolist()))
     assert bool(set(np.unique(fine_map).tolist()) & {7, 8, 9, 10})
+
+
+def test_fly_brain_controls_mouse_behaviors_and_plasticity(scene_page):
+    # Launch via the standalone fly_brain_mouse.html wrapper to verify its redirect path too.
+    page = scene_page("seed=777", filename="fly_brain_mouse.html")
+    assert "two_mice.html" in page.url and "fly_brain=1" in page.url
+    assert page.locator("#fly-brain-panel").is_visible()
+    page.wait_for_function(
+        "() => (window.annolidTwoMice.getFlyBrainState(1)?.totalSpikes || 0) > 60"
+    )
+    initial_state = page.evaluate("window.annolidTwoMice.getFlyBrainState(1)")
+    assert initial_state["enabled"] is True
+    assert initial_state["dynamics"] == "spiking"
+    assert initial_state["numNeurons"] >= 200
+
+    # Switching subject selector to 'both' attaches a fly brain to subject 2 as well.
+    page.locator("#fb-target-select").select_option("both")
+    assert page.evaluate("window.annolidTwoMice.getFlyBrainState(2)?.enabled") is True
+    page.locator("#fb-target-select").select_option("black")
+    assert page.evaluate("window.annolidTwoMice.getFlyBrainState(2)?.enabled") is False
+
+    # Optogenetic Moonwalker (MDN) drives backward locomotion on the 3D mouse rig.
+    page.locator('#fb-opto-grid button[data-preset-id="moonwalk"]').click()
+    page.wait_for_function(
+        """() => {
+          const obs = window.annolidTwoMice.getObservation(1);
+          const fb = window.annolidTwoMice.getFlyBrainState(1);
+          return fb && fb.dominantCircuit === 'moonwalk_MDN' && obs.egocentricVelocity.forward < -0.4;
+        }"""
+    )
+
+    output = os.environ.get("ANNOLID_THREEJS_SCREENSHOT_DIR")
+    if output:
+        directory = Path(output)
+        directory.mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=str(directory / "fly_brain_mouse.png"))
+
+    # Optogenetic aDN1 triggers real 3D face-wash grooming posture.
+    page.locator("#fb-clear-stim").click()
+    page.locator('#fb-opto-grid button[data-preset-id="groom"]').click()
+    page.wait_for_function(
+        "() => window.annolidTwoMice.getObservation(1).behavior.grooming === 'face-wash'"
+    )
+
+    # Stonkfly-style PAM reward dopamine paired with Reward KC modulates KC -> MBON weights.
+    page.locator("#fb-clear-stim").click()
+    page.evaluate(
+        """() => {
+          const api = window.annolidTwoMice;
+          api.resetFlyBrainPlasticity(1);
+          api.stimulateFlyNeuron(1, 'KC_Reward_Zone', 1.4, 2.5);
+          api.stimulateFlyNeuron(1, 'PAM', 1.6, 2.5);
+        }"""
+    )
+    page.wait_for_function(
+        """() => {
+          const p = window.annolidTwoMice.getFlyBrainState(1)?.plasticity;
+          return p && p.reward_approach.scale > 1.08 && p.reward_avoid.scale < 0.92;
+        }""",
+        timeout=60_000,
+    )
+
+    # Disabling Fly Brain hides the panel and returns the subject to autonomous control.
+    page.evaluate("window.annolidTwoMice.disableFlyBrain(1)")
+    assert not page.locator("#fly-brain-panel").is_visible()
+    assert page.evaluate("window.annolidTwoMice.getObservation(1).command") is None

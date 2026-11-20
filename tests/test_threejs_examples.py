@@ -63,6 +63,13 @@ def test_two_mice_example_preserves_subject_appearance_and_render_readiness():
     assert "canvas.dataset.observedTailOverlap" in source
     assert "function createDynamicTailTubeGeometry(" in source
     assert "function updateDynamicTailTubeGeometry(" in source
+    assert "function createTailAlbedoMap(" in model_source
+    assert "tailMat.map = tailAlbedoMap;" in source
+    assert "this.tailShadingProfile =" in source
+    assert "this.tailWorldVel = null;" in source
+    assert "const featherWorldLateralShift =" in source
+    assert "const enforceTailBendLimit =" in source
+    assert "const propagateCurvatureSafeChain =" in source
     assert "this.tailMesh.name = 'continuous-tail-tube'" in source
     assert "this.tailInstanced" not in source
     assert "const clampPointToArena" in source
@@ -166,14 +173,13 @@ def test_two_mice_example_preserves_subject_appearance_and_render_readiness():
     assert "Math.sin(legCycle" not in source
     assert "this.maxSpeed = params.maxSpeed" in source
     assert "bodyLength: 2.68, bodyGirthX: 1.13, bodyGirthY: 1.14" in source
-    assert "function createPinnaShellGeometry()" in source
+    assert "function createPinnaShellGeometry(" in source
     assert "function createPinnaSurfaceGeometry(" in source
     assert "const lowerOpen = THREE.MathUtils.smoothstep" in source
-    assert (
-        "const attachmentBlend = THREE.MathUtils.smoothstep(-y, 0.58, 0.96)" in source
-    )
-    assert "const attachmentY = -0.70 + Math.abs(x) * 0.035" in source
-    assert "const openingYaw = 0.48 +" in source
+    assert "const funnelTaper =" in source
+    assert "const anteriorBaseTuck =" in source
+    assert "const earGeoR = createPinnaShellGeometry(-1)" in source
+    assert "const openingYaw =" in source
     assert "sideSign * openingYaw + asymmetryYaw" in source
     assert "ear.name = sideSign > 0 ? 'left-ear-root-pivot'" in source
     assert "pinna.position.set(sideSign * 0.012, 0.76, 0.0)" in source

@@ -130,7 +130,9 @@ export function computeOrientedWallMargin(
   const towardWall = -(hx * inwardNormalX + hz * inwardNormalZ);
   const stretchMul = 1.0 + clampScalar(axialStretch, -0.22, 0.26) * 0.85;
   const snoutReach = (2.85 * bodyLengthScale + 0.82 * snoutLengthScale) * stretchMul;
-  const rumpReach = 2.15 * bodyLengthScale * stretchMul;
+  // Cover full posterior rump + sacral tail emergence (bodyLength 2.68) so backing
+  // rump-first into a wall never pushes the tail root outside the enclosure.
+  const rumpReach = 2.68 * bodyLengthScale * stretchMul;
   const flankRadius = 1.42 * widthScale;
 
   const axialReach = towardWall >= 0

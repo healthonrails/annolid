@@ -121,8 +121,274 @@
     }
     body.dataset-capture .overlay,
     body.dataset-capture .hud,
-    body.dataset-capture .lil-gui {
+    body.dataset-capture .lil-gui,
+    body.dataset-capture #fly-brain-panel {
       display: none !important;
+    }
+
+    /* Live Drosophila Connectome -> Mouse HUD (visible only when Fly Brain mode is active) */
+    #fly-brain-panel {
+      display: none;
+      position: absolute;
+      top: 18px;
+      left: 20px;
+      width: 296px;
+      max-height: calc(100vh - 248px);
+      overflow-y: auto;
+      padding: 11px 12px 10px;
+      border-radius: 9px;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      background: rgba(20, 22, 26, 0.88);
+      color: #edf1f7;
+      font-size: 11px;
+      line-height: 1.35;
+      backdrop-filter: blur(8px);
+      box-shadow: 0 12px 32px rgba(10, 12, 16, 0.34);
+      z-index: 20;
+    }
+
+    body.fly-brain-active #fly-brain-panel {
+      display: block;
+    }
+
+    #fly-brain-panel.collapsed .fb-body {
+      display: none;
+    }
+
+    .fb-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      margin-bottom: 6px;
+    }
+
+    .fb-title-wrap {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+
+    .fb-title {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #f5f7fb;
+    }
+
+    .fb-subtitle {
+      font-size: 9.5px;
+      color: #9ba8bc;
+      letter-spacing: 0.02em;
+    }
+
+    .fb-collapse-btn {
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      background: rgba(255, 255, 255, 0.07);
+      color: #e4eaf3;
+      border-radius: 5px;
+      width: 22px;
+      height: 22px;
+      cursor: pointer;
+      font-size: 13px;
+      line-height: 1;
+      padding: 0;
+    }
+
+    .fb-collapse-btn:hover {
+      background: rgba(255, 255, 255, 0.16);
+    }
+
+    .fb-meta-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      margin-bottom: 7px;
+    }
+
+    .fb-select {
+      background: rgba(255, 255, 255, 0.08);
+      color: #f1f5fb;
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      border-radius: 5px;
+      padding: 2px 6px;
+      font-size: 10.5px;
+      cursor: pointer;
+    }
+
+    .fb-pill {
+      display: inline-block;
+      padding: 2px 7px;
+      border-radius: 999px;
+      font-size: 9.5px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      background: rgba(86, 194, 152, 0.2);
+      color: #7ee8bd;
+      border: 1px solid rgba(86, 194, 152, 0.35);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 148px;
+    }
+
+    .fb-raster-wrap {
+      position: relative;
+      border-radius: 6px;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.10);
+      background: #0d1015;
+      margin-bottom: 7px;
+    }
+
+    #fly-raster {
+      display: block;
+      width: 100%;
+      height: 78px;
+    }
+
+    .fb-raster-legend {
+      display: flex;
+      justify-content: space-between;
+      padding: 3px 6px;
+      font-size: 9px;
+      color: #9aa7bc;
+      background: rgba(255, 255, 255, 0.03);
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    .fb-dot {
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      margin-right: 3px;
+      vertical-align: middle;
+    }
+
+    .fb-section-label {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 9.5px;
+      font-weight: 700;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+      color: #9aa8bd;
+      margin: 6px 0 4px;
+    }
+
+    .fb-bars {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4px 8px;
+      margin-bottom: 6px;
+    }
+
+    .fb-bar-row {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .fb-bar-head {
+      display: flex;
+      justify-content: space-between;
+      font-size: 9.5px;
+      color: #cfd8e6;
+    }
+
+    .fb-bar-track {
+      height: 5px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.09);
+      overflow: hidden;
+    }
+
+    .fb-bar-fill {
+      height: 100%;
+      width: 0%;
+      border-radius: 999px;
+      background: #5bd6a8;
+    }
+
+    .fb-plasticity {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      padding: 6px 7px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      margin-bottom: 7px;
+    }
+
+    .fb-plast-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 10px;
+      color: #d6dfed;
+    }
+
+    .fb-opto-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4px;
+    }
+
+    .fb-opto-btn {
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      background: rgba(255, 255, 255, 0.07);
+      color: #edf2f9;
+      border-radius: 5px;
+      padding: 4px 6px;
+      font-size: 10px;
+      text-align: left;
+      cursor: pointer;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .fb-opto-btn:hover {
+      background: rgba(114, 188, 255, 0.22);
+      border-color: rgba(114, 188, 255, 0.5);
+    }
+
+    .fb-opto-btn.da-reward {
+      border-color: rgba(242, 188, 76, 0.42);
+      color: #ffd982;
+    }
+
+    .fb-opto-btn.da-punish {
+      border-color: rgba(235, 102, 102, 0.42);
+      color: #ff9c9c;
+    }
+
+    .fb-mini-btn {
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      background: rgba(255, 255, 255, 0.06);
+      color: #cfd9e8;
+      border-radius: 4px;
+      padding: 1px 6px;
+      font-size: 9px;
+      cursor: pointer;
+    }
+
+    .fb-mini-btn:hover {
+      background: rgba(255, 255, 255, 0.16);
+    }
+
+    @media (max-width: 680px) {
+      #fly-brain-panel {
+        left: 8px;
+        top: 8px;
+        width: 244px;
+        max-height: calc(100vh - 190px);
+      }
     }
   </style>
 </head>
@@ -131,6 +397,58 @@
   <canvas id="c" aria-label="Interactive two-mouse open field simulation"></canvas>
   <div id="scene-status" role="status">Loading mouse models…</div>
   <div class="overlay"></div>
+  <aside id="fly-brain-panel" aria-label="Drosophila Connectome Controller">
+    <div class="fb-header">
+      <div class="fb-title-wrap">
+        <span class="fb-title">Drosophila Brain → Mouse</span>
+        <span class="fb-subtitle" id="fb-meta">LIF Spiking · 0 neurons · 0 spk/s</span>
+      </div>
+      <button type="button" class="fb-collapse-btn" id="fb-collapse-btn" title="Collapse or expand Fly Brain monitor">−</button>
+    </div>
+    <div class="fb-body">
+      <div class="fb-meta-row">
+        <select class="fb-select" id="fb-target-select" aria-label="Fly brain controlled subject">
+          <option value="black">Black (C57BL/6)</option>
+          <option value="white">White (BALB/c)</option>
+          <option value="both">Both Mice</option>
+        </select>
+        <span class="fb-pill" id="fb-circuit">RESTING</span>
+      </div>
+      <div class="fb-raster-wrap">
+        <canvas id="fly-raster" width="272" height="78"></canvas>
+        <div class="fb-raster-legend">
+          <span><i class="fb-dot" style="background:#56d6f5"></i>Sensory</span>
+          <span><i class="fb-dot" style="background:#f5c256"></i>MB / DA</span>
+          <span><i class="fb-dot" style="background:#b987ff"></i>CX / LAL</span>
+          <span><i class="fb-dot" style="background:#5be3a6"></i>Desc DN</span>
+        </div>
+      </div>
+      <div class="fb-section-label">
+        <span>Descending Neurons → Mouse Rig</span>
+        <span id="fb-cmd-readout">v=0.0 ω=0.0</span>
+      </div>
+      <div class="fb-bars" id="fb-bars"></div>
+      <div class="fb-section-label">
+        <span>KC → MBON Plasticity (PAM / PPL1)</span>
+        <button type="button" class="fb-mini-btn" id="fb-reset-plast">Reset</button>
+      </div>
+      <div class="fb-plasticity">
+        <div class="fb-plast-row">
+          <span>Reward Zone (Gold)</span>
+          <span id="fb-plast-reward">App 1.00× · Av 1.00×</span>
+        </div>
+        <div class="fb-plast-row">
+          <span>Hazard Zone (Red)</span>
+          <span id="fb-plast-hazard">App 1.00× · Av 1.00×</span>
+        </div>
+      </div>
+      <div class="fb-section-label">
+        <span>Chrimson Optogenetics</span>
+        <button type="button" class="fb-mini-btn" id="fb-clear-stim">Clear</button>
+      </div>
+      <div class="fb-opto-grid" id="fb-opto-grid"></div>
+    </div>
+  </aside>
   <div class="hud">
     <h1>Open Field · Two Mice</h1>
     <p class="simulation-note">Procedural simulation · illustrative physiology</p>

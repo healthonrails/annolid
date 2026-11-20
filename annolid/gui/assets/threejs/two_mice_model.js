@@ -251,83 +251,213 @@ export function createMouseModel(THREE, annolidShaders, random) {
     return tex;
   }
 
-  function createTailRingRoughnessMap(size = 256) {
+  function createTailAlbedoMap(size = 512) {
+    const c = document.createElement('canvas'); c.width = c.height = size;
+    const ctx = c.getContext('2d');
+    const rng = makeIsolatedRng(0x5A17C4E1);
+    // Warm neutral multiplicative dermal base so each strain's tailColor drives hue cleanly.
+    ctx.fillStyle = '#efe9e5';
+    ctx.fillRect(0, 0, size, size);
+
+    const ringRows = 26;
+    const cols = 20;
+    const rowH = size / ringRows;
+    const colW = size / cols;
+
+    // 1. Subtle longitudinal dermal tonal variation (wrapped seamlessly in U).
+    for (let i = 0; i < 42; i++) {
+      const x = rng() * size;
+      const w = size * (0.04 + rng() * 0.08);
+      const warm = rng() > 0.45;
+      const alpha = 0.025 + rng() * 0.028;
+      const offsets = [0];
+      if (x - w < 0) offsets.push(size);
+      if (x + w > size) offsets.push(-size);
+      for (const ox of offsets) {
+        const g = ctx.createLinearGradient(x + ox - w, 0, x + ox + w, 0);
+        g.addColorStop(0.0, 'rgba(0,0,0,0)');
+        g.addColorStop(0.5, warm ? `rgba(218,176,168,${alpha})` : `rgba(156,144,138,${alpha})`);
+        g.addColorStop(1.0, 'rgba(0,0,0,0)');
+        ctx.fillStyle = g;
+        ctx.fillRect(x + ox - w, 0, w * 2, size);
+      }
+    }
+
+    // 2. Staggered imbricate annular epidermal scales (~182 delicate rings at repeat.y = 7).
+    // Note: CanvasTexture flipY=true maps +V (root->tip) to -Y on canvas.
+    for (let r = 0; r < ringRows; r++) {
+      const y0 = r * rowH;
+      const stagger = (r % 2) * colW * 0.5;
+
+      // Delicate imbricate scale plate luminance ramp (luminous crown -> soft sulcus crease).
+      const bandGrad = ctx.createLinearGradient(0, y0, 0, y0 + rowH);
+      bandGrad.addColorStop(0.00, 'rgba(112,92,86,0.18)');
+      bandGrad.addColorStop(0.15, 'rgba(134,114,106,0.08)');
+      bandGrad.addColorStop(0.34, 'rgba(255,250,246,0.09)');
+      bandGrad.addColorStop(0.76, 'rgba(248,242,238,0.04)');
+      bandGrad.addColorStop(0.92, 'rgba(146,126,118,0.08)');
+      bandGrad.addColorStop(1.00, 'rgba(108,88,82,0.16)');
+      ctx.fillStyle = bandGrad;
+      ctx.fillRect(0, y0, size, rowH);
+
+      // Individual staggered epidermal scale tiles (wrapped cleanly at x=0/size).
+      for (let col = 0; col < cols; col++) {
+        const x0 = (col * colW + stagger) % size;
+        const jitter = (rng() - 0.5) * 14;
+        const fill = jitter >= 0
+          ? `rgba(255,248,244,${(jitter / 255 * 0.52).toFixed(3)})`
+          : `rgba(122,104,98,${(-jitter / 255 * 0.55).toFixed(3)})`;
+        const xOffsets = x0 + colW > size ? [0, -size] : [0];
+        for (const ox of xOffsets) {
+          ctx.fillStyle = fill;
+          ctx.fillRect(x0 + ox + 0.8, y0 + rowH * 0.16, colW - 1.6, rowH * 0.72);
+          ctx.strokeStyle = 'rgba(122,102,96,0.11)';
+          ctx.lineWidth = 0.7;
+          ctx.beginPath();
+          ctx.moveTo(x0 + ox, y0 + rowH * 0.12);
+          ctx.lineTo(x0 + ox + (rng() - 0.5) * 1.0, y0 + rowH * 0.90);
+          ctx.stroke();
+        }
+      }
+
+      // Fine inter-ring epidermal sulcus groove.
+      ctx.fillStyle = 'rgba(96,78,72,0.14)';
+      ctx.fillRect(0, y0, size, Math.max(1.0, rowH * 0.07));
+    }
+
+    // 3. Murine scale-margin caudal hair triplets (3 short fine hairs emerging caudally per scale).
+    ctx.lineCap = 'round';
+    for (let r = 0; r < ringRows; r++) {
+      const yBase = r * rowH + rowH * 0.14;
+      const stagger = (r % 2) * colW * 0.5;
+      for (let col = 0; col < cols; col++) {
+        if (rng() > 0.58) continue;
+        const xCenter = (col * colW + stagger + colW * (0.28 + rng() * 0.44)) % size;
+        const hairCount = rng() > 0.35 ? 3 : 2;
+        for (let h = 0; h < hairCount; h++) {
+          const hx = (xCenter + (h - (hairCount - 1) * 0.5) * 2.0 + size) % size;
+          const hLen = rowH * (0.45 + rng() * 0.44);
+          const drift = (rng() - 0.5) * 1.6;
+          const alpha = 0.11 + rng() * 0.10;
+          ctx.strokeStyle = `rgba(98,84,78,${alpha.toFixed(3)})`;
+          ctx.lineWidth = 0.5 + rng() * 0.3;
+          const yOffsets = yBase - hLen < 0 ? [0, size] : [0];
+          const xOffsets = hx < 4 ? [0, size] : (hx > size - 4 ? [0, -size] : [0]);
+          for (const ox of xOffsets) {
+            for (const oy of yOffsets) {
+              ctx.beginPath();
+              ctx.moveTo(hx + ox, yBase + oy);
+              ctx.lineTo(hx + ox + drift, yBase + oy - hLen);
+              ctx.stroke();
+            }
+          }
+        }
+      }
+    }
+
+    const tex = new THREE.CanvasTexture(c);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(1.0, 7.0);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+
+  function createTailRingRoughnessMap(size = 512) {
     const c = document.createElement('canvas'); c.width = size; c.height = size;
     const ctx = c.getContext('2d');
-    const ringRows = 32;
+    const rng = makeIsolatedRng(0x3B72D19A);
+    const ringRows = 26;
     const rowH = size / ringRows;
     for (let y = 0; y < size; y++) {
       const rowFrac = (y % rowH) / rowH;
-      // Imbricate keratinized ring profile: smoother distal scale plate, matte sulcus.
-      const sulcus = Math.exp(-Math.pow((rowFrac - 0.90) / 0.12, 2.0));
-      const grain = (random() - 0.5) * 5.0;
-      const v = Math.floor(THREE.MathUtils.clamp(162 + sulcus * 46 - rowFrac * 10 + grain, 128, 228));
+      // Imbricate keratinized ring profile: satin scale plate crown, matte inter-ring sulcus.
+      const sulcusTop = Math.exp(-Math.pow(rowFrac / 0.12, 2.0));
+      const sulcusBot = Math.exp(-Math.pow((1.0 - rowFrac) / 0.10, 2.0));
+      const sulcus = Math.max(sulcusTop, sulcusBot);
+      const crown = Math.exp(-Math.pow((rowFrac - 0.46) / 0.26, 2.0));
+      const grain = (rng() - 0.5) * 5.0;
+      const v = Math.floor(THREE.MathUtils.clamp(166 + sulcus * 54 - crown * 16 + grain, 138, 232));
       ctx.fillStyle = `rgb(${v},${v},${v})`;
       ctx.fillRect(0, y, size, 1);
     }
-    ctx.globalAlpha = 0.05;
-    for (let i = 0; i < 64; i++) {
-      const y0 = random() * size;
-      const x0 = random() * size;
-      const shade = 148 + Math.floor(random() * 34);
+    ctx.globalAlpha = 0.06;
+    for (let i = 0; i < 120; i++) {
+      const y0 = rng() * size;
+      const x0 = rng() * size;
+      const shade = 144 + Math.floor(rng() * 42);
       ctx.strokeStyle = `rgb(${shade},${shade},${shade})`;
-      ctx.lineWidth = 0.45 + random() * 0.65;
+      ctx.lineWidth = 0.6 + rng() * 0.7;
       ctx.beginPath();
       ctx.moveTo(x0, y0);
-      ctx.lineTo(x0 + (random() - 0.5) * 3.0, y0 + 5 + random() * 9);
+      ctx.lineTo(x0 + (rng() - 0.5) * 3.0, y0 - (8 + rng() * 13));
       ctx.stroke();
     }
     ctx.globalAlpha = 1.0;
     const tex = new THREE.CanvasTexture(c);
     tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-    tex.repeat.set(1.0, 6.0);
+    tex.repeat.set(1.0, 7.0);
     return tex;
   }
 
-  function createTailNormalMap(size = 256) {
+  function createTailNormalMap(size = 512) {
     const c = document.createElement('canvas'); c.width = c.height = size;
     const ctx = c.getContext('2d');
+    const rng = makeIsolatedRng(0x7E29B4C3);
     ctx.fillStyle = '#8080ff';
     ctx.fillRect(0, 0, size, size);
-    const ringRows = 32;
-    const cols = 18;
+    const ringRows = 26;
+    const cols = 20;
     const rowH = size / ringRows;
     const colW = size / cols;
-    // Staggered annular epidermal scales (~192 rings across repeat.y = 6).
+    // Staggered annular epidermal scales aligned 1:1 with tailAlbedoMap & tailRoughnessMap.
     for (let r = 0; r < ringRows; r++) {
       const y0 = r * rowH;
       const stagger = (r % 2) * colW * 0.5;
-      // Transverse ring crease (normal tilted along V)
-      ctx.fillStyle = 'rgba(128,104,252,0.55)';
-      ctx.fillRect(0, y0, size, Math.max(1.0, rowH * 0.18));
-      ctx.fillStyle = 'rgba(128,150,252,0.42)';
-      ctx.fillRect(0, y0 + rowH * 0.76, size, Math.max(1.0, rowH * 0.20));
-      for (let col = -1; col <= cols; col++) {
-        const x0 = col * colW + stagger;
-        ctx.strokeStyle = 'rgba(114,128,250,0.28)';
-        ctx.lineWidth = 0.7;
+      // Crisp yet delicate imbricate ring bevel along V across sulcus & crown.
+      ctx.fillStyle = 'rgba(128,92,250,0.56)';
+      ctx.fillRect(0, y0, size, Math.max(1.2, rowH * 0.13));
+      ctx.fillStyle = 'rgba(128,154,252,0.36)';
+      ctx.fillRect(0, y0 + rowH * 0.13, size, Math.max(1.2, rowH * 0.17));
+      ctx.fillStyle = 'rgba(128,118,254,0.18)';
+      ctx.fillRect(0, y0 + rowH * 0.78, size, Math.max(1.2, rowH * 0.22));
+      for (let col = 0; col < cols; col++) {
+        const x0 = (col * colW + stagger) % size;
+        const xOffsets = x0 < 3 ? [0, size] : (x0 > size - 3 ? [0, -size] : [0]);
+        for (const ox of xOffsets) {
+          ctx.strokeStyle = 'rgba(108,128,248,0.28)';
+          ctx.lineWidth = 0.9;
+          ctx.beginPath();
+          ctx.moveTo(x0 + ox, y0 + rowH * 0.12);
+          ctx.lineTo(x0 + ox + (rng() - 0.5) * 0.9, y0 + rowH * 0.90);
+          ctx.stroke();
+          ctx.strokeStyle = 'rgba(146,128,250,0.20)';
+          ctx.lineWidth = 0.7;
+          ctx.beginPath();
+          ctx.moveTo(x0 + ox + 1.1, y0 + rowH * 0.12);
+          ctx.lineTo(x0 + ox + 1.1 + (rng() - 0.5) * 0.9, y0 + rowH * 0.90);
+          ctx.stroke();
+        }
+      }
+    }
+    // Fine caudal bristle impressions emerging along +V (-Y on canvas).
+    ctx.lineCap = 'round';
+    for (let i = 0; i < 360; i++) {
+      const x = rng() * size;
+      const y = rng() * size;
+      const len = rowH * (0.48 + rng() * 0.50);
+      ctx.strokeStyle = 'rgba(140,146,255,0.24)';
+      ctx.lineWidth = 0.7;
+      const yOffsets = y - len < 0 ? [0, size] : [0];
+      for (const oy of yOffsets) {
         ctx.beginPath();
-        ctx.moveTo(x0, y0 + rowH * 0.10);
-        ctx.lineTo(x0 + (random() - 0.5) * 0.8, y0 + rowH * 0.90);
+        ctx.moveTo(x, y + oy);
+        ctx.lineTo(x + (rng() - 0.5) * 1.6, y + oy - len);
         ctx.stroke();
       }
     }
-    // Sparse short caudal bristle impressions emerging from scale margins
-    ctx.lineCap = 'round';
-    for (let i = 0; i < 220; i++) {
-      const x = random() * size;
-      const y = random() * size;
-      const len = rowH * (0.55 + random() * 0.55);
-      ctx.strokeStyle = 'rgba(138,142,255,0.24)';
-      ctx.lineWidth = 0.55;
-      ctx.beginPath();
-      ctx.moveTo(x, y);
-      ctx.lineTo(x + (random() - 0.5) * 1.4, y + len);
-      ctx.stroke();
-    }
     const tex = new THREE.CanvasTexture(c);
     tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-    tex.repeat.set(1.0, 6.0);
+    tex.repeat.set(1.0, 7.0);
     return tex;
   }
 
@@ -627,52 +757,77 @@ export function createMouseModel(THREE, annolidShaders, random) {
     const ctx = c.getContext('2d');
     const base = new THREE.Color(colorHex);
     const hsl = {}; base.getHSL(hsl);
-    const isPaleCoat = hsl.l > 0.70;
+    const isPaleCoat = hsl.l > 0.68;
+    const isDarkCoat = hsl.l < 0.18;
     const isAgouti = hsl.s > 0.16 && hsl.l > 0.12 && hsl.l < 0.62;
     const root = isPaleCoat
-      ? base.clone().offsetHSL(0.01, 0.03, -0.045)
-      : base.clone().offsetHSL(0.0, -0.02, -0.075);
+      ? base.clone().offsetHSL(0.008, 0.04, -0.072)
+      : (isDarkCoat
+        ? base.clone().offsetHSL(0.012, 0.04, -0.028)
+        : base.clone().offsetHSL(0.0, -0.02, -0.075));
     const subapical = isAgouti
-      ? base.clone().offsetHSL(0.025, 0.14, 0.11)
-      : base.clone().offsetHSL(0.012, 0.01, isPaleCoat ? 0.018 : 0.045);
+      ? base.clone().offsetHSL(0.025, 0.15, 0.12)
+      : (isDarkCoat
+        ? base.clone().offsetHSL(0.015, 0.03, 0.032)
+        : base.clone().offsetHSL(0.008, 0.01, isPaleCoat ? 0.014 : 0.045));
     const tip = isAgouti
       ? base.clone().offsetHSL(-0.01, -0.05, -0.10)
-      : base.clone().offsetHSL(0.01, 0.0, isPaleCoat ? 0.024 : 0.065);
-    // Keep the base tileable across torso UV seams.
+      : (isDarkCoat
+        ? base.clone().offsetHSL(0.012, 0.01, 0.052)
+        : base.clone().offsetHSL(0.006, 0.0, isPaleCoat ? 0.026 : 0.065));
     const baseSRGB = base.clone().convertLinearToSRGB();
     ctx.fillStyle = `rgb(${Math.round(baseSRGB.r * 255)},${Math.round(baseSRGB.g * 255)},${Math.round(baseSRGB.b * 255)})`;
     ctx.fillRect(0, 0, size, size);
+
+    // Subtle wrapped undercoat shadow tufts give plush macro-depth without hard seams.
+    const drawWrappedStroke = (x0, y0, dx, dy) => {
+      const x1 = x0 + dx;
+      const y1 = y0 + dy;
+      const xOffsets = x1 < 0 ? [0, size] : (x1 > size ? [0, -size] : [0]);
+      const yOffsets = y1 < 0 ? [0, size] : (y1 > size ? [0, -size] : [0]);
+      for (const ox of xOffsets) {
+        for (const oy of yOffsets) {
+          ctx.beginPath();
+          ctx.moveTo(x0 + ox, y0 + oy);
+          ctx.lineTo(x1 + ox, y1 + oy);
+          ctx.stroke();
+        }
+      }
+    };
+
     ctx.lineCap = 'round';
-    for (let i = 0; i < 8600; i++) {
+    const rootSRGB = root.clone().convertLinearToSRGB();
+    const rootRgb = `${Math.round(rootSRGB.r * 255)},${Math.round(rootSRGB.g * 255)},${Math.round(rootSRGB.b * 255)}`;
+    for (let i = 0; i < 650; i++) {
       const x = random() * size;
       const y = random() * size;
-      const len = 5 + random() * 20;
+      const len = 14 + random() * 26;
+      const alpha = isPaleCoat ? (0.045 + random() * 0.045) : (0.07 + random() * 0.06);
+      ctx.strokeStyle = `rgba(${rootRgb},${alpha})`;
+      ctx.lineWidth = 2.4 + random() * 3.0;
+      drawWrappedStroke(x, y, (random() - 0.5) * 4.5, len);
+    }
+
+    // Dense combed multi-scale pelage fibers (wrapped seamlessly across tile edges).
+    for (let i = 0; i < 14000; i++) {
+      const x = random() * size;
+      const y = random() * size;
+      const len = 6 + random() * 20;
       const roll = random();
-      const tone = roll < 0.34 ? root : (roll < 0.72 ? subapical : tip);
+      const tone = roll < 0.36 ? root : (roll < 0.74 ? subapical : tip);
       const fiber = tone.clone().convertLinearToSRGB();
-      const alpha = isPaleCoat ? (0.07 + random() * 0.11) : (0.12 + random() * 0.18);
-      ctx.strokeStyle = `rgba(${Math.round(fiber.r * 255)},${Math.round(fiber.g * 255)},${Math.round(fiber.b * 255)},${alpha})`;
-      ctx.lineWidth = 0.32 + random() * 0.72;
-      ctx.beginPath();
-      ctx.moveTo(x, y);
-      ctx.lineTo(x + (random() - 0.5) * 2.0, y + len);
-      ctx.stroke();
-    }
-    for (let i = 0; i < 5000; i++) {
-      const x = random() * size;
-      const y = random() * size;
       const alpha = isPaleCoat
-        ? 0.005 + random() * 0.014
-        : 0.014 + random() * 0.038;
-      const light = random() > 0.48;
-      ctx.fillStyle = light
-        ? `rgba(255,252,246,${alpha})`
-        : `rgba(${isPaleCoat ? 155 : 0},${isPaleCoat ? 148 : 0},${isPaleCoat ? 138 : 0},${alpha})`;
-      ctx.fillRect(x, y, 1 + random() * 1.5, 1);
+        ? (0.09 + random() * 0.13)
+        : (isDarkCoat ? (0.14 + random() * 0.18) : (0.13 + random() * 0.18));
+      ctx.strokeStyle = `rgba(${Math.round(fiber.r * 255)},${Math.round(fiber.g * 255)},${Math.round(fiber.b * 255)},${alpha})`;
+      ctx.lineWidth = 0.42 + random() * 0.85;
+      drawWrappedStroke(x, y, (random() - 0.5) * 2.2, len);
     }
+
     const tex = new THREE.CanvasTexture(c);
     tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-    tex.repeat.set(3.2, 2.2);
+    // Exact integer U repeat eliminates the sphere seam down the cheek and flank.
+    tex.repeat.set(4.0, 2.0);
     tex.colorSpace = THREE.SRGBColorSpace;
     tex.anisotropy = 8;
     return tex;
@@ -683,41 +838,55 @@ export function createMouseModel(THREE, annolidShaders, random) {
     ctx.fillStyle = '#8080ff';
     ctx.fillRect(0, 0, size, size);
     ctx.lineCap = 'round';
-    for (let i = 0; i < 5800; i++) {
+    for (let i = 0; i < 6400; i++) {
       const x = random() * size, y = random() * size;
-      const span = 3 + random() * 14;
-      for (const [offset, red] of [[-0.45, 102], [0.45, 154]]) {
-        ctx.strokeStyle = `rgba(${red},128,251,0.30)`;
-        ctx.lineWidth = 0.65;
-        ctx.beginPath();
-        ctx.moveTo(x + offset, y);
-        ctx.quadraticCurveTo(x + offset + 0.6, y + span * 0.5, x + offset + 0.2, y + span);
-        ctx.stroke();
+      const span = 4 + random() * 14;
+      const bend = (random() - 0.5) * 1.4;
+      const yOffsets = y + span > size ? [0, -size] : [0];
+      for (const oy of yOffsets) {
+        for (const [offset, red] of [[-0.50, 106], [0.50, 150]]) {
+          ctx.strokeStyle = `rgba(${red},128,251,0.34)`;
+          ctx.lineWidth = 0.72;
+          ctx.beginPath();
+          ctx.moveTo(x + offset, y + oy);
+          ctx.quadraticCurveTo(x + offset + bend, y + oy + span * 0.5, x + offset + bend * 0.4, y + oy + span);
+          ctx.stroke();
+        }
       }
     }
     const tex = new THREE.CanvasTexture(c);
     tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-    tex.repeat.set(3.2, 1.8);
+    tex.repeat.set(4.0, 2.0);
     return tex;
   }
   function createCoatRoughnessMap(size = 256) {
     const c = document.createElement('canvas'); c.width = c.height = size;
     const ctx = c.getContext('2d');
-    ctx.fillStyle = '#c4c4c4';
+    ctx.fillStyle = '#c8c8c8';
     ctx.fillRect(0, 0, size, size);
-    for (let i = 0; i < 2400; i++) {
+    ctx.lineCap = 'round';
+    for (let i = 0; i < 2800; i++) {
       const x = random() * size;
       const y = random() * size;
-      const v = 148 + Math.floor(random() * 72);
-      ctx.fillStyle = `rgba(${v},${v},${v},0.36)`;
-      ctx.fillRect(x, y, 1 + random() * 2, 1);
+      const len = 4 + random() * 11;
+      const v = 152 + Math.floor(random() * 72);
+      ctx.strokeStyle = `rgba(${v},${v},${v},0.34)`;
+      ctx.lineWidth = 0.9 + random() * 1.2;
+      const yOffsets = y + len > size ? [0, -size] : [0];
+      for (const oy of yOffsets) {
+        ctx.beginPath();
+        ctx.moveTo(x, y + oy);
+        ctx.lineTo(x + (random() - 0.5) * 1.4, y + oy + len);
+        ctx.stroke();
+      }
     }
     const tex = new THREE.CanvasTexture(c);
     tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-    tex.repeat.set(2.6, 1.5);
+    tex.repeat.set(3.0, 2.0);
     return tex;
   }
   const padNormalMap = createPadNormalMap();
+  const tailAlbedoMap = createTailAlbedoMap();
   const tailRoughnessMap = createTailRingRoughnessMap();
   const tailNormalMap = createTailNormalMap();
   const eyeIrisMap = createEyeIrisMap();
@@ -894,31 +1063,31 @@ export function createMouseModel(THREE, annolidShaders, random) {
       // The albedo map already contains the strain pigment. Keeping the
       // material tint neutral avoids multiplying dark coats into black.
       color: 0xffffff,
-      roughness: isHairless ? 0.64 : (isPale ? 0.84 : (isDark ? 0.74 : 0.82)),
-      envMapIntensity: isHairless ? 0.36 : (isPale ? 0.42 : (isDark ? 0.62 : 0.40)),
+      roughness: isHairless ? 0.64 : (isPale ? 0.86 : (isDark ? 0.78 : 0.82)),
+      envMapIntensity: isHairless ? 0.36 : (isPale ? 0.36 : (isDark ? 0.48 : 0.38)),
       metalness: 0.0,
-      clearcoat: isHairless ? 0.04 : (isDark ? 0.06 : 0.0),
-      clearcoatRoughness: isHairless ? 0.56 : 0.62,
-      sheen: isHairless ? 0.16 : (isPale ? 0.62 : (isDark ? 0.72 : 0.48)),
+      clearcoat: isHairless ? 0.04 : (isDark ? 0.03 : 0.0),
+      clearcoatRoughness: isHairless ? 0.56 : 0.66,
+      sheen: isHairless ? 0.16 : (isPale ? 0.58 : (isDark ? 0.62 : 0.48)),
       sheenColor: isDark
-        ? new THREE.Color(0x5c5760)
-        : (isHairless ? skin : fur).clone().offsetHSL(0.0, -0.02, isPale ? 0.06 : 0.10),
-      sheenRoughness: isHairless ? 0.62 : (isDark ? 0.46 : 0.58),
+        ? new THREE.Color(0x453e42)
+        : (isHairless ? skin : fur).clone().offsetHSL(0.005, -0.01, isPale ? 0.04 : 0.09),
+      sheenRoughness: isHairless ? 0.62 : (isDark ? 0.50 : 0.58),
       map: createCoatAlbedoMap(isHairless ? skinColor : furColor),
       normalMap: createCoatNormalMap(),
       normalScale: isHairless
         ? new THREE.Vector2(0.05, 0.06)
-        : new THREE.Vector2(0.13 + density * 0.09, 0.14 + density * 0.10),
+        : new THREE.Vector2(0.16 + density * 0.11, 0.17 + density * 0.12),
       roughnessMap: createCoatRoughnessMap(),
     });
     if (!isHairless && annolidShaders?.applyFurShader && params?.enableFurShader !== false) {
-      const rootCol = fur.clone().offsetHSL(0.0, 0.0, isPale ? -0.025 : -0.025);
+      const rootCol = fur.clone().offsetHSL(0.005, 0.01, isPale ? -0.045 : -0.025);
       const tipCol = isDark
-        ? fur.clone().offsetHSL(0.004, -0.01, 0.14)
-        : fur.clone().offsetHSL(0.008, -0.01, isPale ? 0.035 : 0.075);
+        ? fur.clone().offsetHSL(0.012, 0.01, 0.085)
+        : fur.clone().offsetHSL(0.008, -0.01, isPale ? 0.032 : 0.075);
       annolidShaders.applyFurShader(material, {
-        anisotropy: isPale ? 30.0 : (isDark ? 34.0 : 30.0),
-        specIntensity: isPale ? 0.048 : (isDark ? 0.095 : 0.058),
+        anisotropy: isPale ? 28.0 : (isDark ? 36.0 : 30.0),
+        specIntensity: isPale ? 0.046 : (isDark ? 0.078 : 0.056),
         rootColor: [rootCol.r, rootCol.g, rootCol.b],
         tipColor: [tipCol.r, tipCol.g, tipCol.b],
         flowDir: [0.0, -0.08, -0.996],
@@ -947,22 +1116,22 @@ export function createMouseModel(THREE, annolidShaders, random) {
     const isPale = hsl.l > 0.65;
     const isDark = hsl.l < 0.18;
     material.color.copy(base).offsetHSL(
-      0.0,
-      isPale ? -0.005 : -0.01,
+      isDark ? 0.008 : 0.004,
+      isPale ? 0.005 : 0.0,
       isUndercoat
-        ? (isPale ? -0.004 : -0.014)
-        : (isPale ? 0.018 : (isDark ? 0.024 : 0.018))
+        ? (isPale ? -0.020 : (isDark ? -0.012 : -0.018))
+        : (isPale ? 0.014 : (isDark ? 0.016 : 0.018))
     );
     material.transparent = false;
     material.depthWrite = true;
-    material.envMapIntensity = isUndercoat ? (isPale ? 0.34 : 0.22) : (isDark ? 0.64 : 0.48);
+    material.envMapIntensity = isUndercoat ? (isPale ? 0.28 : 0.18) : (isDark ? 0.46 : 0.40);
     if (material.isMeshPhysicalMaterial) {
-      material.roughness = isDark ? 0.68 : (isPale ? 0.82 : 0.78);
-      material.sheen = isUndercoat ? 0.32 : (isDark ? 0.85 : 0.72);
+      material.roughness = isDark ? 0.72 : (isPale ? 0.84 : 0.78);
+      material.sheen = isUndercoat ? 0.28 : (isDark ? 0.68 : 0.64);
       material.sheenColor = isDark
-        ? new THREE.Color(0x645f68)
-        : base.clone().offsetHSL(0.01, -0.03, isPale ? 0.08 : 0.12);
-      material.sheenRoughness = isUndercoat ? 0.82 : (isDark ? 0.46 : 0.56);
+        ? new THREE.Color(0x4a4346)
+        : base.clone().offsetHSL(0.008, -0.02, isPale ? 0.06 : 0.12);
+      material.sheenRoughness = isUndercoat ? 0.84 : (isDark ? 0.48 : 0.56);
     }
     return material;
   }
@@ -970,6 +1139,28 @@ export function createMouseModel(THREE, annolidShaders, random) {
   // ═══════════════════════════════════════════════════════════════
   // 5. DEFORMATION FUNCTIONS
   // ═══════════════════════════════════════════════════════════════
+  function weldParametricSeamNormals(geometry, radialSegments, rings) {
+    const nrm = geometry.attributes.normal;
+    if (!nrm || !radialSegments || !rings) return;
+    const row = radialSegments + 1;
+    if (nrm.count < (rings + 1) * row) return;
+    const a = new THREE.Vector3();
+    const b = new THREE.Vector3();
+    for (let r = 0; r <= rings; r++) {
+      const i0 = r * row;
+      const i1 = i0 + radialSegments;
+      a.fromBufferAttribute(nrm, i0);
+      b.fromBufferAttribute(nrm, i1);
+      a.add(b);
+      if (a.lengthSq() > 1e-10) {
+        a.normalize();
+        nrm.setXYZ(i0, a.x, a.y, a.z);
+        nrm.setXYZ(i1, a.x, a.y, a.z);
+      }
+    }
+    nrm.needsUpdate = true;
+  }
+
   function deform(geometry, deformFn) {
     const pos = geometry.attributes.position;
     const v = new THREE.Vector3();
@@ -979,6 +1170,10 @@ export function createMouseModel(THREE, annolidShaders, random) {
       pos.setXYZ(i, v.x, v.y, v.z);
     }
     geometry.computeVertexNormals();
+    const p = geometry.parameters;
+    if (p && p.widthSegments && p.heightSegments) {
+      weldParametricSeamNormals(geometry, p.widthSegments, p.heightSegments);
+    }
     return geometry;
   }
 
@@ -1265,8 +1460,8 @@ export function createMouseModel(THREE, annolidShaders, random) {
   // monotonically from inside the thorax through the neck waist into the skull
   // so it emerges tangentially with no outward flare or vertical shading kink.
   function cervicalCoreInset(rawT) {
-    const frontBlend = 1.0 - THREE.MathUtils.smoothstep(rawT, 0.58, 1.0) * 0.46;
-    return THREE.MathUtils.lerp(0.95, 0.85, rawT) * frontBlend;
+    const frontBlend = 1.0 - THREE.MathUtils.smoothstep(rawT, 0.54, 1.0) * 0.48;
+    return THREE.MathUtils.lerp(0.92, 0.81, rawT) * frontBlend;
   }
 
   /**
@@ -1305,7 +1500,7 @@ export function createMouseModel(THREE, annolidShaders, random) {
           profile.centerY + Math.sin(angle) * profile.radiusY * inset,
           profile.z
         );
-        uvs.push(segment / radialSegments, rawT);
+        uvs.push(segment / radialSegments, rawT * 0.42);
       }
     }
     for (let ring = 0; ring < rings; ring++) {
@@ -1320,6 +1515,7 @@ export function createMouseModel(THREE, annolidShaders, random) {
     geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
     geometry.setIndex(indices);
     geometry.computeVertexNormals();
+    weldParametricSeamNormals(geometry, radialSegments, rings);
     return geometry;
   }
 
@@ -1340,46 +1536,92 @@ export function createMouseModel(THREE, annolidShaders, random) {
     if (v.z > 0) v.z += gluteal * 0.04;
   };
 
-  function shapePinnaPoint(x, y, depthMul = 1.0, zLift = 0.0) {
+  function shapePinnaPoint(x, y, depthMul = 1.0, zLift = 0.0, sideSign = 1) {
     const radius = Math.min(1.0, Math.sqrt(x * x + y * y));
-    const lowerOpen = THREE.MathUtils.smoothstep(y, -0.90, -0.06);
-    const crownTaper = 1.0 - THREE.MathUtils.smoothstep(y, 0.30, 0.96) * 0.14;
-    const rootPad = Math.exp(-(x * x * 5.0 + Math.pow(y + 0.76, 2.0) * 15.0));
-    const shoulder = Math.exp(-Math.pow((y - 0.06) / 0.70, 2.0));
+    // Anatomical lateral coordinate: xm < 0 is medial/anterior helix margin,
+    // xm > 0 is lateral/posterior outer margin (mirrored cleanly per ear).
+    const xm = x * sideSign;
+    const lowerOpen = THREE.MathUtils.smoothstep(y, -0.98, 0.04);
+    const funnelTaper = 0.16 + 0.84 * Math.pow(lowerOpen, 0.64);
+    // Broad, genuinely rounded murine dome (no pointy apex or flat corners).
+    const crownTaper = 1.0 - THREE.MathUtils.smoothstep(y, 0.48, 1.0) * 0.035;
+    const midFullness = Math.exp(-Math.pow((y - 0.10) / 0.68, 2.0));
     const rim = THREE.MathUtils.smoothstep(radius, 0.78, 1.0);
-    const centerCup = Math.max(0.0, 1.0 - radius * radius);
-    // Gentle forward-cupped side curl + soft backward crown flex so top and
-    // side views show an organic cupped murine ear rather than a flat plate.
-    const lateralCup = (x * x) * 0.105 * (0.45 + 0.55 * lowerOpen);
-    const crownBackFlex = THREE.MathUtils.smoothstep(y, 0.18, 0.98) * 0.085;
-    const upperFold = Math.exp(-(
-      Math.pow(x + 0.10, 2.0) * 5.5 + Math.pow(y - 0.22, 2.0) * 8.5
-    ));
-    const basalFold = Math.exp(-(
-      Math.pow(x + 0.16, 2.0) * 9.0 + Math.pow(y + 0.50, 2.0) * 14.0
-    ));
-    const attachmentBlend = THREE.MathUtils.smoothstep(-y, 0.58, 0.96);
 
-    const px = x * (0.92 + shoulder * 0.065)
-      * (0.54 + lowerOpen * 0.46) * crownTaper;
-    const attachmentY = -0.70 + Math.abs(x) * 0.035;
-    const py = THREE.MathUtils.lerp(y * 0.94, attachmentY, attachmentBlend)
-      + rootPad * 0.018;
+    // Smooth C-infinity lateral/medial shaping without any corner kinks:
+    // gentle posterolateral lobe fullness + subtle lower antitragal curve.
+    const lateralMask = 0.5 * (1.0 + Math.tanh(xm * 2.4));
+    const lateralFull = lateralMask * Math.abs(xm) * (
+      midFullness * 0.048
+      - Math.exp(-Math.pow((y + 0.46) / 0.26, 2.0)) * 0.042
+    );
+    const apexSweep = sideSign * THREE.MathUtils.smoothstep(y, -0.25, 0.96) * 0.018;
+    const px = x * (0.87 + midFullness * 0.055) * funnelTaper * crownTaper
+      + sideSign * lateralFull + apexSweep;
+
+    const py = y * 0.95 + 0.035 * THREE.MathUtils.smoothstep(y, -0.25, 0.95);
+
+    // Deep acoustic conchal bowl + forward-cupped lateral/medial margins +
+    // tucked basal stem (so the lower anterior edge curves cleanly INTO the
+    // temporal skull rather than poking forward as a flap) + internal folds.
+    const conchaBowl = Math.exp(-(
+      Math.pow(xm + 0.03, 2.0) * 2.1 + Math.pow(y + 0.22, 2.0) * 1.85
+    ));
+    const upperScaphaCup = Math.max(0.0, 1.0 - radius * radius)
+      * THREE.MathUtils.smoothstep(y, -0.35, 0.55);
+    const upperCupMask = THREE.MathUtils.smoothstep(y, -0.45, 0.28);
+    const sideCurl = (x * x) * (0.140 * upperCupMask + 0.045);
+    // Mid-upper medial helix rolls gently forward; lower-anterior base tucks
+    // smoothly backward into the temporal fur collar.
+    const medialCurl = THREE.MathUtils.smoothstep(-xm, 0.25, 0.98)
+      * THREE.MathUtils.smoothstep(y, -0.10, 0.48)
+      * (1.0 - THREE.MathUtils.smoothstep(y, 0.58, 0.98) * 0.60)
+      * 0.042;
+    const anteriorBaseTuck = THREE.MathUtils.smoothstep(-xm, 0.05, 0.92)
+      * THREE.MathUtils.smoothstep(-y, 0.08, 0.86)
+      * 0.145;
+    const crownBackFlex = THREE.MathUtils.smoothstep(y, 0.34, 1.0) * 0.042;
+    const antihelixDist = Math.hypot((xm - 0.05) * 1.15, (y + 0.10) * 0.95) - 0.54;
+    const antihelixArc = Math.exp(-(antihelixDist * antihelixDist) * 34.0)
+      * THREE.MathUtils.smoothstep(y, -0.52, 0.36);
+    const plicaRidge = Math.exp(-(
+      Math.pow(xm + 0.04, 2.0) * 5.0
+      + Math.pow(y + 0.26 - xm * 0.16, 2.0) * 40.0
+    ));
+    const basalWall = Math.exp(-(
+      Math.pow(xm + 0.20, 2.0) * 10.0 + Math.pow(y + 0.54, 2.0) * 16.0
+    ));
+    const stemRecess = THREE.MathUtils.smoothstep(-y, 0.48, 1.0) * 0.12;
+
     const pz = (
-      -centerCup * 0.285 + lateralCup - crownBackFlex + rim * 0.090
-      + upperFold * 0.028 + basalFold * 0.036 + rootPad * 0.020
+      -conchaBowl * 0.29
+      - upperScaphaCup * 0.17
+      + sideCurl
+      + medialCurl
+      - anteriorBaseTuck
+      - crownBackFlex
+      + rim * 0.055
+      + antihelixArc * 0.032
+      + plicaRidge * 0.034
+      + basalWall * 0.030
+      - stemRecess
     ) * depthMul + zLift;
     return new THREE.Vector3(px, py, pz);
   }
 
-  function createPinnaShellGeometry() {
-    const rings = 18;
+  function createPinnaShellGeometry(sideSign = 1) {
+    const rings = 20;
     const segments = 72;
     const row = segments + 1;
     const surfaceVertexCount = (rings + 1) * row;
     const positions = [];
     const uvs = [];
     const indices = [];
+
+    const thicknessAt = (x, y, normalizedRadius) => {
+      const rootMass = Math.exp(-(x * x * 4.5 + Math.pow(y + 0.78, 2.0) * 10.0));
+      return 0.011 + (1.0 - normalizedRadius) * 0.010 + rootMass * 0.018;
+    };
 
     for (let side = 0; side < 2; side++) {
       for (let ring = 0; ring <= rings; ring++) {
@@ -1388,24 +1630,43 @@ export function createMouseModel(THREE, annolidShaders, random) {
           const angle = (seg / segments) * Math.PI * 2;
           const x = Math.cos(angle) * normalizedRadius;
           const y = Math.sin(angle) * normalizedRadius;
-          const point = shapePinnaPoint(x, y);
+          const point = shapePinnaPoint(x, y, 1.0, 0.0, sideSign);
           if (side === 1) {
-            const rootThickness = Math.exp(-(
-              x * x * 5.0 + Math.pow(y + 0.72, 2.0) * 12.0
-            ));
-            const shellThickness = 0.019
-              + (1.0 - normalizedRadius) * 0.008
-              + rootThickness * 0.015;
-            point.z -= shellThickness;
+            point.z -= thicknessAt(x, y, normalizedRadius);
           }
           positions.push(point.x, point.y, point.z);
-          uvs.push(0.5 + Math.cos(angle) * normalizedRadius * 0.5, 0.5 + Math.sin(angle) * normalizedRadius * 0.5);
+          uvs.push(
+            0.5 + Math.cos(angle) * normalizedRadius * 0.5,
+            0.5 + Math.sin(angle) * normalizedRadius * 0.5
+          );
         }
       }
     }
 
+    // Rounded mid-margin seam ring so the outer helix curls smoothly from the
+    // inner cup onto the posterior back with no harsh paper-cut sidewall.
+    const edgeMidStart = surfaceVertexCount * 2;
+    for (let seg = 0; seg <= segments; seg++) {
+      const angle = (seg / segments) * Math.PI * 2;
+      const x = Math.cos(angle);
+      const y = Math.sin(angle);
+      const basePt = shapePinnaPoint(x, y, 1.0, 0.0, sideSign);
+      const outPt = shapePinnaPoint(x * 0.97, y * 0.97, 1.0, 0.0, sideSign);
+      const outDirX = basePt.x - outPt.x;
+      const outDirY = basePt.y - outPt.y;
+      const outLen = Math.hypot(outDirX, outDirY) || 1.0;
+      const thick = thicknessAt(x, y, 1.0);
+      const roundOut = thick * 0.42;
+      positions.push(
+        basePt.x + (outDirX / outLen) * roundOut,
+        basePt.y + (outDirY / outLen) * roundOut,
+        basePt.z - thick * 0.50
+      );
+      uvs.push(0.5 + x * 0.5, 0.5 + y * 0.5);
+    }
+
     // Group 0: concave inner (anterior) surface. Group 1: convex outer
-    // (posterior) surface plus the margin, which carries short coat pigment.
+    // (posterior) surface plus the rounded rolled margin.
     const innerIndices = [];
     const outerIndices = [];
     for (let ring = 0; ring < rings; ring++) {
@@ -1424,9 +1685,12 @@ export function createMouseModel(THREE, annolidShaders, random) {
     for (let seg = 0; seg < segments; seg++) {
       const frontA = outerFront + seg;
       const frontB = frontA + 1;
+      const midA = edgeMidStart + seg;
+      const midB = midA + 1;
       const backA = outerBack + seg;
       const backB = backA + 1;
-      outerIndices.push(frontA, backA, frontB, frontB, backA, backB);
+      outerIndices.push(frontA, midA, frontB, frontB, midA, midB);
+      outerIndices.push(midA, backA, midB, midB, backA, backB);
     }
     indices.push(...innerIndices, ...outerIndices);
 
@@ -1440,7 +1704,7 @@ export function createMouseModel(THREE, annolidShaders, random) {
     return geometry;
   }
 
-  function createPinnaSurfaceGeometry(radiusScale = 0.78, depthMul = 1.0, zLift = 0.002) {
+  function createPinnaSurfaceGeometry(radiusScale = 0.78, depthMul = 1.0, zLift = 0.002, sideSign = 1) {
     const rings = 16;
     const segments = 72;
     const row = segments + 1;
@@ -1456,7 +1720,8 @@ export function createMouseModel(THREE, annolidShaders, random) {
           Math.cos(angle) * radius,
           Math.sin(angle) * radius,
           depthMul,
-          zLift
+          zLift,
+          sideSign
         );
         positions.push(point.x, point.y, point.z);
         uvs.push(0.5 + Math.cos(angle) * normalizedRadius * 0.5, 0.5 + Math.sin(angle) * normalizedRadius * 0.5);
@@ -1477,7 +1742,7 @@ export function createMouseModel(THREE, annolidShaders, random) {
     return geometry;
   }
 
-  function createPinnaRimGeometry() {
+  function createPinnaRimGeometry(sideSign = 1) {
     const segments = 76;
     const positions = [];
     const uvs = [];
@@ -1485,17 +1750,17 @@ export function createMouseModel(THREE, annolidShaders, random) {
     for (let band = 0; band < 2; band++) {
       for (let seg = 0; seg <= segments; seg++) {
         const t = seg / segments;
-        // Flush rolled helix edge tapering smoothly to zero into both sides of
-        // the skull attachment so grazing/top views never show a notched step.
-        const angle = -Math.PI * 0.24 + t * Math.PI * 1.48;
-        const endFade = THREE.MathUtils.smoothstep(t, 0.0, 0.16)
-          * THREE.MathUtils.smoothstep(1.0 - t, 0.0, 0.16);
-        const radius = band === 0 ? 1.0 - 0.018 * endFade : 1.0;
+        // Delicate flush rolled helix lip fading cleanly into the basal funnel.
+        const angle = -Math.PI * 0.22 + t * Math.PI * 1.44;
+        const endFade = THREE.MathUtils.smoothstep(t, 0.0, 0.18)
+          * THREE.MathUtils.smoothstep(1.0 - t, 0.0, 0.18);
+        const radius = band === 0 ? 1.0 - 0.015 * endFade : 0.999;
         const point = shapePinnaPoint(
           Math.cos(angle) * radius,
           Math.sin(angle) * radius,
           1.0,
-          0.0005 + endFade * 0.0015
+          0.0003 + endFade * 0.0011,
+          sideSign
         );
         positions.push(point.x, point.y, point.z + (band === 0 ? 0.0004 * endFade : 0.0));
         uvs.push(seg / segments, band);
@@ -1529,9 +1794,12 @@ export function createMouseModel(THREE, annolidShaders, random) {
   const neckGeo = createCervicalMantleGeometry();
   const cervicalCoreGeo = createCervicalCoreGeometry();
   const thighGeo = deform(new THREE.SphereGeometry(1, 32, 32), deformThigh);
-  const earGeo = createPinnaShellGeometry();
-  const earInnerGeo = createPinnaSurfaceGeometry(0.42, 1.0, 0.002);
-  const earRimGeo = createPinnaRimGeometry();
+  const earGeo = createPinnaShellGeometry(1);
+  const earGeoR = createPinnaShellGeometry(-1);
+  const earInnerGeo = createPinnaSurfaceGeometry(0.44, 1.0, 0.002, 1);
+  const earInnerGeoR = createPinnaSurfaceGeometry(0.44, 1.0, 0.002, -1);
+  const earRimGeo = createPinnaRimGeometry(1);
+  const earRimGeoR = createPinnaRimGeometry(-1);
 
   function copyGeometryPositionsInPlace(targetGeo, freshGeo) {
     const dst = targetGeo.attributes.position;
@@ -2036,16 +2304,16 @@ export function createMouseModel(THREE, annolidShaders, random) {
       hipBlend.add(hfInst);
     }
 
-    // Thigh (femur) — sculpted muscular haunch
+    // Thigh (femur) — sculpted muscular haunch tucked smoothly into the flank
     const thigh = new THREE.Group();
     thigh.name = `${side}-thigh`;
-    thigh.position.set(0, -0.10, 0.02);
+    thigh.position.set(-sign * 0.055, -0.09, 0.02);
     chain.add(thigh);
     const thighMuscle = new THREE.Mesh(thighGeo, surfaceMat);
-    thighMuscle.scale.set(0.76 * thickness, 0.68 * hl, 0.86 * thickness);
-    thighMuscle.castShadow = true;
+    thighMuscle.scale.set(0.68 * thickness, 0.64 * hl, 0.80 * thickness);
+    thighMuscle.castShadow = false;
     thigh.add(thighMuscle);
-    thighMuscle.add(generateFurLayer(deformThigh, Math.floor(8200 * density), furColor, 0.115, false));
+    thighMuscle.add(generateFurLayer(deformThigh, Math.floor(8800 * density), furColor, 0.115, false));
 
     // Shank (crus / tibia-fibula) — furred distal leg tapering toward hock
     const shank = new THREE.Group();
@@ -2112,12 +2380,12 @@ export function createMouseModel(THREE, annolidShaders, random) {
     const furHslMeta = {}; furColObj.getHSL(furHslMeta);
     metaMat.color.set(strain.pawColor ?? '#e6b0a7').lerp(
       furColObj,
-      furHslMeta.l < 0.25 ? 0.36 : 0.26
+      furHslMeta.l < 0.25 ? 0.68 : 0.48
     );
-    metaMat.roughness = 0.68;
-    metaMat.transmission = 0.05;
-    metaMat.sheen = 0.42;
-    metaMat.sheenColor = new THREE.Color(strain.pawColor ?? '#e6b0a7').lerp(furColObj, 0.35);
+    metaMat.roughness = 0.78;
+    metaMat.transmission = 0.03;
+    metaMat.sheen = 0.50;
+    metaMat.sheenColor = new THREE.Color(strain.pawColor ?? '#e6b0a7').lerp(furColObj, 0.58);
     const metaLen = 0.25 * PROP.hindPawSize;
     const metaGeo = new THREE.CapsuleGeometry(0.046 * thickness, metaLen, 8, 10);
     deform(metaGeo, (mv) => {
@@ -2132,16 +2400,16 @@ export function createMouseModel(THREE, annolidShaders, random) {
     metaMesh.position.set(sign * 0.022, -0.104, 0.112);
     metaMesh.castShadow = true;
     ankle.add(metaMesh);
-    // Fine tapered dorsal tarsal fur blending cleanly from furred hock onto
-    // the upper half of the metatarsus (zero sharp black-to-pink cuff step).
+    // Dense proximal tarsal fur tapering smoothly down from the hock so the
+    // hind ankle transitions organically into the dorsal foot without spots.
     metaMesh.add(generateFurLayer(v => {
       const y = v.y;
       const yN = THREE.MathUtils.clamp((y + 1) * 0.5, 0, 1);
       const t = 0.82 + yN * 0.26;
       v.x *= 0.045 * thickness * t;
       v.z *= 0.037 * thickness * t;
-      v.y = (y * 0.36 - 0.16) * metaLen;
-    }, Math.floor(820 * density), furColor, 0.026, false, true));
+      v.y = (y * 0.40 - 0.16) * metaLen;
+    }, Math.floor(1150 * density), furColor, 0.032, false, true));
 
     // Hindpaw — planted level on ground
     const paw = createPaw(skinMat, false, strain, furColor);
@@ -2343,8 +2611,11 @@ export function createMouseModel(THREE, annolidShaders, random) {
     const furHsl = {};
     baseFurColor.getHSL(furHsl);
     const isPaleCoat = furHsl.l > 0.65;
+    const isDarkCoat = furHsl.l < 0.18;
     const clumpScale = THREE.MathUtils.clamp((clumpiness ?? 0.3) / 0.3, 0.0, 3.5);
-    const radius = isUndercoat ? 0.0023 : 0.0017;
+    // Fuller, softly tapered hair blades reduce sub-pixel speckle aliasing and
+    // give a plush, cohesive murine velvet pelt across both dark and pale coats.
+    const radius = isUndercoat ? 0.0036 : 0.0025;
     // Only the visible guard layer needs the extra bend segment. Undercoat
     // remains a single tapered segment with lightweight matte shading.
     const geo = new THREE.ConeGeometry(radius, length, 3, isUndercoat ? 1 : 2, true);
@@ -2354,10 +2625,10 @@ export function createMouseModel(THREE, annolidShaders, random) {
     const colors = new Float32Array(vertices.count * 3);
     for (let i = 0; i < vertices.count; i++) {
       const progress = THREE.MathUtils.clamp(vertices.getZ(i) / length, 0, 1);
-      vertices.setX(i, vertices.getX(i) + length * 0.09 * progress * progress);
+      vertices.setX(i, vertices.getX(i) + length * 0.08 * progress * progress);
       const shade = isPaleCoat
-        ? (0.93 + progress * 0.12)
-        : (0.80 + progress * 0.30);
+        ? (0.89 + progress * 0.14)
+        : (isDarkCoat ? (0.74 + progress * 0.28) : (0.78 + progress * 0.28));
       colors.set([shade, shade, shade], i * 3);
     }
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
@@ -2366,15 +2637,15 @@ export function createMouseModel(THREE, annolidShaders, random) {
       ? new THREE.MeshStandardMaterial({
         vertexColors: true,
         color: 0xffffff,
-        roughness: isPaleCoat ? 0.88 : 0.93,
+        roughness: isPaleCoat ? 0.90 : 0.94,
       })
       : new THREE.MeshPhysicalMaterial({
         vertexColors: true,
-        color: 0xffffff, roughness: isPaleCoat ? 0.78 : 0.72,
+        color: 0xffffff, roughness: isPaleCoat ? 0.80 : 0.74,
         clearcoat: 0.0,
-        sheen: isPaleCoat ? 0.70 : 0.82,
-        sheenColor: new THREE.Color(colorHex),
-        sheenRoughness: isPaleCoat ? 0.66 : 0.48,
+        sheen: isPaleCoat ? 0.64 : 0.70,
+        sheenColor: isDarkCoat ? new THREE.Color(0x4a4346) : new THREE.Color(colorHex),
+        sheenRoughness: isPaleCoat ? 0.66 : 0.50,
       });
     enhanceFurMaterial(mat, colorHex, isUndercoat);
     const inst = new THREE.InstancedMesh(geo, mat, count);
@@ -2431,7 +2702,7 @@ export function createMouseModel(THREE, annolidShaders, random) {
       // normal buries strands at the shoulder and points them into the rump.
       flowDir.addScaledVector(normal, -flowDir.dot(normal));
       if (flowDir.lengthSq() < 1e-8) flowDir.set(1, 0, 0).addScaledVector(normal, -normal.x);
-      flowDir.normalize().addScaledVector(normal, isUndercoat ? 0.26 : 0.13).normalize();
+      flowDir.normalize().addScaledVector(normal, isUndercoat ? 0.22 : 0.10).normalize();
       dummy.position.copy(pos);
       dummy.lookAt(lookTarget.copy(pos).add(flowDir));
       let scale = 0.70 + random() * 0.40;
@@ -2522,31 +2793,41 @@ export function createMouseModel(THREE, annolidShaders, random) {
   }
 
   function createEarBaseFur(furColor, density, sideSign) {
-    const count = Math.floor(620 * density);
+    const count = Math.floor(760 * density);
     if (count <= 0) return new THREE.Group();
-    const geo = new THREE.ConeGeometry(0.0046, 0.074, 3);
-    geo.translate(0, 0.037, 0);
-    const mat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(furColor),
-      roughness: 0.88,
-    });
+    const rng = makeIsolatedRng(sideSign > 0 ? 0x3B9E17A5 : 0x3B9E17A6);
+    const geo = new THREE.ConeGeometry(0.0048, 0.082, 3);
+    geo.translate(0, 0.041, 0);
+    const mat = enhanceFurMaterial(
+      new THREE.MeshStandardMaterial({
+        color: new THREE.Color(furColor),
+        roughness: 0.88,
+      }),
+      furColor,
+      true
+    );
     const inst = new THREE.InstancedMesh(geo, mat, count);
     const dummy = new THREE.Object3D();
+    const up = new THREE.Vector3(0, 1, 0);
     const nrm = new THREE.Vector3();
     for (let i = 0; i < count; i++) {
-      const t = random() * 2.0 - 1.0;
-      const arch = 1.0 - t * t;
-      const x = t * (0.28 + random() * 0.07);
-      const y = -0.035 + arch * 0.11 + random() * 0.055;
-      const z = -0.09 + random() * 0.075;
+      // Wrap smoothly around the entire narrow conchal stem (medial, anterior,
+      // posterior, and lateral) so cranial pelage flows seamlessly onto the pinna base.
+      const ang = rng() * Math.PI * 2;
+      const frac = Math.pow(rng(), 0.78);
+      const isBack = Math.sin(ang) < 0.25;
+      const rad = THREE.MathUtils.lerp(0.24, 0.14, frac) * (0.86 + rng() * 0.26);
+      const x = Math.cos(ang) * rad * 1.15;
+      const z = Math.sin(ang) * rad * 0.78 - (isBack ? 0.055 : 0.015);
+      const y = -0.10 + frac * (isBack ? 0.34 : 0.22) + (rng() - 0.5) * 0.04;
       dummy.position.set(x, y, z);
       nrm.set(
-        t * 0.36 + sideSign * 0.04,
-        0.50 + arch * 0.28,
-        0.38 + random() * 0.22
+        Math.cos(ang) * 0.42 + sideSign * 0.06,
+        0.56 + frac * 0.32,
+        Math.sin(ang) * 0.38 - (isBack ? 0.18 : -0.12)
       ).normalize();
-      dummy.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), nrm);
-      const s = 0.58 + random() * 0.48;
+      dummy.quaternion.setFromUnitVectors(up, nrm);
+      const s = (0.62 + rng() * 0.48) * (1.0 - frac * 0.28);
       dummy.scale.set(s, s, s);
       dummy.updateMatrix();
       inst.setMatrixAt(i, dummy.matrix);
@@ -2554,17 +2835,18 @@ export function createMouseModel(THREE, annolidShaders, random) {
     return inst;
   }
 
-  function createEarRimFuzz(furColor, skinColor, density) {
+  function createEarRimFuzz(furColor, skinColor, density, sideSign = 1) {
     if (density <= 0) return new THREE.Group();
-    const count = Math.floor(260 * Math.max(0.35, density));
+    const count = Math.floor(280 * Math.max(0.35, density));
     if (count <= 0) return new THREE.Group();
-    const geo = new THREE.ConeGeometry(0.0024, 0.032, 3);
-    geo.translate(0, 0.016, 0);
-    const fuzzColor = new THREE.Color(skinColor).lerp(new THREE.Color(furColor), 0.35).offsetHSL(0, -0.05, 0.18);
+    const rng = makeIsolatedRng(sideSign > 0 ? 0x61D42C11 : 0x61D42C12);
+    const geo = new THREE.ConeGeometry(0.0022, 0.028, 3);
+    geo.translate(0, 0.014, 0);
+    const fuzzColor = new THREE.Color(skinColor).lerp(new THREE.Color(furColor), 0.42).offsetHSL(0, -0.04, 0.14);
     const mat = new THREE.MeshBasicMaterial({
       color: fuzzColor,
       transparent: true,
-      opacity: 0.34,
+      opacity: 0.32,
       depthWrite: false,
     });
     const inst = new THREE.InstancedMesh(geo, mat, count);
@@ -2572,13 +2854,13 @@ export function createMouseModel(THREE, annolidShaders, random) {
     const up = new THREE.Vector3(0, 1, 0);
     const dir = new THREE.Vector3();
     for (let i = 0; i < count; i++) {
-      const t = i / count + (random() - 0.5) * 0.008;
-      const angle = -Math.PI * 0.18 + THREE.MathUtils.clamp(t, 0, 1) * Math.PI * 1.36;
-      const pt = shapePinnaPoint(Math.cos(angle) * 0.99, Math.sin(angle) * 0.99, 1.0, 0.004);
+      const t = i / count + (rng() - 0.5) * 0.008;
+      const angle = -Math.PI * 0.16 + THREE.MathUtils.clamp(t, 0, 1) * Math.PI * 1.32;
+      const pt = shapePinnaPoint(Math.cos(angle) * 0.99, Math.sin(angle) * 0.99, 1.0, -0.002, sideSign);
       dummy.position.copy(pt);
-      dir.set(Math.cos(angle), Math.sin(angle), 0.15 + (random() - 0.5) * 0.2).normalize();
+      dir.set(Math.cos(angle) * 0.85, Math.sin(angle) * 0.85, -0.18 + (rng() - 0.5) * 0.18).normalize();
       dummy.quaternion.setFromUnitVectors(up, dir);
-      const s = 0.65 + random() * 0.55;
+      const s = 0.60 + rng() * 0.50;
       dummy.scale.set(s, s, s);
       dummy.updateMatrix();
       inst.setMatrixAt(i, dummy.matrix);
@@ -2586,12 +2868,12 @@ export function createMouseModel(THREE, annolidShaders, random) {
     return inst;
   }
 
-  function createEarBackFuzz(furColor, density) {
-    const count = Math.floor(260 * Math.max(0.0, density));
+  function createEarBackFuzz(furColor, density, sideSign = 1) {
+    const count = Math.floor(400 * Math.max(0.0, density));
     if (count <= 0) return new THREE.Group();
-    const rng = makeIsolatedRng(0x51A7C23D);
-    const geo = new THREE.ConeGeometry(0.0032, 0.040, 3);
-    geo.translate(0, 0.020, 0);
+    const rng = makeIsolatedRng(sideSign > 0 ? 0x51A7C23D : 0x51A7C23E);
+    const geo = new THREE.ConeGeometry(0.0031, 0.042, 3);
+    geo.translate(0, 0.021, 0);
     const mat = enhanceFurMaterial(
       new THREE.MeshStandardMaterial({
         color: new THREE.Color(furColor),
@@ -2606,15 +2888,17 @@ export function createMouseModel(THREE, annolidShaders, random) {
     const up = new THREE.Vector3(0, 1, 0);
     const dir = new THREE.Vector3();
     for (let i = 0; i < count; i++) {
-      const r = Math.sqrt(rng()) * 0.88;
+      // Bias short velvety posterior pelage more densely toward the lower/mid pinna.
+      const r = Math.sqrt(rng()) * 0.90;
       const a = rng() * Math.PI * 2;
       const x = Math.cos(a) * r;
-      const y = Math.sin(a) * r;
-      const pt = shapePinnaPoint(x, y, 1.0, -0.024);
+      const y = Math.sin(a) * r * 0.92 - 0.08 * (1.0 - r);
+      const pt = shapePinnaPoint(x, y, 1.0, -0.018, sideSign);
       dummy.position.copy(pt);
-      dir.set(x * 0.35, 0.72 + y * 0.25, -0.52).normalize();
+      dir.set(x * 0.34, 0.74 + y * 0.22, -0.46).normalize();
       dummy.quaternion.setFromUnitVectors(up, dir);
-      const s = 0.52 + rng() * 0.45;
+      const upperThin = 1.0 - THREE.MathUtils.smoothstep(y, 0.10, 0.92) * 0.42;
+      const s = (0.50 + rng() * 0.46) * upperThin;
       dummy.scale.set(s, s, s);
       dummy.updateMatrix();
       inst.setMatrixAt(i, dummy.matrix);
@@ -2644,149 +2928,154 @@ export function createMouseModel(THREE, annolidShaders, random) {
 
     const outerHsl = {};
     new THREE.Color(furColor).getHSL(outerHsl);
-    // Posterior pinna: short, fine pelage over thin skin. Dark coats stay
-    // deeply pigmented charcoal-taupe; pale coats stay translucent rose-ivory.
+    // Posterior pinna: soft velvety pelage over thin translucent cartilage.
+    // Dark coats stay rich charcoal-taupe; pale coats stay soft warm rose-ivory.
     const backMat = outerMat.clone();
     backMat.color = new THREE.Color(furColor).lerp(
       outerMat.color,
-      outerHsl.l < 0.2 ? 0.18 : 0.56
+      outerHsl.l < 0.2 ? 0.26 : 0.78
     );
+    if (outerHsl.l >= 0.2) {
+      backMat.color.lerp(innerMat.color, 0.22);
+    }
     backMat.map = null;
     backMat.normalMap = null;
     backMat.transmission = outerHsl.l < 0.2
-      ? 0.05
-      : Math.min(0.20, outerMat.transmission ?? 0.16);
-    backMat.roughness = outerHsl.l < 0.2 ? 0.86 : 0.76;
+      ? 0.07
+      : Math.min(0.28, outerMat.transmission ?? 0.22);
+    backMat.roughness = outerHsl.l < 0.2 ? 0.84 : 0.74;
     backMat.clearcoat = 0.0;
-    backMat.sheen = 0.62;
+    backMat.sheen = 0.65;
     backMat.sheenColor = new THREE.Color(furColor).lerp(new THREE.Color(0xffffff), 0.22);
     backMat.sheenRoughness = 0.58;
 
+    const pinnaShellGeo = sideSign > 0 ? earGeo : earGeoR;
+    const pinnaInnerGeo = sideSign > 0 ? earInnerGeo : earInnerGeoR;
+    const pinnaRimGeo = sideSign > 0 ? earRimGeo : earRimGeoR;
+
     // Group 0 (concave inner surface) carries innerMat directly; Group 1
-    // (convex back + rolled margin) carries backMat so there is zero double-layer gap.
-    const outer = new THREE.Mesh(earGeo, [innerMat, backMat]);
+    // (convex back + rounded rolled margin) carries backMat with zero gap.
+    const outer = new THREE.Mesh(pinnaShellGeo, [innerMat, backMat]);
     outer.name = 'pinna-shell';
     outer.castShadow = true;
     outer.receiveShadow = true;
     pinna.add(outer);
 
     const rimMat = backMat.clone();
-    rimMat.color = rimMat.color.clone().lerp(outerMat.color, 0.35);
+    rimMat.color = rimMat.color.clone().lerp(innerMat.color, 0.48);
     rimMat.transmission = 0.0;
-    rimMat.roughness = Math.min(0.72, (outerMat.roughness ?? 0.48) + 0.12);
+    rimMat.roughness = Math.min(0.72, (outerMat.roughness ?? 0.48) + 0.14);
     rimMat.polygonOffset = true;
     rimMat.polygonOffsetFactor = -1;
     rimMat.polygonOffsetUnits = -1;
-    const rim = new THREE.Mesh(earRimGeo, rimMat);
+    const rim = new THREE.Mesh(pinnaRimGeo, rimMat);
     rim.name = 'open-auricular-rim';
     rim.castShadow = false;
     pinna.add(rim);
 
-    const rimFuzz = createEarRimFuzz(furColor, skinColor, density);
+    const rimFuzz = createEarRimFuzz(furColor, skinColor, density, sideSign);
     rimFuzz.name = 'auricular-marginal-vellus';
     pinna.add(rimFuzz);
 
-    const backFuzz = createEarBackFuzz(furColor, density);
+    const backFuzz = createEarBackFuzz(furColor, density, sideSign);
     pinna.add(backFuzz);
 
-    // Subtle non-transmissive basal conchal blush over the unified pinna shell
-    // (avoids overlapping two transmissive surfaces which creates a ring cutout).
+    // Subtle non-transmissive basal conchal blush over the unified pinna shell.
     const conchalBlushMat = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(innerMat.color).offsetHSL(0.0, 0.04, -0.04),
+      color: new THREE.Color(innerMat.color).offsetHSL(0.0, 0.04, -0.05),
       roughness: 0.72,
       transparent: true,
-      opacity: 0.16,
+      opacity: 0.18,
       depthWrite: false,
       polygonOffset: true,
       polygonOffsetFactor: -1,
       polygonOffsetUnits: -1,
     });
-    const inner = new THREE.Mesh(earInnerGeo, conchalBlushMat);
+    const inner = new THREE.Mesh(pinnaInnerGeo, conchalBlushMat);
     inner.name = 'concave-pinna-surface';
-    inner.position.set(0, -0.08, 0.001);
+    inner.position.set(0, -0.10, 0.001);
     inner.castShadow = false;
     pinna.add(inner);
 
-    // Compact buried pedicle seated entirely inside the temporal skull & base fur
-    // collar so no bare lobe ever pokes out behind the eye.
+    // Compact buried pedicle seated entirely inside the temporal skull & base fur collar.
     const pedicle = new THREE.Mesh(
-      new THREE.SphereGeometry(0.16, 16, 12),
+      new THREE.SphereGeometry(0.15, 16, 12),
       backMat
     );
     pedicle.name = 'buried-pinna-pedicle';
-    pedicle.position.set(sideSign * 0.008, -0.02, -0.042);
-    pedicle.scale.set(0.72, 0.42, 0.46);
+    pedicle.position.set(sideSign * 0.008, -0.03, -0.045);
+    pedicle.scale.set(0.68, 0.44, 0.46);
     pedicle.castShadow = false;
     ear.add(pedicle);
 
     const foldMat = innerMat.clone();
-    foldMat.color = foldMat.color.clone().offsetHSL(0.0, 0.010, -0.045);
-    foldMat.transmission = Math.min(0.18, innerMat.transmission ?? 0.22);
-    foldMat.roughness = 0.68;
-    // Concha, tragus, and auditory meatus shadow sit deeply inside the basal
-    // cup so they read as organic cartilage contours rather than floating pegs.
-    const cupDepthAt = (px, py) => shapePinnaPoint(px, py - 0.76, 1.0, 0.002).z;
+    foldMat.color = foldMat.color.clone().offsetHSL(0.0, 0.012, -0.055);
+    foldMat.transmission = Math.min(0.16, innerMat.transmission ?? 0.20);
+    foldMat.roughness = 0.70;
+    // Concha, tragus, and auditory meatus shadow sit deeply inside the mirrored
+    // basal funnel so they read as organic cartilage contours.
+    const cupDepthAt = (px, py) => shapePinnaPoint(px, py - 0.76, 1.0, 0.002, sideSign).z;
     const concha = new THREE.Mesh(
-      new THREE.SphereGeometry(0.14, 16, 12),
+      new THREE.SphereGeometry(0.12, 16, 12),
       foldMat
     );
     concha.name = 'basal-conchal-fold';
-    concha.position.set(sideSign * 0.010, 0.26, cupDepthAt(0.0, 0.26) - 0.008);
-    concha.scale.set(0.56, 0.36, 0.08);
-    concha.rotation.z = sideSign * 0.06;
+    concha.position.set(sideSign * 0.015, 0.27, cupDepthAt(sideSign * 0.015, 0.27) - 0.006);
+    concha.scale.set(0.52, 0.34, 0.09);
+    concha.rotation.z = sideSign * 0.08;
     concha.castShadow = false;
     ear.add(concha);
 
     const tragus = new THREE.Mesh(
-      new THREE.CapsuleGeometry(0.014, 0.056, 8, 10),
+      new THREE.CapsuleGeometry(0.015, 0.055, 8, 10),
       foldMat
     );
     tragus.name = 'auricular-tragus-fold';
-    tragus.position.set(-sideSign * 0.046, 0.22, cupDepthAt(-0.046, 0.22) - 0.002);
-    tragus.rotation.z = sideSign * 0.42;
-    tragus.scale.set(0.85, 0.85, 0.34);
+    tragus.position.set(-sideSign * 0.052, 0.22, cupDepthAt(-sideSign * 0.052, 0.22) + 0.004);
+    tragus.rotation.z = sideSign * 0.38;
+    tragus.scale.set(0.86, 0.86, 0.38);
     tragus.castShadow = false;
     ear.add(tragus);
 
-    const canalMat = new THREE.MeshPhysicalMaterial({
-      color: new THREE.Color(innerMat.color).multiplyScalar(0.42),
-      roughness: 0.90,
+    const canalMat = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(innerMat.color).multiplyScalar(0.36),
+      roughness: 0.92,
       transparent: true,
-      opacity: 0.42,
+      opacity: 0.48,
       depthWrite: false,
     });
     const canal = new THREE.Mesh(
-      new THREE.SphereGeometry(0.048, 14, 12),
+      new THREE.SphereGeometry(0.050, 14, 12),
       canalMat
     );
     canal.name = 'ear-canal-shadow';
-    canal.position.set(-sideSign * 0.012, 0.19, cupDepthAt(-0.012, 0.19) + 0.002);
-    canal.scale.set(0.78, 0.46, 0.10);
+    canal.position.set(-sideSign * 0.012, 0.18, cupDepthAt(-sideSign * 0.012, 0.18) + 0.003);
+    canal.scale.set(0.76, 0.48, 0.12);
     ear.add(canal);
 
     const baseFur = createEarBaseFur(furColor, density, sideSign);
     baseFur.name = 'pinna-root-fur-collar';
-    baseFur.position.set(0, -0.02, -0.015);
+    baseFur.position.set(0, -0.02, -0.012);
     ear.add(baseFur);
 
     const strainScale = strain.earScaleMul ?? 1.0;
-    const s = eSize * 0.78 * strainScale;
-    // Pinnae rise from the dorsolateral cranium behind the eyes, cupping
-    // forward-laterally with a natural subtle backward sweep and outward splay.
-    const openingYaw = 0.48 + (strain.earYaw ?? PROP.earYaw) * 0.30;
+    const s = eSize * 0.73 * strainScale;
+    // Pinnae seat on the posterolateral temporal skull behind the eyes, splaying
+    // outward in a natural V-arc with a graceful backward sweep and anterolateral cup.
+    const openingYaw = 0.36 + (strain.earYaw ?? PROP.earYaw) * 0.26;
     const root = findHeadSurfacePoint({
-      x: sideSign * 0.37,
-      y: 0.48,
-      z: PROP.earSetBack + 0.18,
+      x: sideSign * 0.49,
+      y: 0.36,
+      z: PROP.earSetBack + 0.03,
     });
-    ear.position.copy(root.position).addScaledVector(root.normal, -0.055);
+    ear.position.copy(root.position).addScaledVector(root.normal, -0.085);
     ear.position.y += heightOffset;
     ear.rotation.set(
-      -0.20 + asymmetryTilt,
+      -0.10 + asymmetryTilt,
       sideSign * openingYaw + asymmetryYaw,
-      sideSign * -0.25
+      sideSign * -0.42
     );
-    ear.scale.set(s * 0.94, s, s);
+    ear.scale.set(s * 0.93, s * 1.00, s * 1.04);
     ear._pinna = pinna;
     ear._pedicle = pedicle;
     ear._canal = canal;
@@ -2794,11 +3083,11 @@ export function createMouseModel(THREE, annolidShaders, random) {
   }
 
   function createTailBaseFur(furColor, density) {
-    const count = Math.floor(420 * Math.max(0.0, density));
+    const count = Math.floor(640 * Math.max(0.0, density));
     if (count <= 0) return new THREE.Group();
     const rng = makeIsolatedRng(0x2F84A91B);
-    const geo = new THREE.ConeGeometry(0.0048, 0.088, 3);
-    geo.translate(0, 0.044, 0);
+    const geo = new THREE.ConeGeometry(0.0042, 0.095, 3);
+    geo.translate(0, 0.0475, 0);
     const mat = enhanceFurMaterial(
       new THREE.MeshStandardMaterial({
         color: new THREE.Color(furColor),
@@ -2813,17 +3102,25 @@ export function createMouseModel(THREE, annolidShaders, random) {
     const up = new THREE.Vector3(0, 1, 0);
     const dir = new THREE.Vector3();
     for (let i = 0; i < count; i++) {
-      const frac = rng() * 0.85;
+      // Exponential caudal falloff: plush sacral collar emerging right at the rump
+      // feathering organically into sparse sleek hairs down the visible proximal shaft.
+      const frac = Math.pow(rng(), 1.35);
       const ang = rng() * Math.PI * 2;
-      const rad = THREE.MathUtils.lerp(0.132, 0.096, frac) * (0.94 + rng() * 0.10);
-      const x = Math.cos(ang) * rad;
-      const y = Math.sin(ang) * rad;
-      const z = frac * 0.24;
+      const ovalX = THREE.MathUtils.lerp(1.05, 1.0, frac);
+      const ovalY = THREE.MathUtils.lerp(0.95, 1.0, frac);
+      // Match emerging tailSurfaceRadiusAt(0.04..0.14) so roots sit right on the visible skin.
+      const baseRad = THREE.MathUtils.lerp(0.114, 0.083, frac) * (0.98 + rng() * 0.05);
+      const x = Math.cos(ang) * baseRad * ovalX;
+      const y = Math.sin(ang) * baseRad * ovalY;
+      const z = -0.10 + frac * 0.78;
       dummy.position.set(x, y, z);
-      dir.set(x * 0.42, y * 0.42, 0.92 + rng() * 0.18).normalize();
+      // Sleek caudal lay hugging the emerging shaft (less flare distally).
+      const flare = THREE.MathUtils.lerp(0.28, 0.12, frac);
+      dir.set(Math.cos(ang) * flare, Math.sin(ang) * flare, 0.95 + rng() * 0.12).normalize();
       dummy.quaternion.setFromUnitVectors(up, dir);
-      const sc = (0.68 + rng() * 0.46) * (1.0 - frac * 0.42);
-      dummy.scale.set(sc, sc, sc);
+      const scLen = (0.76 + rng() * 0.44) * THREE.MathUtils.lerp(1.18, 0.36, frac);
+      const scWid = (0.80 + rng() * 0.32) * THREE.MathUtils.lerp(1.05, 0.56, frac);
+      dummy.scale.set(scWid, scLen, scWid);
       dummy.updateMatrix();
       inst.setMatrixAt(i, dummy.matrix);
     }
@@ -2835,8 +3132,10 @@ export function createMouseModel(THREE, annolidShaders, random) {
   // Shared assets survive subject disposal and can be used by later spawns.
   // ═══════════════════════════════════════════════════════════════
   const sharedResources = new Set([
-    bodyGeo, headGeo, neckGeo, cervicalCoreGeo, thighGeo, earGeo, earInnerGeo, earRimGeo,
-    fleshMatBase, clawMat, eyeMat, corneaMat, padNormalMap, tailRoughnessMap, tailNormalMap,
+    bodyGeo, headGeo, neckGeo, cervicalCoreGeo, thighGeo,
+    earGeo, earGeoR, earInnerGeo, earInnerGeoR, earRimGeo, earRimGeoR,
+    fleshMatBase, clawMat, eyeMat, corneaMat, padNormalMap, tailAlbedoMap,
+    tailRoughnessMap, tailNormalMap,
     eyeIrisMap, earNormalMap, earRoughnessMap, earAlbedoMap, noseAlbedoMap, noseNormalMap,
     noseRoughnessMap, labFloorAlbedoMap, labFloorRoughnessMap, labFloorNormalMap,
     homeCageBeddingMaps.albedo, homeCageBeddingMaps.normal, homeCageBeddingMaps.roughness,
@@ -2878,6 +3177,7 @@ export function createMouseModel(THREE, annolidShaders, random) {
   return {
     PROP,
     FORELIMB_NEUTRAL,
+    tailAlbedoMap,
     tailRoughnessMap,
     tailNormalMap,
     eyeIrisMap,

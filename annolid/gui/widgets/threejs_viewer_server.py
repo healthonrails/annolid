@@ -37,10 +37,12 @@ _THREEJS_ALLOWED_ASSETS = {
     "lil-gui.esm.min.js",
     "points_3d.html",
     "two_mice.html",
+    "fly_brain_mouse.html",
     "two_mice_scene.js",
     "two_mice_model.js",
     "two_mice_simulation.js",
     "two_mice_control.js",
+    "two_mice_fly_brain.js",
     "swarm_visualizer.html",
     "parser.worker.js",
 }
@@ -148,8 +150,13 @@ def _ensure_threejs_http_server() -> str:
         if _THREEJS_HTTP_SERVER is not None and _THREEJS_HTTP_PORT is not None:
             return f"http://127.0.0.1:{_THREEJS_HTTP_PORT}"
 
+        class _ThreeJsHttpServer(ThreadingHTTPServer):
+            request_queue_size = 64
+            daemon_threads = True
+
         class _Handler(BaseHTTPRequestHandler):
             server_version = "AnnolidThreeJsServer/1.0"
+            protocol_version = "HTTP/1.1"
 
             def log_message(self, fmt: str, *args: object) -> None:  # noqa: D401
                 return
@@ -169,6 +176,7 @@ def _ensure_threejs_http_server() -> str:
                     "Access-Control-Expose-Headers",
                     "Accept-Ranges, Content-Range, Content-Length",
                 )
+                self.send_header("Content-Length", "0")
                 self.end_headers()
 
             def _serve(self, *, send_body: bool) -> None:
@@ -356,7 +364,7 @@ def _ensure_threejs_http_server() -> str:
                     except Exception:
                         return
 
-        httpd = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        httpd = _ThreeJsHttpServer(("127.0.0.1", 0), _Handler)
         _THREEJS_HTTP_SERVER = httpd
         _THREEJS_HTTP_PORT = int(getattr(httpd, "server_port", 0) or 0)
         thread = threading.Thread(target=httpd.serve_forever, daemon=True)

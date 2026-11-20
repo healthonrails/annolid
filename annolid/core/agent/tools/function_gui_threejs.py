@@ -45,8 +45,8 @@ class GuiOpenThreeJsExampleTool(FunctionTool):
     def description(self) -> str:
         return (
             "Open a built-in Three.js example in Annolid 3D view. "
-            "Known examples: two_mice_html, brain_viewer_html, helix_points_csv, "
-            "wave_surface_obj, sphere_points_ply."
+            "Known examples: two_mice_html, fly_brain_mouse_html, brain_viewer_html, "
+            "helix_points_csv, wave_surface_obj, sphere_points_ply."
         )
 
     @property
