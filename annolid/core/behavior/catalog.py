@@ -48,6 +48,7 @@ def behavior_catalog_entries(schema: Optional[ProjectSchema]) -> List[Dict[str, 
                 "key_binding": behavior.key_binding or "",
                 "is_state": bool(behavior.is_state),
                 "exclusive_with": list(behavior.exclusive_with or []),
+                "color": behavior.color or "",
             }
         )
     return entries

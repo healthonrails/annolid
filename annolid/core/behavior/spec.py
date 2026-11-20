@@ -7,6 +7,7 @@ from annolid.behavior.project_schema import (
     BehaviorDefinition,
     CategoryDefinition,
     DEFAULT_SCHEMA_FILENAME,
+    IndependentVariableDefinition,
     ModifierDefinition,
     ProjectSchema,
     SubjectDefinition,
@@ -26,7 +27,21 @@ def _load_spec_from_resolved_path(
     resolved: Path,
     fallback: Optional[BehaviorSpec],
 ) -> BehaviorSpec:
+    if resolved.suffix.lower() == ".boris":
+        from annolid.behavior.boris_io import import_boris_project
+
+        return import_boris_project(resolved).schema
+
     payload = read_schema_payload(resolved)
+    if (
+        "behaviors_conf" in payload
+        or "subjects_conf" in payload
+        or ("ethogram" in payload and "behaviors" not in payload)
+    ):
+        from annolid.behavior.boris_io import import_boris_project
+
+        return import_boris_project(payload, source_path=resolved).schema
+
     loaded = _dict_to_schema(payload)
     if is_workspace_only_project_payload(payload):
         seed = fallback if fallback is not None else default_behavior_spec()
@@ -38,6 +53,8 @@ def _load_spec_from_resolved_path(
             pose_schema_path=loaded.pose_schema_path or seed.pose_schema_path,
             pose_schema=loaded.pose_schema or seed.pose_schema,
             version=loaded.version,
+            independent_variables=list(seed.independent_variables),
+            observation_variables=dict(seed.observation_variables),
         )
     return loaded
 
@@ -91,6 +108,7 @@ __all__ = [
     "BehaviorDefinition",
     "BehaviorSpec",
     "CategoryDefinition",
+    "IndependentVariableDefinition",
     "ModifierDefinition",
     "ProjectSchema",
     "SubjectDefinition",

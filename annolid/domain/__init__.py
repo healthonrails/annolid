@@ -35,6 +35,7 @@ _EXPORTS = {
     "FrameRef": "annolid.domain.timelines",
     "IRRDisagreementBout": "annolid.domain.timelines",
     "IRRReport": "annolid.domain.timelines",
+    "IndependentVariableDefinition": "annolid.domain.project_schema",
     "InstanceRegistry": "annolid.domain.keypoints",
     "InstanceState": "annolid.domain.keypoints",
     "InstanceTrackSummary": "annolid.domain.tracks",

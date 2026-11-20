@@ -36,6 +36,8 @@ _ROOT_COMMAND_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "behavior-qc",
             "behavior-irr",
             "behavior-cohort",
+            "boris-import",
+            "boris-export",
             "report",
         ),
     ),
@@ -116,7 +118,7 @@ def _root_help_epilog() -> str:
         "Common areas:\n"
         "  Models: train, predict, list-models, dinov3-models\n"
         "  Tracking: track-qc, repair-tracks, gap-report, tracking-stats, kinematics, zone-analysis, segment-body-parts, body-part-ethogram\n"
-        "  Behavior: time-budget, behavior-qc, behavior-irr, behavior-cohort, report\n"
+        "  Behavior: time-budget, behavior-qc, behavior-irr, behavior-cohort, boris-import, boris-export, report\n"
         "  Agent: agent, agent-behavior, agent-status, agent-capabilities, agent-security-*, agent-cron-*\n"
         "  Data: collect-labels, index-to-yolo, import-deeplabcut-training-data\n"
         "  Utilities: citations-*, validate-agent-output, validate-agent-tools"
@@ -486,12 +488,22 @@ def _cmd_time_budget(args: argparse.Namespace) -> int:
             strict=bool(getattr(args, "strict", False)),
             bin_size=getattr(args, "bin_size", None),
             session_duration=getattr(args, "session_duration", None),
+            start_time=getattr(args, "start_time", None),
+            end_time=getattr(args, "end_time", None),
+            exclude_behaviors=getattr(args, "exclude_behaviors", None),
             schema_path=getattr(args, "schema", None),
             bout_profile=getattr(args, "bout_profile", None),
             bout_name=str(getattr(args, "bout_name", "custom_bout") or "custom_bout"),
             bout_behaviors=getattr(args, "bout_behaviors", None),
             bout_initiation_behaviors=getattr(args, "bout_initiation_behaviors", None),
             bout_gap_seconds=getattr(args, "bout_gap_seconds", None),
+            cooccurrence_csv=getattr(args, "cooccurrence_csv", None),
+            ethogram_svg=getattr(args, "ethogram_svg", None),
+            transitions_dot=getattr(args, "transitions_dot", None),
+            transitions_svg=getattr(args, "transitions_svg", None),
+            external_data_csvs=getattr(args, "external_data", None),
+            external_offset_s=float(getattr(args, "external_offset", 0.0) or 0.0),
+            external_data_svg=getattr(args, "external_data_svg", None),
         )
     )
 
@@ -570,6 +582,60 @@ def _cmd_behavior_cohort(args: argparse.Namespace) -> int:
             subjects_csv=getattr(args, "subjects_csv", None),
             transitions_csv=getattr(args, "transitions_csv", None),
             comparisons_csv=getattr(args, "comparisons_csv", None),
+            transitions_dot=getattr(args, "transitions_dot", None),
+            transitions_svg=getattr(args, "transitions_svg", None),
+        )
+    )
+
+
+def _cmd_boris_import(args: argparse.Namespace) -> int:
+    from annolid.services.behavior_analytics import run_boris_import_cli
+
+    raw_obs = getattr(args, "observations", None)
+    obs_filter = (
+        [item.strip() for item in str(raw_obs).split(",") if item.strip()]
+        if raw_obs
+        else None
+    )
+    return int(
+        run_boris_import_cli(
+            boris_path=args.boris_file,
+            output_dir=args.output_dir,
+            observations=obs_filter,
+            apply_time_offset=bool(getattr(args, "apply_time_offset", False)),
+            group_variable=getattr(args, "group_variable", None),
+            json_stdout=bool(getattr(args, "json", False)),
+        )
+    )
+
+
+def _cmd_boris_export(args: argparse.Namespace) -> int:
+    from annolid.services.behavior_analytics import run_boris_export_cli
+
+    fmt = str(getattr(args, "format", "") or "").strip().lower()
+    out_arg = getattr(args, "output", None)
+    out_boris = out_arg
+    tab_csv = getattr(args, "tabular_csv", None)
+    agg_csv = getattr(args, "aggregated_csv", None)
+    if out_arg and fmt == "tabular-csv":
+        tab_csv = tab_csv or out_arg
+        out_boris = None
+    elif out_arg and fmt == "aggregated-csv":
+        agg_csv = agg_csv or out_arg
+        out_boris = None
+
+    return int(
+        run_boris_export_cli(
+            schema_path=getattr(args, "schema", None),
+            events_csvs=list(getattr(args, "events_csvs", None) or ()),
+            output_boris=out_boris,
+            tabular_csv=tab_csv,
+            aggregated_csv=agg_csv,
+            project_name=str(
+                getattr(args, "project_name", "Annolid Behavioral Project")
+                or "Annolid Behavioral Project"
+            ),
+            json_stdout=bool(getattr(args, "json", False)),
         )
     )
 
@@ -2860,6 +2926,8 @@ def _build_root_parser() -> argparse.ArgumentParser:
     time_budget_p.add_argument(
         "-o",
         "--output",
+        "--output-csv",
+        dest="output",
         default=None,
         help="Optional CSV path to write the time-budget summary.",
     )
@@ -2921,6 +2989,60 @@ def _build_root_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help="Maximum gap (seconds) between intervals within the same bout.",
+    )
+    time_budget_p.add_argument(
+        "--start-time",
+        type=float,
+        default=None,
+        help="Optional analysis window start time (seconds) to clip intervals.",
+    )
+    time_budget_p.add_argument(
+        "--end-time",
+        type=float,
+        default=None,
+        help="Optional analysis window end time (seconds) to clip intervals.",
+    )
+    time_budget_p.add_argument(
+        "--exclude-behaviors",
+        default=None,
+        help="Comma-separated behaviors (e.g. out_of_sight) subtracted from per-subject session duration.",
+    )
+    time_budget_p.add_argument(
+        "--cooccurrence-csv",
+        default=None,
+        help="Optional CSV path to write pairwise behavioral co-occurrence statistics.",
+    )
+    time_budget_p.add_argument(
+        "--ethogram-svg",
+        default=None,
+        help="Optional SVG path to render a multi-subject State/Point ethogram.",
+    )
+    time_budget_p.add_argument(
+        "--transitions-dot",
+        default=None,
+        help="Optional Graphviz DOT path for sequential behavioral transitions.",
+    )
+    time_budget_p.add_argument(
+        "--transitions-svg",
+        default=None,
+        help="Optional standalone SVG path for sequential behavioral transitions.",
+    )
+    time_budget_p.add_argument(
+        "--external-data",
+        action="append",
+        default=None,
+        help="Optional external physiological/hardware CSV/TSV file(s) to align against behaviors.",
+    )
+    time_budget_p.add_argument(
+        "--external-offset",
+        type=float,
+        default=0.0,
+        help="Time offset in seconds added to external data timestamps (default: 0.0).",
+    )
+    time_budget_p.add_argument(
+        "--external-data-svg",
+        default=None,
+        help="Optional SVG path to render synchronized external traces with shaded behavior bouts.",
     )
     time_budget_p.set_defaults(_handler=_cmd_time_budget)
 
@@ -3143,7 +3265,101 @@ def _build_root_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional CSV path to write inferential between-group hypothesis test and effect-size rows.",
     )
+    cohort_p.add_argument(
+        "--transitions-dot",
+        default=None,
+        help="Optional Graphviz DOT path to export behavioral transition pathways.",
+    )
+    cohort_p.add_argument(
+        "--transitions-svg",
+        default=None,
+        help="Optional standalone SVG path to render behavioral transition pathways.",
+    )
     cohort_p.set_defaults(_handler=_cmd_behavior_cohort)
+
+    boris_import_p = sub.add_parser(
+        "boris-import",
+        help="Import a BORIS (.boris) project into Annolid schema, event CSVs, and cohort manifest.",
+    )
+    boris_import_p.add_argument(
+        "boris_file",
+        help="Path to a .boris JSON project file.",
+    )
+    boris_import_p.add_argument(
+        "-o",
+        "--output-dir",
+        required=True,
+        help="Target directory for project.annolid.json, <obs>_events.csv, and cohort_manifest.json.",
+    )
+    boris_import_p.add_argument(
+        "--observations",
+        default=None,
+        help="Optional comma-separated observation IDs to import.",
+    )
+    boris_import_p.add_argument(
+        "--apply-time-offset",
+        action="store_true",
+        help="Add each observation's BORIS time_offset to event timestamps.",
+    )
+    boris_import_p.add_argument(
+        "--group-variable",
+        default=None,
+        help="Optional BORIS independent variable name used as experimental group in cohort_manifest.json.",
+    )
+    boris_import_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Print structured JSON import summary to stdout.",
+    )
+    boris_import_p.set_defaults(_handler=_cmd_boris_import)
+
+    boris_export_p = sub.add_parser(
+        "boris-export",
+        help="Export Annolid schema and event CSVs to BORIS (.boris) and/or BORIS CSV/TSV tables.",
+    )
+    boris_export_p.add_argument(
+        "events_csvs",
+        nargs="*",
+        help="Zero or more behavior event CSV/TSV files to include as observations.",
+    )
+    boris_export_p.add_argument(
+        "--schema",
+        default=None,
+        help="Optional project.annolid.json (or YAML) schema file.",
+    )
+    boris_export_p.add_argument(
+        "-o",
+        "--output",
+        default=None,
+        help="Output path (.boris by default, or CSV/TSV when --format is tabular-csv/aggregated-csv).",
+    )
+    boris_export_p.add_argument(
+        "--format",
+        choices=("boris", "tabular-csv", "aggregated-csv"),
+        default="boris",
+        help="Primary format written to -o/--output (default: boris).",
+    )
+    boris_export_p.add_argument(
+        "--tabular-csv",
+        default=None,
+        help="Optional output path for BORIS Tabular Events CSV/TSV (START/STOP/POINT).",
+    )
+    boris_export_p.add_argument(
+        "--aggregated-csv",
+        default=None,
+        help="Optional output path for BORIS Aggregated Events CSV/TSV (Start/Stop/Duration).",
+    )
+    boris_export_p.add_argument(
+        "--project-name",
+        default="Annolid Behavioral Project",
+        help="Project title stored in the exported .boris file.",
+    )
+    boris_export_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Print structured JSON export summary to stdout.",
+    )
+    boris_export_p.set_defaults(_handler=_cmd_boris_export)
 
     kinematics_p = sub.add_parser(
         "kinematics",

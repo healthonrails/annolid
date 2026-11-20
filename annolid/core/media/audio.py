@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
 import shutil
 import subprocess
-from typing import Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 import warnings
 
 import numpy as np
@@ -190,3 +191,119 @@ class AudioBuffer:
             return None, None
         end = start + (1.0 / float(self.fps))
         return start, end
+
+    def rms_dbfs_at_time(
+        self, time_s: float, *, window_s: float = 0.05
+    ) -> Optional[float]:
+        """Compute instantaneous RMS level in dBFS around ``time_s``."""
+        if self.sample_rate <= 0 or self.audio_data.size == 0:
+            return None
+        total_dur = float(self.audio_data.shape[0]) / float(self.sample_rate)
+        if time_s < 0.0 or time_s > total_dur:
+            return None
+        half = 0.5 * max(0.005, float(window_s))
+        seg = self.slice_seconds(max(0.0, time_s - half), min(total_dur, time_s + half))
+        if seg.size == 0:
+            return None
+        rms = float(np.sqrt(np.mean(np.square(seg, dtype=np.float64))))
+        if rms <= 1e-6:
+            return -120.0
+        return 20.0 * math.log10(min(1.0, rms))
+
+
+@dataclass(frozen=True)
+class AudioTrackMixSpec:
+    """Configuration for a single camera/microphone track in a synchronized mix."""
+
+    buffer: AudioBuffer
+    offset_s: float = 0.0
+    gain: float = 1.0
+    muted: bool = False
+
+
+def mix_synchronized_audio_buffers(
+    tracks: Sequence[AudioTrackMixSpec],
+    *,
+    primary_start_sec: float = 0.0,
+    duration_sec: Optional[float] = None,
+    target_sample_rate: int = 48_000,
+    playback_speed: float = 1.0,
+) -> Tuple[np.ndarray, int]:
+    """Mix 1..N offset-aligned audio tracks into a single headroom-safe float32 buffer."""
+    out_sr = max(8_000, int(target_sample_rate))
+    speed = max(0.05, min(16.0, float(playback_speed or 1.0)))
+    max_out_samples = (
+        max(0, int(round((float(duration_sec) / speed) * out_sr)))
+        if duration_sec is not None and duration_sec > 0
+        else None
+    )
+
+    prepared: List[Tuple[int, np.ndarray]] = []
+    total_len = 0
+
+    for track in tracks:
+        if track.muted or track.gain <= 0.0 or track.buffer is None:
+            continue
+        buf = track.buffer
+        src_sr = int(buf.sample_rate)
+        if src_sr <= 0 or buf.audio_data.size == 0:
+            continue
+
+        cam_start_sec = float(primary_start_sec) + float(track.offset_s)
+        if cam_start_sec >= 0.0:
+            s0 = int(round(cam_start_sec * src_sr))
+            if s0 >= int(buf.audio_data.shape[0]):
+                continue
+            lead_out = 0
+            raw_seg = np.asarray(buf.audio_data[s0:], dtype=np.float32)
+        else:
+            lead_out = int(round(((-cam_start_sec) / speed) * out_sr))
+            if max_out_samples is not None and lead_out >= max_out_samples:
+                continue
+            raw_seg = np.asarray(buf.audio_data, dtype=np.float32)
+
+        if max_out_samples is not None:
+            rem_out = max(0, max_out_samples - lead_out)
+            needed_src = int(math.ceil((rem_out / float(out_sr)) * speed * src_sr)) + 2
+            raw_seg = raw_seg[:needed_src]
+
+        n_src = int(raw_seg.shape[0])
+        if n_src == 0:
+            continue
+
+        if src_sr == out_sr and abs(speed - 1.0) <= 1e-6:
+            resampled = raw_seg
+        else:
+            n_out = max(1, int(round((n_src / float(src_sr) / speed) * out_sr)))
+            if n_src == 1:
+                resampled = np.full(n_out, float(raw_seg[0]), dtype=np.float32)
+            else:
+                x_new = np.linspace(0.0, float(n_src - 1), n_out, dtype=np.float64)
+                x_old = np.arange(n_src, dtype=np.float64)
+                resampled = np.interp(x_new, x_old, raw_seg).astype(np.float32)
+
+        if max_out_samples is not None:
+            resampled = resampled[: max(0, max_out_samples - lead_out)]
+        if resampled.size == 0:
+            continue
+
+        scaled = (
+            resampled * np.float32(track.gain)
+            if abs(float(track.gain) - 1.0) > 1e-6
+            else resampled
+        )
+        end_idx = lead_out + int(scaled.shape[0])
+        total_len = max(total_len, end_idx)
+        prepared.append((lead_out, scaled))
+
+    if not prepared or total_len <= 0:
+        return np.empty(0, dtype=np.float32), out_sr
+
+    mixed = np.zeros(total_len, dtype=np.float32)
+    for lead_out, scaled in prepared:
+        mixed[lead_out : lead_out + int(scaled.shape[0])] += scaled
+
+    peak = float(np.max(np.abs(mixed)))
+    if peak > 1.0:
+        mixed = (mixed / np.float32(peak)).astype(np.float32)
+    return mixed, out_sr

@@ -33,7 +33,7 @@ _POINT_EVENT_TOKENS = frozenset(
 
 @dataclass(frozen=True)
 class ParsedEventRow:
-    """Normalized representation of a single row in a behavior event CSV."""
+    """Normalized representation of a single row in a behavior event CSV/TSV."""
 
     line_number: int
     recording_time: Optional[float]
@@ -45,6 +45,7 @@ class ParsedEventRow:
     raw_event: str
     event_kind: Optional[str]  # "start", "end", "point", or None
     modifiers: Tuple[str, ...] = ()
+    comment: str = ""
 
 
 def normalize_event_label(event_label: Optional[str]) -> Optional[str]:
@@ -125,13 +126,59 @@ def _split_modifiers(raw_value: object) -> Tuple[str, ...]:
     return tuple(part.strip() for part in parts if part.strip())
 
 
+def _extract_modifiers_from_lowered_row(
+    lowered: Mapping[str, object],
+) -> Tuple[str, ...]:
+    collected: List[str] = []
+    for key in ("modifiers", "modifier", "behavior modifier(s)", "behavior modifiers"):
+        if key in lowered and lowered[key] is not None:
+            collected.extend(_split_modifiers(lowered[key]))
+    # BORIS tabular/aggregated exports can emit numbered modifier columns:
+    # "modifier #1", "modifier #2", "modifier 1", etc.
+    numbered_keys = sorted(
+        k
+        for k in lowered
+        if re.match(r"^modifier\s*#?\s*\d+$", k) and lowered[k] is not None
+    )
+    for k in numbered_keys:
+        collected.extend(_split_modifiers(lowered[k]))
+    deduped: List[str] = []
+    for item in collected:
+        if item and item not in deduped:
+            deduped.append(item)
+    return tuple(deduped)
+
+
+def _extract_comment_from_lowered_row(lowered: Mapping[str, object]) -> str:
+    parts: List[str] = []
+    for key in (
+        "comment",
+        "comments",
+        "notes",
+        "note",
+        "comment start",
+        "comment stop",
+    ):
+        raw = lowered.get(key)
+        if raw is None:
+            continue
+        txt = str(raw).strip()
+        if txt and txt.lower() not in {"none", "nan"} and txt not in parts:
+            parts.append(txt)
+    return "; ".join(parts)
+
+
 def parse_event_mapping_rows(
     rows: Sequence[Mapping[str, object]],
     *,
     default_subject: str = DEFAULT_SUBJECT_LABEL,
     start_line_number: int = 1,
 ) -> List[ParsedEventRow]:
-    """Convert raw dictionary rows into :class:`ParsedEventRow` records."""
+    """Convert raw dictionary rows into :class:`ParsedEventRow` records.
+
+    Supports Annolid CSV rows, BORIS Tabular rows (``Time``, ``Status`` = START/STOP/POINT),
+    and BORIS Aggregated rows (``Start (s)``, ``Stop (s)``, ``Behavior type`` = STATE/POINT).
+    """
     parsed: List[ParsedEventRow] = []
     for offset, raw_row in enumerate(rows):
         lowered: Dict[str, object] = {
@@ -139,40 +186,131 @@ def parse_event_mapping_rows(
             for key, val in raw_row.items()
             if key is not None
         }
-        raw_rec = (
-            lowered.get("recording time")
-            if "recording time" in lowered
-            else lowered.get(
-                "timestamp",
-                lowered.get("time"),
-            )
+        line_no = int(lowered.get("_line_number", start_line_number + offset))
+
+        raw_subject = (
+            lowered.get("subject")
+            if "subject" in lowered
+            else lowered.get("subject name")
         )
+        subj_str = "" if raw_subject is None else str(raw_subject).strip()
+        if subj_str.lower() in {"no focal subject", "none"}:
+            subj_str = ""
+        has_explicit_subject = bool(subj_str)
+        subject = subj_str if subj_str else default_subject
+
+        raw_behavior = (
+            lowered.get("behavior")
+            if "behavior" in lowered
+            else lowered.get("behavior code")
+        )
+        behavior = "" if raw_behavior is None else str(raw_behavior).strip()
+
+        modifiers = _extract_modifiers_from_lowered_row(lowered)
+        comment = _extract_comment_from_lowered_row(lowered)
+
+        has_event_or_status = any(
+            k in lowered for k in ("event", "status", "event type")
+        )
+        has_aggregated_bounds = any(
+            k in lowered for k in ("start (s)", "start")
+        ) and any(k in lowered for k in ("stop (s)", "stop"))
+
+        if not has_event_or_status and has_aggregated_bounds:
+            raw_start = (
+                lowered.get("start (s)")
+                if "start (s)" in lowered
+                else lowered.get("start")
+            )
+            raw_stop = (
+                lowered.get("stop (s)")
+                if "stop (s)" in lowered
+                else lowered.get("stop")
+            )
+            start_str = "" if raw_start is None else str(raw_start).strip()
+            stop_str = "" if raw_stop is None else str(raw_stop).strip()
+            start_sec = parse_recording_seconds(raw_start)
+            stop_sec = parse_recording_seconds(raw_stop)
+            btype = (
+                str(lowered.get("behavior type") or lowered.get("type") or "")
+                .strip()
+                .lower()
+            )
+            is_point_row = "point" in btype or (
+                not btype and not stop_str and start_sec is not None
+            )
+            if is_point_row:
+                parsed.append(
+                    ParsedEventRow(
+                        line_number=line_no,
+                        recording_time=start_sec,
+                        raw_recording_time=start_str,
+                        trial_time=start_sec,
+                        subject=subject,
+                        has_explicit_subject=has_explicit_subject,
+                        behavior=behavior,
+                        raw_event="POINT",
+                        event_kind="point",
+                        modifiers=modifiers,
+                        comment=comment,
+                    )
+                )
+            else:
+                comment_start = (
+                    str(lowered.get("comment start") or "").strip() or comment
+                )
+                comment_stop = str(lowered.get("comment stop") or "").strip() or ""
+                parsed.append(
+                    ParsedEventRow(
+                        line_number=line_no,
+                        recording_time=start_sec,
+                        raw_recording_time=start_str,
+                        trial_time=start_sec,
+                        subject=subject,
+                        has_explicit_subject=has_explicit_subject,
+                        behavior=behavior,
+                        raw_event="START",
+                        event_kind="start",
+                        modifiers=modifiers,
+                        comment=comment_start,
+                    )
+                )
+                parsed.append(
+                    ParsedEventRow(
+                        line_number=line_no,
+                        recording_time=stop_sec,
+                        raw_recording_time=stop_str,
+                        trial_time=stop_sec,
+                        subject=subject,
+                        has_explicit_subject=has_explicit_subject,
+                        behavior=behavior,
+                        raw_event="STOP",
+                        event_kind="end",
+                        modifiers=modifiers,
+                        comment=comment_stop,
+                    )
+                )
+            continue
+
+        raw_rec = None
+        for time_key in ("recording time", "timestamp", "time", "time (s)"):
+            if time_key in lowered:
+                raw_rec = lowered.get(time_key)
+                break
         raw_rec_str = "" if raw_rec is None else str(raw_rec).strip()
         rec_sec = parse_recording_seconds(raw_rec)
 
         raw_trial = lowered.get("trial time")
         trial_sec = parse_recording_seconds(raw_trial)
 
-        raw_subject = lowered.get("subject")
-        subj_str = "" if raw_subject is None else str(raw_subject).strip()
-        has_explicit_subject = bool(subj_str)
-        subject = subj_str if subj_str else default_subject
-
-        raw_behavior = lowered.get("behavior")
-        behavior = "" if raw_behavior is None else str(raw_behavior).strip()
-
-        raw_event_val = lowered.get("event")
+        raw_event_val = None
+        for ev_key in ("event", "status", "event type"):
+            if ev_key in lowered:
+                raw_event_val = lowered.get(ev_key)
+                break
         raw_event = "" if raw_event_val is None else str(raw_event_val).strip()
         event_kind = classify_event_label(raw_event)
 
-        raw_modifiers = (
-            lowered.get("modifiers")
-            if "modifiers" in lowered
-            else lowered.get("modifier")
-        )
-        modifiers = _split_modifiers(raw_modifiers)
-
-        line_no = int(lowered.get("_line_number", start_line_number + offset))
         parsed.append(
             ParsedEventRow(
                 line_number=line_no,
@@ -185,9 +323,30 @@ def parse_event_mapping_rows(
                 raw_event=raw_event,
                 event_kind=event_kind,
                 modifiers=modifiers,
+                comment=comment,
             )
         )
     return parsed
+
+
+_TIME_HEADER_TOKENS = frozenset({"recording time", "timestamp", "time", "time (s)"})
+_EVENT_HEADER_TOKENS = frozenset({"event", "status", "event type"})
+_BEHAVIOR_HEADER_TOKENS = frozenset({"behavior", "behavior code"})
+_AGG_START_TOKENS = frozenset({"start (s)", "start"})
+_AGG_STOP_TOKENS = frozenset({"stop (s)", "stop"})
+
+
+def _is_valid_event_header_set(headers: set[str]) -> bool:
+    has_behavior = bool(headers & _BEHAVIOR_HEADER_TOKENS)
+    if not has_behavior:
+        return False
+    has_tabular = bool(headers & _TIME_HEADER_TOKENS) and bool(
+        headers & _EVENT_HEADER_TOKENS
+    )
+    has_aggregated = bool(headers & _AGG_START_TOKENS) and bool(
+        headers & _AGG_STOP_TOKENS
+    )
+    return has_tabular or has_aggregated
 
 
 def read_parsed_event_rows(
@@ -195,48 +354,81 @@ def read_parsed_event_rows(
     *,
     default_subject: str = DEFAULT_SUBJECT_LABEL,
 ) -> List[ParsedEventRow]:
-    """Read a behavior event CSV file into :class:`ParsedEventRow` records.
+    """Read an Annolid or BORIS behavior event CSV/TSV file into :class:`ParsedEventRow` records.
 
     Raises:
         FileNotFoundError: When ``path`` does not exist.
-        ValueError: When required headers (recording time, behavior, event) are absent.
+        ValueError: When required headers are absent.
     """
     csv_path = Path(path)
     if not csv_path.exists():
         raise FileNotFoundError(f"Behavior events CSV not found: {csv_path}")
 
-    with csv_path.open("r", newline="", encoding="utf-8-sig") as handle:
-        reader = csv.DictReader(handle)
-        if reader.fieldnames is None:
-            return []
-        normalized_headers = {
-            str(name).strip().lower() for name in reader.fieldnames if name is not None
+    text = csv_path.read_text(encoding="utf-8-sig")
+    if not text.strip():
+        return []
+
+    raw_lines = text.splitlines()
+    delimiter = (
+        "\t"
+        if csv_path.suffix.lower() == ".tsv"
+        or ("\t" in raw_lines[0] and "," not in raw_lines[0])
+        else ","
+    )
+
+    # Locate the table header row (skipping optional BORIS observation metadata preamble).
+    header_line_idx = 0
+    found_header = False
+    max_scan = min(len(raw_lines), 40)
+    for idx in range(max_scan):
+        line = raw_lines[idx]
+        if not line.strip():
+            continue
+        cand_delim = "\t" if ("\t" in line and "," not in line) else delimiter
+        cells = next(csv.reader([line], delimiter=cand_delim), [])
+        norm = {
+            str(c).strip().lower() for c in cells if c is not None and str(c).strip()
         }
-        has_time_col = bool(
-            normalized_headers & {"recording time", "timestamp", "time"}
-        )
+        if _is_valid_event_header_set(norm):
+            header_line_idx = idx
+            delimiter = cand_delim
+            found_header = True
+            break
+
+    sliced_text = "\n".join(raw_lines[header_line_idx:])
+    reader = csv.DictReader(sliced_text.splitlines(), delimiter=delimiter)
+    if reader.fieldnames is None:
+        return []
+
+    normalized_headers = {
+        str(name).strip().lower() for name in reader.fieldnames if name is not None
+    }
+    if not found_header and not _is_valid_event_header_set(normalized_headers):
+        has_time_col = bool(normalized_headers & _TIME_HEADER_TOKENS)
         missing: List[str] = []
         if not has_time_col:
             missing.append("Recording time")
-        if "behavior" not in normalized_headers:
+        if not (normalized_headers & _BEHAVIOR_HEADER_TOKENS):
             missing.append("Behavior")
-        if "event" not in normalized_headers:
+        if not (normalized_headers & _EVENT_HEADER_TOKENS):
             missing.append("Event")
-        if missing:
-            raise ValueError(
-                f"Behavior CSV {csv_path} is missing required column(s): {', '.join(missing)}"
-            )
+        raise ValueError(
+            f"Behavior CSV {csv_path} is missing required column(s): {', '.join(missing)}"
+        )
 
-        raw_rows: List[Dict[str, object]] = []
-        for row_idx, row in enumerate(reader, start=2):
-            entry: Dict[str, object] = dict(row)
-            entry["_line_number"] = row_idx
-            raw_rows.append(entry)
+    raw_rows: List[Dict[str, object]] = []
+    start_row_no = header_line_idx + 2
+    for row_idx, row in enumerate(reader, start=start_row_no):
+        if not any(str(v or "").strip() for v in row.values()):
+            continue
+        entry: Dict[str, object] = dict(row)
+        entry["_line_number"] = row_idx
+        raw_rows.append(entry)
 
     return parse_event_mapping_rows(
         raw_rows,
         default_subject=default_subject,
-        start_line_number=2,
+        start_line_number=start_row_no,
     )
 
 

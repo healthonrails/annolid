@@ -59,26 +59,46 @@ annolid-run gap-report session_tracking.csv --fps 30 --out-json gaps.json
 # 6. Multi-video *_tracking_stats.json telemetry dashboard
 annolid-run tracking-stats ./project_videos/ --output-dir ./stats_dashboard
 
-# 7. Behavior time budget with explicit session denominator and binned CSV sidecar
+# 7. Behavior time budget with BORIS Out-of-Sight subtraction, external photometry/sensor alignment, & SVG/DOT
 annolid-run time-budget session_events.csv \
+    --schema project.annolid.json \
     --session-duration 600 \
+    --exclude-behaviors out_of_sight,occluded \
     --bin-size 60 \
+    --external-data photometry_dff.csv \
+    --external-offset 0.25 \
+    --external-data-svg photometry_aligned.svg \
+    --cooccurrence-csv cooccurrence.csv \
+    --ethogram-svg ethogram.svg \
+    --transitions-dot transitions.dot \
+    --transitions-svg transitions.svg \
     -o time_budget.csv
 
-# 8. Inter-Rater Reliability with bootstrap 95% CIs, Krippendorff's alpha, and disagreement CSV
+# 8. Bidirectional BORIS (.boris / Tabular CSV / Aggregated CSV) import & export
+annolid-run boris-import study.boris \
+    --output-dir ./annolid_from_boris \
+    --group-variable Treatment
+
+annolid-run boris-export session_events.csv \
+    --schema project.annolid.json \
+    --format boris \
+    --output session.boris
+
+# 9. Inter-Rater Reliability with bootstrap 95% CIs, Krippendorff's alpha, and disagreement CSV
 annolid-run behavior-irr rater1.csv rater2.csv \
     --bin-seconds 0.1 \
     --disagreements-csv disagreements.csv \
     --out irr_report.json
 
-# 9. Multi-recording cohort inferential comparisons (preventing dyadic pseudoreplication)
-annolid-run behavior-cohort ./scored_csvs/ \
-    --metadata-csv unblind_key.csv \
+# 10. Multi-recording cohort inferential comparisons & transition diagrams
+annolid-run behavior-cohort ./annolid_from_boris/cohort_manifest.json \
     --unit recording \
     --session-duration 600 \
     --summary-csv cohort_summary.csv \
     --comparisons-csv cohort_comparisons.csv \
     --transitions-csv cohort_transitions.csv \
+    --transitions-dot cohort_transitions.dot \
+    --transitions-svg cohort_transitions.svg \
     --out cohort_report.json
 ```
 

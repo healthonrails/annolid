@@ -61,6 +61,12 @@ __all__ = [
     "write_cohort_subject_rows_csv",
     "write_cohort_comparisons_csv",
     "write_transition_matrix_csv",
+    "compute_observation_transitions",
+    "build_boris_transition_grid",
+    "export_transitions_graphviz_dot",
+    "write_transitions_graphviz_dot",
+    "render_transitions_svg",
+    "write_transitions_svg",
 ]
 
 
@@ -2076,4 +2082,305 @@ def write_transition_matrix_csv(
             ]
         )
     atomic_write_text(dst, buf.getvalue(), encoding="utf-8")
+    return dst
+
+
+def compute_observation_transitions(
+    intervals: Iterable[BehaviorInterval],
+    *,
+    group_name: str = "session",
+    max_transition_gap_s: Optional[float] = None,
+    include_self_transitions: bool = True,
+) -> Tuple[TransitionEdge, ...]:
+    """Compute per-subject sequential Markov transitions for a single observation."""
+    by_subj: Dict[str, List[BehaviorInterval]] = defaultdict(list)
+    for iv in intervals:
+        by_subj[iv.subject].append(iv)
+    if not by_subj:
+        return ()
+    return compute_transition_matrix(
+        {group_name: list(by_subj.values())},
+        max_transition_gap_s=max_transition_gap_s,
+        include_self_transitions=include_self_transitions,
+    )
+
+
+def build_boris_transition_grid(
+    edges: Iterable[TransitionEdge],
+    *,
+    group: Optional[str] = None,
+    mode: str = "probability",
+) -> Tuple[List[str], List[List[float]]]:
+    """Build a square BORIS transition matrix ``(behaviors, grid)``.
+
+    Args:
+        edges: TransitionEdge sequence.
+        group: Optional group filter (defaults to ``"__all__"`` if present, else first group).
+        mode: One of:
+            - ``"probability"``: row-normalized $P(j \\mid i)$ (frequencies after each behavior)
+            - ``"count"``: raw number of transitions $N(i \\to j)$
+            - ``"total_frequency"``: fraction of all transitions $N(i \\to j) / \\sum N$
+    """
+    edge_list = list(edges)
+    if not edge_list:
+        return [], []
+    groups_present = {e.group for e in edge_list}
+    target_group = (
+        group
+        if group is not None
+        else ("__all__" if "__all__" in groups_present else sorted(groups_present)[0])
+    )
+    filtered = [e for e in edge_list if e.group == target_group]
+    if not filtered:
+        return [], []
+
+    behaviors = sorted(
+        {e.from_behavior for e in filtered} | {e.to_behavior for e in filtered}
+    )
+    idx_map = {b: i for i, b in enumerate(behaviors)}
+    n = len(behaviors)
+    grid = [[0.0 for _ in range(n)] for _ in range(n)]
+    grand_total = sum(e.count for e in filtered)
+
+    norm_mode = str(mode or "probability").strip().lower()
+    if norm_mode not in {"probability", "count", "total_frequency"}:
+        raise ValueError(
+            f"Unsupported transition matrix mode '{mode}'. Choose probability, count, or total_frequency."
+        )
+
+    for e in filtered:
+        r = idx_map[e.from_behavior]
+        c = idx_map[e.to_behavior]
+        if norm_mode == "count":
+            grid[r][c] = float(e.count)
+        elif norm_mode == "total_frequency":
+            grid[r][c] = (
+                (float(e.count) / float(grand_total)) if grand_total > 0 else 0.0
+            )
+        else:
+            grid[r][c] = float(e.probability)
+
+    return behaviors, grid
+
+
+def _escape_dot(text: str) -> str:
+    return str(text).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def export_transitions_graphviz_dot(
+    edges: Iterable[TransitionEdge],
+    *,
+    group: Optional[str] = None,
+    min_probability: float = 0.01,
+    min_count: int = 1,
+    title: Optional[str] = None,
+) -> str:
+    """Export behavioral transitions as a BORIS-compatible Graphviz DOT script."""
+    edge_list = list(edges)
+    groups_present = {e.group for e in edge_list}
+    target_group = (
+        group
+        if group is not None
+        else (
+            "__all__"
+            if "__all__" in groups_present
+            else (sorted(groups_present)[0] if groups_present else "session")
+        )
+    )
+    filtered = [
+        e
+        for e in edge_list
+        if e.group == target_group
+        and e.count >= max(1, int(min_count))
+        and e.probability >= float(min_probability)
+    ]
+
+    lines = [
+        "digraph BehavioralTransitions {",
+        "  rankdir=LR;",
+        '  node [shape=box, style="rounded,filled", fillcolor="#EEF4FB", color="#3B6EA5", fontname="Helvetica"];',
+        '  edge [fontname="Helvetica", fontsize=10];',
+    ]
+    graph_title = title or f"Behavioral Transitions ({target_group})"
+    lines.append(f'  labelloc="t"; label="{_escape_dot(graph_title)}";')
+
+    nodes = sorted(
+        {e.from_behavior for e in filtered} | {e.to_behavior for e in filtered}
+    )
+    for node in nodes:
+        lines.append(f'  "{_escape_dot(node)}";')
+
+    for e in filtered:
+        pen = 1.0 + 4.0 * max(0.0, min(1.0, float(e.probability)))
+        lbl = f"{e.probability:.2f} (n={e.count})"
+        lines.append(
+            f'  "{_escape_dot(e.from_behavior)}" -> "{_escape_dot(e.to_behavior)}" '
+            f'[label="{lbl}", penwidth={pen:.2f}];'
+        )
+    lines.append("}")
+    return "\n".join(lines) + "\n"
+
+
+def write_transitions_graphviz_dot(
+    edges: Iterable[TransitionEdge],
+    output_path: Path | str,
+    *,
+    group: Optional[str] = None,
+    min_probability: float = 0.01,
+    min_count: int = 1,
+    title: Optional[str] = None,
+) -> Path:
+    dst = Path(output_path)
+    dot_text = export_transitions_graphviz_dot(
+        edges,
+        group=group,
+        min_probability=min_probability,
+        min_count=min_count,
+        title=title,
+    )
+    atomic_write_text(dst, dot_text, encoding="utf-8")
+    return dst
+
+
+def _xml_escape(text: object) -> str:
+    return (
+        str(text)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def render_transitions_svg(
+    edges: Iterable[TransitionEdge],
+    *,
+    group: Optional[str] = None,
+    min_probability: float = 0.05,
+    min_count: int = 1,
+    title: str = "Behavioral Transition Diagram",
+    width: int = 720,
+    height: int = 560,
+) -> str:
+    """Render a deterministic, self-contained SVG flow diagram of behavioral transitions."""
+    edge_list = list(edges)
+    groups_present = {e.group for e in edge_list}
+    target_group = (
+        group
+        if group is not None
+        else (
+            "__all__"
+            if "__all__" in groups_present
+            else (sorted(groups_present)[0] if groups_present else "session")
+        )
+    )
+    filtered = [
+        e
+        for e in edge_list
+        if e.group == target_group
+        and e.count >= max(1, int(min_count))
+        and e.probability >= float(min_probability)
+    ]
+    nodes = sorted(
+        {e.from_behavior for e in filtered} | {e.to_behavior for e in filtered}
+    )
+
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="{width}" height="{height}">',
+        "<defs>",
+        '  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">',
+        '    <path d="M 0 1 L 10 5 L 0 9 z" fill="#334155"/>',
+        "  </marker>",
+        "</defs>",
+        f'<rect width="{width}" height="{height}" fill="#ffffff"/>',
+        f'<text x="{width / 2:.1f}" y="30" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="16" font-weight="bold" fill="#0f172a">{_xml_escape(title)} ({_xml_escape(target_group)})</text>',
+    ]
+
+    if not nodes:
+        parts.append(
+            f'<text x="{width / 2:.1f}" y="{height / 2:.1f}" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="13" fill="#64748b">No transitions meet threshold.</text>'
+        )
+        parts.append("</svg>")
+        return "\n".join(parts)
+
+    cx = width / 2.0
+    cy = (height + 30.0) / 2.0
+    radius = min(width, height - 60) * 0.34 if len(nodes) > 1 else 0.0
+    node_r = 34.0
+    coords: Dict[str, Tuple[float, float]] = {}
+    for idx, node in enumerate(nodes):
+        angle = -math.pi / 2.0 + (2.0 * math.pi * idx) / max(1, len(nodes))
+        coords[node] = (cx + radius * math.cos(angle), cy + radius * math.sin(angle))
+
+    for e in filtered:
+        x1, y1 = coords[e.from_behavior]
+        x2, y2 = coords[e.to_behavior]
+        stroke_w = 1.2 + 4.2 * max(0.0, min(1.0, float(e.probability)))
+        if e.from_behavior == e.to_behavior:
+            lx = x1
+            ly = y1 - node_r - 22.0
+            parts.append(
+                f'<path d="M {x1 - 14:.1f} {y1 - node_r + 4:.1f} C {x1 - 36:.1f} {ly - 20:.1f}, {x1 + 36:.1f} {ly - 20:.1f}, {x1 + 14:.1f} {y1 - node_r + 4:.1f}" '
+                f'fill="none" stroke="#475569" stroke-width="{stroke_w:.2f}" marker-end="url(#arrow)"/>'
+            )
+            parts.append(
+                f'<text x="{lx:.1f}" y="{ly - 14:.1f}" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="10" fill="#1e293b">{e.probability:.2f}</text>'
+            )
+            continue
+
+        dx = x2 - x1
+        dy = y2 - y1
+        dist = max(1e-6, math.hypot(dx, dy))
+        ux = dx / dist
+        uy = dy / dist
+        nx = -uy * 16.0
+        ny = ux * 16.0
+        sx = x1 + ux * node_r + nx * 0.35
+        sy = y1 + uy * node_r + ny * 0.35
+        ex = x2 - ux * (node_r + 4.0) + nx * 0.35
+        ey = y2 - uy * (node_r + 4.0) + ny * 0.35
+        qx = 0.5 * (x1 + x2) + nx
+        qy = 0.5 * (y1 + y2) + ny
+        parts.append(
+            f'<path d="M {sx:.1f} {sy:.1f} Q {qx:.1f} {qy:.1f} {ex:.1f} {ey:.1f}" '
+            f'fill="none" stroke="#334155" stroke-opacity="0.82" stroke-width="{stroke_w:.2f}" marker-end="url(#arrow)"/>'
+        )
+        lx = 0.25 * sx + 0.5 * qx + 0.25 * ex
+        ly = 0.25 * sy + 0.5 * qy + 0.25 * ey
+        parts.append(
+            f'<text x="{lx:.1f}" y="{ly - 3:.1f}" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="10" font-weight="600" fill="#0f172a">{e.probability:.2f}</text>'
+        )
+
+    palette = (
+        "#dbeafe",
+        "#dcfce7",
+        "#fef3c7",
+        "#f3e8ff",
+        "#ffe4e6",
+        "#cffafe",
+        "#e2e8f0",
+    )
+    for idx, node in enumerate(nodes):
+        nx_pos, ny_pos = coords[node]
+        fill_c = palette[idx % len(palette)]
+        label = node if len(node) <= 14 else node[:12] + "…"
+        parts.append(
+            f'<circle cx="{nx_pos:.1f}" cy="{ny_pos:.1f}" r="{node_r:.1f}" fill="{fill_c}" stroke="#1e3a8a" stroke-width="1.6"/>'
+        )
+        parts.append(
+            f'<text x="{nx_pos:.1f}" y="{ny_pos + 4:.1f}" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="11" font-weight="600" fill="#0f172a">{_xml_escape(label)}</text>'
+        )
+
+    parts.append("</svg>")
+    return "\n".join(parts)
+
+
+def write_transitions_svg(
+    edges: Iterable[TransitionEdge],
+    output_path: Path | str,
+    **kwargs: Any,
+) -> Path:
+    dst = Path(output_path)
+    svg_text = render_transitions_svg(edges, **kwargs)
+    atomic_write_text(dst, svg_text, encoding="utf-8")
     return dst
