@@ -15,6 +15,12 @@ import {
   evaluateSpinePoint,
   computeOrientedWallMargin,
 } from './two_mice_simulation.js';
+import {
+  MOUSE_JOINT_SPEC,
+  MouseMotorController,
+  getMouseActionSpec,
+  sanitizeMotorCommand,
+} from './two_mice_control.js';
 
 const datasetQuery = new URLSearchParams(window.location.search);
 const DATASET_CAPTURE = datasetQuery.get('dataset') === '1';
@@ -33,7 +39,10 @@ const DATASET_LIGHTING = datasetQuery.get('lighting') || '';
 const DATASET_OCCLUDER = datasetQuery.get('occluder') || '';
 const DATASET_ARENA = datasetQuery.get('arena') || '';
 const DATASET_HEADSTAGE = datasetQuery.get('headstage') || '';
-const ANATOMY_QA_VIEWS = new Set(['ears', 'ears-front', 'torso-side', 'torso-front']);
+const ANATOMY_QA_VIEWS = new Set([
+  'ears', 'ears-front', 'torso-side', 'torso-front',
+  'head-side', 'head-three-quarter', 'head-top', 'mouth-front',
+]);
 const IS_ANATOMY_QA = ANATOMY_QA_VIEWS.has(ANATOMY_QA);
 const IS_TORSO_ANATOMY_QA = ANATOMY_QA === 'torso-side'
   || ANATOMY_QA === 'torso-front';
@@ -99,7 +108,6 @@ pmremGenerator.dispose();
 const annolidShaders = new AnnolidShaders(THREE);
 const {
   PROP,
-  FORELIMB_NEUTRAL,
   tailRoughnessMap,
   tailNormalMap,
   earNormalMap,
@@ -122,7 +130,8 @@ const {
   deform,
   deformBody,
   deformHead,
-  getCervicalMantleProfile,
+  getHeadFeatureAnchors,
+  deformCervicalCore,
   bodyGeo,
   headGeo,
   neckGeo,
@@ -150,21 +159,21 @@ function createContactShadow() {
   const ctx = c.getContext('2d');
   ctx.save();
   ctx.translate(64, 64);
-  ctx.scale(0.68, 1.0);
-  const core = ctx.createRadialGradient(0, 4, 2, 0, 2, 46);
-  core.addColorStop(0.0, 'rgba(18,15,12,0.42)');
-  core.addColorStop(0.42, 'rgba(20,17,14,0.24)');
-  core.addColorStop(0.76, 'rgba(22,19,16,0.08)');
+  ctx.scale(0.64, 1.0);
+  const core = ctx.createRadialGradient(0, 6, 3, 0, 2, 50);
+  core.addColorStop(0.0, 'rgba(18,15,12,0.44)');
+  core.addColorStop(0.38, 'rgba(20,17,14,0.26)');
+  core.addColorStop(0.72, 'rgba(22,19,16,0.09)');
   core.addColorStop(1.0, 'rgba(22,19,16,0)');
   ctx.fillStyle = core;
   ctx.fillRect(-96, -64, 192, 128);
   ctx.restore();
   const tex = new THREE.CanvasTexture(c);
-  const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, depthTest: true });
-  const geo = new THREE.PlaneGeometry(4.2, 5.8);
+  const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: 0.92, depthWrite: false, depthTest: true });
+  const geo = new THREE.PlaneGeometry(4.0, 5.6);
   const mesh = new THREE.Mesh(geo, mat);
   mesh.rotation.x = -Math.PI / 2;
-  mesh.position.y = 0.02;
+  mesh.position.y = 0.018;
   mesh.renderOrder = 5;
   return mesh;
 }
@@ -964,91 +973,23 @@ class ExpertMouse {
     cervicalCore.castShadow = false;
     cervicalCore.receiveShadow = true;
     neckMesh.add(cervicalCore);
-    const buildCervicalFurLayer = ({
-      baseCount,
-      length,
-      radius,
-      normalWeight,
-      caudalFlow,
-      roughness,
-      opacity,
-      name,
-    }) => {
-      const count = Math.floor(baseCount * density);
-      if (count <= 0) return null;
-      const geometry = new THREE.ConeGeometry(radius, length, 3);
-      geometry.translate(0, length * 0.5, 0);
-      const isUndercoat = normalWeight > 0.5;
-      const baseFurMat = isUndercoat
-        ? new THREE.MeshStandardMaterial({
-          color: new THREE.Color(furColor),
-          roughness,
-          metalness: 0.0,
-        })
-        : new THREE.MeshPhysicalMaterial({
-          color: new THREE.Color(furColor),
-          roughness,
-          transparent: true,
-          opacity,
-        });
-      const material = enhanceFurMaterial(
-        baseFurMat,
-        furColor,
-        isUndercoat
-      );
-      const layer = new THREE.InstancedMesh(geometry, material, count);
-      layer.name = name;
-      const nkDummy = new THREE.Object3D();
-      const nkNrm = new THREE.Vector3();
-      const nkFlow = new THREE.Vector3(0, -0.045, -caudalFlow);
-      const localUp = new THREE.Vector3(0, 1, 0);
-      for (let i = 0; i < count; i++) {
-        const t = appearanceRandom();
-        const angle = appearanceRandom() * Math.PI * 2;
-        const profile = getCervicalMantleProfile(t);
-        const cos = Math.cos(angle);
-        const sin = Math.sin(angle);
-        const anteriorFade = 1.0 - THREE.MathUtils.smoothstep(t, 0.32, 0.80);
-        const anteriorInset = 0.68 + anteriorFade * 0.24;
-        nkDummy.position.set(
-          cos * profile.radiusX * anteriorInset,
-          profile.centerY + sin * profile.radiusY * anteriorInset,
-          profile.z
-        );
-        nkNrm.set(cos / profile.radiusX, sin / profile.radiusY, 0).normalize();
-        nkNrm.multiplyScalar(normalWeight).add(nkFlow).normalize();
-        nkDummy.quaternion.setFromUnitVectors(localUp, nkNrm);
-        const baseScale = 0.78 + appearanceRandom() * (isUndercoat ? 0.28 : 0.38);
-        const s = baseScale * (0.24 + anteriorFade * 0.76);
-        nkDummy.scale.set(s, s, s); nkDummy.updateMatrix();
-        layer.setMatrixAt(i, nkDummy.matrix);
-      }
-      return layer;
-    };
-    const cervicalUndercoat = buildCervicalFurLayer({
-      baseCount: 11000,
-      length: 0.042 * furLenMul,
-      radius: 0.0052,
-      normalWeight: 0.82,
-      caudalFlow: 0.14,
-      roughness: 0.92,
-      opacity: 0.90,
-      name: 'cervical-undercoat',
-    });
-    const cervicalGuardHairs = buildCervicalFurLayer({
-      baseCount: 7000,
-      length: 0.084 * furLenMul,
-      radius: 0.0042,
-      normalWeight: 0.24,
-      caudalFlow: 0.88,
-      roughness: 0.76,
-      opacity: 0.88,
-      name: 'cervical-guard-hairs',
-    });
+    // Neck coat: the same two-layer pelage generator (materials, strand shading,
+    // and caudal flow) as the body and head, seated on the cervical core, so the
+    // head -> neck -> shoulder transition has no shading collar.
+    const cervicalCoat = generateMultiLayerFur(
+      deformCervicalCore,
+      density * 0.11,
+      furColor,
+      false,
+      { ...params, furLength: (params.furLength ?? 1.0) * 0.68 }
+    );
+    const [cervicalUndercoat = null, cervicalGuardHairs = null] = cervicalCoat.children;
+    if (cervicalUndercoat) cervicalUndercoat.name = 'cervical-undercoat';
+    if (cervicalGuardHairs) cervicalGuardHairs.name = 'cervical-guard-hairs';
+    cervicalCoat.name = 'cervical-coat';
     this.cervicalUndercoat = cervicalUndercoat;
     this.cervicalGuardHairs = cervicalGuardHairs;
-    if (cervicalUndercoat) neckMesh.add(cervicalUndercoat);
-    if (cervicalGuardHairs) neckMesh.add(cervicalGuardHairs);
+    neckMesh.add(cervicalCoat);
 
     // BELLY FUR ANCHOR (no visible geometry; avoids hard side cut-lines from above)
     const bellyFurAnchor = new THREE.Group();
@@ -1119,13 +1060,13 @@ class ExpertMouse {
     applySkinShaderStack(noseMat, 0.45);
     noseMat.map = noseAlbedoMap;
     noseMat.normalMap = noseNormalMap;
-    noseMat.normalScale = new THREE.Vector2(0.24, 0.24);
+    noseMat.normalScale = new THREE.Vector2(0.30, 0.30);
     noseMat.roughnessMap = noseRoughnessMap;
-    noseMat.roughness = 0.28;
-    noseMat.transmission = 0.16;
+    noseMat.roughness = 0.40;
+    noseMat.transmission = 0.10;
     noseMat.thickness = 0.12;
-    noseMat.clearcoat = 0.54;
-    noseMat.clearcoatRoughness = 0.14;
+    noseMat.clearcoat = 0.32;
+    noseMat.clearcoatRoughness = 0.22;
     // Heart-shaped rhinarium with median philtrum cleft and comma-shaped alar wings
     const rhinariumGeo = new THREE.SphereGeometry(0.135, 28, 28);
     deform(rhinariumGeo, (v) => {
@@ -1133,90 +1074,216 @@ class ExpertMouse {
       v.x *= 0.76 + yN * 0.34;   // wider dorsolateral narial wings, narrower philtrum tip
       v.y *= 0.68;
       v.z *= 0.66;
-      // Median philtrum sulcus
-      if (Math.abs(v.x) < 0.030 && v.z > 0) v.z -= (0.030 - Math.abs(v.x)) * 0.78;
+      // Gentle median philtrum sulcus (shallow enough that head mesh never splits nose)
+      if (Math.abs(v.x) < 0.028 && v.z > 0) v.z -= (0.028 - Math.abs(v.x)) * 0.36;
       // Dorsolateral alar folds framing comma-shaped nostrils
       const nDist = Math.sqrt(Math.pow(Math.abs(v.x) - 0.038, 2) + Math.pow(v.y - 0.008, 2));
-      if (nDist < 0.052 && v.z > 0.008) v.z += (0.052 - nDist) * 0.34;
+      if (nDist < 0.052 && v.z > 0.008) v.z += (0.052 - nDist) * 0.30;
     });
     this.snoutTip = new THREE.Mesh(rhinariumGeo, noseMat);
-    this.snoutTip.scale.set(0.84, 0.72, 0.68);
-    this.snoutTip.position.set(this.asymmetry.noseYaw * 0.55, -0.152, PROP.snoutLength * 0.992);
+    this.noseBaseScale = new THREE.Vector3(0.64, 0.52, 0.48);
+    this.snoutTip.scale.set(
+      this.noseBaseScale.x,
+      this.noseBaseScale.y,
+      this.noseBaseScale.z * (params.snoutLength || 1.0)
+    );
     this.head.add(this.snoutTip);
-    // Moist tip overlay — wet specular sheen on rhinarium apex
+    // Subtle satin moist sheen on the rhinarium apex (not a glossy blister)
     const moistMat = noseMat.clone();
-    moistMat.roughness = 0.09; moistMat.clearcoat = 0.90;
-    moistMat.clearcoatRoughness = 0.04; moistMat.transmission = 0.05;
-    const moistTip = new THREE.Mesh(new THREE.SphereGeometry(0.054, 14, 14), moistMat);
-    moistTip.scale.set(0.95, 0.68, 0.52);
+    moistMat.roughness = 0.24; moistMat.clearcoat = 0.44;
+    moistMat.clearcoatRoughness = 0.16; moistMat.transmission = 0.04;
+    const moistTip = new THREE.Mesh(new THREE.SphereGeometry(0.044, 14, 14), moistMat);
+    moistTip.scale.set(0.92, 0.60, 0.40);
     moistTip.position.set(0, 0.010, 0.046);
     this.snoutTip.add(moistTip);
-    // Comma-shaped narial slits
+    // Comma-shaped narial slits nestled flush inside the alar folds
     const nostrilMat = new THREE.MeshPhysicalMaterial({
-      color: 0x240f0e, roughness: 0.80, clearcoat: 0.22, clearcoatRoughness: 0.32
+      color: skinHSL.l > 0.5 ? 0x3a1c1d : 0x1e1112,
+      roughness: 0.84, clearcoat: 0.14, clearcoatRoughness: 0.38
     });
-    const nSlitGeo = new THREE.CapsuleGeometry(0.008, 0.015, 8, 8);
+    const nSlitGeo = new THREE.CapsuleGeometry(0.0072, 0.014, 8, 8);
     const nL = new THREE.Mesh(nSlitGeo, nostrilMat);
-    nL.scale.set(0.76, 1.0, 0.56); nL.rotation.z = 0.42;
-    nL.position.set(0.032, 0.002, 0.068); this.snoutTip.add(nL);
+    nL.scale.set(0.72, 0.96, 0.48); nL.rotation.z = 0.46;
+    nL.position.set(0.032, 0.000, 0.064); this.snoutTip.add(nL);
     const nR = new THREE.Mesh(nSlitGeo, nostrilMat);
-    nR.scale.set(0.76, 1.0, 0.56); nR.rotation.z = -0.42;
-    nR.position.set(-0.032, 0.002, 0.068); this.snoutTip.add(nR);
-    // Moist narial rims
+    nR.scale.set(0.72, 0.96, 0.48); nR.rotation.z = -0.46;
+    nR.position.set(-0.032, 0.000, 0.064); this.snoutTip.add(nR);
+    // Delicate flush narial rims
     const rimMoistMat = noseMat.clone();
-    rimMoistMat.roughness = 0.16; rimMoistMat.clearcoat = 0.70;
+    rimMoistMat.roughness = 0.26; rimMoistMat.clearcoat = 0.46;
     for (const s of [1, -1]) {
-      const rim = new THREE.Mesh(new THREE.TorusGeometry(0.012, 0.0030, 8, 12), rimMoistMat);
-      rim.position.set(s * 0.032, 0.003, 0.065);
-      rim.rotation.y = s * 0.42; rim.rotation.z = s * 0.40;
+      const rim = new THREE.Mesh(new THREE.TorusGeometry(0.011, 0.0022, 8, 12), rimMoistMat);
+      rim.position.set(s * 0.032, 0.001, 0.061);
+      rim.rotation.y = s * 0.40; rim.rotation.z = s * 0.42;
       this.snoutTip.add(rim);
     }
     // Median philtrum cleft
     const philtrumMat = new THREE.MeshPhysicalMaterial({
-      color: 0x381b1a, roughness: 0.62, transparent: true, opacity: 0.52
+      color: skinHSL.l > 0.5 ? 0x5c2e2f : 0x261516,
+      roughness: 0.68, transparent: true, opacity: 0.44
     });
-    const philtrum = new THREE.Mesh(new THREE.CapsuleGeometry(0.0042, 0.038, 4, 8), philtrumMat);
-    philtrum.position.set(0, -0.022, 0.064); this.snoutTip.add(philtrum);
+    const philtrum = new THREE.Mesh(new THREE.CapsuleGeometry(0.0036, 0.034, 4, 8), philtrumMat);
+    philtrum.position.set(0, -0.022, 0.060); this.snoutTip.add(philtrum);
     // Alar wing accents
     for (const s of [1, -1]) {
-      const alar = new THREE.Mesh(new THREE.SphereGeometry(0.018, 12, 12), noseMat);
-      alar.scale.set(0.88, 0.58, 0.62);
-      alar.position.set(s * 0.038, 0.004, 0.054);
+      const alar = new THREE.Mesh(new THREE.SphereGeometry(0.016, 12, 12), noseMat);
+      alar.scale.set(0.84, 0.54, 0.56);
+      alar.position.set(s * 0.036, 0.003, 0.052);
       this.snoutTip.add(alar);
     }
 
-    // SPLIT RODENT UPPER LIP + TUCKED ORAL CLEFT + CHIN
-    const mouthMat = new THREE.MeshPhysicalMaterial({
-      color: 0x6e3e3d, roughness: 0.70, metalness: 0.0, clearcoat: 0.08, transparent: true, opacity: 0.68
+    // SPLIT RODENT UPPER LIP + ORAL CLEFT + CURVED MURINE INCISORS + LOWER LIP
+    // Assembled in mouth-local coordinates (+Z outward, +Y toward nose) and
+    // seated inside the recessed sub-philtral oral fossa by placeHeadFeatures().
+    this.mouthGroup = new THREE.Group();
+    this.mouthGroup.name = 'murine-mouth-assembly';
+    this.head.add(this.mouthGroup);
+
+    const oralCavityMat = new THREE.MeshStandardMaterial({
+      color: skinHSL.l > 0.5 ? 0x642b33 : 0x261216,
+      roughness: 0.88,
+      metalness: 0.0,
     });
-    this.mouth = new THREE.Mesh(new THREE.CapsuleGeometry(0.008, 0.042, 6, 8), mouthMat);
-    this.mouth.rotation.z = Math.PI / 2;
-    this.mouth.position.set(0, -0.214, PROP.snoutLength * 0.935);
-    this.head.add(this.mouth);
-    // Bilateral furred upper-lip cushions flanking the philtrum cleft
-    const upperLipGeo = new THREE.SphereGeometry(0.030, 10, 10);
-    for (const s of [1, -1]) {
+    const oralCavityGeo = new THREE.SphereGeometry(0.032, 12, 10);
+    this.mouth = new THREE.Mesh(oralCavityGeo, oralCavityMat);
+    this.mouth.name = 'oral-cleft-recess';
+    this.mouth.scale.set(1.06, 0.46, 0.34);
+    this.mouth.position.set(0, -0.004, -0.007);
+    this.mouth.castShadow = false;
+    this.mouthGroup.add(this.mouth);
+
+    // Subtle median philtrum shadow crease linking rhinarium to the split upper lip
+    const philtrumCreaseMat = new THREE.MeshStandardMaterial({
+      color: skinHSL.l > 0.5 ? 0xcab0b0 : 0x20181a,
+      roughness: 0.88,
+      metalness: 0.0,
+      transparent: true,
+      opacity: 0.34,
+    });
+    const philtrumCrease = new THREE.Mesh(
+      new THREE.CapsuleGeometry(0.0024, 0.038, 4, 6),
+      philtrumCreaseMat
+    );
+    philtrumCrease.name = 'philtrum-sulcus';
+    philtrumCrease.position.set(0, 0.032, 0.001);
+    this.mouthGroup.add(philtrumCrease);
+
+    // Soft mucosal lip tint matched closely to strain nose/skin tone (standard
+    // material avoids spawning extra transmission passes for 2-mm lip rims).
+    const labialSkinMat = new THREE.MeshStandardMaterial({
+      color: noseMat.color.clone().lerp(new THREE.Color(skinColor), 0.30),
+      roughness: 0.52,
+      metalness: 0.0,
+      envMapIntensity: 0.45,
+    });
+
+    // Split rodent upper lip: smooth furred bilateral pads tucked seamlessly
+    // into the muzzle with soft inverted-Y mucosal edges hugging the incisors.
+    const upperLipGeo = new THREE.SphereGeometry(0.028, 10, 10);
+    const upperLipRimGeo = new THREE.CapsuleGeometry(0.0045, 0.032, 4, 6);
+    this.upperLips = [1, -1].map(s => {
       const upperLip = new THREE.Mesh(upperLipGeo, this.surfaceMat);
-      upperLip.scale.set(0.95, 0.68, 1.10);
-      upperLip.position.set(s * 0.026, -0.194, PROP.snoutLength * 0.948);
+      upperLip.name = s > 0 ? 'left-upper-lip-lobe' : 'right-upper-lip-lobe';
+      upperLip.scale.set(1.36, 0.82, 0.52);
+      upperLip.position.set(s * 0.027, 0.016, -0.009);
+      upperLip.rotation.z = -s * 0.42;
+      upperLip.userData.side = s;
       upperLip.castShadow = false;
-      this.head.add(upperLip);
-    }
-    const lowerLip = new THREE.Mesh(new THREE.SphereGeometry(0.024, 12, 12), this.surfaceMat);
-    lowerLip.scale.set(1.12, 0.48, 0.82);
-    lowerLip.position.set(0, -0.232, PROP.snoutLength * 0.908);
-    lowerLip.castShadow = false;
-    this.head.add(lowerLip);
+      this.mouthGroup.add(upperLip);
+
+      const lipRim = new THREE.Mesh(upperLipRimGeo, labialSkinMat);
+      lipRim.name = s > 0 ? 'left-upper-lip-margin' : 'right-upper-lip-margin';
+      lipRim.position.set(s * 0.020, 0.008, 0.001);
+      lipRim.rotation.z = s * (Math.PI * 0.5 - 0.48);
+      lipRim.scale.set(0.86, 1.0, 0.62);
+      lipRim.castShadow = false;
+      this.mouthGroup.add(lipRim);
+      return upperLip;
+    });
+
+    // Murine incisors: warm ivory-cream labial enamel, curved chisel profile.
+    const enamelMat = new THREE.MeshStandardMaterial({
+      color: skinHSL.l > 0.5 ? 0xf2e3be : 0xecddb6,
+      roughness: 0.16,
+      metalness: 0.02,
+      envMapIntensity: 1.30,
+    });
+    const buildIncisorGeo = (w, h, d, curveSign = 1) => {
+      const geo = new THREE.BoxGeometry(w, h, d, 2, 6, 1);
+      deform(geo, (tv) => {
+        // yN = 0 at gum root, 1 at occlusal chisel tip
+        const yN = curveSign > 0
+          ? THREE.MathUtils.clamp((h * 0.5 - tv.y) / Math.max(1e-4, h), 0, 1)
+          : THREE.MathUtils.clamp((tv.y + h * 0.5) / Math.max(1e-4, h), 0, 1);
+        // Gentle labial convexity & natural backward chisel curve toward tip
+        const xN = tv.x / Math.max(1e-4, w * 0.5);
+        tv.z += (1.0 - xN * xN) * d * 0.24;
+        tv.z += Math.sin(yN * Math.PI) * 0.0042 - yN * yN * 0.0052;
+        // Narrow slightly into a crisp chisel bevel at the biting tip
+        tv.x *= 1.0 - yN * 0.16;
+        tv.z *= 1.0 - yN * 0.52;
+      });
+      return geo;
+    };
+    const upperIncisorGeo = buildIncisorGeo(0.0112, 0.027, 0.010, 1);
+    this.upperIncisors = [1, -1].map(s => {
+      const tooth = new THREE.Mesh(upperIncisorGeo, enamelMat);
+      tooth.name = s > 0 ? 'left-upper-incisor' : 'right-upper-incisor';
+      tooth.position.set(s * 0.0068, 0.004, 0.0005);
+      tooth.rotation.z = -s * 0.04;
+      tooth.rotation.x = 0.10;
+      tooth.castShadow = false;
+      this.mouthGroup.add(tooth);
+      return tooth;
+    });
+    const lowerIncisorGeo = buildIncisorGeo(0.0086, 0.019, 0.0075, -1);
+    this.lowerIncisors = [1, -1].map(s => {
+      const tooth = new THREE.Mesh(lowerIncisorGeo, enamelMat);
+      tooth.name = s > 0 ? 'left-lower-incisor' : 'right-lower-incisor';
+      tooth.position.set(s * 0.0054, -0.010, -0.0032);
+      tooth.rotation.z = s * 0.04;
+      tooth.rotation.x = -0.14;
+      tooth.castShadow = false;
+      this.mouthGroup.add(tooth);
+      return tooth;
+    });
+
+    // Soft rose lower lip hugging cleanly beneath the incisor tips, backed by
+    // a small rounded furred chin cushion.
+    this.lowerLip = new THREE.Group();
+    this.lowerLip.name = 'lower-lip-and-chin';
+    this.lowerLip.position.set(0, -0.016, -0.003);
+    const chinCushion = new THREE.Mesh(new THREE.SphereGeometry(0.026, 10, 10), this.surfaceMat);
+    chinCushion.name = 'furred-chin-cushion';
+    chinCushion.scale.set(1.22, 0.56, 0.58);
+    chinCushion.position.set(0, -0.010, -0.008);
+    chinCushion.castShadow = false;
+    this.lowerLip.add(chinCushion);
+    const lowerLipEdge = new THREE.Mesh(
+      new THREE.CapsuleGeometry(0.0078, 0.024, 4, 8),
+      labialSkinMat
+    );
+    lowerLipEdge.name = 'mucosal-lower-lip';
+    lowerLipEdge.rotation.z = Math.PI / 2;
+    lowerLipEdge.scale.set(0.88, 1.0, 0.64);
+    lowerLipEdge.position.set(0, 0.003, 0.004);
+    lowerLipEdge.castShadow = false;
+    this.lowerLip.add(lowerLipEdge);
+    this.mouthGroup.add(this.lowerLip);
+    this.lowerLipRestY = this.lowerLip.position.y;
 
     // WHISKERS — Mystacial pad array + supraorbital & genal tactile vibrissae
     const wColor = strain.whiskerColor ?? (skinHSL.l > 0.5 ? 0xe6e0d8 : 0xb5aba2);
-    const whiskerOpacity = skinHSL.l > 0.5 ? 0.54 : 0.62;
-    this.padL = new THREE.Group(); this.padL.position.set(0.20, -0.075, 0.75); this.head.add(this.padL);
-    this.padR = new THREE.Group(); this.padR.position.set(-0.20, -0.075, 0.75); this.head.add(this.padR);
+    const whiskerOpacity = strain.whiskerOpacity ?? (skinHSL.l > 0.5 ? 0.54 : 0.62);
+    this.padL = new THREE.Group(); this.head.add(this.padL);
+    this.padR = new THREE.Group(); this.head.add(this.padR);
     this.padL.add(createAnatomicalWhiskers(wColor, true, whiskerOpacity));
     this.padR.add(createAnatomicalWhiskers(wColor, false, whiskerOpacity));
-    this.head.add(createSupraorbitalWhiskers(wColor, true, whiskerOpacity * 0.86));
-    this.head.add(createSupraorbitalWhiskers(wColor, false, whiskerOpacity * 0.86));
+    this.supraorbitalL = createSupraorbitalWhiskers(wColor, true, whiskerOpacity * 0.86);
+    this.supraorbitalR = createSupraorbitalWhiskers(wColor, false, whiskerOpacity * 0.86);
+    this.head.add(this.supraorbitalL);
+    this.head.add(this.supraorbitalR);
+    this.placeHeadFeatures();
 
     // EARS (with asymmetry) — rounded mouse pinnae integrated into the skull fur.
     const earOuterMat = this.fleshMat.clone();
@@ -1299,63 +1366,89 @@ class ExpertMouse {
     const subjectEyeMat = eyeMat.clone();
     subjectEyeMat.color.set(strain.eyeColor ?? '#060505');
     subjectEyeMat.attenuationColor = subjectEyeMat.color.clone();
+    const eyeHsl = {};
+    subjectEyeMat.color.getHSL(eyeHsl);
+    if (eyeHsl.l > 0.14) {
+      // Albino ruby-garnet eye: soft internal retinal vascular luminosity
+      subjectEyeMat.emissive = subjectEyeMat.color.clone().multiplyScalar(0.36);
+      subjectEyeMat.emissiveIntensity = 0.42;
+      subjectEyeMat.transmission = 0.14;
+      subjectEyeMat.thickness = 0.18;
+    }
     const subjectCorneaMat = corneaMat.clone();
     subjectCorneaMat.attenuationColor = subjectEyeMat.color.clone().offsetHSL(0, 0, 0.08);
     const lidMat = new THREE.MeshPhysicalMaterial({
-      color: new THREE.Color(strain.eyeRimColor ?? 0x221717).lerp(new THREE.Color(skinColor), 0.18),
-      roughness: 0.62,
+      color: new THREE.Color(strain.eyeRimColor ?? 0x221717).lerp(new THREE.Color(skinColor), 0.28),
+      roughness: 0.58,
       metalness: 0.0,
-      clearcoat: 0.18,
-      clearcoatRoughness: 0.38,
+      clearcoat: 0.14,
+      clearcoatRoughness: 0.40,
     });
     const tearMeniscusMat = new THREE.MeshPhysicalMaterial({
-      color: new THREE.Color(strain.eyeRimColor ?? 0x2a1b1b).lerp(new THREE.Color(0xffffff), 0.14),
-      roughness: 0.05,
+      color: new THREE.Color(strain.eyeRimColor ?? 0x2a1b1b).lerp(new THREE.Color(0xf6e6e4), 0.10),
+      roughness: 0.06,
       metalness: 0.0,
-      clearcoat: 0.96,
-      clearcoatRoughness: 0.04,
+      clearcoat: 0.90,
+      clearcoatRoughness: 0.06,
       transparent: true,
-      opacity: 0.42,
+      opacity: 0.16,
+      depthWrite: false,
     });
-    const lidArcGeo = new THREE.TorusGeometry(PROP.eyeSize * 0.82, 0.0085, 8, 18, Math.PI * 0.94);
-    const tearArcGeo = new THREE.TorusGeometry(PROP.eyeSize * 0.80, 0.0055, 6, 16, Math.PI * 0.68);
+    // Almond palpebral rim seated cleanly around the orbital aperture so the
+    // glossy globe emerges from a living eyelid margin without crossing the pupil.
+    const lidArcGeo = new THREE.TorusGeometry(PROP.eyeSize * 0.96, 0.0105, 8, 22, Math.PI * 0.92);
+    const tearArcGeo = new THREE.TorusGeometry(PROP.eyeSize * 0.92, 0.0030, 6, 18, Math.PI * 0.54);
+    const localForwardZ = new THREE.Vector3(0, 0, 1);
+    // SphereGeometry centers the iris texture on local +X; rotate it onto +Z so
+    // the pupil looks along the eye's outward axis and the UV seam stays hidden.
+    const eyeGeo = new THREE.SphereGeometry(PROP.eyeSize, 28, 28).rotateY(-Math.PI / 2);
+    const corneaGeo = new THREE.SphereGeometry(PROP.eyeSize + 0.0045, 28, 28).rotateY(-Math.PI / 2);
+    const headAnchors = getHeadFeatureAnchors();
 
     const buildEyeAssembly = (sideSign, offsetAsym) => {
-      const eye = new THREE.Mesh(new THREE.SphereGeometry(PROP.eyeSize, 22, 22), subjectEyeMat);
+      // Murine eyes are lateral (~60 deg from the midline) and sit half-buried
+      // in the orbital fossa, bulging out of an almond palpebral aperture.
+      const anchor = sideSign > 0 ? headAnchors.eyeL : headAnchors.eyeR;
+      const designDir = new THREE.Vector3(sideSign * 0.86, 0.14, 0.48).normalize();
+      const outDir = anchor.normal.clone().lerp(designDir, 0.6).normalize();
+      const eyeCenter = anchor.position.clone()
+        .addScaledVector(outDir, -PROP.eyeSize * 0.26);
+      eyeCenter.x += offsetAsym;
+      const eyeQuat = new THREE.Quaternion().setFromUnitVectors(localForwardZ, outDir);
+
+      const eye = new THREE.Mesh(eyeGeo, subjectEyeMat);
       eye.scale.set(0.98, 0.94, PROP.eyeProtrusion);
-      eye.position.set(sideSign * PROP.eyeSpacing + offsetAsym, 0.15, PROP.eyeYaw);
-      eye.rotation.y = sideSign * 0.58;
+      eye.position.copy(eyeCenter);
+      eye.quaternion.copy(eyeQuat);
       eye.castShadow = false;
       this.head.add(eye);
 
-      const cornea = new THREE.Mesh(new THREE.SphereGeometry(PROP.eyeSize + 0.005, 22, 22), subjectCorneaMat);
-      cornea.scale.set(0.98, 0.94, PROP.eyeProtrusion + 0.05);
-      cornea.position.copy(eye.position);
-      cornea.rotation.y = sideSign * 0.58;
+      const cornea = new THREE.Mesh(corneaGeo, subjectCorneaMat);
+      cornea.scale.set(0.98, 0.94, PROP.eyeProtrusion + 0.04);
+      cornea.position.copy(eyeCenter);
+      cornea.quaternion.copy(eyeQuat);
       cornea.castShadow = false;
       this.head.add(cornea);
 
-      // Recessed orbital palpebral rim aligned perpendicular to the outward eye axis
-      const outDir = new THREE.Vector3(sideSign * 0.85, 0.08, 0.52).normalize();
+      // Almond palpebral rim seated right where the globe emerges from the orbit
       const lidFrame = new THREE.Group();
-      lidFrame.position.copy(eye.position).addScaledVector(outDir, PROP.eyeSize * 0.42);
-      lidFrame.lookAt(lidFrame.position.clone().add(outDir));
-      lidFrame.rotation.z += sideSign * -0.15;
+      lidFrame.position.copy(eyeCenter).addScaledVector(outDir, PROP.eyeSize * 0.21);
+      lidFrame.quaternion.copy(eyeQuat);
       this.head.add(lidFrame);
 
       const upperLid = new THREE.Mesh(lidArcGeo, lidMat);
-      upperLid.rotation.z = Math.PI * 0.03;
-      upperLid.scale.set(1.04, 0.92, 1.0);
+      upperLid.rotation.z = Math.PI * 0.04;
+      upperLid.scale.set(1.06, 0.90, 0.72);
       lidFrame.add(upperLid);
 
       const lowerLid = new THREE.Mesh(lidArcGeo, lidMat);
-      lowerLid.rotation.z = Math.PI * 1.03;
-      lowerLid.scale.set(1.02, 0.88, 1.0);
+      lowerLid.rotation.z = Math.PI * 1.04;
+      lowerLid.scale.set(1.04, 0.86, 0.70);
       lidFrame.add(lowerLid);
 
       const tear = new THREE.Mesh(tearArcGeo, tearMeniscusMat);
-      tear.rotation.z = Math.PI * 1.16;
-      tear.position.set(0, -0.004, 0.005);
+      tear.rotation.z = Math.PI * 1.22;
+      tear.position.set(0, -0.002, 0.003);
       lidFrame.add(tear);
 
       return { eye, cornea, upperLid, lowerLid };
@@ -1404,7 +1497,7 @@ class ExpertMouse {
     const makeFootPlant = (
       paw,
       joints,
-      phaseOffset,
+      limb,
       isFore,
       side,
       maximumReach = null
@@ -1412,7 +1505,7 @@ class ExpertMouse {
       paw,
       contact: paw._groundContact,
       joints,
-      phaseOffset,
+      limb,
       isFore,
       side,
       maximumReach,
@@ -1430,12 +1523,12 @@ class ExpertMouse {
       constraintContactLocal: new THREE.Vector3(),
     });
     this.footPlants = [
-      makeFootPlant(this.hindL._paw, [this.hindL._ankle, this.shankL, this.hindL], 0, false, 1),
-      makeFootPlant(this.hindR._paw, [this.hindR._ankle, this.shankR, this.hindR], Math.PI, false, -1),
+      makeFootPlant(this.hindL._paw, [this.hindL._ankle, this.shankL, this.hindL], 'LH', false, 1),
+      makeFootPlant(this.hindR._paw, [this.hindR._ankle, this.shankR, this.hindR], 'RH', false, -1),
       makeFootPlant(
         this.armL._paw,
         [this.armL._wrist, this.armL._forearm, this.upperArmL],
-        Math.PI,
+        'LF',
         true,
         1,
         this.armL._maximumReach
@@ -1443,14 +1536,23 @@ class ExpertMouse {
       makeFootPlant(
         this.armR._paw,
         [this.armR._wrist, this.armR._forearm, this.upperArmR],
-        0,
+        'RF',
         true,
         -1,
         this.armR._maximumReach
       ),
     ];
+    // FlyBody-style layered motor control: descending drive -> limb CPG ->
+    // named joint targets (see two_mice_control.js). The jitter is derived from
+    // timeOffset so it never consumes the behavioral random stream.
+    this.motor = new MouseMotorController({
+      gait: 'trot',
+      jitter: (((this.timeOffset * 0.37) % 1) - 0.5) * 0.08,
+    });
+    this.externalCommand = null;
+    this.jointBindings = this.createJointBindings();
     this.contactFrame = {
-      legCycle: 0,
+      limbStance: { LF: true, RF: true, LH: true, RH: true },
       isMoving: false,
       rear: 0,
       groom: 0,
@@ -1595,10 +1697,20 @@ class ExpertMouse {
       }
     };
 
-    // Tracking nodes at anatomical landmarks
-    createTrackingNode('snout', this.head, new THREE.Vector3(0, -0.15, PROP.snoutLength * 1.04));
-    createTrackingNode('lear', this.head, new THREE.Vector3(0.55, 0.45, -0.15));
-    createTrackingNode('rear', this.head, new THREE.Vector3(-0.55, 0.45, -0.15));
+    // Tracking nodes at anatomical landmarks: the nose keypoint sits on the
+    // rhinarium tip and ear keypoints at each pinna's center.
+    const noseAnchor = getHeadFeatureAnchors().nose;
+    createTrackingNode(
+      'snout',
+      this.head,
+      noseAnchor.position.clone().addScaledVector(noseAnchor.normal, 0.02)
+    );
+    const pinnaCenterInHead = ear => {
+      ear.updateMatrix();
+      return ear._pinna.position.clone().applyMatrix4(ear.matrix);
+    };
+    createTrackingNode('lear', this.head, pinnaCenterInHead(this.earL));
+    createTrackingNode('rear', this.head, pinnaCenterInHead(this.earR));
     createTrackingNode(
       'neck',
       this.neckMesh,
@@ -1660,6 +1772,182 @@ class ExpertMouse {
     if (this.headstageGroup) this.headstageGroup.visible = active;
     if (this.tetherMesh) this.tetherMesh.visible = active;
     if (active) this.updateHeadstageTether();
+  }
+
+  // ── Actuators: bind MOUSE_JOINT_SPEC names to rig transforms ──
+  createJointBindings() {
+    const chains = {
+      LF: { chain: this.armL, upper: this.upperArmL },
+      RF: { chain: this.armR, upper: this.upperArmR },
+      LH: { chain: this.hindL, shank: this.shankL },
+      RH: { chain: this.hindR, shank: this.shankR },
+    };
+    const segmentObject = (limb, segment) => {
+      const entry = chains[limb];
+      switch (segment) {
+        case 'hip': return entry.chain;
+        case 'knee': return entry.shank;
+        case 'ankle': return entry.chain._ankle;
+        case 'toe': return entry.chain._paw;
+        case 'shoulder': return entry.upper;
+        case 'elbow': return entry.chain._forearm;
+        case 'wrist': return entry.chain._wrist;
+        case 'carpal': return entry.chain._paw;
+        default: return null;
+      }
+    };
+    return MOUSE_JOINT_SPEC.map(joint => {
+      const object = segmentObject(joint.limb, joint.segment);
+      if (!object) throw new Error(`Mouse rig has no segment for joint ${joint.name}.`);
+      return {
+        name: joint.name,
+        target: joint.type === 'slide' ? object.position : object.rotation,
+        axis: joint.axis,
+      };
+    });
+  }
+
+  applyJointTargets(targets) {
+    for (const binding of this.jointBindings) {
+      const value = targets[binding.name];
+      if (Number.isFinite(value)) binding.target[binding.axis] = value;
+    }
+  }
+
+  readJointPositions() {
+    const positions = {};
+    for (const binding of this.jointBindings) {
+      positions[binding.name] = binding.target[binding.axis];
+    }
+    return positions;
+  }
+
+  // Proprioceptive feedback for the CPG lift-off reflex, in MOUSE_LIMBS order.
+  getLiftOffRequests() {
+    const byLimb = {};
+    for (const foot of this.footPlants) {
+      byLimb[foot.limb] = foot.rejectionReason === 'reach'
+        || (foot.planted && foot.reachRatio > 0.96)
+        || (foot.planted && foot.slip > STANCE_CONTACT_LIMITS.slip * 0.8);
+    }
+    return [byLimb.LF, byLimb.RF, byLimb.LH, byLimb.RH].map(Boolean);
+  }
+
+  // ── External control (analogous to a FlyBody task command) ──
+  setMotorCommand(command, time = 0) {
+    const sanitized = sanitizeMotorCommand(command, { maxSpeed: this.guiParams.maxSpeed });
+    this.externalCommand = {
+      ...sanitized,
+      heading: this.yawAngle,
+      startedAt: time,
+      expiresAt: time + sanitized.durationSec,
+    };
+    // A command replaces spontaneous pauses but lets active postures finish.
+    this.pauseTimer = 0;
+    this.lowSpeedTimer = 0;
+    this.stuckTimer = 0;
+    return this.describeMotorCommand();
+  }
+
+  clearMotorCommand() {
+    this.externalCommand = null;
+  }
+
+  describeMotorCommand() {
+    const command = this.externalCommand;
+    if (!command) return null;
+    return {
+      forwardSpeed: command.forwardSpeed,
+      turnRate: command.turnRate,
+      gait: command.gait,
+      durationSec: Number.isFinite(command.durationSec) ? command.durationSec : null,
+      startedAt: command.startedAt,
+      expiresAt: Number.isFinite(command.expiresAt) ? command.expiresAt : null,
+      commandedHeading: command.heading,
+    };
+  }
+
+  /** Egocentric observation, analogous to FlyBody's walker/* observables. */
+  getObservation() {
+    const forward = this.velocity.x * this.heading.x + this.velocity.y * this.heading.y;
+    const lateral = this.velocity.x * this.heading.y - this.velocity.y * this.heading.x;
+    const footContacts = {};
+    const footSlip = {};
+    for (const foot of this.footPlants) {
+      footContacts[foot.limb] = Boolean(foot.planted);
+      footSlip[foot.limb] = foot.planted ? foot.slip : 0;
+    }
+    const flex = this.effectiveSpineFlex || this.spineFlex;
+    return {
+      trackId: this.trackId,
+      strain: this.appearance.strain,
+      position: [this.mesh.position.x, this.mesh.position.z],
+      heading: this.yawAngle,
+      yawRate: this.yawVel,
+      egocentricVelocity: { forward, lateral },
+      speed: this.velocity.length(),
+      body: {
+        height: this.rig.position.y,
+        pitch: this.rig.rotation.x,
+        roll: this.rig.rotation.z,
+      },
+      spine: {
+        bend: flex.bend, sCurve: flex.sCurve, arch: flex.arch, stretch: flex.stretch,
+      },
+      jointPositions: this.readJointPositions(),
+      jointTargets: { ...this.motor.targets },
+      footContacts,
+      footSlip,
+      motor: this.motor.snapshot(),
+      behavior: {
+        bout: this.boutState.mode,
+        social: this.socialState.mode,
+        rearing: this.rearing.mode,
+        rearingPhase: this.rearing.phase,
+        grooming: this.grooming.mode,
+        groomingPhase: this.grooming.phase,
+      },
+      command: this.describeMotorCommand(),
+    };
+  }
+
+  resetNoseScale() {
+    this.snoutTip.scale.set(
+      this.noseBaseScale.x,
+      this.noseBaseScale.y,
+      this.noseBaseScale.z * (this.guiParams.snoutLength || 1.0)
+    );
+  }
+
+  // ── Face: place nose, mouth, lips and whisker pads on the head surface ──
+  placeHeadFeatures() {
+    const anchors = getHeadFeatureAnchors();
+    const Z = new THREE.Vector3(0, 0, 1);
+    // Rhinarium: seated cleanly into the blunt muzzle dome, facing along its normal.
+    const nose = anchors.nose;
+    this.noseRestPosition = nose.position.clone()
+      .addScaledVector(nose.normal, -0.024);
+    this.noseRestPosition.x += this.asymmetry.noseYaw * 0.55;
+    this.snoutTip.position.copy(this.noseRestPosition);
+    this.snoutTip.quaternion.setFromUnitVectors(
+      Z,
+      nose.normal.clone().lerp(Z, 0.55).normalize()
+    );
+    // Seat the mouth assembly (philtrum, split upper lip, curved incisors,
+    // oral cleft, and lower lip/chin) into the recessed sub-philtral fossa.
+    const mouth = anchors.mouth;
+    const mouthForward = mouth.normal.clone()
+      .lerp(new THREE.Vector3(0, -0.24, 0.97).normalize(), 0.45)
+      .normalize();
+    this.mouthGroup.position.copy(mouth.position)
+      .addScaledVector(mouth.normal, 0.002);
+    this.mouthGroup.quaternion.setFromUnitVectors(Z, mouthForward);
+    // Whisker follicle pads on the mystacial cushions.
+    this.padL.position.copy(anchors.padL.position).addScaledVector(anchors.padL.normal, -0.012);
+    this.padR.position.copy(anchors.padR.position).addScaledVector(anchors.padR.normal, -0.012);
+    // Supraorbital/genal vibrissae were authored for eyes at x = +/-0.415.
+    if (this.supraorbitalL) this.supraorbitalL.position.x = anchors.eyeL.position.x - 0.415;
+    if (this.supraorbitalR) this.supraorbitalR.position.x = anchors.eyeR.position.x + 0.415;
   }
 
   updateHeadstageTether() {
@@ -1802,14 +2090,13 @@ class ExpertMouse {
       this.guiParams.headSize * 0.94,
       this.guiParams.headSize * 1.03
     );
-    this.snoutTip.position.z = PROP.snoutLength * 0.992;
-    this.snoutTip.scale.set(0.84, 0.72, this.guiParams.snoutLength * 0.68);
-    if (this.mouth) this.mouth.position.z = PROP.snoutLength * 0.935;
+    this.placeHeadFeatures();
+    this.resetNoseScale();
     this.armRestZ = PROP.bodyLength * 0.70;
     this.hindRestZ = -PROP.bodyLength * 0.36;
     this.bellyRestZ = PROP.bodyLength * 0.56;
-    this.armRestPosL.set(0.52 * PROP.shoulderWidth / 0.90, -0.08, this.armRestZ);
-    this.armRestPosR.set(-0.52 * PROP.shoulderWidth / 0.90, -0.08, this.armRestZ);
+    this.armRestPosL.set(0.38 * PROP.shoulderWidth / 0.90, -0.11, this.armRestZ);
+    this.armRestPosR.set(-0.38 * PROP.shoulderWidth / 0.90, -0.11, this.armRestZ);
     this.hindRestPosL.set(0.62 * PROP.haunchWidth / 1.04, -0.04, this.hindRestZ);
     this.hindRestPosR.set(-0.62 * PROP.haunchWidth / 1.04, -0.04, this.hindRestZ);
     this.applySpinalRigTransforms(chonk, bodyLenScale);
@@ -2239,7 +2526,6 @@ class ExpertMouse {
     this.maximumPawGroundError = 0;
 
     for (const foot of this.footPlants) {
-      const stancePhase = Math.sin(this.contactFrame.legCycle + foot.phaseOffset);
       const flankGroomSupport = foot.isFore
         && this.grooming.mode === 'flank-groom'
         && this.contactFrame.rear < 0.08;
@@ -2255,8 +2541,12 @@ class ExpertMouse {
               || faceWashRecovery
           )
       );
+      // Stance timing comes from the limb CPG; posture controllers (rearing,
+      // grooming) own the supporting limbs while they are engaged.
+      const postureHold = this.contactFrame.rear >= 0.08
+        || this.contactFrame.groom >= 0.08;
       const inStance = mayTouchGround && (
-        !this.contactFrame.isMoving || stancePhase < 0.08
+        postureHold || this.contactFrame.limbStance[foot.limb] !== false
       );
       if (!inStance) {
         foot.planted = false;
@@ -2476,9 +2766,12 @@ class ExpertMouse {
       const bodyForceY = (
         this.bodyDyn.pitch * 0.32 - clampedFwdAccel * 0.008
       ) * transmit;
-      const naturalSway = Math.sin(p * Math.PI * 1.35) * 0.085 * swayPolarity * (1.0 - speedNorm * 0.45);
+      const naturalSway = (
+        Math.sin(p * Math.PI * 1.35) * (0.14 + this.rearAmount * 0.24)
+        + Math.sin(p * Math.PI * 0.65) * (0.06 + this.rearAmount * 0.16)
+      ) * swayPolarity * (1.0 - speedNorm * 0.45);
       const localX = this.tailDyn.sway * lag + bodyForceX + naturalSway + travelWave
-        + midCurve * 0.14 * Math.sign(this.tailDyn.sway || bodyForceX || swayPolarity);
+        + midCurve * 0.16 * Math.sign(this.tailDyn.sway || bodyForceX || swayPolarity);
       const distalCurl = Math.pow(Math.max(0, p - 0.72) / 0.28, 2.0) * 0.030;
       let waveY = -i * PROP.tailSag * p - restDrape * Math.pow(p, 1.15)
         + this.tailDyn.lift * lag + bodyForceY + midCurve * 0.05 + distalCurl;
@@ -2978,6 +3271,7 @@ class ExpertMouse {
       && this.rearing.mode === 'none'
       && guiParams.enableGrooming
       && this.groomCooldown <= 0
+      && !this.externalCommand
     ) {
       const quietOpportunity = time >= state.nextSpontaneousAt
         && !context.hitWall
@@ -3150,6 +3444,7 @@ class ExpertMouse {
       && this.grooming.mode === 'none'
       && guiParams.enableRearing
       && this.rearCooldown <= 0
+      && !this.externalCommand
     ) {
       const supportDirection = new THREE.Vector2(
         -context.nearestWall.normalX,
@@ -3478,9 +3773,15 @@ class ExpertMouse {
         }
       }
     }
-    const behaviorPause = this.pauseTimer > 0 || this.boutState.mode === 'pause-sniff';
+    if (this.externalCommand && time >= this.externalCommand.expiresAt) {
+      this.externalCommand = null;
+    }
+    const commandActive = Boolean(this.externalCommand);
+    const behaviorPause = !commandActive
+      && (this.pauseTimer > 0 || this.boutState.mode === 'pause-sniff');
     const rearingActive = this.rearing.mode !== 'none';
     const groomingActive = this.grooming.mode !== 'none';
+    const commandTracking = commandActive && !rearingActive && !groomingActive;
     const isPausing = behaviorPause || rearingActive || groomingActive;
     const boutSpeedFactor = this.boutState.mode === 'dart-trot'
       ? 1.18
@@ -3601,7 +3902,7 @@ class ExpertMouse {
           this.socialState.targetWorld.set(aimX, aimZ);
         }
 
-        if (dist < SOCIAL_RADIUS && !rearingActive && !groomingActive) {
+        if (dist < SOCIAL_RADIUS && !rearingActive && !groomingActive && !commandActive) {
           const socialBand = THREE.MathUtils.clamp((SOCIAL_RADIUS - dist) / 6.2, 0, 1);
           const headDot = this.heading.x * other.heading.x + this.heading.y * other.heading.y;
 
@@ -3677,7 +3978,7 @@ class ExpertMouse {
     const speedCapScale = isCloseCropDataset ? 0.56 : 1.0;
 
     // Saltatory target-speed assist: brisk darts, moderate walks, genuine stationary sniff pauses
-    if (!guiParams.isPaused && !isPausing) {
+    if (!guiParams.isPaused && !isPausing && !commandActive) {
       const modeCruise = this.socialState.mode === 'evasive-dart'
         ? 0.96
         : (this.socialState.mode === 'anogenital-follow'
@@ -3710,7 +4011,7 @@ class ExpertMouse {
     this.force.y -= this.velocity.y * dragC;
 
     // Low-speed rescue: inject motion only if stalled unintentionally outside a pause/social bout.
-    if (!guiParams.isPaused && !isPausing && !this.socialContact) {
+    if (!guiParams.isPaused && !isPausing && !this.socialContact && !commandActive) {
       if (preSpeed < 0.85) this.lowSpeedTimer += dt;
       else this.lowSpeedTimer = Math.max(0, this.lowSpeedTimer - dt * 0.5);
       if (this.lowSpeedTimer > 1.05) {
@@ -3735,14 +4036,30 @@ class ExpertMouse {
       if (behaviorPause && !rearingActive && !groomingActive) {
         this.velocity.multiplyScalar(Math.exp(-9.0 * dt));
       }
-      const effectiveInertia = this.mass * (isCloseCropDataset ? 1000 : 360);
-      const ax = this.force.x / effectiveInertia;
-      const az = this.force.y / effectiveInertia;
-      this.velocity.x += ax * dt; this.velocity.y += az * dt;
-      const dartMul = (this.boutState.mode === 'dart-trot' || this.socialState.mode === 'evasive-dart') ? 1.24 : 1.0;
-      const uMS = this.guiParams.maxSpeed * speedCapScale * dartMul;
+      let speedCap;
+      if (commandTracking) {
+        // External command: first-order velocity tracking along a commanded
+        // heading that integrates the commanded turn rate (FlyBody-style task
+        // target). Wall and body contacts are still resolved below.
+        const command = this.externalCommand;
+        command.heading = Math.atan2(
+          Math.sin(command.heading + command.turnRate * dt),
+          Math.cos(command.heading + command.turnRate * dt)
+        );
+        const tracking = 1.0 - Math.exp(-6.0 * dt);
+        this.velocity.x += (Math.sin(command.heading) * command.forwardSpeed - this.velocity.x) * tracking;
+        this.velocity.y += (Math.cos(command.heading) * command.forwardSpeed - this.velocity.y) * tracking;
+        speedCap = this.guiParams.maxSpeed * 1.24;
+      } else {
+        const effectiveInertia = this.mass * (isCloseCropDataset ? 1000 : 360);
+        const ax = this.force.x / effectiveInertia;
+        const az = this.force.y / effectiveInertia;
+        this.velocity.x += ax * dt; this.velocity.y += az * dt;
+        const dartMul = (this.boutState.mode === 'dart-trot' || this.socialState.mode === 'evasive-dart') ? 1.24 : 1.0;
+        speedCap = this.guiParams.maxSpeed * speedCapScale * dartMul;
+      }
       const cS = this.velocity.length();
-      if (cS > uMS) this.velocity.multiplyScalar(uMS / cS);
+      if (cS > speedCap) this.velocity.multiplyScalar(speedCap / cS);
       this.mesh.position.x += this.velocity.x * dt;
       this.mesh.position.z += this.velocity.y * dt;
       this.locomotionTime += this.velocity.length() * dt;
@@ -3837,6 +4154,9 @@ class ExpertMouse {
           this.rearing.supportDirection.x,
           this.rearing.supportDirection.y
         );
+      } else if (commandTracking) {
+        // Commanded heading also covers in-place turns and backward walking.
+        targetYaw = this.externalCommand.heading;
       } else if (isMoving) {
         targetYaw = Math.atan2(this.velocity.x, this.velocity.y);
       } else if (this.socialContact && this.socialTarget.lengthSq() > 1e-6) {
@@ -3913,6 +4233,11 @@ class ExpertMouse {
       // Display estimates must not consume the behavioral random stream.
       hudRef.resp.innerText = isMoving && !isPausing ? "215 BPM" : (162 + Math.round(Math.sin(time * 0.7) * 7)) + " BPM";
       hudRef.coord.innerText = `${this.mesh.position.x.toFixed(2)}, ${this.mesh.position.z.toFixed(2)}`;
+      if (hudRef.gait) {
+        hudRef.gait.innerText = this.motor.isStepping()
+          ? `${this.motor.cpg.gait.toUpperCase()} · ${this.motor.cpg.frequencyHz.toFixed(1)} HZ`
+          : 'STANDING';
+      }
     }
 
     // Body + spine + tail dynamics (gravity + inertia + vertebral flexion + concertina elongation)
@@ -3996,8 +4321,8 @@ class ExpertMouse {
       ) + flankCurl;
       const targetBend = THREE.MathUtils.clamp(rawTargetBend, -0.56, 0.56);
 
-      // 2. Subtle S-curve counter-undulation during trotting & slalom turns
-      const gaitWave = isMoving ? Math.sin(this.locomotionTime * 4.1) * Math.min(speedNorm, 1.0) * 0.045 : 0;
+      // 2. Subtle S-curve counter-undulation phase-locked to the hindlimb CPG
+      const gaitWave = isMoving ? this.motor.spinalWave() * 0.045 : 0;
       const targetSCurve = THREE.MathUtils.clamp(
         (gaitWave - this.yawErr * 0.08) * rearPoseSuppress * faceWashSuppress,
         -0.18,
@@ -4086,79 +4411,46 @@ class ExpertMouse {
     const spineHeadBaseY = this.headGroup.position.y;
     const spineHeadBaseZ = this.headGroup.position.z;
 
-    // Contact shadow follows curved & stretched mouse footprint on ground
+    // Contact shadow sits on the arena floor (this.mesh y=0, NOT this.rig)
+    // and follows the curved & stretched murine footprint with subtle height attenuation.
     this.contactShadow.position.set(
       this.spineFlex.bend * 0.18 * chonk,
-      -this.rig.position.y + 0.02,
+      0.018,
       0
     );
     this.contactShadow.scale.set(
-      THREE.MathUtils.clamp(1.0 - this.spineFlex.stretch * 0.35, 0.82, 1.15),
-      THREE.MathUtils.clamp(1.0 + this.spineFlex.stretch * 0.85, 0.80, 1.24),
+      THREE.MathUtils.clamp(1.0 - this.spineFlex.stretch * 0.35, 0.82, 1.15) * chonk,
+      THREE.MathUtils.clamp(1.0 + this.spineFlex.stretch * 0.85, 0.80, 1.24) * bodyLenScale,
       1.0
     );
-
-    // ═══ GAIT ANIMATION (anatomically correct) ═══
-    const legCycle = this.locomotionTime * 4.1;
-    const gaitAmp = Math.min(speedNorm * 1.35, 1.0) * 0.44 * this.motion.gaitAmpMul;
-
-    if (isMoving) {
-      // Diagonal rodent walk: hind hip drives while knee and ankle fold in swing.
-      this.hindL.rotation.x = -0.24 + Math.sin(legCycle) * gaitAmp * 0.48;
-      this.hindR.rotation.x = -0.24 + Math.sin(legCycle + Math.PI) * gaitAmp * 0.48;
-      this.hindL.rotation.z = 0;
-      this.hindR.rotation.z = 0;
-      this.shankL.rotation.x = 0.56 + Math.max(0, Math.sin(legCycle + 0.5)) * gaitAmp * 0.34;
-      this.shankR.rotation.x = 0.56 + Math.max(0, Math.sin(legCycle + Math.PI + 0.5)) * gaitAmp * 0.34;
-      // Ankle follows shank, pushes off
-      if (this.hindL._ankle) this.hindL._ankle.rotation.x = -0.36 + Math.sin(legCycle - 0.3) * gaitAmp * 0.22;
-      if (this.hindR._ankle) this.hindR._ankle.rotation.x = -0.36 + Math.sin(legCycle + Math.PI - 0.3) * gaitAmp * 0.22;
-      if (this.hindL._paw) this.hindL._paw.rotation.x = -0.10 - Math.sin(legCycle - 0.3) * gaitAmp * 0.12;
-      if (this.hindR._paw) this.hindR._paw.rotation.x = -0.10 - Math.sin(legCycle + Math.PI - 0.3) * gaitAmp * 0.12;
-
-      // Forelimb: shoulder drives, elbow/wrist follow
-      this.upperArmL.position.z = 0;
-      this.upperArmR.position.z = 0;
-      this.upperArmL.rotation.x = FORELIMB_NEUTRAL.shoulderX
-        + Math.sin(legCycle + Math.PI) * gaitAmp * 0.46;
-      this.upperArmR.rotation.x = FORELIMB_NEUTRAL.shoulderX
-        + Math.sin(legCycle) * gaitAmp * 0.46;
-      this.upperArmL.rotation.z = -0.04;
-      this.upperArmR.rotation.z = 0.04;
-      // Elbow flex
-      if (this.armL._forearm) this.armL._forearm.rotation.x = -0.62 + Math.max(0, Math.sin(legCycle + Math.PI + 0.4)) * gaitAmp * 0.28;
-      if (this.armR._forearm) this.armR._forearm.rotation.x = -0.62 + Math.max(0, Math.sin(legCycle + 0.4)) * gaitAmp * 0.28;
-      // Wrist flex
-      if (this.armL._wrist) this.armL._wrist.rotation.x = -0.12 + Math.sin(legCycle + Math.PI + 0.6) * gaitAmp * 0.16;
-      if (this.armR._wrist) this.armR._wrist.rotation.x = -0.12 + Math.sin(legCycle + 0.6) * gaitAmp * 0.16;
-      if (this.armL._paw) this.armL._paw.rotation.x = -0.12 - Math.sin(legCycle + Math.PI + 0.6) * gaitAmp * 0.10;
-      if (this.armR._paw) this.armR._paw.rotation.x = -0.12 - Math.sin(legCycle + 0.6) * gaitAmp * 0.10;
-      this.rig.position.y += Math.sin(legCycle * 2.0) * speedNorm * 0.018;
-    } else {
-      // Idle pose
-      this.hindL.rotation.x = -0.24; this.hindR.rotation.x = -0.24;
-      this.hindL.rotation.z = 0; this.hindR.rotation.z = 0;
-      this.shankL.rotation.x = 0.56; this.shankR.rotation.x = 0.56;
-      if (this.hindL._ankle) this.hindL._ankle.rotation.x = -0.36;
-      if (this.hindR._ankle) this.hindR._ankle.rotation.x = -0.36;
-      if (this.hindL._paw) this.hindL._paw.rotation.x = -0.10;
-      if (this.hindR._paw) this.hindR._paw.rotation.x = -0.10;
-
-      // Neutral planted stance with subtle weight-shift micro-motion
-      const pawShift = Math.sin(time * 1.3 + this.timeOffset) * 0.008;
-      this.upperArmL.position.z = 0;
-      this.upperArmR.position.z = 0;
-      this.upperArmL.rotation.x = FORELIMB_NEUTRAL.shoulderX;
-      this.upperArmR.rotation.x = FORELIMB_NEUTRAL.shoulderX;
-      this.upperArmL.rotation.z = -0.04 + pawShift;
-      this.upperArmR.rotation.z = 0.04 - pawShift;
-      if (this.armL._forearm) this.armL._forearm.rotation.x = -0.62;
-      if (this.armR._forearm) this.armR._forearm.rotation.x = -0.62;
-      if (this.armL._wrist) this.armL._wrist.rotation.x = -0.12;
-      if (this.armR._wrist) this.armR._wrist.rotation.x = -0.12;
-      if (this.armL._paw) this.armL._paw.rotation.x = -0.12;
-      if (this.armR._paw) this.armR._paw.rotation.x = -0.12;
+    if (this.contactShadow.material) {
+      this.contactShadow.material.opacity = THREE.MathUtils.clamp(
+        0.92 - Math.max(0, this.rig.position.y - 1.16) * 0.28,
+        0.38,
+        0.95
+      );
     }
+
+    // ═══ LOCOMOTOR CONTROL (descending drive -> limb CPG -> joint targets) ═══
+    // Mirrors the FlyBody brain/VNC pipeline: body state sets a descending
+    // drive, coupled limb oscillators produce gait-specific phases, and the
+    // decoder writes named joint targets clipped to MOUSE_JOINT_SPEC ranges.
+    // Rearing/grooming poses below blend on top of these targets.
+    const forwardSpeed = this.velocity.x * this.heading.x + this.velocity.y * this.heading.y;
+    const motorTargets = this.motor.step(guiParams.isPaused ? 0 : dt, {
+      speed,
+      forwardSpeed,
+      maxSpeed: this.maxSpeed,
+      yawRate: this.yawVel,
+      posture: rearingActive ? 'rearing' : (groomingActive ? 'grooming' : 'none'),
+      dart: this.boutState.mode === 'dart-trot' || this.socialState.mode === 'evasive-dart',
+      gaitOverride: this.externalCommand?.gait ?? guiParams.gaitMode ?? 'auto',
+      gaitAmpMul: this.motion.gaitAmpMul,
+      idleSway: isMoving ? 0 : Math.sin(time * 1.3 + this.timeOffset) * 0.008,
+      liftOff: this.getLiftOffRequests(),
+    });
+    this.applyJointTargets(motorTargets);
+    this.rig.position.y += this.motor.bodyOscillation() * 0.018;
 
     const rear = this.rearAmount;
     if (rear > 0 && !this.rearing.rearFeetPlanted) {
@@ -4213,7 +4505,15 @@ class ExpertMouse {
       if (this.hindR._ankle) this.hindR._ankle.rotation.x = THREE.MathUtils.lerp(this.hindR._ankle.rotation.x, -0.58, poseAmount);
       if (this.hindL._paw) this.hindL._paw.rotation.x = THREE.MathUtils.lerp(this.hindL._paw.rotation.x, -0.04, poseAmount);
       if (this.hindR._paw) this.hindR._paw.rotation.x = THREE.MathUtils.lerp(this.hindR._paw.rotation.x, -0.04, poseAmount);
-      this.contactShadow.position.set(0, -this.rig.position.y + 0.02, 0);
+      this.contactShadow.position.set(0, 0.018, -poseAmount * 0.65);
+      this.contactShadow.scale.set(
+        chonk * THREE.MathUtils.lerp(1.0, 0.84, poseAmount),
+        bodyLenScale * THREE.MathUtils.lerp(1.0, 0.62, poseAmount),
+        1.0
+      );
+      if (this.contactShadow.material) {
+        this.contactShadow.material.opacity = THREE.MathUtils.lerp(0.92, 0.72, poseAmount);
+      }
     }
     const groom = this.groomAmount;
     const {
@@ -4269,16 +4569,16 @@ class ExpertMouse {
           shoulderX: side > 0 ? sameSideShoulder : supportShoulder,
           shoulderZ: side > 0 ? -0.10 : -0.16,
           elbowX: side > 0 ? -0.30 + flankLick * 0.05 : -0.58,
-          wristX: side > 0 ? -0.06 : -0.13,
-          pawX: side > 0 ? -0.08 : -0.12,
+          wristX: side > 0 ? 0.16 : 0.22,
+          pawX: side > 0 ? 0.10 : 0.12,
         }, groomPose);
         this.blendForelimbPose(this.armR, {
           shoulderProtraction: 0.02,
           shoulderX: side < 0 ? sameSideShoulder : supportShoulder,
           shoulderZ: side < 0 ? 0.10 : 0.16,
           elbowX: side < 0 ? -0.30 + flankLick * 0.05 : -0.58,
-          wristX: side < 0 ? -0.06 : -0.13,
-          pawX: side < 0 ? -0.08 : -0.12,
+          wristX: side < 0 ? 0.16 : 0.22,
+          pawX: side < 0 ? 0.10 : 0.12,
         }, groomPose);
       }
 
@@ -4290,9 +4590,14 @@ class ExpertMouse {
       this.shankR.rotation.x = THREE.MathUtils.lerp(this.shankR.rotation.x, shankTarget, groomPose);
       if (this.hindL._ankle) this.hindL._ankle.rotation.x = THREE.MathUtils.lerp(this.hindL._ankle.rotation.x, -0.48, groomPose);
       if (this.hindR._ankle) this.hindR._ankle.rotation.x = THREE.MathUtils.lerp(this.hindR._ankle.rotation.x, -0.48, groomPose);
-      this.contactShadow.position.set(0, -this.rig.position.y + 0.02, 0);
+      this.contactShadow.position.set(0, 0.018, -groomPose * 0.35);
+      if (this.contactShadow.material) {
+        this.contactShadow.material.opacity = THREE.MathUtils.lerp(0.92, 0.78, groomPose);
+      }
     }
-    this.contactFrame.legCycle = legCycle;
+    for (const limb of Object.keys(this.contactFrame.limbStance)) {
+      this.contactFrame.limbStance[limb] = this.motor.isLimbInStance(limb);
+    }
     this.contactFrame.isMoving = isMoving;
     this.contactFrame.rear = rear;
     this.contactFrame.groom = groom;
@@ -4319,9 +4624,9 @@ class ExpertMouse {
       this.headGroup.rotation.y = this.spineHeadYaw
         + THREE.MathUtils.clamp(relYaw, -0.52, 0.52) + sniffPulse * 0.032;
       this.headGroup.rotation.x = -0.075 + sniffPulse * 0.030;
-      this.snoutTip.position.y = -0.152 + sniffPulse * 0.024;
+      this.snoutTip.position.y = this.noseRestPosition.y + sniffPulse * 0.024;
       const noseScalePulse = 1.0 + sniffPulse * 0.018;
-      this.snoutTip.scale.z = 0.68 * this.guiParams.snoutLength * noseScalePulse;
+      this.snoutTip.scale.z = this.noseBaseScale.z * this.guiParams.snoutLength * noseScalePulse;
       this.padL.rotation.y = 0.14 + sniffPulse * 0.060 + whiskSweep * 1.20;
       this.padR.rotation.y = -0.14 - sniffPulse * 0.060 - whiskSweep * 1.20;
       this.padL.rotation.x = -0.015 + sniffPulse * 0.008;
@@ -4332,7 +4637,7 @@ class ExpertMouse {
       if (calmIdle) {
         this.headGroup.rotation.y = THREE.MathUtils.lerp(this.headGroup.rotation.y, this.spineHeadYaw, 0.15);
         this.headGroup.rotation.x *= 0.85;
-        this.snoutTip.position.y = -0.152 + sniffPulse * 0.006;
+        this.snoutTip.position.y = this.noseRestPosition.y + sniffPulse * 0.006;
         this.padL.rotation.y = 0.045 + sniffPulse * 0.012 + whiskSweep;
         this.padR.rotation.y = -0.045 - sniffPulse * 0.012 - whiskSweep;
         this.padL.rotation.x = -0.008;
@@ -4352,9 +4657,9 @@ class ExpertMouse {
           Math.sin(time * 3.2 + this.timeOffset * 0.05) * 0.048
           + sniffPulse * 0.018
         ) * this.motion.headIdlePitchMul;
-        this.snoutTip.position.y = -0.152 + sniffPulse * 0.022;
+        this.snoutTip.position.y = this.noseRestPosition.y + sniffPulse * 0.022;
         const noseScalePulse = 1.0 + sniffPulse * 0.016;
-        this.snoutTip.scale.z = 0.68 * this.guiParams.snoutLength * noseScalePulse;
+        this.snoutTip.scale.z = this.noseBaseScale.z * this.guiParams.snoutLength * noseScalePulse;
         this.padL.rotation.y = sniffPulse * 0.045 + 0.085 + whiskSweep;
         this.padR.rotation.y = -sniffPulse * 0.045 - 0.085 - whiskSweep;
         this.padL.rotation.x = -0.010 + sniffPulse * 0.006;
@@ -4376,7 +4681,7 @@ class ExpertMouse {
         this.spineHeadYaw + headLeadYaw,
         -headLeadYaw * 0.08
       );
-      this.snoutTip.position.y = -0.152 + sniffPulse * 0.010;
+      this.snoutTip.position.y = this.noseRestPosition.y + sniffPulse * 0.010;
       this.padL.rotation.y = -0.06 + whiskSweep * 1.25;
       this.padR.rotation.y = 0.06 - whiskSweep * 1.25;
       this.padL.rotation.x = 0.010; this.padR.rotation.x = 0.010;
@@ -4395,6 +4700,16 @@ class ExpertMouse {
           this.rearing.elapsed * 2.0 + this.timeOffset * 0.015
         ) * poseAmount * 0.07;
       }
+    }
+    if (this.lowerLip && this.lowerLipRestY !== undefined) {
+      const lickOpen = groom > 0
+        ? THREE.MathUtils.clamp(groom / Math.max(this.grooming.peakAmount, 0.01), 0, 1)
+          * (this.grooming.mode === 'face-wash' ? pawLick : flankLick) * 0.006
+        : 0;
+      const sniffTwitch = !guiParams.isPaused && !calmIdle
+        ? Math.max(0, sniffPulse) * 0.0018
+        : 0;
+      this.lowerLip.position.y = this.lowerLipRestY - lickOpen - sniffTwitch;
     }
     if (groom > 0) {
       const groomPose = THREE.MathUtils.clamp(
@@ -4463,21 +4778,23 @@ class ExpertMouse {
 
     // ═══ EAR MICRO-TWITCHES & DYNAMIC PIN-BACK ═══
     if (this.earL && this.earR && this.earMicro.baseRotL) {
-      this.earMicro.twitchTimerL += dt;
-      this.earMicro.twitchTimerR += dt;
-      if (this.earMicro.twitchTimerL > this.earMicro.nextIntervalL) {
-        this.earMicro.twitchAngleL = (random() - 0.5) * 0.08;
-        this.earMicro.twitchTimerL = 0;
-        this.earMicro.nextIntervalL = 0.5 + random() * 4.0;
+      if (!guiParams.isPaused) {
+        this.earMicro.twitchTimerL += dt;
+        this.earMicro.twitchTimerR += dt;
+        if (this.earMicro.twitchTimerL > this.earMicro.nextIntervalL) {
+          this.earMicro.twitchAngleL = (random() - 0.5) * 0.08;
+          this.earMicro.twitchTimerL = 0;
+          this.earMicro.nextIntervalL = 0.5 + random() * 4.0;
+        }
+        if (this.earMicro.twitchTimerR > this.earMicro.nextIntervalR) {
+          this.earMicro.twitchAngleR = (random() - 0.5) * 0.08;
+          this.earMicro.twitchTimerR = 0;
+          this.earMicro.nextIntervalR = 0.5 + random() * 4.0;
+        }
+        // Smooth exponential decay
+        this.earMicro.twitchAngleL *= Math.exp(-4.0 * dt);
+        this.earMicro.twitchAngleR *= Math.exp(-4.0 * dt);
       }
-      if (this.earMicro.twitchTimerR > this.earMicro.nextIntervalR) {
-        this.earMicro.twitchAngleR = (random() - 0.5) * 0.08;
-        this.earMicro.twitchTimerR = 0;
-        this.earMicro.nextIntervalR = 0.5 + random() * 4.0;
-      }
-      // Smooth exponential decay
-      this.earMicro.twitchAngleL *= Math.exp(-4.0 * dt);
-      this.earMicro.twitchAngleR *= Math.exp(-4.0 * dt);
       // Locomotion secondary bounce + aerodynamic/social ear pin-back
       const earBounce = isMoving ? Math.sin(this.locomotionTime * 5.0) * 0.022 : 0;
       const earScan = Math.sin(time * 0.72 + this.timeOffset * 0.013) * 0.026;
@@ -4567,8 +4884,11 @@ class ExpertMouse {
       this.guiParams.headSize * 0.94,
       this.guiParams.headSize * 1.03
     );
-    if (!isMoving || calmIdle) {
-      this.snoutTip.scale.set(0.84, 0.72, this.guiParams.snoutLength * 0.68);
+    if (calmIdle || (isMoving && !this.socialContact)) {
+      this.resetNoseScale();
+    } else {
+      this.snoutTip.scale.x = this.noseBaseScale.x;
+      this.snoutTip.scale.y = this.noseBaseScale.y;
     }
     this.prevVelocity.copy(this.velocity);
 
@@ -5159,7 +5479,8 @@ const hudElements = {
   state: document.getElementById('hud-state'),
   hr: document.getElementById('hud-hr'),
   resp: document.getElementById('hud-resp'),
-  coord: document.getElementById('hud-coord')
+  coord: document.getElementById('hud-coord'),
+  gait: document.getElementById('hud-gait'),
 };
 
 // Shared shader engine is initialized with the model factory above.
@@ -5313,6 +5634,8 @@ const guiParams = {
     if (subject) subject.startRearing('unsupported');
   },
   enableGrooming: true, groomingFrequency: 1.0, groomingMode: 'Face wash',
+  // Motor control: 'auto' selects walk/trot/gallop from speed with hysteresis.
+  gaitMode: 'auto',
   triggerGrooming: () => {
     const subject = mice.find(mouse => (
       mouse.rearing.mode === 'none' && mouse.grooming.mode === 'none'
@@ -5362,16 +5685,16 @@ if (DATASET_ARENA === 'home_cage') {
 function getStrainProfile(presetName) {
   if (presetName === 'C57BL/6 (Black)') {
     return {
-      eyeColor: '#060505', eyeRimColor: '#1f1617',
-      earOuterTransmission: 0.18, earInnerTransmission: 0.28,
-      earInnerSatOffset: 0.035, earInnerLightOffset: 0.02, earOuterRoughness: 0.60,
-      earOuterColor: '#66585a', earInnerColor: '#987c7a',
+      eyeColor: '#060505', eyeRimColor: '#241a1b',
+      earOuterTransmission: 0.16, earInnerTransmission: 0.26,
+      earInnerSatOffset: 0.030, earInnerLightOffset: 0.02, earOuterRoughness: 0.62,
+      earOuterColor: '#625456', earInnerColor: '#967c7a',
       earSkinBlend: 0.22, earInnerSkinBlend: 0.16, earScaleMul: 0.96,
       earSheenColor: 0xb29a90, earAttenuationColor: 0x8a5148, earAttenuationDistance: 0.12,
-      earYaw: 0.72, earHeightOffset: -0.02, padDarken: 0.94, clawColor: 0xd0c6be,
-      pawColor: '#a67674', pawPadColor: '#885c5b',
-      noseColor: '#966563', tailColor: '#524242', tailTransmission: 0.10,
-      whiskerColor: 0xb5aba3, pawSpreadMul: 1.0, toeLenMul: 0.98,
+      earYaw: 0.72, earHeightOffset: -0.02, padDarken: 0.92, clawColor: 0xd0c6be,
+      pawColor: '#8c6d6b', pawPadColor: '#6e5250',
+      noseColor: '#8e6e6e', tailColor: '#4c3e3e', tailTransmission: 0.10,
+      whiskerColor: 0x3a3533, whiskerOpacity: 0.80, pawSpreadMul: 1.0, toeLenMul: 0.98,
       gaitAmpMul: 0.92, headIdleYawMul: 0.82, headIdlePitchMul: 0.88,
       sniffAmpMul: 0.75, breathIdleAmp: 0.010, breathMoveAmp: 0.012,
       breathIdleFreq: 10.0, breathMoveFreq: 18.0, tailWaveAmpMul: 0.85, tailWaveFreqMul: 0.90
@@ -5386,8 +5709,8 @@ function getStrainProfile(presetName) {
       earSkinBlend: 0.24, earInnerSkinBlend: 0.16, earScaleMul: 0.96,
       earSheenColor: 0xc6a08e, earAttenuationColor: 0xb77668, earAttenuationDistance: 0.14,
       earYaw: 0.58, earHeightOffset: -0.01, padDarken: 0.93, clawColor: 0xd6c8bd,
-      pawColor: '#c8948b', pawPadColor: '#aa7771',
-      noseColor: '#b8786f', tailColor: '#7a5d50', tailTransmission: 0.16,
+      pawColor: '#c4928a', pawPadColor: '#a67670',
+      noseColor: '#be8880', tailColor: '#7a5d50', tailTransmission: 0.16,
       whiskerColor: 0xc2b7ae, pawSpreadMul: 1.0, toeLenMul: 1.0,
       gaitAmpMul: 1.0, headIdleYawMul: 1.0, headIdlePitchMul: 1.0,
       sniffAmpMul: 1.0, breathIdleAmp: 0.013, breathMoveAmp: 0.016,
@@ -5396,32 +5719,32 @@ function getStrainProfile(presetName) {
   }
   if (presetName === 'Nude/Hairless') {
     return {
-      eyeColor: '#6d151b', eyeRimColor: '#b87478',
+      eyeColor: '#7a1922', eyeRimColor: '#be7c80',
       earOuterTransmission: 0.36, earInnerTransmission: 0.46,
       earInnerSatOffset: 0.10, earInnerLightOffset: 0.08, earOuterRoughness: 0.44,
       earOuterColor: '#d9b2ad', earInnerColor: '#e8b9b5',
       earSkinBlend: 0.28, earInnerSkinBlend: 0.18, earScaleMul: 1.02,
       earSheenColor: 0xffd6c8, earAttenuationColor: 0xea9d8f, earAttenuationDistance: 0.18,
       earYaw: 0.48, earHeightOffset: 0.00, padDarken: 0.94, clawColor: 0xe2d6cd,
-      pawColor: '#e9b8b2', pawPadColor: '#d39390',
-      noseColor: '#d29089', tailColor: '#e2aca6', tailTransmission: 0.28,
+      pawColor: '#e8bab4', pawPadColor: '#d29692',
+      noseColor: '#e4ada8', tailColor: '#e2aca6', tailTransmission: 0.28,
       whiskerColor: 0xe6dcd5, pawSpreadMul: 1.04, toeLenMul: 1.05,
       gaitAmpMul: 1.08, headIdleYawMul: 1.15, headIdlePitchMul: 1.12,
       sniffAmpMul: 1.25, breathIdleAmp: 0.018, breathMoveAmp: 0.024,
       breathIdleFreq: 13.0, breathMoveFreq: 24.0, tailWaveAmpMul: 1.18, tailWaveFreqMul: 1.12
     };
   }
-  return { // BALB/c default — deep ruby iris + translucent pale rose pinnae
-    eyeColor: '#4c0c13', eyeRimColor: '#c98a8c',
-    earOuterTransmission: 0.34, earInnerTransmission: 0.46,
-    earInnerSatOffset: 0.055, earInnerLightOffset: 0.030, earOuterRoughness: 0.54,
-    earOuterColor: '#dcd0cd', earInnerColor: '#eac0be',
+  return { // BALB/c default — luminous ruby-garnet albino iris + pale rose pinnae
+    eyeColor: '#a82234', eyeRimColor: '#d9a4a4',
+    earOuterTransmission: 0.36, earInnerTransmission: 0.48,
+    earInnerSatOffset: 0.040, earInnerLightOffset: 0.030, earOuterRoughness: 0.52,
+    earOuterColor: '#dcd0cd', earInnerColor: '#e8c6c4',
     earSkinBlend: 0.24, earInnerSkinBlend: 0.20, earScaleMul: 0.96,
     earSheenColor: 0xf4dada, earAttenuationColor: 0xde9ca0, earAttenuationDistance: 0.17,
     earYaw: 0.52, earHeightOffset: -0.01, padDarken: 0.94, clawColor: 0xe6dcd5,
-    pawColor: '#eab9b6', pawPadColor: '#d69799',
-    noseColor: '#e59ca0', tailColor: '#e6b2b0', tailTransmission: 0.26,
-    whiskerColor: 0xebe6df, pawSpreadMul: 1.04, toeLenMul: 1.03,
+    pawColor: '#e8c4c0', pawPadColor: '#d6a6a4',
+    noseColor: '#efc2c0', tailColor: '#e4b8b5', tailTransmission: 0.28,
+    whiskerColor: 0xddd6ce, pawSpreadMul: 1.00, toeLenMul: 1.02,
     gaitAmpMul: 1.0, headIdleYawMul: 1.0, headIdlePitchMul: 1.0,
     sniffAmpMul: 1.0, breathIdleAmp: 0.013, breathMoveAmp: 0.016,
     breathIdleFreq: 12.0, breathMoveFreq: 20.0, tailWaveAmpMul: 1.0, tailWaveFreqMul: 1.0
@@ -5763,6 +6086,7 @@ behaviorFolder.add(guiParams, 'enableGrooming').name('Grooming');
 behaviorFolder.add(guiParams, 'groomingFrequency', 0.25, 2.0, 0.05).name('Groom Frequency');
 behaviorFolder.add(guiParams, 'groomingMode', ['Face wash', 'Flank groom']).name('Groom Type');
 behaviorFolder.add(guiParams, 'triggerGrooming').name('Groom Now');
+behaviorFolder.add(guiParams, 'gaitMode', ['auto', ...getMouseActionSpec().gaits]).name('Gait');
 gui.close();
 
 // ═══════════════════════════════════════════════════════════════
@@ -5831,6 +6155,7 @@ function clearMice() {
   hudElements.hr.innerText = "-- BPM";
   hudElements.resp.innerText = "-- BPM";
   hudElements.coord.innerText = "0.00, 0.00";
+  if (hudElements.gait) hudElements.gait.innerText = "--";
 }
 
 // Spawn initial subjects
@@ -6277,6 +6602,25 @@ window.addEventListener('resize', () => {
       .multiplyScalar(1.0 + portraitFit * 0.42)
       .add(anatomyTarget);
     controls.target.copy(anatomyTarget);
+  } else if (ANATOMY_QA === 'head-side' || ANATOMY_QA === 'head-three-quarter' || ANATOMY_QA === 'head-top' || ANATOMY_QA === 'mouth-front') {
+    // Close head/neck/mouth inspection views (subject faces -Z at the origin).
+    const isMouthFront = ANATOMY_QA === 'mouth-front';
+    const anatomyTarget = isMouthFront
+      ? new THREE.Vector3(0, 1.24, -3.22)
+      : new THREE.Vector3(0, 1.36, -2.75);
+    const anatomyCamera = isMouthFront
+      ? new THREE.Vector3(0.0, 0.98, -5.05)
+      : (ANATOMY_QA === 'head-side'
+        ? new THREE.Vector3(4.60, 1.62, -2.75)
+        : (ANATOMY_QA === 'head-top'
+          ? new THREE.Vector3(0.0, 6.20, -2.70)
+          : new THREE.Vector3(2.85, 2.25, -6.10)));
+    camera.fov = THREE.MathUtils.lerp(isMouthFront ? 22 : 30, isMouthFront ? 32 : 44, portraitFit);
+    camera.up.set(0, ANATOMY_QA === 'head-top' ? 0 : 1, ANATOMY_QA === 'head-top' ? -1 : 0);
+    camera.position.copy(anatomyCamera).sub(anatomyTarget)
+      .multiplyScalar(1.0 + portraitFit * 0.42)
+      .add(anatomyTarget);
+    controls.target.copy(anatomyTarget);
   } else if (REARING_QA === 'wall-supported' || REARING_QA === 'wall-transition') {
     camera.position.set(15.0, 6.2, 2.0);
     camera.up.set(0, 1, 0);
@@ -6338,7 +6682,19 @@ const observedGroomingModes = new Set();
 let datasetCurrentFrameIndex = 0;
 let datasetInitialized = false;
 
-// Read-only state for browser QA; scene objects and simulation controls stay private.
+function findSubjectByTrackId(trackId) {
+  const subject = mice.find(mouse => mouse.trackId === Number(trackId));
+  if (!subject) {
+    throw new RangeError(
+      `No subject with trackId ${JSON.stringify(trackId)}; available: ${mice.map(m => m.trackId).join(', ') || 'none'}.`
+    );
+  }
+  return subject;
+}
+
+// Diagnostics and observations are read-only snapshots; setCommand/clearCommand
+// are the only supported control entry points (FlyBody-style task commands).
+// Seeded dataset captures stay reproducible as long as no command is issued.
 window.annolidTwoMice = Object.freeze({
   getDiagnostics: () => ({
     time: accumulatedTime,
@@ -6349,6 +6705,9 @@ window.annolidTwoMice = Object.freeze({
       strain: mouse.appearance.strain,
       position: mouse.mesh.position.toArray(),
       heading: mouse.yawAngle,
+      gait: mouse.motor.cpg.gait,
+      stepping: mouse.motor.isStepping(),
+      commanded: Boolean(mouse.externalCommand),
     })),
     renderer: {
       simulationMs: simulationDurationMs,
@@ -6359,6 +6718,15 @@ window.annolidTwoMice = Object.freeze({
       textures: renderer.info.memory.textures,
     },
   }),
+  getActionSpec: () => getMouseActionSpec(),
+  getObservation: trackId => findSubjectByTrackId(trackId).getObservation(),
+  getObservations: () => mice.map(mouse => mouse.getObservation()),
+  setCommand: (trackId, command) => findSubjectByTrackId(trackId)
+    .setMotorCommand(command, accumulatedTime),
+  clearCommand: trackId => {
+    findSubjectByTrackId(trackId).clearMotorCommand();
+    return null;
+  },
 });
 
 function updateCollisionTelemetry() {

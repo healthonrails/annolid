@@ -35,6 +35,7 @@ def _two_mice_source():
             "two_mice_scene.js",
             "two_mice_model.js",
             "two_mice_simulation.js",
+            "two_mice_control.js",
         )
     )
 
@@ -157,7 +158,12 @@ def test_two_mice_example_preserves_subject_appearance_and_render_readiness():
     assert "paw.add(toeTip)" not in source
     assert "paw.position.set(sign * 0.035, -0.13, 0.07)" in source
     assert "paw.position.set(sign * 0.045, -0.20, 0.31)" in source
-    assert "this.hindL._paw.rotation.x = -0.10" in source
+    # Limb poses come from the FlyBody-style motor controller, not per-joint sines.
+    assert "this.motor = new MouseMotorController(" in source
+    assert "const motorTargets = this.motor.step(" in source
+    assert "this.applyJointTargets(motorTargets)" in source
+    assert "this.contactFrame.limbStance[foot.limb]" in source
+    assert "Math.sin(legCycle" not in source
     assert "this.maxSpeed = params.maxSpeed" in source
     assert "bodyLength: 2.68, bodyGirthX: 1.13, bodyGirthY: 1.14" in source
     assert "function createPinnaShellGeometry()" in source
@@ -167,11 +173,13 @@ def test_two_mice_example_preserves_subject_appearance_and_render_readiness():
         "const attachmentBlend = THREE.MathUtils.smoothstep(-y, 0.58, 0.96)" in source
     )
     assert "const attachmentY = -0.70 + Math.abs(x) * 0.035" in source
-    assert "const openingYaw = 0.24 +" in source
+    assert "const openingYaw = 0.48 +" in source
     assert "sideSign * openingYaw + asymmetryYaw" in source
     assert "ear.name = sideSign > 0 ? 'left-ear-root-pivot'" in source
     assert "pinna.position.set(sideSign * 0.012, 0.76, 0.0)" in source
-    assert "0.03 + heightOffset" in source
+    # Ear roots are seated on the deformed skull surface, not fixed offsets.
+    assert "const root = findHeadSurfacePoint(" in source
+    assert "ear.position.y += heightOffset" in source
     assert "rim.name = 'open-auricular-rim'" in source
     assert "pedicle.name = 'buried-pinna-pedicle'" in source
     assert "concha.name = 'basal-conchal-fold'" in source
@@ -193,7 +201,8 @@ def test_two_mice_example_preserves_subject_appearance_and_render_readiness():
     assert "const rimTubeGeo = new THREE.TubeGeometry(rimCurve" in source
     assert "createTrackingNode('lforepaw', this.armL._paw" in source
     assert "createTrackingNode('lhindpaw', this.hindL._paw" in source
-    assert "const legCycle = this.locomotionTime * 4.1" in source
+    assert "window.annolidTwoMice = Object.freeze" in source
+    assert "setCommand: (trackId, command)" in source
     assert "const DATASET_CAPTURE" in source
     assert "const POSE_KEYPOINTS = Object.freeze" in source
     assert "window.annolidPoseDataset = Object.freeze" in source

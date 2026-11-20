@@ -299,6 +299,7 @@ def test_threejs_runtime_and_two_mice_assets_have_no_external_cdn_imports():
         "two_mice_scene.js",
         "two_mice_model.js",
         "two_mice_simulation.js",
+        "two_mice_control.js",
         "swarm_visualizer.html",
     )
     for name in offline_files:

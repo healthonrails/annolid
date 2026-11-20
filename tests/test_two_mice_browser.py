@@ -239,6 +239,8 @@ def test_live_pause_cameras_and_subject_resource_lifecycle(scene_page):
     "query",
     [
         "anatomy_qa=torso-side",
+        "anatomy_qa=head-three-quarter",
+        "anatomy_qa=mouth-front",
         "anatomy_qa=ears-front&anatomy_subject=white",
         "rearing_qa=unsupported",
         "rearing_qa=wall-supported",
@@ -275,6 +277,100 @@ def test_anatomy_and_behavior_poses_render(scene_page, query):
         page.screenshot(
             path=str(directory / (query.replace("&", "_").replace("=", "-") + ".png"))
         )
+
+
+def test_motor_control_api_turns_in_place_and_walks_on_command(scene_page):
+    page = scene_page("dataset=1&seed=321")
+    result = page.evaluate(
+        """() => {
+          const api = window.annolidTwoMice;
+          const dataset = window.annolidPoseDataset;
+          const spec = api.getActionSpec();
+          dataset.setFrame(0);
+          const initial = api.getObservation(1);
+          const errors = [];
+          for (const [trackId, command] of [
+            [1, { forwardSpeed: NaN }],
+            [1, { turnRate: 1, gait: 'hop' }],
+            [99, { forwardSpeed: 1 }],
+          ]) {
+            try { api.setCommand(trackId, command); errors.push(null); }
+            catch (error) { errors.push(error.name); }
+          }
+
+          api.setCommand(1, { forwardSpeed: 0, turnRate: 1.5 });
+          let frame = 0;
+          let unwrappedTurn = 0;
+          let previousHeading = initial.heading;
+          let turnSteppingHz = 0;
+          const turnStart = api.getObservation(1).position;
+          for (let i = 0; i < 8; i++) {
+            dataset.setFrame(++frame);
+            const obs = api.getObservation(1);
+            unwrappedTurn += Math.atan2(
+              Math.sin(obs.heading - previousHeading),
+              Math.cos(obs.heading - previousHeading)
+            );
+            previousHeading = obs.heading;
+            turnSteppingHz = Math.max(turnSteppingHz, obs.motor.frequencyHz);
+          }
+          const turnEnd = api.getObservation(1).position;
+
+          api.setCommand(1, { forwardSpeed: 4.0, turnRate: 0, gait: 'walk' });
+          let maxForward = 0;
+          let minStanceLimbs = 4;
+          let maxFootSlip = 0;
+          const gaits = new Set();
+          for (let i = 0; i < 6; i++) {
+            const payload = dataset.setFrame(++frame);
+            const obs = api.getObservation(1);
+            maxForward = Math.max(maxForward, obs.egocentricVelocity.forward);
+            minStanceLimbs = Math.min(
+              minStanceLimbs,
+              Object.values(obs.motor.stance).filter(Boolean).length
+            );
+            maxFootSlip = Math.max(maxFootSlip, payload.image.maximum_foot_slip);
+            gaits.add(obs.motor.gait);
+          }
+          const commanded = api.getObservation(1);
+          api.clearCommand(1);
+          return {
+            joints: spec.names.length,
+            observedJoints: Object.keys(initial.jointPositions).sort(),
+            specJoints: [...spec.names].sort(),
+            footLimbs: Object.keys(initial.footContacts).sort(),
+            errors,
+            unwrappedTurn,
+            turnDisplacement: Math.hypot(turnEnd[0] - turnStart[0], turnEnd[1] - turnStart[1]),
+            turnSteppingHz,
+            maxForward,
+            minStanceLimbs,
+            maxFootSlip,
+            gaits: [...gaits],
+            commandDuring: commanded.command,
+            commandAfter: api.getObservation(1).command,
+            commandedFlag: api.getDiagnostics().subjects[0].commanded,
+            json: JSON.stringify(commanded).length > 0,
+          };
+        }"""
+    )
+    assert result["joints"] == 22
+    assert result["observedJoints"] == result["specJoints"]
+    assert result["footLimbs"] == ["LF", "LH", "RF", "RH"]
+    assert result["errors"] == ["TypeError", "RangeError", "RangeError"]
+    # 1.5 rad/s for 1.6 s, allowing for yaw inertia: a clear in-place turn.
+    assert result["unwrappedTurn"] > 1.2
+    assert result["turnDisplacement"] < 1.5
+    assert result["turnSteppingHz"] > 0.5
+    assert result["maxForward"] > 2.5
+    assert result["gaits"] == ["walk"]
+    # Lateral-sequence walk keeps at least two paws on the ground.
+    assert result["minStanceLimbs"] >= 2
+    assert result["maxFootSlip"] <= 0.075
+    assert result["commandDuring"]["gait"] == "walk"
+    assert result["commandAfter"] is None
+    assert result["commandedFlag"] is False
+    assert result["json"] is True
 
 
 def test_dataset_segmentation_masks_match_viewport_and_subjects(scene_page):

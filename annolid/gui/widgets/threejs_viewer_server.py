@@ -40,6 +40,7 @@ _THREEJS_ALLOWED_ASSETS = {
     "two_mice_scene.js",
     "two_mice_model.js",
     "two_mice_simulation.js",
+    "two_mice_control.js",
     "swarm_visualizer.html",
     "parser.worker.js",
 }

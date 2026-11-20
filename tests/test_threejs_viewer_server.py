@@ -133,6 +133,7 @@ def test_threejs_allowed_assets_include_runtime_modules() -> None:
         "two_mice_scene.js",
         "two_mice_model.js",
         "two_mice_simulation.js",
+        "two_mice_control.js",
         "annolid_shaders.js",
         "annolid_threejs_runtime.js",
         "annolid_threejs_css2d.js",
