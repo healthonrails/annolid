@@ -62,7 +62,7 @@ class BehaviorEventLogWidget(QtWidgets.QWidget):
         )
         self._review_filter.currentIndexChanged.connect(self._refresh)
 
-        self._table = QtWidgets.QTableWidget(0, 10)
+        self._table = QtWidgets.QTableWidget(0, 11)
         self._table.setObjectName("behaviorEventTable")
         self._table.setHorizontalHeaderLabels(
             [
@@ -76,6 +76,7 @@ class BehaviorEventLogWidget(QtWidgets.QWidget):
                 "Frame",
                 "Duration (s)",
                 "Status",
+                "Comment",
             ]
         )
         self._table.verticalHeader().setVisible(False)
@@ -206,8 +207,9 @@ class BehaviorEventLogWidget(QtWidgets.QWidget):
     ) -> None:
         if fps is not None and fps > 0:
             self._fps = float(fps)
+        rank = {"start": 0, "point": 1, "end": 2}
         self._events = sorted(
-            list(events), key=lambda evt: (evt.frame, 0 if evt.event == "start" else 1)
+            list(events), key=lambda evt: (evt.frame, rank.get(evt.event, 1))
         )
         self._update_filter_options()
         self._refresh()
@@ -220,8 +222,9 @@ class BehaviorEventLogWidget(QtWidgets.QWidget):
     ) -> None:
         if fps is not None and fps > 0:
             self._fps = float(fps)
+        rank = {"start": 0, "point": 1, "end": 2}
         self._events.append(event)
-        self._events.sort(key=lambda evt: (evt.frame, 0 if evt.event == "start" else 1))
+        self._events.sort(key=lambda evt: (evt.frame, rank.get(evt.event, 1)))
         self._update_filter_options()
         self._refresh()
 
@@ -284,13 +287,16 @@ class BehaviorEventLogWidget(QtWidgets.QWidget):
             if issue:
                 status += f" · {issue}"
             self._table.setItem(row, 9, self._make_item(status))
+            comment_text = (getattr(event, "comment", None) or "").strip() or "—"
+            self._table.setItem(row, 10, self._make_item(comment_text))
 
-            # Apply a subtle color cue for start/end events to improve scanning.
-            color = (
-                QtGui.QColor("#2E7D32")
-                if event.event == "start"
-                else QtGui.QColor("#C62828")
-            )
+            # Apply a subtle color cue for start/point/end events to improve scanning.
+            if event.event == "start":
+                color = QtGui.QColor("#2E7D32")
+            elif event.event == "point":
+                color = QtGui.QColor("#B45309")
+            else:
+                color = QtGui.QColor("#C62828")
             for column in range(self._table.columnCount()):
                 item = self._table.item(row, column)
                 if item is not None:
@@ -330,6 +336,9 @@ class BehaviorEventLogWidget(QtWidgets.QWidget):
         issues: dict[int, str] = {}
         pending: dict[tuple, list[BehaviorEvent]] = {}
         for event in self._events:
+            if event.event == "point":
+                durations[id(event)] = "0.00"
+                continue
             key = (event.behavior, event.subject or "", tuple(sorted(event.modifiers)))
             if event.event == "start":
                 pending.setdefault(key, []).append(event)
@@ -396,6 +405,7 @@ class BehaviorEventLogWidget(QtWidgets.QWidget):
                 event.behavior,
                 event.subject or "",
                 event.category or "",
+                getattr(event, "comment", None) or "",
                 *event.modifiers,
             ]
         ).casefold()

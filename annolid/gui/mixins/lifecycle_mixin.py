@@ -125,6 +125,16 @@ class LifecycleMixin:
             except (AttributeError, RuntimeError, TypeError) as exc:
                 logger.debug("Failed releasing audio loader during cleanup: %s", exc)
 
+        boris_sync = getattr(self, "boris_sync_widget", None)
+        if boris_sync is not None and hasattr(boris_sync, "shutdown"):
+            try:
+                boris_sync.shutdown()
+            except (AttributeError, RuntimeError, TypeError) as exc:
+                logger.debug(
+                    "Failed releasing synchronized media readers during cleanup: %s",
+                    exc,
+                )
+
         self._stop_frame_loader()
         self._stop_csv_worker()
         cancel_dir_scan = getattr(self, "_cancel_import_dir_scan", None)

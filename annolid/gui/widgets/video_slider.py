@@ -65,6 +65,8 @@ class VideoSliderMark:
 
         if self.mark_type in colors:
             return colors[self.mark_type]
+        if self.mark_type == "event_point" and self._color == "black":
+            return (245, 158, 11)
         else:
             return self._color
 
@@ -112,6 +114,8 @@ class VideoSliderMark:
 
     @property
     def visual_width(self):
+        if self.mark_type == "event_point":
+            return 3
         if self.mark_type in ("open", "filled", "tick", "event_start", "event_end"):
             return 2
         if self.mark_type in (

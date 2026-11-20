@@ -114,11 +114,24 @@ class FramePlaybackMixin:
         self._sync_seekbar_value(frame_number)
         if getattr(self, "timeline_panel", None) is not None:
             self.timeline_panel.set_current_frame(frame_number)
+        if hasattr(self, "_refresh_ethogram_active_badges"):
+            try:
+                self._refresh_ethogram_active_badges(frame_number)
+            except Exception:
+                pass
+        if hasattr(self, "_sync_boris_media_and_streams"):
+            try:
+                self._sync_boris_media_and_streams(frame_number)
+            except Exception:
+                pass
         self._update_audio_playhead(frame_number)
         if self.isPlaying and not self._suppress_audio_seek:
-            audio_loader = self._active_audio_loader()
-            if audio_loader:
-                audio_loader.play(start_frame=frame_number)
+            if hasattr(self, "_play_synchronized_video_audio"):
+                self._play_synchronized_video_audio(frame_number)
+            else:
+                audio_loader = self._active_audio_loader()
+                if audio_loader:
+                    audio_loader.play(start_frame=frame_number)
         self.filename = str(self._frame_image_path(frame_number))
         self.current_frame_time_stamp = self.video_loader.get_time_stamp()
         if self.frame_loader is not None:

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import csv
 import os
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Set, Tuple
@@ -43,6 +42,7 @@ class BehaviorInteractionMixin:
         subject: Optional[str] = None,
         modifiers: Optional[Iterable[str]] = None,
         highlight: bool = True,
+        comment: Optional[str] = None,
     ) -> Optional[BehaviorEvent]:
         if frame_number is None:
             frame_number = self.frame_number
@@ -60,8 +60,13 @@ class BehaviorInteractionMixin:
 
         if modifiers is None:
             modifiers = self._selected_modifiers_for_behavior(behavior)
-        if not modifiers:
-            modifiers = self._default_modifiers_for_behavior(behavior)
+
+        if comment is None and hasattr(self, "behavior_controls_widget"):
+            try:
+                taken = self.behavior_controls_widget.take_event_comment()
+                comment = taken or None
+            except Exception:
+                comment = None
 
         category_label: Optional[str] = None
         if self.project_schema:
@@ -83,6 +88,7 @@ class BehaviorInteractionMixin:
             modifiers=modifiers,
             category=category_label,
             highlight=highlight,
+            comment=comment,
         )
         if event is None:
             logger.warning(
@@ -101,7 +107,28 @@ class BehaviorInteractionMixin:
         self._update_pinned_flag(behavior, self.pinned_flags.get(behavior, False))
         fps_for_log = self.fps if self.fps and self.fps > 0 else 29.97
         self.behavior_log_widget.append_event(event, fps=fps_for_log)
+        self._refresh_ethogram_active_badges(frame_number)
         return event
+
+    def _refresh_ethogram_active_badges(
+        self, frame_number: Optional[int] = None
+    ) -> None:
+        controls = getattr(self, "behavior_controls_widget", None)
+        ctrl = getattr(self, "behavior_controller", None)
+        if (
+            controls is None
+            or ctrl is None
+            or not hasattr(controls, "set_active_behaviors")
+        ):
+            return
+        frame = (
+            int(frame_number)
+            if frame_number is not None
+            else int(getattr(self, "frame_number", 0) or 0)
+        )
+        subj = self._current_subject_name()
+        active = ctrl.active_behaviors(frame, subject=subj)
+        controls.set_active_behaviors(active)
 
     def _populate_behavior_controls_from_schema(
         self, schema: Optional[ProjectSchema]
@@ -123,13 +150,13 @@ class BehaviorInteractionMixin:
         self.behavior_controls_widget.set_subjects(subjects, selected=stored_subject)
         self._active_subject_name = self.behavior_controls_widget.current_subject()
 
-        self.behavior_controls_widget.set_modifiers(list(schema.modifiers))
-        for behavior in schema.behaviors:
-            if behavior.modifier_ids:
-                self._behavior_modifier_state[behavior.code] = set(
-                    behavior.modifier_ids
-                )
+        if hasattr(self.behavior_controls_widget, "set_behaviors"):
+            self.behavior_controls_widget.set_behaviors(
+                list(schema.behaviors),
+                categories=list(schema.categories),
+            )
 
+        self.behavior_controls_widget.set_modifiers(list(schema.modifiers))
         self.behavior_controls_widget.set_category_badge(None, None)
         self.behavior_controls_widget.set_modifier_states(
             [],
@@ -137,6 +164,7 @@ class BehaviorInteractionMixin:
         )
         self.behavior_controls_widget.show_warning(None)
         self._update_modifier_controls_for_behavior(self.event_type)
+        self._refresh_ethogram_active_badges()
 
     def _sync_behavior_flags_from_schema(self, schema: Optional[ProjectSchema]) -> None:
         if schema is None or not hasattr(self, "flag_widget"):
@@ -228,31 +256,12 @@ class BehaviorInteractionMixin:
                 category_label = category.name or category.id
                 category_color = category.color
 
-        selected_modifiers = self._behavior_modifier_state.get(behavior)
-        if selected_modifiers is None:
-            if behavior_def and behavior_def.modifier_ids:
-                selected_modifiers = set(
-                    modifier_id
-                    for modifier_id in behavior_def.modifier_ids
-                    if modifier_id in allowed_modifiers
-                )
-                self._behavior_modifier_state[behavior] = set(selected_modifiers)
-            else:
-                selected_modifiers = set()
-        else:
-            selected_modifiers = {
-                modifier_id
-                for modifier_id in selected_modifiers
-                if modifier_id in allowed_modifiers
-            }
-            self._behavior_modifier_state[behavior] = set(selected_modifiers)
-            if not selected_modifiers and behavior_def and behavior_def.modifier_ids:
-                selected_modifiers = {
-                    modifier_id
-                    for modifier_id in behavior_def.modifier_ids
-                    if modifier_id in allowed_modifiers
-                }
-                self._behavior_modifier_state[behavior] = set(selected_modifiers)
+        selected_modifiers = {
+            modifier_id
+            for modifier_id in (self._behavior_modifier_state.get(behavior) or set())
+            if modifier_id in allowed_modifiers
+        }
+        self._behavior_modifier_state[behavior] = set(selected_modifiers)
 
         self.behavior_controls_widget.set_category_badge(
             category_label,
@@ -269,6 +278,7 @@ class BehaviorInteractionMixin:
         if subject_name:
             self._active_subject_name = subject_name
             self.settings.setValue("behavior/last_subject", subject_name)
+            self._refresh_ethogram_active_badges()
 
     def _on_modifier_toggled(self, modifier_id: str, state: bool) -> None:
         behavior = self.event_type
@@ -319,18 +329,158 @@ class BehaviorInteractionMixin:
             return []
         selected = self._behavior_modifier_state.get(behavior)
         if selected:
-            return list(selected)
-        defaults = self._default_modifiers_for_behavior(behavior)
-        if defaults:
-            allowed = self._allowed_modifiers_for_behavior(behavior)
-            if allowed:
-                defaults = [
-                    modifier_id for modifier_id in defaults if modifier_id in allowed
-                ]
-        if defaults:
-            self._behavior_modifier_state[behavior] = set(defaults)
-            return list(defaults)
+            return sorted(selected)
         return []
+
+    def set_playback_speed(self, speed: float) -> None:
+        self._playback_speed = max(0.05, min(16.0, float(speed or 1.0)))
+        timer = getattr(self, "timer", None)
+        if getattr(self, "isPlaying", False) and timer is not None and timer.isActive():
+            fps = float(getattr(self, "fps", 0.0) or 0.0)
+            if fps > 0:
+                timer.setInterval(
+                    max(5, int(round(1000.0 / (fps * self._playback_speed))))
+                )
+            else:
+                timer.setInterval(max(5, int(round(20.0 / self._playback_speed))))
+            self._play_synchronized_video_audio(getattr(self, "frame_number", 0))
+        self.statusBar().showMessage(
+            self.tr("Playback speed: %gx") % self._playback_speed, 2500
+        )
+
+    def step_video_by_seconds(self, delta_seconds: float) -> None:
+        if (
+            getattr(self, "seekbar", None) is None
+            or getattr(self, "num_frames", None) is None
+        ):
+            return
+        fps = float(getattr(self, "fps", 0.0) or 29.97)
+        delta_frames = int(round(float(delta_seconds) * fps))
+        target = max(
+            0,
+            min(int(self.frame_number) + delta_frames, int(self.num_frames) - 1),
+        )
+        self._jump_to_frame_from_log(target)
+
+    def trigger_ethogram_behavior(self, behavior_code: str) -> None:
+        """BORIS-style behavior trigger: fires Point events or toggles State Start/Stop."""
+        code = str(behavior_code or "").strip()
+        if not code:
+            return
+        self.event_type = code
+        self._update_modifier_controls_for_behavior(code)
+
+        if getattr(self, "seekbar", None) is None:
+            self.statusBar().showMessage(
+                self.tr("Selected behavior '%s' (open a video to record events)")
+                % code,
+                3000,
+            )
+            return
+
+        schema = getattr(self, "project_schema", None)
+        bdef = schema.behavior_map().get(code) if schema is not None else None
+        subj = self._current_subject_name()
+        frame = int(getattr(self, "frame_number", 0) or 0)
+
+        if bdef is not None and not bdef.is_state:
+            self.record_behavior_event(code, "point", frame_number=frame, subject=subj)
+            self.statusBar().showMessage(
+                self.tr("Recorded POINT '%s' for %s at frame %d") % (code, subj, frame),
+                2500,
+            )
+            return
+
+        is_active = self.behavior_controller.is_behavior_active(
+            frame, code, subject=subj
+        )
+        flags_ctrl = getattr(self, "flags_controller", None)
+        if is_active:
+            if flags_ctrl is not None:
+                flags_ctrl.end_flag(code, record_event=True)
+            else:
+                self.record_behavior_event(
+                    code, "end", frame_number=frame, subject=subj
+                )
+            self.statusBar().showMessage(
+                self.tr("Stopped '%s' for %s at frame %d") % (code, subj, frame),
+                2500,
+            )
+        else:
+            if flags_ctrl is not None:
+                flags_ctrl.start_flag(code, record_event=True)
+            else:
+                self.record_behavior_event(
+                    code, "start", frame_number=frame, subject=subj
+                )
+            if self.behavior_controller.is_behavior_active(frame, code, subject=subj):
+                self.statusBar().showMessage(
+                    self.tr("Started '%s' for %s at frame %d") % (code, subj, frame),
+                    2500,
+                )
+        self._refresh_ethogram_active_badges(frame)
+
+    def _handle_boris_coding_keypress(self, event: QtGui.QKeyEvent) -> bool:
+        controls = getattr(self, "behavior_controls_widget", None)
+        if controls is None or not hasattr(controls, "is_coding_mode_enabled"):
+            return False
+        if not controls.is_coding_mode_enabled():
+            return False
+        if event.modifiers() & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier):
+            return False
+        focused = QtWidgets.QApplication.focusWidget()
+        if isinstance(
+            focused,
+            (
+                QtWidgets.QLineEdit,
+                QtWidgets.QTextEdit,
+                QtWidgets.QPlainTextEdit,
+                QtWidgets.QAbstractSpinBox,
+            ),
+        ):
+            return False
+
+        key_text = (event.text() or "").strip()
+        if not key_text:
+            key_text = QtGui.QKeySequence(event.key()).toString().strip()
+        if not key_text:
+            return False
+        norm_key = key_text.lower()
+
+        schema = getattr(self, "project_schema", None)
+        if schema is None:
+            return False
+
+        # 1) Focal subject shortcut
+        for subj in schema.subjects:
+            if subj.key_binding and subj.key_binding.strip().lower() == norm_key:
+                target_name = subj.name or subj.id
+                controls.select_subject(target_name)
+                self.statusBar().showMessage(
+                    self.tr("Focal subject: %s") % target_name, 2500
+                )
+                return True
+
+        # 2) Behavior shortcut (State toggle or Point event)
+        for beh in schema.behaviors:
+            if beh.key_binding and beh.key_binding.strip().lower() == norm_key:
+                self.trigger_ethogram_behavior(beh.code)
+                return True
+
+        # 3) Applicable modifier shortcut
+        allowed = self._allowed_modifiers_for_behavior(self.event_type)
+        for mod in schema.modifiers:
+            if (
+                mod.id in allowed
+                and mod.key_binding
+                and mod.key_binding.strip().lower() == norm_key
+            ):
+                btn = controls._modifier_buttons.get(mod.id)
+                if btn is not None and btn.isEnabled():
+                    btn.toggle()
+                    return True
+
+        return False
 
     def _default_modifiers_for_behavior(self, behavior: Optional[str]) -> List[str]:
         if not behavior or not self.project_schema:
@@ -571,6 +721,9 @@ class BehaviorInteractionMixin:
         self.canvas.setBehaviorText(None)
 
     def keyPressEvent(self, event: QtGui.QKeyEvent):
+        if self._handle_boris_coding_keypress(event):
+            event.accept()
+            return
         if self.seekbar is not None:
             if event.key() == Qt.Key_Right:
                 next_pos = self.seekbar.value() + 1
@@ -626,25 +779,387 @@ class BehaviorInteractionMixin:
     def saveTimestampList(self):
         default_timestamp_csv_file = (
             str(os.path.dirname(self.filename)) + "_timestamps.csv"
+            if getattr(self, "filename", None)
+            else "behavior_timestamps.csv"
         )
-        file_dialog = QtWidgets.QFileDialog()
-        file_dialog.setDefaultSuffix(".csv")
-        file_path, _ = file_dialog.getSaveFileName(
-            self, "Save Timestamps", default_timestamp_csv_file, "CSV files (*.csv)"
+        filters = (
+            "Annolid Behavior CSV (*.csv);;"
+            "BORIS Project (*.boris);;"
+            "BORIS Tabular Events CSV (*.tabular.csv);;"
+            "BORIS Aggregated Events CSV (*.aggregated.csv)"
         )
+        file_path, selected_filter = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Save / Export Behavior Events",
+            default_timestamp_csv_file,
+            filters,
+        )
+        if not file_path:
+            return
 
-        if file_path:
-            rows = self.behavior_controller.export_rows(
-                timestamp_fallback=lambda evt: self._estimate_recording_time(evt.frame)
-            )
-            with open(file_path, "w", newline="") as f:
-                writer = csv.writer(f)
-                writer.writerow(
-                    ["Trial time", "Recording time", "Subject", "Behavior", "Event"]
+        detailed = self.behavior_controller.export_detailed_rows(
+            timestamp_fallback=lambda evt: self._estimate_recording_time(evt.frame)
+        )
+        out_path = Path(file_path)
+        from annolid.behavior.boris_io import (
+            BorisObservation,
+            write_annolid_events_csv,
+            write_boris_aggregated_csv,
+            write_boris_project,
+            write_boris_tabular_csv,
+        )
+        from annolid.behavior.event_utils import parse_event_mapping_rows
+        from annolid.domain import default_behavior_spec
+
+        parsed_rows = parse_event_mapping_rows(detailed)
+        schema = self.project_schema or default_behavior_spec()
+        media_str = str(getattr(self, "video_file", "") or "")
+        obs_id = Path(media_str).stem if media_str else out_path.stem
+
+        if out_path.suffix.lower() == ".boris" or "BORIS Project" in selected_filter:
+            if out_path.suffix.lower() != ".boris":
+                out_path = out_path.with_suffix(".boris")
+            sync_w = getattr(self, "boris_sync_widget", None)
+            if sync_w is not None and hasattr(sync_w, "export_boris_media_and_plots"):
+                by_player, media_offsets, ext_specs = (
+                    sync_w.export_boris_media_and_plots(media_str or None)
                 )
-                for row in rows:
-                    writer.writerow(row)
-
-            QtWidgets.QMessageBox.information(
-                self, "Timestamps saved", "Timestamps saved successfully!"
+            else:
+                by_player = {"1": (media_str,)} if media_str else {}
+                media_offsets = {}
+                ext_specs = ()
+            all_media = tuple(
+                p for paths in by_player.values() for p in paths if p
+            ) or ((media_str,) if media_str else ())
+            obs = BorisObservation(
+                observation_id=obs_id,
+                events=tuple(parsed_rows),
+                media_files=all_media,
+                fps=float(self.fps) if getattr(self, "fps", None) else None,
+                media_by_player=by_player,
+                media_offsets=media_offsets,
+                external_data=ext_specs,
             )
+            write_boris_project(
+                out_path, schema, observations=[obs], project_name=obs_id
+            )
+        elif (
+            str(out_path).lower().endswith(".tabular.csv")
+            or "Tabular" in selected_filter
+        ):
+            write_boris_tabular_csv(
+                parsed_rows,
+                out_path,
+                observation_id=obs_id,
+                media_file=media_str,
+                schema=schema,
+            )
+        elif (
+            str(out_path).lower().endswith(".aggregated.csv")
+            or "Aggregated" in selected_filter
+        ):
+            write_boris_aggregated_csv(
+                parsed_rows,
+                out_path,
+                observation_id=obs_id,
+                media_file=media_str,
+                schema=schema,
+            )
+        else:
+            write_annolid_events_csv(parsed_rows, out_path)
+
+        QtWidgets.QMessageBox.information(
+            self, "Events Saved", f"Behavior events saved to:\n{out_path}"
+        )
+
+    def import_boris_dialog(self) -> None:
+        """Import a .boris project or BORIS CSV/TSV event table into Annolid."""
+        path_str, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            self.tr("Import BORIS Project or Events"),
+            str(Path(self.video_file).parent)
+            if getattr(self, "video_file", None)
+            else "",
+            self.tr(
+                "BORIS Files (*.boris *.csv *.tsv *.json);;BORIS Project (*.boris);;CSV / TSV (*.csv *.tsv)"
+            ),
+        )
+        if not path_str:
+            return
+        resolved = Path(path_str)
+        if resolved.suffix.lower() in {".csv", ".tsv"}:
+            self._load_behavior(str(resolved))
+            self.statusBar().showMessage(
+                self.tr("Loaded behavior events from %s") % resolved.name, 4000
+            )
+            return
+
+        from annolid.behavior.boris_io import import_boris_project
+
+        try:
+            imported = import_boris_project(resolved)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self,
+                self.tr("BORIS Import Error"),
+                self.tr("Failed to import BORIS project:\n%s") % exc,
+            )
+            return
+
+        self.project_schema = imported.schema
+        if hasattr(self, "_refresh_behavior_catalog_views"):
+            self._refresh_behavior_catalog_views()
+        if hasattr(self, "save_behavior_catalog"):
+            self.save_behavior_catalog()
+
+        if imported.observations:
+            chosen_obs = imported.observations[0]
+            if len(imported.observations) > 1:
+                obs_ids = [o.observation_id for o in imported.observations]
+                choice, ok = QtWidgets.QInputDialog.getItem(
+                    self,
+                    self.tr("Select BORIS Observation"),
+                    self.tr("Load events from observation:"),
+                    obs_ids,
+                    0,
+                    False,
+                )
+                if not ok:
+                    return
+                chosen_obs = next(
+                    (o for o in imported.observations if o.observation_id == choice),
+                    imported.observations[0],
+                )
+            fps = (
+                self.fps
+                if getattr(self, "fps", None) and self.fps > 0
+                else (chosen_obs.fps or 29.97)
+            )
+            self.behavior_controller.load_events_from_rows(
+                chosen_obs.events,
+                time_to_frame=lambda t: int(round(float(t) * float(fps))),
+            )
+            if getattr(self, "seekbar", None) is not None:
+                self.behavior_controller.attach_slider(self.seekbar)
+            if hasattr(self, "_refresh_behavior_log"):
+                self._refresh_behavior_log()
+            self._refresh_ethogram_active_badges()
+            self._apply_boris_observation_sync_assets(chosen_obs, resolved.parent)
+
+        self.statusBar().showMessage(
+            self.tr("Imported BORIS project '%s' (%d behaviors, %d observations)")
+            % (
+                imported.project_name,
+                len(imported.schema.behaviors),
+                len(imported.observations),
+            ),
+            5000,
+        )
+
+    def export_boris_dialog(self) -> None:
+        """Export current schema and active session events to .boris or BORIS CSV."""
+        self.saveTimestampList()
+
+    # ------------------------------------------------------------------ #
+    # Synchronized Multi-Camera & External Data Streams Dock
+    # ------------------------------------------------------------------ #
+    def open_boris_sync_dock(self):
+        """Open (lazily creating) the synchronized secondary cameras & external data streams dock."""
+        from annolid.behavior.time_budget import extract_behavior_intervals
+        from annolid.gui.widgets.boris_sync_dock import BorisSyncWidget
+
+        dock = getattr(self, "boris_sync_dock", None)
+        if dock is None:
+            dock = QtWidgets.QDockWidget(
+                self.tr("Synchronized Cameras & Data Streams"), self
+            )
+            dock.setObjectName("BorisSyncDock")
+            dock.setAllowedAreas(
+                Qt.BottomDockWidgetArea
+                | Qt.RightDockWidgetArea
+                | Qt.LeftDockWidgetArea
+                | Qt.TopDockWidgetArea
+            )
+            sync_widget = BorisSyncWidget(dock)
+
+            def _intervals_provider():
+                ctrl = getattr(self, "behavior_controller", None)
+                if ctrl is None or getattr(ctrl, "events_count", 0) == 0:
+                    return ()
+                rows = ctrl.export_detailed_rows(
+                    timestamp_fallback=lambda evt: self._estimate_recording_time(
+                        evt.frame
+                    )
+                )
+                ivs, _ = extract_behavior_intervals(rows)
+                return ivs
+
+            sync_widget.set_intervals_provider(_intervals_provider)
+            sync_widget.timeJumpRequested.connect(self._jump_to_time_from_sync_widget)
+            sync_widget.audioMixChanged.connect(self._on_boris_audio_mix_changed)
+            dock.setWidget(sync_widget)
+            self.addDockWidget(Qt.BottomDockWidgetArea, dock)
+            self.boris_sync_dock = dock
+            self.boris_sync_widget = sync_widget
+
+        dock.show()
+        dock.raise_()
+        self._sync_boris_media_and_streams()
+        return dock
+
+    def _on_boris_audio_mix_changed(self) -> None:
+        if bool(getattr(self, "isPlaying", False)):
+            self._play_synchronized_video_audio(getattr(self, "frame_number", 0))
+
+    def _play_synchronized_video_audio(
+        self, start_frame: Optional[int] = None, *, ensure_ready: bool = False
+    ) -> None:
+        from annolid.utils.audio_playback import play_audio_buffer, stop_audio_playback
+
+        frame_idx = (
+            int(start_frame)
+            if start_frame is not None
+            else int(getattr(self, "frame_number", 0) or 0)
+        )
+        sync_w = getattr(self, "boris_sync_widget", None)
+        speed = max(0.05, float(getattr(self, "_playback_speed", 1.0) or 1.0))
+        active_loader_fn = getattr(self, "_active_audio_loader", None)
+        primary_loader = (
+            active_loader_fn(ensure_ready=ensure_ready)
+            if callable(active_loader_fn)
+            else None
+        )
+
+        use_mix = (sync_w is not None and sync_w.custom_audio_mix_active()) or abs(
+            speed - 1.0
+        ) > 1e-6
+        if not use_mix:
+            if primary_loader is not None:
+                primary_loader.play(start_frame=frame_idx)
+            return
+
+        primary_buf = getattr(primary_loader, "_buffer", None)
+        t_start = self._estimate_recording_time(frame_idx) or 0.0
+        if sync_w is not None:
+            mixed, sr = sync_w.build_mixed_audio(
+                primary_buf,
+                float(t_start),
+                playback_speed=speed,
+            )
+        elif primary_buf is not None:
+            from annolid.core.media.audio import (
+                AudioTrackMixSpec,
+                mix_synchronized_audio_buffers,
+            )
+
+            mixed, sr = mix_synchronized_audio_buffers(
+                [AudioTrackMixSpec(buffer=primary_buf)],
+                primary_start_sec=float(t_start),
+                playback_speed=speed,
+            )
+        else:
+            return
+
+        if mixed.size == 0:
+            stop_audio_playback()
+            return
+        play_audio_buffer(mixed, sr, blocking=False)
+
+    def _stop_synchronized_video_audio(self) -> None:
+        from annolid.utils.audio_playback import stop_audio_playback
+
+        active_loader_fn = getattr(self, "_active_audio_loader", None)
+        loader = active_loader_fn() if callable(active_loader_fn) else None
+        if loader is not None:
+            loader.stop()
+        else:
+            stop_audio_playback()
+
+    def _jump_to_time_from_sync_widget(self, time_s: float) -> None:
+        if (
+            getattr(self, "seekbar", None) is None
+            or getattr(self, "num_frames", None) is None
+        ):
+            sync_w = getattr(self, "boris_sync_widget", None)
+            if sync_w is not None:
+                sync_w.sync_to_time(float(time_s), immediate=True)
+            return
+        fps = float(getattr(self, "fps", 0.0) or 29.97)
+        target_frame = max(
+            0, min(int(round(float(time_s) * fps)), int(self.num_frames) - 1)
+        )
+        self._jump_to_frame_from_log(target_frame)
+
+    def _sync_boris_media_and_streams(self, frame_number: Optional[int] = None) -> None:
+        sync_w = getattr(self, "boris_sync_widget", None)
+        if sync_w is None:
+            return
+        dock = getattr(self, "boris_sync_dock", None)
+        if dock is not None and not dock.isVisible():
+            return
+        frame = (
+            int(frame_number)
+            if frame_number is not None
+            else int(getattr(self, "frame_number", 0) or 0)
+        )
+        t_sec = self._estimate_recording_time(frame)
+        if t_sec is not None:
+            sync_w.sync_to_time(float(t_sec))
+
+    def _apply_boris_observation_sync_assets(
+        self, obs, base_dir: Optional[Path] = None
+    ) -> None:
+        secondary_players = {
+            pk: paths
+            for pk, paths in (getattr(obs, "media_by_player", None) or {}).items()
+            if str(pk) != "1" and paths
+        }
+        ext_specs = tuple(getattr(obs, "external_data", None) or ())
+        if not secondary_players and not ext_specs:
+            return
+
+        self.open_boris_sync_dock()
+        sync_w = getattr(self, "boris_sync_widget", None)
+        if sync_w is None:
+            return
+
+        sync_w.clear_secondary_videos()
+        sync_w.clear_external_streams()
+
+        media_offsets = getattr(obs, "media_offsets", None) or {}
+        for pk, paths in sorted(secondary_players.items(), key=lambda kv: str(kv[0])):
+            raw_p = Path(paths[0]).expanduser()
+            candidates = [raw_p]
+            if not raw_p.is_absolute() and base_dir is not None:
+                candidates.insert(0, Path(base_dir).resolve() / raw_p)
+                candidates.append(Path(base_dir).resolve() / raw_p.name)
+            resolved_vid = next((c for c in candidates if c.is_file()), None)
+            if resolved_vid is None:
+                logger.warning(
+                    "Secondary BORIS media for player #%s not found on disk: %s",
+                    pk,
+                    paths[0],
+                )
+                continue
+            off = float(media_offsets.get(pk, media_offsets.get(paths[0], 0.0)) or 0.0)
+            try:
+                sync_w.add_secondary_video(
+                    resolved_vid, player_id=str(pk), offset_s=off
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed opening secondary BORIS media '%s': %s",
+                    resolved_vid.name,
+                    exc,
+                )
+
+        for spec in ext_specs:
+            try:
+                sync_w.add_external_stream(spec, base_dir=base_dir)
+            except Exception as exc:
+                logger.warning(
+                    "Failed loading BORIS external data stream '%s': %s",
+                    spec.file_path,
+                    exc,
+                )
+        self._sync_boris_media_and_streams()

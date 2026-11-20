@@ -10,7 +10,13 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Sequence
 
 from qtpy import QtCore, QtGui, QtWidgets
 
-from annolid.behavior.cohort import write_cohort_comparisons_csv
+from annolid.behavior.cohort import (
+    compute_observation_transitions,
+    write_cohort_comparisons_csv,
+    write_transitions_graphviz_dot,
+    write_transitions_svg,
+)
+from annolid.behavior.ethogram import write_ethogram_svg
 from annolid.behavior.irr import write_irr_disagreements_csv
 from annolid.behavior.time_budget import (
     _read_event_rows,
@@ -133,6 +139,7 @@ class AnalysisStudioWidget(QtWidgets.QWidget):
         self._shutting_down: bool = False
         self._last_report_artifacts: Optional[UnifiedReportArtifacts] = None
         self._last_kinematics_report: Any = None
+        self._last_behavior_result: Optional[Dict[str, Any]] = None
         self._last_irr_report: Any = None
         self._last_cohort_report: Any = None
 
@@ -511,6 +518,12 @@ class AnalysisStudioWidget(QtWidgets.QWidget):
         self.beh_bin_spin.setSpecialValueText("No Bins")
         self.beh_bin_spin.setValue(60.0)
 
+        self.beh_exclude_edit = QtWidgets.QLineEdit(page)
+        self.beh_exclude_edit.setPlaceholderText("e.g. out_of_sight, occluded")
+        self.beh_exclude_edit.setToolTip(
+            "BORIS Out-of-Sight subtraction: subtract these behavior intervals from each subject's session denominator"
+        )
+
         self.run_behavior_btn = QtWidgets.QPushButton(
             "Run Time Budget & Ethogram QC", page
         )
@@ -519,12 +532,26 @@ class AnalysisStudioWidget(QtWidgets.QWidget):
                 "behavior", self._prepare_behavior_job, is_preparer=True
             )
         )
+        self.export_ethogram_svg_btn = QtWidgets.QPushButton(
+            "Export Ethogram SVG…", page
+        )
+        self.export_ethogram_svg_btn.setEnabled(False)
+        self.export_ethogram_svg_btn.clicked.connect(self._export_behavior_ethogram_svg)
+        self.export_transitions_btn = QtWidgets.QPushButton(
+            "Export Transitions SVG / DOT…", page
+        )
+        self.export_transitions_btn.setEnabled(False)
+        self.export_transitions_btn.clicked.connect(self._export_behavior_transitions)
+
         ctrl.addWidget(QtWidgets.QLabel("Session Duration (s):"))
         ctrl.addWidget(self.beh_session_dur_spin)
         ctrl.addWidget(QtWidgets.QLabel("Bin Width (s):"))
         ctrl.addWidget(self.beh_bin_spin)
+        ctrl.addWidget(QtWidgets.QLabel("Exclude:"))
+        ctrl.addWidget(self.beh_exclude_edit, 1)
         ctrl.addWidget(self.run_behavior_btn)
-        ctrl.addStretch(1)
+        ctrl.addWidget(self.export_ethogram_svg_btn)
+        ctrl.addWidget(self.export_transitions_btn)
         lay.addLayout(ctrl)
 
         splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical, page)
@@ -536,7 +563,10 @@ class AnalysisStudioWidget(QtWidgets.QWidget):
                 "Occurrences",
                 "Total (s)",
                 "Mean Bout (s)",
+                "SD (s)",
                 "Median Bout (s)",
+                "Rate (/min)",
+                "Latency (s)",
                 "% of Session",
             ],
         )
@@ -943,11 +973,36 @@ class AnalysisStudioWidget(QtWidgets.QWidget):
         beh_ctrl = getattr(w, "behavior_controller", None) if w is not None else None
         if beh_ctrl is not None and getattr(beh_ctrl, "events_count", 0) > 0:
             est = getattr(w, "_estimate_recording_time", None)
-            rows = beh_ctrl.export_rows(
-                timestamp_fallback=(lambda evt: est(evt.frame))
-                if callable(est)
-                else None
-            )
+            fallback_fn = (lambda evt: est(evt.frame)) if callable(est) else None
+            if hasattr(beh_ctrl, "export_detailed_rows"):
+                detailed = beh_ctrl.export_detailed_rows(timestamp_fallback=fallback_fn)
+                if detailed:
+                    buf = io.StringIO()
+                    writer = csv.writer(buf)
+                    cols = [
+                        "Trial time",
+                        "Recording time",
+                        "Subject",
+                        "Behavior",
+                        "Event",
+                        "Modifiers",
+                        "Comment",
+                    ]
+                    writer.writerow(cols)
+                    for d_row in detailed:
+                        writer.writerow([d_row.get(c, "") for c in cols])
+                    with tempfile.NamedTemporaryFile(
+                        mode="w",
+                        prefix="annolid_session_events_",
+                        suffix=".csv",
+                        encoding="utf-8",
+                        newline="",
+                        delete=False,
+                    ) as tmp_fh:
+                        tmp_fh.write(buf.getvalue())
+                        tmp_path = Path(tmp_fh.name)
+                    return tmp_path, True
+            rows = beh_ctrl.export_rows(timestamp_fallback=fallback_fn)
             if rows:
                 buf = io.StringIO()
                 writer = csv.writer(buf)
@@ -1091,19 +1146,29 @@ class AnalysisStudioWidget(QtWidgets.QWidget):
         ev_path, is_temp = self._resolve_events_csv_source()
         sess_dur = float(self.beh_session_dur_spin.value())
         bin_w = float(self.beh_bin_spin.value())
+        excl_raw = self.beh_exclude_edit.text().strip()
+        exclude_behaviors = [
+            x.strip() for x in excl_raw.split(",") if x.strip()
+        ] or None
 
         def _job() -> Dict[str, Any]:
             try:
                 rows = _read_event_rows(ev_path)
                 intervals, warnings = extract_behavior_intervals(rows)
                 summary = summarize_intervals(
-                    intervals, session_duration=sess_dur if sess_dur > 0 else None
+                    intervals,
+                    session_duration=sess_dur if sess_dur > 0 else None,
+                    exclude_behaviors=exclude_behaviors,
                 )
                 binned = (
                     compute_binned_time_budget(intervals, bin_w) if bin_w > 0 else []
                 )
+                transitions = compute_observation_transitions(intervals)
                 qc_report = run_behavior_qc(ev_path)
                 return {
+                    "intervals": intervals,
+                    "transitions": transitions,
+                    "exclude_behaviors": exclude_behaviors,
                     "summary": summary,
                     "binned": binned,
                     "warnings": warnings,
@@ -1463,6 +1528,10 @@ class AnalysisStudioWidget(QtWidgets.QWidget):
             return
 
         if task_name == "behavior" and isinstance(result, dict):
+            self._last_behavior_result = result
+            has_intervals = bool(result.get("intervals"))
+            self.export_ethogram_svg_btn.setEnabled(has_intervals)
+            self.export_transitions_btn.setEnabled(bool(result.get("transitions")))
             summary = result["summary"]
             binned = result["binned"]
             qc = result["qc"]
@@ -1475,7 +1544,10 @@ class AnalysisStudioWidget(QtWidgets.QWidget):
                         r.occurrences,
                         _fmt_num(r.total_duration, 3),
                         _fmt_num(r.mean_duration, 3),
+                        _fmt_num(r.std_duration, 3),
                         _fmt_num(r.median_duration, 3),
+                        _fmt_num(r.rate_per_min, 2),
+                        _fmt_num(r.latency_to_first, 3),
                         _fmt_num(r.percent_of_session, 2, "%"),
                     ]
                     for r in summary
@@ -1489,7 +1561,7 @@ class AnalysisStudioWidget(QtWidgets.QWidget):
                         f"{b.bin_start:.1f}–{b.bin_end:.1f}",
                         b.subject,
                         b.behavior,
-                        "—",
+                        int(getattr(b, "occurrences", 0)),
                         _fmt_num(b.duration, 3),
                         _fmt_num(
                             100.0
@@ -1722,6 +1794,58 @@ class AnalysisStudioWidget(QtWidgets.QWidget):
                 self._last_cohort_report.comparisons, Path(chosen)
             )
             self.status_label.setText(f"Exported cohort comparisons to {chosen}")
+
+    def _export_behavior_ethogram_svg(self) -> None:
+        if not self._last_behavior_result:
+            return
+        intervals = self._last_behavior_result.get("intervals") or []
+        if not intervals:
+            return
+        chosen, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Export Ethogram Plot SVG",
+            "ethogram.svg",
+            "SVG Vector Graphics (*.svg)",
+        )
+        if not chosen:
+            return
+        schema = (
+            getattr(self._owner_window, "project_schema", None)
+            if self._owner_window is not None
+            else None
+        )
+        write_ethogram_svg(
+            intervals,
+            Path(chosen),
+            schema=schema,
+            exclude_behaviors=self._last_behavior_result.get("exclude_behaviors"),
+        )
+        self.status_label.setText(f"Exported ethogram SVG to {chosen}")
+
+    def _export_behavior_transitions(self) -> None:
+        if not self._last_behavior_result:
+            return
+        edges = self._last_behavior_result.get("transitions") or []
+        if not edges:
+            return
+        chosen, sel_filter = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Export Behavioral Transition Diagram",
+            "transitions.svg",
+            "SVG Flow Diagram (*.svg);;Graphviz DOT Script (*.dot)",
+        )
+        if not chosen:
+            return
+        out = Path(chosen)
+        if out.suffix.lower() == ".dot" or "DOT" in sel_filter:
+            if out.suffix.lower() != ".dot":
+                out = out.with_suffix(".dot")
+            write_transitions_graphviz_dot(edges, out)
+        else:
+            if out.suffix.lower() != ".svg":
+                out = out.with_suffix(".svg")
+            write_transitions_svg(edges, out)
+        self.status_label.setText(f"Exported behavioral transitions to {out}")
 
 
 class AnalysisStudioDialog(QtWidgets.QDialog):

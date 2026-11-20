@@ -77,26 +77,65 @@ class FlagsController(QtCore.QObject):
         self.set_flags(flags, persist=True)
 
     def start_flag(self, flag_name: str, record_event: bool = True) -> None:
-        """Mark a flag as active and optionally record a start event."""
+        """Mark a flag as active (or fire a point event) and optionally record the event."""
         if not flag_name:
             return
+        behavior_def = None
         if self._window.project_schema:
             behavior_def = self._window.project_schema.behavior_map().get(flag_name)
-            if behavior_def and behavior_def.exclusive_with:
-                active_conflicts = [
-                    name
-                    for name, value in self.pinned_flags.items()
-                    if value and name in behavior_def.exclusive_with
-                ]
+
+        # Point behaviors record an instantaneous event without latching active state.
+        if behavior_def is not None and not behavior_def.is_state:
+            if record_event and self._window.seekbar:
+                self._window.record_behavior_event(
+                    flag_name, "point", frame_number=self._window.frame_number
+                )
+            self._window.event_type = flag_name
+            self._window._update_modifier_controls_for_behavior(flag_name)
+            self._widget._update_row_value(flag_name, False)
+            return
+
+        if self._window.project_schema and behavior_def is not None:
+            excl_codes = self._window.project_schema.symmetric_exclusions_for(flag_name)
+            if excl_codes:
+                subj = (
+                    self._window._current_subject_name()
+                    if hasattr(self._window, "_current_subject_name")
+                    else None
+                )
+                ctrl = getattr(self._window, "behavior_controller", None)
+                active_for_subj = (
+                    ctrl.active_behaviors(self._window.frame_number, subject=subj)
+                    if ctrl is not None and self._window.seekbar
+                    else {k for k, v in self.pinned_flags.items() if v}
+                )
+                active_conflicts = sorted(
+                    c for c in excl_codes if c in active_for_subj and c != flag_name
+                )
                 if active_conflicts:
-                    message = (
-                        f"Behavior '{flag_name}' conflicts with "
-                        f"{', '.join(sorted(active_conflicts))}."
+                    controls = getattr(self._window, "behavior_controls_widget", None)
+                    auto_stop = (
+                        controls.auto_stop_excluded()
+                        if controls is not None
+                        and hasattr(controls, "auto_stop_excluded")
+                        else False
                     )
-                    logger.warning(message)
-                    self._widget._update_row_value(flag_name, False)
-                    self._window.statusBar().showMessage(message, 4000)
-                    return
+                    if auto_stop and record_event and self._window.seekbar:
+                        for conflict_name in active_conflicts:
+                            self.end_flag(conflict_name, record_event=True)
+                        self._window.statusBar().showMessage(
+                            f"Auto-stopped excluded behavior(s): {', '.join(active_conflicts)}",
+                            3500,
+                        )
+                    else:
+                        message = (
+                            f"Behavior '{flag_name}' conflicts with "
+                            f"{', '.join(active_conflicts)}."
+                        )
+                        logger.warning(message)
+                        self._widget._update_row_value(flag_name, False)
+                        self._window.statusBar().showMessage(message, 4000)
+                        return
         if record_event and self._window.seekbar:
             self._window.record_behavior_event(
                 flag_name, "start", frame_number=self._window.frame_number

@@ -613,6 +613,30 @@ class MenuController:
                 "tip": w.tr("Edit categories, modifiers, and behaviors"),
             },
             {
+                "name": "import_boris",
+                "text": w.tr("Import &BORIS Project / Events…"),
+                "slot": getattr(w, "import_boris_dialog", lambda: None),
+                "tip": w.tr(
+                    "Import BORIS (.boris) ethogram, subjects, modifiers, exclusions, and observation events, or BORIS CSV/TSV files"
+                ),
+            },
+            {
+                "name": "export_boris",
+                "text": w.tr("Export to BORIS (.boris / CSV)…"),
+                "slot": getattr(w, "export_boris_dialog", lambda: None),
+                "tip": w.tr(
+                    "Export project schema and recorded behavior events to .boris or BORIS Tabular/Aggregated CSV"
+                ),
+            },
+            {
+                "name": "boris_sync_dock",
+                "text": w.tr("Synchronized &Cameras && Data Streams…"),
+                "slot": getattr(w, "open_boris_sync_dock", lambda: None),
+                "tip": w.tr(
+                    "Open BORIS-style synchronized multi-camera video views and external CSV/TSV physiological data plotter"
+                ),
+            },
+            {
                 "name": "convert_csv",
                 "text": w.tr("&Export Tracking CSV(s)"),
                 "slot": w.convert_labelme_json_to_csv,
@@ -1394,6 +1418,7 @@ class MenuController:
                 actions["frames"],
                 actions["downsample_video"],
                 actions["zones"],
+                actions["boris_sync_dock"],
             ),
             (
                 actions["run_optical_flow"],
@@ -1519,6 +1544,10 @@ class MenuController:
             (
                 actions["convert_csv"],
                 actions["extract_shape_keypoints"],
+            ),
+            (
+                actions["import_boris"],
+                actions["export_boris"],
             ),
         ]
         self._add_menu_sections(w.menus.convert, convert_sections)

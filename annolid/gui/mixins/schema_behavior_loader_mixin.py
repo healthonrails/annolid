@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List
 
 from annolid.annotation.pose_schema import PoseSchema
 from annolid.domain import (
@@ -77,83 +77,84 @@ class SchemaBehaviorLoaderMixin:
             pass
 
     def _load_behavior(self, behavior_csv_file: str) -> None:
-        """Load behavior events from CSV and populate the slider timeline."""
-        import pandas as pd
+        """Load behavior events from Annolid CSV, BORIS CSV/TSV, or .boris project."""
+        from annolid.behavior.boris_io import import_boris_project
+        from annolid.behavior.event_utils import ParsedEventRow, read_parsed_event_rows
 
-        df_behaviors = pd.read_csv(behavior_csv_file)
-        required_columns = {"Recording time", "Event", "Behavior"}
-
-        if not required_columns.issubset(df_behaviors.columns):
-            del df_behaviors
-            if not self._load_deeplabcut_table(behavior_csv_file):
-                logger.debug(
-                    "Skipped loading '%s' because it is neither a behavior log nor a DeepLabCut export.",
-                    Path(behavior_csv_file).name,
-                )
-            return
-
-        rows: List[Tuple[float, float, Optional[str], str, str]] = []
-
-        for _, row in df_behaviors.iterrows():
-            raw_timestamp = row.get("Recording time")
-            event_label = str(row.get("Event"))
-            behavior = str(row.get("Behavior"))
-            raw_subject = row.get("Subject")
-            raw_trial_time = row.get("Trial time")
-
-            try:
-                timestamp_value = float(raw_timestamp)
-            except (TypeError, ValueError):
-                logger.warning(
-                    "Failed to convert timestamp '%s' for behavior '%s'.",
-                    raw_timestamp,
-                    behavior,
-                )
-                continue
-
-            trial_time_value: Optional[float]
-            try:
-                trial_time_value = (
-                    float(raw_trial_time)
-                    if raw_trial_time is not None and pd.notna(raw_trial_time)
-                    else None
-                )
-            except (TypeError, ValueError):
-                trial_time_value = None
-
-            subject_value = None
-            if raw_subject is not None and pd.notna(raw_subject):
-                subject_value = str(raw_subject)
-
-            rows.append(
-                (
-                    trial_time_value,
-                    timestamp_value,
-                    subject_value,
-                    behavior,
-                    event_label,
-                )
-            )
-
+        source_path = Path(behavior_csv_file)
         fps = self.fps if self.fps and self.fps > 0 else 29.97
+
+        if source_path.suffix.lower() == ".boris":
+            try:
+                imported = import_boris_project(source_path)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to import BORIS project '%s': %s",
+                    source_path.name,
+                    exc,
+                )
+                return
+            self.project_schema = imported.schema
+            self.behavior_controller.configure_from_schema(imported.schema)
+            self._populate_behavior_controls_from_schema(imported.schema)
+            self._sync_behavior_flags_from_schema(imported.schema)
+            valid_rows: List[ParsedEventRow] = []
+            if imported.observations:
+                obs = imported.observations[0]
+                if obs.fps and obs.fps > 0 and not (self.fps and self.fps > 0):
+                    fps = float(obs.fps)
+                valid_rows = [
+                    r for r in obs.events if r.recording_time is not None and r.behavior
+                ]
+                apply_sync = getattr(self, "_apply_boris_observation_sync_assets", None)
+                if callable(apply_sync):
+                    apply_sync(obs, source_path.parent)
+        else:
+            try:
+                parsed_rows = read_parsed_event_rows(source_path)
+            except ValueError:
+                if not self._load_deeplabcut_table(behavior_csv_file):
+                    logger.debug(
+                        "Skipped loading '%s' because it is neither a behavior log nor a DeepLabCut export.",
+                        source_path.name,
+                    )
+                return
+
+            valid_rows = []
+            for row in parsed_rows:
+                if row.recording_time is None:
+                    logger.warning(
+                        "Failed to convert timestamp '%s' for behavior '%s'.",
+                        row.raw_recording_time,
+                        row.behavior,
+                    )
+                    continue
+                if not row.behavior:
+                    continue
+                valid_rows.append(row)
 
         def time_to_frame(time_value: float) -> int:
             return int(round(time_value * fps))
 
         self.behavior_controller.load_events_from_rows(
-            rows,
+            valid_rows,
             time_to_frame=time_to_frame,
         )
-        self.behavior_controller.attach_slider(self.seekbar)
-        fps_for_log = self.fps if self.fps and self.fps > 0 else 29.97
-        self.behavior_log_widget.set_events(
-            list(self.behavior_controller.iter_events()),
-            fps=fps_for_log,
-        )
+        if getattr(self, "seekbar", None) is not None:
+            self.behavior_controller.attach_slider(self.seekbar)
+        fps_for_log = self.fps if self.fps and self.fps > 0 else fps
+        if getattr(self, "behavior_log_widget", None) is not None:
+            self.behavior_log_widget.set_events(
+                list(self.behavior_controller.iter_events()),
+                fps=fps_for_log,
+            )
         current = dict(self.pinned_flags or {})
         for behavior in self.behavior_controller.behavior_names:
             current[str(behavior)] = False
         self.loadFlags(current)
+        refresh_badges = getattr(self, "_refresh_ethogram_active_badges", None)
+        if callable(refresh_badges):
+            refresh_badges()
 
     def _load_deeplabcut_table(self, behavior_csv_file: str) -> bool:
         """Load DeepLabCut tracking results stored as a multi-index CSV."""

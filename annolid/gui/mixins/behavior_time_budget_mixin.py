@@ -21,9 +21,14 @@ class BehaviorTimeBudgetMixin:
 
     def show_behavior_time_budget_dialog(self) -> None:
         """Summarise recorded behavior events using the time-budget report."""
-        rows = self.behavior_controller.export_rows(
-            timestamp_fallback=lambda evt: self._estimate_recording_time(evt.frame)
-        )
+        if hasattr(self.behavior_controller, "export_detailed_rows"):
+            rows = self.behavior_controller.export_detailed_rows(
+                timestamp_fallback=lambda evt: self._estimate_recording_time(evt.frame)
+            )
+        else:
+            rows = self.behavior_controller.export_rows(
+                timestamp_fallback=lambda evt: self._estimate_recording_time(evt.frame)
+            )
         if not rows:
             QtWidgets.QMessageBox.information(
                 self,
@@ -49,10 +54,11 @@ class BehaviorTimeBudgetMixin:
         warnings: List[str] = list(report.warnings)
         schema_for_dialog = self.project_schema
         category_summary: List[Tuple[str, float, int]] = list(report.category_summary)
+        cooccurrence_summary = list(report.cooccurrence_summary)
 
         if not summary:
             message = self.tr(
-                "No completed start/end pairs were found for the current behavior events."
+                "No completed start/end pairs or point events were found for the current behavior events."
             )
             if warnings:
                 message += "\n\n" + self.tr("Warnings:\n") + "\n".join(warnings)
@@ -70,19 +76,22 @@ class BehaviorTimeBudgetMixin:
         tabs = QtWidgets.QTabWidget(dialog)
 
         # Tab 1: Sortable Interactive Table
-        summary_table = QtWidgets.QTableWidget(len(summary), 8, tabs)
-        summary_table.setHorizontalHeaderLabels(
-            [
-                "Subject",
-                "Behavior",
-                "Occurrences",
-                "Total (s)",
-                "Mean (s)",
-                "Median (s)",
-                "Min–Max (s)",
-                "% Session",
-            ]
-        )
+        headers = [
+            "Subject",
+            "Behavior",
+            "Occurrences",
+            "Total (s)",
+            "Mean (s)",
+            "SD (s)",
+            "Median (s)",
+            "Min–Max (s)",
+            "Rate (/min)",
+            "Latency (s)",
+            "Mean IEI (s)",
+            "% Session",
+        ]
+        summary_table = QtWidgets.QTableWidget(len(summary), len(headers), tabs)
+        summary_table.setHorizontalHeaderLabels(headers)
         summary_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         summary_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         summary_table.setAlternatingRowColors(True)
@@ -93,8 +102,16 @@ class BehaviorTimeBudgetMixin:
                 str(int(row.occurrences)),
                 f"{row.total_duration:.3f}",
                 f"{row.mean_duration:.3f}",
+                f"{row.std_duration:.3f}",
                 f"{row.median_duration:.3f}",
                 f"{row.min_duration:.2f}–{row.max_duration:.2f}",
+                f"{row.rate_per_min:.2f}",
+                f"{row.latency_to_first:.3f}",
+                (
+                    f"{row.inter_event_interval_mean:.3f}"
+                    if row.inter_event_interval_mean is not None
+                    else "—"
+                ),
                 f"{row.percent_of_session:.2f}%",
             ]
             for c_idx, val in enumerate(cells):
@@ -118,6 +135,13 @@ class BehaviorTimeBudgetMixin:
             category_view.setFont(fixed_font)
             category_view.setPlainText(format_category_summary(category_summary))
             tabs.addTab(category_view, self.tr("Category Summary"))
+
+        if cooccurrence_summary and report.cooccurrence_table_text:
+            coocc_view = QtWidgets.QPlainTextEdit(tabs)
+            coocc_view.setReadOnly(True)
+            coocc_view.setFont(fixed_font)
+            coocc_view.setPlainText(report.cooccurrence_table_text)
+            tabs.addTab(coocc_view, self.tr("Co-occurrence"))
 
         layout.addWidget(tabs, 1)
 
@@ -205,12 +229,35 @@ class BehaviorTimeBudgetMixin:
                         "occurrences": int(r.occurrences),
                         "total_duration": round(float(r.total_duration), 6),
                         "mean_duration": round(float(r.mean_duration), 6),
+                        "std_duration": round(float(r.std_duration), 6),
                         "median_duration": round(float(r.median_duration), 6),
                         "min_duration": round(float(r.min_duration), 6),
                         "max_duration": round(float(r.max_duration), 6),
+                        "rate_per_min": round(float(r.rate_per_min), 6),
+                        "latency_to_first": round(float(r.latency_to_first), 6),
+                        "inter_event_interval_mean": (
+                            round(float(r.inter_event_interval_mean), 6)
+                            if r.inter_event_interval_mean is not None
+                            else None
+                        ),
+                        "inter_event_interval_std": (
+                            round(float(r.inter_event_interval_std), 6)
+                            if r.inter_event_interval_std is not None
+                            else None
+                        ),
                         "percent_of_session": round(float(r.percent_of_session), 4),
                     }
                     for r in summary
+                ],
+                "cooccurrences": [
+                    {
+                        "behavior_a": c.behavior_a,
+                        "behavior_b": c.behavior_b,
+                        "overlap_bouts": int(c.overlap_bouts),
+                        "overlap_duration": round(float(c.overlap_duration), 6),
+                        "jaccard_index": round(float(c.jaccard_index), 6),
+                    }
+                    for c in cooccurrence_summary
                 ],
             }
             try:

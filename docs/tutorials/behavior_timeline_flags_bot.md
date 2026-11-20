@@ -240,6 +240,29 @@ Opening another video resets the log's filters and selection.
 This review workflow is inspired by BORIS's
 [event search, filtering, and state-event checks](https://www.boris.unito.it/user_guide/coding/).
 
+## BORIS Live Coding, Ethogram Schema & Interoperability
+
+Annolid includes first-class support for BORIS-style behavioral observation workflows:
+
+1. **Project Schema & BORIS Ethogram (`Settings -> Project Schema`)**:
+   - Configure **State** vs. **Point** (instantaneous) behaviors, shortcut keys, colors, and categories.
+   - Use the **Exclusion Matrix** tab to define symmetric mutual-exclusion rules (e.g., `attack` excludes `groom` and `out_of_sight`).
+   - Configure **Modifiers** with named groups, `single` (radio-button) vs. `multi` (checkbox) selection modes, shortcut keys, or click **Add Subjects as Modifiers** for directed dyadic behaviors (`resident` attacks `intruder`).
+   - Define **Independent Variables** (`text`, `numeric`, `value_from_list`, `timestamp`) for experimental factors (`Treatment`, `Genotype`, `Dose`).
+2. **Ethogram Coding Pad & Live Keyboard Coding (`Behavior Controls` dock)**:
+   - Toggle **`⌨ Live Coding: ON`** to log events directly from single-key shortcuts while watching video:
+     - Focal subject keys (e.g. `1`, `2`) switch the active animal.
+     - State behavior keys toggle `START` / `STOP` per subject (with active `●` badges on the Ethogram Pad), automatically closing mutually-exclusive active states when **`Auto-stop Excluded`** is checked.
+     - Point behavior keys log instantaneous `POINT` markers on both the video slider, Behavior Log, and Timeline (`Behavior`, `Behavior+Instance`, or `Instance` view).
+     - Modifier keys toggle applicable single- or multi-select modifiers, and optional comments attach to the next recorded event.
+   - Adjust playback rate (`0.1x`–`4x`) or step `-5s` / `-1s` / `+1s` / `+5s` directly from the transport bar.
+3. **Synchronized Secondary Cameras & External Physiological/Hardware Data Streams (`Video Tools -> Synchronized Cameras & Data Streams…`)**:
+   - Attach 1..N secondary camera videos (side/bottom/thermal views) with per-camera millisecond `Offset (s)` controls, per-camera Mute/Unmute (`🔇`/`🔊`) + Volume (`0–200%`) synchronized audio mixing, and live dBFS metering so all viewports and audio tracks scrub/play in lockstep with the main canvas.
+   - Attach 1..N external CSV/TSV time-series streams (e.g., fiber photometry $\Delta F/F$, heart rate, rotary encoder speed, Bpod analog/TTL traces) with 1-based or named column selection, sandboxed BORIS `converters` (`HHMMSS_2_seconds`, `ISO8601_2_seconds`, safe `INPUT`/`OUTPUT` calibration formulas), baseline subtraction, live playhead readouts, shaded behavior intervals, click/drag scrubbing, and SVG export.
+4. **Bidirectional `.boris` & CSV/TSV Import/Export**:
+   - Import `.boris` project files (preserving multi-player media, offsets, external `plot_data` streams, and sub-frame timestamps with automatic FPS re-indexing on video open), BORIS Tabular CSV/TSVs, or BORIS Aggregated CSV/TSVs via **`Convert -> Import BORIS Project / Events…`** or `annolid-run boris-import`.
+   - Export active schemas, multi-camera/external stream specs, and observations back to `.boris`, BORIS Tabular CSV, BORIS Aggregated CSV, or Annolid CSV via **`Convert -> Export to BORIS (.boris / CSV)…`** or `annolid-run boris-export`.
+
 ## Recommended Operating Loop
 
 1. Define behavior names first (Flags or Timeline).

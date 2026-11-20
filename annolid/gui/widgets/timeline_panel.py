@@ -653,7 +653,10 @@ class TimelineGraphicsView(QtWidgets.QGraphicsView):
             end_frame = max(start_frame, min(self._max_frame, end_frame))
             x0 = self._frame_to_x(start_frame, pixels_per_frame)
             x1 = self._frame_to_x(end_frame + 1, pixels_per_frame)
-            width = max(1.0, x1 - x0)
+            min_w = 6.0 if event.kind == "point" else 1.0
+            width = max(min_w, x1 - x0)
+            if event.kind == "point" and (x1 - x0) < min_w:
+                x0 = max(0.0, x0 - (min_w - (x1 - x0)) * 0.5)
             rect = QtCore.QRectF(x0, y, width, self._row_height)
             color = event.color or QtGui.QColor(100, 140, 200)
             brush = QtGui.QBrush(self._apply_confidence(color, event.confidence))
@@ -666,7 +669,7 @@ class TimelineGraphicsView(QtWidgets.QGraphicsView):
                 self._edit_mode
                 and self._edit_callback
                 and event.end_frame is not None
-                and event.kind == "behavior"
+                and event.kind in {"behavior", "point"}
                 and bool(event.behavior)
             )
             segment_item: TimelineSegmentItem
@@ -876,7 +879,9 @@ class TimelinePanel(QtWidgets.QWidget):
         header_row = QtWidgets.QHBoxLayout()
         header_row.setSpacing(8)
         self._row_mode_combo = QtWidgets.QComboBox()
-        self._row_mode_combo.addItems(["Behavior", "Custom"])
+        self._row_mode_combo.addItems(
+            ["Behavior", "Behavior+Instance", "Instance", "Custom"]
+        )
         self._row_mode_combo.currentTextChanged.connect(self._on_row_mode_changed)
         header_row.addWidget(self._row_mode_combo, 1)
 
@@ -1106,6 +1111,31 @@ class TimelinePanel(QtWidgets.QWidget):
                         kind="behavior",
                     )
                 )
+            try:
+                point_events = list(
+                    self._behavior_controller.timeline.iter_point_events()
+                )
+            except Exception:
+                point_events = []
+            for pt_evt in point_events:
+                beh = pt_evt.behavior
+                if beh in self._hidden_behaviors:
+                    continue
+                if self._catalog_behaviors and beh not in self._catalog_behaviors:
+                    continue
+                color = _color_from_getter(self._color_getter, beh)
+                events.append(
+                    TimelineEvent(
+                        track_id=beh,
+                        start_frame=int(pt_evt.frame),
+                        end_frame=int(pt_evt.frame),
+                        label=f"◆ {beh}",
+                        color=color,
+                        behavior=beh,
+                        subject=pt_evt.subject,
+                        kind="point",
+                    )
+                )
 
         self._model.set_tracks(tracks)
         self._model.set_events(events)
@@ -1317,6 +1347,25 @@ class TimelinePanel(QtWidgets.QWidget):
                         subject=subject,
                     )
                 )
+            for event in events:
+                if getattr(event, "event", None) != "point":
+                    continue
+                if event.behavior in self._hidden_behaviors:
+                    continue
+                subj = event.subject or "Subject 1"
+                color = _color_from_getter(self._color_getter, event.behavior)
+                timeline_events.append(
+                    TimelineEvent(
+                        track_id=subj,
+                        start_frame=event.frame,
+                        end_frame=event.frame,
+                        label=f"◆ {event.behavior}",
+                        color=color,
+                        kind="point",
+                        behavior=event.behavior,
+                        subject=subj,
+                    )
+                )
             return tracks, timeline_events
 
         if self._row_mode == "Behavior+Instance":
@@ -1347,6 +1396,25 @@ class TimelinePanel(QtWidgets.QWidget):
                         color=color,
                         behavior=behavior,
                         subject=subject,
+                    )
+                )
+            for event in events:
+                if getattr(event, "event", None) != "point":
+                    continue
+                if event.behavior in self._hidden_behaviors:
+                    continue
+                subj = event.subject or "Subject 1"
+                color = _color_from_getter(self._color_getter, event.behavior)
+                timeline_events.append(
+                    TimelineEvent(
+                        track_id=f"{event.behavior}::{subj}",
+                        start_frame=event.frame,
+                        end_frame=event.frame,
+                        label=f"◆ {event.behavior}",
+                        color=color,
+                        kind="point",
+                        behavior=event.behavior,
+                        subject=subj,
                     )
                 )
             return tracks, timeline_events
@@ -1433,27 +1501,67 @@ class TimelinePanel(QtWidgets.QWidget):
         if action == "delete":
             if behavior is None:
                 return
+            if event.kind == "point":
+                key = (
+                    (context.original_start, event.subject, behavior, "point")
+                    if event.subject
+                    else (context.original_start, behavior, "point")
+                )
+                self._behavior_controller.delete_event(key)
+                return
             self._behavior_controller.delete_interval(
                 behavior=behavior,
                 start_frame=context.original_start,
                 end_frame=context.original_end
                 if context.original_end is not None
                 else context.original_start,
+                subject=event.subject,
             )
             return
         if action == "create":
             behavior = self._resolve_behavior_for_track(event.track_id, behavior)
             if behavior is None:
                 return
+            is_point_beh = False
+            schema = getattr(self._behavior_controller, "schema", None)
+            if schema is not None:
+                bdef = schema.behavior_map().get(behavior)
+                if bdef is not None and not bdef.is_state and start == end:
+                    is_point_beh = True
+            if is_point_beh:
+                self._behavior_controller.create_point_event(
+                    behavior=behavior,
+                    frame=start,
+                    subject=event.subject,
+                    timestamp_provider=self._timestamp_provider,
+                )
+                return
             self._behavior_controller.create_interval(
                 behavior=behavior,
                 start_frame=start,
                 end_frame=end,
-                subject=None,
+                subject=event.subject,
                 timestamp_provider=self._timestamp_provider,
             )
             return
         if behavior is None:
+            return
+        if event.kind == "point":
+            key = (
+                (context.original_start, event.subject, behavior, "point")
+                if event.subject
+                else (context.original_start, behavior, "point")
+            )
+            old_evt = self._behavior_controller.delete_event(key)
+            self._behavior_controller.create_point_event(
+                behavior=behavior,
+                frame=start,
+                subject=event.subject or (old_evt.subject if old_evt else None),
+                modifiers=old_evt.modifiers if old_evt else None,
+                comment=old_evt.comment if old_evt else None,
+                category=old_evt.category if old_evt else None,
+                timestamp_provider=self._timestamp_provider,
+            )
             return
         self._behavior_controller.update_interval(
             behavior=behavior,
@@ -1686,13 +1794,20 @@ def _build_ranges(
     for key, group_events in grouped.items():
         behavior = getattr(group_events[0], "behavior", None)
         subject = getattr(group_events[0], "subject", None)
-        group_events.sort(key=lambda evt: (evt.frame, 0 if evt.event == "start" else 1))
+        group_events.sort(
+            key=lambda evt: (
+                evt.frame,
+                0 if evt.event == "end" else (1 if evt.event == "point" else 2),
+            )
+        )
         open_starts: List[int] = []
         for evt in group_events:
-            if evt.event == "start":
+            if evt.event == "point":
+                ranges.append((behavior, subject, evt.frame, evt.frame))
+            elif evt.event == "start":
                 open_starts.append(evt.frame)
             else:
-                start_frame = open_starts.pop() if open_starts else evt.frame
+                start_frame = open_starts.pop(0) if open_starts else evt.frame
                 ranges.append((behavior, subject, start_frame, evt.frame))
         for start_frame in open_starts:
             ranges.append((behavior, subject, start_frame, start_frame))

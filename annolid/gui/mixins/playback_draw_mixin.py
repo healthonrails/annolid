@@ -157,19 +157,28 @@ class PlaybackDrawMixin:
                 self.timer = timer
             if timer.isActive():
                 return
-            audio_loader = self._active_audio_loader(ensure_ready=True)
-            if audio_loader:
-                audio_loader.play(start_frame=self.frame_number)
-            if self.fps is not None and self.fps > 0:
-                timer.start(int(1000 / self.fps))
+            if hasattr(self, "_play_synchronized_video_audio"):
+                self._play_synchronized_video_audio(
+                    self.frame_number, ensure_ready=True
+                )
             else:
-                timer.start(20)
+                audio_loader = self._active_audio_loader(ensure_ready=True)
+                if audio_loader:
+                    audio_loader.play(start_frame=self.frame_number)
+            speed = max(0.05, float(getattr(self, "_playback_speed", 1.0) or 1.0))
+            if self.fps is not None and self.fps > 0:
+                timer.start(max(5, int(round(1000.0 / (float(self.fps) * speed)))))
+            else:
+                timer.start(max(5, int(round(20.0 / speed))))
         else:
             if timer is not None and timer.isActive():
                 timer.stop()
-            audio_loader = self._active_audio_loader()
-            if audio_loader:
-                audio_loader.stop()
+            if hasattr(self, "_stop_synchronized_video_audio"):
+                self._stop_synchronized_video_audio()
+            else:
+                audio_loader = self._active_audio_loader()
+                if audio_loader:
+                    audio_loader.stop()
 
     def startPlaying(self):
         self.playVideo(isPlaying=True)

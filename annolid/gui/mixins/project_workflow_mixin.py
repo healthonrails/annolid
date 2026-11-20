@@ -93,6 +93,7 @@ class ProjectWorkflowMixin:
             "key_binding": target.key_binding or "",
             "is_state": bool(target.is_state),
             "exclusive_with": list(target.exclusive_with or []),
+            "color": getattr(target, "color", None) or "",
         }
 
     def sync_behavior_catalog_from_ui(self, *, save: bool = True) -> Dict[str, Any]:
@@ -357,6 +358,61 @@ class ProjectWorkflowMixin:
                     self.tr("Project schema saved to %s") % Path(target_path).name,
                     4000,
                 )
+
+            imported = getattr(dialog, "imported_boris_project", None)
+            if imported is not None and imported.observations:
+                reply = QtWidgets.QMessageBox.question(
+                    self,
+                    self.tr("Load BORIS Observations"),
+                    self.tr(
+                        "The imported BORIS project contains %d observation(s). "
+                        "Load an observation's behavior events into the timeline now?"
+                    )
+                    % len(imported.observations),
+                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                    QtWidgets.QMessageBox.Yes,
+                )
+                if reply == QtWidgets.QMessageBox.Yes:
+                    chosen_obs = imported.observations[0]
+                    if len(imported.observations) > 1:
+                        obs_ids = [o.observation_id for o in imported.observations]
+                        choice, ok = QtWidgets.QInputDialog.getItem(
+                            self,
+                            self.tr("Select BORIS Observation"),
+                            self.tr("Observation:"),
+                            obs_ids,
+                            0,
+                            False,
+                        )
+                        if not ok:
+                            return
+                        chosen_obs = next(
+                            (
+                                o
+                                for o in imported.observations
+                                if o.observation_id == choice
+                            ),
+                            imported.observations[0],
+                        )
+                    fps = (
+                        float(self.fps)
+                        if getattr(self, "fps", None) and self.fps > 0
+                        else float(chosen_obs.fps or 29.97)
+                    )
+                    self.behavior_controller.load_events_from_rows(
+                        chosen_obs.events,
+                        time_to_frame=lambda t: int(round(float(t) * fps)),
+                    )
+                    if getattr(self, "seekbar", None) is not None:
+                        self.behavior_controller.attach_slider(self.seekbar)
+                    refresh_log = getattr(self, "_refresh_behavior_log", None)
+                    if callable(refresh_log):
+                        refresh_log()
+                    refresh_badges = getattr(
+                        self, "_refresh_ethogram_active_badges", None
+                    )
+                    if callable(refresh_badges):
+                        refresh_badges()
 
     def open_new_project_wizard(self) -> None:
         """Open the new project wizard for guided project creation."""

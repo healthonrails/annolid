@@ -72,6 +72,18 @@ def setup_timeline_feature(deps: GuiFeatureDeps) -> TimelineFeatureState:
         window._on_active_subject_changed
     )
     window.behavior_controls_widget.modifierToggled.connect(window._on_modifier_toggled)
+    if hasattr(window, "trigger_ethogram_behavior"):
+        window.behavior_controls_widget.behaviorTriggerRequested.connect(
+            window.trigger_ethogram_behavior
+        )
+    if hasattr(window, "set_playback_speed"):
+        window.behavior_controls_widget.playbackSpeedChanged.connect(
+            window.set_playback_speed
+        )
+    if hasattr(window, "step_video_by_seconds"):
+        window.behavior_controls_widget.stepSecondsRequested.connect(
+            window.step_video_by_seconds
+        )
     window.behavior_controls_dock = QtWidgets.QDockWidget("Behavior Controls", window)
     window.behavior_controls_dock.setObjectName("behaviorControlsDock")
     window.behavior_controls_dock.setWidget(window.behavior_controls_widget)

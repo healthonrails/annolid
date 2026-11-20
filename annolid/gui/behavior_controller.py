@@ -2,22 +2,42 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Set,
+    Tuple,
+    Union,
+)
 
 from qtpy import QtGui
 
+from annolid.behavior.event_utils import ParsedEventRow, classify_event_label
 from annolid.domain import ProjectSchema, normalize_event_label
 from annolid.gui.widgets.video_slider import VideoSlider, VideoSliderMark
 from annolid.infrastructure import AnnotationStore
 
 
+EventKeyType = Union[
+    Tuple[int, str, str],
+    Tuple[int, str, str, str],
+    Tuple[int, str, str, str, int],
+]
+InternalStorageKeyType = Tuple[int, str, str, str, int]
+
+
 @dataclass(frozen=True)
 class BehaviorEvent:
-    """Structured representation of a behavior boundary event."""
+    """Structured representation of a behavior boundary or point event."""
 
     frame: int
     behavior: str
-    event: str  # canonical "start" or "end"
+    event: str  # canonical "start", "end", or "point"
     timestamp: Optional[float] = None
     trial_time: Optional[float] = None
     subject: Optional[str] = None
@@ -25,13 +45,24 @@ class BehaviorEvent:
     modifiers: Tuple[str, ...] = ()
     category: Optional[str] = None
     confirmed: bool = True
+    comment: Optional[str] = None
+    subframe_seq: int = 0
 
     @property
     def mark_key(self) -> Tuple[int, str, str]:
         return (self.frame, self.behavior, self.event)
 
     @property
+    def storage_key(self) -> EventKeyType:
+        s_norm = (self.subject or "").strip()
+        if self.subframe_seq > 0:
+            return (self.frame, s_norm, self.behavior, self.event, self.subframe_seq)
+        return (self.frame, s_norm, self.behavior, self.event)
+
+    @property
     def slider_mark_type(self) -> str:
+        if self.event == "point":
+            return "event_point"
         return "event_start" if self.event == "start" else "event_end"
 
     def to_store_dict(self) -> Dict[str, Any]:
@@ -52,26 +83,32 @@ class BehaviorEvent:
             payload["modifiers"] = list(self.modifiers)
         if self.category is not None:
             payload["category"] = self.category
+        if self.comment:
+            payload["comment"] = self.comment
         return payload
 
 
 class BehaviorTimeline:
-    """Store behavior events and derived active intervals."""
+    """Store behavior events (state start/end and instantaneous point) and active intervals."""
 
     def __init__(self) -> None:
-        self._events: Dict[Tuple[int, str, str], BehaviorEvent] = {}
+        self._events: Dict[InternalStorageKeyType, BehaviorEvent] = {}
         self._ranges: Dict[str, List[Tuple[int, Optional[int]]]] = {}
+        self._subject_ranges: Dict[
+            Tuple[str, str], List[Tuple[int, Optional[int]]]
+        ] = {}
         self._behaviors: Set[str] = set()
         self._pending_rebuild: Set[str] = set()
 
     def clear(self) -> None:
         self._events.clear()
         self._ranges.clear()
+        self._subject_ranges.clear()
         self._behaviors.clear()
         self._pending_rebuild.clear()
 
     @property
-    def events(self) -> Dict[Tuple[int, str, str], BehaviorEvent]:
+    def events(self) -> Dict[InternalStorageKeyType, BehaviorEvent]:
         return self._events
 
     @property
@@ -81,6 +118,36 @@ class BehaviorTimeline:
     @property
     def events_count(self) -> int:
         return len(self._events)
+
+    def _resolve_storage_keys(self, key: EventKeyType) -> List[InternalStorageKeyType]:
+        if len(key) == 5:
+            k5 = (
+                int(key[0]),
+                str(key[1] or "").strip(),
+                str(key[2]),
+                str(key[3]),
+                int(key[4]),
+            )
+            return [k5] if k5 in self._events else []
+        if len(key) == 4:
+            f_val = int(key[0])
+            s_val = str(key[1] or "").strip()
+            beh_val = str(key[2])
+            ev_val = str(key[3])
+            return sorted(
+                sk
+                for sk in self._events.keys()
+                if sk[0] == f_val
+                and sk[1] == s_val
+                and sk[2] == beh_val
+                and sk[3] == ev_val
+            )
+        f_val, beh_val, ev_val = int(key[0]), str(key[1]), str(key[2])
+        return sorted(
+            sk
+            for sk in self._events.keys()
+            if sk[0] == f_val and sk[2] == beh_val and sk[3] == ev_val
+        )
 
     def record_event(
         self,
@@ -96,17 +163,43 @@ class BehaviorTimeline:
         modifiers: Optional[Iterable[str]] = None,
         category: Optional[str] = None,
         confirmed: bool = True,
+        comment: Optional[str] = None,
     ) -> Optional[BehaviorEvent]:
         canonical = (
             event_label
-            if event_label in {"start", "end"}
-            else normalize_event_label(event_label)
+            if event_label in {"start", "end", "point"}
+            else (
+                normalize_event_label(event_label) or classify_event_label(event_label)
+            )
         )
         if canonical is None:
             return None
 
+        f_int = int(frame)
+        s_norm = (subject or "").strip()
+        same_slot = [
+            (sk, evt)
+            for sk, evt in self._events.items()
+            if sk[0] == f_int
+            and sk[1] == s_norm
+            and sk[2] == behavior
+            and sk[3] == canonical
+        ]
+        for _sk, existing in same_slot:
+            if existing.timestamp is None and timestamp is None:
+                return existing
+            if (
+                existing.timestamp is not None
+                and timestamp is not None
+                and abs(float(existing.timestamp) - float(timestamp)) <= 1e-6
+            ):
+                return existing
+
+        used_seqs = {sk[4] for sk, _ in same_slot}
+        seq = 0 if 0 not in used_seqs else (max(used_seqs) + 1)
+
         event = BehaviorEvent(
-            frame=frame,
+            frame=f_int,
             behavior=behavior,
             event=canonical,
             timestamp=timestamp,
@@ -116,12 +209,11 @@ class BehaviorTimeline:
             modifiers=tuple(modifiers or ()),
             category=category,
             confirmed=bool(confirmed),
+            comment=(str(comment).strip() or None) if comment else None,
+            subframe_seq=seq,
         )
 
-        if event.mark_key in self._events:
-            return self._events[event.mark_key]
-
-        self._events[event.mark_key] = event
+        self._events[(f_int, s_norm, behavior, canonical, seq)] = event
         self._behaviors.add(behavior)
         if rebuild:
             self._rebuild_behavior(behavior)
@@ -129,8 +221,13 @@ class BehaviorTimeline:
             self._pending_rebuild.add(behavior)
         return event
 
-    def remove_event(self, key: Tuple[int, str, str]) -> Optional[BehaviorEvent]:
-        event = self._events.pop(key, None)
+    def remove_event(self, key: EventKeyType) -> Optional[BehaviorEvent]:
+        matched_keys = self._resolve_storage_keys(key)
+        if not matched_keys:
+            return None
+        event = self._events.pop(matched_keys[-1], None)
+        for extra_k in matched_keys[:-1]:
+            self._events.pop(extra_k, None)
         if event is None:
             return None
 
@@ -141,32 +238,43 @@ class BehaviorTimeline:
         else:
             self._behaviors.discard(behavior)
             self._ranges.pop(behavior, None)
+            for sk in [k for k in self._subject_ranges if k[1] == behavior]:
+                self._subject_ranges.pop(sk, None)
         return event
 
     def update_event_confirmation(
         self,
-        key: Tuple[int, str, str],
+        key: EventKeyType,
         *,
         confirmed: bool,
     ) -> Optional[BehaviorEvent]:
-        event = self._events.get(key)
-        if event is None:
+        matched_keys = self._resolve_storage_keys(key)
+        if not matched_keys:
             return None
-        updated = BehaviorEvent(
-            frame=event.frame,
-            behavior=event.behavior,
-            event=event.event,
-            timestamp=event.timestamp,
-            trial_time=event.trial_time,
-            subject=event.subject,
-            raw_event=event.raw_event,
-            modifiers=event.modifiers,
-            category=event.category,
-            confirmed=bool(confirmed),
-        )
-        self._events[key] = updated
-        self._rebuild_behavior(updated.behavior)
-        return updated
+        updated_last: Optional[BehaviorEvent] = None
+        for sk in matched_keys:
+            event = self._events.get(sk)
+            if event is None:
+                continue
+            updated = BehaviorEvent(
+                frame=event.frame,
+                behavior=event.behavior,
+                event=event.event,
+                timestamp=event.timestamp,
+                trial_time=event.trial_time,
+                subject=event.subject,
+                raw_event=event.raw_event,
+                modifiers=event.modifiers,
+                category=event.category,
+                confirmed=bool(confirmed),
+                comment=event.comment,
+                subframe_seq=event.subframe_seq,
+            )
+            self._events[sk] = updated
+            updated_last = updated
+        if updated_last is not None:
+            self._rebuild_behavior(updated_last.behavior)
+        return updated_last
 
     def flush_pending(self) -> None:
         if not self._pending_rebuild:
@@ -177,28 +285,76 @@ class BehaviorTimeline:
         self._pending_rebuild.clear()
 
     def _rebuild_behavior(self, behavior: str) -> None:
-        events = [evt for evt in self._events.values() if evt.behavior == behavior]
+        for sk in [k for k in self._subject_ranges if k[1] == behavior]:
+            self._subject_ranges.pop(sk, None)
+
+        events = [
+            evt
+            for evt in self._events.values()
+            if evt.behavior == behavior and evt.event in {"start", "end"}
+        ]
         if not events:
             self._ranges.pop(behavior, None)
             return
 
-        events.sort(key=lambda evt: (evt.frame, 0 if evt.event == "start" else 1))
-        ranges: List[Tuple[int, Optional[int]]] = []
-        open_starts: List[int] = []
-
+        by_subj: Dict[str, List[BehaviorEvent]] = {}
         for evt in events:
-            if evt.event == "start":
-                open_starts.append(evt.frame)
-            else:
-                start_frame = open_starts.pop() if open_starts else evt.frame
-                ranges.append((start_frame, evt.frame))
+            s_norm = (evt.subject or "").strip()
+            by_subj.setdefault(s_norm, []).append(evt)
 
-        for start_frame in open_starts:
-            ranges.append((start_frame, None))
+        combined_ranges: List[Tuple[int, Optional[int]]] = []
+        for s_norm, s_events in sorted(by_subj.items()):
+            frames_missing_ts = {evt.frame for evt in s_events if evt.timestamp is None}
+            s_events.sort(
+                key=lambda evt: (
+                    evt.frame,
+                    (
+                        round(float(evt.timestamp), 9)
+                        if evt.timestamp is not None
+                        and evt.frame not in frames_missing_ts
+                        else 0.0
+                    ),
+                    0 if evt.event == "end" else 1,
+                    evt.subframe_seq,
+                )
+            )
+            s_ranges: List[Tuple[int, Optional[int]]] = []
+            open_starts: List[int] = []
 
-        self._ranges[behavior] = ranges
+            for evt in s_events:
+                if evt.event == "start":
+                    open_starts.append(evt.frame)
+                else:
+                    start_frame = open_starts.pop(0) if open_starts else evt.frame
+                    s_ranges.append((start_frame, evt.frame))
 
-    def is_behavior_active(self, frame: int, behavior: str) -> bool:
+            for start_frame in open_starts:
+                s_ranges.append((start_frame, None))
+
+            self._subject_ranges[(s_norm, behavior)] = s_ranges
+            combined_ranges.extend(s_ranges)
+
+        combined_ranges.sort(
+            key=lambda pair: (pair[0], pair[1] if pair[1] is not None else 10**12)
+        )
+        self._ranges[behavior] = combined_ranges
+
+    def is_behavior_active(
+        self,
+        frame: int,
+        behavior: str,
+        *,
+        subject: Optional[str] = None,
+    ) -> bool:
+        if subject is not None:
+            s_norm = subject.strip()
+            ranges = self._subject_ranges.get((s_norm, behavior), [])
+            for start, end in ranges:
+                end_bound = end if end is not None else float("inf")
+                if start <= frame <= end_bound:
+                    return True
+            return False
+
         if behavior not in self._ranges:
             return False
 
@@ -208,7 +364,20 @@ class BehaviorTimeline:
                 return True
         return False
 
-    def active_behaviors(self, frame: int) -> Set[str]:
+    def active_behaviors(
+        self,
+        frame: int,
+        *,
+        subject: Optional[str] = None,
+    ) -> Set[str]:
+        if subject is not None:
+            s_norm = subject.strip()
+            return {
+                beh
+                for (subj_k, beh) in self._subject_ranges.keys()
+                if subj_k == s_norm
+                and self.is_behavior_active(frame, beh, subject=s_norm)
+            }
         return {
             behavior
             for behavior in self._ranges.keys()
@@ -216,16 +385,73 @@ class BehaviorTimeline:
         }
 
     def iter_events(self) -> Iterable[BehaviorEvent]:
+        order_rank = {"start": 0, "point": 1, "end": 2}
+        vals = list(self._events.values())
+        frames_missing_ts = {evt.frame for evt in vals if evt.timestamp is None}
         return iter(
             sorted(
-                self._events.values(),
+                vals,
                 key=lambda evt: (
                     evt.frame,
-                    0 if evt.event == "start" else 1,
+                    (
+                        round(float(evt.timestamp), 9)
+                        if evt.timestamp is not None
+                        and evt.frame not in frames_missing_ts
+                        else 0.0
+                    ),
+                    order_rank.get(evt.event, 1),
+                    evt.subframe_seq,
                     evt.behavior,
+                    evt.subject or "",
                 ),
             )
         )
+
+    def rebind_fps(
+        self, fps: float, *, max_frame: Optional[int] = None
+    ) -> Tuple[bool, Set[int]]:
+        """Re-index timestamped events to a new FPS without losing sub-frame timestamps."""
+        if fps <= 0:
+            return False, set()
+        snapshot = list(self.iter_events())
+        if not snapshot or not any(evt.timestamp is not None for evt in snapshot):
+            return False, set()
+
+        def _compute_frame(evt: BehaviorEvent) -> int:
+            if evt.timestamp is None:
+                target = evt.frame
+            else:
+                target = int(round(float(evt.timestamp) * float(fps)))
+            if max_frame is not None:
+                target = max(0, min(int(max_frame), target))
+            else:
+                target = max(0, target)
+            return target
+
+        if all(_compute_frame(evt) == evt.frame for evt in snapshot):
+            return False, set()
+
+        dirty_frames: Set[int] = {evt.frame for evt in snapshot}
+        self.clear()
+        for evt in snapshot:
+            nf = _compute_frame(evt)
+            dirty_frames.add(nf)
+            self.record_event(
+                evt.behavior,
+                evt.event,
+                nf,
+                timestamp=evt.timestamp,
+                trial_time=evt.trial_time,
+                subject=evt.subject,
+                raw_event=evt.raw_event,
+                rebuild=False,
+                modifiers=evt.modifiers,
+                category=evt.category,
+                confirmed=evt.confirmed,
+                comment=evt.comment,
+            )
+        self.flush_pending()
+        return True, dirty_frames
 
     def events_at_frame(self, frame: int) -> List[BehaviorEvent]:
         return [evt for evt in self._events.values() if evt.frame == frame]
@@ -235,7 +461,16 @@ class BehaviorTimeline:
             for start, end in ranges:
                 yield behavior, start, end
 
-    def get_behavior_ranges(self, behavior: str) -> List[Tuple[int, Optional[int]]]:
+    def iter_point_events(self) -> Iterable[BehaviorEvent]:
+        for evt in self.iter_events():
+            if evt.event == "point":
+                yield evt
+
+    def get_behavior_ranges(
+        self, behavior: str, *, subject: Optional[str] = None
+    ) -> List[Tuple[int, Optional[int]]]:
+        if subject is not None:
+            return list(self._subject_ranges.get((subject.strip(), behavior), []))
         return list(self._ranges.get(behavior, []))
 
     def to_export_rows(
@@ -257,9 +492,16 @@ class BehaviorTimeline:
                 event.trial_time if event.trial_time is not None else recording_time
             )
             subject = event.subject or "Subject 1"
-            label = event.raw_event or (
-                "state start" if event.event == "start" else "state stop"
-            )
+            if event.event == "point":
+                label = (
+                    event.raw_event
+                    if classify_event_label(event.raw_event) == "point"
+                    else "point"
+                )
+            else:
+                label = event.raw_event or (
+                    "state start" if event.event == "start" else "state stop"
+                )
             rows.append(
                 (
                     trial_time if trial_time is not None else 0.0,
@@ -270,6 +512,53 @@ class BehaviorTimeline:
                 )
             )
         return rows
+
+    def to_detailed_export_rows(
+        self,
+        timestamp_fallback: Optional[Callable[[BehaviorEvent], Optional[float]]] = None,
+        *,
+        confirmed_only: bool = True,
+    ) -> List[Dict[str, Any]]:
+        detailed: List[Dict[str, Any]] = []
+        for event in self.iter_events():
+            if confirmed_only and not event.confirmed:
+                continue
+            recording_time = event.timestamp
+            if recording_time is None and timestamp_fallback is not None:
+                fallback_value = timestamp_fallback(event)
+                if fallback_value is not None:
+                    recording_time = fallback_value
+            trial_time = (
+                event.trial_time if event.trial_time is not None else recording_time
+            )
+            subject = event.subject or "Subject 1"
+            if event.event == "point":
+                label = (
+                    event.raw_event
+                    if classify_event_label(event.raw_event) == "point"
+                    else "point"
+                )
+            else:
+                label = event.raw_event or (
+                    "state start" if event.event == "start" else "state stop"
+                )
+            detailed.append(
+                {
+                    "Trial time": trial_time if trial_time is not None else 0.0,
+                    "Recording time": recording_time
+                    if recording_time is not None
+                    else 0.0,
+                    "Subject": subject,
+                    "Behavior": event.behavior,
+                    "Event": label,
+                    "Modifiers": "|".join(event.modifiers) if event.modifiers else "",
+                    "Comment": event.comment or "",
+                    "Category": event.category or "",
+                    "Frame": int(event.frame),
+                    "Confirmed": bool(event.confirmed),
+                }
+            )
+        return detailed
 
 
 ColorType = Union[str, Tuple[int, int, int], Tuple[int, int, int, int]]
@@ -632,6 +921,8 @@ class BehaviorController:
         highlight: bool = True,
         modifiers: Optional[Iterable[str]] = None,
         category: Optional[str] = None,
+        confirmed: bool = True,
+        comment: Optional[str] = None,
         persist: bool = True,
         notify: bool = True,
     ) -> Optional[BehaviorEvent]:
@@ -646,6 +937,8 @@ class BehaviorController:
             rebuild=rebuild,
             modifiers=modifiers,
             category=category,
+            confirmed=confirmed,
+            comment=comment,
         )
         if event is None:
             return None
@@ -674,7 +967,7 @@ class BehaviorController:
         for key, event in list(self.timeline.events.items()):
             if event.frame == value:
                 self.timeline.remove_event(key)
-                removed.append(("behavior", key))
+                removed.append(("behavior", event.mark_key))
         if removed:
             self.sync_marks()
             self._persist_frame(value)
@@ -708,13 +1001,21 @@ class BehaviorController:
             return ("behavior", key)
         return self.marks.remove_mark_instance(mark)
 
-    def active_behaviors(self, frame: int) -> Set[str]:
+    def active_behaviors(
+        self, frame: int, *, subject: Optional[str] = None
+    ) -> Set[str]:
         self.timeline.flush_pending()
-        return self.timeline.active_behaviors(frame)
+        return self.timeline.active_behaviors(frame, subject=subject)
 
-    def is_behavior_active(self, frame: int, behavior: str) -> bool:
+    def is_behavior_active(
+        self,
+        frame: int,
+        behavior: str,
+        *,
+        subject: Optional[str] = None,
+    ) -> bool:
         self.timeline.flush_pending()
-        return self.timeline.is_behavior_active(frame, behavior)
+        return self.timeline.is_behavior_active(frame, behavior, subject=subject)
 
     def iter_events(self):
         self.timeline.flush_pending()
@@ -732,7 +1033,7 @@ class BehaviorController:
     def schema(self) -> Optional[ProjectSchema]:
         return self._schema
 
-    def delete_event(self, key: Tuple[int, str, str]) -> Optional[BehaviorEvent]:
+    def delete_event(self, key: EventKeyType) -> Optional[BehaviorEvent]:
         event = self.timeline.remove_event(key)
         if event is not None:
             self.sync_marks()
@@ -742,7 +1043,7 @@ class BehaviorController:
 
     def set_event_confirmation(
         self,
-        key: Tuple[int, str, str],
+        key: EventKeyType,
         *,
         confirmed: bool,
     ) -> Optional[BehaviorEvent]:
@@ -760,17 +1061,26 @@ class BehaviorController:
         start_frame: int,
         end_frame: int,
         confirmed: bool,
+        subject: Optional[str] = None,
     ) -> None:
         start_frame = int(start_frame)
         end_frame = int(end_frame)
         if end_frame < start_frame:
             start_frame, end_frame = end_frame, start_frame
-        self.timeline.update_event_confirmation(
-            (start_frame, behavior, "start"), confirmed=confirmed
-        )
-        self.timeline.update_event_confirmation(
-            (end_frame, behavior, "end"), confirmed=confirmed
-        )
+        if subject is not None:
+            self.timeline.update_event_confirmation(
+                (start_frame, subject, behavior, "start"), confirmed=confirmed
+            )
+            self.timeline.update_event_confirmation(
+                (end_frame, subject, behavior, "end"), confirmed=confirmed
+            )
+        else:
+            self.timeline.update_event_confirmation(
+                (start_frame, behavior, "start"), confirmed=confirmed
+            )
+            self.timeline.update_event_confirmation(
+                (end_frame, behavior, "end"), confirmed=confirmed
+            )
         self.sync_marks()
         self._persist_frames({start_frame, end_frame})
         self._notify_listeners()
@@ -780,11 +1090,28 @@ class BehaviorController:
         if not events:
             return None
         event = events[-1]
-        self.timeline.remove_event(event.mark_key)
+        self.timeline.remove_event(event.storage_key)
         self.sync_marks()
         self._persist_frame(event.frame)
         self._notify_listeners()
         return event
+
+    def rebind_fps(
+        self,
+        fps: float,
+        *,
+        max_frame: Optional[int] = None,
+        persist: bool = True,
+    ) -> bool:
+        """Recompute integer frame indices from exact float timestamps when FPS changes."""
+        changed, dirty_frames = self.timeline.rebind_fps(fps, max_frame=max_frame)
+        if not changed:
+            return False
+        self.sync_marks()
+        if persist:
+            self._persist_frames(dirty_frames)
+        self._notify_listeners()
+        return True
 
     def export_rows(
         self,
@@ -798,9 +1125,21 @@ class BehaviorController:
             confirmed_only=confirmed_only,
         )
 
+    def export_detailed_rows(
+        self,
+        timestamp_fallback: Optional[Callable[[BehaviorEvent], Optional[float]]] = None,
+        *,
+        confirmed_only: bool = True,
+    ) -> List[Dict[str, Any]]:
+        self.timeline.flush_pending()
+        return self.timeline.to_detailed_export_rows(
+            timestamp_fallback=timestamp_fallback,
+            confirmed_only=confirmed_only,
+        )
+
     def load_events_from_rows(
         self,
-        rows: Iterable[Tuple[Optional[float], float, Optional[str], str, str]],
+        rows: Iterable[Any],
         *,
         time_to_frame: Callable[[float], int],
         rebuild: bool = True,
@@ -808,17 +1147,101 @@ class BehaviorController:
     ) -> None:
         self.timeline.clear()
         frames_to_persist: Set[int] = set()
-        for trial_time, recording_time, subject, behavior, event_label in rows:
-            try:
-                time_value = float(recording_time)
-            except (TypeError, ValueError):
+        cat_map = self._schema.category_map() if self._schema else {}
+        beh_map = self._schema.behavior_map() if self._schema else {}
+
+        for raw_item in rows:
+            mods: Optional[Iterable[str]] = None
+            comment: Optional[str] = None
+            if isinstance(raw_item, ParsedEventRow):
+                if raw_item.recording_time is None or not raw_item.behavior:
+                    continue
+                time_value = float(raw_item.recording_time)
+                trial_value = (
+                    float(raw_item.trial_time)
+                    if raw_item.trial_time is not None
+                    else time_value
+                )
+                subject = raw_item.subject
+                behavior = raw_item.behavior
+                event_label = raw_item.event_kind or raw_item.raw_event
+                raw_ev = raw_item.raw_event
+                mods = raw_item.modifiers or None
+                comment = raw_item.comment or None
+            elif isinstance(raw_item, Mapping):
+                rec = raw_item.get(
+                    "recording time",
+                    raw_item.get("Recording time", raw_item.get("time")),
+                )
+                try:
+                    time_value = float(rec)  # type: ignore[arg-type]
+                except (TypeError, ValueError):
+                    continue
+                tr = raw_item.get("trial time", raw_item.get("Trial time"))
+                try:
+                    trial_value = float(tr) if tr is not None else time_value
+                except (TypeError, ValueError):
+                    trial_value = time_value
+                subject = (
+                    str(raw_item.get("subject", raw_item.get("Subject")) or "").strip()
+                    or None
+                )
+                behavior = str(
+                    raw_item.get("behavior", raw_item.get("Behavior")) or ""
+                ).strip()
+                event_label = str(
+                    raw_item.get("event", raw_item.get("Event", raw_item.get("Status")))
+                    or ""
+                ).strip()
+                raw_ev = event_label
+                raw_m = raw_item.get("modifiers", raw_item.get("Modifiers"))
+                if isinstance(raw_m, (list, tuple)):
+                    mods = [str(x).strip() for x in raw_m if str(x).strip()]
+                elif isinstance(raw_m, str) and raw_m.strip():
+                    mods = [
+                        x.strip()
+                        for x in raw_m.replace("|", ",").split(",")
+                        if x.strip()
+                    ]
+                comment = (
+                    str(raw_item.get("comment", raw_item.get("Comment")) or "").strip()
+                    or None
+                )
+            else:
+                seq = tuple(raw_item)
+                if len(seq) < 5:
+                    continue
+                trial_time, recording_time, subject, behavior, event_label = seq[:5]
+                raw_ev = event_label
+                if len(seq) >= 6 and seq[5]:
+                    if isinstance(seq[5], (list, tuple)):
+                        mods = [str(x).strip() for x in seq[5] if str(x).strip()]
+                    else:
+                        mods = [
+                            x.strip()
+                            for x in str(seq[5]).replace("|", ",").split(",")
+                            if x.strip()
+                        ]
+                if len(seq) >= 7 and seq[6]:
+                    comment = str(seq[6]).strip() or None
+                try:
+                    time_value = float(recording_time)
+                except (TypeError, ValueError):
+                    continue
+                try:
+                    trial_value = float(trial_time) if trial_time is not None else None
+                except (TypeError, ValueError):
+                    trial_value = None
+
+            if not behavior or not event_label:
                 continue
             frame = time_to_frame(time_value)
-            trial_value: Optional[float]
-            try:
-                trial_value = float(trial_time) if trial_time is not None else None
-            except (TypeError, ValueError):
-                trial_value = None
+            category_name: Optional[str] = None
+            bdef = beh_map.get(behavior)
+            if bdef and bdef.category_id:
+                cobj = cat_map.get(bdef.category_id)
+                category_name = (cobj.name or cobj.id) if cobj else bdef.category_id
+
             self.record_event(
                 behavior,
                 event_label,
@@ -826,10 +1249,12 @@ class BehaviorController:
                 timestamp=time_value,
                 trial_time=trial_value,
                 subject=subject,
+                raw_event=raw_ev,
                 rebuild=False,
                 highlight=False,
-                modifiers=None,
-                category=None,
+                modifiers=mods,
+                category=category_name,
+                comment=comment,
                 persist=False,
                 notify=False,
             )
@@ -896,6 +1321,7 @@ class BehaviorController:
                 modifiers = payload.get("modifiers") or ()
                 category = payload.get("category")
                 confirmed = payload.get("confirmed", True)
+                comment = payload.get("comment")
                 self.record_event(
                     str(behavior),
                     str(event_label),
@@ -909,6 +1335,7 @@ class BehaviorController:
                     modifiers=list(modifiers) if modifiers else None,
                     category=str(category) if category is not None else None,
                     confirmed=bool(confirmed),
+                    comment=str(comment) if comment else None,
                     persist=False,
                     notify=False,
                 )
@@ -1061,6 +1488,32 @@ class BehaviorController:
             except Exception:
                 continue
 
+    def create_point_event(
+        self,
+        *,
+        behavior: str,
+        frame: int,
+        subject: Optional[str] = None,
+        modifiers: Optional[Iterable[str]] = None,
+        comment: Optional[str] = None,
+        category: Optional[str] = None,
+        timestamp_provider: Optional[Callable[[int], Optional[float]]] = None,
+    ) -> Optional[BehaviorEvent]:
+        frame = int(frame)
+        ts = timestamp_provider(frame) if timestamp_provider else None
+        return self.record_event(
+            behavior,
+            "point",
+            frame,
+            timestamp=ts,
+            trial_time=ts,
+            subject=subject,
+            raw_event="point",
+            modifiers=modifiers,
+            category=category,
+            comment=comment,
+        )
+
     def create_interval(
         self,
         *,
@@ -1068,6 +1521,9 @@ class BehaviorController:
         start_frame: int,
         end_frame: int,
         subject: Optional[str] = None,
+        modifiers: Optional[Iterable[str]] = None,
+        comment: Optional[str] = None,
+        category: Optional[str] = None,
         timestamp_provider: Optional[Callable[[int], Optional[float]]] = None,
     ) -> None:
         start_frame = int(start_frame)
@@ -1083,6 +1539,9 @@ class BehaviorController:
             timestamp=start_time,
             trial_time=start_time,
             subject=subject,
+            modifiers=modifiers,
+            category=category,
+            comment=comment,
             rebuild=False,
         )
         self.timeline.record_event(
@@ -1092,6 +1551,8 @@ class BehaviorController:
             timestamp=end_time,
             trial_time=end_time,
             subject=subject,
+            modifiers=modifiers,
+            category=category,
             rebuild=False,
         )
         self.timeline.flush_pending()
@@ -1108,15 +1569,52 @@ class BehaviorController:
         new_start: int,
         new_end: int,
         subject: Optional[str] = None,
+        old_subject: Optional[str] = None,
+        modifiers: Optional[Iterable[str]] = None,
+        comment: Optional[str] = None,
         timestamp_provider: Optional[Callable[[int], Optional[float]]] = None,
     ) -> None:
         new_start = int(new_start)
         new_end = int(new_end)
         if new_end < new_start:
             new_start, new_end = new_end, new_start
-        self.timeline.remove_event((int(old_start), behavior, "start"))
+        lookup_subj = old_subject if old_subject is not None else subject
+        start_key: EventKeyType = (
+            (int(old_start), lookup_subj, behavior, "start")
+            if lookup_subj is not None
+            else (int(old_start), behavior, "start")
+        )
+        old_start_evt = self.timeline.remove_event(start_key)
+        old_end_evt: Optional[BehaviorEvent] = None
         if old_end is not None:
-            self.timeline.remove_event((int(old_end), behavior, "end"))
+            end_key: EventKeyType = (
+                (int(old_end), lookup_subj, behavior, "end")
+                if lookup_subj is not None
+                else (int(old_end), behavior, "end")
+            )
+            old_end_evt = self.timeline.remove_event(end_key)
+
+        eff_subject = (
+            subject
+            if subject is not None
+            else (old_start_evt.subject if old_start_evt else None)
+        )
+        eff_mods = (
+            tuple(modifiers)
+            if modifiers is not None
+            else (old_start_evt.modifiers if old_start_evt else ())
+        )
+        eff_comment = (
+            comment
+            if comment is not None
+            else (
+                (old_start_evt.comment if old_start_evt else None)
+                or (old_end_evt.comment if old_end_evt else None)
+            )
+        )
+        eff_cat = old_start_evt.category if old_start_evt else None
+        eff_conf = old_start_evt.confirmed if old_start_evt else True
+
         start_time = timestamp_provider(new_start) if timestamp_provider else None
         end_time = timestamp_provider(new_end) if timestamp_provider else None
         self.timeline.record_event(
@@ -1125,7 +1623,11 @@ class BehaviorController:
             new_start,
             timestamp=start_time,
             trial_time=start_time,
-            subject=subject,
+            subject=eff_subject,
+            modifiers=eff_mods,
+            category=eff_cat,
+            confirmed=eff_conf,
+            comment=eff_comment,
             rebuild=False,
         )
         self.timeline.record_event(
@@ -1134,7 +1636,10 @@ class BehaviorController:
             new_end,
             timestamp=end_time,
             trial_time=end_time,
-            subject=subject,
+            subject=eff_subject,
+            modifiers=eff_mods,
+            category=eff_cat,
+            confirmed=eff_conf,
             rebuild=False,
         )
         self.timeline.flush_pending()
@@ -1148,13 +1653,18 @@ class BehaviorController:
         behavior: str,
         start_frame: int,
         end_frame: int,
+        subject: Optional[str] = None,
     ) -> None:
         start_frame = int(start_frame)
         end_frame = int(end_frame)
         if end_frame < start_frame:
             start_frame, end_frame = end_frame, start_frame
-        self.timeline.remove_event((start_frame, behavior, "start"))
-        self.timeline.remove_event((end_frame, behavior, "end"))
+        if subject is not None:
+            self.timeline.remove_event((start_frame, subject, behavior, "start"))
+            self.timeline.remove_event((end_frame, subject, behavior, "end"))
+        else:
+            self.timeline.remove_event((start_frame, behavior, "start"))
+            self.timeline.remove_event((end_frame, behavior, "end"))
         self.timeline.flush_pending()
         self.sync_marks()
         self._persist_frames({start_frame, end_frame})

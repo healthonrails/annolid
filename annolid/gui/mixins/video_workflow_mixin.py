@@ -127,6 +127,20 @@ class VideoWorkflowMixin:
             self.fps = self.video_loader.get_fps()
             self.num_frames = self.video_loader.total_frames()
             _log_step("read_video_metadata")
+            if (
+                self.fps
+                and self.fps > 0
+                and getattr(self.behavior_controller, "events_count", 0) > 0
+                and hasattr(self.behavior_controller, "rebind_fps")
+            ):
+                max_idx = max(0, int(self.num_frames) - 1) if self.num_frames else None
+                if self.behavior_controller.rebind_fps(
+                    float(self.fps), max_frame=max_idx
+                ):
+                    self.behavior_log_widget.set_events(
+                        list(self.behavior_controller.iter_events()),
+                        fps=self.fps,
+                    )
             self.behavior_log_widget.set_fps(self.fps)
             if self.timeline_panel is not None:
                 self.timeline_panel.set_time_range(0, self.num_frames - 1)
