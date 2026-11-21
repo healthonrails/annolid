@@ -849,6 +849,7 @@ class ExpertMouse {
     this.spineHeadYaw = 0;
     this.tailWorldPoints = null;
     this.tailWorldVel = null;
+    this.tailSideBias = 0;
     this.tailIdleTime = (this.timeOffset * 0.23) % 100.0;
     this.tailPrevRootWorld = new THREE.Vector3(1e6, 1e6, 1e6);
     this.boutState = {
@@ -2864,99 +2865,114 @@ class ExpertMouse {
       }
     }
 
-    // Couple lateral counterbalance wave to the hindlimb CPG phase for stride-locked fluidity.
+    // Couple subtle low-wavenumber pelvic sway to the hindlimb CPG phase.
     const lhIndex = this.motor?.cpg ? this.motor.cpg.limbIndex('LH') : -1;
     const lhPhase = lhIndex >= 0
       ? this.motor.cpg.phases[lhIndex]
       : ((this.locomotionTime * 0.58 * this.motion.tailWaveFreqMul) % 1.0);
     const motorAmp = this.motor ? THREE.MathUtils.clamp(this.motor.amplitude, 0, 1.2) : speedNorm;
-    const gaitDrive = Math.max(speedNorm, motorAmp * 0.85)
+    const gaitDrive = Math.max(speedNorm, motorAmp * 0.75)
       * (1.0 - rearNorm * 0.92)
       * (1.0 - groomNorm * 0.90);
-    const trotCarry = THREE.MathUtils.smoothstep(speedNorm, 0.34, 0.92)
+    // Real mice drag the distal 65% of the tail along the floor during slow exploration/rest
+    // and only elevate it into a sleek horizontal counterbalance beam during brisk trots/darts.
+    const trotCarry = THREE.MathUtils.smoothstep(speedNorm, 0.45, 0.92)
       * (1.0 - rearNorm)
       * (1.0 - groomNorm);
-    const alertCarry = (this.boutState.mode === 'dart-trot' ? 0.12 : 0)
-      + (this.socialContact ? 0.06 : 0);
-    const restDrape = (1.0 - trotCarry * 0.72) * 0.44 + rearNorm * 0.24 + groomNorm * 0.22;
+    const alertCarry = (this.boutState.mode === 'dart-trot' ? 0.14 : 0)
+      + (this.socialContact ? 0.04 : 0);
 
-    // Build ideal caudal rest/muscle curve in mesh-local space aligned with sacral spine yaw.
+    // Track which side the mid-tail currently leans toward so backward/grooming shifts
+    // deepen the existing natural curve instead of flipping abruptly across the midline.
+    if (!this.tailSideBias) this.tailSideBias = swayPolarity;
+    if (this.tailWorldPoints && this.tailWorldPoints.length === this.tailCount + 1) {
+      const midProbe = this.tailWorldPoints[Math.floor(this.tailCount * 0.42)].clone();
+      this.mesh.worldToLocal(midProbe);
+      if (Math.abs(midProbe.x) > 0.22) {
+        this.tailSideBias = Math.sign(midProbe.x);
+      }
+    }
+    const naturalSide = this.tailSideBias || swayPolarity;
+
+    // Build calm, biomechanically grounded caudal target curve in mesh-local space.
     const sacralYaw = spSacral.yaw;
     const cosSac = Math.cos(sacralYaw);
     const sinSac = Math.sin(sacralYaw);
     const idealLocal = [];
     const groomSide = this.grooming.mode === 'flank-groom'
       ? -this.grooming.side
-      : swayPolarity;
+      : naturalSide;
+    const rootJump = tailBaseWorld.distanceTo(this.tailPrevRootWorld);
+    const shouldReinitWorld = !this.tailWorldPoints
+      || this.tailWorldPoints.length !== this.tailCount + 1
+      || !this.tailWorldVel
+      || this.tailWorldVel.length !== this.tailCount + 1
+      || rootJump > 1.35
+      || CONTACT_QA === 'tail';
+    const rootMoveSpeed = (!shouldReinitWorld && stepDt > 1e-4)
+      ? rootJump / stepDt
+      : speed;
+    const moveGate = THREE.MathUtils.smoothstep(Math.max(rootMoveSpeed, speed * 0.8), 0.18, 2.2);
+
     for (let i = 0; i <= this.tailCount; i++) {
       const p = i / this.tailCount;
       const lag = p * p;
-      const transmit = Math.pow(p, 1.28);
-      const midCurve = p * (1.0 - p);
+      const transmit = Math.pow(p, 1.20);
 
-      // 1. Stride-coupled traveling counterbalance wave propagating root -> tip.
-      const wavePhase = lhPhase * Math.PI * 2 - p * 4.9;
+      // 1. Subtle broad pelvic counterbalance sway (low wavenumber, never an eel/snake ripple).
+      const wavePhase = lhPhase * Math.PI * 2 - p * 1.65;
       const travelWave = Math.sin(wavePhase)
-        * (0.18 + 0.14 * speedNorm)
+        * (0.045 + 0.045 * speedNorm)
         * gaitDrive
         * this.motion.tailWaveAmpMul
-        * Math.pow(p, 1.12);
-      const verticalStrideBounce = Math.sin(lhPhase * Math.PI * 4 - p * 3.4)
-        * 0.032 * speedNorm * trotCarry * transmit;
+        * Math.sin(p * Math.PI * 0.85);
+      const verticalStrideBounce = Math.sin(lhPhase * Math.PI * 4 - p * 1.8)
+        * 0.022 * speedNorm * trotCarry * transmit;
 
-      // 2. Inertial & pelvic forces from roll, turn rate, and acceleration.
+      // 2. Smooth pelvic/inertial response at the sacral base.
       const bodyForceX = (
-        this.bodyDyn.roll * 0.36 + clampedLatAccel * 0.015 - clampedTurnRate * 0.034
+        this.bodyDyn.roll * 0.22 + clampedLatAccel * 0.008 - clampedTurnRate * 0.018
       ) * transmit;
       const bodyForceY = (
-        this.bodyDyn.pitch * 0.30 - clampedFwdAccel * 0.008
+        this.bodyDyn.pitch * 0.22 - clampedFwdAccel * 0.005
       ) * transmit;
 
-      // 3. Organic resting/walking S-curve + living idle tip drift (never a ramrod ruler).
-      const idleMicroWave = Math.sin(this.tailIdleTime * 1.25 - p * 2.8)
-        * 0.055 * (1.0 - speedNorm * 0.75) * (1.0 - rearNorm * 0.85) * Math.pow(p, 1.35);
-      const organicCurve = (
-        Math.sin(p * Math.PI * 1.08) * 0.30
-        - Math.sin(p * Math.PI * 2.02) * 0.13
-      ) * swayPolarity * (1.0 - speedNorm * 0.36) * (1.0 - rearNorm) * (1.0 - groomNorm);
+      // 3. Single gentle natural curve on initial spawn (live curves come from true path history).
+      const initCurve = shouldReinitWorld
+        ? Math.sin(p * Math.PI * 0.88) * 0.24 * swayPolarity * (1.0 - rearNorm)
+        : 0;
 
-      // 4. Behavior-specific lateral geometry: rearing tripod sweep, grooming curl, moonwalk side-deflect.
+      // 4. Behavior-specific broad single-arc postures (no tight loops or abrupt side flips).
       const rearSweepGain = 1.0 + rearObstacleAhead * 1.15;
       const rearTripodSweep = rearNorm * rearSweepSign * rearSweepGain
         * (Math.sin(p * Math.PI * 0.82) * 0.62 + Math.pow(p, 1.45) * 0.56);
       const groomCurl = groomNorm * groomSide
-        * (Math.sin(p * Math.PI * 0.92) * 0.62 + Math.pow(p, 1.45) * 0.58);
-      const backwardDeflect = backwardNorm * swayPolarity
-        * (Math.sin(p * Math.PI * 0.85) * 0.78 + Math.pow(p, 1.3) * 0.68);
+        * (Math.sin(p * Math.PI * 0.85) * 0.52 + Math.pow(p, 1.4) * 0.42);
+      const backwardDeflect = backwardNorm * naturalSide
+        * (Math.sin(p * Math.PI * 0.80) * 0.62 + Math.pow(p, 1.35) * 0.54);
 
-      const primaryDirection = this.tailDyn.sway || bodyForceX || swayPolarity;
-      const localX = this.tailDyn.sway * lag
+      const localX = this.tailDyn.sway * Math.pow(p, 1.45)
         + bodyForceX
-        + organicCurve
+        + initCurve
         + travelWave
-        + idleMicroWave
         + rearTripodSweep
         + groomCurl
-        + backwardDeflect
-        + midCurve * 0.18 * Math.sign(primaryDirection) * (1.0 - rearNorm * 0.7);
+        + backwardDeflect;
 
-      // 5. Vertical carriage: elevated horizontal counterbalance in brisk trot/dart;
-      //    smooth floor-draped tripod support in rearing/grooming/slow walk.
-      const carryArch = (trotCarry * 0.28 + alertCarry * trotCarry)
-        * Math.sin(p * Math.PI * 0.88);
-      const distalTipUp = Math.pow(Math.max(0, p - 0.68) / 0.32, 1.85)
-        * (0.028 + trotCarry * 0.085) * (1.0 - rearNorm);
-      const rearFloorBrace = -rearNorm * (0.38 * Math.pow(p, 0.70) + 0.20 * p);
-      let waveY = -i * PROP.tailSag * p
-        - restDrape * Math.pow(p, 1.08)
+      // 5. Gravity-grounded vertical carriage: slopes down cleanly onto the floor by p~0.35
+      //    at rest/slow walk; elevates into a sleek horizontal counterbalance arc in brisk trot.
+      const gravityDrop = -Math.pow(p, 0.72) * 1.18 * (1.0 - trotCarry * 0.78);
+      const carryArch = (trotCarry * 0.22 + alertCarry * trotCarry)
+        * Math.sin(p * Math.PI * 0.85);
+      const rearFloorBrace = -rearNorm * (0.42 * Math.pow(p, 0.68) + 0.18 * p);
+      let waveY = gravityDrop
+        - i * PROP.tailSag * p * (1.0 - trotCarry * 0.65)
         + rearFloorBrace
         + carryArch
         + this.tailDyn.lift * lag
         + bodyForceY
-        + verticalStrideBounce
-        + midCurve * (0.045 + trotCarry * 0.08) * (1.0 - rearNorm)
-        + distalTipUp;
-      waveY = Math.max(waveY, -1.45);
+        + verticalStrideBounce;
+      waveY = Math.max(waveY, -1.50);
       const localZ = -i * segLen;
       idealLocal.push(new THREE.Vector3(
         tailBase.x + localX * cosSac + localZ * sinSac,
@@ -2965,16 +2981,11 @@ class ExpertMouse {
       ));
     }
 
-    // World-space floor-friction viscoelastic path-trailing chain:
-    // proximal third tracks the sacrum crisply while the distal floor-resting shaft
-    // drags with real ground friction to trace authentic S/J turning curves.
-    const rootJump = tailBaseWorld.distanceTo(this.tailPrevRootWorld);
-    const shouldReinitWorld = !this.tailWorldPoints
-      || this.tailWorldPoints.length !== this.tailCount + 1
-      || !this.tailWorldVel
-      || this.tailWorldVel.length !== this.tailCount + 1
-      || rootJump > 1.35
-      || CONTACT_QA === 'tail';
+    // Overdamped world-space tractrix + floor-friction chain:
+    // - Proximal ~30% (sacral musculature) tracks the pelvis and active posture cleanly.
+    // - Distal ~70% behaves like a supple, heavily damped floor-dragging rod: it stays
+    //   calmly planted on the floor when stopped or pivoting, and peels smoothly along
+    //   the mouse's actual path when walking forward (zero windshield-wiper sweep or squiggles).
     const tailCurve = [];
     if (shouldReinitWorld) {
       this.tailWorldPoints = idealLocal.map(pt => {
@@ -2994,6 +3005,34 @@ class ExpertMouse {
       const prevWorldPos = new THREE.Vector3();
       if (!guiParams.isPaused && stepDt > 0) {
         const invStepDt = 1.0 / Math.max(stepDt, 1e-4);
+
+        // 0. Axial columnar compression transport:
+        //    Real caudal vertebrae transmit axial compression down the tail as a
+        //    coherent gentle C-bow rather than accordion-buckling like wet string
+        //    when the mouse backs up or its rump swings into the tail during a turn.
+        const rootStepX = tailBaseWorld.x - this.tailPrevRootWorld.x;
+        const rootStepZ = tailBaseWorld.z - this.tailPrevRootWorld.z;
+        let rootDirX = this.tailWorldPoints[Math.min(3, this.tailCount)].x - this.tailPrevRootWorld.x;
+        let rootDirZ = this.tailWorldPoints[Math.min(3, this.tailCount)].z - this.tailPrevRootWorld.z;
+        const rootDirLen = Math.hypot(rootDirX, rootDirZ);
+        if (rootDirLen > 1e-4) {
+          rootDirX /= rootDirLen;
+          rootDirZ /= rootDirLen;
+          const axialPush = rootStepX * rootDirX + rootStepZ * rootDirZ;
+          if (axialPush > 1e-4) {
+            const clampedPush = Math.min(axialPush, segLen * 1.4);
+            const perpX = -rootDirZ * naturalSide;
+            const perpZ = rootDirX * naturalSide;
+            for (let i = 1; i <= this.tailCount; i++) {
+              const p = i / this.tailCount;
+              const colCarry = THREE.MathUtils.lerp(0.94, 0.58, p);
+              const bowCarry = Math.sin(p * Math.PI * 0.85) * 0.44;
+              this.tailWorldPoints[i].x += (rootDirX * colCarry + perpX * bowCarry) * clampedPush;
+              this.tailWorldPoints[i].z += (rootDirZ * colCarry + perpZ * bowCarry) * clampedPush;
+            }
+          }
+        }
+
         for (let i = 1; i <= this.tailCount; i++) {
           const p = i / this.tailCount;
           const surfRad = tailSurfaceRadiusAt(p, this.guiParams.tailThickness);
@@ -3002,48 +3041,46 @@ class ExpertMouse {
           idealWorld.copy(idealLocal[i]);
           this.mesh.localToWorld(idealWorld);
 
-          // Floor-contact friction factor: elevated trotting tails whip freely;
-          // floor-resting distal tails resist sideways skating and trace true path curves.
           const heightAboveFloor = Math.max(0, prevWorldPos.y - floorY);
-          const groundProx = 1.0 - THREE.MathUtils.smoothstep(heightAboveFloor, 0.0, 0.16);
-          const frictionResist = groundProx * THREE.MathUtils.smoothstep(p, 0.22, 0.78);
+          const groundProx = 1.0 - THREE.MathUtils.smoothstep(heightAboveFloor, 0.0, 0.14);
 
-          // 1. Damped inertial momentum (stronger damping when dragging on floor).
-          const velDamp = Math.exp(-(5.8 + groundProx * 12.5) * stepDt);
+          // 1. Overdamped airborne-only micro-inertia (strictly zero on floor-resting nodes).
+          const velDamp = Math.exp(-(9.0 + groundProx * 18.0) * stepDt);
           this.tailWorldVel[i].multiplyScalar(velDamp);
-          const inertiaWeight = THREE.MathUtils.lerp(0.18, 0.52, p) * (1.0 - groundProx * 0.72);
-          this.tailWorldPoints[i].addScaledVector(this.tailWorldVel[i], stepDt * inertiaWeight);
+          const airborneInertia = 0.08 * trotCarry * (1.0 - groundProx) * Math.sin(p * Math.PI * 0.85);
+          if (airborneInertia > 1e-4) {
+            this.tailWorldPoints[i].addScaledVector(this.tailWorldVel[i], stepDt * airborneInertia);
+          }
 
-          // 2. Follow-the-leader inextensible advection along previous world trajectory.
-          //    When backing up or compressed axially, bias deflection laterally along
-          //    the floor instead of letting the chain buckle vertically into the air.
+          // 2. Inextensible tractrix advection along the previous world trajectory.
           segVec.copy(this.tailWorldPoints[i]).sub(this.tailWorldPoints[i - 1]);
           const rawSegLen = segVec.length();
           if (rawSegLen < 1e-4) {
             segVec.copy(idealWorld).sub(this.tailWorldPoints[i - 1]);
             if (segVec.lengthSq() < 1e-8) segVec.set(-this.heading.x, 0, -this.heading.y);
-          } else if (rawSegLen < segLen * 0.90 || backwardNorm > 0.05) {
-            const compress = THREE.MathUtils.clamp(
-              (segLen - rawSegLen) / Math.max(segLen, 1e-4),
-              0,
-              1
-            );
-            const sidePush = (compress * 0.45 + backwardNorm * 0.14) * segLen * swayPolarity;
-            segVec.x += this.heading.y * sidePush;
-            segVec.z -= this.heading.x * sidePush;
-            segVec.y *= 1.0 - Math.min(0.65, compress * 0.75 + backwardNorm * 0.35);
+          } else if (rawSegLen < segLen * 0.90) {
+            const compress = THREE.MathUtils.clamp((segLen - rawSegLen) / Math.max(segLen, 1e-4), 0, 1);
+            segVec.y *= 1.0 - Math.min(0.75, compress * 0.80);
           }
           segVec.normalize().multiplyScalar(segLen);
           this.tailWorldPoints[i].copy(this.tailWorldPoints[i - 1]).add(segVec);
 
-          // 3. Graded caudal muscular tone: crisp sacral alignment proximally,
-          //    supple ground-friction-modulated path trailing distally.
-          const baseRate = THREE.MathUtils.lerp(13.8, 1.55, Math.pow(p, 0.62));
-          const lateralRate = baseRate * (1.0 - frictionResist * 0.64);
-          const lateralBlend = (1.0 - Math.exp(-lateralRate * stepDt))
-            * THREE.MathUtils.lerp(0.84, 0.18, Math.pow(p, 0.80));
-          const verticalBlend = (1.0 - Math.exp(-(baseRate * 1.15) * stepDt))
-            * THREE.MathUtils.lerp(0.86, 0.34, p);
+          // 3. Motion-gated proximal-to-distal muscular tone:
+          //    - Basal 30% tracks sacral orientation & active behavior postures.
+          //    - Floor-resting distal 70% stays planted when stopped/pivoting and only
+          //      relaxes gently behind the mouse when moving forward or elevated in trot.
+          const proxMask = Math.pow(1.0 - THREE.MathUtils.smoothstep(p, 0.0, 0.36), 1.65);
+          const behaviorPull = Math.max(rearNorm, groomNorm * 0.45, backwardNorm * 0.55)
+            * THREE.MathUtils.lerp(0.85, 0.20, p);
+          const activeSlide = moveGate * (1.0 - groundProx * 0.65) + trotCarry * 0.75;
+          const lateralRate = proxMask * 11.5
+            + (1.0 - proxMask) * (0.03 + activeSlide * 1.15 + behaviorPull * 2.6);
+          const lateralCap = proxMask * 0.78 + (1.0 - proxMask) * (0.04 + activeSlide * 0.16 + behaviorPull * 0.22);
+          const lateralBlend = Math.min(lateralCap, 1.0 - Math.exp(-lateralRate * stepDt));
+          const verticalRate = THREE.MathUtils.lerp(13.0, 5.8, p);
+          const verticalBlend = (1.0 - Math.exp(-verticalRate * stepDt))
+            * THREE.MathUtils.lerp(0.88, 0.52, p);
+
           this.tailWorldPoints[i].x = THREE.MathUtils.lerp(
             this.tailWorldPoints[i].x,
             idealWorld.x,
@@ -3060,13 +3097,106 @@ class ExpertMouse {
             verticalBlend
           );
 
-          // Track clamped node velocity for next-step fluid follow-through.
-          this.tailWorldVel[i]
-            .copy(this.tailWorldPoints[i])
-            .sub(prevWorldPos)
-            .multiplyScalar(invStepDt);
+          // Low-pass filtered node velocity for smooth airborne follow-through only.
+          const vx = (this.tailWorldPoints[i].x - prevWorldPos.x) * invStepDt;
+          const vy = (this.tailWorldPoints[i].y - prevWorldPos.y) * invStepDt;
+          const vz = (this.tailWorldPoints[i].z - prevWorldPos.z) * invStepDt;
+          const vSmooth = 1.0 - Math.exp(-8.0 * stepDt);
+          this.tailWorldVel[i].set(
+            THREE.MathUtils.lerp(this.tailWorldVel[i].x, vx, vSmooth),
+            THREE.MathUtils.lerp(this.tailWorldVel[i].y, vy, vSmooth),
+            THREE.MathUtils.lerp(this.tailWorldVel[i].z, vz, vSmooth)
+          );
           const velMag = this.tailWorldVel[i].length();
-          if (velMag > 12.0) this.tailWorldVel[i].multiplyScalar(12.0 / velMag);
+          if (velMag > 8.0) this.tailWorldVel[i].multiplyScalar(8.0 / velMag);
+        }
+
+        // 4. Angle-space Euler-Bernoulli elastic rod relaxation (zero bending moment at free tip):
+        //    Operating directly on segment heading angles propagates uncurling cleanly out to
+        //    the free distal tip in O(N) — unwinding tight pig-tail '?' hooks and ripples while
+        //    leaving calm broad resting C-curves (<= ~2.8 deg/seg) motionless on the floor.
+        if (!this._tailSegAngles || this._tailSegAngles.length !== this.tailCount) {
+          this._tailSegAngles = new Float64Array(this.tailCount);
+          this._tailSegPitches = new Float64Array(this.tailCount);
+          this._tailCurvatures = new Float64Array(this.tailCount);
+        }
+        const segAngles = this._tailSegAngles;
+        const segPitches = this._tailSegPitches;
+        const curvatures = this._tailCurvatures;
+        for (let i = 0; i < this.tailCount; i++) {
+          const dx = this.tailWorldPoints[i + 1].x - this.tailWorldPoints[i].x;
+          const dy = this.tailWorldPoints[i + 1].y - this.tailWorldPoints[i].y;
+          const dz = this.tailWorldPoints[i + 1].z - this.tailWorldPoints[i].z;
+          const hLen = Math.hypot(dx, dz);
+          segAngles[i] = hLen > 1e-6
+            ? Math.atan2(dz, dx)
+            : (i > 0 ? segAngles[i - 1] : Math.atan2(-this.heading.y, -this.heading.x));
+          segPitches[i] = Math.asin(THREE.MathUtils.clamp(dy / Math.max(Math.hypot(hLen, dy), 1e-6), -0.98, 0.98));
+        }
+        const wrapRad = a => {
+          let r = a;
+          while (r > Math.PI) r -= Math.PI * 2;
+          while (r < -Math.PI) r += Math.PI * 2;
+          return r;
+        };
+        curvatures[0] = 0;
+        for (let i = 1; i < this.tailCount; i++) {
+          curvatures[i] = wrapRad(segAngles[i] - segAngles[i - 1]);
+        }
+        // A. Nonlinear local curvature damping + zero-moment distal free-tip decay (kappa(L) -> 0).
+        const distalStart = Math.floor(this.tailCount * 0.45);
+        for (let i = 1; i < this.tailCount; i++) {
+          const p = i / this.tailCount;
+          const k = curvatures[i];
+          const absK = Math.abs(k);
+          const freeTip = THREE.MathUtils.smoothstep(p, 0.45, 1.0);
+          // Calm broad curves below threshold stay undisturbed on the floor.
+          const restThreshold = THREE.MathUtils.lerp(0.052, 0.016, freeTip);
+          if (absK > restThreshold) {
+            const excess = absK - restThreshold;
+            const decayRate = THREE.MathUtils.lerp(6.5, 16.0, freeTip) + excess * 42.0;
+            const dampedExcess = excess * Math.exp(-decayRate * stepDt);
+            curvatures[i] = Math.sign(k) * (restThreshold + dampedExcess);
+          }
+          // Soft per-joint anatomical curvature cap tapers smoothly toward zero at the free tip.
+          const tipCap = THREE.MathUtils.degToRad(THREE.MathUtils.lerp(9.0, 2.2, freeTip));
+          if (Math.abs(curvatures[i]) > tipCap) {
+            curvatures[i] = THREE.MathUtils.lerp(
+              curvatures[i],
+              Math.sign(curvatures[i]) * tipCap,
+              1.0 - Math.exp(-14.0 * stepDt)
+            );
+          }
+        }
+        // Subtle C2 curvature continuity along the distal half removes fine S-ripples.
+        for (let i = Math.max(2, distalStart); i < this.tailCount - 1; i++) {
+          const avg = 0.5 * (curvatures[i - 1] + curvatures[i + 1]);
+          curvatures[i] = THREE.MathUtils.lerp(curvatures[i], avg, 0.16);
+        }
+        // B. Limit cumulative distal-half curl (prevents 180-deg pig-tail '?' hooks at tip).
+        let distalAbsCurl = 0;
+        for (let i = distalStart; i < this.tailCount; i++) {
+          distalAbsCurl += Math.abs(curvatures[i]);
+        }
+        const maxDistalCurl = THREE.MathUtils.degToRad(52.0);
+        if (distalAbsCurl > maxDistalCurl) {
+          const targetScale = maxDistalCurl / distalAbsCurl;
+          const curlScale = THREE.MathUtils.lerp(1.0, targetScale, 1.0 - Math.exp(-14.0 * stepDt));
+          for (let i = distalStart; i < this.tailCount; i++) {
+            curvatures[i] *= curlScale;
+          }
+        }
+        // C. Reconstruct world points forward from root -> free tip (exact segLen).
+        let runningAngle = segAngles[0];
+        for (let i = 0; i < this.tailCount; i++) {
+          if (i > 0) runningAngle += curvatures[i];
+          const cosP = Math.cos(segPitches[i]);
+          const sinP = Math.sin(segPitches[i]);
+          this.tailWorldPoints[i + 1].set(
+            this.tailWorldPoints[i].x + Math.cos(runningAngle) * cosP * segLen,
+            this.tailWorldPoints[i].y + sinP * segLen,
+            this.tailWorldPoints[i].z + Math.sin(runningAngle) * cosP * segLen
+          );
         }
       }
       for (let i = 0; i <= this.tailCount; i++) {
@@ -3345,7 +3475,7 @@ class ExpertMouse {
     const segPrevWorld = new THREE.Vector3();
     const segCurrWorld = new THREE.Vector3();
     const prevDirWorld = new THREE.Vector3();
-    const candidateAngles = new Float64Array(9);
+    const candidateAngles = new Float64Array(64);
 
     const wrapAngleDelta = angle => {
       let a = angle;
@@ -3380,12 +3510,33 @@ class ExpertMouse {
       return true;
     };
 
-    // Unified inextensible, 3D curvature-bounded, wall/corner/floor-safe chain propagation.
-    // Guarantees exact segment length (||P[i]-P[i-1]|| === segLen) inside the arena
-    // using floor-landing vertical flare, an analytical turning-radius wall/corner barrier,
-    // and an exact analytical circle-box fallback.
+    // Unified inextensible, 3D curvature-bounded, wall/corner/body/floor-safe chain propagation.
+    // Guarantees exact segment length (||P[i]-P[i-1]|| === segLen) inside the arena and
+    // outside other mice's bodies using floor-landing vertical flare, analytical turning-radius
+    // body & wall/corner barriers, and an exact analytical circle-box/circle-disc fallback.
+    const segmentClearsObstacles = (ax, az, bx, bz, segTailRad) => {
+      const sx = bx - ax;
+      const sz = bz - az;
+      const lenSq = sx * sx + sz * sz;
+      for (let oi = 0; oi < obstacles.length; oi++) {
+        const disc = obstacles[oi];
+        const t = lenSq > 1e-8
+          ? THREE.MathUtils.clamp(((disc.x - ax) * sx + (disc.z - az) * sz) / lenSq, 0, 1)
+          : 0;
+        const cx = ax + sx * t;
+        const cz = az + sz * t;
+        const req = disc.radius + segTailRad;
+        const dx = cx - disc.x;
+        const dz = cz - disc.z;
+        if (dx * dx + dz * dz < req * req) return false;
+      }
+      return true;
+    };
+
     const propagateCurvatureSafeChain = (steerWallLookahead, bendBlend) => {
       let wallTouched = false;
+      let bodyTouched = false;
+      let hardClamped = false;
       let bendClamped = false;
 
       // Seed root exit tangent from the mouse's backward heading in world space.
@@ -3410,13 +3561,16 @@ class ExpertMouse {
         const minY = surfaceRadius + 0.012;
         const maxX = ENCLOSURE_HALF_X - horizontalMargin;
         const maxZ = ENCLOSURE_HALF_Z - horizontalMargin;
-        const maxRad = THREE.MathUtils.degToRad(THREE.MathUtils.lerp(9.5, 13.0, p));
+        // Hard vertebral curvature bound (~9.5 deg root -> ~11.5 deg distal) keeps
+        // tight body-obstacle wraps smooth while the angle-space Euler-Bernoulli
+        // free-tip relaxation above prevents pig-tail hooks in open space.
+        const maxRad = THREE.MathUtils.degToRad(THREE.MathUtils.lerp(9.5, 11.5, p));
 
-        // 1. Suppress non-physical aerial rope buckling + flare downward pitch smoothly
-        //    before floor touchdown so the tail lands tangentially instead of dive-kinking.
+        // 1. Suppress non-physical aerial rope buckling + smooth sqrt-flare landing
+        //    so slow/resting tails slope cleanly from the rump onto the floor by p~0.35.
         const heightAboveFloor = Math.max(0, segPrevWorld.y - minY);
-        const maxDownSlope = -THREE.MathUtils.smoothstep(heightAboveFloor, 0.0, 0.42) * 0.30;
-        const maxUpSlope = THREE.MathUtils.lerp(0.24, 0.18, p);
+        const maxDownSlope = -Math.sqrt(THREE.MathUtils.clamp(heightAboveFloor / 0.28, 0, 1)) * 0.48;
+        const maxUpSlope = THREE.MathUtils.lerp(0.20, 0.14, p);
         if (currSegDir.y < maxDownSlope || currSegDir.y > maxUpSlope) {
           currSegDir.y = THREE.MathUtils.clamp(currSegDir.y, maxDownSlope, maxUpSlope);
           const hLen = Math.hypot(currSegDir.x, currSegDir.z);
@@ -3464,45 +3618,134 @@ class ExpertMouse {
           hdz = currSegDir.z / horizLen;
         }
 
-        // 4. Analytical turning-radius wall & corner barrier using true horizontal budget.
+        const segTailRad = Math.max(tailRadiusAt(i - 1), tailRadiusAt(i));
+        const turnRadius = horizR / Math.max(horizMaxRad * 0.80, 0.08);
+        const remLen = (this.tailCount - i + 1) * segLen;
+
+        // 4a. Analytical turning-radius body-obstacle lookahead:
+        //     Starts turning smoothly at <= horizMaxRad before reaching another mouse's body
+        //     so the tail wraps gracefully around the silhouette with exact segment length.
+        if (steerWallLookahead && obstacleBodies.length > 0) {
+          let bestBodyDelta = 0;
+          let minObsMargin = Infinity;
+          const curTheta = Math.atan2(hdz, hdx);
+          for (let bi = 0; bi < obstacleBodies.length; bi++) {
+            const body = obstacleBodies[bi];
+            const bodyX = body.mouse.mesh.position.x;
+            const bodyZ = body.mouse.mesh.position.z;
+            const bodyCross = hdx * (bodyZ - segPrevWorld.z) - hdz * (bodyX - segPrevWorld.x);
+            const sideDot = (-hdz) * body.directionX + hdx * body.directionZ;
+            const avoidTurnSign = Math.abs(bodyCross) > 0.65
+              ? (bodyCross > 0 ? -1 : 1)
+              : (Math.abs(sideDot) > 0.12 ? Math.sign(sideDot) : (bodyCross >= 0 ? -1 : 1));
+            const nTurnX = -hdz * avoidTurnSign;
+            const nTurnZ = hdx * avoidTurnSign;
+            const turnCx = segPrevWorld.x + nTurnX * turnRadius;
+            const turnCz = segPrevWorld.z + nTurnZ * turnRadius;
+
+            for (let di = 0; di < body.discs.length; di++) {
+              const disc = body.discs[di];
+              const obsR = disc.radius + segTailRad + 0.04;
+              const toX = disc.x - segPrevWorld.x;
+              const toZ = disc.z - segPrevWorld.z;
+              const dist = Math.hypot(toX, toZ);
+              const ahead = toX * hdx + toZ * hdz;
+              if (ahead < -obsR * 0.4 || dist > remLen + obsR + turnRadius) continue;
+              const cross = hdx * toZ - hdz * toX;
+              const rayThreat = (ahead > -0.05 && Math.abs(cross) < obsR + 0.08)
+                || dist <= obsR + 0.08;
+              if (!rayThreat) continue;
+              const distOC = Math.hypot(disc.x - turnCx, disc.z - turnCz);
+              if (distOC >= turnRadius + obsR + 0.18 && dist > obsR + 0.08) continue;
+
+              const thetaC = Math.atan2(toZ, toX);
+              let targetTheta;
+              if (dist > obsR + 0.04) {
+                const alpha = Math.asin(THREE.MathUtils.clamp((obsR + 0.04) / dist, 0, 0.999));
+                targetTheta = thetaC + avoidTurnSign * alpha;
+              } else {
+                targetTheta = thetaC + avoidTurnSign * (Math.PI * 0.55);
+              }
+              const reqDelta = wrapAngleDelta(targetTheta - curTheta);
+              if (reqDelta * avoidTurnSign > 0 && Math.abs(reqDelta) > Math.abs(bestBodyDelta)) {
+                bestBodyDelta = reqDelta;
+                minObsMargin = Math.min(minObsMargin, dist - obsR);
+              }
+            }
+          }
+          if (Math.abs(bestBodyDelta) > 1e-4) {
+            bodyTouched = true;
+            const targetTheta = curTheta + bestBodyDelta;
+            if (i === 1) {
+              const rootMaxStep = minObsMargin < 0.75 ? Math.PI : maxRad * 2.5;
+              const newTheta = curTheta + THREE.MathUtils.clamp(bestBodyDelta, -rootMaxStep, rootMaxStep);
+              hdx = Math.cos(newTheta);
+              hdz = Math.sin(newTheta);
+            } else {
+              const prevHorizLen = Math.hypot(prevDirWorld.x, prevDirWorld.z);
+              const baseTheta = prevHorizLen > 1e-5
+                ? Math.atan2(prevDirWorld.z, prevDirWorld.x)
+                : curTheta;
+              const newTheta = baseTheta + THREE.MathUtils.clamp(
+                wrapAngleDelta(targetTheta - baseTheta),
+                -horizMaxRad,
+                horizMaxRad
+              );
+              hdx = Math.cos(newTheta);
+              hdz = Math.sin(newTheta);
+            }
+          }
+        }
+
+        // 4b. Analytical baseboard-gliding wall & 90-degree corner barrier:
+        //     Computes exact turning-arc wall clearance (accounting for long-way corner turns)
+        //     and turns only until parallel to the approached wall so the tail glides cleanly
+        //     along the perimeter without curling into hooks.
         if (steerWallLookahead) {
           const distX = maxX - Math.abs(segPrevWorld.x);
           const distZ = maxZ - Math.abs(segPrevWorld.z);
           const wallSignX = Math.sign(segPrevWorld.x || 1);
           const wallSignZ = Math.sign(segPrevWorld.z || 1);
-          const turnRadius = horizR / Math.max(horizMaxRad * 0.80, 0.08);
           const intoX = hdx * wallSignX;
           const intoZ = hdz * wallSignZ;
-          const reqX = intoX > 0
-            ? turnRadius * (1.0 - Math.sqrt(Math.max(0, 1.0 - intoX * intoX))) + 0.34
+          const prevHz = i >= 2 ? prevDirWorld.z : hdz;
+          const prevHx = i >= 2 ? prevDirWorld.x : hdx;
+          const openZ = Math.abs(segPrevWorld.z) > maxZ - (turnRadius + 0.85)
+            ? -wallSignZ
+            : (Math.abs(prevHz) > 0.14 ? Math.sign(prevHz) : -Math.sign(segPrevWorld.z || naturalSide));
+          const openX = Math.abs(segPrevWorld.x) > maxX - (turnRadius + 0.85)
+            ? -wallSignX
+            : (Math.abs(prevHx) > 0.14 ? Math.sign(prevHx) : -Math.sign(segPrevWorld.x || naturalSide));
+          const cosAlignX = hdz * openZ;
+          const cosAlignZ = hdx * openX;
+          const reqX = intoX > 0.005
+            ? turnRadius * (1.0 - cosAlignX) + 0.30
             : 0;
-          const reqZ = intoZ > 0
-            ? turnRadius * (1.0 - Math.sqrt(Math.max(0, 1.0 - intoZ * intoZ))) + 0.34
+          const reqZ = intoZ > 0.005
+            ? turnRadius * (1.0 - cosAlignZ) + 0.30
             : 0;
-          const trigX = intoX > 0 && distX < reqX;
-          const trigZ = intoZ > 0 && distZ < reqZ;
-          const nearCorner = distX < turnRadius + 0.55 && distZ < turnRadius + 0.55;
-          if (trigX || trigZ || (nearCorner && (intoX > -0.15 || intoZ > -0.15))) {
+          const trigX = intoX > 0.005 && distX < reqX;
+          const trigZ = intoZ > 0.005 && distZ < reqZ;
+          if (trigX || trigZ) {
             wallTouched = true;
             let safeX = 0;
             let safeZ = 0;
-            if ((trigX && trigZ) || nearCorner) {
-              safeX = -wallSignX;
-              safeZ = -wallSignZ;
+            if (trigX && trigZ) {
+              // Entering a 90-degree corner: turn away from whichever wall has less clearance
+              // through the roomier perpendicular direction, exiting parallel to the adjacent wall.
+              if (distX < distZ) {
+                safeX = -wallSignX;
+                safeZ = -wallSignZ * 0.06;
+              } else {
+                safeX = -wallSignX * 0.06;
+                safeZ = -wallSignZ;
+              }
             } else if (trigX) {
-              const prevHz = i >= 2 ? prevDirWorld.z : hdz;
-              const openZ = Math.abs(segPrevWorld.z) > maxZ - (turnRadius + 1.0)
-                ? -wallSignZ
-                : (Math.abs(prevHz) > 0.14 ? Math.sign(prevHz) : -Math.sign(segPrevWorld.z || swayPolarity));
-              safeX = -wallSignX * 0.22;
+              safeX = -wallSignX * 0.05;
               safeZ = openZ;
             } else {
-              const prevHx = i >= 2 ? prevDirWorld.x : hdx;
-              const openX = Math.abs(segPrevWorld.x) > maxX - (turnRadius + 1.0)
-                ? -wallSignX
-                : (Math.abs(prevHx) > 0.14 ? Math.sign(prevHx) : -Math.sign(segPrevWorld.x || swayPolarity));
               safeX = openX;
-              safeZ = -wallSignZ * 0.22;
+              safeZ = -wallSignZ * 0.05;
             }
             const targetTheta = Math.atan2(safeZ, safeX);
             if (i === 1) {
@@ -3532,41 +3775,80 @@ class ExpertMouse {
           }
         }
 
-        // 5. Hard exact circle-box containment fallback (preserves exact segLen).
+        // 5. Hard exact circle-box & circle-disc containment fallback (preserves exact segLen).
         let stepX = hdx * horizR;
         let stepZ = hdz * horizR;
         const safeMaxX = maxX - 1e-4;
         const safeMaxZ = maxZ - 1e-4;
-        if (
-          Math.abs(segPrevWorld.x + stepX) > maxX
-          || Math.abs(segPrevWorld.z + stepZ) > maxZ
-        ) {
-          wallTouched = true;
+        const hitsWall = Math.abs(segPrevWorld.x + stepX) > maxX
+          || Math.abs(segPrevWorld.z + stepZ) > maxZ;
+        const hitsBody = obstacles.length > 0 && !segmentClearsObstacles(
+          segPrevWorld.x,
+          segPrevWorld.z,
+          segPrevWorld.x + stepX,
+          segPrevWorld.z + stepZ,
+          segTailRad
+        );
+        if (hitsWall || hitsBody) {
+          if (hitsWall) wallTouched = true;
+          if (hitsBody) bodyTouched = true;
+          hardClamped = true;
           const theta0 = Math.atan2(hdz, hdx);
           let count = 0;
+          const pushCand = ang => {
+            if (count < candidateAngles.length) candidateAngles[count++] = ang;
+          };
           const openAngle = Math.atan2(
             -Math.sign(segPrevWorld.z || 1),
             -Math.sign(segPrevWorld.x || 1)
           );
-          candidateAngles[count++] = openAngle;
+          pushCand(openAngle);
           for (const bx of [safeMaxX, -safeMaxX]) {
             const ratio = (bx - segPrevWorld.x) / horizR;
             if (Math.abs(ratio) <= 1.0) {
               const a = Math.acos(THREE.MathUtils.clamp(ratio, -1, 1));
-              candidateAngles[count++] = a;
-              candidateAngles[count++] = -a;
+              pushCand(a);
+              pushCand(-a);
             }
           }
           for (const bz of [safeMaxZ, -safeMaxZ]) {
             const ratio = (bz - segPrevWorld.z) / horizR;
             if (Math.abs(ratio) <= 1.0) {
               const a = Math.asin(THREE.MathUtils.clamp(ratio, -1, 1));
-              candidateAngles[count++] = a;
-              candidateAngles[count++] = Math.PI - a;
+              pushCand(a);
+              pushCand(Math.PI - a);
             }
+          }
+          if (hitsBody) {
+            for (let oi = 0; oi < obstacles.length; oi++) {
+              const disc = obstacles[oi];
+              const discR = disc.radius + segTailRad + 0.014;
+              const toX = disc.x - segPrevWorld.x;
+              const toZ = disc.z - segPrevWorld.z;
+              const d = Math.hypot(toX, toZ);
+              if (d > horizR + discR + 0.05) continue;
+              const thetaToDisc = Math.atan2(toZ, toX);
+              pushCand(thetaToDisc + Math.PI);
+              if (d > 1e-5 && d + horizR > discR && Math.abs(d - horizR) < discR) {
+                const cosG = THREE.MathUtils.clamp(
+                  (horizR * horizR + d * d - discR * discR) / (2 * horizR * d),
+                  -1,
+                  1
+                );
+                const g = Math.acos(cosG);
+                pushCand(thetaToDisc + g);
+                pushCand(thetaToDisc - g);
+              }
+            }
+            for (const mult of [1, -1, 2, -2, 3, -3, 4, -4, 6, -6, 9, -9, 12, -12]) {
+              pushCand(theta0 + mult * horizMaxRad);
+            }
+            pushCand(theta0 + Math.PI);
           }
           let bestAngle = openAngle;
           let bestScore = Infinity;
+          let bestFallbackAngle = openAngle;
+          let bestFallbackScore = Infinity;
           for (let c = 0; c < count; c++) {
             const ang = candidateAngles[c];
             const cx = segPrevWorld.x + Math.cos(ang) * horizR;
@@ -3578,13 +3860,27 @@ class ExpertMouse {
               + Math.max(0, Math.abs(cz) - (maxZ - 1.2))
             ) * 0.08;
             const score = angDist + cornerPenalty;
+            if (score < bestFallbackScore) {
+              bestFallbackScore = score;
+              bestFallbackAngle = ang;
+            }
+            if (obstacles.length > 0 && !segmentClearsObstacles(
+              segPrevWorld.x,
+              segPrevWorld.z,
+              cx,
+              cz,
+              segTailRad
+            )) {
+              continue;
+            }
             if (score < bestScore) {
               bestScore = score;
               bestAngle = ang;
             }
           }
-          stepX = Math.cos(bestAngle) * horizR;
-          stepZ = Math.sin(bestAngle) * horizR;
+          const chosenAngle = bestScore < Infinity ? bestAngle : bestFallbackAngle;
+          stepX = Math.cos(chosenAngle) * horizR;
+          stepZ = Math.sin(chosenAngle) * horizR;
         }
 
         segCurrWorld.set(
@@ -3597,7 +3893,7 @@ class ExpertMouse {
         tailCurve[i].copy(segCurrWorld);
       }
 
-      return { wallTouched, bendClamped };
+      return { wallTouched, bodyTouched, hardClamped, bendClamped };
     };
 
     for (let pass = 0; pass < 28; pass++) {
@@ -3616,25 +3912,30 @@ class ExpertMouse {
       }
       tailCurve[0].copy(fixedRoot);
 
-      // Stiffness-graded bend relaxation eliminates contact- and floor-induced
-      // kinks (firmer muscular proximal shaft, supple whip-like distal third).
-      const passScale = pass < 10 ? 1.0 : 0.65;
-      for (let parity = 0; parity < 2; parity++) {
-        for (let i = 1 + parity; i < this.tailCount; i += 2) {
-          const p = i / this.tailCount;
-          const bendAlpha = THREE.MathUtils.lerp(0.28, 0.14, p) * passScale;
-          bendTarget.copy(tailCurve[i - 1]).add(tailCurve[i + 1]).multiplyScalar(0.5);
-          tailCurve[i].lerp(bendTarget, bendAlpha);
+      // Motion- and contact-gated bend relaxation:
+      // - When stationary with zero collision, leave calm floor curves undisturbed (no creeping/straightening).
+      // - When sliding or resolving wall/body contact, smooth curvature gracefully.
+      const relaxStrength = (pass > 0 || hadObstacleContact)
+        ? (pass < 10 ? 0.85 : 0.55)
+        : (0.20 * moveGate + 0.12 * trotCarry);
+      if (relaxStrength > 0.005) {
+        for (let parity = 0; parity < 2; parity++) {
+          for (let i = 1 + parity; i < this.tailCount; i += 2) {
+            const p = i / this.tailCount;
+            const bendAlpha = THREE.MathUtils.lerp(0.24, 0.10, p) * relaxStrength;
+            bendTarget.copy(tailCurve[i - 1]).add(tailCurve[i + 1]).multiplyScalar(0.5);
+            tailCurve[i].lerp(bendTarget, bendAlpha);
+          }
         }
       }
 
-      const { wallTouched, bendClamped } = propagateCurvatureSafeChain(
+      const { wallTouched, bodyTouched, hardClamped, bendClamped } = propagateCurvatureSafeChain(
         true,
         pass < 10 ? 0.80 : 1.0
       );
-      if (wallTouched || bendClamped) {
+      if (wallTouched || bodyTouched || bendClamped) {
         hadObstacleContact = true;
-        if (wallTouched) corrected = true;
+        if (wallTouched || hardClamped) corrected = true;
       }
 
       const useFeather = pass < 10;
@@ -4966,39 +5267,39 @@ class ExpertMouse {
         : (this.socialContact ? 0.08 : 0.0);
       this.earPinAmount += (targetEarPin - this.earPinAmount) * Math.min(1.0, dt * 8.0);
 
-      // Tail inertial follow-through, counterbalance carriage, and behavior posture.
-      const tailPolarity = (this.trackId || 1) % 2 === 0 ? -1 : 1;
+      // Overdamped basal tail carriage, turn lag, and behavior posture (no springy ringing).
+      const tailPolarity = this.tailSideBias || ((this.trackId || 1) % 2 === 0 ? -1 : 1);
       const signedFwd = this.velocity.x * this.heading.x + this.velocity.y * this.heading.y;
       const backwardAmount = THREE.MathUtils.clamp(-signedFwd / Math.max(this.maxSpeed * 0.45, 0.25), 0, 1);
       const groomingTailSway = isFlankGroom
-        ? -this.grooming.side * groomPoseNorm * 0.36
-        : (isFaceWash ? tailPolarity * groomPoseNorm * 0.26 : 0);
+        ? -this.grooming.side * groomPoseNorm * 0.26
+        : (isFaceWash ? tailPolarity * groomPoseNorm * 0.18 : 0);
       const targetTailSway = THREE.MathUtils.clamp(
-        -turnRate * 0.115
-          - lateralAccel * 0.018
+        -turnRate * 0.065
+          - lateralAccel * 0.010
           + groomingTailSway
-          + tailPolarity * backwardAmount * 0.62,
-        -1.15,
-        1.15
+          + tailPolarity * backwardAmount * 0.42,
+        -0.60,
+        0.60
       );
-      const trotElevate = THREE.MathUtils.smoothstep(speedNorm, 0.32, 0.92)
+      const trotElevate = THREE.MathUtils.smoothstep(speedNorm, 0.45, 0.92)
         * rearPoseSuppress
         * (1.0 - groomPoseNorm);
-      const dartAlert = (this.boutState.mode === 'dart-trot' && speedNorm > 0.5 ? 0.08 : 0)
-        + (this.socialContact ? 0.05 : 0);
+      const dartAlert = (this.boutState.mode === 'dart-trot' && speedNorm > 0.55 ? 0.08 : 0)
+        + (this.socialContact ? 0.03 : 0);
       const targetTailLift = THREE.MathUtils.clamp(
-        -0.08
-          - forwardAccel * 0.005
-          + trotElevate * 0.24
+        -0.14
+          - forwardAccel * 0.004
+          + trotElevate * 0.36
           + dartAlert
-          - (1.0 - rearPoseSuppress) * 0.12
-          - groomPoseNorm * 0.08
-          + backwardAmount * 0.08,
-        -0.22,
-        0.26
+          - (1.0 - rearPoseSuppress) * 0.14
+          - groomPoseNorm * 0.10
+          + backwardAmount * 0.04,
+        -0.28,
+        0.28
       );
-      const tailK = 15.0;
-      const tailD = speed < 0.45 && this.lowSpeedTimer > 0.6 ? 7.2 : 5.2;
+      const tailK = 12.0;
+      const tailD = 7.4;
       this.tailDyn.swayV += (tailK * (targetTailSway - this.tailDyn.sway) - tailD * this.tailDyn.swayV) * dt;
       this.tailDyn.liftV += (tailK * (targetTailLift - this.tailDyn.lift) - tailD * this.tailDyn.liftV) * dt;
       this.tailDyn.sway += this.tailDyn.swayV * dt;

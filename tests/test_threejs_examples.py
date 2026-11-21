@@ -67,6 +67,7 @@ def test_two_mice_example_preserves_subject_appearance_and_render_readiness():
     assert "tailMat.map = tailAlbedoMap;" in source
     assert "this.tailShadingProfile =" in source
     assert "this.tailWorldVel = null;" in source
+    assert "this.tailSideBias = 0;" in source
     assert "const featherWorldLateralShift =" in source
     assert "const enforceTailBendLimit =" in source
     assert "const propagateCurvatureSafeChain =" in source
