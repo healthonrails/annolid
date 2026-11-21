@@ -739,6 +739,7 @@ function resolveAllMouseContacts(subjects, dt = 0.016) {
   for (const mouse of subjects) mouse.solveFootPlantConstraints(dt);
   for (const mouse of subjects) mouse.solveRearSupportConstraints();
   for (const mouse of subjects) mouse.solveForelimbBehaviorConstraints();
+  for (const mouse of subjects) mouse.updatePawDigits();
   for (const mouse of subjects) mouse.updateTailGeometry(subjects, dt);
   for (const mouse of subjects) mouse.updateHeadstageTether?.();
   for (const mouse of subjects) mouse.updateTrackingGeometry();
@@ -2697,6 +2698,17 @@ class ExpertMouse {
         x: joint.rotation.x,
         z: joint.rotation.z,
       }));
+      const pawBaselineX = foot.paw.rotation.x;
+      const limbIndex = this.motor?.cpg ? this.motor.cpg.limbIndex(foot.limb) : -1;
+      const limbCpgState = limbIndex >= 0 ? this.motor.cpg.limbState(limbIndex) : null;
+      const latePushOff = this.contactFrame.isMoving
+        && !rearSupportFoot
+        && !groomingHindSupport
+        && !flankGroomSupport
+        && limbCpgState?.stance
+        ? THREE.MathUtils.smoothstep(limbCpgState.progress, 0.72, 1.0)
+        : 0;
+      const targetPawPitch = -latePushOff * 0.14;
       // Allow difficult stance targets to converge, but stop inexpensive
       // near-rest solves as soon as the contact is within 0.005 scene units.
       const iterationCount = flankGroomSupport ? 20 : 18;
@@ -2737,9 +2749,24 @@ class ExpertMouse {
             : (rearSupportFoot ? 0.48 : (groomingHindSupport ? 0.38 : 0.26)),
           scratch
         );
+        // Keep planted paws flush & level against the floor during stance
+        // (with subtle natural heel-lift only during late-stance push-off).
+        if (iteration === 1 || iteration === 4) {
+          foot.paw.updateWorldMatrix(true, false);
+          const m = foot.paw.matrixWorld.elements;
+          const fLen = Math.hypot(m[8], m[9], m[10]) || 1.0;
+          const worldPitch = Math.asin(THREE.MathUtils.clamp(m[9] / fLen, -1, 1));
+          const pitchCorrection = (worldPitch - targetPawPitch) * 0.65;
+          const pawLim = foot.isFore ? 0.55 : 0.45;
+          foot.paw.rotation.x = THREE.MathUtils.clamp(
+            foot.paw.rotation.x + pitchCorrection,
+            Math.max(-pawLim, pawBaselineX - 0.36),
+            Math.min(pawLim, pawBaselineX + 0.36)
+          );
+        }
         foot.contact.updateWorldMatrix(true, false);
         foot.contact.getWorldPosition(scratch.effectorWorld);
-        if (scratch.effectorWorld.distanceToSquared(foot.anchor) < 0.000025) break;
+        if (iteration >= 5 && scratch.effectorWorld.distanceToSquared(foot.anchor) < 0.000025) break;
       }
 
       foot.contact.updateWorldMatrix(true, false);
@@ -2791,6 +2818,72 @@ class ExpertMouse {
         this.maximumPawGroundError,
         foot.groundError
       );
+    }
+  }
+
+  updatePawDigits() {
+    const rearNorm = THREE.MathUtils.clamp(
+      this.rearAmount / Math.max(this.rearing.peakAmount || 1.0, 0.01),
+      0,
+      1
+    );
+    const groomNorm = THREE.MathUtils.clamp(
+      this.groomAmount / Math.max(this.grooming.peakAmount || 1.0, 0.01),
+      0,
+      1
+    );
+    const wallSupported = this.rearing.mode === 'wall-supported';
+    const faceWash = this.grooming.mode === 'face-wash';
+    const washPulse = faceWash && groomNorm > 0.05
+      ? (this.getGroomingMotion().washStroke || 0)
+      : 0;
+
+    for (const foot of this.footPlants) {
+      const toes = foot.paw?._toes;
+      if (!toes || toes.length === 0) continue;
+      const limbIndex = this.motor?.cpg ? this.motor.cpg.limbIndex(foot.limb) : -1;
+      const state = limbIndex >= 0 ? this.motor.cpg.limbState(limbIndex) : null;
+
+      let flexDelta = 0;
+      let splayDelta = 0;
+      if (foot.isFore && rearNorm > 0.05) {
+        if (wallSupported) {
+          // Wall-supported rearing: open digits gently to press flat against the wall.
+          flexDelta = -0.08 * rearNorm;
+          splayDelta = 0.07 * rearNorm;
+        } else {
+          // Unsupported rearing: softly curl tucked forepaw fingers inward.
+          flexDelta = 0.42 * rearNorm;
+          splayDelta = -0.06 * rearNorm;
+        }
+      } else if (foot.isFore && faceWash && groomNorm > 0.05) {
+        // Face-wash grooming: gently cup digits toward muzzle/cheeks.
+        flexDelta = (0.34 + washPulse * 0.10) * groomNorm;
+        splayDelta = -0.05 * groomNorm;
+      } else if (!foot.isFore && (rearNorm > 0.05 || groomNorm > 0.05)) {
+        // Planted hindpaws splay slightly wider for bipedal tripod balance.
+        const brace = Math.max(rearNorm, groomNorm * 0.75);
+        flexDelta = -0.02 * brace;
+        splayDelta = 0.055 * brace;
+      } else if (state && !state.stance) {
+        // Airborne swing: curl digits softly on lift-off & mid-swing, then extend
+        // open right before paw touchdown.
+        const curlEnvelope = Math.sin(Math.PI * Math.pow(state.progress, 0.72));
+        const preLandOpen = THREE.MathUtils.smoothstep(state.progress, 0.72, 1.0);
+        flexDelta = 0.28 * curlEnvelope - 0.06 * preLandOpen;
+        splayDelta = -0.04 * curlEnvelope + 0.04 * preLandOpen;
+      } else if (foot.planted) {
+        // Weight-bearing stance: relaxed floor-kissing digits with slight load splay.
+        flexDelta = -0.015;
+        splayDelta = 0.032;
+      }
+
+      for (let i = 0; i < toes.length; i++) {
+        const toe = toes[i];
+        const outerMul = toe.isOuter ? 1.18 : 1.0;
+        toe.group.rotation.x = toe.baseRotX + flexDelta * (toe.isOuter ? 0.92 : 1.06);
+        toe.group.rotation.y = toe.baseRotY + toe.spreadSign * splayDelta * outerMul;
+      }
     }
   }
 

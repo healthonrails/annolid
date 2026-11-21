@@ -166,6 +166,12 @@ def test_two_mice_example_preserves_subject_appearance_and_render_readiness():
     assert "paw.add(toeTip)" not in source
     assert "paw.position.set(sign * 0.035, -0.13, 0.07)" in source
     assert "paw.position.set(sign * 0.045, -0.20, 0.31)" in source
+    assert "function createPawSkinMaps(" in model_source
+    assert "function createLimbFurSleeve(" in model_source
+    assert "function applyCuffVertexGradient(" in model_source
+    assert "pollex.name = 'forepaw-medial-pollex'" in model_source
+    assert "paw._toes = toes;" in model_source
+    assert "updatePawDigits()" in source
     # Limb poses come from the FlyBody-style motor controller, not per-joint sines.
     assert "this.motor = new MouseMotorController(" in source
     assert "const motorTargets = this.motor.step(" in source

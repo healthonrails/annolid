@@ -1023,6 +1023,86 @@ export function createMouseModel(THREE, annolidShaders, random) {
 
     return { albedo, normal, roughness };
   }
+  function createPawSkinMaps(size = 128) {
+    const rng = makeIsolatedRng(0x4C81D92B);
+    // 1. Digital skin normal map: fine transverse epidermal annular creases
+    //    characteristic of murine phalanges plus subtle dermal micro-grain.
+    const cDig = document.createElement('canvas'); cDig.width = cDig.height = size;
+    const dCtx = cDig.getContext('2d');
+    dCtx.fillStyle = '#8080ff';
+    dCtx.fillRect(0, 0, size, size);
+    const rings = 18;
+    const bandH = size / rings;
+    for (let r = 0; r < rings; r++) {
+      const y0 = r * bandH;
+      const g = dCtx.createLinearGradient(0, y0, 0, y0 + bandH);
+      g.addColorStop(0.0, 'rgb(128,154,250)');
+      g.addColorStop(0.28, 'rgb(128,128,255)');
+      g.addColorStop(0.76, 'rgb(128,108,248)');
+      g.addColorStop(1.0, 'rgb(128,150,250)');
+      dCtx.fillStyle = g;
+      dCtx.fillRect(0, y0, size, bandH + 0.5);
+    }
+    for (let i = 0; i < 420; i++) {
+      const x = rng() * size;
+      const y = rng() * size;
+      const nx = 121 + Math.floor(rng() * 14);
+      const ny = 121 + Math.floor(rng() * 14);
+      dCtx.fillStyle = `rgba(${nx},${ny},255,0.32)`;
+      dCtx.beginPath();
+      dCtx.arc(x, y, 0.8 + rng() * 1.4, 0, Math.PI * 2);
+      dCtx.fill();
+    }
+    const digitNormal = new THREE.CanvasTexture(cDig);
+    digitNormal.wrapS = digitNormal.wrapT = THREE.RepeatWrapping;
+
+    // 2. Dorsal paw albedo & normal maps: subtle longitudinal fine pelage
+    //    streaks and soft metacarpal/metatarsal vascular tonal warmth.
+    const cAlb = document.createElement('canvas'); cAlb.width = cAlb.height = size;
+    const aCtx = cAlb.getContext('2d');
+    const cNrm = document.createElement('canvas'); cNrm.width = cNrm.height = size;
+    const nCtx = cNrm.getContext('2d');
+    aCtx.fillStyle = '#f3ece9';
+    aCtx.fillRect(0, 0, size, size);
+    nCtx.fillStyle = '#8080ff';
+    nCtx.fillRect(0, 0, size, size);
+    // Soft vascular warmth distally, slightly brighter silky sheen dorsally.
+    const grad = aCtx.createLinearGradient(0, 0, 0, size);
+    grad.addColorStop(0.0, 'rgba(232,226,222,0.22)');
+    grad.addColorStop(0.55, 'rgba(248,244,242,0.10)');
+    grad.addColorStop(1.0, 'rgba(238,205,200,0.20)');
+    aCtx.fillStyle = grad;
+    aCtx.fillRect(0, 0, size, size);
+    for (let i = 0; i < 520; i++) {
+      const x = rng() * size;
+      const y = rng() * size;
+      const len = 5 + rng() * 12;
+      const drift = (rng() - 0.5) * 2.2;
+      const light = rng() > 0.35;
+      aCtx.strokeStyle = light
+        ? `rgba(255,252,248,${(0.10 + rng() * 0.14).toFixed(3)})`
+        : `rgba(196,178,172,${(0.06 + rng() * 0.08).toFixed(3)})`;
+      aCtx.lineWidth = 0.7 + rng() * 0.9;
+      aCtx.beginPath();
+      aCtx.moveTo(x, y);
+      aCtx.lineTo(x + drift, y + len);
+      aCtx.stroke();
+
+      nCtx.strokeStyle = light ? 'rgba(140,132,255,0.38)' : 'rgba(116,124,255,0.34)';
+      nCtx.lineWidth = 0.9;
+      nCtx.beginPath();
+      nCtx.moveTo(x, y);
+      nCtx.lineTo(x + drift, y + len);
+      nCtx.stroke();
+    }
+    const dorsalAlbedo = new THREE.CanvasTexture(cAlb);
+    dorsalAlbedo.wrapS = dorsalAlbedo.wrapT = THREE.RepeatWrapping;
+    dorsalAlbedo.colorSpace = THREE.SRGBColorSpace;
+    const dorsalNormal = new THREE.CanvasTexture(cNrm);
+    dorsalNormal.wrapS = dorsalNormal.wrapT = THREE.RepeatWrapping;
+    return { digitNormal, dorsalAlbedo, dorsalNormal };
+  }
+  const pawSkinMaps = createPawSkinMaps();
   const homeCageBeddingMaps = createHomeCageBeddingMaps();
 
   // ═══════════════════════════════════════════════════════════════
@@ -1034,10 +1114,10 @@ export function createMouseModel(THREE, annolidShaders, random) {
     sheen: 0.22, sheenColor: new THREE.Color(0xead2cc), sheenRoughness: 0.65,
   });
   const clawMat = new THREE.MeshPhysicalMaterial({
-    color: 0xe6ddd2, roughness: 0.16, metalness: 0.02,
-    clearcoat: 1.0, clearcoatRoughness: 0.08,
-    transmission: 0.14, thickness: 0.22,
-    ior: 1.54, // keratin IOR
+    color: 0xeee5da, roughness: 0.24, metalness: 0.0,
+    clearcoat: 0.72, clearcoatRoughness: 0.18,
+    transmission: 0.18, thickness: 0.16,
+    ior: 1.54, // translucent keratin IOR
   });
   // Two-layer eye with subtle iris stroma depth + ultra-clear wet tear-film cornea
   const eyeMat = new THREE.MeshPhysicalMaterial({
@@ -1835,223 +1915,509 @@ export function createMouseModel(THREE, annolidShaders, random) {
 
 
   // ═══════════════════════════════════════════════════════════════
-  // 6. PAW BUILDER (anatomically correct forepaw vs hindpaw)
+  // 6. PAW & LIMB PELAGE BUILDERS (handed murine manus & pes)
   // ═══════════════════════════════════════════════════════════════
-  function createPaw(mat, isFore = false, strain = {}, furColor = null) {
-    const paw = new THREE.Group();
-    paw.name = isFore ? 'connected-forepaw' : 'connected-hindpaw';
-    const pawFleshMat = mat.clone();
-    pawFleshMat.color.set(strain.pawColor ?? '#e6b0a7');
-    pawFleshMat.transmission = 0.09;
-    pawFleshMat.thickness = 0.10;
-    pawFleshMat.roughness = 0.56;
-    pawFleshMat.clearcoat = 0.04;
-    pawFleshMat.clearcoatRoughness = 0.46;
-    pawFleshMat.sheen = 0.24;
-    pawFleshMat.sheenColor = new THREE.Color(strain.pawColor ?? '#e6b0a7').offsetHSL(0, -0.04, 0.08);
-    // Thin dorsal pelage tint over the metacarpus/metatarsus: blends subtly
-    // toward the coat tone on dark strains and soft ivory-pink on pale strains.
-    const pawDorsalMat = pawFleshMat.clone();
+  function computePawDorsalColor(strain, furColor) {
+    const col = new THREE.Color(strain.pawColor ?? '#e6b0a7');
     if (furColor) {
       const coat = new THREE.Color(furColor);
       const coatHsl = {}; coat.getHSL(coatHsl);
-      const dorsalBlend = coatHsl.l < 0.25 ? 0.34 : (coatHsl.l > 0.70 ? 0.24 : 0.26);
-      pawDorsalMat.color.lerp(coat, dorsalBlend);
-      pawDorsalMat.roughness = 0.72;
-      pawDorsalMat.transmission = 0.04;
-      pawDorsalMat.sheen = 0.48;
-      pawDorsalMat.sheenColor = coat.clone().lerp(new THREE.Color(0xffffff), 0.30);
+      const silkyLift = coatHsl.l < 0.25 ? 0.16 : (coatHsl.l > 0.70 ? 0.36 : 0.22);
+      const dorsalCoatBlend = coatHsl.l < 0.25 ? 0.12 : (coatHsl.l > 0.70 ? 0.22 : 0.15);
+      col.lerp(new THREE.Color(0xf6efec), silkyLift);
+      col.lerp(coat, dorsalCoatBlend);
+    }
+    return col;
+  }
+
+  function applyCuffVertexGradient(geometry, span, distalDirY, proxColor, distColor) {
+    const pos = geometry.attributes.position;
+    const colors = new Float32Array(pos.count * 3);
+    const tmp = new THREE.Color();
+    const halfSpan = Math.max(span * 0.5, 0.01);
+    for (let i = 0; i < pos.count; i++) {
+      const y = pos.getY(i);
+      const yN = THREE.MathUtils.clamp((y + halfSpan) / (halfSpan * 2), 0, 1);
+      const tDist = distalDirY < 0 ? (1.0 - yN) : yN;
+      const blend = THREE.MathUtils.smoothstep(tDist, 0.12, 0.78);
+      tmp.copy(proxColor).lerp(distColor, blend);
+      colors[i * 3] = tmp.r;
+      colors[i * 3 + 1] = tmp.g;
+      colors[i * 3 + 2] = tmp.b;
+    }
+    geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  }
+
+  function createLimbFurSleeve({
+    profileFn,
+    span = 0.0,
+    count = 800,
+    furColor = '#2a2a2e',
+    pawSkinColor = '#e6b0a7',
+    hairLength = 0.044,
+    hairRadius = null,
+    distalDirY = -1,
+    featherDistal = false,
+    coverCaps = false,
+    seed = 0x51A01923,
+    isUndercoat = false,
+  }) {
+    if (count <= 0) return new THREE.Group();
+    const rng = makeIsolatedRng(seed);
+    const furCol = new THREE.Color(furColor);
+    const furHsl = {}; furCol.getHSL(furHsl);
+    const isPaleCoat = furHsl.l > 0.65;
+    // Match real murine limb-to-paw transition: pure silky ivory-white on pale coats,
+    // soft silvery-warm transition on dark coats (zero harsh contrasting speckles).
+    const distalTipCol = isPaleCoat
+      ? furCol.clone().lerp(new THREE.Color(0xfbf7f4), 0.50)
+      : new THREE.Color(pawSkinColor).lerp(new THREE.Color(0xdad2cc), 0.42);
+    const geo = new THREE.ConeGeometry(
+      hairRadius ?? (hairLength * (isUndercoat ? 0.145 : 0.125)),
+      hairLength,
+      3
+    );
+    geo.translate(0, hairLength * 0.5, 0);
+    const mat = enhanceFurMaterial(
+      new THREE.MeshStandardMaterial({
+        color: featherDistal ? 0xffffff : furCol,
+        roughness: isUndercoat ? 0.90 : 0.84,
+      }),
+      furColor,
+      isUndercoat
+    );
+    const inst = new THREE.InstancedMesh(geo, mat, count);
+    inst.castShadow = false;
+    inst.receiveShadow = !isUndercoat && !isPaleCoat;
+    inst.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(count * 3), 3);
+    const dummy = new THREE.Object3D();
+    const up = new THREE.Vector3(0, 1, 0);
+    const nrm = new THREE.Vector3();
+    const dir = new THREE.Vector3();
+    const strandCol = new THREE.Color();
+    for (let i = 0; i < count; i++) {
+      // Sample distal progress tDist in [0, 1] (0 = proximal, 1 = distal).
+      // When feathering onto a paw cuff, concentrate fur densely over the proximal
+      // coat-colored cuff (0..0.42) and taper smoothly out by 0.72 so no isolated
+      // dark speckles scatter onto the pale dorsal foot.
+      const tDist = featherDistal ? Math.pow(rng(), 2.10) * 0.72 : rng();
+      const yN = distalDirY < 0 ? (1.0 - tDist) : tDist;
+      const ang = rng() * Math.PI * 2;
+      const ca = Math.cos(ang);
+      const sa = Math.sin(ang);
+      const { rx, rz, offsetZ = 0 } = profileFn(yN);
+      let px;
+      let py;
+      let pz;
+      if (coverCaps && rng() < 0.34) {
+        // Wrap the rounded hemispherical end-caps (e.g. calcaneal heel bulb)
+        // so the rear of the hock has zero bare smooth sphere peeking out.
+        const capSign = rng() < 0.72 ? -distalDirY : distalDirY;
+        const elev = Math.asin(rng());
+        const ringR = Math.cos(elev);
+        px = ca * rx * ringR;
+        pz = sa * rz * ringR + offsetZ;
+        py = capSign * (span * 0.5 + Math.sin(elev) * Math.min(rx, rz));
+        nrm.set(ca * ringR, capSign * Math.sin(elev), sa * ringR).normalize();
+      } else {
+        px = ca * rx;
+        py = (yN - 0.5) * span;
+        pz = sa * rz + offsetZ;
+        nrm.set(ca / Math.max(rx, 1e-4), 0, sa / Math.max(rz, 1e-4)).normalize();
+      }
+      dummy.position.set(px + nrm.x * 0.0014, py + nrm.y * 0.0014, pz + nrm.z * 0.0014);
+      // Sleek proximal-to-distal lay down the limb axis with subtle radial lift.
+      const lift = featherDistal
+        ? THREE.MathUtils.lerp(0.24, 0.09, tDist / 0.72)
+        : (isUndercoat ? 0.26 : 0.18);
+      dir.set(
+        nrm.x * lift + (rng() - 0.5) * 0.06,
+        distalDirY * 0.94 + nrm.y * 0.18,
+        nrm.z * lift + (rng() - 0.5) * 0.06
+      ).normalize();
+      dummy.quaternion.setFromUnitVectors(up, dir);
+      const featherLen = featherDistal
+        ? THREE.MathUtils.lerp(1.06, 0.24, Math.pow(tDist / 0.72, 0.85))
+        : (0.82 + rng() * 0.34);
+      const sLen = featherLen * (0.82 + rng() * 0.32);
+      const sWid = (featherDistal ? THREE.MathUtils.lerp(1.0, 0.56, tDist / 0.72) : 1.0)
+        * (0.82 + rng() * 0.28);
+      dummy.scale.set(sWid, sLen, sWid);
+      dummy.updateMatrix();
+      inst.setMatrixAt(i, dummy.matrix);
+
+      const shade = (isPaleCoat ? 0.96 : 0.90) + rng() * (isPaleCoat ? 0.04 : 0.10);
+      if (featherDistal) {
+        const blend = THREE.MathUtils.smoothstep(tDist, 0.20, 0.68);
+        strandCol.copy(furCol).lerp(distalTipCol, blend).multiplyScalar(shade);
+      } else {
+        strandCol.setRGB(shade, shade, shade);
+      }
+      inst.instanceColor.setXYZ(i, strandCol.r, strandCol.g, strandCol.b);
+    }
+    return inst;
+  }
+
+  function createPawDorsalMicroFur(isFore, pawScale, strain, furColor, density, sideSign) {
+    if (density <= 0) return new THREE.Group();
+    const count = Math.floor((isFore ? 150 : 230) * Math.max(0.45, density));
+    if (count <= 0) return new THREE.Group();
+    const rng = makeIsolatedRng(
+      (isFore ? 0x6A31F100 : 0x6A31F200) + (sideSign > 0 ? 1 : 2)
+    );
+    const hairLen = (isFore ? 0.022 : 0.026) * pawScale;
+    const geo = new THREE.ConeGeometry(hairLen * 0.10, hairLen, 3);
+    geo.translate(0, hairLen * 0.5, 0);
+    // Real murine dorsal paw micro-hairs are fine, pale silky-ivory to warm silver,
+    // softly tinted toward the coat only at the very proximal carpus/tarsus.
+    const coat = furColor ? new THREE.Color(furColor) : new THREE.Color('#c8c0b8');
+    const coatHsl = {}; coat.getHSL(coatHsl);
+    const paleSilk = new THREE.Color(strain.pawColor ?? '#e6b0a7').lerp(
+      new THREE.Color(0xf9f5f2),
+      coatHsl.l > 0.65 ? 0.78 : 0.62
+    );
+    const proxTint = coatHsl.l > 0.65
+      ? paleSilk.clone().lerp(coat, 0.55)
+      : paleSilk.clone().lerp(coat, coatHsl.l < 0.25 ? 0.24 : 0.18);
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.78,
+      metalness: 0.0,
+    });
+    const inst = new THREE.InstancedMesh(geo, mat, count);
+    inst.name = isFore ? 'forepaw-dorsal-microfur' : 'hindpaw-dorsal-microfur';
+    inst.castShadow = false;
+    inst.receiveShadow = false;
+    inst.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(count * 3), 3);
+    const dummy = new THREE.Object3D();
+    const up = new THREE.Vector3(0, 1, 0);
+    const dir = new THREE.Vector3();
+    const col = new THREE.Color();
+    for (let i = 0; i < count; i++) {
+      const zFrac = Math.pow(rng(), 0.88); // 0 = proximal wrist/tarsus, 1 = knuckle line
+      const u = (rng() - 0.5) * 2.0; // [-1, 1] across width
+      const lateralEllip = Math.sqrt(Math.max(0.08, 1.0 - u * u * 0.78));
+      let x;
+      let y;
+      let z;
+      if (isFore) {
+        const halfW = THREE.MathUtils.lerp(0.044, 0.068, zFrac) * pawScale;
+        x = u * halfW;
+        z = THREE.MathUtils.lerp(-0.042, 0.104, zFrac) * pawScale;
+        const archY = 0.011 * lateralEllip * (1.0 - zFrac * 0.42) - zFrac * zFrac * 0.014;
+        y = -0.018 + archY;
+      } else {
+        const halfW = THREE.MathUtils.lerp(0.046, 0.082, zFrac) * pawScale;
+        x = u * halfW;
+        z = THREE.MathUtils.lerp(-0.185, 0.175, zFrac) * pawScale;
+        const archY = 0.015 * lateralEllip * (1.0 - zFrac * 0.36)
+          + Math.sin(zFrac * Math.PI) * 0.006 - zFrac * 0.014;
+        y = -0.019 + archY;
+      }
+      dummy.position.set(x, y, z);
+      dir.set(u * 0.18 + (rng() - 0.5) * 0.08, 0.10 - zFrac * 0.14, 0.96).normalize();
+      dummy.quaternion.setFromUnitVectors(up, dir);
+      const lenScale = THREE.MathUtils.lerp(1.12, 0.52, zFrac) * (0.76 + rng() * 0.42);
+      dummy.scale.set(0.85, lenScale, 0.85);
+      dummy.updateMatrix();
+      inst.setMatrixAt(i, dummy.matrix);
+      col.copy(proxTint).lerp(paleSilk, THREE.MathUtils.smoothstep(zFrac, 0.08, 0.65));
+      const shade = 0.92 + rng() * 0.12;
+      inst.instanceColor.setXYZ(i, col.r * shade, col.g * shade, col.b * shade);
+    }
+    return inst;
+  }
+
+  function createPaw(mat, isFore = false, strain = {}, furColor = null, side = 'L', density = 1.0) {
+    const paw = new THREE.Group();
+    const sideSign = side === 'R' ? -1 : 1; // +1 = Left (+X lateral, -X medial)
+    paw.name = isFore ? 'connected-forepaw' : 'connected-hindpaw';
+    const pawBaseColor = new THREE.Color(strain.pawColor ?? '#e6b0a7');
+    const pawFleshMat = mat.clone();
+    pawFleshMat.color.copy(pawBaseColor);
+    pawFleshMat.transmission = 0.11;
+    pawFleshMat.thickness = 0.14;
+    pawFleshMat.roughness = 0.54;
+    pawFleshMat.clearcoat = 0.05;
+    pawFleshMat.clearcoatRoughness = 0.44;
+    pawFleshMat.sheen = 0.28;
+    pawFleshMat.sheenColor = pawBaseColor.clone().offsetHSL(0, -0.04, 0.10);
+    pawFleshMat.normalMap = pawSkinMaps.digitNormal;
+    pawFleshMat.normalScale = new THREE.Vector2(0.22, 0.22);
+
+    // Delicate silky dorsal pelage tint over the metacarpus/metatarsus:
+    // uses computePawDorsalColor so wrist/tarsus cuffs match the exact dorsal tone.
+    const pawDorsalMat = pawFleshMat.clone();
+    pawDorsalMat.map = pawSkinMaps.dorsalAlbedo;
+    pawDorsalMat.normalMap = pawSkinMaps.dorsalNormal;
+    pawDorsalMat.normalScale = new THREE.Vector2(0.18, 0.18);
+    pawDorsalMat.color.copy(computePawDorsalColor(strain, furColor));
+    if (furColor) {
+      const coat = new THREE.Color(furColor);
+      pawDorsalMat.roughness = 0.76;
+      pawDorsalMat.transmission = 0.05;
+      pawDorsalMat.sheen = 0.56;
+      pawDorsalMat.sheenColor = coat.clone().lerp(new THREE.Color(0xffffff), 0.55);
     }
     const padMat = mat.clone();
     padMat.color.set(strain.pawPadColor ?? strain.pawColor ?? '#e9b8ae');
-    padMat.color.multiplyScalar(strain.padDarken ?? 0.9);
-    padMat.transmission = 0.07; padMat.thickness = 0.10;
-    padMat.roughness = 0.54; padMat.clearcoat = 0.05; padMat.clearcoatRoughness = 0.44;
+    padMat.color.multiplyScalar(strain.padDarken ?? 0.92);
+    padMat.transmission = 0.08; padMat.thickness = 0.12;
+    padMat.roughness = 0.50; padMat.clearcoat = 0.08; padMat.clearcoatRoughness = 0.40;
     padMat.normalMap = padNormalMap;
-    padMat.normalScale = new THREE.Vector2(0.20, 0.20);
+    padMat.normalScale = new THREE.Vector2(0.22, 0.22);
 
     const pawScale = isFore ? (PROP.forePawSize) : (PROP.hindPawSize);
-    // Compact carpus/tarsus root bridge seamlessly joining wrist/ankle into the
-    // dorsal paw without a protruding heel balloon behind the foreleg.
-    const rootLength = isFore ? 0.075 : 0.22;
-    const rootBridge = new THREE.Mesh(
-      new THREE.CapsuleGeometry(isFore ? 0.036 : 0.050, rootLength, 10, 12),
-      pawDorsalMat
-    );
+    // Sculpted carpus/tarsus root bridge seamlessly joining wrist/low-hock into the
+    // dorsal paw without an abrupt step or protruding heel balloon.
+    const rootLength = isFore ? 0.082 : 0.24;
+    const rootBridgeGeo = new THREE.CapsuleGeometry(isFore ? 0.038 : 0.048, rootLength, 10, 14);
+    deform(rootBridgeGeo, (rv) => {
+      const yN = THREE.MathUtils.clamp((rv.y + rootLength * 0.5) / Math.max(0.01, rootLength), 0, 1);
+      // Taper gently into the wrist/calcaneus and flare smoothly toward the dorsal arch.
+      const widthTaper = isFore ? (0.86 + yN * 0.26) : (0.76 + yN * 0.38);
+      rv.x *= widthTaper;
+      rv.z *= isFore ? (0.70 - yN * 0.08) : (0.66 - yN * 0.06);
+    });
+    const rootBridge = new THREE.Mesh(rootBridgeGeo, pawDorsalMat);
     rootBridge.name = isFore ? 'forepaw-root-bridge' : 'hindpaw-root-bridge';
-    rootBridge.rotation.x = Math.PI / 2 - (isFore ? 0.08 : 0.06);
-    rootBridge.position.set(0, isFore ? 0.004 : -0.004, isFore ? -0.026 : -0.108);
-    rootBridge.scale.set(isFore ? 0.94 : 0.96, isFore ? 0.68 : 0.64, 1.0);
+    rootBridge.rotation.x = Math.PI / 2 - (isFore ? 0.06 : 0.03);
+    rootBridge.position.set(0, isFore ? -0.014 : -0.022, isFore ? -0.026 : -0.118);
     rootBridge.castShadow = true;
     paw.add(rootBridge);
 
     if (isFore) {
-      const dorsalHandGeo = new THREE.SphereGeometry(0.096, 18, 18);
+      // Sculpted murine dorsal manus with integrated metacarpal ray contours
+      // and soft interdigital slope down toward the knuckle web.
+      const dorsalHandGeo = new THREE.SphereGeometry(0.098, 22, 20);
       deform(dorsalHandGeo, (hv) => {
-        const zN = THREE.MathUtils.clamp((hv.z / 0.096 + 1) * 0.5, 0, 1);
-        hv.x *= (0.72 + zN * 0.14) * pawScale;
-        hv.y *= 0.34 * (1.0 - zN * 0.14);
-        hv.z *= 1.06 * pawScale;
-        hv.y -= zN * zN * 0.012;
+        const zN = THREE.MathUtils.clamp((hv.z / 0.098 + 1) * 0.5, 0, 1);
+        const xNorm = THREE.MathUtils.clamp(hv.x / 0.098, -1, 1);
+        const isDorsal = hv.y > 0;
+        // Subtle 4-ray metacarpal relief on the dorsum
+        const rayRidge = isDorsal
+          ? Math.pow(Math.max(0, Math.cos(xNorm * Math.PI * 3.5)), 2.0) * 0.0045 * zN
+          : 0;
+        hv.x *= (0.70 + zN * 0.20) * pawScale;
+        hv.y *= (isDorsal ? 0.34 : 0.30) * (1.0 - zN * 0.16);
+        hv.z *= 1.12 * pawScale;
+        hv.y += rayRidge - zN * zN * 0.020;
       });
       const dorsalHand = new THREE.Mesh(dorsalHandGeo, pawDorsalMat);
       dorsalHand.name = 'forepaw-dorsal-hand';
-      dorsalHand.position.set(0, -0.008, 0.048);
+      dorsalHand.position.set(0, -0.024, 0.048);
       dorsalHand.castShadow = true;
       paw.add(dorsalHand);
 
-      // Vestigial medial pollex (thumb) nub characteristic of murine manus
-      const pollex = new THREE.Mesh(new THREE.SphereGeometry(0.016, 8, 8), pawFleshMat);
-      pollex.scale.set(0.82, 0.64, 1.08);
-      pollex.position.set(-0.064 * pawScale, -0.026, 0.032);
+      // True medial vestigial pollex (D1 thumb nub) mirrored cleanly per side
+      const pollex = new THREE.Mesh(new THREE.SphereGeometry(0.0155, 10, 10), pawFleshMat);
+      pollex.name = 'forepaw-medial-pollex';
+      pollex.scale.set(0.84, 0.66, 1.14);
+      pollex.position.set(-sideSign * 0.062 * pawScale, -0.052, 0.028);
       paw.add(pollex);
 
+      // Central palmar cushion + 5 true murine palmar pads (thenar, hypothenar, 3 interdigital)
       const palm = new THREE.Mesh(new THREE.SphereGeometry(0.068, 16, 16), padMat);
-      palm.scale.set(0.76 * pawScale, 0.24, 0.96 * pawScale);
-      palm.position.set(0, -0.044, 0.056);
+      palm.scale.set(0.78 * pawScale, 0.26, 0.96 * pawScale);
+      palm.position.set(0, -0.064, 0.054);
       paw.add(palm);
 
-      const carpalPad = new THREE.Mesh(new THREE.SphereGeometry(0.030, 12, 12), padMat);
-      carpalPad.scale.set(0.84, 0.32, 0.92);
-      carpalPad.position.set(0, -0.036, -0.018);
+      const carpalPad = new THREE.Mesh(new THREE.SphereGeometry(0.028, 12, 12), padMat);
+      carpalPad.scale.set(0.84, 0.36, 0.96);
+      carpalPad.position.set(sideSign * 0.024 * pawScale, -0.062, -0.014);
       paw.add(carpalPad);
+
+      const thenarPad = new THREE.Mesh(new THREE.SphereGeometry(0.025, 12, 12), padMat);
+      thenarPad.scale.set(0.82, 0.36, 0.94);
+      thenarPad.position.set(-sideSign * 0.026 * pawScale, -0.062, -0.008);
+      paw.add(thenarPad);
 
       for (let p = 0; p < 3; p++) {
         const iPad = new THREE.Mesh(new THREE.SphereGeometry(0.022, 10, 10), padMat);
-        iPad.scale.set(0.82 * pawScale, 0.34, 0.88 * pawScale);
-        iPad.position.set((p - 1) * 0.030 * pawScale, -0.046, 0.106);
+        iPad.scale.set(0.84 * pawScale, 0.40, 0.92 * pawScale);
+        iPad.position.set((p - 1) * 0.032 * pawScale, -0.070, 0.102 * pawScale);
         paw.add(iPad);
       }
     } else {
-      // Sleek elongated murine pes: slender tapered arch from heel to metatarsals
-      const dorsalFootGeo = new THREE.SphereGeometry(0.118, 20, 20);
+      // Sleek elongated plantigrade murine pes: slender calcaneal heel tapering
+      // smoothly across an arched metatarsus with integrated 5-ray dorsal relief.
+      const dorsalFootGeo = new THREE.SphereGeometry(0.118, 24, 22);
       deform(dorsalFootGeo, (fv) => {
         const zN = THREE.MathUtils.clamp((fv.z / 0.118 + 1) * 0.5, 0, 1);
-        const widthProfile = 0.56 + zN * 0.24;
+        const xNorm = THREE.MathUtils.clamp(fv.x / 0.118, -1, 1);
+        const isDorsal = fv.y > 0;
+        const widthProfile = 0.52 + Math.pow(zN, 0.85) * 0.30;
+        const rayRidge = isDorsal
+          ? Math.pow(Math.max(0, Math.cos(xNorm * Math.PI * 4.5)), 2.0) * 0.0052
+            * THREE.MathUtils.smoothstep(zN, 0.20, 0.90)
+          : 0;
         fv.x *= widthProfile * pawScale;
-        fv.y *= (0.30 + (1.0 - zN) * 0.08);
-        fv.z *= 1.62 * pawScale;
-        // Subtle natural plantar arch & gentle downward taper to the toe line
-        fv.y += Math.sin(zN * Math.PI) * 0.008 - zN * 0.014;
+        fv.y *= (isDorsal ? 0.30 : 0.28) + (1.0 - zN) * 0.07;
+        fv.z *= 1.66 * pawScale;
+        // Natural plantar arch + gentle downward taper toward the distal metatarsal heads
+        fv.y += rayRidge + Math.sin(zN * Math.PI) * 0.008 - zN * 0.020;
       });
       const dorsalFoot = new THREE.Mesh(dorsalFootGeo, pawDorsalMat);
       dorsalFoot.name = 'hindpaw-dorsal-foot';
-      dorsalFoot.position.set(0, -0.010, 0.062);
+      dorsalFoot.position.set(0, -0.024, 0.064);
       dorsalFoot.castShadow = true;
       paw.add(dorsalFoot);
 
-      // Subtle low-relief dorsal metatarsal tendons flush with the foot arch
-      for (let r = -1; r <= 1; r++) {
-        const tendon = new THREE.Mesh(
-          new THREE.CapsuleGeometry(0.007, 0.20 * pawScale, 6, 8),
-          pawDorsalMat
-        );
-        tendon.rotation.x = Math.PI / 2 - 0.02;
-        tendon.rotation.y = r * 0.036;
-        tendon.scale.set(0.76, 1.0, 0.42);
-        tendon.position.set(r * 0.022 * pawScale, 0.016, 0.064);
-        paw.add(tendon);
-      }
-
+      // Elongated plantar sole + 6 true murine plantar pads (calcaneal heel,
+      // 2 asymmetric metatarsal pads, and 4 interdigital cushions) kissing the floor.
       const sole = new THREE.Mesh(new THREE.SphereGeometry(0.098, 18, 18), padMat);
-      sole.scale.set(0.70 * pawScale, 0.20, 1.48 * pawScale);
-      sole.position.set(0, -0.048, 0.068);
+      sole.scale.set(0.66 * pawScale, 0.22, 1.54 * pawScale);
+      sole.position.set(0, -0.066, 0.064);
       paw.add(sole);
 
       const heelPad = new THREE.Mesh(new THREE.SphereGeometry(0.042, 12, 12), padMat);
-      heelPad.scale.set(0.78, 0.28, 0.94);
-      heelPad.position.set(0, -0.040, -0.118 * pawScale);
+      heelPad.scale.set(0.76, 0.34, 1.04);
+      heelPad.position.set(0, -0.064, -0.140 * pawScale);
       paw.add(heelPad);
 
-      const midPad = new THREE.Mesh(new THREE.SphereGeometry(0.044, 12, 12), padMat);
-      midPad.scale.set(0.76, 0.28, 1.06);
-      midPad.position.set(0, -0.050, 0.132 * pawScale);
+      const midPad = new THREE.Mesh(new THREE.SphereGeometry(0.036, 12, 12), padMat);
+      midPad.scale.set(0.74, 0.36, 1.05);
+      midPad.position.set(-sideSign * 0.024 * pawScale, -0.070, 0.056 * pawScale);
       paw.add(midPad);
+
+      const latMetPad = new THREE.Mesh(new THREE.SphereGeometry(0.034, 12, 12), padMat);
+      latMetPad.scale.set(0.74, 0.36, 1.00);
+      latMetPad.position.set(sideSign * 0.026 * pawScale, -0.070, 0.098 * pawScale);
+      paw.add(latMetPad);
+
+      for (let p = 0; p < 4; p++) {
+        const u = p - 1.5;
+        const iPad = new THREE.Mesh(new THREE.SphereGeometry(0.022, 10, 10), padMat);
+        iPad.scale.set(0.80 * pawScale, 0.40, 0.92 * pawScale);
+        iPad.position.set(
+          sideSign * u * 0.028 * pawScale,
+          -0.072,
+          (0.168 - Math.abs(u) * 0.012) * pawScale
+        );
+        paw.add(iPad);
+      }
     }
 
+    // Fine silky pale dorsal paw micro-hairs tapering cleanly before the knuckles.
+    paw.add(createPawDorsalMicroFur(isFore, pawScale, strain, furColor, density, sideSign));
+
     const pawSpreadMul = strain.pawSpreadMul ?? 1.0;
-    const toeCount = isFore ? 4 : 5;
-    const baseSpread = isFore ? 0.038 : 0.035;
+    const baseSpread = isFore ? 0.034 : 0.031;
     const spread = baseSpread * pawSpreadMul * pawScale;
 
     const clawLocalMat = clawMat.clone();
-    clawLocalMat.color.set(strain.clawColor ?? 0xf2e9e0);
+    clawLocalMat.color.set(strain.clawColor ?? 0xf0e7dc);
 
-    for (let i = 0; i < toeCount; i++) {
-      const centeredIndex = i - (toeCount - 1) * 0.5;
-      const t = centeredIndex * spread;
-      const arc = Math.abs(centeredIndex) / (toeCount * 0.5 + 0.01);
+    // Anatomically handed murine digit formulas (indexed medial -> lateral):
+    // Forepaw (manus): D2..D5 (D3 longest, D5 shortest & splayed) + medial pollex above.
+    // Hindpaw (pes): D1 (proximal medial hallux), D2..D5 (D3 longest, D5 offset).
+    const digitSpecs = isFore
+      ? [
+        { xMul: -1.42, zBack: 0.018, lenMul: 0.86, yaw: -0.22, radMul: 0.94 },
+        { xMul: -0.45, zBack: 0.000, lenMul: 1.04, yaw: -0.05, radMul: 1.00 },
+        { xMul: 0.52, zBack: 0.004, lenMul: 0.98, yaw: 0.08, radMul: 0.98 },
+        { xMul: 1.44, zBack: 0.028, lenMul: 0.74, yaw: 0.26, radMul: 0.88 },
+      ]
+      : [
+        { xMul: -1.88, zBack: 0.068, lenMul: 0.60, yaw: -0.34, radMul: 0.90 },
+        { xMul: -0.94, zBack: 0.014, lenMul: 0.94, yaw: -0.11, radMul: 0.96 },
+        { xMul: 0.00, zBack: 0.000, lenMul: 1.05, yaw: 0.00, radMul: 1.00 },
+        { xMul: 0.94, zBack: 0.012, lenMul: 0.96, yaw: 0.11, radMul: 0.96 },
+        { xMul: 1.84, zBack: 0.038, lenMul: 0.72, yaw: 0.28, radMul: 0.88 },
+      ];
+
+    const toes = [];
+    for (let i = 0; i < digitSpecs.length; i++) {
+      const spec = digitSpecs[i];
       const toe = new THREE.Group();
       toe.name = `${isFore ? 'fore' : 'hind'}-digit-${i + 1}`;
-      let lenMul = 1.0;
-      if (isFore && (i === 0 || i === 3)) lenMul = 0.74;
-      if (!isFore && (i === 0 || i === 4)) lenMul = 0.68;
-      const toeLen = (isFore ? 0.138 : 0.192)
-        * (strain.toeLenMul ?? 1.0) * lenMul * pawScale;
-      const toeRadius = isFore ? 0.0138 : 0.0154;
-      const phalanxGeo = new THREE.CapsuleGeometry(toeRadius, toeLen, 10, 10);
+      const toeLen = (isFore ? 0.140 : 0.194)
+        * (strain.toeLenMul ?? 1.0) * spec.lenMul * pawScale;
+      const toeRadius = (isFore ? 0.0118 : 0.0132) * spec.radMul;
+
+      // Multi-phalanx sculpted digit: slender proximal/middle phalanges with subtle
+      // PIP/DIP interphalangeal joint swells and a graceful downward arch onto the pad.
+      const phalanxGeo = new THREE.CapsuleGeometry(toeRadius, toeLen, 10, 14);
       deform(phalanxGeo, (pv) => {
         const yN = THREE.MathUtils.clamp((pv.y + toeLen * 0.5) / Math.max(0.01, toeLen), 0, 1);
-        const taper = 1.0 - yN * 0.28;
+        const pipSwell = Math.exp(-Math.pow((yN - 0.40) / 0.11, 2.0)) * 0.09;
+        const dipSwell = Math.exp(-Math.pow((yN - 0.74) / 0.10, 2.0)) * 0.07;
+        const taper = (1.06 - yN * 0.34) * (1.0 + pipSwell + dipSwell);
         pv.x *= taper;
-        pv.z *= taper;
+        pv.z *= taper * 0.90;
         // After rotation.x = +PI/2, local +Z maps to toe -Y (toward the floor):
-        // gently arch the mid-phalanx upward and curve the tip down to the floor.
-        pv.z += -Math.sin(yN * Math.PI) * 0.005 + yN * yN * 0.010;
+        // gently arch over the proximal/middle phalanx and curve the distal tip onto the floor.
+        pv.z += -Math.sin(yN * Math.PI * 0.88) * 0.008 + Math.pow(yN, 2.1) * 0.024;
       });
       const phalanx = new THREE.Mesh(phalanxGeo, pawFleshMat);
       phalanx.position.z = toeLen * 0.46;
       phalanx.rotation.x = Math.PI / 2;
-      phalanx.scale.set(0.92, 1.0, 0.84);
       phalanx.castShadow = true;
       toe.add(phalanx);
 
+      // Subtle dorsal metapodial-phalangeal knuckle web blending toe into dorsal paw
       const knuckle = new THREE.Mesh(
-        new THREE.SphereGeometry(isFore ? 0.0145 : 0.0165, 10, 10),
+        new THREE.SphereGeometry(toeRadius * 1.18, 10, 10),
         pawDorsalMat
       );
-      knuckle.scale.set(0.98, 0.68, 1.05);
-      knuckle.position.set(0, -0.001, 0.008);
+      knuckle.scale.set(1.06, 0.70, 1.15);
+      knuckle.position.set(0, -0.002, 0.006);
       toe.add(knuckle);
 
-      const toeTip = new THREE.Mesh(new THREE.SphereGeometry(isFore ? 0.0115 : 0.013, 10, 10), pawFleshMat);
-      toeTip.scale.set(1.00, 0.78, 1.00);
-      toeTip.position.set(0, -0.009, toeLen + toeRadius * 0.28);
+      // Rounded fleshy apical digital bulb curving smoothly to kiss the floor
+      const toeTip = new THREE.Mesh(new THREE.SphereGeometry(toeRadius * 0.96, 10, 10), pawFleshMat);
+      toeTip.scale.set(1.02, 0.82, 1.08);
+      toeTip.position.set(0, -0.022, toeLen + toeRadius * 0.24);
       toe.add(toeTip);
 
-      const toePad = new THREE.Mesh(new THREE.SphereGeometry(isFore ? 0.0145 : 0.017, 10, 10), padMat);
-      toePad.scale.set(isFore ? 0.90 : 0.86, isFore ? 0.44 : 0.40, isFore ? 0.92 : 0.98);
-      toePad.position.set(0, -0.011, toeLen * 0.74);
+      // Ventral apical digital friction pad beneath the fingertip
+      const toePad = new THREE.Mesh(new THREE.SphereGeometry(toeRadius * 1.10, 10, 10), padMat);
+      toePad.scale.set(0.94, 0.50, 1.06);
+      toePad.position.set(0, -0.028, toeLen * 0.84);
       toe.add(toePad);
 
-      const clawLength = isFore ? 0.030 : 0.040;
-      const clawRadius = isFore ? 0.0046 : 0.0054;
-      const clawGeo = new THREE.CapsuleGeometry(clawRadius, clawLength, 6, 6);
-      clawGeo.translate(0, clawLength / 2, 0);
+      // Tapered, laterally compressed, downward-curved keratin falcula claw
+      // emerging cleanly from the dorsal unguicular sheath.
+      const clawLength = (isFore ? 0.032 : 0.042) * (0.88 + spec.lenMul * 0.14);
+      const clawRadius = (isFore ? 0.0044 : 0.0052) * spec.radMul;
+      const clawGeo = new THREE.CapsuleGeometry(clawRadius, clawLength, 8, 10);
+      clawGeo.translate(0, clawLength * 0.5, 0);
       deform(clawGeo, (cv) => {
         const yN = THREE.MathUtils.clamp(
           (cv.y + clawRadius) / (clawLength + clawRadius * 2),
           0,
           1
         );
-        cv.x *= 1.0 - yN * 0.56;
-        cv.z *= 1.0 - yN * 0.46;
-        // Downward falcula curvature (+Z maps to -Y after rotation.x = +PI/2)
-        cv.z += yN * yN * 0.010;
+        // Laterally compressed keratin blade tapering cleanly to a fine crescent point
+        cv.x *= (0.76 - yN * 0.62);
+        cv.z *= (1.06 - yN * 0.72);
+        // Downward crescent falcula curve (+Z maps to -Y after rotation.x = +PI/2)
+        cv.z += Math.pow(yN, 1.85) * (isFore ? 0.015 : 0.018);
       });
       const claw = new THREE.Mesh(clawGeo, clawLocalMat);
-      claw.rotation.x = Math.PI / 2 + (isFore ? 0.16 : 0.14);
-      claw.position.set(0, -0.009, toeLen + toeRadius * 0.38);
+      claw.rotation.x = Math.PI / 2 + (isFore ? 0.22 : 0.19);
+      claw.position.set(0, -0.020, toeLen + toeRadius * 0.16);
       claw.castShadow = true;
       toe.add(claw);
 
-      const zPos = (isFore ? 0.114 - arc * 0.018 : 0.184 - arc * 0.026) * pawScale;
-      toe.position.set(t, isFore ? -0.018 + arc * 0.003 : -0.020 + arc * 0.003, zPos);
-      toe.rotation.y = centeredIndex * (isFore ? 0.075 : 0.055);
-      // Slight downward toe-resting pitch (positive X pitches +Z toward floor)
-      toe.rotation.x = isFore ? 0.04 + arc * 0.02 : 0.02 + arc * 0.015;
+      const xPos = sideSign * spec.xMul * spread;
+      const zPos = ((isFore ? 0.106 : 0.178) - spec.zBack) * pawScale;
+      const yPos = (isFore ? -0.036 : -0.038) + spec.zBack * 0.06;
+      const baseRotY = sideSign * spec.yaw;
+      const baseRotX = isFore ? 0.11 + spec.zBack * 0.35 : 0.09 + spec.zBack * 0.25;
+      toe.position.set(xPos, yPos, zPos);
+      toe.rotation.y = baseRotY;
+      toe.rotation.x = baseRotX;
       paw.add(toe);
+      toes.push({
+        group: toe,
+        baseRotX,
+        baseRotY,
+        spreadSign: sideSign * Math.sign(spec.xMul || (i - (digitSpecs.length - 1) * 0.5)),
+        isOuter: i === 0 || i === digitSpecs.length - 1,
+      });
     }
+    paw._toes = toes;
 
     // Invisible sole landmark used by the stance-phase IK solver. Keeping it
     // inside the paw hierarchy lets the solver preserve every visible joint.
@@ -2063,7 +2429,7 @@ export function createMouseModel(THREE, annolidShaders, random) {
     if (isFore) {
       const groomingContact = new THREE.Object3D();
       groomingContact.name = 'forepaw-palmar-contact';
-      groomingContact.position.set(0, -0.044, 0.15);
+      groomingContact.position.set(0, -0.056, 0.15);
       paw.add(groomingContact);
       paw._groomingContact = groomingContact;
     }
@@ -2081,24 +2447,25 @@ export function createMouseModel(THREE, annolidShaders, random) {
     // Tucked shoulder anchor: proximal joints remain smoothly inside the chest coat.
     chain.position.set(sign * 0.38 * PROP.shoulderWidth / 0.90, -0.11, PROP.bodyLength * 0.70);
 
-    const shoulderMantle = new THREE.Mesh(new THREE.SphereGeometry(0.155, 16, 16), surfaceMat);
-    shoulderMantle.position.set(-sign * 0.11, 0.02, -0.10);
-    shoulderMantle.scale.set(1.04, 0.96, 1.24);
+    // Plush scapular + pectoral-brachial soft-tissue mantle enveloping the proximal
+    // humerus & elbow smoothly into the anterior chest coat (zero L-bracket notch).
+    const shoulderMantle = new THREE.Mesh(new THREE.SphereGeometry(0.168, 16, 16), surfaceMat);
+    shoulderMantle.position.set(-sign * 0.10, 0.02, -0.10);
+    shoulderMantle.scale.set(1.08, 0.98, 1.28);
     shoulderMantle.castShadow = false;
     chain.add(shoulderMantle);
-    // Pectoral-brachial skin fold enveloping the proximal arm into the sternum
-    const pectoralFold = new THREE.Mesh(new THREE.SphereGeometry(0.135 * thickness, 14, 14), surfaceMat);
+    const pectoralFold = new THREE.Mesh(new THREE.SphereGeometry(0.152 * thickness, 16, 16), surfaceMat);
     pectoralFold.name = `${side}-pectoral-brachial-fold`;
-    pectoralFold.position.set(-sign * 0.075, -0.08, -0.03);
-    pectoralFold.scale.set(1.04, 1.24, 1.18);
+    pectoralFold.position.set(-sign * 0.058, -0.11, -0.045);
+    pectoralFold.scale.set(1.08, 1.32, 1.24);
     pectoralFold.castShadow = false;
     chain.add(pectoralFold);
     const scapularBridge = new THREE.Mesh(
-      new THREE.CapsuleGeometry(0.095 * thickness, 0.22, 10, 10),
+      new THREE.CapsuleGeometry(0.104 * thickness, 0.24, 10, 12),
       surfaceMat
     );
     scapularBridge.name = `${side}-scapular-soft-tissue-bridge`;
-    scapularBridge.position.set(-sign * 0.07, 0.04, -0.10);
+    scapularBridge.position.set(-sign * 0.068, 0.03, -0.11);
     scapularBridge.rotation.x = Math.PI / 2;
     scapularBridge.castShadow = false;
     chain.add(scapularBridge);
@@ -2108,54 +2475,71 @@ export function createMouseModel(THREE, annolidShaders, random) {
     const upperArm = new THREE.Group();
     upperArm.name = `${side}-upper-arm`;
     const uaLen = 0.42 * fl;
-    const upperArmGeo = new THREE.CapsuleGeometry(0.108 * thickness, uaLen, 10, 12);
+    const upperArmProfile = yN => {
+      const topTuck = 1.0 - THREE.MathUtils.smoothstep(yN, 0.76, 1.0) * 0.16;
+      const triceps = Math.exp(-Math.pow((yN - 0.56) / 0.28, 2.0)) * 0.14;
+      const t = (0.76 + yN * 0.26 + triceps) * topTuck;
+      return {
+        rx: 0.118 * thickness * t * 0.90,
+        rz: 0.118 * thickness * t * 1.06,
+        offsetZ: -triceps * 0.035,
+      };
+    };
+    const upperArmGeo = new THREE.CapsuleGeometry(0.118 * thickness, uaLen, 10, 14);
     deform(upperArmGeo, (uv) => {
-      // Taper muscular brachium cleanly from tucked shoulder cap into elbow
       const yN = THREE.MathUtils.clamp((uv.y + uaLen * 0.5) / Math.max(0.01, uaLen), 0, 1);
-      const topTuck = 1.0 - THREE.MathUtils.smoothstep(yN, 0.74, 1.0) * 0.20;
-      const t = (0.72 + yN * 0.30) * topTuck;
-      uv.x *= t * 0.88;
-      uv.z *= t * 1.04;
+      const prof = upperArmProfile(yN);
+      uv.x *= prof.rx / (0.118 * thickness);
+      uv.z *= prof.rz / (0.118 * thickness);
+      uv.z += prof.offsetZ;
     });
     const upperArmMesh = new THREE.Mesh(upperArmGeo, surfaceMat);
     upperArmMesh.position.y = -uaLen * 0.5;
     upperArmMesh.castShadow = true;
     upperArm.add(upperArmMesh);
     upperArm.rotation.x = FORELIMB_NEUTRAL.shoulderX;
-    // Shoulder joint sphere tucked smoothly inside chest coat
-    const shoulderJoint = new THREE.Mesh(new THREE.SphereGeometry(0.084 * thickness, 12, 12), surfaceMat);
-    shoulderJoint.scale.set(0.84, 0.82, 0.98);
+    const shoulderJoint = new THREE.Mesh(new THREE.SphereGeometry(0.092 * thickness, 12, 12), surfaceMat);
+    shoulderJoint.scale.set(0.88, 0.86, 1.02);
     shoulderJoint.castShadow = false;
     upperArm.add(shoulderJoint);
     chain.add(upperArm);
 
-    // Forearm (radius/ulna) — attached at elbow
+    // Forearm (radius/ulna) — muscular proximal flexor/brachioradialis belly
+    // tapering organically into a delicate slender carpus (never a straight peg).
     const forearm = new THREE.Group();
     forearm.name = `${side}-forearm`;
     const faLen = 0.45 * fl;
     forearm.position.set(0, -uaLen - 0.01, -0.01);
     forearm.rotation.x = FORELIMB_NEUTRAL.elbowX;
-    // Soft-tissue bridge to avoid segmented look between upper arm and forearm.
     const elbowBridge = new THREE.Mesh(
-      new THREE.CapsuleGeometry(0.074 * thickness, 0.088, 10, 10),
+      new THREE.CapsuleGeometry(0.088 * thickness, 0.11, 10, 12),
       surfaceMat
     );
-    elbowBridge.position.set(0, -uaLen * 0.92, 0.020);
-    elbowBridge.rotation.x = 0.15;
+    elbowBridge.position.set(-sign * 0.010, -uaLen * 0.90, 0.012);
+    elbowBridge.rotation.x = 0.18;
     elbowBridge.castShadow = false;
     upperArm.add(elbowBridge);
-    // Elbow joint (sleek furred contour flush with forearm)
-    const elbowJoint = new THREE.Mesh(new THREE.SphereGeometry(0.062 * thickness, 10, 10), surfaceMat);
-    elbowJoint.scale.set(0.90, 0.94, 0.96);
+    const elbowJoint = new THREE.Mesh(new THREE.SphereGeometry(0.074 * thickness, 12, 12), surfaceMat);
+    elbowJoint.scale.set(0.92, 0.96, 1.02);
     elbowJoint.castShadow = false;
     forearm.add(elbowJoint);
-    const forearmGeo = new THREE.CapsuleGeometry(0.074 * thickness, faLen, 8, 12);
+
+    const forearmProfile = yN => {
+      const flexorBelly = Math.exp(-Math.pow((yN - 0.72) / 0.28, 2.0)) * 0.24;
+      const t = 0.50 + Math.pow(yN, 0.85) * 0.52 + flexorBelly;
+      return {
+        rx: 0.084 * thickness * t * 0.94,
+        rz: 0.084 * thickness * t * 1.06,
+        offsetZ: -flexorBelly * 0.022 + Math.sin(yN * Math.PI) * 0.010,
+      };
+    };
+    const forearmGeo = new THREE.CapsuleGeometry(0.084 * thickness, faLen, 10, 14);
     deform(forearmGeo, (fv) => {
-      // Natural proximal-to-distal taper from forearm flexors down into slender carpus
       const yN = THREE.MathUtils.clamp((fv.y + faLen * 0.5) / Math.max(0.01, faLen), 0, 1);
-      const t = 0.56 + yN * 0.48;
-      fv.x *= t;
-      fv.z *= t * 1.04;
+      const prof = forearmProfile(yN);
+      fv.x *= prof.rx / (0.084 * thickness);
+      fv.z *= prof.rz / (0.084 * thickness);
+      fv.z += prof.offsetZ;
     });
     const forearmMesh = new THREE.Mesh(forearmGeo, surfaceMat);
     forearmMesh.position.y = -faLen * 0.5;
@@ -2163,67 +2547,107 @@ export function createMouseModel(THREE, annolidShaders, random) {
     forearm.add(forearmMesh);
     upperArm.add(forearm);
 
-    // Wrist joint — coaxial furred carpus tapering seamlessly onto dorsal manus
+    // Wrist joint — smoothly contoured, coat-to-skin feathered carpus cuff
+    // aligned collinearly from the distal forearm right onto the dorsal manus.
     const wrist = new THREE.Group();
     wrist.name = `${side}-wrist`;
     wrist.position.set(0, -faLen - 0.018, 0.03);
     wrist.rotation.x = FORELIMB_NEUTRAL.wristX;
-    const wristJoint = new THREE.Mesh(new THREE.SphereGeometry(0.038 * thickness, 8, 8), surfaceMat);
-    wristJoint.scale.set(0.92, 0.88, 0.94);
+    const wristJoint = new THREE.Mesh(new THREE.SphereGeometry(0.044 * thickness, 10, 10), surfaceMat);
+    wristJoint.scale.set(0.94, 0.90, 0.96);
     wristJoint.castShadow = false;
     wrist.add(wristJoint);
-    const wristCuffGeo = new THREE.CapsuleGeometry(0.040 * thickness, 0.074, 8, 10);
+
+    const wristCuffMat = skinMat.clone();
+    const furColFore = new THREE.Color(furColor);
+    const dorsalColFore = computePawDorsalColor(strain, furColor);
+    wristCuffMat.color.setHex(0xffffff);
+    wristCuffMat.vertexColors = true;
+    wristCuffMat.map = pawSkinMaps.dorsalAlbedo;
+    wristCuffMat.roughness = 0.80;
+    wristCuffMat.transmission = 0.03;
+    wristCuffMat.sheen = 0.54;
+    wristCuffMat.sheenColor = furColFore.clone().lerp(new THREE.Color(0xffffff), 0.45);
+
+    const wristCuffLen = 0.132;
+    const wristCuffProfile = yN => {
+      // Proximal (yN=1) hugs the slender distal forearm; distal (yN=0) flattens
+      // smoothly right onto forepaw-root-bridge so there is zero ledge or step.
+      const rx = (0.044 + (1.0 - yN) * 0.010) * thickness;
+      const rz = (0.042 - (1.0 - yN) * 0.010) * thickness;
+      return { rx, rz, offsetZ: 0 };
+    };
+    const wristCuffGeo = new THREE.CapsuleGeometry(0.044 * thickness, wristCuffLen, 10, 14);
     deform(wristCuffGeo, (wv) => {
-      const yN = THREE.MathUtils.clamp((wv.y + 0.037) / 0.074, 0, 1);
-      const t = 0.76 + yN * 0.26;
-      wv.x *= t;
-      wv.z *= t;
+      const yN = THREE.MathUtils.clamp((wv.y + wristCuffLen * 0.5) / wristCuffLen, 0, 1);
+      const prof = wristCuffProfile(yN);
+      wv.x *= prof.rx / (0.044 * thickness);
+      wv.z *= prof.rz / (0.044 * thickness);
     });
-    const wristCuff = new THREE.Mesh(wristCuffGeo, surfaceMat);
-    wristCuff.position.set(sign * 0.017, -0.064, 0.035);
-    wristCuff.rotation.x = -0.49;
-    wristCuff.rotation.z = sign * 0.22;
+    applyCuffVertexGradient(wristCuffGeo, wristCuffLen, -1, furColFore, dorsalColFore);
+    const wristCuff = new THREE.Mesh(wristCuffGeo, wristCuffMat);
+    wristCuff.position.set(sign * 0.019, -0.074, 0.028);
+    wristCuff.rotation.x = -0.35;
+    wristCuff.rotation.z = sign * 0.25;
     wristCuff.castShadow = false;
     wrist.add(wristCuff);
     forearm.add(wrist);
 
-    // Paw — sits level at bottom of wrist
-    const paw = createPaw(skinMat, true, strain, furColor);
+    // Handed forepaw — sits level at bottom of wrist with subtle natural toe-out yaw
+    const paw = createPaw(skinMat, true, strain, furColor, side, density);
     paw.position.set(sign * 0.035, -0.13, 0.07);
     paw.scale.setScalar(0.96 * Math.sqrt(thickness));
     paw.rotation.x = FORELIMB_NEUTRAL.pawX;
+    paw.rotation.y = sign * 0.14;
     wrist.add(paw);
 
-    // Continuous coat hugging the actual tapered limb contours & joint caps
-    // from shoulder down over the carpal cuff (zero bare shiny joint knobs).
-    const coatCapsule = (
-      mesh,
-      radius,
-      span,
-      count,
-      hairLength,
-      taperMin = 1.0,
-      taperSpan = 0.0,
-      isUndercoat = false
-    ) => {
+    // Proximal-to-distal combed limb pelage sleeves hugging the exact muscle contours
+    // from shoulder & pectoral fold down into a feathered carpal cuff.
+    const coatSphere = (mesh, radius, count, hairLength) => {
       const coat = generateFurLayer(v => {
-        const y = v.y;
-        const yN = THREE.MathUtils.clamp((y + 1) * 0.5, 0, 1);
-        const t = taperMin + yN * taperSpan;
-        v.multiplyScalar(radius * t);
-        v.y += y * span * 0.5;
-      }, Math.floor(count * density), furColor, hairLength, false, isUndercoat);
+        v.multiplyScalar(radius);
+      }, Math.floor(count * density), furColor, hairLength, false, true);
       mesh.add(coat);
     };
-    coatCapsule(upperArmMesh, 0.106 * thickness, uaLen, 3400, 0.066, 0.72, 0.24);
-    coatCapsule(shoulderJoint, 0.084 * thickness, 0, 340, 0.064, 1.0, 0.0, true);
-    coatCapsule(elbowBridge, 0.074 * thickness, 0.088, 340, 0.052, 1.0, 0.0, true);
-    coatCapsule(elbowJoint, 0.062 * thickness, 0, 280, 0.048, 1.0, 0.0, true);
-    coatCapsule(forearmMesh, 0.074 * thickness, faLen, 2800, 0.046, 0.56, 0.48);
-    coatCapsule(wristJoint, 0.038 * thickness, 0, 200, 0.034, 1.0, 0.0, true);
-    coatCapsule(wristCuff, 0.040 * thickness, 0.074, 850, 0.030, 0.76, 0.26, true);
-    coatCapsule(shoulderMantle, 0.156, 0, 1400, 0.066, 1.0, 0.0, true);
-    coatCapsule(pectoralFold, 0.136 * thickness, 0.04, 1300, 0.066, 1.0, 0.0, true);
+    const seedOffset = sign > 0 ? 11 : 29;
+    upperArmMesh.add(createLimbFurSleeve({
+      profileFn: upperArmProfile,
+      span: uaLen,
+      count: Math.floor(2600 * density),
+      furColor,
+      pawSkinColor: strain.pawColor ?? '#e6b0a7',
+      hairLength: 0.064,
+      distalDirY: -1,
+      seed: 0x31F00100 + seedOffset,
+    }));
+    forearmMesh.add(createLimbFurSleeve({
+      profileFn: forearmProfile,
+      span: faLen,
+      count: Math.floor(2400 * density),
+      furColor,
+      pawSkinColor: strain.pawColor ?? '#e6b0a7',
+      hairLength: 0.046,
+      distalDirY: -1,
+      seed: 0x31F00200 + seedOffset,
+    }));
+    wristCuff.add(createLimbFurSleeve({
+      profileFn: wristCuffProfile,
+      span: wristCuffLen,
+      count: Math.floor(960 * density),
+      furColor,
+      pawSkinColor: strain.pawColor ?? '#e6b0a7',
+      hairLength: 0.030,
+      distalDirY: -1,
+      featherDistal: true,
+      seed: 0x31F00300 + seedOffset,
+      isUndercoat: true,
+    }));
+    coatSphere(shoulderJoint, 0.092 * thickness, 360, 0.064);
+    coatSphere(elbowBridge, 0.088 * thickness, 520, 0.056);
+    coatSphere(elbowJoint, 0.074 * thickness, 340, 0.050);
+    coatSphere(wristJoint, 0.044 * thickness, 240, 0.034);
+    coatSphere(shoulderMantle, 0.168, 1500, 0.068);
+    coatSphere(pectoralFold, 0.152 * thickness, 1600, 0.068);
 
     chain._upperArm = upperArm;
     chain._forearm = forearm;
@@ -2249,6 +2673,7 @@ export function createMouseModel(THREE, annolidShaders, random) {
     const chain = new THREE.Group();
     const hl = PROP.hindLimbLength * legLengthScale;
     const thickness = THREE.MathUtils.clamp(legThicknessScale, 0.65, 1.5);
+    const seedOffset = sign > 0 ? 17 : 37;
     // Hip anchor — at widest haunch point
     chain.position.set(sign * 0.62 * PROP.haunchWidth / 1.04, -0.04, -PROP.bodyLength * 0.36);
 
@@ -2315,106 +2740,187 @@ export function createMouseModel(THREE, annolidShaders, random) {
     thigh.add(thighMuscle);
     thighMuscle.add(generateFurLayer(deformThigh, Math.floor(8800 * density), furColor, 0.115, false));
 
-    // Shank (crus / tibia-fibula) — furred distal leg tapering toward hock
+    // Shank (crus / tibia-fibula) — muscular gastrocnemius calf belly tapering
+    // smoothly down into a sleek furred Achilles/tarsal hock.
     const shank = new THREE.Group();
     shank.name = `${side}-shank`;
     shank.position.set(0.02 * sign, -0.32 * hl, 0.18);
     thigh.add(shank);
 
-    const kneeJoint = new THREE.Mesh(new THREE.SphereGeometry(0.096 * thickness, 10, 10), surfaceMat);
-    kneeJoint.position.set(0, 0.045, 0.01);
+    const kneeJoint = new THREE.Mesh(new THREE.SphereGeometry(0.112 * thickness, 12, 12), surfaceMat);
+    kneeJoint.position.set(0, 0.045, 0.005);
+    kneeJoint.scale.set(0.96, 1.04, 1.12);
     kneeJoint.castShadow = false;
     shank.add(kneeJoint);
+    kneeJoint.add(generateFurLayer(v => {
+      v.multiplyScalar(0.110 * thickness);
+    }, Math.floor(520 * density), furColor, 0.068, false, true));
 
     const shankLen = 0.46 * hl;
-    const shankGeo = new THREE.CapsuleGeometry(0.068 * thickness, shankLen, 8, 12);
+    const shankProfile = yN => {
+      // Prominent proximal gastrocnemius calf belly tapering into sleek distal Achilles
+      const gastroc = Math.exp(-Math.pow((yN - 0.68) / 0.26, 2.0)) * 0.34;
+      const t = 0.62 + yN * 0.42 + gastroc;
+      return {
+        rx: 0.082 * thickness * t * 0.88,
+        rz: 0.082 * thickness * t * 1.10,
+        offsetZ: -gastroc * 0.036,
+      };
+    };
+    const shankGeo = new THREE.CapsuleGeometry(0.082 * thickness, shankLen, 10, 14);
     deform(shankGeo, (sv) => {
-      // Gastrocnemius muscle taper into slender Achilles/tarsal ankle
       const yN = THREE.MathUtils.clamp((sv.y + shankLen * 0.5) / Math.max(0.01, shankLen), 0, 1);
-      const t = 0.66 + yN * 0.44;
-      sv.x *= t * 0.92;
-      sv.z *= t * 1.06;
+      const prof = shankProfile(yN);
+      sv.x *= prof.rx / (0.082 * thickness);
+      sv.z *= prof.rz / (0.082 * thickness);
+      sv.z += prof.offsetZ;
     });
     const shankMesh = new THREE.Mesh(shankGeo, surfaceMat);
     shankMesh.rotation.x = -0.16;
     shankMesh.position.set(0, -shankLen * 0.5, 0.09);
     shankMesh.castShadow = true;
     shank.add(shankMesh);
-    shankMesh.add(generateFurLayer(v => {
-      const y = v.y;
-      const yN = THREE.MathUtils.clamp((y + 1) * 0.5, 0, 1);
-      const t = 0.66 + yN * 0.44;
-      v.multiplyScalar(0.068 * thickness * t);
-      v.y += y * shankLen * 0.5;
-    }, Math.floor(2400 * density), furColor, 0.052, false));
+    shankMesh.add(createLimbFurSleeve({
+      profileFn: shankProfile,
+      span: shankLen,
+      count: Math.floor(2400 * density),
+      furColor,
+      pawSkinColor: strain.pawColor ?? '#e6b0a7',
+      hairLength: 0.054,
+      distalDirY: -1,
+      seed: 0x31B00100 + seedOffset,
+    }));
 
-    // Ankle/hock (tarsocrural joint + sleek calcaneal tuber)
+    // Ankle / low furred calcaneal hock (tarsocrural joint descending smoothly
+    // to a grounded heel right behind the horizontal semi-plantigrade pes).
     const ankle = new THREE.Group();
     ankle.name = `${side}-ankle`;
     ankle.position.set(0, -shankLen - 0.04, 0.18);
     shank.add(ankle);
 
-    const ankleJoint = new THREE.Mesh(new THREE.SphereGeometry(0.052 * thickness, 10, 10), surfaceMat);
+    const ankleJoint = new THREE.Mesh(new THREE.SphereGeometry(0.056 * thickness, 10, 10), surfaceMat);
     ankleJoint.castShadow = false;
     ankle.add(ankleJoint);
     ankleJoint.add(generateFurLayer(v => {
-      v.multiplyScalar(0.052 * thickness);
-    }, Math.floor(240 * density), furColor, 0.036, false, true));
+      v.multiplyScalar(0.056 * thickness);
+    }, Math.floor(480 * density), furColor, 0.044, false, true));
 
-    // Calcaneus (hock): compact tucked tuber rather than a protruding sphere
-    const heel = new THREE.Mesh(new THREE.CapsuleGeometry(0.048 * thickness, 0.075, 8, 8), surfaceMat);
-    heel.rotation.x = -0.42;
-    heel.position.set(0, 0.018, -0.032);
+    // Furred distal crus / Achilles bridge descending from the lower shank down
+    // to the low grounded calcaneal hock (replaces the exposed 45-deg bare stick).
+    const crusLen = 0.168;
+    const crusProfile = yN => {
+      const t = 0.88 + yN * 0.18;
+      return {
+        rx: 0.054 * thickness * t * 0.92,
+        rz: 0.054 * thickness * t * 1.06,
+        offsetZ: -(1.0 - yN) * 0.008,
+      };
+    };
+    const distalCrusGeo = new THREE.CapsuleGeometry(0.054 * thickness, crusLen, 10, 12);
+    deform(distalCrusGeo, (cv) => {
+      const yN = THREE.MathUtils.clamp((cv.y + crusLen * 0.5) / crusLen, 0, 1);
+      const prof = crusProfile(yN);
+      cv.x *= prof.rx / (0.054 * thickness);
+      cv.z *= prof.rz / (0.054 * thickness);
+      cv.z += prof.offsetZ;
+    });
+    const distalCrus = new THREE.Mesh(distalCrusGeo, surfaceMat);
+    distalCrus.name = `${side}-distal-crus-achilles`;
+    distalCrus.position.set(sign * 0.018, -0.094, 0.028);
+    distalCrus.rotation.x = -0.29;
+    distalCrus.rotation.z = sign * 0.19;
+    distalCrus.castShadow = true;
+    ankle.add(distalCrus);
+    distalCrus.add(createLimbFurSleeve({
+      profileFn: crusProfile,
+      span: crusLen,
+      count: Math.floor(1250 * density),
+      furColor,
+      pawSkinColor: strain.pawColor ?? '#e6b0a7',
+      hairLength: 0.040,
+      distalDirY: -1,
+      coverCaps: true,
+      seed: 0x31B00200 + seedOffset,
+    }));
+
+    // Low, tucked, fully furred calcaneus (hock/heel) right behind the horizontal hindfoot
+    const heel = new THREE.Mesh(new THREE.CapsuleGeometry(0.050 * thickness, 0.078, 8, 10), surfaceMat);
+    heel.rotation.x = Math.PI / 2 - 0.18;
+    heel.position.set(sign * 0.036, -0.192, 0.038);
+    heel.scale.set(0.92, 1.0, 0.84);
     heel.castShadow = false;
     ankle.add(heel);
-    heel.add(generateFurLayer(v => {
-      const y = v.y;
-      v.multiplyScalar(0.049 * thickness);
-      v.y += y * 0.036;
-    }, Math.floor(600 * density), furColor, 0.038, false));
+    heel.add(createLimbFurSleeve({
+      profileFn: () => ({ rx: 0.048 * thickness, rz: 0.044 * thickness, offsetZ: 0 }),
+      span: 0.072,
+      count: Math.floor(880 * density),
+      furColor,
+      pawSkinColor: strain.pawColor ?? '#e6b0a7',
+      hairLength: 0.036,
+      distalDirY: 1,
+      coverCaps: true,
+      seed: 0x31B00300 + seedOffset,
+      isUndercoat: true,
+    }));
 
-    // Tarsometatarsal bridge routed collinearly from hock directly into the
-    // proximal dorsal foot, coated with a smooth fur-to-skin transition.
+    // Sleek, nearly horizontal tarsometatarsal bridge running cleanly from the low
+    // calcaneal hock forward onto the dorsal pes with seamless vertex-color & fur feathering.
     const metaMat = skinMat.clone();
     const furColObj = new THREE.Color(furColor);
-    const furHslMeta = {}; furColObj.getHSL(furHslMeta);
-    metaMat.color.set(strain.pawColor ?? '#e6b0a7').lerp(
-      furColObj,
-      furHslMeta.l < 0.25 ? 0.68 : 0.48
-    );
+    const dorsalColHind = computePawDorsalColor(strain, furColor);
+    metaMat.color.setHex(0xffffff);
+    metaMat.vertexColors = true;
+    metaMat.map = pawSkinMaps.dorsalAlbedo;
+    metaMat.normalMap = pawSkinMaps.dorsalNormal;
+    metaMat.normalScale = new THREE.Vector2(0.18, 0.18);
     metaMat.roughness = 0.78;
-    metaMat.transmission = 0.03;
-    metaMat.sheen = 0.50;
-    metaMat.sheenColor = new THREE.Color(strain.pawColor ?? '#e6b0a7').lerp(furColObj, 0.58);
-    const metaLen = 0.25 * PROP.hindPawSize;
-    const metaGeo = new THREE.CapsuleGeometry(0.046 * thickness, metaLen, 8, 10);
+    metaMat.transmission = 0.04;
+    metaMat.sheen = 0.56;
+    metaMat.sheenColor = furColObj.clone().lerp(new THREE.Color(0xffffff), 0.45);
+    const metaLen = 0.21 * PROP.hindPawSize;
+    const metaProfile = yN => {
+      // Proximal heel (yN=0) -> distal metatarsus (yN=1): low dorsoventrally compressed arch
+      return {
+        rx: (0.046 + yN * 0.015) * thickness,
+        rz: (0.038 - yN * 0.007) * thickness,
+        offsetZ: 0,
+      };
+    };
+    const metaGeo = new THREE.CapsuleGeometry(0.048 * thickness, metaLen, 10, 14);
     deform(metaGeo, (mv) => {
       const yN = THREE.MathUtils.clamp((mv.y + metaLen * 0.5) / Math.max(0.01, metaLen), 0, 1);
-      const t = 0.80 + yN * 0.30;
-      mv.x *= t;
-      mv.z *= t * 0.82;
+      const prof = metaProfile(yN);
+      mv.x *= prof.rx / (0.048 * thickness);
+      mv.z *= prof.rz / (0.048 * thickness);
     });
+    applyCuffVertexGradient(metaGeo, metaLen, 1, furColObj, dorsalColHind);
     const metaMesh = new THREE.Mesh(metaGeo, metaMat);
-    metaMesh.rotation.x = Math.PI / 2 + 0.62;
-    metaMesh.rotation.z = -sign * 0.13;
-    metaMesh.position.set(sign * 0.022, -0.104, 0.112);
+    metaMesh.rotation.order = 'YXZ';
+    metaMesh.rotation.x = Math.PI / 2 + 0.085;
+    metaMesh.rotation.y = sign * 0.05;
+    metaMesh.position.set(sign * 0.041, -0.206, 0.158);
     metaMesh.castShadow = true;
     ankle.add(metaMesh);
-    // Dense proximal tarsal fur tapering smoothly down from the hock so the
-    // hind ankle transitions organically into the dorsal foot without spots.
-    metaMesh.add(generateFurLayer(v => {
-      const y = v.y;
-      const yN = THREE.MathUtils.clamp((y + 1) * 0.5, 0, 1);
-      const t = 0.82 + yN * 0.26;
-      v.x *= 0.045 * thickness * t;
-      v.z *= 0.037 * thickness * t;
-      v.y = (y * 0.40 - 0.16) * metaLen;
-    }, Math.floor(1150 * density), furColor, 0.032, false, true));
+    // Feathered proximal-to-distal tarsal fur combed sleekly forward from the
+    // calcaneal hock onto the dorsal foot (zero harsh speckles or bare stick seam).
+    metaMesh.add(createLimbFurSleeve({
+      profileFn: metaProfile,
+      span: metaLen,
+      count: Math.floor(1150 * density),
+      furColor,
+      pawSkinColor: strain.pawColor ?? '#e6b0a7',
+      hairLength: 0.032,
+      distalDirY: 1,
+      featherDistal: true,
+      seed: 0x31B00400 + seedOffset,
+      isUndercoat: true,
+    }));
 
-    // Hindpaw — planted level on ground
-    const paw = createPaw(skinMat, false, strain, furColor);
+    // Handed hindpaw — planted level on ground with subtle natural outward splay
+    const paw = createPaw(skinMat, false, strain, furColor, side, density);
     paw.position.set(sign * 0.045, -0.20, 0.31);
     paw.rotation.x = 0.02;
+    paw.rotation.y = sign * 0.18;
     paw.scale.setScalar(0.92 * Math.sqrt(thickness));
     ankle.add(paw);
 
@@ -3139,6 +3645,7 @@ export function createMouseModel(THREE, annolidShaders, random) {
     eyeIrisMap, earNormalMap, earRoughnessMap, earAlbedoMap, noseAlbedoMap, noseNormalMap,
     noseRoughnessMap, labFloorAlbedoMap, labFloorRoughnessMap, labFloorNormalMap,
     homeCageBeddingMaps.albedo, homeCageBeddingMaps.normal, homeCageBeddingMaps.roughness,
+    pawSkinMaps.digitNormal, pawSkinMaps.dorsalAlbedo, pawSkinMaps.dorsalNormal,
     urineSpotTexture, shadowSmudgeTexture,
   ]);
 
