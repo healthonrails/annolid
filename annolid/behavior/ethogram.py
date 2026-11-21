@@ -8,16 +8,14 @@ from __future__ import annotations
 
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
-
-import matplotlib
-import matplotlib.patches as patches
-import matplotlib.pyplot as plt
-import pandas as pd
+from typing import TYPE_CHECKING, Dict, Iterable, List, Optional, Tuple
 
 from annolid.behavior.project_schema import ProjectSchema
 from annolid.behavior.time_budget import BehaviorInterval, extract_behavior_intervals
 from annolid.utils.atomic_io import atomic_write_text
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 __all__ = [
     "create_ethogram",
@@ -84,6 +82,10 @@ def create_ethogram(
     schema: Optional[ProjectSchema] = None,
 ):
     """Create a Matplotlib ethogram figure supporting State bars and Point diamonds."""
+    import matplotlib
+    import matplotlib.patches as patches
+    import matplotlib.pyplot as plt
+
     required_cols = [subject_column, behavior_column, start_column]
     if not all(col in data.columns for col in required_cols):
         raise ValueError(f"Data must contain columns: {', '.join(required_cols)}")
