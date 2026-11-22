@@ -1762,7 +1762,7 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
         }
 
     exec_match = re.match(
-        r"\s*(?:run\s+command|exec|!)\s*(?P<cmd>.+?)\s*$",
+        r"\s*(?:(?:run\s+command|exec)\s+|!\s*)(?P<cmd>.+?)\s*$",
         text,
         flags=re.IGNORECASE,
     )

@@ -66,10 +66,18 @@ def invoke_widget_slot(
     if widget is None:
         return False
     try:
+        connection_type = QtCore.Qt.BlockingQueuedConnection
+        widget_thread = getattr(widget, "thread", None)
+        if callable(widget_thread):
+            try:
+                if QtCore.QThread.currentThread() == widget_thread():
+                    connection_type = QtCore.Qt.DirectConnection
+            except Exception:
+                pass
         invoked = QMetaObject.invokeMethod(
             widget,
             slot_name,
-            QtCore.Qt.BlockingQueuedConnection,
+            connection_type,
             *qargs,
         )
         # Depending on Qt binding/runtime, invokeMethod may return either

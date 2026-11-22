@@ -20,31 +20,40 @@ def format_dependency_error(
     provider: str,
 ) -> str:
     message = str(raw_error or "").strip()
+    lowered = message.lower()
     kind = provider_kind(settings, provider)
-    if kind == "openai_compat" and "openai package is required" in message:
+    if kind == "openai_compat" and (
+        "openai package is required" in lowered or "no module named 'openai'" in lowered
+    ):
         return (
             "OpenAI-compatible provider requires the `openai` package. "
             "Install it in your Annolid environment, for example: "
             "`.venv/bin/pip install openai`."
         )
-    if kind == "openai_codex" and "oauth_cli_kit" in message:
+    if kind == "openai_codex" and (
+        "oauth_cli_kit" in lowered or "oauth-cli-kit" in lowered
+    ):
         return (
             "OpenAI Codex provider requires `oauth_cli_kit`. "
             "Install it in your Annolid environment, for example: "
             "`.venv/bin/pip install oauth-cli-kit`."
         )
-    if kind == "openai_codex" and "httpx" in message:
+    if kind == "openai_codex" and "httpx" in lowered:
         return (
             "OpenAI Codex provider requires `httpx`. "
             "Install it in your Annolid environment, for example: "
             "`.venv/bin/pip install httpx`."
         )
-    if kind == "codex_cli" and "codex executable" in message.lower():
+    if kind == "codex_cli" and "codex executable" in lowered:
         return (
             "Codex CLI provider requires the `codex` executable. "
             "Install Codex and ensure `codex` is available on PATH."
         )
-    if kind == "gemini" and "google-generativeai" in message:
+    if kind == "gemini" and (
+        "google-generativeai" in lowered
+        or "google.generativeai" in lowered
+        or "no module named 'google'" in lowered
+    ):
         return (
             "Gemini provider requires `google-generativeai`. "
             "Install it in your Annolid environment, for example: "

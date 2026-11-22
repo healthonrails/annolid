@@ -36,7 +36,7 @@ async def chat_exec_command(command: str) -> dict[str, Any]:
     workspace = get_agent_workspace_path()
     tool = ExecTool(working_dir=str(workspace))
     result = await tool.execute(command=command)
-    if result.startswith("Error:") and "timed out" not in result:
+    if result.startswith("Error:"):
         return {"ok": False, "error": result}
     return {"ok": True, "result": result}
 

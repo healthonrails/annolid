@@ -64,17 +64,24 @@ def resolve_bib_output_path(
     *,
     workspace: Path,
 ) -> Path:
+    resolved_workspace = Path(workspace).expanduser().resolve()
     target = str(bib_file or "").strip()
     if not target:
-        return workspace / "citations.bib"
+        return resolved_workspace / "citations.bib"
     candidate = Path(target).expanduser()
-    if candidate.is_absolute():
-        try:
-            candidate.relative_to(workspace)
-            return candidate
-        except Exception:
-            return workspace / candidate.name
-    return workspace / candidate
+    resolved_candidate = (
+        candidate.resolve()
+        if candidate.is_absolute()
+        else (resolved_workspace / candidate).resolve()
+    )
+    try:
+        resolved_candidate.relative_to(resolved_workspace)
+        return resolved_candidate
+    except ValueError:
+        safe_name = candidate.name or "citations.bib"
+        if safe_name in {".", ".."}:
+            safe_name = "citations.bib"
+        return resolved_workspace / safe_name
 
 
 def citation_fields_from_pdf_state(

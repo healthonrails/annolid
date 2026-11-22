@@ -112,15 +112,37 @@ def run_chat_stats_slash_tool(
         default_root_dir=root_dir,
     )
     if stats_res.get("ok"):
+        totals = dict(stats_res.get("totals") or {})
+        artifacts = dict(stats_res.get("artifacts") or {})
+        video_count = int(
+            stats_res.get("video_count", stats_res.get("stats_files_count", 0)) or 0
+        )
+        overview_csv = str(
+            artifacts.get("overview_csv") or stats_res.get("overview_csv") or ""
+        )
+        abnormal_segments = int(
+            totals.get(
+                "abnormal_segment_events",
+                stats_res.get("abnormal_segment_rows", 0),
+            )
+            or 0
+        )
+        bad_shapes = int(
+            totals.get(
+                "bad_shape_events_unresolved",
+                stats_res.get("bad_shape_event_rows", 0),
+            )
+            or 0
+        )
         return {
             "ok": True,
             "mode": "tracking_stats",
             "summary_text": (
                 f"Tracking telemetry summary for `{root_dir}`:\n"
-                f"- Discovered stats files: {stats_res.get('stats_files_count', 0)}\n"
-                f"- Overview CSV: {stats_res.get('overview_csv', '')}\n"
-                f"- Abnormal segments: {stats_res.get('abnormal_segment_rows', 0)}\n"
-                f"- Bad-shape events: {stats_res.get('bad_shape_event_rows', 0)}"
+                f"- Discovered stats files: {video_count}\n"
+                f"- Overview CSV: {overview_csv}\n"
+                f"- Abnormal segments: {abnormal_segments}\n"
+                f"- Bad-shape events: {bad_shapes}"
             ),
             "report": stats_res,
         }

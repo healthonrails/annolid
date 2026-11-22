@@ -237,12 +237,6 @@ async def apply_web_response_fallbacks(
             result = open_page_fallback
         else:
             _log("open_page_suggestion", "miss")
-    if (
-        prompt_needs_live_web
-        and not should_force_fallback
-        and not str(result or "").strip()
-    ):
-        should_force_fallback = True
     if not should_force_fallback and not should_apply_web_refusal_fallback_cb(result):
         _log("decision", "skip_no_refusal_or_force")
         return result

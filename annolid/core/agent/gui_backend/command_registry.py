@@ -101,10 +101,20 @@ def _looks_like_video_path_token(value: str) -> bool:
     )
 
 
+def _matches_slash_prefix(trimmed: str, slash: str) -> bool:
+    lowered = trimmed.lower()
+    slash_lower = str(slash or "").strip().lower()
+    if not slash_lower or not lowered.startswith(slash_lower):
+        return False
+    if len(lowered) == len(slash_lower):
+        return True
+    return lowered[len(slash_lower)].isspace()
+
+
 def _parse_track_command(text: str) -> Dict[str, Any]:
     """Parse the structured `/track` shortcut into the existing GUI workflow."""
     trimmed = str(text or "").strip()
-    if not trimmed.lower().startswith("/track"):
+    if not _matches_slash_prefix(trimmed, "/track"):
         return {}
 
     payload: Dict[str, Any] = {
@@ -119,7 +129,10 @@ def _parse_track_command(text: str) -> Dict[str, Any]:
     if not raw_args:
         return {"name": "open_track_dialog", "args": {}}
 
-    tokens = shlex.split(raw_args) if raw_args else []
+    try:
+        tokens = shlex.split(raw_args) if raw_args else []
+    except ValueError:
+        tokens = raw_args.split() if raw_args else []
     positional: list[str] = []
     key_values: dict[str, str] = {}
     for token in tokens:
@@ -215,8 +228,7 @@ def _parse_behavior_command(text: str) -> Dict[str, Any]:
 
 def _parse_slash_command_action_args(raw: str, slash: str) -> Dict[str, str]:
     trimmed = str(raw or "").strip()
-    slash_lower = str(slash or "").strip().lower()
-    if not slash_lower or not trimmed.lower().startswith(slash_lower):
+    if not _matches_slash_prefix(trimmed, slash):
         return {"kind": "no-match", "action": "", "args": ""}
     rest = trimmed[len(slash) :].strip()
     if not rest:
@@ -669,8 +681,20 @@ def iter_direct_slash_command_specs() -> Tuple[SlashCommandSpec, ...]:
 
 
 def build_root_slash_completion_entries() -> List[Dict[str, str]]:
-    entries: List[Dict[str, str]] = [dict(row) for row in _ROOT_SLASH_SELECTION_ENTRIES]
+    entries: List[Dict[str, str]] = []
+    seen_searches: set[str] = set()
+    for row in _ROOT_SLASH_SELECTION_ENTRIES:
+        search = str(row.get("search") or "").strip().lower()
+        if search and search in seen_searches:
+            continue
+        if search:
+            seen_searches.add(search)
+        entries.append(dict(row))
     for spec in DIRECT_SLASH_COMMAND_SPECS:
+        search = f"/{spec.primary_alias}".strip().lower()
+        if search in seen_searches:
+            continue
+        seen_searches.add(search)
         entries.append(
             {
                 "display": spec.display,
@@ -713,8 +737,6 @@ def build_direct_command_alias_line(tool_names: Sequence[str]) -> str:
     for spec in DIRECT_SLASH_COMMAND_SPECS:
         required_tools = {name.lower() for name in spec.required_tools if name}
         if tool_set and required_tools and not (tool_set & required_tools):
-            continue
-        if tool_set and spec.name == "cron" and "cron" not in tool_set:
             continue
         examples.extend(spec.examples)
         examples.extend(spec.prompt_examples)

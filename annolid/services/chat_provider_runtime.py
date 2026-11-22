@@ -210,6 +210,8 @@ def build_chat_agent_loop(
     tool_timeout_seconds: float,
     browser_first_for_web: bool,
     strict_runtime_tool_guard: bool,
+    tool_permission_context: Any = None,
+    tool_approval_callback: Any = None,
 ) -> AgentLoop:
     return AgentLoop(
         tools=tools,
@@ -225,6 +227,8 @@ def build_chat_agent_loop(
         tool_timeout_seconds=tool_timeout_seconds,
         browser_first_for_web=browser_first_for_web,
         strict_runtime_tool_guard=strict_runtime_tool_guard,
+        tool_permission_context=tool_permission_context,
+        tool_approval_callback=tool_approval_callback,
     )
 
 

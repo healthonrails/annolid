@@ -7,7 +7,10 @@ from typing import Any, Callable, Iterable, List
 
 from annolid.core.agent.config import load_config
 from annolid.core.agent.tools import FunctionToolRegistry, register_nanobot_style_tools
-from annolid.core.agent.tools.policy import resolve_allowed_tools
+from annolid.core.agent.tools.policy import (
+    build_tool_permission_context,
+    resolve_allowed_tools,
+)
 from annolid.core.agent.utils import get_agent_workspace_path
 
 
@@ -29,6 +32,7 @@ class ContextToolPreparation:
     t_after_register: float
     t_before_policy: float
     t_after_policy: float
+    permission_context: Any = None
 
 
 def _detect_annolid_repo_root() -> Path | None:
@@ -121,7 +125,7 @@ async def prepare_context_tools(
     t_after_register = time.perf_counter()
 
     t_before_policy = time.perf_counter()
-    policy_profile, policy_source = apply_tool_policy(
+    policy_profile, policy_source, permission_context = apply_tool_policy_with_context(
         tools=tools,
         include_tools=include_tools,
         tools_cfg=agent_cfg.tools,
@@ -142,10 +146,11 @@ async def prepare_context_tools(
         t_after_register=t_after_register,
         t_before_policy=t_before_policy,
         t_after_policy=t_after_policy,
+        permission_context=permission_context,
     )
 
 
-def apply_tool_policy(
+def apply_tool_policy_with_context(
     *,
     tools: FunctionToolRegistry,
     include_tools: bool,
@@ -156,10 +161,11 @@ def apply_tool_policy(
     always_disabled_tools: Iterable[str],
     web_tools: Iterable[str],
     resolve_policy: Callable[..., Any] = resolve_allowed_tools,
-) -> tuple[str, str]:
+) -> tuple[str, str, Any]:
     if not include_tools:
-        return "none", "tool_intent_skip"
+        return "none", "tool_intent_skip", None
 
+    all_initial_names = list(tools.tool_names)
     disabled_tools = set(always_disabled_tools)
     if not enable_web_tools:
         disabled_tools.update(web_tools)
@@ -175,4 +181,35 @@ def apply_tool_policy(
     for tool_name in list(tools.tool_names):
         if tool_name not in resolved_policy.allowed_tools:
             tools.unregister(tool_name)
-    return resolved_policy.profile, resolved_policy.source
+    permission_context = build_tool_permission_context(
+        all_tool_names=[*all_initial_names, *sorted(disabled_tools)],
+        resolved_policy=resolved_policy,
+        extra_deny_patterns=sorted(disabled_tools),
+    )
+    return resolved_policy.profile, resolved_policy.source, permission_context
+
+
+def apply_tool_policy(
+    *,
+    tools: FunctionToolRegistry,
+    include_tools: bool,
+    tools_cfg: Any,
+    provider: str,
+    model: str,
+    enable_web_tools: bool,
+    always_disabled_tools: Iterable[str],
+    web_tools: Iterable[str],
+    resolve_policy: Callable[..., Any] = resolve_allowed_tools,
+) -> tuple[str, str]:
+    profile, source, _permission_context = apply_tool_policy_with_context(
+        tools=tools,
+        include_tools=include_tools,
+        tools_cfg=tools_cfg,
+        provider=provider,
+        model=model,
+        enable_web_tools=enable_web_tools,
+        always_disabled_tools=always_disabled_tools,
+        web_tools=web_tools,
+        resolve_policy=resolve_policy,
+    )
+    return profile, source

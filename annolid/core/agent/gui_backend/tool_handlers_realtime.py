@@ -3,9 +3,35 @@ from __future__ import annotations
 import json
 import ipaddress
 import re
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from email.utils import parseaddr
 from typing import Any, Callable, Dict
+
+
+_SENSITIVE_QUERY_KEY_RE = re.compile(
+    r"(?:^|[_\-.])(pass|password|pwd|token|auth|secret|key|apikey|api_key|sig|signature)(?:$|[_\-.])",
+    flags=re.IGNORECASE,
+)
+
+
+def _redact_sensitive_query(query: str) -> str:
+    raw = str(query or "")
+    if not raw:
+        return ""
+    pairs = parse_qsl(raw, keep_blank_values=True)
+    if not pairs:
+        return raw
+    changed = False
+    redacted_pairs: list[tuple[str, str]] = []
+    for key, val in pairs:
+        if _SENSITIVE_QUERY_KEY_RE.search(str(key or "")):
+            redacted_pairs.append((key, "<redacted>"))
+            changed = True
+        else:
+            redacted_pairs.append((key, val))
+    if not changed:
+        return raw
+    return urlencode(redacted_pairs, doseq=True)
 
 
 def _redact_camera_source_for_bot_display(source: str) -> str:
@@ -47,13 +73,15 @@ def _redact_camera_source_for_bot_display(source: str) -> str:
     if not parts.netloc:
         return text
 
+    safe_query = _redact_sensitive_query(parts.query)
+
     if not redact_host:
-        # Strip credentials if present, keep host/port.
+        # Strip credentials if present (rsplit handles passwords containing '@').
         safe_netloc = parts.netloc
         if "@" in safe_netloc:
-            safe_netloc = safe_netloc.split("@", 1)[1]
+            safe_netloc = safe_netloc.rsplit("@", 1)[1]
         return urlunsplit(
-            (parts.scheme, safe_netloc, parts.path, parts.query, parts.fragment)
+            (parts.scheme, safe_netloc, parts.path, safe_query, parts.fragment)
         )
 
     port = f":{parts.port}" if parts.port else ""
@@ -62,7 +90,7 @@ def _redact_camera_source_for_bot_display(source: str) -> str:
     else:
         replacement = f"<private-host>{port}"
     return urlunsplit(
-        (parts.scheme, replacement, parts.path, parts.query, parts.fragment)
+        (parts.scheme, replacement, parts.path, safe_query, parts.fragment)
     )
 
 

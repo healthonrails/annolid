@@ -628,7 +628,8 @@ def _repair_temporal_records(
                 template=template,
             )
             repaired_all_shapes.append(filled)
-            last_seen[track_id] = (frame, dict(filled))
+            # Keep last_seen anchored on the last *observed* frame so max_gap_frames
+            # bounds gap length accurately and linear interpolation spans the true gap.
             missing += 1
 
         if repaired_all_shapes != all_shapes:
@@ -791,6 +792,13 @@ def _write_ndjson_lines(path: Path, lines: Iterable[str]) -> None:
                 fh.write(str(line))
                 fh.write("\n")
         temp_path.replace(path)
+        try:
+            from annolid.utils.annotation_store import AnnotationStore
+
+            AnnotationStore._CACHE.pop(path, None)
+            AnnotationStore._CACHE.pop(path.resolve(), None)
+        except Exception:
+            pass
     finally:
         if temp_path is not None and temp_path.exists():
             temp_path.unlink(missing_ok=True)

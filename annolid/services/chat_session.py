@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from annolid.core.agent.session_manager import (
@@ -16,13 +17,16 @@ from annolid.core.agent.gui_backend.session_io import (
     persist_turn as gui_persist_turn,
 )
 
+_SESSION_STORE_LOCK = threading.Lock()
 _SESSION_STORE: PersistentSessionStore | None = None
 
 
 def get_chat_session_store() -> PersistentSessionStore:
     global _SESSION_STORE
     if _SESSION_STORE is None:
-        _SESSION_STORE = PersistentSessionStore(AgentSessionManager())
+        with _SESSION_STORE_LOCK:
+            if _SESSION_STORE is None:
+                _SESSION_STORE = PersistentSessionStore(AgentSessionManager())
     return _SESSION_STORE
 
 

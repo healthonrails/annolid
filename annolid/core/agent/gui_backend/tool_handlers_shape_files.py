@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -196,12 +197,22 @@ def _shape_entries(
 
 
 def _write_json_atomic(path: Path, payload: Dict[str, Any]) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    tmp.replace(path)
+    tmp_path: Optional[Path] = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=str(path.parent),
+            prefix=f"{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as fh:
+            tmp_path = Path(fh.name)
+            fh.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+        tmp_path.replace(path)
+    finally:
+        if tmp_path is not None and tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
 
 
 def _load_store_lines(path: Path) -> List[str]:
@@ -239,10 +250,24 @@ def _pick_default_frame(records: List[Tuple[int, Dict[str, Any]]]) -> Optional[i
 
 
 def _write_store_lines(path: Path, lines: List[str]) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    tmp_path: Optional[Path] = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=str(path.parent),
+            prefix=f"{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as fh:
+            tmp_path = Path(fh.name)
+            fh.write("\n".join(lines) + "\n")
+        tmp_path.replace(path)
+    finally:
+        if tmp_path is not None and tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
     AnnotationStore._CACHE.pop(path, None)
+    AnnotationStore._CACHE.pop(path.resolve(), None)
 
 
 def list_shapes_in_annotation_tool(
@@ -515,9 +540,14 @@ def delete_shapes_in_annotation_tool(
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
 
-    def _delete_from_shapes(shapes: List[Any]) -> Tuple[List[Any], int]:
+    def _delete_from_shapes(
+        shapes: List[Any],
+        *,
+        remaining: int,
+    ) -> Tuple[List[Any], int]:
         kept: List[Any] = []
         removed = 0
+        cap = max(0, int(remaining))
         for shape in shapes:
             if not isinstance(shape, dict):
                 kept.append(shape)
@@ -528,7 +558,7 @@ def delete_shapes_in_annotation_tool(
                 exact_label=exact,
                 shape_type=type_text,
             )
-            if should_remove and removed < limit:
+            if should_remove and removed < cap:
                 removed += 1
                 continue
             kept.append(shape)
@@ -539,7 +569,7 @@ def delete_shapes_in_annotation_tool(
             json_path = Path(target["input_path"])
             payload = _read_json_dict(json_path)
             shapes = list(payload.get("shapes") or [])
-            kept, removed = _delete_from_shapes(shapes)
+            kept, removed = _delete_from_shapes(shapes, remaining=limit)
             if removed > 0:
                 payload["shapes"] = kept
                 if not bool(dry_run):
@@ -575,7 +605,10 @@ def delete_shapes_in_annotation_tool(
             if not bool(apply_all_frames) and row_frame != target_frame:
                 continue
             row_shapes = list(payload.get("shapes") or [])
-            kept, removed = _delete_from_shapes(row_shapes)
+            remaining = max(0, int(limit) - int(deleted_shapes))
+            if remaining <= 0:
+                break
+            kept, removed = _delete_from_shapes(row_shapes, remaining=remaining)
             if removed <= 0:
                 continue
             deleted_shapes += int(removed)

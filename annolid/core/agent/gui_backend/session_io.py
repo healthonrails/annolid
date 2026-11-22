@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import json
+import itertools
 import logging
 import hashlib
-import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from qtpy import QtCore
 from qtpy.QtCore import QMetaObject
 from ..tool_call_utils import sanitize_tool_call_id, sanitize_tool_call_requests
+from .response_finalize import sanitize_final_response_text
 from .turn_state import (
     ERROR_TYPE_INTERNAL,
     ERROR_TYPE_NONE,
@@ -24,6 +25,7 @@ from .turn_state import (
 
 
 logger = logging.getLogger(__name__)
+_CHUNK_EVENT_SEQ = itertools.count(1)
 
 
 @dataclass(frozen=True)
@@ -46,15 +48,16 @@ def encode_outbound_chat_event(event: OutboundChatEvent) -> str:
     event_id = str(event.event_id or "").strip()
     idempotency_key = str(event.idempotency_key or "").strip()
     if not idempotency_key:
-        digest_src = "|".join(
-            [
-                direction,
-                kind,
-                turn_id,
-                str(bool(event.is_error)),
-                str(event.text or ""),
-            ]
-        )
+        digest_parts = [
+            direction,
+            kind,
+            turn_id,
+            str(bool(event.is_error)),
+            str(event.text or ""),
+        ]
+        if event_id:
+            digest_parts.append(event_id)
+        digest_src = "|".join(digest_parts)
         idempotency_key = hashlib.sha1(digest_src.encode("utf-8")).hexdigest()
     payload = {
         "direction": direction,
@@ -107,30 +110,34 @@ def decode_outbound_chat_event(payload_text: str) -> Optional[OutboundChatEvent]
     )
 
 
+def _invoke_queued_slot(widget: Any, slot_name: str, payload_text: str) -> bool:
+    slot = getattr(widget, slot_name, None)
+    if not callable(slot):
+        return False
+    try:
+        invoked = QMetaObject.invokeMethod(
+            widget,
+            slot_name,
+            QtCore.Qt.QueuedConnection,
+            QtCore.Q_ARG(str, payload_text),
+        )
+    except Exception:
+        return False
+    # Depending on Qt binding (PyQt vs PySide), void invokeMethod may return
+    # either True or None on success; only explicit False signals failure.
+    if isinstance(invoked, bool):
+        return invoked
+    return True
+
+
 def _emit_outbound_chat_event(widget: Any, event: OutboundChatEvent) -> None:
     if widget is None:
         return
     payload_text = encode_outbound_chat_event(event)
-    bus_enqueue_slot = getattr(widget, "enqueue_outbound_bus_message", None)
-    if callable(bus_enqueue_slot):
-        invoked = QMetaObject.invokeMethod(
-            widget,
-            "enqueue_outbound_bus_message",
-            QtCore.Qt.QueuedConnection,
-            QtCore.Q_ARG(str, payload_text),
-        )
-        if bool(invoked):
-            return
-    consume_slot = getattr(widget, "consume_outbound_chat_event", None)
-    if callable(consume_slot):
-        invoked = QMetaObject.invokeMethod(
-            widget,
-            "consume_outbound_chat_event",
-            QtCore.Qt.QueuedConnection,
-            QtCore.Q_ARG(str, payload_text),
-        )
-        if bool(invoked):
-            return
+    if _invoke_queued_slot(widget, "enqueue_outbound_bus_message", payload_text):
+        return
+    if _invoke_queued_slot(widget, "consume_outbound_chat_event", payload_text):
+        return
 
     # Backward-compatible fallback for old widgets.
     if event.kind == "chunk":
@@ -158,6 +165,7 @@ def _emit_outbound_chat_event(widget: Any, event: OutboundChatEvent) -> None:
 
 
 def emit_chunk(*, widget: Any, chunk: str, turn_id: str = "") -> None:
+    seq = next(_CHUNK_EVENT_SEQ)
     _emit_outbound_chat_event(
         widget,
         OutboundChatEvent(
@@ -166,6 +174,7 @@ def emit_chunk(*, widget: Any, chunk: str, turn_id: str = "") -> None:
             text=str(chunk or ""),
             turn_id=str(turn_id or "").strip(),
             turn_status=TURN_STATUS_RUNNING,
+            event_id=f"chunk-{seq}",
         ),
     )
 
@@ -254,54 +263,68 @@ def load_history_messages(
         return []
     cleaned: List[Dict[str, Any]] = []
     for msg in history:
+        if not isinstance(msg, dict):
+            continue
         role = str(msg.get("role") or "")
         content = msg.get("content")
-        if role not in {"user", "assistant", "system"}:
+        if role not in {"user", "assistant", "system", "tool"}:
             continue
-        if not isinstance(content, str):
-            continue
-        text = content.strip()
-        if not text:
-            continue
-        entry: Dict[str, Any] = {"role": role, "content": text}
-        tool_calls = msg.get("tool_calls")
-        if isinstance(tool_calls, list) and tool_calls:
-            raw_calls: List[Dict[str, Any]] = []
-            for item in tool_calls:
-                if not isinstance(item, dict):
-                    continue
-                function = item.get("function")
-                if isinstance(function, dict):
+        text = content.strip() if isinstance(content, str) else ""
+        cleaned_calls: List[Dict[str, Any]] = []
+        if role == "assistant":
+            tool_calls = msg.get("tool_calls")
+            if isinstance(tool_calls, list) and tool_calls:
+                raw_calls: List[Dict[str, Any]] = []
+                for item in tool_calls:
+                    if not isinstance(item, dict):
+                        continue
+                    function = item.get("function")
+                    if isinstance(function, dict):
+                        raw_calls.append(
+                            {
+                                "id": item.get("id"),
+                                "name": function.get("name"),
+                                "arguments": function.get("arguments"),
+                            }
+                        )
+                        continue
                     raw_calls.append(
                         {
                             "id": item.get("id"),
-                            "name": function.get("name"),
-                            "arguments": function.get("arguments"),
+                            "name": item.get("name"),
+                            "arguments": item.get("arguments"),
                         }
                     )
-                    continue
-                raw_calls.append(
-                    {
-                        "id": item.get("id"),
-                        "name": item.get("name"),
-                        "arguments": item.get("arguments"),
-                    }
-                )
-            cleaned_calls = sanitize_tool_call_requests(raw_calls)
-            if cleaned_calls:
-                entry["tool_calls"] = [
-                    {
-                        "id": item["id"],
-                        "type": "function",
-                        "function": {
-                            "name": item["name"],
-                            "arguments": json.dumps(
-                                item["arguments"], ensure_ascii=False
-                            ),
-                        },
-                    }
-                    for item in cleaned_calls
-                ]
+                cleaned_calls = sanitize_tool_call_requests(raw_calls)
+        if role == "tool":
+            tool_call_id = msg.get("tool_call_id")
+            if not (isinstance(tool_call_id, str) and tool_call_id.strip()):
+                continue
+            entry: Dict[str, Any] = {
+                "role": "tool",
+                "content": text,
+                "tool_call_id": sanitize_tool_call_id(tool_call_id),
+            }
+            name = msg.get("name")
+            if isinstance(name, str) and name.strip():
+                entry["name"] = name.strip()
+            cleaned.append(entry)
+            continue
+        if not text and not cleaned_calls:
+            continue
+        entry = {"role": role, "content": text}
+        if cleaned_calls:
+            entry["tool_calls"] = [
+                {
+                    "id": item["id"],
+                    "type": "function",
+                    "function": {
+                        "name": item["name"],
+                        "arguments": json.dumps(item["arguments"], ensure_ascii=False),
+                    },
+                }
+                for item in cleaned_calls
+            ]
         tool_call_id = msg.get("tool_call_id")
         if isinstance(tool_call_id, str) and tool_call_id.strip():
             entry["tool_call_id"] = sanitize_tool_call_id(tool_call_id)
@@ -310,7 +333,11 @@ def load_history_messages(
             entry["name"] = name.strip()
         cleaned.append(entry)
     keep = max(1, int(max_history_messages))
-    return cleaned[-keep:]
+    sliced = cleaned[-keep:]
+    # Drop orphaned leading tool responses whose parent assistant(tool_calls) was sliced off.
+    while sliced and sliced[0].get("role") == "tool":
+        sliced.pop(0)
+    return sliced
 
 
 def persist_turn(
@@ -343,20 +370,22 @@ def persist_turn(
         except Exception:
             logger.exception("Failed to persist agent chat history for %s", session_id)
     if session_store:
-        _record_session_event(
-            session_store=session_store,
-            session_id=session_id,
-            direction="inbound",
-            kind="user",
-            payload={"text": user_msg},
-        )
-        _record_session_event(
-            session_store=session_store,
-            session_id=session_id,
-            direction="outbound",
-            kind="assistant",
-            payload={"text": assistant_msg},
-        )
+        if user_msg:
+            _record_session_event(
+                session_store=session_store,
+                session_id=session_id,
+                direction="inbound",
+                kind="user",
+                payload={"text": user_msg},
+            )
+        if assistant_msg:
+            _record_session_event(
+                session_store=session_store,
+                session_id=session_id,
+                direction="outbound",
+                kind="assistant",
+                payload={"text": assistant_msg},
+            )
 
     if not _is_gui_test_session_id(session_id):
         try:
@@ -369,8 +398,12 @@ def persist_turn(
             entry = "\n\n".join(parts)
             workspace_memory.append_today(entry)
             workspace_memory.append_history(entry)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(
+                "Failed to append workspace memory for session=%s: %s",
+                session_id,
+                exc,
+            )
 
 
 def _record_session_event(
@@ -403,22 +436,7 @@ def _is_gui_test_session_id(session_id: str) -> bool:
 
 
 def _sanitize_persisted_turn_text(text: Any) -> str:
-    value = str(text or "").strip()
-    if not value:
-        return ""
-    value = re.sub(r"<think>[\s\S]*?</think>", "", value, flags=re.IGNORECASE)
-    value = re.sub(
-        r"<\|tool_calls_section_begin\|>[\s\S]*?<\|tool_calls_section_end\|>",
-        "",
-        value,
-        flags=re.IGNORECASE,
-    )
-    value = re.sub(r"<\|tool_call_begin\|>[\s\S]*?<\|tool_call_end\|>", "", value)
-    value = re.sub(r"<\|tool_call_argument_begin\|>", "", value)
-    value = re.sub(r"<\|tool_calls_section_(?:begin|end)\|>", "", value)
-    value = re.sub(r"<\|tool_call_(?:begin|end)\|>", "", value)
-    value = re.sub(r"\n{3,}", "\n\n", value)
-    return value.strip()
+    return sanitize_final_response_text(str(text or ""))
 
 
 def replay_session_debug_events(

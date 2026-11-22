@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from annolid.core.agent.gui_backend.tool_handlers_realtime import (
+    _redact_camera_source_for_bot_display as redact_camera_source_for_bot_display,
     check_stream_source_tool,
     get_realtime_status_tool,
     list_log_files_tool,
@@ -26,6 +27,7 @@ __all__ = [
     "list_realtime_models_tool",
     "open_log_folder_tool",
     "read_log_file_tool",
+    "redact_camera_source_for_bot_display",
     "remove_log_folder_tool",
     "search_logs_tool",
     "start_realtime_stream_tool",

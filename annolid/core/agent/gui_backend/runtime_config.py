@@ -68,7 +68,14 @@ def browser_first_for_web(settings: Dict[str, Any]) -> bool:
     agent_cfg = settings.get("agent", {})
     if not isinstance(agent_cfg, dict):
         return True
-    return bool(agent_cfg.get("browser_first_for_web", True))
+    raw = agent_cfg.get("browser_first_for_web", True)
+    if isinstance(raw, str):
+        token = raw.strip().lower()
+        if token in {"0", "false", "no", "off", ""}:
+            return False
+        if token in {"1", "true", "yes", "on"}:
+            return True
+    return bool(raw)
 
 
 def ollama_agent_plain_timeout_seconds(settings: Dict[str, Any]) -> float:

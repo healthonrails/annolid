@@ -105,7 +105,10 @@ def analyze_tracking_stats_tool(
     if video_filter and not overview_df.empty and "video_id" in overview_df.columns:
         lowered = video_filter.lower()
         filtered_df = overview_df[
-            overview_df["video_id"].astype(str).str.lower().str.contains(lowered)
+            overview_df["video_id"]
+            .astype(str)
+            .str.lower()
+            .str.contains(lowered, regex=False)
         ]
 
     if filtered_df.empty:

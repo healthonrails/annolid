@@ -1,47 +1,14 @@
 import asyncio
-import ipaddress
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
 from typing import Any, Callable, Dict
+
+from annolid.core.agent.gui_backend.tool_handlers_realtime import (
+    _redact_camera_source_for_bot_display,
+)
 
 
 def _safe_source_for_display(source: str) -> str:
-    text = str(source or "").strip()
-    if not text or text.isdigit() or "://" not in text:
-        return text
-    try:
-        parts = urlsplit(text)
-    except Exception:
-        return text
-    host = str(parts.hostname or "").strip()
-    if not host:
-        return text
-    redact = host.lower() == "localhost"
-    if not redact:
-        try:
-            ip_obj = ipaddress.ip_address(host)
-            redact = bool(
-                ip_obj.is_private
-                or ip_obj.is_loopback
-                or ip_obj.is_link_local
-                or ip_obj.is_multicast
-            )
-        except Exception:
-            redact = False
-    safe_netloc = parts.netloc
-    if "@" in safe_netloc:
-        safe_netloc = safe_netloc.split("@", 1)[1]
-    if not redact:
-        return urlunsplit(
-            (parts.scheme, safe_netloc, parts.path, parts.query, parts.fragment)
-        )
-    port = f":{parts.port}" if parts.port else ""
-    replacement = f"<private-host>{port}"
-    if parts.scheme.lower() in {"rtp", "udp"}:
-        replacement = f"@<private-host>{port}"
-    return urlunsplit(
-        (parts.scheme, replacement, parts.path, parts.query, parts.fragment)
-    )
+    return _redact_camera_source_for_bot_display(source)
 
 
 async def execute_direct_gui_command(
@@ -461,18 +428,26 @@ async def execute_direct_gui_command(
         return str(payload.get("error") or "Failed to manage behavior catalog.")
 
     if name == "start_realtime_stream":
-        payload = await _run(
-            start_realtime_stream,
-            camera_source=str(args.get("camera_source") or ""),
-            model_name=str(args.get("model_name") or ""),
-            target_behaviors=args.get("target_behaviors"),
-            confidence_threshold=args.get("confidence_threshold"),
-            viewer_type=str(args.get("viewer_type") or ""),
-            rtsp_transport=str(args.get("rtsp_transport") or ""),
-            classify_eye_blinks=bool(args.get("classify_eye_blinks", False)),
-            blink_ear_threshold=args.get("blink_ear_threshold"),
-            blink_min_consecutive_frames=args.get("blink_min_consecutive_frames"),
-        )
+        start_kwargs: Dict[str, Any] = {
+            "camera_source": str(args.get("camera_source") or ""),
+            "model_name": str(args.get("model_name") or ""),
+            "target_behaviors": args.get("target_behaviors"),
+            "confidence_threshold": args.get("confidence_threshold"),
+            "viewer_type": str(args.get("viewer_type") or ""),
+            "rtsp_transport": str(args.get("rtsp_transport") or ""),
+            "classify_eye_blinks": bool(args.get("classify_eye_blinks", False)),
+            "blink_ear_threshold": args.get("blink_ear_threshold"),
+            "blink_min_consecutive_frames": args.get("blink_min_consecutive_frames"),
+        }
+        if "save_detection_segments" in args:
+            start_kwargs["save_detection_segments"] = bool(
+                args.get("save_detection_segments", False)
+            )
+        if args.get("detection_segment_targets") is not None:
+            start_kwargs["detection_segment_targets"] = args.get(
+                "detection_segment_targets"
+            )
+        payload = await _run(start_realtime_stream, **start_kwargs)
         if payload.get("ok"):
             model_name = str(payload.get("model_name") or "")
             return (
@@ -916,16 +891,15 @@ async def execute_direct_gui_command(
                 return "No citations found."
             count = int(payload.get("count") or len(items))
             lines = [f"Found {count} citation(s):"]
-            for entry in items[:20]:
-                if not isinstance(entry, dict):
-                    continue
+            shown = [entry for entry in items[:20] if isinstance(entry, dict)]
+            for entry in shown:
                 key = str(entry.get("key") or "").strip()
                 title = str(entry.get("title") or "").strip()
                 year = str(entry.get("year") or "").strip()
                 label = key or "(no-key)"
                 detail = f"{title} ({year})" if title and year else (title or year)
                 lines.append(f"- {label}: {detail}".rstrip(": "))
-            if count > len(items):
+            if count > len(shown):
                 lines.append("... (showing top results)")
             return "\n".join(lines)
         return str(payload.get("error") or "Failed to list citations.")
