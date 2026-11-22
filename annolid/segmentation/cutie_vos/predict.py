@@ -59,8 +59,10 @@ from annolid.utils.model_assets import ensure_cached_model_asset
 from annolid.utils.zone_shapes import is_zone_shape_payload
 from annolid.motion.optical_flow import (
     compute_optical_flow,
+    flow_hsv_to_bgr,
     optical_flow_compute_kwargs,
     optical_flow_settings_from,
+    resolve_optical_flow_backend_flags,
 )
 from annolid.utils import draw
 from annolid.utils.lru_cache import BboxCache
@@ -4188,9 +4190,11 @@ class CutieCoreVideoProcessor:
                         return (message + delimiter + str(current_frame_index), True)
 
                     if self.compute_optical_flow and prev_frame is not None:
-                        backend_val = str(self.optical_flow_backend).lower()
-                        use_raft = "raft" in backend_val
-                        use_torch_farneback = ("torch" in backend_val) and not use_raft
+                        use_raft, use_torch_farneback = (
+                            resolve_optical_flow_backend_flags(
+                                self.optical_flow_backend
+                            )
+                        )
                         self._flow_hsv, self._flow = compute_optical_flow(
                             prev_frame,
                             frame,
@@ -4736,18 +4740,17 @@ class CutieCoreVideoProcessor:
                         self._mask = global_prediction > 0
                         visualization = overlay_davis(frame, global_prediction)
                         if self._flow_hsv is not None:
-                            flow_bgr = cv2.cvtColor(self._flow_hsv, cv2.COLOR_HSV2BGR)
+                            flow_bgr = flow_hsv_to_bgr(self._flow_hsv)
                             expanded_prediction = np.expand_dims(self._mask, axis=-1)
                             flow_bgr = flow_bgr * expanded_prediction
-                            mask_array_reshaped = np.repeat(
-                                self._mask[:, :, np.newaxis], 2, axis=2
-                            )
                             visualization = cv2.addWeighted(
                                 visualization, 1, flow_bgr, 0.5, 0
                             )
-                            visualization = draw.draw_flow(
-                                visualization, self._flow * mask_array_reshaped
-                            )
+                            if self._flow is not None:
+                                visualization = draw.draw_flow(
+                                    visualization,
+                                    self._flow * expanded_prediction,
+                                )
                         self.video_writer.write(visualization)
 
                     if (

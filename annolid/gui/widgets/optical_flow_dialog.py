@@ -5,8 +5,16 @@ from typing import Optional, Tuple, Union
 from qtpy import QtCore, QtWidgets
 
 from annolid.motion.optical_flow import (
+    DEFAULT_FARNEBACK_ITERATIONS,
+    DEFAULT_FARNEBACK_LEVELS,
     DEFAULT_FARNEBACK_POLY_N,
+    DEFAULT_FARNEBACK_POLY_SIGMA,
+    DEFAULT_FARNEBACK_PYR_SCALE,
     DEFAULT_FARNEBACK_WINSIZE,
+    OPTICAL_FLOW_BACKEND_LABELS,
+    OpticalFlowPreferences,
+    normalize_optical_flow_backend,
+    optical_flow_backend_combo_index,
 )
 
 
@@ -24,31 +32,22 @@ class FlowOptionsDialog(QtWidgets.QDialog):
         default_quiver_step: int = 16,
         default_quiver_gain: Union[int, float] = 1.0,
         default_stable_hsv: bool = True,
-        default_pyr_scale: Union[int, float] = 0.5,
-        default_levels: int = 1,
+        default_pyr_scale: Union[int, float] = DEFAULT_FARNEBACK_PYR_SCALE,
+        default_levels: int = DEFAULT_FARNEBACK_LEVELS,
         default_winsize: int = DEFAULT_FARNEBACK_WINSIZE,
-        default_iterations: int = 3,
+        default_iterations: int = DEFAULT_FARNEBACK_ITERATIONS,
         default_poly_n: int = DEFAULT_FARNEBACK_POLY_N,
-        default_poly_sigma: Union[int, float] = 1.1,
+        default_poly_sigma: Union[int, float] = DEFAULT_FARNEBACK_POLY_SIGMA,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Optical Flow Settings")
 
         backend_label = QtWidgets.QLabel("Flow backend:")
         self.backend_combo = QtWidgets.QComboBox()
-        self.backend_combo.addItems(
-            ["farneback (default)", "farneback (torch)", "raft (torchvision)"]
+        self.backend_combo.addItems(list(OPTICAL_FLOW_BACKEND_LABELS))
+        self.backend_combo.setCurrentIndex(
+            optical_flow_backend_combo_index(default_backend)
         )
-        backend_val = (
-            str(default_backend).lower() if default_backend is not None else "farneback"
-        )
-        if "raft" in backend_val:
-            backend_idx = 2
-        elif "torch" in backend_val:
-            backend_idx = 1
-        else:
-            backend_idx = 0
-        self.backend_combo.setCurrentIndex(backend_idx)
 
         raft_label = QtWidgets.QLabel("RAFT model:")
         self.raft_combo = QtWidgets.QComboBox()
@@ -92,11 +91,13 @@ class FlowOptionsDialog(QtWidgets.QDialog):
         self.pyr_scale_spin = QtWidgets.QDoubleSpinBox()
         self.pyr_scale_spin.setRange(0.05, 0.99)
         self.pyr_scale_spin.setSingleStep(0.05)
-        self.pyr_scale_spin.setValue(float(default_pyr_scale or 0.5))
+        self.pyr_scale_spin.setValue(
+            float(default_pyr_scale or DEFAULT_FARNEBACK_PYR_SCALE)
+        )
 
         self.levels_spin = QtWidgets.QSpinBox()
         self.levels_spin.setRange(1, 10)
-        self.levels_spin.setValue(int(default_levels or 1))
+        self.levels_spin.setValue(int(default_levels or DEFAULT_FARNEBACK_LEVELS))
 
         self.winsize_spin = QtWidgets.QSpinBox()
         self.winsize_spin.setRange(1, 128)
@@ -107,7 +108,9 @@ class FlowOptionsDialog(QtWidgets.QDialog):
 
         self.iterations_spin = QtWidgets.QSpinBox()
         self.iterations_spin.setRange(1, 50)
-        self.iterations_spin.setValue(int(default_iterations or 3))
+        self.iterations_spin.setValue(
+            int(default_iterations or DEFAULT_FARNEBACK_ITERATIONS)
+        )
 
         self.poly_n_spin = QtWidgets.QSpinBox()
         self.poly_n_spin.setRange(3, 15)
@@ -119,7 +122,9 @@ class FlowOptionsDialog(QtWidgets.QDialog):
         self.poly_sigma_spin = QtWidgets.QDoubleSpinBox()
         self.poly_sigma_spin.setRange(0.5, 5.0)
         self.poly_sigma_spin.setSingleStep(0.05)
-        self.poly_sigma_spin.setValue(float(default_poly_sigma or 1.1))
+        self.poly_sigma_spin.setValue(
+            float(default_poly_sigma or DEFAULT_FARNEBACK_POLY_SIGMA)
+        )
 
         farneback_form.addRow(QtWidgets.QLabel("Pyramid scale:"), self.pyr_scale_spin)
         farneback_form.addRow(QtWidgets.QLabel("Levels:"), self.levels_spin)
@@ -174,50 +179,52 @@ class FlowOptionsDialog(QtWidgets.QDialog):
         is_quiver = self.viz_combo.currentText().strip().lower() == "quiver"
         self.quiver_group.setEnabled(is_quiver)
         self.stable_hsv_checkbox.setEnabled(not is_quiver)
-        is_raft = "raft" in self.backend_combo.currentText().strip().lower()
+        is_raft = self._backend_value() == "raft"
         self.raft_combo.setEnabled(is_raft)
         self.farneback_group.setEnabled(not is_raft)
 
     def _backend_value(self) -> str:
-        text = self.backend_combo.currentText().strip().lower()
-        if "raft" in text:
-            return "raft"
-        if "torch" in text:
-            return "farneback_torch"
-        return "farneback"
+        return normalize_optical_flow_backend(self.backend_combo.currentText())
+
+    def preferences(self) -> Optional[OpticalFlowPreferences]:
+        if self.result() != QtWidgets.QDialog.Accepted:
+            return None
+        return OpticalFlowPreferences(
+            backend=self._backend_value(),
+            raft_model=self.raft_combo.currentText().strip().lower(),
+            visualization=self.viz_combo.currentText().strip().lower(),
+            opacity=int(self.opacity_slider.value()),
+            quiver_step=int(self.quiver_step_spin.value()),
+            quiver_gain=float(self.quiver_gain_spin.value()),
+            stable_hsv=bool(self.stable_hsv_checkbox.isChecked()),
+            farneback_pyr_scale=float(self.pyr_scale_spin.value()),
+            farneback_levels=int(self.levels_spin.value()),
+            farneback_winsize=int(self.winsize_spin.value()),
+            farneback_iterations=int(self.iterations_spin.value()),
+            farneback_poly_n=int(self.poly_n_spin.value()),
+            farneback_poly_sigma=float(self.poly_sigma_spin.value()),
+        )
 
     def values(
         self,
     ) -> Optional[
         Tuple[str, str, str, int, int, float, bool, float, int, int, int, int, float]
     ]:
-        if self.result() != QtWidgets.QDialog.Accepted:
+        prefs = self.preferences()
+        if prefs is None:
             return None
-        backend = self._backend_value()
-        raft_model = self.raft_combo.currentText().strip().lower()
-        viz = self.viz_combo.currentText().strip().lower()
-        opacity = int(self.opacity_slider.value())
-        quiver_step = int(self.quiver_step_spin.value())
-        quiver_gain = float(self.quiver_gain_spin.value())
-        stable_hsv = bool(self.stable_hsv_checkbox.isChecked())
-        pyr_scale = float(self.pyr_scale_spin.value())
-        levels = int(self.levels_spin.value())
-        winsize = int(self.winsize_spin.value())
-        iterations = int(self.iterations_spin.value())
-        poly_n = int(self.poly_n_spin.value())
-        poly_sigma = float(self.poly_sigma_spin.value())
         return (
-            backend,
-            raft_model,
-            viz,
-            opacity,
-            quiver_step,
-            quiver_gain,
-            stable_hsv,
-            pyr_scale,
-            levels,
-            winsize,
-            iterations,
-            poly_n,
-            poly_sigma,
+            prefs.backend,
+            prefs.raft_model,
+            prefs.visualization,
+            prefs.opacity,
+            prefs.quiver_step,
+            prefs.quiver_gain,
+            prefs.stable_hsv,
+            prefs.farneback_pyr_scale,
+            prefs.farneback_levels,
+            prefs.farneback_winsize,
+            prefs.farneback_iterations,
+            prefs.farneback_poly_n,
+            prefs.farneback_poly_sigma,
         )

@@ -17,20 +17,10 @@
 
 import numpy as np
 
+_COLORWHEEL_CACHE = None
 
-def make_colorwheel():
-    """
-    Generates a color wheel for optical flow visualization as presented in:
-        Baker et al. "A Database and Evaluation Methodology for Optical Flow" (ICCV, 2007)
-        URL: http://vision.middlebury.edu/flow/flowEval-iccv07.pdf
 
-    Code follows the original C++ source code of Daniel Scharstein.
-    Code follows the the Matlab source code of Deqing Sun.
-
-    Returns:
-        np.ndarray: Color wheel
-    """
-
+def _build_colorwheel():
     RY = 15
     YG = 6
     GC = 4
@@ -39,7 +29,7 @@ def make_colorwheel():
     MR = 6
 
     ncols = RY + YG + GC + CB + BM + MR
-    colorwheel = np.zeros((ncols, 3))
+    colorwheel = np.zeros((ncols, 3), dtype=np.float32)
     col = 0
 
     # RY
@@ -68,6 +58,28 @@ def make_colorwheel():
     return colorwheel
 
 
+def _get_cached_colorwheel():
+    global _COLORWHEEL_CACHE
+    if _COLORWHEEL_CACHE is None:
+        _COLORWHEEL_CACHE = _build_colorwheel()
+    return _COLORWHEEL_CACHE
+
+
+def make_colorwheel():
+    """
+    Generates a color wheel for optical flow visualization as presented in:
+        Baker et al. "A Database and Evaluation Methodology for Optical Flow" (ICCV, 2007)
+        URL: http://vision.middlebury.edu/flow/flowEval-iccv07.pdf
+
+    Code follows the original C++ source code of Daniel Scharstein.
+    Code follows the the Matlab source code of Deqing Sun.
+
+    Returns:
+        np.ndarray: Color wheel
+    """
+    return _get_cached_colorwheel().copy()
+
+
 def flow_uv_to_colors(u, v, convert_to_bgr=False):
     """
     Applies the flow color wheel to (possibly clipped) flow components u and v.
@@ -83,27 +95,30 @@ def flow_uv_to_colors(u, v, convert_to_bgr=False):
     Returns:
         np.ndarray: Flow visualization image of shape [H,W,3]
     """
-    flow_image = np.zeros((u.shape[0], u.shape[1], 3), np.uint8)
-    colorwheel = make_colorwheel()  # shape [55x3]
+    u = np.nan_to_num(np.asarray(u, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+    v = np.nan_to_num(np.asarray(v, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+
+    flow_image = np.empty((u.shape[0], u.shape[1], 3), np.uint8)
+    colorwheel = _get_cached_colorwheel()  # shape [55x3]
     ncols = colorwheel.shape[0]
-    rad = np.sqrt(np.square(u) + np.square(v))
+    rad = np.hypot(u, v)
     a = np.arctan2(-v, -u) / np.pi
-    fk = (a + 1) / 2 * (ncols - 1)
-    k0 = np.floor(fk).astype(np.int32)
+    fk = (a + 1.0) * 0.5 * (ncols - 1)
+    k0 = np.clip(np.floor(fk).astype(np.int32), 0, ncols - 1)
     k1 = k0 + 1
     k1[k1 == ncols] = 0
     f = fk - k0
-    for i in range(colorwheel.shape[1]):
-        tmp = colorwheel[:, i]
-        col0 = tmp[k0] / 255.0
-        col1 = tmp[k1] / 255.0
-        col = (1 - f) * col0 + f * col1
-        idx = rad <= 1
-        col[idx] = 1 - rad[idx] * (1 - col[idx])
-        col[~idx] = col[~idx] * 0.75  # out of range
+    one_minus_f = 1.0 - f
+    in_range = rad <= 1.0
+    for i in range(3):
+        tmp = colorwheel[:, i] * (1.0 / 255.0)
+        col = one_minus_f * tmp[k0] + f * tmp[k1]
+        col = np.where(in_range, 1.0 - rad * (1.0 - col), col * 0.75)
         # Note the 2-i => BGR instead of RGB
         ch_idx = 2 - i if convert_to_bgr else i
-        flow_image[:, :, ch_idx] = np.floor(255 * col)
+        flow_image[:, :, ch_idx] = np.clip(np.floor(255.0 * col), 0.0, 255.0).astype(
+            np.uint8
+        )
     return flow_image
 
 
@@ -113,7 +128,7 @@ def flow_to_image(flow_uv, clip_flow=None, convert_to_bgr=False):
 
     Args:
         flow_uv (np.ndarray): Flow UV image of shape [H,W,2]
-        clip_flow (float, optional): Clip maximum of flow values. Defaults to None.
+        clip_flow (float, optional): Symmetric clip bound for flow components. Defaults to None.
         convert_to_bgr (bool, optional): Convert output image to BGR. Defaults to False.
 
     Returns:
@@ -121,13 +136,16 @@ def flow_to_image(flow_uv, clip_flow=None, convert_to_bgr=False):
     """
     assert flow_uv.ndim == 3, "input flow must have three dimensions"
     assert flow_uv.shape[2] == 2, "input flow must have shape [H,W,2]"
+    flow_uv = np.nan_to_num(
+        np.asarray(flow_uv, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0
+    )
     if clip_flow is not None:
-        flow_uv = np.clip(flow_uv, 0, clip_flow)
+        bound = abs(float(clip_flow))
+        flow_uv = np.clip(flow_uv, -bound, bound)
     u = flow_uv[:, :, 0]
     v = flow_uv[:, :, 1]
-    rad = np.sqrt(np.square(u) + np.square(v))
-    rad_max = np.max(rad)
+    rad = np.hypot(u, v)
+    rad_max = float(np.max(rad)) if rad.size else 0.0
     epsilon = 1e-5
-    u = u / (rad_max + epsilon)
-    v = v / (rad_max + epsilon)
-    return flow_uv_to_colors(u, v, convert_to_bgr)
+    inv_scale = 1.0 / (rad_max + epsilon)
+    return flow_uv_to_colors(u * inv_scale, v * inv_scale, convert_to_bgr)

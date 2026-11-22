@@ -35,6 +35,11 @@ from annolid.gui.widgets.dino_training_ui_shared import (
     configure_dino_model_combo,
     selected_dino_model_identifier,
 )
+from annolid.motion.optical_flow import (
+    OPTICAL_FLOW_BACKEND_LABELS,
+    normalize_optical_flow_backend,
+    optical_flow_backend_combo_index,
+)
 
 
 class AdvancedParametersDialog(QDialog):
@@ -231,13 +236,7 @@ class AdvancedParametersDialog(QDialog):
             )
         )
 
-        backend_val = str(self.optical_flow_backend).lower()
-        if "raft" in backend_val:
-            backend_idx = 2
-        elif "torch" in backend_val:
-            backend_idx = 1
-        else:
-            backend_idx = 0
+        backend_idx = optical_flow_backend_combo_index(self.optical_flow_backend)
 
         self.epsilon_spinbox.setValue(self.epsilon_value)
         self.t_max_spinbox.setValue(self.t_max_value)
@@ -401,16 +400,8 @@ class AdvancedParametersDialog(QDialog):
         )
 
         self.optical_flow_backend_combo = QComboBox()
-        self.optical_flow_backend_combo.addItems(
-            ["farneback (default)", "farneback (torch)", "raft (torchvision)"]
-        )
-        backend_val = str(self.optical_flow_backend).lower()
-        if "raft" in backend_val:
-            backend_idx = 2
-        elif "torch" in backend_val:
-            backend_idx = 1
-        else:
-            backend_idx = 0
+        self.optical_flow_backend_combo.addItems(list(OPTICAL_FLOW_BACKEND_LABELS))
+        backend_idx = optical_flow_backend_combo_index(self.optical_flow_backend)
         self.optical_flow_backend_combo.setCurrentIndex(backend_idx)
         self.optical_flow_backend_combo.setToolTip(
             "Choose OpenCV Farneback, Torch Farneback, or RAFT (TorchVision)."
@@ -1781,12 +1772,9 @@ class AdvancedParametersDialog(QDialog):
         return self.follow_prediction_progress
 
     def get_optical_flow_backend(self) -> str:
-        text = self.optical_flow_backend_combo.currentText().lower()
-        if "raft" in text:
-            return "raft"
-        if "torch" in text:
-            return "farneback_torch"
-        return "farneback"
+        return normalize_optical_flow_backend(
+            self.optical_flow_backend_combo.currentText()
+        )
 
     def get_cutie_weights_path(self) -> Optional[str]:
         return self._current_cutie_spec_from_widgets()

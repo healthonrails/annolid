@@ -17,21 +17,16 @@ except ImportError:
     from corr import AlternateCorrBlock, CorrBlock
     from extractor import BasicEncoder, SmallEncoder
     from update import BasicUpdateBlock, SmallUpdateBlock
+from contextlib import nullcontext
 from annolid.motion.utils import coords_grid, upflow8
 
-try:
-    autocast = torch.cuda.amp.autocast
-except AttributeError:
-    # dummy autocast for PyTorch < 1.6
-    class autocast:
-        def __init__(self, enabled):
-            pass
 
-        def __enter__(self):
-            pass
-
-        def __exit__(self, *args):
-            pass
+def _autocast_cuda(enabled: bool):
+    if not enabled or not torch.cuda.is_available():
+        return nullcontext()
+    if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
+        return torch.amp.autocast("cuda", enabled=True)
+    return torch.cuda.amp.autocast(enabled=True)
 
 
 class RAFT(nn.Module):
@@ -51,11 +46,14 @@ class RAFT(nn.Module):
             args.corr_levels = 4
             args.corr_radius = 4
 
-        if "dropout" not in self.args:
+        if not hasattr(self.args, "dropout"):
             self.args.dropout = 0
 
-        if "alternate_corr" not in self.args:
+        if not hasattr(self.args, "alternate_corr"):
             self.args.alternate_corr = False
+
+        if not hasattr(self.args, "mixed_precision"):
+            self.args.mixed_precision = False
 
         # feature network, context network, and update block
         if args.small:
@@ -84,8 +82,8 @@ class RAFT(nn.Module):
     def initialize_flow(self, img):
         """Flow is represented as difference between two coordinate grids flow = coords1 - coords0"""
         N, C, H, W = img.shape
-        coords0 = coords_grid(N, H // 8, W // 8).to(img.device)
-        coords1 = coords_grid(N, H // 8, W // 8).to(img.device)
+        coords0 = coords_grid(N, H // 8, W // 8, device=img.device)
+        coords1 = coords0.clone()
 
         # optical flow computed as difference: flow = coords1 - coords0
         return coords0, coords1
@@ -118,7 +116,7 @@ class RAFT(nn.Module):
         cdim = self.context_dim
 
         # run the feature network
-        with autocast(enabled=self.args.mixed_precision):
+        with _autocast_cuda(self.args.mixed_precision):
             fmap1, fmap2 = self.fnet([image1, image2])
 
         fmap1 = fmap1.float()
@@ -129,7 +127,7 @@ class RAFT(nn.Module):
             corr_fn = CorrBlock(fmap1, fmap2, radius=self.args.corr_radius)
 
         # run the context network
-        with autocast(enabled=self.args.mixed_precision):
+        with _autocast_cuda(self.args.mixed_precision):
             cnet = self.cnet(image1)
             net, inp = torch.split(cnet, [hdim, cdim], dim=1)
             net = torch.tanh(net)
@@ -146,7 +144,7 @@ class RAFT(nn.Module):
             corr = corr_fn(coords1)  # index correlation volume
 
             flow = coords1 - coords0
-            with autocast(enabled=self.args.mixed_precision):
+            with _autocast_cuda(self.args.mixed_precision):
                 net, up_mask, delta_flow = self.update_block(net, inp, corr, flow)
 
             # F(t+1) = F(t) + \Delta(t)

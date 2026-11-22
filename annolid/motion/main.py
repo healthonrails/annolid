@@ -9,8 +9,8 @@ import argparse
 import cv2
 import numpy as np
 import torch
-from raft import RAFT
 from annolid.motion import flow_viz
+from annolid.motion.raft import RAFT
 from annolid.motion.utils import InputPadder
 from annolid.utils.safe_torch_load import safe_torch_load
 from torch.utils.data import DataLoader, IterableDataset
@@ -34,10 +34,13 @@ class VideoFrameDataset(IterableDataset):
 
     def __iter__(self):
         ret, old_frame = self.cap.read()
-        num_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if not ret or old_frame is None:
+            return
         old_frame = cv2.cvtColor(old_frame, cv2.COLOR_BGR2RGB)
-        for num in range(num_frames - 1):
+        while True:
             ret, frame = self.cap.read()
+            if not ret or frame is None:
+                break
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             if self.transform:
                 x = self.transform(old_frame)
@@ -45,13 +48,20 @@ class VideoFrameDataset(IterableDataset):
             else:
                 x = old_frame
                 y = frame
-            old_frame = frame.copy()
+            old_frame = frame
 
             yield x, y
 
+    def close(self):
+        if self.cap is not None and self.cap.isOpened():
+            self.cap.release()
+
+    def __enter__(self):
+        return self
+
     def __exit__(self, exc_type, exc_value, traceback):
         cv2.destroyAllWindows()
-        self.cap.release()
+        self.close()
 
 
 def viz(img, flo):
@@ -97,20 +107,23 @@ def main():
 
     loader = DataLoader(video_dataset, batch_size=1)
     counter = 0
-    with torch.no_grad():
-        for image1, image2 in loader:
-            image1 = image1.permute(0, 3, 1, 2).float()
-            image2 = image2.permute(0, 3, 1, 2).float()
+    try:
+        with torch.inference_mode():
+            for image1, image2 in loader:
+                image1 = image1.permute(0, 3, 1, 2).float()
+                image2 = image2.permute(0, 3, 1, 2).float()
 
-            image1 = image1.to(DEVICE)
-            image2 = image2.to(DEVICE)
-            padder = InputPadder(image1.shape)
-            image1, image2 = padder.pad(image1, image2)
-            flow_low, flow_up = model(image1, image2, iters=20, test_mode=True)
-            viz(image1, flow_up)
-            if counter % 10 == 0:
-                print(flow_up)
-            counter += 1
+                image1 = image1.to(DEVICE)
+                image2 = image2.to(DEVICE)
+                padder = InputPadder(image1.shape)
+                image1, image2 = padder.pad(image1, image2)
+                flow_low, flow_up = model(image1, image2, iters=20, test_mode=True)
+                viz(image1, flow_up)
+                if counter % 10 == 0:
+                    print(flow_up)
+                counter += 1
+    finally:
+        video_dataset.close()
 
 
 if __name__ == "__main__":

@@ -1,61 +1,56 @@
 from __future__ import annotations
 
-import base64
-import json
-import gzip
-from pathlib import Path
+from collections import OrderedDict
 from dataclasses import dataclass
+import json
+from pathlib import Path
 from typing import Dict, Optional
 
-import cv2
 import numpy as np
 from qtpy import QtCore, QtWidgets
 
 from annolid.gui.qt_threads import configure_worker_thread_stack
 from annolid.gui.widgets.optical_flow_dialog import FlowOptionsDialog
 from annolid.gui.workers import FlexibleWorker
-from annolid.motion.flow_runner import process_video_flow, flow_to_color
-from annolid.motion.optical_flow import (
-    DEFAULT_FARNEBACK_POLY_N,
-    DEFAULT_FARNEBACK_WINSIZE,
+from annolid.motion.flow_runner import (
+    decode_flow_component,
+    decode_flow_record,
+    process_video_flow,
+    render_flow_overlay,
 )
-from annolid.utils import draw
+from annolid.motion.optical_flow import (
+    OpticalFlowPreferences,
+    resolve_optical_flow_backend_flags,
+)
+from annolid.utils.logger import logger
+
+FlowPreferences = OpticalFlowPreferences
+_MAX_DECODED_FLOW_CACHE = 16
 
 
 @dataclass
-class FlowPreferences:
-    backend: str = "farneback"
-    raft_model: str = "small"
-    visualization: str = "hsv"
-    opacity: int = 70
-    quiver_step: int = 16
-    quiver_gain: float = 1.0
-    stable_hsv: bool = True
-    farneback_pyr_scale: float = 0.5
-    farneback_levels: int = 1
-    farneback_winsize: int = DEFAULT_FARNEBACK_WINSIZE
-    farneback_iterations: int = 3
-    farneback_poly_n: int = DEFAULT_FARNEBACK_POLY_N
-    farneback_poly_sigma: float = 1.1
-
-
-@dataclass
-class FlowRunSettings(FlowPreferences):
+class FlowRunSettings(OpticalFlowPreferences):
     video_path: str = ""
     ndjson_path: str = ""
 
 
 class OpticalFlowTool(QtCore.QObject):
-    """Encapsulates optical-flow UI, running, and NDJSON overlay playback."""
+    """Encapsulates optical-flow UI, running, and indexed NDJSON overlay playback."""
 
-    def __init__(self, window: QtWidgets.QWidget) -> None:
+    def __init__(self, window: QtWidgets.QWidget, manager=None) -> None:
         super().__init__(window)
         self._window = window
+        self._manager = manager
         self._worker: Optional[FlexibleWorker] = None
         self._worker_thread: Optional[QtCore.QThread] = None
         self._active_ndjson_path: Optional[Path] = None
         self._live_running: bool = False
+        self._stop_requested: bool = False
+        # Optional in-memory records override + lightweight byte-offset index for disk files.
         self._records: Dict[int, Dict[str, object]] = {}
+        self._record_offsets: Dict[int, int] = {}
+        self._indexed_ndjson_path: Optional[Path] = None
+        self._decoded_flow_cache: OrderedDict[int, np.ndarray] = OrderedDict()
         self._global_mag_max: Optional[float] = None
 
     # ------------------------------------------------------------------ #
@@ -70,6 +65,24 @@ class OpticalFlowTool(QtCore.QObject):
         if not settings:
             return
         self._start_worker(settings)
+
+    def stop(self, timeout_ms: int = 3000) -> None:
+        """Cooperatively stop an active background optical-flow worker."""
+        worker = self._worker
+        worker_thread = self._worker_thread
+        if worker is not None:
+            self._stop_requested = True
+            try:
+                worker.request_stop()
+            except Exception:
+                logger.debug("Failed to request optical-flow stop.", exc_info=True)
+        if worker_thread is not None and worker_thread.isRunning():
+            worker_thread.quit()
+            if QtCore.QThread.currentThread() is not worker_thread:
+                worker_thread.wait(int(timeout_ms))
+
+    def is_live_running(self) -> bool:
+        return bool(self._live_running)
 
     def configure(self) -> None:
         """Open a dialog to set optical-flow defaults without starting a run."""
@@ -92,41 +105,12 @@ class OpticalFlowTool(QtCore.QObject):
         )
         if dialog.exec_() != QtWidgets.QDialog.Accepted:
             return
-        values = dialog.values()
-        if not values:
+        updated = dialog.preferences()
+        if updated is None:
             return
-        (
-            backend,
-            raft_model,
-            viz_choice,
-            opacity,
-            quiver_step,
-            quiver_gain,
-            stable_hsv,
-            pyr_scale,
-            levels,
-            winsize,
-            iterations,
-            poly_n,
-            poly_sigma,
-        ) = values
-        updated = FlowPreferences(
-            backend=backend,
-            raft_model=raft_model,
-            visualization=viz_choice,
-            opacity=opacity,
-            quiver_step=quiver_step,
-            quiver_gain=quiver_gain,
-            stable_hsv=stable_hsv,
-            farneback_pyr_scale=pyr_scale,
-            farneback_levels=levels,
-            farneback_winsize=winsize,
-            farneback_iterations=iterations,
-            farneback_poly_n=poly_n,
-            farneback_poly_sigma=poly_sigma,
-        )
         self._apply_preferences_to_window(updated)
         self._persist_preferences(updated)
+        self.refresh_current_frame_overlay()
         try:
             self._window.statusBar().showMessage(
                 self._window.tr("Optical flow settings updated."), 2500
@@ -134,10 +118,30 @@ class OpticalFlowTool(QtCore.QObject):
         except Exception:
             pass
 
+    def refresh_current_frame_overlay(self) -> None:
+        """Re-render the active frame's flow overlay after settings change."""
+        if self._live_running:
+            return
+        frame_num = getattr(self._window, "frame_number", None)
+        if frame_num is None:
+            return
+        try:
+            frame_idx = int(frame_num)
+        except (TypeError, ValueError):
+            return
+        if self.has_overlay_for_frame(frame_idx):
+            self.update_overlay_for_frame(frame_idx)
+
     def clear(self) -> None:
+        if self._is_processing():
+            self.stop()
         self._records = {}
+        self._record_offsets = {}
+        self._indexed_ndjson_path = None
+        self._decoded_flow_cache.clear()
         self._global_mag_max = None
         self._live_running = False
+        self._stop_requested = False
         w = self._window
         try:
             if getattr(w, "canvas", None):
@@ -149,62 +153,152 @@ class OpticalFlowTool(QtCore.QObject):
         path = self._flow_ndjson_path(video_file)
         if not path:
             self._records = {}
+            self._record_offsets = {}
+            self._indexed_ndjson_path = None
+            self._decoded_flow_cache.clear()
             self._global_mag_max = None
             return
         self._load_records_from_path(path)
 
     def _load_records_from_path(self, path: Path) -> None:
-        records: Dict[int, Dict[str, object]] = {}
+        """Index NDJSON frame byte offsets without holding base64 payloads in RAM."""
+        offsets: Dict[int, int] = {}
         global_mag_max = 0.0
+        bad_lines = 0
+        self._records = {}
+        self._decoded_flow_cache.clear()
         if not path.exists():
-            self._records = records
+            self._record_offsets = offsets
+            self._indexed_ndjson_path = None
             self._global_mag_max = None
             return
         try:
-            with path.open("r", encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
+            with path.open("rb") as fh:
+                while True:
+                    offset = fh.tell()
+                    raw_line = fh.readline()
+                    if not raw_line:
+                        break
+                    stripped = raw_line.strip()
+                    if not stripped:
                         continue
-                    data = json.loads(line)
-                    frame_index = int(data.get("frame_index", -1))
+                    try:
+                        data = json.loads(stripped.decode("utf-8"))
+                    except Exception:
+                        bad_lines += 1
+                        continue
+                    if not isinstance(data, dict):
+                        bad_lines += 1
+                        continue
+                    try:
+                        frame_index = int(data.get("frame_index", -1))
+                    except (TypeError, ValueError):
+                        bad_lines += 1
+                        continue
                     if frame_index >= 0:
-                        records[frame_index] = data
+                        offsets[frame_index] = offset
                         other = data.get("otherData") or {}
-                        # Support new raw-compressed format and legacy quantized format.
-                        mag_info = (
-                            other.get("flow_mag_raw")
-                            or other.get("flow_magnitude")
-                            or {}
-                        )
-                        scale = mag_info.get("scale") or {}
-                        try:
-                            mag_max = float(scale.get("max", 0.0))
-                            if mag_max > global_mag_max:
-                                global_mag_max = mag_max
-                        except Exception:
-                            pass
-        except Exception:
-            records = {}
+                        if isinstance(other, dict):
+                            mag_info = (
+                                other.get("flow_mag_raw")
+                                or other.get("flow_magnitude")
+                                or {}
+                            )
+                            scale = (
+                                mag_info.get("scale")
+                                if isinstance(mag_info, dict)
+                                else None
+                            )
+                            if isinstance(scale, dict):
+                                try:
+                                    mag_max = float(scale.get("max", 0.0))
+                                    if (
+                                        np.isfinite(mag_max)
+                                        and mag_max > global_mag_max
+                                    ):
+                                        global_mag_max = mag_max
+                                except (TypeError, ValueError):
+                                    pass
+        except OSError:
+            logger.warning(
+                "Failed to index optical-flow NDJSON at %s.",
+                path,
+                exc_info=True,
+            )
+            offsets = {}
             global_mag_max = 0.0
-        self._records = records
+            path = None
+
+        if bad_lines > 0:
+            logger.warning(
+                "Skipped %d malformed record(s) while indexing optical-flow NDJSON %s.",
+                bad_lines,
+                path,
+            )
+        self._record_offsets = offsets
+        self._indexed_ndjson_path = path if offsets else None
         self._global_mag_max = global_mag_max if global_mag_max > 0 else None
+
+    def _read_indexed_record(self, frame_number: int) -> Optional[Dict[str, object]]:
+        if frame_number in self._records:
+            return self._records[frame_number]
+        offset = self._record_offsets.get(frame_number)
+        path = self._indexed_ndjson_path
+        if offset is None or path is None or not path.exists():
+            return None
+        try:
+            with path.open("rb") as fh:
+                fh.seek(offset)
+                raw_line = fh.readline()
+            data = json.loads(raw_line.decode("utf-8"))
+            return data if isinstance(data, dict) else None
+        except Exception:
+            logger.debug(
+                "Failed to read optical-flow record for frame %s from %s.",
+                frame_number,
+                path,
+                exc_info=True,
+            )
+            return None
+
+    def _decoded_flow_for_frame(self, frame_number: int) -> Optional[np.ndarray]:
+        cached = self._decoded_flow_cache.get(frame_number)
+        if cached is not None:
+            self._decoded_flow_cache.move_to_end(frame_number)
+            return cached
+        record = self._read_indexed_record(frame_number)
+        if record is None:
+            return None
+        flow = decode_flow_record(record)
+        if flow is None:
+            return None
+        self._decoded_flow_cache[frame_number] = flow
+        self._decoded_flow_cache.move_to_end(frame_number)
+        while len(self._decoded_flow_cache) > _MAX_DECODED_FLOW_CACHE:
+            self._decoded_flow_cache.popitem(last=False)
+        return flow
 
     def update_overlay_for_frame(
         self, frame_number: int, frame_rgb: Optional[np.ndarray] = None
     ) -> None:
+        _ = frame_rgb
         w = self._window
         if not getattr(w, "canvas", None):
             return
-        record = self._records.get(int(frame_number))
-        if record is None:
+        frame_idx = int(frame_number)
+        if not self.has_overlay_for_frame(frame_idx):
             # During a live run, let preview overlays persist even if NDJSON
-            # hasn't been appended/loaded yet.
+            # hasn't been finalized/loaded yet.
             if self._live_running:
                 return
             w.canvas.setFlowPreviewOverlay(None)
             return
-        overlay = self._overlay_from_record(record)
+
+        flow = self._decoded_flow_for_frame(frame_idx)
+        if flow is None:
+            w.canvas.setFlowPreviewOverlay(None)
+            return
+        overlay = self._overlay_from_flow(flow)
         if overlay is None:
             w.canvas.setFlowPreviewOverlay(None)
             return
@@ -218,7 +312,8 @@ class OpticalFlowTool(QtCore.QObject):
 
     def has_overlay_for_frame(self, frame_number: int) -> bool:
         try:
-            return int(frame_number) in self._records
+            idx = int(frame_number)
+            return (idx in self._record_offsets) or (idx in self._records)
         except Exception:
             return False
 
@@ -245,10 +340,10 @@ class OpticalFlowTool(QtCore.QObject):
         self._apply_preferences_to_window(prefs)
         return FlowRunSettings(
             video_path=video_path,
+            ndjson_path=str(self._default_ndjson_path(video_path)),
             backend=prefs.backend,
             raft_model=prefs.raft_model,
             visualization=prefs.visualization,
-            ndjson_path=str(self._default_ndjson_path(video_path)),
             opacity=int(prefs.opacity),
             quiver_step=int(prefs.quiver_step),
             quiver_gain=float(prefs.quiver_gain),
@@ -275,80 +370,30 @@ class OpticalFlowTool(QtCore.QObject):
             return None
         return str(Path(video_path).expanduser().resolve())
 
-    def _apply_preferences_to_window(self, prefs: FlowPreferences) -> None:
-        w = self._window
-        setattr(w, "optical_flow_backend", prefs.backend)
-        setattr(w, "optical_flow_raft_model", prefs.raft_model)
-        setattr(w, "flow_visualization", prefs.visualization)
-        setattr(w, "flow_opacity", prefs.opacity)
-        setattr(w, "flow_quiver_step", prefs.quiver_step)
-        setattr(w, "flow_quiver_gain", prefs.quiver_gain)
-        setattr(w, "flow_stable_hsv", prefs.stable_hsv)
-        setattr(w, "flow_farneback_pyr_scale", prefs.farneback_pyr_scale)
-        setattr(w, "flow_farneback_levels", prefs.farneback_levels)
-        setattr(w, "flow_farneback_winsize", prefs.farneback_winsize)
-        setattr(w, "flow_farneback_iterations", prefs.farneback_iterations)
-        setattr(w, "flow_farneback_poly_n", prefs.farneback_poly_n)
-        setattr(w, "flow_farneback_poly_sigma", prefs.farneback_poly_sigma)
+    def _apply_preferences_to_window(self, prefs: OpticalFlowPreferences) -> None:
+        prefs.apply_to_target(self._window)
+        manager = self._manager or getattr(self._window, "optical_flow_manager", None)
+        if manager is not None:
+            prefs.apply_to_target(manager)
+            if hasattr(manager, "_preferences"):
+                manager._preferences = prefs
 
-    def _persist_preferences(self, prefs: FlowPreferences) -> None:
+    def _persist_preferences(self, prefs: OpticalFlowPreferences) -> None:
         settings = getattr(self._window, "settings", None)
         if not isinstance(settings, QtCore.QSettings):
             return
-        settings.setValue("optical_flow/backend", prefs.backend)
-        settings.setValue("optical_flow/raft_model", prefs.raft_model)
-        settings.setValue("optical_flow/visualization", prefs.visualization)
-        settings.setValue("optical_flow/opacity", prefs.opacity)
-        settings.setValue("optical_flow/quiver_step", prefs.quiver_step)
-        settings.setValue("optical_flow/quiver_gain", prefs.quiver_gain)
-        settings.setValue("optical_flow/stable_hsv", prefs.stable_hsv)
-        settings.setValue("optical_flow/farneback_pyr_scale", prefs.farneback_pyr_scale)
-        settings.setValue("optical_flow/farneback_levels", prefs.farneback_levels)
-        settings.setValue("optical_flow/farneback_winsize", prefs.farneback_winsize)
-        settings.setValue(
-            "optical_flow/farneback_iterations", prefs.farneback_iterations
-        )
-        settings.setValue("optical_flow/farneback_poly_n", prefs.farneback_poly_n)
-        settings.setValue(
-            "optical_flow/farneback_poly_sigma", prefs.farneback_poly_sigma
-        )
+        for key, value in prefs.qsettings_items():
+            settings.setValue(key, value)
 
-    def _current_preferences(self) -> FlowPreferences:
-        w = self._window
-        return FlowPreferences(
-            backend=str(getattr(w, "optical_flow_backend", "farneback")),
-            raft_model=str(getattr(w, "optical_flow_raft_model", "small")),
-            visualization=str(getattr(w, "flow_visualization", "hsv")),
-            opacity=int(getattr(w, "flow_opacity", 70)),
-            quiver_step=int(getattr(w, "flow_quiver_step", 16)),
-            quiver_gain=float(getattr(w, "flow_quiver_gain", 1.0)),
-            stable_hsv=bool(getattr(w, "flow_stable_hsv", True)),
-            farneback_pyr_scale=float(getattr(w, "flow_farneback_pyr_scale", 0.5)),
-            farneback_levels=int(getattr(w, "flow_farneback_levels", 1)),
-            farneback_winsize=int(
-                getattr(
-                    w,
-                    "flow_farneback_winsize",
-                    DEFAULT_FARNEBACK_WINSIZE,
-                )
-            ),
-            farneback_iterations=int(getattr(w, "flow_farneback_iterations", 3)),
-            farneback_poly_n=int(
-                getattr(
-                    w,
-                    "flow_farneback_poly_n",
-                    DEFAULT_FARNEBACK_POLY_N,
-                )
-            ),
-            farneback_poly_sigma=float(getattr(w, "flow_farneback_poly_sigma", 1.1)),
-        )
+    def _current_preferences(self) -> OpticalFlowPreferences:
+        return OpticalFlowPreferences.from_source(self._window)
 
     def _start_worker(self, settings: FlowRunSettings) -> None:
         w = self._window
         self._live_running = True
+        self._stop_requested = False
         self._active_ndjson_path = Path(settings.ndjson_path)
-        backend_val = str(settings.backend).lower()
-        use_torch_farneback = ("torch" in backend_val) and ("raft" not in backend_val)
+        _, use_torch_farneback = resolve_optical_flow_backend_flags(settings.backend)
         worker = FlexibleWorker(
             process_video_flow,
             settings.video_path,
@@ -422,87 +467,28 @@ class OpticalFlowTool(QtCore.QObject):
     def _decode_flow_component(
         self, comp: Dict[str, object], height: int, width: int
     ) -> Optional[np.ndarray]:
-        if not comp:
-            return None
-        values = comp.get("values")
-        if values is None and comp.get("compressed"):
-            b64 = comp.get("data")
-            if not b64:
-                return None
-            try:
-                raw = gzip.decompress(base64.b64decode(b64))
-                dtype = np.float16 if comp.get("dtype") == "float16" else np.uint16
-                arr = np.frombuffer(raw, dtype=dtype)
-                shape = comp.get("shape") or []
-                try:
-                    arr = arr.reshape(shape)
-                except Exception:
-                    pass
-            except Exception:
-                return None
-        else:
-            if values is None:
-                return None
-            dtype = np.float16 if comp.get("dtype") == "float16" else np.uint16
-            arr = np.asarray(values, dtype=dtype)
-        scale = comp.get("scale", {}) if isinstance(comp, dict) else {}
+        return decode_flow_component(comp, height, width)
+
+    def _overlay_from_flow(self, flow: np.ndarray) -> Optional[np.ndarray]:
+        prefs = self._current_preferences()
         try:
-            if arr.ndim != 2:
-                arr = np.array(arr, dtype=arr.dtype)
-            if comp.get("dtype") == "uint16":
-                v_min = float(scale.get("min", 0.0))
-                v_max = float(scale.get("max", 0.0))
-                if abs(v_max - v_min) < 1e-6:
-                    v_max = v_min + 1e-6
-                arr = (arr.astype(np.float32) / 65535.0) * (v_max - v_min) + v_min
-            v_min = float(scale.get("min", 0.0))
-            v_max = float(scale.get("max", 0.0))
-            arr = np.clip(arr, v_min, v_max)
-            arr = cv2.resize(arr, (width, height), interpolation=cv2.INTER_LINEAR)
-            return arr.astype(np.float32)
+            global_max = self._global_mag_max if prefs.stable_hsv else None
+            return render_flow_overlay(
+                flow,
+                visualization=prefs.visualization,
+                opacity=prefs.opacity,
+                quiver_step=prefs.quiver_step,
+                quiver_gain=prefs.quiver_gain,
+                max_mag=global_max,
+            )
         except Exception:
             return None
 
     def _overlay_from_record(self, record: Dict[str, object]) -> Optional[np.ndarray]:
-        w = self._window
-        try:
-            height = int(record.get("imageHeight") or 0)
-            width = int(record.get("imageWidth") or 0)
-            if height <= 0 or width <= 0:
-                return None
-            other = record.get("otherData") or {}
-            # New format stores raw compressed arrays under *_raw keys.
-            dx_comp = other.get("flow_dx_raw") or other.get("flow_dx")
-            dy_comp = other.get("flow_dy_raw") or other.get("flow_dy")
-            dx = self._decode_flow_component(dx_comp, height, width)
-            dy = self._decode_flow_component(dy_comp, height, width)
-            if dx is None or dy is None:
-                return None
-            flow = np.stack([dx, dy], axis=-1).astype(np.float32)
-            viz = str(getattr(w, "flow_visualization", "hsv")).lower()
-            if viz == "hsv":
-                global_max = (
-                    self._global_mag_max
-                    if bool(getattr(w, "flow_stable_hsv", True))
-                    else None
-                )
-                return flow_to_color(flow, max_mag=global_max)
-
-            flow_scaled = flow * float(getattr(w, "flow_quiver_gain", 1.0))
-            blank = np.zeros((height, width, 3), dtype=np.uint8)
-            arrows_bgr = draw.draw_flow(
-                blank,
-                flow_scaled,
-                step=int(getattr(w, "flow_quiver_step", 16)),
-            )
-            arrows_rgb = cv2.cvtColor(arrows_bgr, cv2.COLOR_BGR2RGB)
-            mask = np.any(arrows_bgr != 0, axis=2)
-            alpha_val = self._opacity_alpha()
-            alpha = np.zeros((height, width), dtype=np.uint8)
-            alpha[mask] = alpha_val
-            return np.ascontiguousarray(np.dstack([arrows_rgb, alpha]))
-        except Exception:
+        flow = decode_flow_record(record)
+        if flow is None:
             return None
+        return self._overlay_from_flow(flow)
 
     def _on_progress(self, percent: int) -> None:
         w = self._window
@@ -550,6 +536,11 @@ class OpticalFlowTool(QtCore.QObject):
     def _on_worker_finished(self, result: object) -> None:
         w = self._window
         self._live_running = False
+        was_stopped = self._stop_requested or (
+            self._worker is not None
+            and bool(getattr(self._worker, "is_stopped", lambda: False)())
+        )
+        self._stop_requested = False
         ndjson_path = self._active_ndjson_path
         worker_thread = self._worker_thread
 
@@ -568,6 +559,13 @@ class OpticalFlowTool(QtCore.QObject):
 
         if isinstance(result, Exception):
             QtWidgets.QMessageBox.critical(w, w.tr("Optical flow error"), str(result))
+            return
+
+        if was_stopped or result == "Stopped":
+            try:
+                w.statusBar().showMessage(w.tr("Optical flow stopped."), 2500)
+            except Exception:
+                pass
             return
 
         if ndjson_path is None:

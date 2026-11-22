@@ -281,7 +281,7 @@ class CanvasWorkflowMixin:
         ):
             large_image_view.clear()
         frame_rgb = None
-        if needs_depth_overlay or needs_flow_overlay:
+        if needs_depth_overlay:
             try:
                 frame_rgb = convert_qt_image_to_rgb_cv_image(qimage).copy()
             except Exception:
@@ -290,6 +290,14 @@ class CanvasWorkflowMixin:
             depth_manager.update_overlay_for_frame(frame_number, frame_rgb)
         if needs_flow_overlay and optical_flow_manager is not None:
             optical_flow_manager.update_overlay_for_frame(frame_number, frame_rgb)
+        elif (
+            optical_flow_manager is not None
+            and getattr(self, "canvas", None) is not None
+            and getattr(self.canvas, "_flow_preview_pixmap", None) is not None
+        ):
+            is_live_fn = getattr(optical_flow_manager, "is_live_running", None)
+            if not (callable(is_live_fn) and bool(is_live_fn())):
+                self.canvas.setFlowPreviewOverlay(None)
         self._refresh_behavior_overlay(frame_number=int(frame_number))
 
     @staticmethod

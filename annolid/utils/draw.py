@@ -173,29 +173,65 @@ def draw_boxes(
 
 def draw_flow(img, flow, step=16, quiver=(0, 100, 0)):
     """
-    Modified from here
+    Draw optical-flow quiver vectors onto a copy of `img`.
+
+    Modified from:
     https://gist.github.com/RodolfoFerro/11d39fad57e21b5e85fe4d4a906cf098
     """
-
+    step_i = max(1, int(step))
     h, w = img.shape[:2]
-    y, x = np.mgrid[step / 2 : h : step, step / 2 : w : step].reshape(2, -1).astype(int)
-    fx, fy = flow[y, x].T
+    vis = img.copy()
+    if h <= 0 or w <= 0:
+        return vis
 
-    # Filter out zero flow vectors
-    non_zero_indices = (fx != 0) | (fy != 0)
-    x = x[non_zero_indices]
-    y = y[non_zero_indices]
-    fx = fx[non_zero_indices]
-    fy = fy[non_zero_indices]
+    start = step_i / 2.0
+    ys = np.arange(start, h, step_i, dtype=np.float64).astype(np.int32)
+    xs = np.arange(start, w, step_i, dtype=np.float64).astype(np.int32)
+    if ys.size == 0 or xs.size == 0:
+        return vis
 
-    lines = np.vstack([x, y, x + fx, y + fy]).T.reshape(-1, 2, 2)
-    lines = np.int32(lines + 0.5)
-    vis = img.copy()  # Make a copy of the original image to draw on
+    y_grid, x_grid = np.meshgrid(ys, xs, indexing="ij")
+    y = y_grid.ravel()
+    x = x_grid.ravel()
+    fx = flow[y, x, 0]
+    fy = flow[y, x, 1]
 
-    # Draw the flow vectors
-    cv2.polylines(vis, lines, 0, quiver, 3)
-    for (x1, y1), (_x2, _y2) in lines:
-        cv2.circle(vis, (x1, y1), 1, (0, 255, 0), -1)
+    # Filter out zero and non-finite flow vectors so cv2.polylines never overflows.
+    keep = np.isfinite(fx) & np.isfinite(fy) & ((fx != 0) | (fy != 0))
+    if not np.any(keep):
+        return vis
+
+    x = x[keep]
+    y = y[keep]
+    fx = fx[keep]
+    fy = fy[keep]
+
+    x2 = np.clip(x + fx + 0.5, -1_000_000.0, 1_000_000.0).astype(np.int32)
+    y2 = np.clip(y + fy + 0.5, -1_000_000.0, 1_000_000.0).astype(np.int32)
+    lines = np.empty((x.size, 2, 2), dtype=np.int32)
+    lines[:, 0, 0] = x
+    lines[:, 0, 1] = y
+    lines[:, 1, 0] = x2
+    lines[:, 1, 1] = y2
+
+    cv2.polylines(vis, lines, False, quiver, 3)
+
+    # Stamp the exact 5-pixel footprint of cv2.circle(vis, (x1, y1), 1, color, -1)
+    # in vectorized NumPy instead of thousands of per-point Python OpenCV calls.
+    dot_color = (0, 255, 0) if vis.ndim == 3 else 255
+    vis[y, x] = dot_color
+    valid_l = x > 0
+    if np.any(valid_l):
+        vis[y[valid_l], x[valid_l] - 1] = dot_color
+    valid_r = (x + 1) < w
+    if np.any(valid_r):
+        vis[y[valid_r], x[valid_r] + 1] = dot_color
+    valid_u = y > 0
+    if np.any(valid_u):
+        vis[y[valid_u] - 1, x[valid_u]] = dot_color
+    valid_d = (y + 1) < h
+    if np.any(valid_d):
+        vis[y[valid_d] + 1, x[valid_d]] = dot_color
 
     return vis
 

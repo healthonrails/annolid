@@ -9,10 +9,7 @@ from qtpy import QtCore, QtWidgets
 from annolid.features.dino_models import resolve_dino_model_id
 from annolid.interfaces.memory.adapters.settings_model import SettingsProfile
 from annolid.interfaces.memory.adapters.workspace import WorkspaceMemoryAdapter
-from annolid.motion.optical_flow import (
-    DEFAULT_FARNEBACK_POLY_N,
-    DEFAULT_FARNEBACK_WINSIZE,
-)
+from annolid.motion.optical_flow import OpticalFlowPreferences
 
 
 def _show_status(window, text: str, timeout_ms: int = 3500) -> None:
@@ -168,92 +165,18 @@ def _apply_advanced_parameters(window, profile: SettingsProfile) -> None:
 
 def _apply_optical_flow(window, profile: SettingsProfile) -> None:
     payload = dict(profile.settings or {})
+    prefs = OpticalFlowPreferences.from_source(payload)
     manager = getattr(window, "optical_flow_manager", None)
-    backend = str(
-        payload.get("backend", payload.get("optical_flow/backend", "farneback"))
-    )
-    raft_model = str(
-        payload.get("raft_model", payload.get("optical_flow/raft_model", "small"))
-    )
-    visualization = str(
-        payload.get("visualization", payload.get("optical_flow/visualization", "hsv"))
-    )
-    opacity = int(payload.get("opacity", payload.get("optical_flow/opacity", 70)))
-    quiver_step = int(
-        payload.get("quiver_step", payload.get("optical_flow/quiver_step", 16))
-    )
-    quiver_gain = float(
-        payload.get("quiver_gain", payload.get("optical_flow/quiver_gain", 1.0))
-    )
-    stable_hsv = bool(
-        payload.get("stable_hsv", payload.get("optical_flow/stable_hsv", True))
-    )
-    pyr_scale = float(
-        payload.get(
-            "farneback_pyr_scale", payload.get("optical_flow/farneback_pyr_scale", 0.5)
-        )
-    )
-    levels = int(
-        payload.get("farneback_levels", payload.get("optical_flow/farneback_levels", 1))
-    )
-    winsize = int(
-        payload.get(
-            "farneback_winsize",
-            payload.get(
-                "optical_flow/farneback_winsize",
-                DEFAULT_FARNEBACK_WINSIZE,
-            ),
-        )
-    )
-    iterations = int(
-        payload.get(
-            "farneback_iterations",
-            payload.get("optical_flow/farneback_iterations", 3),
-        )
-    )
-    poly_n = int(
-        payload.get(
-            "farneback_poly_n",
-            payload.get(
-                "optical_flow/farneback_poly_n",
-                DEFAULT_FARNEBACK_POLY_N,
-            ),
-        )
-    )
-    poly_sigma = float(
-        payload.get(
-            "farneback_poly_sigma",
-            payload.get("optical_flow/farneback_poly_sigma", 1.1),
-        )
-    )
-    if manager is not None:
-        manager.set_backend(backend)
-    setattr(window, "optical_flow_raft_model", raft_model)
-    setattr(window, "flow_visualization", visualization)
-    setattr(window, "flow_opacity", opacity)
-    setattr(window, "flow_quiver_step", quiver_step)
-    setattr(window, "flow_quiver_gain", quiver_gain)
-    setattr(window, "flow_stable_hsv", stable_hsv)
-    setattr(window, "flow_farneback_pyr_scale", pyr_scale)
-    setattr(window, "flow_farneback_levels", levels)
-    setattr(window, "flow_farneback_winsize", winsize)
-    setattr(window, "flow_farneback_iterations", iterations)
-    setattr(window, "flow_farneback_poly_n", poly_n)
-    setattr(window, "flow_farneback_poly_sigma", poly_sigma)
 
-    _persist_qsettings(window, "optical_flow/backend", backend)
-    _persist_qsettings(window, "optical_flow/raft_model", raft_model)
-    _persist_qsettings(window, "optical_flow/visualization", visualization)
-    _persist_qsettings(window, "optical_flow/opacity", opacity)
-    _persist_qsettings(window, "optical_flow/quiver_step", quiver_step)
-    _persist_qsettings(window, "optical_flow/quiver_gain", quiver_gain)
-    _persist_qsettings(window, "optical_flow/stable_hsv", stable_hsv)
-    _persist_qsettings(window, "optical_flow/farneback_pyr_scale", pyr_scale)
-    _persist_qsettings(window, "optical_flow/farneback_levels", levels)
-    _persist_qsettings(window, "optical_flow/farneback_winsize", winsize)
-    _persist_qsettings(window, "optical_flow/farneback_iterations", iterations)
-    _persist_qsettings(window, "optical_flow/farneback_poly_n", poly_n)
-    _persist_qsettings(window, "optical_flow/farneback_poly_sigma", poly_sigma)
+    if manager is not None and callable(getattr(manager, "apply_preferences", None)):
+        manager.apply_preferences(prefs, persist=True, refresh_overlay=True)
+        return
+
+    if manager is not None and callable(getattr(manager, "set_backend", None)):
+        manager.set_backend(prefs.backend)
+    prefs.apply_to_target(window)
+    for key, value in prefs.qsettings_items():
+        _persist_qsettings(window, key, value)
 
 
 def _apply_depth(window, profile: SettingsProfile) -> None:
@@ -387,35 +310,7 @@ def _collect_advanced_parameters(window) -> dict:
 
 
 def _collect_optical_flow(window) -> dict:
-    return {
-        "backend": str(getattr(window, "optical_flow_backend", "farneback")),
-        "raft_model": str(getattr(window, "optical_flow_raft_model", "small")),
-        "visualization": str(getattr(window, "flow_visualization", "hsv")),
-        "opacity": int(getattr(window, "flow_opacity", 70)),
-        "quiver_step": int(getattr(window, "flow_quiver_step", 16)),
-        "quiver_gain": float(getattr(window, "flow_quiver_gain", 1.0)),
-        "stable_hsv": bool(getattr(window, "flow_stable_hsv", True)),
-        "farneback_pyr_scale": float(getattr(window, "flow_farneback_pyr_scale", 0.5)),
-        "farneback_levels": int(getattr(window, "flow_farneback_levels", 1)),
-        "farneback_winsize": int(
-            getattr(
-                window,
-                "flow_farneback_winsize",
-                DEFAULT_FARNEBACK_WINSIZE,
-            )
-        ),
-        "farneback_iterations": int(getattr(window, "flow_farneback_iterations", 3)),
-        "farneback_poly_n": int(
-            getattr(
-                window,
-                "flow_farneback_poly_n",
-                DEFAULT_FARNEBACK_POLY_N,
-            )
-        ),
-        "farneback_poly_sigma": float(
-            getattr(window, "flow_farneback_poly_sigma", 1.1)
-        ),
-    }
+    return OpticalFlowPreferences.from_source(window).to_profile_dict()
 
 
 def _collect_depth(window) -> dict:

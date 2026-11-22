@@ -28,9 +28,10 @@ from annolid.utils.zone_shapes import is_zone_shape_payload
 
 # Optional: For flow and visualization if kept here
 from annolid.motion.optical_flow import (
-    compute_optical_flow,
+    compute_optical_flow_field,
     optical_flow_compute_kwargs,
     optical_flow_settings_from,
+    resolve_optical_flow_backend_flags,
 )
 from annolid.utils import draw  # For drawing flow
 
@@ -573,10 +574,10 @@ class SegmentedCutieExecutor:
                     self.config.get("compute_optical_flow", True)
                     and prev_frame_bgr is not None
                 ):
-                    backend_val = str(self.optical_flow_backend).lower()
-                    use_raft = "raft" in backend_val
-                    use_torch_farneback = ("torch" in backend_val) and not use_raft
-                    _, dense_flow_for_this_frame = compute_optical_flow(
+                    use_raft, use_torch_farneback = resolve_optical_flow_backend_flags(
+                        self.optical_flow_backend
+                    )
+                    dense_flow_for_this_frame = compute_optical_flow_field(
                         prev_frame_bgr,
                         current_frame_bgr,
                         use_raft=use_raft,
@@ -597,11 +598,11 @@ class SegmentedCutieExecutor:
                 if self.video_writer:
                     overlay = overlay_davis(current_frame_bgr, pred_mask_np_obj_ids)
                     if dense_flow_for_this_frame is not None and self.config.get(
-                        "compute_optical_flow", False
+                        "compute_optical_flow", True
                     ):
                         mask_for_flow_viz = pred_mask_np_obj_ids > 0
                         overlay_with_flow = draw.draw_flow(
-                            overlay.copy(),
+                            overlay,
                             dense_flow_for_this_frame
                             * np.expand_dims(mask_for_flow_viz, axis=-1),
                         )
