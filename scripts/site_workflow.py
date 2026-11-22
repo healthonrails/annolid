@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import functools
 import http.server
+import importlib.util
 import os
 import re
 import shutil
@@ -76,8 +77,15 @@ class CheckResult:
         return not self.errors
 
 
-def _find_mkdocs_executable(repo_root: Path = REPO_ROOT) -> list[str]:
-    """Resolve MkDocs inside `.venv` first, falling back to current interpreter/PATH."""
+def _find_mkdocs_executable(repo_root: Path = REPO_ROOT) -> list[str] | None:
+    """Resolve MkDocs in the active environment, `.venv`, or PATH; return None if absent."""
+    exe_dir = Path(sys.executable).resolve().parent
+    for name in ("mkdocs", "mkdocs.exe"):
+        candidate = exe_dir / name
+        if candidate.is_file():
+            return [str(candidate)]
+    if importlib.util.find_spec("mkdocs") is not None:
+        return [sys.executable, "-m", "mkdocs"]
     venv_mkdocs = repo_root / ".venv" / "bin" / "mkdocs"
     if venv_mkdocs.is_file():
         return [str(venv_mkdocs)]
@@ -87,7 +95,12 @@ def _find_mkdocs_executable(repo_root: Path = REPO_ROOT) -> list[str]:
     which_mkdocs = shutil.which("mkdocs")
     if which_mkdocs:
         return [which_mkdocs]
-    return [sys.executable, "-m", "mkdocs"]
+    return None
+
+
+def has_mkdocs(repo_root: Path = REPO_ROOT) -> bool:
+    """Return True when MkDocs is available to build the docs portal."""
+    return _find_mkdocs_executable(repo_root) is not None
 
 
 def build_mkdocs(
@@ -97,8 +110,14 @@ def build_mkdocs(
     strict: bool = True,
 ) -> None:
     """Run MkDocs build into `site_dir`."""
+    mkdocs_cmd = _find_mkdocs_executable(repo_root)
+    if mkdocs_cmd is None:
+        raise RuntimeError(
+            "MkDocs is not installed in this environment. "
+            "Install docs dependencies with: uv pip install -r docs/requirements_mkdocs.txt"
+        )
     cmd = [
-        *_find_mkdocs_executable(repo_root),
+        *mkdocs_cmd,
         "build",
         "--clean",
         "--config-file",

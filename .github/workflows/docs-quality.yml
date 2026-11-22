@@ -76,7 +76,7 @@ jobs:
           echo "${CHANGED_FILES}"
 
           if [[ "${RELEVANT_CHANGED}" != "true" ]]; then
-            if echo "${CHANGED_FILES}" | grep -Eq '^(website/|docs/|mkdocs.yml|docs/requirements_mkdocs\.txt|scripts/sync_landing_page_to_site_root\.sh|scripts/sync_docs_to_site_root\.sh|scripts/write_legacy_redirects\.sh|\.markdownlint-cli2\.jsonc|\.github/workflows/docs-quality\.yml|\.github/workflows/docs-pages\.yml|\.github/workflows/healthonrails-site-sync\.yml)'; then
+            if echo "${CHANGED_FILES}" | grep -Eq '^(website/|docs/|mkdocs.yml|docs/requirements_mkdocs\.txt|scripts/site_workflow\.py|scripts/sync_landing_page_to_site_root\.sh|scripts/sync_docs_to_site_root\.sh|scripts/write_legacy_redirects\.sh|\.markdownlint-cli2\.jsonc|\.github/workflows/docs-quality\.yml|\.github/workflows/docs-pages\.yml|\.github/workflows/healthonrails-site-sync\.yml)'; then
               RELEVANT_CHANGED=true
             fi
           fi
@@ -132,6 +132,12 @@ jobs:
           export NO_MKDOCS_2_WARNING=1
           DOCS_BUILD_DIR="$(mktemp -d /tmp/annolid-docs-html.XXXXXX)"
           mkdocs build --strict --clean --config-file mkdocs.yml --site-dir "$DOCS_BUILD_DIR"
+
+      - name: Validate combined website and docs links and assets
+        if: steps.changes.outputs.relevant_changed == 'true'
+        run: |
+          source .venv/bin/activate
+          python scripts/site_workflow.py check
 
       - name: Lint Markdown
         if: steps.changes.outputs.relevant_changed == 'true'

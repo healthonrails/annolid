@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -24,8 +25,40 @@ def _load_script_module(script_name: str):
     return module
 
 
+def test_site_workflow_static_checks_pass_on_repository():
+    """Run dependency-free website, docs asset, size, and hygiene checks in all environments."""
+    site_workflow = _load_script_module("site_workflow.py")
+    res = site_workflow.check_site(repo_root=REPO_ROOT, skip_mkdocs=True)
+    assert res.ok, "site_workflow.check_site (static) failed:\n" + "\n".join(res.errors)
+    assert res.stats["website_refs_checked"] >= 10
+    assert res.stats["docs_images_checked"] >= 20
+
+
+def test_site_workflow_stage_website_without_mkdocs(tmp_path: Path):
+    """Verify landing-page staging works even in environments without MkDocs installed."""
+    site_workflow = _load_script_module("site_workflow.py")
+    staged = site_workflow.stage_combined_site(
+        tmp_path / "preview", repo_root=REPO_ROOT, skip_mkdocs=True
+    )
+
+    assert (staged / "index.html").is_file()
+    assert site_workflow.REQUIRED_LANDING_TITLE in (staged / "index.html").read_text(
+        encoding="utf-8"
+    )
+    assert (staged / "website-assets" / "css" / "main.css").is_file()
+    assert (staged / "website-assets" / "js" / "main.js").is_file()
+    assert (
+        staged / "website-assets" / "images" / "showcase" / "mouse083_tracking_demo.gif"
+    ).is_file()
+
+
 def test_site_workflow_check_passes_on_repository():
     site_workflow = _load_script_module("site_workflow.py")
+    if not site_workflow.has_mkdocs(REPO_ROOT):
+        pytest.skip(
+            "mkdocs is not installed in this environment "
+            "(install docs/requirements_mkdocs.txt to run full portal checks)"
+        )
     res = site_workflow.check_site(repo_root=REPO_ROOT, skip_mkdocs=False)
     assert res.ok, "site_workflow.check_site failed:\n" + "\n".join(res.errors)
     assert res.stats["website_refs_checked"] >= 10
@@ -35,6 +68,11 @@ def test_site_workflow_check_passes_on_repository():
 
 def test_site_workflow_stage_produces_combined_layout(tmp_path: Path):
     site_workflow = _load_script_module("site_workflow.py")
+    if not site_workflow.has_mkdocs(REPO_ROOT):
+        pytest.skip(
+            "mkdocs is not installed in this environment "
+            "(install docs/requirements_mkdocs.txt to run full combined staging)"
+        )
     staged = site_workflow.stage_combined_site(
         tmp_path / "preview", repo_root=REPO_ROOT, strict=True
     )
@@ -100,6 +138,18 @@ def test_site_check_catches_missing_title_and_broken_website_asset(tmp_path: Pat
     joined = "\n".join(res.errors)
     assert site_workflow.REQUIRED_LANDING_TITLE in joined
     assert "missing.png" in joined
+
+
+def test_site_workflow_handles_missing_mkdocs_cleanly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    site_workflow = _load_script_module("site_workflow.py")
+    monkeypatch.setattr(
+        site_workflow, "_find_mkdocs_executable", lambda _root=None: None
+    )
+    assert not site_workflow.has_mkdocs(tmp_path)
+    with pytest.raises(RuntimeError, match="docs/requirements_mkdocs.txt"):
+        site_workflow.build_mkdocs(tmp_path / "out", repo_root=tmp_path)
 
 
 def test_showcase_helpers_sanitize_and_render(tmp_path: Path):
