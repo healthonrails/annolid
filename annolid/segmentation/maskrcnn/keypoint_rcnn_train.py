@@ -252,6 +252,8 @@ def draw_keypoint_overlay(
 
     # Draw skeleton connections first (beneath keypoints)
     if keypoints and skeleton:
+        from annolid.utils.draw import _draw_dashed_line_cv2
+
         for pair in skeleton:
             if len(pair) < 2:
                 continue
@@ -267,7 +269,15 @@ def draw_keypoint_overlay(
             xj, yj, vj = keypoints[j_idx]
             if vi > 0.5 and vj > 0.5:
                 color_i = _KP_COLORS[i_idx % len(_KP_COLORS)]
-                cv2.line(vis, (int(xi), int(yi)), (int(xj), int(yj)), color_i, 2)
+                p0 = (int(round(xi)), int(round(yi)))
+                p1 = (int(round(xj)), int(round(yj)))
+                occluded = (vi < 1.5) or (vj < 1.5)
+                if occluded:
+                    _draw_dashed_line_cv2(vis, p0, p1, (20, 20, 20), thickness=4)
+                    _draw_dashed_line_cv2(vis, p0, p1, color_i, thickness=2)
+                else:
+                    cv2.line(vis, p0, p1, (20, 20, 20), 4, lineType=cv2.LINE_AA)
+                    cv2.line(vis, p0, p1, color_i, 2, lineType=cv2.LINE_AA)
 
     # Draw keypoints
     if keypoints:

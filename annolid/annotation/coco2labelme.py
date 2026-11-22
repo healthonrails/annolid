@@ -6,7 +6,9 @@ import json
 import logging
 import shutil
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
+
+from annolid.annotation.pose_schema import PoseSchema, dedup_undirected_pairs
 
 
 logger = logging.getLogger(__name__)
@@ -298,6 +300,44 @@ def _build_shapes_for_image(
     return shapes
 
 
+def _pose_schema_from_categories(
+    categories_by_id: Dict[int, Dict[str, object]],
+    *,
+    infer_symmetry: bool = True,
+) -> Optional[PoseSchema]:
+    """Extract a ``PoseSchema`` from COCO category ``keypoints`` and ``skeleton``."""
+    keypoints: List[str] = []
+    edges: List[Tuple[str, str]] = []
+    for cid in sorted(categories_by_id.keys()):
+        cat = categories_by_id[cid]
+        schema = PoseSchema.from_coco_category(cat, infer_symmetry=False)
+        for kp in schema.keypoints:
+            if kp not in keypoints:
+                keypoints.append(kp)
+        edges.extend(schema.edges)
+    if not keypoints:
+        return None
+    clean_edges = dedup_undirected_pairs(edges)
+    sym = PoseSchema.infer_symmetry_pairs(keypoints) if infer_symmetry else []
+    return PoseSchema(
+        version="1.0",
+        keypoints=keypoints,
+        edges=clean_edges,
+        symmetry_pairs=sym,
+    )
+
+
+def extract_pose_schema_from_coco(
+    coco_json_path: Path | str,
+    *,
+    infer_symmetry: bool = True,
+) -> Optional[PoseSchema]:
+    """Extract an Annolid ``PoseSchema`` from a COCO annotations JSON file."""
+    path = Path(coco_json_path).expanduser().resolve()
+    _images, _anns, categories_by_id = _load_coco_components(path)
+    return _pose_schema_from_categories(categories_by_id, infer_symmetry=infer_symmetry)
+
+
 def _convert_coco_json(
     coco_json_path: Path | str,
     *,
@@ -308,6 +348,7 @@ def _convert_coco_json(
     include_bbox_when_missing: bool = True,
     save_json_with_image: bool,
     link_mode: str = "hardlink",
+    write_pose_schema: bool = False,
 ) -> Dict[str, int]:
     """Shared COCO->LabelMe converter for both dataset and legacy layouts."""
 
@@ -389,13 +430,23 @@ def _convert_coco_json(
         converted += 1
         shapes_total += len(shapes)
 
-    return {
+    pose_schema_written = 0
+    if write_pose_schema and include_keypoints:
+        schema = _pose_schema_from_categories(categories_by_id)
+        if schema is not None:
+            schema.save(output_dir / "pose_schema.json")
+            pose_schema_written = 1
+
+    result = {
         "images_total": len(image_list),
         "converted_images": int(converted),
         "missing_images": int(missing_images),
         "shapes_total": int(shapes_total),
         "copied_images": int(copied_images),
     }
+    if pose_schema_written:
+        result["pose_schema_written"] = pose_schema_written
+    return result
 
 
 def convert_coco_json_to_labelme(
@@ -408,6 +459,7 @@ def convert_coco_json_to_labelme(
     include_bbox_when_missing: bool = True,
     save_json_with_image: bool = True,
     link_mode: str = "hardlink",
+    write_pose_schema: bool = False,
 ) -> Dict[str, int]:
     """Convert one COCO JSON into LabelMe JSON files.
 
@@ -423,6 +475,7 @@ def convert_coco_json_to_labelme(
         include_bbox_when_missing=include_bbox_when_missing,
         save_json_with_image=save_json_with_image,
         link_mode=link_mode,
+        write_pose_schema=write_pose_schema,
     )
 
 
@@ -435,6 +488,7 @@ def convert_coco_json_to_labelme_dataset(
     include_keypoints: bool = True,
     include_bbox_when_missing: bool = True,
     link_mode: str = "hardlink",
+    write_pose_schema: bool = False,
 ) -> Dict[str, int]:
     """Convert one COCO JSON into a LabelMe dataset with sidecar JSON next to images."""
     return convert_coco_json_to_labelme(
@@ -446,6 +500,7 @@ def convert_coco_json_to_labelme_dataset(
         include_bbox_when_missing=include_bbox_when_missing,
         save_json_with_image=True,
         link_mode=link_mode,
+        write_pose_schema=write_pose_schema,
     )
 
 
@@ -505,6 +560,7 @@ def convert_coco_annotations_dir_to_labelme_dataset(
     images_dir: Optional[Path | str] = None,
     recursive: bool = True,
     link_mode: str = "hardlink",
+    write_pose_schema: bool = False,
 ) -> Dict[str, int]:
     """Convert all COCO JSON files under annotations_dir into one LabelMe dataset.
 
@@ -525,16 +581,36 @@ def convert_coco_annotations_dir_to_labelme_dataset(
         "shapes_total": 0,
         "copied_images": 0,
     }
+    merged_keypoints: List[str] = []
+    merged_edges: List[Tuple[str, str]] = []
     for coco_json in coco_jsons:
         summary = convert_coco_json_to_labelme_dataset(
             coco_json,
             output_dir=output_dir,
             images_dir=images_dir,
             link_mode=link_mode,
+            write_pose_schema=False,
         )
         totals["images_total"] += int(summary.get("images_total", 0))
         totals["converted_images"] += int(summary.get("converted_images", 0))
         totals["missing_images"] += int(summary.get("missing_images", 0))
         totals["shapes_total"] += int(summary.get("shapes_total", 0))
         totals["copied_images"] += int(summary.get("copied_images", 0))
+        if write_pose_schema:
+            extracted = extract_pose_schema_from_coco(coco_json, infer_symmetry=False)
+            if extracted is not None:
+                for kp in extracted.keypoints:
+                    if kp not in merged_keypoints:
+                        merged_keypoints.append(kp)
+                merged_edges.extend(extracted.edges)
+
+    if write_pose_schema and merged_keypoints:
+        schema = PoseSchema(
+            version="1.0",
+            keypoints=merged_keypoints,
+            edges=dedup_undirected_pairs(merged_edges),
+            symmetry_pairs=PoseSchema.infer_symmetry_pairs(merged_keypoints),
+        )
+        schema.save(output_dir / "pose_schema.json")
+        totals["pose_schema_written"] = 1
     return totals

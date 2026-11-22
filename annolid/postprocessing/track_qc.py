@@ -1923,17 +1923,17 @@ def evaluate_track_qc(
                     )
 
     # 4. Anatomical PoseSchema skeleton edge-length outlier check.
-    if (
-        effective_pose_schema is not None
-        and effective_pose_schema.edges
-        and keypoints_by_frame
-    ):
+    if effective_pose_schema is not None and keypoints_by_frame:
+        canonical_edges = effective_pose_schema.base_edges()
+    else:
+        canonical_edges = []
+    if canonical_edges and keypoints_by_frame:
         edge_samples: Dict[Tuple[str, str, str], List[Tuple[int, float]]] = defaultdict(
             list
         )
         for frame in sorted(keypoints_by_frame):
             for inst_name, kp_map in sorted(keypoints_by_frame[frame].items()):
-                for src_kp, dst_kp in effective_pose_schema.edges:
+                for src_kp, dst_kp in canonical_edges:
                     if src_kp in kp_map and dst_kp in kp_map:
                         p1 = kp_map[src_kp]
                         p2 = kp_map[dst_kp]

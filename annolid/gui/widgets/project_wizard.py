@@ -22,7 +22,13 @@ from annolid.domain import (
     load_behavior_spec,
     save_behavior_spec,
 )
-from annolid.annotation.pose_schema import PoseSchema
+from annolid.annotation.pose_schema import (
+    PoseSchema,
+    dedup_undirected_pairs,
+    get_pose_schema_preset,
+    list_pose_schema_presets,
+)
+from annolid.gui.widgets.keypoint_sequencer import _SkeletonPreviewWidget
 
 
 class ProjectInfoPage(QtWidgets.QWizardPage):
@@ -391,6 +397,7 @@ class PoseSchemaPage(QtWidgets.QWizardPage):
         )
 
         self._schema = PoseSchema()
+        self._pending_edge_start: Optional[str] = None
 
         layout = QtWidgets.QVBoxLayout(self)
 
@@ -398,7 +405,7 @@ class PoseSchemaPage(QtWidgets.QWizardPage):
         self.enable_pose_check = QtWidgets.QCheckBox(
             "Enable pose estimation for this project"
         )
-        self.enable_pose_check.stateChanged.connect(self._toggle_pose_ui)
+        self.enable_pose_check.toggled.connect(self._toggle_pose_ui)
         layout.addWidget(self.enable_pose_check)
 
         # Pose config container (hidden by default)
@@ -410,22 +417,13 @@ class PoseSchemaPage(QtWidgets.QWizardPage):
         preset_layout = QtWidgets.QHBoxLayout()
         preset_layout.addWidget(QtWidgets.QLabel("Preset:"))
         self.preset_combo = QtWidgets.QComboBox()
-        self.preset_combo.addItems(
-            [
-                "Custom",
-                "Mouse (9 keypoints)",
-                "Mouse (11 keypoints)",
-                "Fly (5 keypoints)",
-                "Fish (5 keypoints)",
-                "Human COCO (17 keypoints)",
-            ]
-        )
+        self.preset_combo.addItems(["Custom", *list_pose_schema_presets()])
         self.preset_combo.currentTextChanged.connect(self._apply_preset)
         preset_layout.addWidget(self.preset_combo)
         preset_layout.addStretch()
         pose_layout.addLayout(preset_layout)
 
-        # Splitter for keypoints and pairs
+        # Splitter for keypoints, skeleton edges/preview, and symmetry pairs
         splitter = QtWidgets.QSplitter(Qt.Horizontal)
 
         # Keypoints panel
@@ -436,6 +434,7 @@ class PoseSchemaPage(QtWidgets.QWizardPage):
 
         self.kp_list = QtWidgets.QListWidget()
         self.kp_list.setDragDropMode(QtWidgets.QAbstractItemView.InternalMove)
+        self.kp_list.model().rowsMoved.connect(lambda *_: self._sync_preview())
         kp_layout.addWidget(self.kp_list, 1)
 
         kp_btn_layout = QtWidgets.QHBoxLayout()
@@ -454,6 +453,48 @@ class PoseSchemaPage(QtWidgets.QWizardPage):
         kp_layout.addLayout(kp_btn_layout)
 
         splitter.addWidget(kp_widget)
+
+        # Skeleton edges + interactive preview panel
+        edges_widget = QtWidgets.QWidget()
+        edges_layout = QtWidgets.QVBoxLayout(edges_widget)
+        edges_layout.setContentsMargins(0, 0, 0, 0)
+
+        edges_header = QtWidgets.QHBoxLayout()
+        edges_header.addWidget(QtWidgets.QLabel("<b>Skeleton Edges</b>"))
+        auto_edges_btn = QtWidgets.QPushButton("Auto-infer")
+        auto_edges_btn.setToolTip(
+            "Infer anatomical skeleton edges from current keypoints"
+        )
+        auto_edges_btn.clicked.connect(self._auto_edges)
+        edges_header.addWidget(auto_edges_btn)
+        edges_header.addStretch()
+        edges_layout.addLayout(edges_header)
+
+        self.skeleton_preview = _SkeletonPreviewWidget()
+        self.skeleton_preview.keypointClicked.connect(self._on_preview_keypoint_clicked)
+        edges_layout.addWidget(self.skeleton_preview, 1)
+
+        self.edges_list = QtWidgets.QListWidget()
+        self.edges_list.setMaximumHeight(96)
+        edges_layout.addWidget(self.edges_list)
+
+        edges_btn_layout = QtWidgets.QHBoxLayout()
+        self.edge_left_combo = QtWidgets.QComboBox()
+        self.edge_right_combo = QtWidgets.QComboBox()
+        edges_btn_layout.addWidget(self.edge_left_combo, 1)
+        edges_btn_layout.addWidget(QtWidgets.QLabel("—"))
+        edges_btn_layout.addWidget(self.edge_right_combo, 1)
+        add_edge_btn = QtWidgets.QPushButton("+")
+        add_edge_btn.setFixedWidth(30)
+        add_edge_btn.clicked.connect(self._add_edge)
+        edges_btn_layout.addWidget(add_edge_btn)
+        remove_edge_btn = QtWidgets.QPushButton("−")
+        remove_edge_btn.setFixedWidth(30)
+        remove_edge_btn.clicked.connect(self._remove_edge)
+        edges_btn_layout.addWidget(remove_edge_btn)
+        edges_layout.addLayout(edges_btn_layout)
+
+        splitter.addWidget(edges_widget)
 
         # Symmetry pairs panel
         pairs_widget = QtWidgets.QWidget()
@@ -489,7 +530,8 @@ class PoseSchemaPage(QtWidgets.QWizardPage):
 
         splitter.addWidget(pairs_widget)
         splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 1)
+        splitter.setStretchFactor(1, 2)
+        splitter.setStretchFactor(2, 1)
 
         pose_layout.addWidget(splitter, 1)
 
@@ -509,79 +551,50 @@ class PoseSchemaPage(QtWidgets.QWizardPage):
         # Initially hide pose config
         self.pose_container.setVisible(False)
 
-    def _toggle_pose_ui(self, state: int) -> None:
-        self.pose_container.setVisible(state == Qt.Checked)
+    def _toggle_pose_ui(self, state: bool | int) -> None:
+        if isinstance(state, bool):
+            visible = state
+        else:
+            visible = state == Qt.Checked or int(state) != 0
+        self.pose_container.setVisible(visible)
 
     def _apply_preset(self, preset: str) -> None:
-        presets = {
-            "Mouse (9 keypoints)": [
-                "nose",
-                "left_ear",
-                "right_ear",
-                "left_forepaw",
-                "right_forepaw",
-                "left_hindpaw",
-                "right_hindpaw",
-                "tail_base",
-                "tail_tip",
-            ],
-            "Mouse (11 keypoints)": [
-                "nose",
-                "left_ear",
-                "right_ear",
-                "neck",
-                "left_forepaw",
-                "right_forepaw",
-                "spine",
-                "left_hindpaw",
-                "right_hindpaw",
-                "tail_base",
-                "tail_tip",
-            ],
-            "Fly (5 keypoints)": [
-                "head",
-                "thorax",
-                "abdomen",
-                "left_wing",
-                "right_wing",
-            ],
-            "Fish (5 keypoints)": [
-                "head",
-                "dorsal_fin",
-                "tail",
-                "left_pectoral",
-                "right_pectoral",
-            ],
-            "Human COCO (17 keypoints)": [
-                "nose",
-                "left_eye",
-                "right_eye",
-                "left_ear",
-                "right_ear",
-                "left_shoulder",
-                "right_shoulder",
-                "left_elbow",
-                "right_elbow",
-                "left_wrist",
-                "right_wrist",
-                "left_hip",
-                "right_hip",
-                "left_knee",
-                "right_knee",
-                "left_ankle",
-                "right_ankle",
-            ],
-        }
+        if preset == "Custom":
+            return
+        try:
+            preset_schema = get_pose_schema_preset(preset)
+        except KeyError:
+            return
+        self._load_schema_into_ui(preset_schema)
+        self.preset_combo.blockSignals(True)
+        self.preset_combo.setCurrentText(preset)
+        self.preset_combo.blockSignals(False)
 
-        if preset in presets:
-            self.kp_list.clear()
-            for kp in presets[preset]:
-                self.kp_list.addItem(kp)
-            self._update_combo_boxes()
-            self._auto_symmetry()
-            self.preset_combo.blockSignals(True)
-            self.preset_combo.setCurrentText(preset)
-            self.preset_combo.blockSignals(False)
+    def _load_schema_into_ui(self, schema: PoseSchema) -> None:
+        self._schema = copy.deepcopy(schema)
+        self._pending_edge_start = None
+        self.skeleton_preview.set_pending_edge_start(None)
+        self.kp_list.clear()
+        for kp in schema.keypoints:
+            self.kp_list.addItem(kp)
+        self._update_combo_boxes()
+        self._populate_edges_list(schema.base_edges())
+        self._populate_pairs_list(schema.base_symmetry_pairs())
+        self._sync_preview()
+
+    def _populate_edges_list(self, edges: List[tuple[str, str]]) -> None:
+        self.edges_list.clear()
+        for left, right in dedup_undirected_pairs(edges):
+            item = QtWidgets.QListWidgetItem(f"{left} — {right}")
+            item.setData(Qt.UserRole, (left, right))
+            self.edges_list.addItem(item)
+
+    def _populate_pairs_list(self, pairs: List[tuple[str, str]]) -> None:
+        self.pairs_list.clear()
+        for left, right in dedup_undirected_pairs(pairs):
+            item = QtWidgets.QListWidgetItem(f"{left} ↔ {right}")
+            item.setData(Qt.UserRole, (left, right))
+            self.pairs_list.addItem(item)
 
     def _add_keypoint(self) -> None:
         name = self.kp_add_edit.text().strip()
@@ -596,28 +609,37 @@ class PoseSchemaPage(QtWidgets.QWizardPage):
         self.kp_list.addItem(name)
         self.kp_add_edit.clear()
         self._update_combo_boxes()
+        self._sync_preview()
         self.preset_combo.setCurrentText("Custom")
 
     def _remove_keypoint(self) -> None:
         for item in self.kp_list.selectedItems():
             self.kp_list.takeItem(self.kp_list.row(item))
+        valid = set(self._get_keypoints())
+        kept_edges = [(a, b) for a, b in self._get_edges() if a in valid and b in valid]
+        kept_pairs = [(a, b) for a, b in self._get_pairs() if a in valid and b in valid]
+        self._populate_edges_list(kept_edges)
+        self._populate_pairs_list(kept_pairs)
+        if self._pending_edge_start and self._pending_edge_start not in valid:
+            self._pending_edge_start = None
+            self.skeleton_preview.set_pending_edge_start(None)
         self._update_combo_boxes()
+        self._sync_preview()
         self.preset_combo.setCurrentText("Custom")
 
     def _update_combo_boxes(self) -> None:
         keypoints = self._get_keypoints()
-        current_left = self.pair_left_combo.currentText()
-        current_right = self.pair_right_combo.currentText()
-
-        self.pair_left_combo.clear()
-        self.pair_right_combo.clear()
-        self.pair_left_combo.addItems(keypoints)
-        self.pair_right_combo.addItems(keypoints)
-
-        if current_left in keypoints:
-            self.pair_left_combo.setCurrentText(current_left)
-        if current_right in keypoints:
-            self.pair_right_combo.setCurrentText(current_right)
+        for combo in (
+            self.edge_left_combo,
+            self.edge_right_combo,
+            self.pair_left_combo,
+            self.pair_right_combo,
+        ):
+            current = combo.currentText()
+            combo.clear()
+            combo.addItems(keypoints)
+            if current in keypoints:
+                combo.setCurrentText(current)
 
     def _get_keypoints(self) -> List[str]:
         return [
@@ -626,29 +648,107 @@ class PoseSchemaPage(QtWidgets.QWizardPage):
             if self.kp_list.item(i).text().strip()
         ]
 
+    def _get_edges(self) -> List[tuple[str, str]]:
+        edges: List[tuple[str, str]] = []
+        for i in range(self.edges_list.count()):
+            item = self.edges_list.item(i)
+            stored = item.data(Qt.UserRole)
+            if isinstance(stored, (tuple, list)) and len(stored) == 2:
+                edges.append((str(stored[0]).strip(), str(stored[1]).strip()))
+                continue
+            text = item.text()
+            for sep in (" — ", " - "):
+                if sep in text:
+                    left, right = text.split(sep, 1)
+                    edges.append((left.strip(), right.strip()))
+                    break
+        return dedup_undirected_pairs(edges)
+
+    def _get_pairs(self) -> List[tuple[str, str]]:
+        pairs: List[tuple[str, str]] = []
+        for i in range(self.pairs_list.count()):
+            item = self.pairs_list.item(i)
+            stored = item.data(Qt.UserRole)
+            if isinstance(stored, (tuple, list)) and len(stored) == 2:
+                pairs.append((str(stored[0]).strip(), str(stored[1]).strip()))
+                continue
+            text = item.text()
+            if " ↔ " in text:
+                left, right = text.split(" ↔ ", 1)
+                pairs.append((left.strip(), right.strip()))
+        return dedup_undirected_pairs(pairs)
+
+    def _sync_preview(self) -> None:
+        self.skeleton_preview.set_schema(self.get_pose_schema())
+
+    def _on_preview_keypoint_clicked(self, name: str) -> None:
+        if not name:
+            return
+        if self._pending_edge_start is None:
+            self._pending_edge_start = name
+            self.skeleton_preview.set_pending_edge_start(name)
+            return
+        first = self._pending_edge_start
+        self._pending_edge_start = None
+        self.skeleton_preview.set_pending_edge_start(None)
+        if first == name:
+            return
+        current = self._get_edges()
+        ukey = (first, name) if first < name else (name, first)
+        filtered = [
+            pair
+            for pair in current
+            if ((pair[0], pair[1]) if pair[0] < pair[1] else (pair[1], pair[0])) != ukey
+        ]
+        if len(filtered) == len(current):
+            filtered.append((first, name))
+        self._populate_edges_list(filtered)
+        self._sync_preview()
+        self.preset_combo.setCurrentText("Custom")
+
+    def _add_edge(self) -> None:
+        left = self.edge_left_combo.currentText().strip()
+        right = self.edge_right_combo.currentText().strip()
+        if not left or not right or left == right:
+            return
+        current = self._get_edges()
+        current.append((left, right))
+        self._populate_edges_list(current)
+        self._sync_preview()
+        self.preset_combo.setCurrentText("Custom")
+
+    def _remove_edge(self) -> None:
+        for item in self.edges_list.selectedItems():
+            self.edges_list.takeItem(self.edges_list.row(item))
+        self._sync_preview()
+        self.preset_combo.setCurrentText("Custom")
+
+    def _auto_edges(self) -> None:
+        keypoints = self._get_keypoints()
+        inferred = PoseSchema.infer_edges(keypoints, preset="auto")
+        self._populate_edges_list(inferred)
+        self._sync_preview()
+
     def _add_pair(self) -> None:
         left = self.pair_left_combo.currentText()
         right = self.pair_right_combo.currentText()
         if not left or not right or left == right:
             return
-        pair_text = f"{left} ↔ {right}"
-        # Check for duplicates
-        for i in range(self.pairs_list.count()):
-            existing = self.pairs_list.item(i).text()
-            if pair_text == existing or f"{right} ↔ {left}" == existing:
-                return
-        self.pairs_list.addItem(pair_text)
+        current = self._get_pairs()
+        current.append((left, right))
+        self._populate_pairs_list(current)
+        self._sync_preview()
 
     def _remove_pair(self) -> None:
         for item in self.pairs_list.selectedItems():
             self.pairs_list.takeItem(self.pairs_list.row(item))
+        self._sync_preview()
 
     def _auto_symmetry(self) -> None:
         keypoints = self._get_keypoints()
         pairs = PoseSchema.infer_symmetry_pairs(keypoints)
-        self.pairs_list.clear()
-        for left, right in pairs:
-            self.pairs_list.addItem(f"{left} ↔ {right}")
+        self._populate_pairs_list(pairs)
+        self._sync_preview()
 
     def _import_pose_schema(self) -> None:
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
@@ -661,14 +761,7 @@ class PoseSchemaPage(QtWidgets.QWizardPage):
             return
         try:
             schema = PoseSchema.load(path)
-            self._schema = schema
-            self.kp_list.clear()
-            for kp in schema.keypoints:
-                self.kp_list.addItem(kp)
-            self._update_combo_boxes()
-            self.pairs_list.clear()
-            for left, right in schema.symmetry_pairs:
-                self.pairs_list.addItem(f"{left} ↔ {right}")
+            self._load_schema_into_ui(schema)
             self.enable_pose_check.setChecked(True)
             self.preset_combo.setCurrentText("Custom")
         except Exception as exc:
@@ -701,13 +794,24 @@ class PoseSchemaPage(QtWidgets.QWizardPage):
 
     def get_pose_schema(self) -> PoseSchema:
         keypoints = self._get_keypoints()
-        pairs = []
-        for i in range(self.pairs_list.count()):
-            text = self.pairs_list.item(i).text()
-            if " ↔ " in text:
-                left, right = text.split(" ↔ ")
-                pairs.append((left.strip(), right.strip()))
-        return PoseSchema(keypoints=keypoints, symmetry_pairs=pairs)
+        edges = self._get_edges()
+        pairs = self._get_pairs()
+        base = self._schema
+        return PoseSchema(
+            version=str(getattr(base, "version", "1.0") or "1.0"),
+            keypoints=keypoints,
+            edges=edges,
+            symmetry_pairs=pairs,
+            flip_idx=(
+                list(base.flip_idx)
+                if base is not None
+                and isinstance(base.flip_idx, list)
+                and len(base.flip_idx) == len(keypoints)
+                else None
+            ),
+            instances=list(getattr(base, "instances", []) or []),
+            instance_separator=str(getattr(base, "instance_separator", "_") or "_"),
+        )
 
 
 class SummaryPage(QtWidgets.QWizardPage):
@@ -780,7 +884,9 @@ class SummaryPage(QtWidgets.QWizardPage):
         if wizard.pose_schema_page.is_pose_enabled():
             pose = wizard.pose_schema_page.get_pose_schema()
             html_parts.append(
-                f"<h3>📍 Pose Schema ({len(pose.keypoints)} keypoints)</h3>"
+                f"<h3>📍 Pose Schema ({len(pose.keypoints)} keypoints, "
+                f"{len(pose.edges)} skeleton edges, "
+                f"{len(pose.symmetry_pairs)} symmetry pairs)</h3>"
             )
             if pose.keypoints:
                 kps = ", ".join(pose.keypoints[:8])
@@ -850,7 +956,8 @@ class ProjectWizard(QtWidgets.QWizard):
                 pose_schema = self.pose_schema_page.get_pose_schema()
                 pose_schema_path = project_path / "pose_schema.json"
                 pose_schema.save(str(pose_schema_path))
-                schema.pose_schema_path = str(pose_schema_path)
+                schema.pose_schema_path = pose_schema_path.name
+                schema.pose_schema = pose_schema.to_dict()
 
             # Save project schema
             schema_path = project_path / "project.annolid.json"

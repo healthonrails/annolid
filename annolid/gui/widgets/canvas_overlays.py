@@ -9,7 +9,22 @@ from typing import Any, Callable, Iterable
 import numpy as np
 from qtpy import QtCore, QtGui, QtWidgets
 
+from annolid.annotation.keypoint_visibility import (
+    KeypointVisibility,
+    keypoint_visibility_from_shape_object,
+)
 from annolid.annotation.pose_schema import PoseSchema
+
+_POSE_INSTANCE_PALETTE: tuple[tuple[int, int, int], ...] = (
+    (0, 229, 255),  # cyan
+    (255, 179, 0),  # amber
+    (255, 64, 129),  # magenta
+    (105, 240, 174),  # emerald
+    (179, 136, 255),  # violet
+    (255, 110, 64),  # coral
+    (64, 196, 255),  # sky
+    (255, 238, 88),  # yellow
+)
 
 _CURSOR_POINT = QtCore.Qt.PointingHandCursor
 
@@ -660,66 +675,237 @@ class CanvasOverlayMixin(BehaviorOverlayMixin):
     ) -> str:
         flags = getattr(shape, "flags", None)
         if isinstance(flags, dict):
-            instance_label = flags.get("instance_label")
-            if isinstance(instance_label, str) and instance_label.strip():
-                return instance_label.strip()
+            for key in ("instance_label", "parent_instance", "instance_name"):
+                instance_label = flags.get(key)
+                if isinstance(instance_label, str) and instance_label.strip():
+                    return instance_label.strip()
         other = getattr(shape, "other_data", None)
         if isinstance(other, dict):
-            instance_label = other.get("instance_label")
-            if isinstance(instance_label, str) and instance_label.strip():
-                return instance_label.strip()
+            for key in ("instance_label", "parent_instance", "instance_name"):
+                instance_label = other.get(key)
+                if isinstance(instance_label, str) and instance_label.strip():
+                    return instance_label.strip()
 
         group_id = getattr(shape, "group_id", None)
         if group_id not in (None, ""):
             return str(group_id)
 
         label = str(getattr(shape, "label", "") or "").strip()
+        if ":" in label:
+            left, right = label.split(":", 1)
+            if left.strip() and right.strip():
+                return left.strip()
+
+        known_kps_lower = self._known_pose_keypoints_lower()
+        if label.lower() in known_kps_lower:
+            return default_label
+
         lower_label = label.lower()
         for candidate in sorted(candidate_labels, key=len, reverse=True):
             if not candidate:
                 continue
-            if lower_label.startswith(candidate.lower()):
-                return candidate
-        for delimiter in ("_", "-", ":", "|", " "):
-            if delimiter in label:
-                return label.split(delimiter, 1)[0].strip() or default_label
+            cand_lower = candidate.lower()
+            if lower_label.startswith(cand_lower) and len(label) > len(candidate):
+                if label[len(candidate)] in ("_", "-", ":", "|", " "):
+                    return candidate
+
+        # Match trailing known keypoint suffix (e.g. "mouse_1_tail_base" -> "mouse_1").
+        if known_kps_lower:
+            sep = (
+                getattr(self._pose_schema, "instance_separator", "_") or "_"
+                if self._pose_schema is not None
+                else "_"
+            )
+            for kp_lower in sorted(known_kps_lower.keys(), key=len, reverse=True):
+                for delimiter in (sep, "_", "-", ":", "|", " "):
+                    token = f"{delimiter}{kp_lower}"
+                    if lower_label.endswith(token) and len(label) > len(token):
+                        prefix = label[: -len(token)].strip()
+                        if prefix:
+                            return prefix
+
         return default_label
 
     def _infer_pose_keypoint_label(self, shape, instance_label: str) -> str:
         flags = getattr(shape, "flags", None)
         if isinstance(flags, dict):
-            display_label = flags.get("display_label")
-            if isinstance(display_label, str) and display_label.strip():
-                return display_label.strip()
+            for key in ("display_label", "part_label", "body_part"):
+                display_label = flags.get(key)
+                if isinstance(display_label, str) and display_label.strip():
+                    return display_label.strip()
         other = getattr(shape, "other_data", None)
         if isinstance(other, dict):
-            display_label = other.get("display_label")
-            if isinstance(display_label, str) and display_label.strip():
-                return display_label.strip()
+            for key in ("display_label", "part_label", "body_part"):
+                display_label = other.get(key)
+                if isinstance(display_label, str) and display_label.strip():
+                    return display_label.strip()
 
         label = str(getattr(shape, "label", "") or "").strip()
+        known_kps_lower = self._known_pose_keypoints_lower()
+        if label.lower() in known_kps_lower:
+            return known_kps_lower[label.lower()]
+
+        if ":" in label:
+            _left, right = label.split(":", 1)
+            if right.strip():
+                r_clean = right.strip()
+                return known_kps_lower.get(r_clean.lower(), r_clean)
+
         if instance_label:
             inst_len = len(instance_label)
-            if label.lower().startswith(instance_label.lower()) and inst_len < len(
-                label
+            if (
+                label.lower().startswith(instance_label.lower())
+                and inst_len < len(label)
+                and label[inst_len] in ("_", "-", ":", "|", " ")
             ):
-                suffix = label[inst_len:].lstrip("_-:| ")
+                suffix = label[inst_len:].lstrip("_-:| ").strip()
                 if suffix:
-                    return suffix
-        for delimiter in ("_", "-", ":", "|"):
-            if delimiter in label:
-                suffix = label.split(delimiter, 1)[1].strip()
-                if suffix:
-                    return suffix
+                    return known_kps_lower.get(suffix.lower(), suffix)
+
+        if known_kps_lower:
+            sep = (
+                getattr(self._pose_schema, "instance_separator", "_") or "_"
+                if self._pose_schema is not None
+                else "_"
+            )
+            lower_label = label.lower()
+            for kp_lower in sorted(known_kps_lower.keys(), key=len, reverse=True):
+                for delimiter in (sep, "_", "-", ":", "|", " "):
+                    token = f"{delimiter}{kp_lower}"
+                    if lower_label.endswith(token) and len(label) > len(token):
+                        return known_kps_lower[kp_lower]
+
         return label
 
-    def _draw_pose_edges(self, painter: QtGui.QPainter) -> None:
-        if (
-            not self._show_pose_edges
-            or not self._pose_schema
-            or not self._pose_schema.edges
-        ):
-            return
+    def _known_pose_keypoints_lower(self) -> dict[str, str]:
+        schema = self._pose_schema
+        if schema is None:
+            return {}
+        known: dict[str, str] = {}
+        for kp in list(getattr(schema, "keypoints", ()) or ()):
+            text = str(kp or "").strip()
+            if text:
+                known.setdefault(text.lower(), text)
+        for raw_a, raw_b in list(getattr(schema, "edges", ()) or ()):
+            for raw in (raw_a, raw_b):
+                _inst, base = schema.strip_instance_prefix(str(raw or ""))
+                if base:
+                    known.setdefault(base.lower(), base)
+        return known
+
+    def _resolve_pose_point_shape(
+        self,
+        shape,
+        candidate_labels: set[str],
+        known_kps_lower: dict[str, str],
+    ) -> tuple[tuple[str, str | None], str, str, int, bool] | None:
+        """Resolve a visible point shape to ``(bucket_key, inst_label, kp_label, vis, highlighted)``."""
+        if str(getattr(shape, "shape_type", "") or "").lower() != "point":
+            return None
+        if not self.isVisible(shape):
+            return None
+        points = getattr(shape, "points", None) or []
+        if not points:
+            return None
+
+        vis = keypoint_visibility_from_shape_object(shape)
+        if vis <= int(KeypointVisibility.MISSING):
+            return None
+
+        raw_label = str(getattr(shape, "label", "") or "").strip()
+        group_id = getattr(shape, "group_id", None)
+        gid_key = str(group_id) if group_id not in (None, "") else None
+
+        instance_label: str | None = None
+        kp_label: str | None = None
+
+        # 1. Explicit instance/keypoint metadata takes precedence when both are present.
+        flags = getattr(shape, "flags", None)
+        other = getattr(shape, "other_data", None)
+        explicit_inst = ""
+        explicit_kp = ""
+        for container in (flags, other):
+            if not isinstance(container, dict):
+                continue
+            if not explicit_inst:
+                for key in ("instance_label", "parent_instance", "instance_name"):
+                    val = container.get(key)
+                    if isinstance(val, str) and val.strip():
+                        explicit_inst = val.strip()
+                        break
+            if not explicit_kp:
+                for key in ("display_label", "part_label", "body_part"):
+                    val = container.get(key)
+                    if isinstance(val, str) and val.strip():
+                        explicit_kp = val.strip()
+                        break
+
+        if explicit_inst:
+            instance_label = explicit_inst
+        if explicit_kp:
+            kp_label = known_kps_lower.get(explicit_kp.lower(), explicit_kp)
+
+        # 2. Try configured PoseSchema instance prefixes (longest-match-first).
+        if (not instance_label or not kp_label) and self._pose_schema is not None:
+            try:
+                inst_from_schema, base_from_schema = (
+                    self._pose_schema.strip_instance_prefix(raw_label)
+                )
+                if inst_from_schema and base_from_schema:
+                    instance_label = instance_label or inst_from_schema
+                    kp_label = kp_label or known_kps_lower.get(
+                        base_from_schema.lower(), base_from_schema
+                    )
+            except Exception:
+                pass
+
+        # 3. Fallback inference (respecting ":" hierarchy, known base keypoints, and candidates).
+        if not instance_label:
+            instance_label = self._infer_pose_instance_label(
+                shape, candidate_labels, default_label="object"
+            )
+        if not kp_label:
+            kp_label = self._infer_pose_keypoint_label(shape, instance_label)
+        if not kp_label:
+            return None
+
+        kp_canonical = known_kps_lower.get(kp_label.lower(), kp_label)
+        bucket_key = (instance_label, gid_key)
+        highlighted = bool(
+            getattr(shape, "selected", False) or shape is getattr(self, "hShape", None)
+        )
+        return bucket_key, instance_label, kp_canonical, int(vis), highlighted
+
+    def _pose_instance_color(
+        self,
+        inst_index: int,
+        total_instances: int,
+        *,
+        occluded: bool = False,
+        highlighted: bool = False,
+    ) -> QtGui.QColor:
+        base_color = getattr(self, "_pose_edge_color", None)
+        if total_instances <= 1 and isinstance(base_color, QtGui.QColor):
+            color = QtGui.QColor(base_color)
+        else:
+            r, g, b = _POSE_INSTANCE_PALETTE[inst_index % len(_POSE_INSTANCE_PALETTE)]
+            color = QtGui.QColor(r, g, b, 210)
+        if highlighted:
+            color = color.lighter(115)
+            color.setAlpha(245)
+        elif occluded:
+            color.setAlpha(min(color.alpha(), 140))
+        return color
+
+    def _collect_pose_edge_segments(
+        self,
+    ) -> list[
+        tuple[QtCore.QPointF, QtCore.QPointF, tuple[str, str | None], int, bool, bool]
+    ]:
+        """Collect drawable skeleton bone segments from current visible shapes and PoseSchema."""
+        schema = self._pose_schema
+        if not self._show_pose_edges or not schema or not schema.edges:
+            return []
 
         candidate_labels = {
             str(getattr(s, "label", "") or "").strip()
@@ -727,116 +913,177 @@ class CanvasOverlayMixin(BehaviorOverlayMixin):
             if str(getattr(s, "shape_type", "") or "").lower() != "point"
         }
         candidate_labels.discard("")
+        known_kps_lower = self._known_pose_keypoints_lower()
 
-        instances = {}
+        buckets: dict[
+            tuple[str, str | None],
+            dict[str, tuple[QtCore.QPointF, int, bool]],
+        ] = {}
+        buckets_by_inst_name: dict[str, list[tuple[str, str | None]]] = {}
+
         for shape in self.shapes:
-            if str(getattr(shape, "shape_type", "") or "").lower() != "point":
+            resolved = self._resolve_pose_point_shape(
+                shape, candidate_labels, known_kps_lower
+            )
+            if resolved is None:
                 continue
-            if not self.isVisible(shape):
-                continue
-            points = getattr(shape, "points", None) or []
-            if not points:
-                continue
-            point = points[0]
-            instance_label = None
-            kp_label = None
+            bucket_key, inst_label, kp_label, vis, highlighted = resolved
+            point = shape.points[0]
+            if bucket_key not in buckets:
+                buckets[bucket_key] = {}
+                buckets_by_inst_name.setdefault(inst_label, []).append(bucket_key)
+            kp_map = buckets[bucket_key]
+            # Prefer visible over occluded if duplicate keypoint labels exist in same bucket.
+            existing = kp_map.get(kp_label)
+            if existing is None or (existing[1] < vis):
+                kp_map[kp_label] = (point, vis, highlighted)
+            elif highlighted and not existing[2]:
+                kp_map[kp_label] = (existing[0], existing[1], True)
 
-            try:
-                inst_from_schema, base_from_schema = (
-                    self._pose_schema.strip_instance_prefix(
-                        str(getattr(shape, "label", "") or "")
-                    )
-                )
-                if inst_from_schema and base_from_schema:
-                    instance_label = inst_from_schema
-                    kp_label = base_from_schema
-            except Exception:
-                instance_label = None
-                kp_label = None
+        if not buckets:
+            return []
 
-            if not instance_label:
-                instance_label = self._infer_pose_instance_label(
-                    shape, candidate_labels, default_label="object"
-                )
-            if not kp_label:
-                kp_label = self._infer_pose_keypoint_label(shape, instance_label)
-            if not kp_label:
+        schema_instances = [inst for inst in (schema.instances or []) if inst]
+        ordered_buckets: list[tuple[str, str | None]] = []
+        seen_buckets: set[tuple[str, str | None]] = set()
+        for inst in schema_instances:
+            for bkey in buckets_by_inst_name.get(inst, ()):
+                if bkey not in seen_buckets:
+                    seen_buckets.add(bkey)
+                    ordered_buckets.append(bkey)
+        for bkey in buckets.keys():
+            if bkey not in seen_buckets:
+                seen_buckets.add(bkey)
+                ordered_buckets.append(bkey)
+
+        bucket_to_index = {bkey: idx for idx, bkey in enumerate(ordered_buckets)}
+        segments: list[
+            tuple[
+                QtCore.QPointF,
+                QtCore.QPointF,
+                tuple[str, str | None],
+                int,
+                bool,
+                bool,
+            ]
+        ] = []
+        drawn_per_bucket: set[tuple[tuple[str, str | None], str, str]] = set()
+
+        def _append_edge(bkey: tuple[str, str | None], kp_a: str, kp_b: str) -> None:
+            ca = known_kps_lower.get(kp_a.lower(), kp_a)
+            cb = known_kps_lower.get(kp_b.lower(), kp_b)
+            if not ca or not cb or ca == cb:
+                return
+            edge_id = (bkey, ca, cb) if ca < cb else (bkey, cb, ca)
+            if edge_id in drawn_per_bucket:
+                return
+            kp_map = buckets.get(bkey)
+            if not kp_map:
+                return
+            rec_a = kp_map.get(ca)
+            rec_b = kp_map.get(cb)
+            if rec_a is None or rec_b is None:
+                return
+            drawn_per_bucket.add(edge_id)
+            occluded = rec_a[1] == int(KeypointVisibility.OCCLUDED) or rec_b[1] == int(
+                KeypointVisibility.OCCLUDED
+            )
+            highlighted = bool(rec_a[2] or rec_b[2])
+            segments.append(
+                (rec_a[0], rec_b[0], bkey, bucket_to_index[bkey], occluded, highlighted)
+            )
+
+        sep = getattr(schema, "instance_separator", "_") or "_"
+        for a, b in schema.edges:
+            inst_a, kp_a = schema.strip_instance_prefix(a)
+            inst_b, kp_b = schema.strip_instance_prefix(b)
+            if not schema.instances:
+                if inst_a is None and isinstance(a, str) and sep in a:
+                    candidate_inst, candidate_kp = a.split(sep, 1)
+                    if candidate_inst in buckets_by_inst_name:
+                        inst_a = candidate_inst
+                        kp_a = candidate_kp.strip()
+                if inst_b is None and isinstance(b, str) and sep in b:
+                    candidate_inst, candidate_kp = b.split(sep, 1)
+                    if candidate_inst in buckets_by_inst_name:
+                        inst_b = candidate_inst
+                        kp_b = candidate_kp.strip()
+
+            if inst_a or inst_b:
+                if inst_a and inst_b and inst_a != inst_b:
+                    continue
+                target_inst = inst_a or inst_b
+                if not target_inst:
+                    continue
+                for bkey in buckets_by_inst_name.get(target_inst, ()):
+                    _append_edge(bkey, kp_a, kp_b)
                 continue
-            instances.setdefault(instance_label, {})[kp_label] = point
 
-        if not instances:
+            for bkey in ordered_buckets:
+                _append_edge(bkey, kp_a, kp_b)
+
+        return segments
+
+    def _draw_pose_edges(self, painter: QtGui.QPainter) -> None:
+        segments = self._collect_pose_edge_segments()
+        if not segments:
             return
 
-        edge_width = max(1, int(round(3.0 / max(self.scale, 1e-6))))
-        shadow_width = edge_width + max(1, int(round(2.0 / max(self.scale, 1e-6))))
-
-        shadow_pen = QtGui.QPen(self._pose_edge_shadow)
-        shadow_pen.setWidth(shadow_width)
-        shadow_pen.setCapStyle(QtCore.Qt.RoundCap)
-        shadow_pen.setJoinStyle(QtCore.Qt.RoundJoin)
-
-        edge_pen = QtGui.QPen(self._pose_edge_color)
-        edge_pen.setWidth(edge_width)
-        edge_pen.setCapStyle(QtCore.Qt.RoundCap)
-        edge_pen.setJoinStyle(QtCore.Qt.RoundJoin)
+        total_instances = len({seg[2] for seg in segments})
+        scale = max(float(getattr(self, "scale", 1.0) or 1.0), 1e-3)
+        base_edge_width = max(0.75, 2.5 / scale)
+        base_shadow_pad = max(0.75, 1.8 / scale)
 
         painter.save()
         try:
-            schema_instances = [
-                inst for inst in (self._pose_schema.instances or []) if inst
-            ]
-            active_instances = list(instances.keys())
-            if schema_instances:
-                instance_order = [
-                    inst for inst in schema_instances if inst in instances
-                ] + [inst for inst in active_instances if inst not in schema_instances]
-            else:
-                instance_order = active_instances
+            for p1, p2, _bkey, inst_idx, occluded, highlighted in segments:
+                edge_width = base_edge_width + (0.9 / scale if highlighted else 0.0)
+                shadow_width = edge_width + base_shadow_pad
 
-            for edge in self._pose_schema.edges:
-                a, b = edge
-                inst_a, kp_a = self._pose_schema.strip_instance_prefix(a)
-                inst_b, kp_b = self._pose_schema.strip_instance_prefix(b)
-                if not self._pose_schema.instances:
-                    sep = getattr(self._pose_schema, "instance_separator", "_") or "_"
-                    if inst_a is None and isinstance(a, str) and sep in a:
-                        candidate_inst, candidate_kp = a.split(sep, 1)
-                        if candidate_inst in instances:
-                            inst_a = candidate_inst
-                            kp_a = candidate_kp.strip()
-                    if inst_b is None and isinstance(b, str) and sep in b:
-                        candidate_inst, candidate_kp = b.split(sep, 1)
-                        if candidate_inst in instances:
-                            inst_b = candidate_inst
-                            kp_b = candidate_kp.strip()
+                shadow_color = QtGui.QColor(self._pose_edge_shadow)
+                if occluded:
+                    shadow_color.setAlpha(min(shadow_color.alpha(), 145))
+                shadow_pen = QtGui.QPen(shadow_color)
+                shadow_pen.setWidthF(shadow_width)
+                shadow_pen.setCapStyle(QtCore.Qt.RoundCap)
+                shadow_pen.setJoinStyle(QtCore.Qt.RoundJoin)
 
-                if inst_a or inst_b:
-                    inst = inst_a or inst_b
-                    if not inst:
-                        continue
-                    if inst_a and inst_b and inst_a != inst_b:
-                        continue
-                    kp_map = instances.get(inst, {})
-                    p1 = kp_map.get(kp_a)
-                    p2 = kp_map.get(kp_b)
-                    if p1 is None or p2 is None:
-                        continue
-                    painter.setPen(shadow_pen)
-                    painter.drawLine(p1, p2)
-                    painter.setPen(edge_pen)
-                    painter.drawLine(p1, p2)
-                    continue
+                edge_color = self._pose_instance_color(
+                    inst_idx,
+                    total_instances,
+                    occluded=occluded,
+                    highlighted=highlighted,
+                )
+                edge_pen = QtGui.QPen(edge_color)
+                edge_pen.setWidthF(edge_width)
+                edge_pen.setCapStyle(QtCore.Qt.RoundCap)
+                edge_pen.setJoinStyle(QtCore.Qt.RoundJoin)
 
-                for inst in instance_order:
-                    kp_map = instances.get(inst, {})
-                    p1 = kp_map.get(kp_a)
-                    p2 = kp_map.get(kp_b)
-                    if p1 is None or p2 is None:
-                        continue
-                    painter.setPen(shadow_pen)
-                    painter.drawLine(p1, p2)
-                    painter.setPen(edge_pen)
-                    painter.drawLine(p1, p2)
+                if occluded:
+                    # Use matched image-coordinate dash/gap lengths so shadow and
+                    # foreground dashes stay phase-locked despite different pen widths.
+                    dash_img = max(3.5, 7.0 / scale)
+                    gap_img = max(3.0, 5.5 / scale)
+                    shadow_pen.setDashPattern(
+                        [
+                            max(0.5, dash_img / max(shadow_width, 1e-3)),
+                            max(0.5, gap_img / max(shadow_width, 1e-3)),
+                        ]
+                    )
+                    edge_pen.setDashPattern(
+                        [
+                            max(0.5, dash_img / max(edge_width, 1e-3)),
+                            max(0.5, gap_img / max(edge_width, 1e-3)),
+                        ]
+                    )
+                else:
+                    shadow_pen.setStyle(QtCore.Qt.SolidLine)
+                    edge_pen.setStyle(QtCore.Qt.SolidLine)
+
+                painter.setPen(shadow_pen)
+                painter.drawLine(p1, p2)
+                painter.setPen(edge_pen)
+                painter.drawLine(p1, p2)
         finally:
             painter.restore()
 

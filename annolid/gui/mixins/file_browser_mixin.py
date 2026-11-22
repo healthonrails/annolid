@@ -281,6 +281,11 @@ class FileBrowserMixin:
         self._cancel_import_dir_scan()
         self.lastOpenDir = dirpath
         self.annotation_dir = dirpath
+        if hasattr(self, "_auto_load_pose_schema_from_dir"):
+            try:
+                self._auto_load_pose_schema_from_dir(dirpath, overwrite=True)
+            except Exception:
+                pass
         self.filename = None
         self.imageList = []
         self._known_file_paths = set()

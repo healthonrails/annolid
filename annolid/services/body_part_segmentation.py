@@ -9,7 +9,7 @@ from pathlib import Path
 import sys
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
-from annolid.annotation.pose_schema import PoseSchema
+from annolid.annotation.pose_schema import PoseSchema, find_pose_schema_in_dir
 from annolid.segmentation.body_parts import (
     BodyPartSegmentationConfig,
     InstanceBodyPartVideoProcessor,
@@ -29,17 +29,24 @@ def _utc_now_iso() -> str:
 
 def _load_skeleton_edges(
     pose_schema_path: Optional[Path | str],
+    *,
+    annotation_dir: Optional[Path] = None,
 ) -> Tuple[Tuple[str, str], ...]:
-    if pose_schema_path is None:
-        return ()
-    resolved = Path(pose_schema_path).expanduser().resolve()
-    if not resolved.exists():
-        raise FileNotFoundError(f"Pose schema file not found: {resolved}")
-    schema = PoseSchema.load(resolved)
-    raw_edges = (
-        getattr(schema, "edges", None) or getattr(schema, "skeleton", None) or ()
-    )
-    return tuple((str(a), str(b)) for a, b in raw_edges)
+    if pose_schema_path is not None:
+        resolved = Path(pose_schema_path).expanduser().resolve()
+        if not resolved.exists():
+            raise FileNotFoundError(f"Pose schema file not found: {resolved}")
+        schema = PoseSchema.load(resolved)
+        return tuple(schema.base_edges())
+    if annotation_dir is not None:
+        discovered = find_pose_schema_in_dir(annotation_dir)
+        if discovered is not None:
+            try:
+                schema = PoseSchema.load(discovered)
+                return tuple(schema.base_edges())
+            except Exception:
+                return ()
+    return ()
 
 
 def _parse_keypoint_part_map(
@@ -111,7 +118,7 @@ def run_body_part_segmentation(
             f"Tracked annotation directory not found: {resolved_dir}"
         )
 
-    skeleton_edges = _load_skeleton_edges(pose_schema_path)
+    skeleton_edges = _load_skeleton_edges(pose_schema_path, annotation_dir=resolved_dir)
     effective_config = config or BodyPartSegmentationConfig()
 
     processor = InstanceBodyPartVideoProcessor(

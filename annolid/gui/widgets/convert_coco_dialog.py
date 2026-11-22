@@ -5,6 +5,7 @@ from typing import Optional
 
 from qtpy import QtCore, QtWidgets
 
+from annolid.annotation.pose_schema import find_pose_schema_in_dir
 from annolid.datasets.labelme_collection import resolve_image_path
 
 
@@ -23,6 +24,7 @@ class ConvertCOODialog(QtWidgets.QDialog):
         self.label_list_text: Optional[str] = None
         self.num_train_frames: float = 0.7  # ratio for labelme2coco.convert(...)
         self.output_mode: str = "segmentation"
+        self.pose_schema_path: Optional[str] = None
 
         self._build_ui()
         self._connect_signals()
@@ -30,6 +32,7 @@ class ConvertCOODialog(QtWidgets.QDialog):
         if annotation_dir:
             self.anno_dir_edit.setText(str(annotation_dir))
             self._auto_fill_output_dir()
+            self._auto_fill_pose_schema()
 
         self._update_summary()
 
@@ -107,9 +110,20 @@ class ConvertCOODialog(QtWidgets.QDialog):
         self.mode_combo.setCurrentIndex(0)
         self.mode_combo.setToolTip(
             "Segmentation mode exports polygon masks per shape label. "
-            "Keypoints mode exports one annotation per instance with keypoints/num_keypoints."
+            "Keypoints mode exports one annotation per instance with keypoints/num_keypoints/skeleton."
         )
         form.addRow("Output mode:", self.mode_combo)
+
+        self.pose_schema_edit = QtWidgets.QLineEdit(self)
+        self.pose_schema_edit.setPlaceholderText(
+            "Optional pose_schema.json/.yaml for keypoint order & COCO skeleton"
+        )
+        pose_btn = QtWidgets.QPushButton("Browse...", self)
+        pose_btn.clicked.connect(self._browse_pose_schema_file)
+        pose_row = QtWidgets.QHBoxLayout()
+        pose_row.addWidget(self.pose_schema_edit, 1)
+        pose_row.addWidget(pose_btn)
+        form.addRow("Pose schema:", self._wrap_row(pose_row))
 
         main.addLayout(form)
 
@@ -131,6 +145,7 @@ class ConvertCOODialog(QtWidgets.QDialog):
         self.anno_dir_edit.textChanged.connect(self._on_annotation_dir_changed)
         self.out_dir_edit.textChanged.connect(self._update_summary)
         self.labels_edit.textChanged.connect(self._update_summary)
+        self.pose_schema_edit.textChanged.connect(self._update_summary)
         self.train_slider.valueChanged.connect(self.train_percent_spin.setValue)
         self.train_percent_spin.valueChanged.connect(self.train_slider.setValue)
         self.train_percent_spin.valueChanged.connect(self._update_summary)
@@ -169,9 +184,35 @@ class ConvertCOODialog(QtWidgets.QDialog):
         if path:
             self.labels_edit.setText(path)
 
+    def _browse_pose_schema_file(self) -> None:
+        start = (
+            self.pose_schema_edit.text().strip()
+            or self.anno_dir_edit.text().strip()
+            or str(Path.home())
+        )
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Select PoseSchema file (optional)",
+            start,
+            "PoseSchema files (*.json *.yaml *.yml);;All files (*)",
+        )
+        if path:
+            self.pose_schema_edit.setText(path)
+
     def _on_annotation_dir_changed(self) -> None:
         self._auto_fill_output_dir()
+        self._auto_fill_pose_schema()
         self._update_summary()
+
+    def _auto_fill_pose_schema(self) -> None:
+        if self.pose_schema_edit.text().strip():
+            return
+        src = self.anno_dir_edit.text().strip()
+        if not src:
+            return
+        found = find_pose_schema_in_dir(src)
+        if found is not None:
+            self.pose_schema_edit.setText(str(found))
 
     def _auto_fill_output_dir(self) -> None:
         if self.out_dir_edit.text().strip():
@@ -264,6 +305,20 @@ class ConvertCOODialog(QtWidgets.QDialog):
             self.label_list_text = str(labels_path)
         else:
             self.label_list_text = None
+
+        pose_schema_file = self.pose_schema_edit.text().strip()
+        if pose_schema_file:
+            ps_path = Path(pose_schema_file).expanduser()
+            if not ps_path.is_file():
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "Invalid pose schema",
+                    f"Pose schema file not found:\n{ps_path}",
+                )
+                return
+            self.pose_schema_path = str(ps_path)
+        else:
+            self.pose_schema_path = None
 
         self.annotation_dir = str(src_path)
         self.out_dir = str(Path(output_dir).expanduser()) if output_dir else None

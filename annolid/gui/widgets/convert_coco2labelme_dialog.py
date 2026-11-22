@@ -14,6 +14,7 @@ class ConvertCOCO2LabelMeConfig:
     images_dir: Optional[Path]
     recursive: bool
     link_mode: str
+    write_pose_schema: bool = True
 
 
 class ConvertCOCO2LabelMeDialog(QtWidgets.QDialog):
@@ -69,6 +70,12 @@ class ConvertCOCO2LabelMeDialog(QtWidgets.QDialog):
         self.recursive_check = QtWidgets.QCheckBox("Find COCO JSON recursively")
         self.recursive_check.setChecked(True)
         form.addRow("", self.recursive_check)
+
+        self.write_pose_schema_check = QtWidgets.QCheckBox(
+            "Write pose_schema.json (preserve COCO keypoints & skeleton)"
+        )
+        self.write_pose_schema_check.setChecked(True)
+        form.addRow("", self.write_pose_schema_check)
 
         self.link_mode_combo = QtWidgets.QComboBox()
         self.link_mode_combo.addItems(["hardlink", "copy", "symlink"])
@@ -151,5 +158,6 @@ class ConvertCOCO2LabelMeDialog(QtWidgets.QDialog):
             images_dir=(images_dir.resolve() if images_dir else None),
             recursive=bool(self.recursive_check.isChecked()),
             link_mode=str(self.link_mode_combo.currentText()),
+            write_pose_schema=bool(self.write_pose_schema_check.isChecked()),
         )
         self.accept()

@@ -3128,6 +3128,14 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
             )
             return
 
+        if getattr(self, "_pose_schema", None) is None and hasattr(
+            self, "_auto_load_pose_schema_from_dir"
+        ):
+            try:
+                self._auto_load_pose_schema_from_dir(path.parent, overwrite=False)
+            except Exception:
+                pass
+
         image_path = path
         shapes = []
         loaded_label_file = None

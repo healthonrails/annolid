@@ -63,12 +63,30 @@ def _principal_axis(points: np.ndarray) -> np.ndarray:
 
 
 def _skeletonize_mask(binary_mask: np.ndarray) -> np.ndarray:
+    mask_bool = np.asarray(binary_mask) > 0
+    if not np.any(mask_bool):
+        return np.zeros(mask_bool.shape, dtype=bool)
     if _skimage_skeletonize is not None:
-        return _skimage_skeletonize(binary_mask)
+        return np.asarray(_skimage_skeletonize(mask_bool), dtype=bool)
     import cv2
 
-    mask_u8 = (np.asarray(binary_mask) > 0).astype(np.uint8) * 255
-    return cv2.ximgproc.thinning(mask_u8) > 0
+    mask_u8 = mask_bool.astype(np.uint8) * 255
+    ximgproc = getattr(cv2, "ximgproc", None)
+    thinning = getattr(ximgproc, "thinning", None) if ximgproc is not None else None
+    if callable(thinning):
+        return np.asarray(thinning(mask_u8) > 0, dtype=bool)
+
+    # Pure OpenCV morphological skeleton fallback (works without opencv-contrib or skimage).
+    kernel = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
+    work = mask_u8.copy()
+    skel = np.zeros_like(work)
+    while cv2.countNonZero(work) > 0:
+        eroded = cv2.erode(work, kernel)
+        opened = cv2.dilate(eroded, kernel)
+        temp = cv2.subtract(work, opened)
+        skel = cv2.bitwise_or(skel, temp)
+        work = eroded
+    return skel > 0
 
 
 def _medial_axis_with_distance(
@@ -137,11 +155,17 @@ class ShapeProcessor:
         """
         # Select points above the overall centroid (assumed to be the head region)
         y_coords, x_coords = np.nonzero(self.medial_axis)
-        points = np.column_stack((x_coords, y_coords))
+        if len(x_coords) == 0:
+            return np.asarray(self.centroid, dtype=np.float64), np.array(
+                [1.0, 0.0], dtype=np.float64
+            )
+        points = np.column_stack((x_coords, y_coords)).astype(np.float64)
         head_region = points[points[:, 1] < self.centroid[1]]
         if len(head_region) < 2:  # fallback to all points
             head_region = points
         center = np.mean(head_region, axis=0)
+        if len(head_region) < 2 or np.allclose(head_region, head_region[0]):
+            return center, np.array([1.0, 0.0], dtype=np.float64)
         axis = _principal_axis(head_region)  # first principal component
         return center, axis
 
@@ -303,7 +327,7 @@ class ShapeProcessor:
 
     def distance_to_polygon_edge(self, point: Tuple[float, float]) -> float:
         """
-        Calculate the shortest distance from a given point to the polygon edge.
+        Calculate the shortest distance from a given point to the polygon boundary.
 
         Parameters:
         -----------
@@ -315,9 +339,21 @@ class ShapeProcessor:
         float:
             The minimum distance.
         """
-        edge_points = self.calculate_polygon_edge_points()
-        distances = [self.calculate_distance(point, (ex, ey)) for ex, ey in edge_points]
-        return min(distances) if distances else float("inf")
+        mask_u8 = (np.asarray(self.binary_mask) > 0).astype(np.uint8)
+        if not np.any(mask_u8):
+            return float("inf")
+        import cv2
+
+        kernel = np.ones((3, 3), dtype=np.uint8)
+        boundary = cv2.subtract(mask_u8, cv2.erode(mask_u8, kernel))
+        y_coords, x_coords = np.nonzero(boundary if np.any(boundary) else mask_u8)
+        if len(x_coords) == 0:
+            return float("inf")
+        dists = np.hypot(
+            x_coords.astype(np.float64) - float(point[0]),
+            y_coords.astype(np.float64) - float(point[1]),
+        )
+        return float(np.min(dists))
 
     def compute_medial_axis_curvature(self) -> list:
         """
@@ -373,9 +409,12 @@ class ShapeProcessor:
         Returns:
             float: The local thickness (distance transform value) at the point.
         """
-        x, y = int(point[0]), int(point[1])
+        x, y = int(round(float(point[0]))), int(round(float(point[1])))
+        h, w = self.dist_transform.shape[:2]
+        if y < 0 or y >= h or x < 0 or x >= w:
+            return 0.0
         # Note: Using [y, x] indexing because numpy arrays are row-major.
-        return self.dist_transform[y, x]
+        return float(self.dist_transform[y, x])
 
     def label_extreme_points(self) -> dict:
         """
@@ -409,8 +448,11 @@ class ShapeProcessor:
             distance = self.calculate_distance(pt, head_point)
             thickness = self.local_thickness(pt)
             candidate_scores[point_name] = distance / (thickness + epsilon)
-        tail_label = max(candidate_scores, key=candidate_scores.get)
-        tail_point = self.extreme_points[tail_label]
+        if candidate_scores:
+            tail_label = max(candidate_scores, key=candidate_scores.get)
+            tail_point = self.extreme_points[tail_label]
+        else:
+            tail_point = head_point
 
         # Curvature analysis to refine the nose (typically a sharp turning point near the head).
         # assumes this method is defined as before
@@ -514,9 +556,22 @@ def extract_medial_axis(binary_image: np.ndarray) -> np.ndarray:
     return medial
 
 
+def _is_metadata_json(path: str) -> bool:
+    name = os.path.basename(path).lower()
+    if name in {
+        "pose_schema.json",
+        "pose_schema_user.json",
+        "project.annolid.json",
+        "manifest.json",
+        "cohort_manifest.json",
+    }:
+        return True
+    return name.startswith("pose_schema") and name.endswith(".json")
+
+
 def add_key_points_to_labelme_json(
     json_path: str, instance_names: List[str], is_vis: bool = False
-) -> None:
+) -> int:
     """
     Process a LabelMe JSON file, extract key points for specified instances, and add these as new point annotations.
 
@@ -528,16 +583,31 @@ def add_key_points_to_labelme_json(
         List of instance names to process.
     is_vis : bool, optional
         If True, visualize the medial axis and key points during processing.
+
+    Returns:
+    --------
+    int:
+        Number of keypoint shapes added or updated.
     """
     try:
-        with open(json_path, "r") as f:
+        with open(json_path, "r", encoding="utf-8") as f:
             data = json.load(f)
     except Exception as e:
         logging.error(f"Failed to load JSON file {json_path}: {e}")
-        return
+        return 0
+    if not isinstance(data, dict) or not isinstance(data.get("shapes"), list):
+        return 0
 
     mask_converter = LabelMeProcessor(json_path)
     binary_masks = mask_converter.get_all_masks()
+
+    shapes = data.setdefault("shapes", [])
+    existing_point_idx: Dict[str, int] = {
+        str(s.get("label") or ""): idx
+        for idx, s in enumerate(shapes)
+        if isinstance(s, dict) and str(s.get("shape_type") or "").lower() == "point"
+    }
+    points_written = 0
 
     for binary_mask, instance_label in binary_masks:
         if instance_label in instance_names:
@@ -545,20 +615,32 @@ def add_key_points_to_labelme_json(
             if is_vis:
                 processor.visualize()
             for point_label, point in processor.labeled_points.items():
-                data.setdefault("shapes", []).append(
-                    {
-                        "label": f"{instance_label}_{point_label}",
-                        "points": [[int(point[0]), int(point[1])]],
-                        "shape_type": "point",
-                        "visible": True,
-                    }
-                )
+                full_label = f"{instance_label}_{point_label}"
+                shape_dict = {
+                    "label": full_label,
+                    "points": [[float(point[0]), float(point[1])]],
+                    "group_id": None,
+                    "shape_type": "point",
+                    "flags": {"kp_visible": True},
+                    "kp_visibility": 2,
+                    "instance_label": str(instance_label),
+                    "display_label": str(point_label),
+                }
+                if full_label in existing_point_idx:
+                    shapes[existing_point_idx[full_label]] = shape_dict
+                else:
+                    existing_point_idx[full_label] = len(shapes)
+                    shapes.append(shape_dict)
+                points_written += 1
 
-    try:
-        with open(json_path, "w") as f:
-            json.dump(data, f, indent=4)
-    except Exception as e:
-        logging.error(f"Failed to save updated JSON file {json_path}: {e}")
+    if points_written > 0:
+        try:
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            logging.error(f"Failed to save updated JSON file {json_path}: {e}")
+            return 0
+    return points_written
 
 
 def extract_ground_truth_keypoints(json_path: str) -> Dict[str, Any]:
@@ -577,7 +659,7 @@ def extract_ground_truth_keypoints(json_path: str) -> Dict[str, Any]:
         Dictionary mapping keypoint labels to their coordinates.
     """
     try:
-        with open(json_path, "r") as f:
+        with open(json_path, "r", encoding="utf-8") as f:
             data = json.load(f)
     except Exception as e:
         logging.error(f"Error loading {json_path}: {e}")
@@ -590,7 +672,7 @@ def extract_ground_truth_keypoints(json_path: str) -> Dict[str, Any]:
     return ground_truth
 
 
-def main(input_folder: str, instance_names: List[str]) -> None:
+def main(input_folder: str, instance_names: List[str]) -> Dict[str, int]:
     """
     Process all LabelMe JSON files in the input folder by adding keypoint annotations.
 
@@ -600,11 +682,22 @@ def main(input_folder: str, instance_names: List[str]) -> None:
         Directory containing JSON files.
     instance_names : List[str]
         List of instance names to process.
+
+    Returns:
+    --------
+    Dict[str, int]:
+        Summary containing ``processed_files`` and ``points_written``.
     """
-    json_files = glob.glob(os.path.join(input_folder, "**/*.json"), recursive=True)
+    json_files = sorted(
+        glob.glob(os.path.join(input_folder, "**/*.json"), recursive=True)
+    )
     ground_truth_keypoints = None
+    processed_files = 0
+    points_written = 0
 
     for json_file in json_files:
+        if _is_metadata_json(json_file):
+            continue
         base_filename = os.path.basename(json_file)
         if "00000000.json" in base_filename:
             ground_truth_keypoints = extract_ground_truth_keypoints(json_file)
@@ -612,7 +705,14 @@ def main(input_folder: str, instance_names: List[str]) -> None:
                 f"Extracted ground truth keypoints from {json_file}: {ground_truth_keypoints}"
             )
         else:
-            add_key_points_to_labelme_json(json_file, instance_names)
+            added = add_key_points_to_labelme_json(json_file, instance_names)
+            processed_files += 1
+            points_written += added
+
+    return {
+        "processed_files": processed_files,
+        "points_written": points_written,
+    }
 
 
 if __name__ == "__main__":

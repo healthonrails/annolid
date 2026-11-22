@@ -10,7 +10,7 @@ Annolid provides bidirectional import and export for pose and keypoint tracking 
 | **SLEAP** projects (`.slp`, `.pkg.slp`) | Multi-video, `/tracks_json` track names, point/instance scores, skeleton edges & symmetry, occluded keypoints | `.slp` or self-contained `.pkg.slp` (`--embed-images`) | Prefers user labels over overlapping predictions on the same frame by default. |
 | **SLEAP** Analysis HDF5 (`.analysis.h5`) | `/tracks`, `/node_names`, `/track_names`, `/edge_names`, `/point_scores`, `/instance_scores` | Standard SLEAP analysis HDF5 (`tracks`, `point_scores`, `instance_scores`, `track_occupancy`, `edge_names`, `edge_inds`) | Requires `h5py` (`pip install 'annolid[sleap]'`). |
 | **SimBA / B-SOiD / VAME / Keypoint-MoSeq / `movement`** | Standard DLC CSV or SLEAP `.analysis.h5` | `--format deeplabcut-csv`, `--format simba`, or `--format sleap-h5` | Directly readable from Annolid LabelMe folders, `AnnotationStore` NDJSON, or `*_tracking.csv`. |
-| **COCO Keypoints** (`.json`) | Keypoints + skeleton edges (with bbox-center fallback) | Existing COCO export + `coco2deeplabcut` real DLC CSV export | Preserves visibility (`1=occluded`, `2=visible`). |
+| **COCO Keypoints** (`.json`) | Keypoints + skeleton edges (with bbox-center fallback) and optional `pose_schema.json` export | COCO keypoints export with canonical `PoseSchema` order, 1-indexed `skeleton` edges, and `coco2deeplabcut` real DLC CSV export | Preserves visibility (`1=occluded`, `2=visible`) in both directions. |
 
 ---
 
@@ -43,9 +43,13 @@ Open **Tools → SLEAP (.slp / .h5) Import & Export…**:
    - Select a LabelMe folder or `*_tracking.csv`.
    - Export to **SLEAP Analysis HDF5 (`.analysis.h5`)**, **SLEAP Project (`.slp`)**, or **Self-Contained Package (`.pkg.slp`)** with embedded frames.
 
-### Direct Overlay Playback in the GUI
+### Direct Overlay Playback & Skeleton Visualization in the GUI
 
-When opening a video alongside a DeepLabCut or Lightning Pose analysis `.csv` or `.h5` (single- or multi-animal), Annolid parses 3- and 4-level headers automatically and overlays labeled points with multi-animal `group_id`, `instance_label`, and `score` metadata.
+- **Auto-discovery**: Opening a video, an annotation directory, a labeled image, or a DeepLabCut/Lightning Pose overlay automatically loads a sibling `pose_schema.json` / `.yaml` / `.yml` (or `project.annolid.json` `pose_schema_path`, or a sibling DLC `config.yaml` skeleton) onto the canvas and Keypoint Sequencer.
+- **Skeleton editing & presets**: Both the **Keypoint Sequencer** dock and the **New Project Wizard** provide built-in species presets (Mouse 5/9/11 keypoints, Fly, Fish, Human COCO 17), anatomical edge auto-inference, combo-based and click-to-toggle skeleton edge editing, and an anatomical left/right-aligned skeleton preview.
+- **Canvas rendering**: When **Show pose skeleton (edges)** is enabled, bones are rendered with per-instance high-contrast colors in multi-animal scenes, dashed lines for occluded (`kp_visibility=1`) keypoints, skipped bones for missing (`kp_visibility=0`) keypoints, and emphasized strokes for selected or hovered keypoints.
+- **DeepLabCut / Lightning Pose playback**: When opening a video alongside a DeepLabCut or Lightning Pose analysis `.csv` or `.h5` (single- or multi-animal), Annolid parses 3- and 4-level headers automatically and overlays labeled points and skeleton bones with multi-animal `group_id`, `instance_label`, and `score` metadata.
+- **COCO Keypoints round-trip**: **Export LabelMe → COCO** in keypoints mode accepts (or auto-discovers) a `pose_schema.json` to emit canonical keypoint ordering, 1-indexed COCO `skeleton` pairs, and `kp_visibility`; **Convert COCO → LabelMe** can write `pose_schema.json` alongside converted images so skeletons render immediately on open.
 
 ---
 

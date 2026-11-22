@@ -15,30 +15,16 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from annolid.annotation.keypoint_visibility import KeypointVisibility
-from annolid.annotation.pose_schema import PoseSchema
+from annolid.annotation.pose_schema import (
+    PoseSchema,
+    _MOUSE_CANONICAL_EDGES as _MOUSE_PRESET_EDGES,  # noqa: F401 - backward-compatible alias
+    dedup_undirected_pairs,
+    infer_pose_skeleton_edges,
+)
 from annolid.utils.body_part_shapes import infer_intra_part_skeleton_edges
 
 HDF5_MAGIC = b"\x89HDF\r\n\x1a\n"
 ZIP_MAGIC = b"PK\x03\x04"
-
-# Common mouse skeleton fallback edges used when preset="mouse" is requested.
-_MOUSE_PRESET_EDGES: Tuple[Tuple[str, str], ...] = (
-    ("nose", "neck"),
-    ("neck", "back"),
-    ("back", "root_tail"),
-    ("root_tail", "mid_tail"),
-    ("mid_tail", "tip_tail"),
-    ("left_ear", "nose"),
-    ("right_ear", "nose"),
-    ("left_front_limb", "neck"),
-    ("right_front_limb", "neck"),
-    ("left_hind_limb", "back"),
-    ("right_hind_limb", "back"),
-    ("left_front_claw", "left_front_limb"),
-    ("right_front_claw", "right_front_limb"),
-    ("left_hind_claw", "left_hind_limb"),
-    ("right_hind_claw", "right_hind_limb"),
-)
 
 
 def is_finite_number(value: Any) -> bool:
@@ -118,25 +104,19 @@ def infer_edges_for_keypoints(
         return []
 
     kp_set = set(kp_list)
-    mouse_edges = [
-        (a, b) for a, b in _MOUSE_PRESET_EDGES if a in kp_set and b in kp_set
-    ]
+    inferred = infer_pose_skeleton_edges(kp_list, preset=mode)
     if mode == "mouse":
-        return dedup_pairs(mouse_edges or infer_intra_part_skeleton_edges(kp_list))
+        return dedup_undirected_pairs(
+            inferred or infer_intra_part_skeleton_edges(kp_list)
+        )
 
-    # Default / "auto": anatomical chain inference + mouse preset edges without duplicates.
+    # Default / "auto": full-body anatomical inference plus any extra intra-part chains.
     generic = infer_intra_part_skeleton_edges(kp_list)
-    combined: List[Tuple[str, str]] = []
-    undirected_seen: set[Tuple[str, str]] = set()
-    for a, b in list(mouse_edges) + list(generic):
-        if a not in kp_set or b not in kp_set or a == b:
-            continue
-        ukey = (a, b) if a < b else (b, a)
-        if ukey in undirected_seen:
-            continue
-        undirected_seen.add(ukey)
-        combined.append((a, b))
-    return combined
+    return dedup_undirected_pairs(
+        (a, b)
+        for a, b in list(inferred) + list(generic)
+        if a in kp_set and b in kp_set and a != b
+    )
 
 
 @dataclass(frozen=True)

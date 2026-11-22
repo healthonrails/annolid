@@ -6,7 +6,7 @@ from pathlib import Path
 
 from qtpy import QtCore, QtGui, QtWidgets
 
-from annolid.annotation.pose_schema import PoseSchema
+from annolid.annotation.pose_schema import PoseSchema, find_pose_schema_in_dir
 from annolid.domain import (
     DEFAULT_SCHEMA_FILENAME,
     default_behavior_spec,
@@ -537,14 +537,12 @@ class ToolingDialogsMixin:
             or str(Path.home())
         )
 
-        default_path = None
-        for candidate in ("pose_schema.json", "pose_schema.yaml", "pose_schema.yml"):
-            maybe = Path(start_dir) / candidate
-            if maybe.exists():
-                default_path = str(maybe)
-                break
-        if default_path is None:
-            default_path = str(Path(start_dir) / "pose_schema.json")
+        found_schema = find_pose_schema_in_dir(start_dir)
+        default_path = (
+            str(found_schema)
+            if found_schema is not None
+            else str(Path(start_dir) / "pose_schema.json")
+        )
         widget = getattr(self, "keypoint_sequence_widget", None)
         dock = getattr(self, "keypoint_sequence_dock", None)
         if widget is None:
@@ -567,13 +565,23 @@ class ToolingDialogsMixin:
                 schema = None
 
         schema_path = getattr(self, "_pose_schema_path", None) or default_path
-        widget.set_pose_schema(schema, schema_path)
-        widget.load_keypoints_from_labels(keypoints)
-        if schema is None and schema_path:
+        loaded_from_disk = False
+        if schema is None and schema_path and Path(schema_path).expanduser().is_file():
             try:
-                widget.load_schema_from_path(str(schema_path), quiet=True)
+                loaded_from_disk = bool(
+                    widget.load_schema_from_path(str(schema_path), quiet=True)
+                )
             except Exception:
-                pass
+                loaded_from_disk = False
+
+        if not loaded_from_disk:
+            widget.set_pose_schema(schema, schema_path)
+            if schema is None:
+                widget.load_keypoints_from_labels(keypoints)
+            elif point_labels:
+                # Only merge observed point keypoint labels into an existing schema
+                # so non-keypoint polygon/zone labels do not pollute the skeleton.
+                widget.load_keypoints_from_labels(point_labels)
 
         if dock is not None:
             try:
@@ -622,7 +630,14 @@ class ToolingDialogsMixin:
             ExtractShapeKeyPointsDialog,
         )
 
-        extract_shape_keypoints_dialog = ExtractShapeKeyPointsDialog()
+        start_dir = (
+            getattr(self, "video_results_folder", None)
+            or getattr(self, "annotation_dir", None)
+            or getattr(self, "lastOpenDir", None)
+        )
+        extract_shape_keypoints_dialog = ExtractShapeKeyPointsDialog(
+            parent=self, start_dir=start_dir
+        )
         extract_shape_keypoints_dialog.exec_()
 
     def place_preference_analyze(self):

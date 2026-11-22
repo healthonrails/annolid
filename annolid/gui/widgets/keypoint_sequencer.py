@@ -5,7 +5,12 @@ from typing import List, Optional, Sequence, Tuple
 
 from qtpy import QtCore, QtGui, QtWidgets
 
-from annolid.annotation.pose_schema import PoseSchema
+from annolid.annotation.pose_schema import (
+    PoseSchema,
+    dedup_undirected_pairs,
+    get_pose_schema_preset,
+    list_pose_schema_presets,
+)
 from annolid.gui.keypoint_catalog import (
     extract_labels_from_uniq_label_list,
     merge_keypoint_lists,
@@ -15,7 +20,7 @@ from annolid.gui.qt_compat import configure_compact_combo
 
 
 class _SkeletonPreviewWidget(QtWidgets.QWidget):
-    """Lightweight skeleton preview for keypoint sequence selection."""
+    """Interactive anatomical skeleton preview for edge editing and sequence state."""
 
     keypointClicked = QtCore.Signal(str)
 
@@ -23,89 +28,130 @@ class _SkeletonPreviewWidget(QtWidgets.QWidget):
         super().__init__(parent)
         self._schema: Optional[PoseSchema] = None
         self._active_keypoints: set[str] = set()
+        self._pending_edge_start: Optional[str] = None
+        self._next_keypoint: Optional[str] = None
+        self._hovered_keypoint: Optional[str] = None
         self._pixel_points: dict[str, QtCore.QPointF] = {}
-        self.setMinimumHeight(170)
+        self._normalized_points: dict[str, QtCore.QPointF] = {}
+        self.setMouseTracking(True)
+        self.setMinimumHeight(180)
 
     def set_schema(self, schema: Optional[PoseSchema]) -> None:
         self._schema = schema
+        keypoints = list(getattr(schema, "keypoints", []) or [])
+        if self._pending_edge_start and self._pending_edge_start not in keypoints:
+            self._pending_edge_start = None
+        if self._next_keypoint and self._next_keypoint not in keypoints:
+            self._next_keypoint = None
+        if self._hovered_keypoint and self._hovered_keypoint not in keypoints:
+            self._hovered_keypoint = None
+        row_count = self._estimate_row_count(keypoints)
+        target_height = max(180, min(320, 26 * max(1, row_count) + 34))
+        self.setMinimumHeight(target_height)
         self.update()
 
     def set_active_keypoints(self, keypoints: List[str]) -> None:
         self._active_keypoints = {str(k).strip() for k in keypoints if str(k).strip()}
         self.update()
 
+    def set_pending_edge_start(self, keypoint: Optional[str]) -> None:
+        cleaned = str(keypoint or "").strip() or None
+        if cleaned != self._pending_edge_start:
+            self._pending_edge_start = cleaned
+            self.update()
+
+    def set_next_keypoint(self, keypoint: Optional[str]) -> None:
+        cleaned = str(keypoint or "").strip() or None
+        if cleaned != self._next_keypoint:
+            self._next_keypoint = cleaned
+            self.update()
+
     @staticmethod
     def _x_hint(name: str) -> float:
         lowered = name.lower()
-        if "left" in lowered or lowered.startswith("l_") or lowered.endswith("_l"):
-            return 0.25
-        if "right" in lowered or lowered.startswith("r_") or lowered.endswith("_r"):
-            return 0.75
-        return 0.5
+        is_left = (
+            "left" in lowered
+            or lowered.startswith(("l_", "l-", "lt_"))
+            or lowered.endswith(("_l", "-l", "_lt"))
+        )
+        is_right = (
+            "right" in lowered
+            or lowered.startswith(("r_", "r-", "rt_"))
+            or lowered.endswith(("_r", "-r", "_rt"))
+        )
+        if not is_left and not is_right:
+            return 0.50
+        # Slight horizontal stagger between torso (shoulder/hip) and outer arm
+        # joints (elbow/wrist) so vertical torso bones do not pass behind arms.
+        is_outer_arm = any(
+            tok in lowered for tok in ("elbow", "wrist", "forearm", "hand", "wing")
+        )
+        is_inner_torso = any(tok in lowered for tok in ("shoulder", "hip", "eye"))
+        if is_outer_arm:
+            return 0.34 if is_left else 0.66
+        if is_inner_torso:
+            return 0.42 if is_left else 0.58
+        return 0.38 if is_left else 0.62
+
+    def _symmetry_lookup(self, keypoints: List[str]) -> dict[str, str]:
+        partner: dict[str, str] = {}
+        valid = set(keypoints)
+        pairs: List[Tuple[str, str]] = []
+        if self._schema is not None:
+            pairs.extend(self._schema.base_symmetry_pairs())
+        pairs.extend(PoseSchema.infer_symmetry_pairs(keypoints))
+        for a, b in pairs:
+            if a in valid and b in valid and a != b:
+                if a not in partner and b not in partner:
+                    partner[a] = b
+                    partner[b] = a
+        return partner
+
+    def _build_layout_rows(self, keypoints: List[str]) -> List[List[Tuple[str, float]]]:
+        partner = self._symmetry_lookup(keypoints)
+        rows: List[List[Tuple[str, float]]] = []
+        placed: set[str] = set()
+        for kp in keypoints:
+            if kp in placed:
+                continue
+            mate = partner.get(kp)
+            if mate and mate not in placed:
+                x_kp = self._x_hint(kp)
+                x_mate = self._x_hint(mate)
+                if x_kp <= x_mate:
+                    left_name, right_name = kp, mate
+                    left_x = x_kp if x_kp < 0.5 else 0.38
+                    right_x = x_mate if x_mate > 0.5 else 0.62
+                else:
+                    left_name, right_name = mate, kp
+                    left_x = x_mate if x_mate < 0.5 else 0.38
+                    right_x = x_kp if x_kp > 0.5 else 0.62
+                rows.append([(left_name, left_x), (right_name, right_x)])
+                placed.add(left_name)
+                placed.add(right_name)
+            else:
+                rows.append([(kp, self._x_hint(kp))])
+                placed.add(kp)
+        return rows
+
+    def _estimate_row_count(self, keypoints: List[str]) -> int:
+        if not keypoints:
+            return 0
+        return len(self._build_layout_rows(keypoints))
 
     def _layout_points(self, keypoints: List[str]) -> dict[str, QtCore.QPointF]:
         points: dict[str, QtCore.QPointF] = {}
         if not keypoints:
             return points
-        n = len(keypoints)
-        for idx, kp in enumerate(keypoints):
-            y = (idx + 1) / (n + 1)
-            x = self._x_hint(kp)
-            points[kp] = QtCore.QPointF(x, y)
+        rows = self._build_layout_rows(keypoints)
+        n_rows = len(rows)
+        for row_idx, row in enumerate(rows):
+            y = (row_idx + 1) / (n_rows + 1)
+            for kp, x in row:
+                points[kp] = QtCore.QPointF(x, y)
         return points
 
-    def paintEvent(self, event) -> None:  # noqa: N802
-        super().paintEvent(event)
-        painter = QtGui.QPainter(self)
-        painter.setRenderHint(QtGui.QPainter.Antialiasing)
-
-        rect = self.rect().adjusted(10, 10, -10, -10)
-        painter.fillRect(rect, QtGui.QColor("#f5f7fb"))
-
-        schema = self._schema
-        keypoints = list(getattr(schema, "keypoints", []) or [])
-        if not keypoints:
-            painter.setPen(QtGui.QColor("#6b7280"))
-            painter.drawText(rect, QtCore.Qt.AlignCenter, "No pose schema loaded")
-            return
-
-        points = self._layout_points(keypoints)
-        pixel_points: dict[str, QtCore.QPointF] = {}
-        for kp, p in points.items():
-            px = rect.left() + p.x() * rect.width()
-            py = rect.top() + p.y() * rect.height()
-            pixel_points[kp] = QtCore.QPointF(px, py)
-        self._pixel_points = pixel_points
-
-        edge_pen = QtGui.QPen(QtGui.QColor("#94a3b8"))
-        edge_pen.setWidth(2)
-        painter.setPen(edge_pen)
-        for raw_a, raw_b in list(getattr(schema, "edges", []) or []):
-            _inst_a, a = schema.strip_instance_prefix(str(raw_a))
-            _inst_b, b = schema.strip_instance_prefix(str(raw_b))
-            p1 = pixel_points.get(a)
-            p2 = pixel_points.get(b)
-            if p1 is not None and p2 is not None:
-                painter.drawLine(p1, p2)
-
-        for kp in keypoints:
-            point = pixel_points.get(kp)
-            if point is None:
-                continue
-            active = kp in self._active_keypoints
-            color = QtGui.QColor("#0ea5e9" if active else "#9ca3af")
-            painter.setBrush(color)
-            painter.setPen(QtGui.QPen(QtGui.QColor("#1f2937"), 1))
-            painter.drawEllipse(point, 5, 5)
-            painter.setPen(QtGui.QColor("#111827"))
-            painter.drawText(
-                QtCore.QRectF(point.x() + 6, point.y() - 10, 130, 20),
-                QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
-                kp,
-            )
-
-    def mousePressEvent(self, event) -> None:  # noqa: N802
-        pos = event.pos()
+    def _hit_test(self, pos: QtCore.QPoint) -> Optional[str]:
         hit_name: Optional[str] = None
         best_dist = float("inf")
         for name, point in self._pixel_points.items():
@@ -115,7 +161,180 @@ class _SkeletonPreviewWidget(QtWidgets.QWidget):
             if dist < best_dist:
                 best_dist = dist
                 hit_name = name
-        if hit_name is not None and best_dist <= 12.0:
+        return hit_name if (hit_name is not None and best_dist <= 13.0) else None
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        super().paintEvent(event)
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+
+        pal = self.palette()
+        is_dark = pal.color(QtGui.QPalette.Window).lightness() < 128
+        bg_color = QtGui.QColor("#1e2430") if is_dark else QtGui.QColor("#f5f7fb")
+        border_color = QtGui.QColor("#334155") if is_dark else QtGui.QColor("#cbd5e1")
+        text_color = QtGui.QColor("#e2e8f0") if is_dark else QtGui.QColor("#0f172a")
+        muted_color = QtGui.QColor("#94a3b8") if is_dark else QtGui.QColor("#64748b")
+        edge_color = QtGui.QColor("#38bdf8") if is_dark else QtGui.QColor("#0284c7")
+        sym_color = QtGui.QColor("#a78bfa") if is_dark else QtGui.QColor("#8b5cf6")
+
+        rect = self.rect().adjusted(6, 6, -6, -6)
+        painter.setPen(QtGui.QPen(border_color, 1))
+        painter.setBrush(bg_color)
+        painter.drawRoundedRect(rect, 6, 6)
+
+        schema = self._schema
+        keypoints = list(getattr(schema, "keypoints", []) or [])
+        if not keypoints:
+            self._pixel_points = {}
+            self._normalized_points = {}
+            painter.setPen(muted_color)
+            painter.drawText(rect, QtCore.Qt.AlignCenter, "No pose schema loaded")
+            return
+
+        inner = rect.adjusted(10, 10, -10, -10)
+        points = self._layout_points(keypoints)
+        self._normalized_points = points
+        pixel_points: dict[str, QtCore.QPointF] = {}
+        for kp, p in points.items():
+            px = inner.left() + p.x() * inner.width()
+            py = inner.top() + p.y() * inner.height()
+            pixel_points[kp] = QtCore.QPointF(px, py)
+        self._pixel_points = pixel_points
+
+        # 1. Draw symmetry pairs subtly beneath skeleton edges.
+        sym_pairs = schema.base_symmetry_pairs() if schema is not None else []
+        if sym_pairs:
+            sym_pen = QtGui.QPen(sym_color)
+            sym_pen.setWidthF(1.2)
+            sym_pen.setStyle(QtCore.Qt.DotLine)
+            painter.setPen(sym_pen)
+            for a, b in sym_pairs:
+                p1 = pixel_points.get(a)
+                p2 = pixel_points.get(b)
+                if p1 is not None and p2 is not None:
+                    painter.drawLine(p1, p2)
+
+        # 2. Draw skeleton edges (emphasize edges incident to pending/hovered keypoint).
+        edges = schema.base_edges() if schema is not None else []
+        for a, b in edges:
+            p1 = pixel_points.get(a)
+            p2 = pixel_points.get(b)
+            if p1 is None or p2 is None:
+                continue
+            emphasized = a in {
+                self._pending_edge_start,
+                self._hovered_keypoint,
+            } or b in {self._pending_edge_start, self._hovered_keypoint}
+            edge_pen = QtGui.QPen(QtGui.QColor("#f59e0b") if emphasized else edge_color)
+            edge_pen.setWidthF(2.6 if emphasized else 2.0)
+            edge_pen.setCapStyle(QtCore.Qt.RoundCap)
+            painter.setPen(edge_pen)
+            painter.drawLine(p1, p2)
+
+        # 3. Draw keypoint nodes and non-clipping labels.
+        font = painter.font()
+        font.setPointSize(
+            max(8, min(10, font.pointSize() if font.pointSize() > 0 else 9))
+        )
+        painter.setFont(font)
+        fm = painter.fontMetrics()
+
+        for kp in keypoints:
+            point = pixel_points.get(kp)
+            norm_pt = points.get(kp)
+            if point is None or norm_pt is None:
+                continue
+
+            is_pending = kp == self._pending_edge_start
+            is_next = kp == self._next_keypoint
+            is_hovered = kp == self._hovered_keypoint
+            is_active = kp in self._active_keypoints
+
+            if is_pending:
+                ring_pen = QtGui.QPen(QtGui.QColor("#f59e0b"), 2.0, QtCore.Qt.DashLine)
+                painter.setPen(ring_pen)
+                painter.setBrush(QtCore.Qt.NoBrush)
+                painter.drawEllipse(point, 9.5, 9.5)
+            elif is_next:
+                ring_pen = QtGui.QPen(QtGui.QColor("#10b981"), 2.0)
+                painter.setPen(ring_pen)
+                painter.setBrush(QtCore.Qt.NoBrush)
+                painter.drawEllipse(point, 9.0, 9.0)
+            elif is_hovered:
+                ring_pen = QtGui.QPen(edge_color, 1.5)
+                painter.setPen(ring_pen)
+                painter.setBrush(QtCore.Qt.NoBrush)
+                painter.drawEllipse(point, 8.5, 8.5)
+
+            if is_pending:
+                node_fill = QtGui.QColor("#f59e0b")
+            elif is_next:
+                node_fill = QtGui.QColor("#10b981")
+            elif is_active:
+                node_fill = QtGui.QColor("#0ea5e9")
+            else:
+                node_fill = QtGui.QColor("#64748b" if is_dark else "#9ca3af")
+
+            radius = 5.5 if (is_pending or is_hovered) else 4.8
+            painter.setBrush(node_fill)
+            painter.setPen(
+                QtGui.QPen(
+                    QtGui.QColor("#f8fafc" if is_dark else "#1e293b"),
+                    1.2,
+                )
+            )
+            painter.drawEllipse(point, radius, radius)
+
+            painter.setPen(text_color)
+            if norm_pt.x() < 0.48:
+                avail_w = max(24.0, point.x() - rect.left() - 16.0)
+                elided = fm.elidedText(kp, QtCore.Qt.ElideRight, int(avail_w))
+                label_rect = QtCore.QRectF(
+                    rect.left() + 4.0, point.y() - 9.0, avail_w, 18.0
+                )
+                painter.drawText(
+                    label_rect, QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter, elided
+                )
+            else:
+                label_offset = 12.0 if (is_pending or is_next or is_hovered) else 9.0
+                avail_w = max(24.0, rect.right() - point.x() - label_offset - 4.0)
+                elided = fm.elidedText(kp, QtCore.Qt.ElideRight, int(avail_w))
+                label_rect = QtCore.QRectF(
+                    point.x() + label_offset, point.y() - 9.0, avail_w, 18.0
+                )
+                painter.drawText(
+                    label_rect, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, elided
+                )
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        hit = self._hit_test(event.pos())
+        if hit != self._hovered_keypoint:
+            self._hovered_keypoint = hit
+            if hit is not None:
+                self.setCursor(QtCore.Qt.PointingHandCursor)
+                if self._pending_edge_start and self._pending_edge_start != hit:
+                    self.setToolTip(
+                        f"{hit} — click to toggle edge with '{self._pending_edge_start}'"
+                    )
+                else:
+                    self.setToolTip(f"{hit} — click to start/finish a skeleton edge")
+            else:
+                self.setCursor(QtCore.Qt.ArrowCursor)
+                self.setToolTip("")
+            self.update()
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        if self._hovered_keypoint is not None:
+            self._hovered_keypoint = None
+            self.setCursor(QtCore.Qt.ArrowCursor)
+            self.setToolTip("")
+            self.update()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        hit_name = self._hit_test(event.pos())
+        if hit_name is not None:
             self.keypointClicked.emit(hit_name)
             event.accept()
             return
@@ -228,6 +447,24 @@ class KeypointSequencerWidget(QtWidgets.QWidget):
             schema_btn_row.addWidget(btn)
         layout.addLayout(schema_btn_row)
 
+        preset_row = QtWidgets.QHBoxLayout()
+        preset_row.setContentsMargins(0, 0, 0, 0)
+        preset_row.setSpacing(4)
+        preset_row.addWidget(QtWidgets.QLabel("Preset:"))
+        self.preset_combo = QtWidgets.QComboBox(self)
+        configure_compact_combo(self.preset_combo, min_chars=10, popup_min_width=210)
+        self.preset_combo.addItem("Select preset…", None)
+        for preset_name in list_pose_schema_presets():
+            self.preset_combo.addItem(preset_name, preset_name)
+        apply_preset_btn = QtWidgets.QPushButton("Apply")
+        apply_preset_btn.setToolTip(
+            "Apply built-in skeleton preset (keypoints, edges, and symmetry pairs)"
+        )
+        apply_preset_btn.clicked.connect(self._apply_preset_clicked)
+        preset_row.addWidget(self.preset_combo, 1)
+        preset_row.addWidget(apply_preset_btn)
+        layout.addLayout(preset_row)
+
         prefix_row = QtWidgets.QHBoxLayout()
         prefix_row.setContentsMargins(0, 0, 0, 0)
         prefix_row.setSpacing(4)
@@ -292,15 +529,36 @@ class KeypointSequencerWidget(QtWidgets.QWidget):
         self.edges_list.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         layout.addWidget(self.edges_list)
 
+        edge_add_row = QtWidgets.QHBoxLayout()
+        edge_add_row.setContentsMargins(0, 0, 0, 0)
+        edge_add_row.setSpacing(4)
+        self.edge_a_combo = QtWidgets.QComboBox(self)
+        self.edge_b_combo = QtWidgets.QComboBox(self)
+        configure_compact_combo(self.edge_a_combo, min_chars=6, popup_min_width=180)
+        configure_compact_combo(self.edge_b_combo, min_chars=6, popup_min_width=180)
+        add_edge_btn = QtWidgets.QPushButton("Add")
+        add_edge_btn.setToolTip("Add skeleton edge between selected keypoints")
+        add_edge_btn.clicked.connect(self._add_edge_from_combos)
+        edge_add_row.addWidget(self.edge_a_combo, 1)
+        edge_add_row.addWidget(self.edge_b_combo, 1)
+        edge_add_row.addWidget(add_edge_btn)
+        layout.addLayout(edge_add_row)
+
         edge_controls = QtWidgets.QHBoxLayout()
         edge_controls.setContentsMargins(0, 0, 0, 0)
         edge_controls.setSpacing(4)
-        remove_edge_btn = QtWidgets.QPushButton("Remove edge(s)")
-        clear_edge_btn = QtWidgets.QPushButton("Clear edges")
+        remove_edge_btn = QtWidgets.QPushButton("Remove")
+        remove_edge_btn.setToolTip("Remove selected skeleton edge(s)")
+        clear_edge_btn = QtWidgets.QPushButton("Clear")
+        clear_edge_btn.setToolTip("Clear all skeleton edges")
+        auto_edge_btn = QtWidgets.QPushButton("Auto")
+        auto_edge_btn.setToolTip("Auto-infer anatomical skeleton edges from keypoints")
         remove_edge_btn.clicked.connect(self._remove_selected_edges)
         clear_edge_btn.clicked.connect(self._clear_edges)
-        edge_controls.addWidget(remove_edge_btn, 1)
-        edge_controls.addWidget(clear_edge_btn, 1)
+        auto_edge_btn.clicked.connect(self._auto_fill_edges)
+        for btn in (remove_edge_btn, clear_edge_btn, auto_edge_btn):
+            btn.setMinimumWidth(46)
+            edge_controls.addWidget(btn, 1)
         layout.addLayout(edge_controls)
 
         symmetry_label = QtWidgets.QLabel("Symmetry pairs (left <-> right):")
@@ -434,21 +692,29 @@ class KeypointSequencerWidget(QtWidgets.QWidget):
         schema_path: Optional[str] = None,
         *,
         emit_change: bool = False,
+        replace_order: bool = False,
     ) -> None:
         previous_instance = self.instance_combo.currentData()
         previous_active = self.active_keypoints()
         self._schema = schema
+        self._pending_edge_start = None
+        self.preview.set_pending_edge_start(None)
         if schema_path:
             self._schema_path = str(schema_path)
             self.schema_path_edit.setText(self._schema_path)
-        self._keypoint_order = merge_keypoint_lists(
-            list(getattr(schema, "keypoints", []) or []), self._keypoint_order
-        )
+        incoming_kps = list(getattr(schema, "keypoints", []) or [])
+        if replace_order:
+            self._keypoint_order = normalize_keypoint_names(incoming_kps)
+            self._prune_locked_keypoints()
+        else:
+            self._keypoint_order = merge_keypoint_lists(
+                incoming_kps, self._keypoint_order
+            )
         self._sync_schema_keypoints_from_order()
         self._rebuild_instance_options(previous_instance=previous_instance)
         self._refresh_instance_config_from_schema()
         self._rebuild_keypoint_list()
-        if previous_active:
+        if previous_active and not replace_order:
             self.set_active_keypoints(previous_active)
         self.preview.set_schema(schema)
         self._rebuild_edges_list_from_schema()
@@ -466,6 +732,43 @@ class KeypointSequencerWidget(QtWidgets.QWidget):
         self.reset_sequence()
         if emit_change:
             self._emit_schema_changed()
+
+    def apply_preset(self, preset_name: str) -> bool:
+        """Apply a named built-in skeleton preset while preserving instance settings."""
+        name = str(preset_name or "").strip()
+        if not name:
+            return False
+        try:
+            preset_schema = get_pose_schema_preset(name)
+        except KeyError:
+            return False
+        if self._schema is not None:
+            preset_schema.instances = list(self._schema.instances or [])
+            preset_schema.instance_separator = str(
+                getattr(self._schema, "instance_separator", "_") or "_"
+            )
+        self._suspend_schema_signal = True
+        try:
+            self.set_pose_schema(
+                preset_schema,
+                self._schema_path,
+                emit_change=False,
+                replace_order=True,
+            )
+            idx = self.preset_combo.findData(name)
+            if idx >= 0:
+                self.preset_combo.blockSignals(True)
+                self.preset_combo.setCurrentIndex(idx)
+                self.preset_combo.blockSignals(False)
+        finally:
+            self._suspend_schema_signal = False
+        self._emit_schema_changed()
+        return True
+
+    def _apply_preset_clicked(self) -> None:
+        preset_name = self.preset_combo.currentData()
+        if preset_name:
+            self.apply_preset(str(preset_name))
 
     def set_active_keypoints(self, keypoints: List[str]) -> None:
         desired = {str(k).strip() for k in keypoints if str(k).strip()}
@@ -854,9 +1157,13 @@ class KeypointSequencerWidget(QtWidgets.QWidget):
             for (a, b) in list(getattr(schema, "symmetry_pairs", []) or [])
             if _pair_is_valid(a, b)
         ]
+        if self._pending_edge_start and self._pending_edge_start not in valid:
+            self._pending_edge_start = None
+            self.preview.set_pending_edge_start(None)
         self._rebuild_edges_list_from_schema()
         self._rebuild_symmetry_list_from_schema()
         self._refresh_symmetry_combo_choices()
+        self.preview.set_schema(schema)
         self._update_flip_preview()
         self._emit_schema_changed()
 
@@ -961,18 +1268,25 @@ class KeypointSequencerWidget(QtWidgets.QWidget):
 
     def _update_status_text(self) -> None:
         active = self.sequence_active_keypoints()
+        edge_text = (
+            f" | Edge start: {self._pending_edge_start}"
+            if self._pending_edge_start
+            else ""
+        )
         if not active:
+            self.preview.set_next_keypoint(None)
             self.status_label.setText(
-                "No active keypoints selected. Check keypoints to enable sequence labeling."
+                f"Lock keypoints (🔒) to enable sequence labeling.{edge_text}"
             )
             return
 
         idx = self._next_index % len(active)
-        next_label = self._compose_label(active[idx])
+        next_kp = active[idx]
+        self.preview.set_next_keypoint(
+            next_kp if self.enable_checkbox.isChecked() else None
+        )
+        next_label = self._compose_label(next_kp)
         mode_text = "Enabled" if self.enable_checkbox.isChecked() else "Disabled"
-        edge_text = ""
-        if self._pending_edge_start:
-            edge_text = f" | Edge start: {self._pending_edge_start}"
         lock_text = ""
         if self._locked_keypoint_order:
             lock_text = f" | Locked: {len(self._locked_keypoint_order)}"
@@ -996,36 +1310,26 @@ class KeypointSequencerWidget(QtWidgets.QWidget):
         schema = self._schema
         if schema is None:
             return []
-        pairs: List[tuple[str, str]] = []
-        seen: set[tuple[str, str]] = set()
-        for raw_a, raw_b in list(getattr(schema, "edges", []) or []):
-            _inst_a, a = schema.strip_instance_prefix(str(raw_a or ""))
-            _inst_b, b = schema.strip_instance_prefix(str(raw_b or ""))
-            a = str(a or "").strip()
-            b = str(b or "").strip()
-            if not a or not b or a == b:
-                continue
-            key = (a, b) if a <= b else (b, a)
-            if key in seen:
-                continue
-            seen.add(key)
-            pairs.append(key)
-        return pairs
+        return schema.base_edges()
 
     def _rebuild_edges_list_from_schema(self) -> None:
         self.edges_list.clear()
         for a, b in self._edges_as_pairs():
-            self.edges_list.addItem(f"{a} - {b}")
+            item = QtWidgets.QListWidgetItem(f"{a} - {b}")
+            item.setData(QtCore.Qt.UserRole, (a, b))
+            self.edges_list.addItem(item)
 
     def _on_preview_keypoint_clicked(self, name: str) -> None:
         if not name:
             return
         if self._pending_edge_start is None:
             self._pending_edge_start = name
+            self.preview.set_pending_edge_start(name)
             self._update_status_text()
             return
         first = self._pending_edge_start
         self._pending_edge_start = None
+        self.preview.set_pending_edge_start(None)
         if first == name:
             self._update_status_text()
             return
@@ -1033,43 +1337,91 @@ class KeypointSequencerWidget(QtWidgets.QWidget):
         self._update_status_text()
 
     def _toggle_edge(self, a: str, b: str) -> None:
-        schema = self._schema
-        if schema is None:
-            schema = PoseSchema()
-            self._schema = schema
+        schema = self._ensure_schema()
         current = self._edges_as_pairs()
-        key = (a, b) if a <= b else (b, a)
-        if key in current:
-            current = [pair for pair in current if pair != key]
+        target_ukey = (a, b) if a < b else (b, a)
+        matched = [
+            pair
+            for pair in current
+            if ((pair[0], pair[1]) if pair[0] < pair[1] else (pair[1], pair[0]))
+            == target_ukey
+        ]
+        if matched:
+            current = [
+                pair
+                for pair in current
+                if ((pair[0], pair[1]) if pair[0] < pair[1] else (pair[1], pair[0]))
+                != target_ukey
+            ]
         else:
-            current.append(key)
-        schema.edges = [(left, right) for left, right in current]
+            current.append((a, b))
+        schema.edges = dedup_undirected_pairs(current)
         self._rebuild_edges_list_from_schema()
-        self.preview.update()
+        self.preview.set_schema(schema)
         self._emit_schema_changed()
+
+    def _add_edge_from_combos(self) -> None:
+        a = str(self.edge_a_combo.currentText() or "").strip()
+        b = str(self.edge_b_combo.currentText() or "").strip()
+        if not a or not b or a == b:
+            return
+        schema = self._ensure_schema()
+        current = self._edges_as_pairs()
+        target_ukey = (a, b) if a < b else (b, a)
+        existing_ukeys = {
+            (left, right) if left < right else (right, left) for left, right in current
+        }
+        if target_ukey not in existing_ukeys:
+            current.append((a, b))
+        schema.edges = dedup_undirected_pairs(current)
+        self._rebuild_edges_list_from_schema()
+        self.preview.set_schema(schema)
+        self._emit_schema_changed()
+
+    def _auto_fill_edges(self) -> None:
+        keypoints = list(self._keypoint_order)
+        if len(keypoints) < 2:
+            return
+        schema = self._ensure_schema()
+        inferred = PoseSchema.infer_edges(keypoints, preset="auto")
+        if inferred:
+            schema.edges = dedup_undirected_pairs(inferred)
+            self._pending_edge_start = None
+            self.preview.set_pending_edge_start(None)
+            self._rebuild_edges_list_from_schema()
+            self.preview.set_schema(schema)
+            self._emit_schema_changed()
 
     def _remove_selected_edges(self) -> None:
         selected = self.edges_list.selectedItems()
         if not selected:
             return
-        remove_keys = set()
+        remove_ukeys: set[tuple[str, str]] = set()
         for item in selected:
-            text = str(item.text() or "").strip()
-            if " - " not in text:
-                continue
-            left, right = [part.strip() for part in text.split(" - ", 1)]
+            stored = item.data(QtCore.Qt.UserRole)
+            if isinstance(stored, (tuple, list)) and len(stored) == 2:
+                left, right = str(stored[0]).strip(), str(stored[1]).strip()
+            else:
+                text = str(item.text() or "").strip()
+                if " - " not in text:
+                    continue
+                left, right = [part.strip() for part in text.split(" - ", 1)]
             if left and right and left != right:
-                key = (left, right) if left <= right else (right, left)
-                remove_keys.add(key)
-        if not remove_keys:
+                remove_ukeys.add((left, right) if left < right else (right, left))
+        if not remove_ukeys:
             return
         schema = self._schema
         if schema is None:
             return
-        kept = [pair for pair in self._edges_as_pairs() if pair not in remove_keys]
-        schema.edges = [(a, b) for a, b in kept]
+        kept = [
+            pair
+            for pair in self._edges_as_pairs()
+            if ((pair[0], pair[1]) if pair[0] < pair[1] else (pair[1], pair[0]))
+            not in remove_ukeys
+        ]
+        schema.edges = dedup_undirected_pairs(kept)
         self._rebuild_edges_list_from_schema()
-        self.preview.update()
+        self.preview.set_schema(schema)
         self._emit_schema_changed()
 
     def _clear_edges(self) -> None:
@@ -1077,38 +1429,34 @@ class KeypointSequencerWidget(QtWidgets.QWidget):
         if schema is None:
             return
         schema.edges = []
+        self._pending_edge_start = None
+        self.preview.set_pending_edge_start(None)
         self._rebuild_edges_list_from_schema()
-        self.preview.update()
+        self.preview.set_schema(schema)
+        self._update_status_text()
         self._emit_schema_changed()
 
     def _symmetry_pairs_as_pairs(self) -> List[Tuple[str, str]]:
         schema = self._schema
         if schema is None:
             return []
-        pairs: List[Tuple[str, str]] = []
-        seen: set[Tuple[str, str]] = set()
-        for raw_a, raw_b in list(getattr(schema, "symmetry_pairs", []) or []):
-            _inst_a, a = schema.strip_instance_prefix(str(raw_a or ""))
-            _inst_b, b = schema.strip_instance_prefix(str(raw_b or ""))
-            a = str(a or "").strip()
-            b = str(b or "").strip()
-            if not a or not b or a == b:
-                continue
-            key = (a, b) if a <= b else (b, a)
-            if key in seen:
-                continue
-            seen.add(key)
-            pairs.append(key)
-        return pairs
+        return schema.base_symmetry_pairs()
 
     def _rebuild_symmetry_list_from_schema(self) -> None:
         self.symmetry_list.clear()
         for a, b in self._symmetry_pairs_as_pairs():
-            self.symmetry_list.addItem(f"{a} <-> {b}")
+            item = QtWidgets.QListWidgetItem(f"{a} <-> {b}")
+            item.setData(QtCore.Qt.UserRole, (a, b))
+            self.symmetry_list.addItem(item)
 
     def _refresh_symmetry_combo_choices(self) -> None:
         keypoints = list(self._keypoint_order)
-        for combo in (self.symmetry_a_combo, self.symmetry_b_combo):
+        for combo in (
+            self.edge_a_combo,
+            self.edge_b_combo,
+            self.symmetry_a_combo,
+            self.symmetry_b_combo,
+        ):
             current = combo.currentText()
             combo.blockSignals(True)
             combo.clear()
@@ -1121,8 +1469,9 @@ class KeypointSequencerWidget(QtWidgets.QWidget):
 
     def _set_symmetry_pairs(self, pairs: Sequence[Tuple[str, str]]) -> None:
         schema = self._ensure_schema()
-        schema.symmetry_pairs = [(str(a).strip(), str(b).strip()) for a, b in pairs]
+        schema.symmetry_pairs = dedup_undirected_pairs(pairs)
         self._rebuild_symmetry_list_from_schema()
+        self.preview.set_schema(schema)
         self._update_flip_preview()
         self._emit_schema_changed()
 
@@ -1132,28 +1481,37 @@ class KeypointSequencerWidget(QtWidgets.QWidget):
         if not a or not b or a == b:
             return
         current = self._symmetry_pairs_as_pairs()
-        key = (a, b) if a <= b else (b, a)
-        if key not in current:
-            current.append(key)
+        ukey = (a, b) if a < b else (b, a)
+        existing = {
+            (left, right) if left < right else (right, left) for left, right in current
+        }
+        if ukey not in existing:
+            current.append((a, b))
         self._set_symmetry_pairs(current)
 
     def _remove_selected_symmetry_pairs(self) -> None:
         selected = self.symmetry_list.selectedItems()
         if not selected:
             return
-        remove_keys: set[Tuple[str, str]] = set()
+        remove_ukeys: set[Tuple[str, str]] = set()
         for item in selected:
-            text = str(item.text() or "").strip()
-            if " <-> " not in text:
-                continue
-            left, right = [part.strip() for part in text.split(" <-> ", 1)]
+            stored = item.data(QtCore.Qt.UserRole)
+            if isinstance(stored, (tuple, list)) and len(stored) == 2:
+                left, right = str(stored[0]).strip(), str(stored[1]).strip()
+            else:
+                text = str(item.text() or "").strip()
+                if " <-> " not in text:
+                    continue
+                left, right = [part.strip() for part in text.split(" <-> ", 1)]
             if left and right and left != right:
-                key = (left, right) if left <= right else (right, left)
-                remove_keys.add(key)
-        if not remove_keys:
+                remove_ukeys.add((left, right) if left < right else (right, left))
+        if not remove_ukeys:
             return
         kept = [
-            pair for pair in self._symmetry_pairs_as_pairs() if pair not in remove_keys
+            pair
+            for pair in self._symmetry_pairs_as_pairs()
+            if ((pair[0], pair[1]) if pair[0] < pair[1] else (pair[1], pair[0]))
+            not in remove_ukeys
         ]
         self._set_symmetry_pairs(kept)
 
@@ -1245,7 +1603,12 @@ class KeypointSequencerWidget(QtWidgets.QWidget):
                 pass
         self._suspend_schema_signal = True
         try:
-            self.set_pose_schema(schema, str(schema_path), emit_change=False)
+            self.set_pose_schema(
+                schema,
+                str(schema_path),
+                emit_change=False,
+                replace_order=bool(schema.keypoints),
+            )
         finally:
             self._suspend_schema_signal = False
         self._emit_schema_changed()

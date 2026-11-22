@@ -27,12 +27,14 @@ class WorkflowActionsMixin:
         input_anno_dir = None
         num_train_frames = 0.7
         output_mode = "segmentation"
+        pose_schema_path = None
         if coco_dlg.exec_():
             input_anno_dir = coco_dlg.annotation_dir
             labels_file = coco_dlg.label_list_text
             output_dir = coco_dlg.out_dir
             num_train_frames = coco_dlg.num_train_frames
             output_mode = coco_dlg.output_mode
+            pose_schema_path = getattr(coco_dlg, "pose_schema_path", None)
         else:
             return
 
@@ -57,6 +59,7 @@ class WorkflowActionsMixin:
             labels_file=labels_file,
             train_valid_split=num_train_frames,
             output_mode=output_mode,
+            pose_schema_path=pose_schema_path,
         )
         pw = ProgressingWindow(label_gen)
         if pw.exec_():
@@ -101,6 +104,7 @@ class WorkflowActionsMixin:
                 images_dir=cfg.images_dir,
                 recursive=cfg.recursive,
                 link_mode=cfg.link_mode,
+                write_pose_schema=bool(getattr(cfg, "write_pose_schema", True)),
             )
         except Exception as exc:
             QtWidgets.QMessageBox.critical(

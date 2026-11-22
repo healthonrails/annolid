@@ -3,7 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List
 
-from annolid.annotation.pose_schema import PoseSchema
+from annolid.annotation.pose_schema import (
+    PoseSchema,
+    find_pose_schema_in_dir,
+)
 from annolid.domain import (
     DEFAULT_SCHEMA_FILENAME,
     default_behavior_spec,
@@ -39,42 +42,116 @@ class SchemaBehaviorLoaderMixin:
         self._update_modifier_controls_for_behavior(self.event_type)
         self._configure_pose_schema_from_project()
 
-    def _configure_pose_schema_from_project(self) -> None:
-        schema = self.project_schema
-        self._pose_schema = None
-        self._pose_schema_path = None
-        if schema is None:
-            return
-
-        embedded = getattr(schema, "pose_schema", None)
-        schema_path_value = getattr(schema, "pose_schema_path", None)
-        if embedded and isinstance(embedded, dict):
-            try:
-                self._pose_schema = PoseSchema.from_dict(embedded)
-            except Exception:
-                self._pose_schema = None
-
-        if schema_path_value:
-            try:
-                p = Path(schema_path_value)
-                if not p.is_absolute() and self.project_schema_path:
-                    p = self.project_schema_path.parent / p
-                self._pose_schema_path = str(p)
-            except Exception:
-                self._pose_schema_path = str(schema_path_value)
-
+    def _apply_loaded_pose_schema(
+        self,
+        schema: PoseSchema | None,
+        schema_path: str | None = None,
+        *,
+        replace_order: bool = False,
+    ) -> None:
+        """Apply a resolved ``PoseSchema`` to window state, canvas, and sequencer."""
+        self._pose_schema = schema
+        self._pose_schema_path = str(schema_path) if schema_path else None
         try:
-            self.canvas.setPoseSchema(self._pose_schema)
+            canvas = getattr(self, "canvas", None)
+            if canvas is not None and hasattr(canvas, "setPoseSchema"):
+                canvas.setPoseSchema(self._pose_schema)
         except Exception:
             pass
         try:
             widget = getattr(self, "keypoint_sequence_widget", None)
             if widget is not None:
                 widget.set_pose_schema(
-                    self._pose_schema, getattr(self, "_pose_schema_path", None)
+                    self._pose_schema,
+                    self._pose_schema_path,
+                    replace_order=bool(
+                        replace_order
+                        and schema is not None
+                        and bool(getattr(schema, "keypoints", None))
+                    ),
                 )
         except Exception:
             pass
+
+    def _auto_load_pose_schema_from_dir(
+        self,
+        directory: str | Path | None,
+        *,
+        overwrite: bool = False,
+        search_parent: bool = False,
+    ) -> bool:
+        """Auto-discover and load ``pose_schema.{json,yaml,yml}`` from ``directory``."""
+        if not directory:
+            return False
+        if not overwrite and getattr(self, "_pose_schema", None) is not None:
+            return False
+        candidate = find_pose_schema_in_dir(directory, search_parent=search_parent)
+        if candidate is None:
+            return False
+        try:
+            loaded = PoseSchema.load(candidate)
+        except Exception as exc:
+            logger.debug("Skipping invalid pose schema %s: %s", candidate, exc)
+            return False
+        self._apply_loaded_pose_schema(
+            loaded,
+            str(candidate),
+            replace_order=bool(overwrite),
+        )
+        return True
+
+    def _configure_pose_schema_from_project(self) -> None:
+        schema = self.project_schema
+        resolved_schema: PoseSchema | None = None
+        resolved_path: str | None = None
+
+        if schema is not None:
+            embedded = getattr(schema, "pose_schema", None)
+            schema_path_value = getattr(schema, "pose_schema_path", None)
+            if embedded and isinstance(embedded, dict):
+                try:
+                    resolved_schema = PoseSchema.from_dict(embedded)
+                except Exception:
+                    resolved_schema = None
+
+            if schema_path_value:
+                try:
+                    p = Path(schema_path_value).expanduser()
+                    if not p.is_absolute() and self.project_schema_path:
+                        p = self.project_schema_path.parent / p
+                    resolved_path = str(p)
+                    if resolved_schema is None and p.is_file():
+                        try:
+                            resolved_schema = PoseSchema.load(p)
+                        except Exception as exc:
+                            logger.warning(
+                                "Failed to load pose schema from %s: %s", p, exc
+                            )
+                except Exception:
+                    resolved_path = str(schema_path_value)
+
+        # Fallback: auto-discover pose_schema.{json,yaml,yml} near the active video/results folder.
+        if resolved_schema is None:
+            search_dirs: list[Path] = []
+            for attr in ("video_results_folder", "annotation_dir"):
+                folder = getattr(self, attr, None)
+                if folder:
+                    search_dirs.append(Path(folder))
+            if getattr(self, "project_schema_path", None):
+                search_dirs.append(Path(self.project_schema_path).parent)
+            if getattr(self, "video_file", None):
+                search_dirs.append(Path(self.video_file).parent)
+            for folder in search_dirs:
+                found = find_pose_schema_in_dir(folder)
+                if found is not None:
+                    try:
+                        resolved_schema = PoseSchema.load(found)
+                        resolved_path = str(found)
+                        break
+                    except Exception as exc:
+                        logger.debug("Skipping invalid pose schema %s: %s", found, exc)
+
+        self._apply_loaded_pose_schema(resolved_schema, resolved_path)
 
     def _load_behavior(self, behavior_csv_file: str) -> None:
         """Load behavior events from Annolid CSV, BORIS CSV/TSV, or .boris project."""
@@ -211,4 +288,46 @@ class SchemaBehaviorLoaderMixin:
             list(table.individuals) if table.multi_animal else [None]
         )
         self._df_deeplabcut_multi_animal = bool(table.multi_animal)
+        if getattr(self, "_pose_schema", None) is None:
+            source_dir = Path(behavior_csv_file).expanduser().parent
+            if not self._auto_load_pose_schema_from_dir(
+                source_dir, overwrite=False, search_parent=True
+            ):
+                try:
+                    from annolid.annotation.pose_interop.deeplabcut import (
+                        discover_dlc_config_near,
+                    )
+
+                    cfg = discover_dlc_config_near(behavior_csv_file)
+                    keypoints = list(
+                        (cfg.bodyparts if cfg and cfg.bodyparts else None)
+                        or table.bodyparts
+                        or ()
+                    )
+                    if keypoints:
+                        edges = (
+                            list(cfg.skeleton)
+                            if (cfg and cfg.skeleton)
+                            else PoseSchema.infer_edges(keypoints, preset="auto")
+                        )
+                        instances = (
+                            list(table.individuals)
+                            if table.multi_animal
+                            else (
+                                list(cfg.individuals) if cfg and cfg.individuals else []
+                            )
+                        )
+                        dlc_schema = PoseSchema(
+                            keypoints=keypoints,
+                            edges=edges,
+                            symmetry_pairs=PoseSchema.infer_symmetry_pairs(keypoints),
+                            instances=instances,
+                        )
+                        self._apply_loaded_pose_schema(dlc_schema, None)
+                except Exception as exc:
+                    logger.debug(
+                        "Unable to infer PoseSchema from DeepLabCut overlay %s: %s",
+                        behavior_csv_file,
+                        exc,
+                    )
         return True

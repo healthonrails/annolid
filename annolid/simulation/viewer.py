@@ -121,6 +121,10 @@ def _infer_edges_from_labels(labels: List[str]) -> List[List[str]]:
             ],
         )
         add([f"tarsus_{seg}", f"{prefix}_tarsus_site"], [f"claw_{seg}"])
+    if not edges and len(labels) >= 2:
+        from annolid.annotation.pose_schema import infer_pose_skeleton_edges
+
+        edges = [[a, b] for a, b in infer_pose_skeleton_edges(labels, preset="auto")]
     return edges
 
 

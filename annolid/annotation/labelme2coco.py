@@ -14,6 +14,11 @@ from typing import Dict, Iterator, List, Optional, Sequence, Tuple
 import numpy as np
 from PIL import Image, ImageOps
 
+from annolid.annotation.keypoint_visibility import (
+    KeypointVisibility,
+    visibility_from_labelme_shape,
+)
+from annolid.annotation.pose_schema import PoseSchema, find_pose_schema_in_dir
 from annolid.datasets.labelme_collection import resolve_image_path
 from annolid.utils.annotation_store import load_labelme_json
 from annolid.utils.body_part_shapes import (
@@ -321,8 +326,15 @@ def _build_segmentation_categories(
 
 
 def _build_keypoint_categories(
-    category_names: Sequence[str], keypoint_names: Sequence[str]
+    category_names: Sequence[str],
+    keypoint_names: Sequence[str],
+    skeleton: Optional[Sequence[Sequence[int]]] = None,
 ) -> List[Dict[str, object]]:
+    skeleton_pairs = [
+        [int(pair[0]), int(pair[1])]
+        for pair in (skeleton or [])
+        if isinstance(pair, (list, tuple)) and len(pair) == 2
+    ]
     categories: List[Dict[str, object]] = []
     for idx, name in enumerate(category_names):
         categories.append(
@@ -331,10 +343,56 @@ def _build_keypoint_categories(
                 "name": name,
                 "supercategory": "animal",
                 "keypoints": list(keypoint_names),
-                "skeleton": [],
+                "skeleton": [list(pair) for pair in skeleton_pairs],
             }
         )
     return categories
+
+
+def _resolve_labelme_keypoint_identity(
+    shape: Dict[str, object],
+    pose_schema: Optional[PoseSchema],
+) -> Tuple[Optional[str], str]:
+    """Resolve optional instance prefix and canonical keypoint name for a point shape."""
+    raw_label = str(shape.get("label") or "").strip()
+    flags = shape.get("flags") if isinstance(shape.get("flags"), dict) else {}
+
+    explicit_inst = ""
+    for key in ("instance_label", "parent_instance", "instance_name"):
+        val = shape.get(key)
+        if isinstance(val, str) and val.strip():
+            explicit_inst = val.strip()
+            break
+        fval = flags.get(key)
+        if isinstance(fval, str) and fval.strip():
+            explicit_inst = fval.strip()
+            break
+
+    explicit_kp = ""
+    for key in ("display_label", "part_label", "body_part"):
+        val = shape.get(key)
+        if isinstance(val, str) and val.strip():
+            explicit_kp = val.strip()
+            break
+        fval = flags.get(key)
+        if isinstance(fval, str) and fval.strip():
+            explicit_kp = fval.strip()
+            break
+
+    if explicit_kp:
+        return (explicit_inst or None), explicit_kp
+
+    if pose_schema is not None and raw_label:
+        stripped_inst, stripped_kp = pose_schema.strip_instance_prefix(raw_label)
+        if stripped_inst and stripped_kp:
+            return (explicit_inst or stripped_inst), stripped_kp
+
+    if ":" in raw_label:
+        left, right = raw_label.split(":", 1)
+        if left.strip() and right.strip():
+            return (explicit_inst or left.strip()), right.strip()
+
+    return (explicit_inst or None), raw_label
 
 
 def convert(
@@ -347,6 +405,7 @@ def convert(
     radius_ratio: float = 0.01,
     output_mode: str = "segmentation",
     export_level: str = "instances",
+    pose_schema_path: Optional[str | Path] = None,
 ) -> Iterator[Tuple[int, str]]:
     """Convert LabelMe directory to train/valid COCO JSON files.
 
@@ -361,6 +420,10 @@ def convert(
         export_level: ``"instances"`` (default: whole-object shapes only,
             skipping child body parts), ``"parts"`` (body-part polygons only),
             or ``"both"`` (both parent instances and child body-part polygons).
+        pose_schema_path: Optional path to a ``PoseSchema`` JSON/YAML file used
+            in keypoints mode for canonical keypoint ordering and COCO
+            ``skeleton`` edges. When omitted, a sibling ``pose_schema.{json,yaml,yml}``
+            in ``input_annotated_dir`` is auto-discovered if present.
 
     Yields:
         (progress_percent, json_path)
@@ -389,6 +452,28 @@ def convert(
 
     last_progress = -1
     progress_step = max(1, total // 20)
+
+    pose_schema: Optional[PoseSchema] = None
+    if mode == "keypoints":
+        if pose_schema_path is not None:
+            resolved_schema = Path(pose_schema_path).expanduser().resolve()
+            if not resolved_schema.exists():
+                raise FileNotFoundError(f"Pose schema not found: {resolved_schema}")
+            pose_schema = PoseSchema.load(resolved_schema)
+            pose_schema.normalize_prefixed_keypoints()
+        else:
+            discovered_schema = find_pose_schema_in_dir(input_dir)
+            if discovered_schema is not None:
+                try:
+                    pose_schema = PoseSchema.load(discovered_schema)
+                    pose_schema.normalize_prefixed_keypoints()
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to load discovered pose schema %s: %s",
+                        discovered_schema,
+                        exc,
+                    )
+                    pose_schema = None
 
     if mode == "segmentation":
         category_names = _read_label_names(labels_file, pairs, export_level=level)
@@ -419,7 +504,11 @@ def convert(
                         str(shape.get("shape_type") or "polygon").lower().strip()
                     )
                     if shape_type == "point":
-                        keypoint_names_map[label_name] = None
+                        _inst, kp_label = _resolve_labelme_keypoint_identity(
+                            shape, pose_schema
+                        )
+                        if kp_label and kp_label not in _IGNORE_LABELS:
+                            keypoint_names_map[kp_label] = None
                     else:
                         instance_names_map[label_name] = None
 
@@ -429,7 +518,13 @@ def convert(
                     last_progress = pre_progress
                     yield pre_progress, str(json_path)
 
-        keypoint_names = sorted(keypoint_names_map.keys())
+        if pose_schema is not None and pose_schema.keypoints:
+            keypoint_names = list(pose_schema.keypoints)
+            for kp in sorted(keypoint_names_map.keys()):
+                if kp not in keypoint_names:
+                    keypoint_names.append(kp)
+        else:
+            keypoint_names = sorted(keypoint_names_map.keys())
         if not keypoint_names:
             raise ValueError(
                 "No keypoint labels found. COCO keypoints mode requires point shapes."
@@ -444,7 +539,16 @@ def convert(
                 if inferred:
                     category_names = [inferred[0]]
 
-        categories = _build_keypoint_categories(category_names, keypoint_names)
+        coco_skeleton = (
+            pose_schema.to_coco_skeleton(keypoint_names)
+            if pose_schema is not None
+            else []
+        )
+        categories = _build_keypoint_categories(
+            category_names,
+            keypoint_names,
+            skeleton=coco_skeleton,
+        )
 
     name_to_id = {str(cat["name"]): int(cat["id"]) for cat in categories}
 
@@ -651,8 +755,10 @@ def convert(
                 if gid is not None:
                     gid_key = str(gid)
                 elif st == "point":
-                    # All ungrouped keypoint points belong to the same instance.
-                    gid_key = "_default_instance_"
+                    inst_hint, _kp = _resolve_labelme_keypoint_identity(
+                        shape, pose_schema
+                    )
+                    gid_key = f"inst:{inst_hint}" if inst_hint else "_default_instance_"
                 else:
                     # Ungrouped non-point shapes get unique per-shape keys.
                     gid_key = f"shape_{sidx}"
@@ -682,10 +788,18 @@ def convert(
                 num_keypoints = 0
                 xy_visible: List[Tuple[float, float]] = []
                 for shape in point_shapes:
-                    label_name = str(shape.get("label") or "").strip()
-                    kidx = keypoint_index.get(label_name)
+                    _inst, kp_label = _resolve_labelme_keypoint_identity(
+                        shape, pose_schema
+                    )
+                    kidx = keypoint_index.get(kp_label)
                     if kidx is None:
                         continue
+                    vis_code = visibility_from_labelme_shape(shape)
+                    if vis_code == int(KeypointVisibility.MISSING):
+                        continue
+                    coco_vis = (
+                        1.0 if vis_code == int(KeypointVisibility.OCCLUDED) else 2.0
+                    )
                     xy = _shape_point(shape)
                     if xy is None:
                         continue
@@ -700,7 +814,7 @@ def convert(
                         continue
                     kpt_values[off] = float(x)
                     kpt_values[off + 1] = float(y)
-                    kpt_values[off + 2] = 2.0
+                    kpt_values[off + 2] = coco_vis
                     num_keypoints += 1
                     xy_visible.append((float(x), float(y)))
 

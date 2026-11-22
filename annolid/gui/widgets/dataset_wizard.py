@@ -981,8 +981,14 @@ class ExportWorker(QtCore.QThread):
             from annolid.annotation import labelme2coco
 
             labels_file = config.get("labels_file")
+            pose_schema = config.get("pose_schema")
+            output_mode = (
+                "keypoints"
+                if config.get("output_mode") == "keypoints" or pose_schema
+                else "segmentation"
+            )
             self.progress.emit(50)
-            self.log_message.emit("Creating COCO annotations...")
+            self.log_message.emit(f"Creating COCO annotations (mode={output_mode})...")
 
             for pct, current_json in labelme2coco.convert(
                 str(source),
@@ -991,6 +997,8 @@ class ExportWorker(QtCore.QThread):
                 # Convert to train/total ratio
                 train_valid_split=config["train_split"]
                 / (config["train_split"] + config["val_split"]),
+                output_mode=output_mode,
+                pose_schema_path=pose_schema,
             ):
                 self.progress.emit(max(50, min(99, int(round(50 + pct * 0.5)))))
                 if pct % 20 == 0:
