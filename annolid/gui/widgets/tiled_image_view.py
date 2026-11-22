@@ -18,6 +18,14 @@ from annolid.gui.large_image_modes import (
 )
 from annolid.gui.mixins.shared_polygon_edit_mixin import SharedPolygonEditMixin
 from annolid.gui.shape import Shape
+from annolid.gui.shape_geometry import (
+    circle_from_three_points,
+    find_neighbor_shape,
+    move_oriented_rect_vertex,
+    oriented_rect_from_three_points,
+    rotate_oriented_rect_by_vertex,
+    shapes_bounding_box,
+)
 from annolid.gui.shared_vertices import SharedTopologyRegistry
 from annolid.gui.tile_scheduler import TileRenderPlan, TileRequestScheduler
 from annolid.io.large_image import LargeImageBackend
@@ -258,7 +266,15 @@ class _ShapeGraphicsItem(QtWidgets.QGraphicsItem):
             point = points[0]
             rect = QtCore.QRectF(float(point.x()), float(point.y()), 0.0, 0.0)
         margin = max(8.0, self._visual_metrics() * 2.75)
-        return rect.adjusted(-margin, -margin, margin, margin)
+        top_margin = margin
+        right_margin = margin
+        if getattr(self._ann_shape, "label", None) and bool(
+            getattr(Shape, "show_label_names", True)
+        ):
+            inv_scale = 1.0 / max(float(self.current_scale or 1.0), 0.01)
+            top_margin = max(top_margin, 28.0 * inv_scale)
+            right_margin = max(right_margin, 140.0 * inv_scale)
+        return rect.adjusted(-margin, -top_margin, right_margin, margin)
 
     def shape(self) -> QtGui.QPainterPath:
         path = QtGui.QPainterPath()
@@ -439,6 +455,8 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         self.createMode = "polygon"
         self.current = None
         self.epsilon = 10.0
+        self._allow_points_outside_image = False
+        self._show_label_names = True
         self.setDragMode(QtWidgets.QGraphicsView.ScrollHandDrag)
         self.setRenderHint(QtGui.QPainter.Antialiasing, True)
         self.setRenderHint(QtGui.QPainter.SmoothPixmapTransform, True)
@@ -468,6 +486,24 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
 
     def set_host_window(self, window) -> None:
         self._host_window = window
+
+    def allowPointsOutsideImage(self) -> bool:
+        return bool(self._allow_points_outside_image)
+
+    def setAllowPointsOutsideImage(self, enabled: bool) -> None:
+        self._allow_points_outside_image = bool(enabled)
+
+    def showLabelNames(self) -> bool:
+        return bool(self._show_label_names)
+
+    def setShowLabelNames(self, enabled: bool) -> None:
+        self._show_label_names = bool(enabled)
+        Shape.show_label_names = self._show_label_names
+        self._refresh_overlay_geometry()
+        try:
+            self.viewport().update()
+        except Exception:
+            pass
 
     def _notify_host_large_image_document_changed(self) -> None:
         host = self._host_window
@@ -2081,6 +2117,8 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         index = self._selected_vertex_index
         if shape is None or index is None:
             return False
+        if hasattr(shape, "is_locked") and shape.is_locked():
+            return False
         points = list(getattr(shape, "points", []) or [])
         normalized = int(index)
         if normalized < 0 or normalized >= len(points):
@@ -2175,6 +2213,8 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         return self.mapToScene(pos)
 
     def _scene_contains(self, point: QtCore.QPointF) -> bool:
+        if self._allow_points_outside_image:
+            return not self.sceneRect().isNull()
         return self.sceneRect().contains(point)
 
     def _close_enough(self, p1: QtCore.QPointF, p2: QtCore.QPointF) -> bool:
@@ -2311,6 +2351,41 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
                     dy = float(points[1].y()) - float(points[0].y())
                     radius = max(0.0, (dx * dx + dy * dy) ** 0.5)
                     path.addEllipse(points[0], radius, radius)
+        elif mode == "oriented_rectangle":
+            if len(points) == 1:
+                path.lineTo(scene_target)
+            elif len(points) == 2:
+                corners = oriented_rect_from_three_points(
+                    points[0], points[1], scene_target
+                )
+                if corners is not None:
+                    path = QtGui.QPainterPath(QtCore.QPointF(*corners[0]))
+                    for cx, cy in corners[1:]:
+                        path.lineTo(QtCore.QPointF(cx, cy))
+                    path.closeSubpath()
+                else:
+                    path.lineTo(points[1])
+            else:
+                for point in points[1:]:
+                    path.lineTo(point)
+                path.closeSubpath()
+        elif mode == "circle_3p":
+            if len(points) == 1:
+                path.lineTo(scene_target)
+            elif len(points) == 2:
+                circle = circle_from_three_points(points[0], points[1], scene_target)
+                if circle is not None:
+                    (cx, cy), (ex, ey) = circle
+                    radius = math.hypot(ex - cx, ey - cy)
+                    path = QtGui.QPainterPath()
+                    path.addEllipse(QtCore.QPointF(cx, cy), radius, radius)
+                else:
+                    path.lineTo(points[1])
+                    path.lineTo(scene_target)
+            else:
+                dx = float(points[1].x()) - float(points[0].x())
+                dy = float(points[1].y()) - float(points[0].y())
+                path.addEllipse(points[0], math.hypot(dx, dy), math.hypot(dx, dy))
         elif mode == "linestrip":
             for point in points[1:]:
                 path.lineTo(point)
@@ -2411,6 +2486,16 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
                 return
             if mode == "rectangle":
                 self.current.close()
+        elif mode == "oriented_rectangle":
+            if len(self.current.points) != 4:
+                return
+            self.current.shape_type = "oriented_rectangle"
+            self.current.close()
+        elif mode == "circle_3p":
+            if len(self.current.points) < 2:
+                return
+            self.current.shape_type = "circle"
+            self.current.close()
         elif mode == "linestrip":
             if len(self.current.points) < 2:
                 return
@@ -2527,6 +2612,21 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
             return False
         if bool(other.get("overlay_locked", False)):
             return False
+        if hasattr(shape, "is_locked") and shape.is_locked():
+            return False
+        if str(getattr(shape, "shape_type", "") or "").lower() == "mask":
+            return False
+        return bool(getattr(shape, "points", []) or [])
+
+    @staticmethod
+    def _is_selectable_shape(shape) -> bool:
+        other = dict(getattr(shape, "other_data", {}) or {})
+        if not getattr(shape, "visible", True) or not bool(
+            other.get("overlay_visible", True)
+        ):
+            return False
+        if bool(other.get("overlay_locked", False)):
+            return False
         if str(getattr(shape, "shape_type", "") or "").lower() == "mask":
             return False
         return bool(getattr(shape, "points", []) or [])
@@ -2541,49 +2641,60 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         point_pixels = min(12.0, max(6.0, 8.0 + (2.0 * diagonal_factor)))
         epsilon = max(4.0, (point_pixels * 0.95) / scale)
         for shape in reversed(list(self._shapes or [])):
-            if not self._is_editable_shape(shape):
+            if not self._is_selectable_shape(shape):
                 continue
+            is_locked = hasattr(shape, "is_locked") and shape.is_locked()
             vertex_index = None
             try:
                 vertex_index = shape.nearestVertex(scene_pos, epsilon)
             except Exception:
                 vertex_index = None
             if vertex_index is not None:
+                if is_locked:
+                    return shape, None, "locked_shape"
                 return shape, vertex_index, "vertex"
             shape_type = str(getattr(shape, "shape_type", "") or "").lower()
             if shape_type == "point":
                 point = shape.points[0]
                 distance = QtCore.QLineF(scene_pos, point).length()
                 if distance <= epsilon:
+                    if is_locked:
+                        return shape, None, "locked_shape"
                     return shape, 0, "shape"
             elif shape_type in {"line", "linestrip"}:
                 try:
                     edge = shape.nearestEdge(scene_pos, epsilon)
                 except Exception:
                     edge = None
-                if edge is not None and bool(
-                    getattr(shape, "canAddPoint", lambda: False)()
+                if (
+                    edge is not None
+                    and not is_locked
+                    and bool(getattr(shape, "canAddPoint", lambda: False)())
                 ):
                     return shape, edge, "edge"
                 if edge is not None:
-                    return shape, None, "shape"
+                    return shape, None, ("locked_shape" if is_locked else "shape")
             else:
                 try:
                     edge = shape.nearestEdge(scene_pos, epsilon)
                 except Exception:
                     edge = None
-                if edge is not None and bool(
-                    getattr(shape, "canAddPoint", lambda: False)()
+                if (
+                    edge is not None
+                    and not is_locked
+                    and bool(getattr(shape, "canAddPoint", lambda: False)())
                 ):
                     return shape, edge, "edge"
                 try:
                     if shape.containsPoint(scene_pos):
-                        return shape, None, "shape"
+                        return shape, None, ("locked_shape" if is_locked else "shape")
                 except Exception:
                     pass
         return None, None, None
 
     def _clamp_scene_point(self, point: QtCore.QPointF) -> QtCore.QPointF:
+        if self._allow_points_outside_image:
+            return QtCore.QPointF(point)
         rect = self.sceneRect()
         if rect.isNull():
             return QtCore.QPointF(point)
@@ -2593,37 +2704,43 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         )
 
     def _bounded_move_selected_shapes(self, delta: QtCore.QPointF) -> bool:
-        if not self.selectedShapes:
+        movable = [
+            s
+            for s in list(self.selectedShapes or [])
+            if not (hasattr(s, "is_locked") and s.is_locked())
+        ]
+        if not movable:
             return False
-        left = None
-        top = None
-        right = None
-        bottom = None
-        for shape in self.selectedShapes:
-            rect = shape.boundingRect()
-            if rect is None:
-                continue
-            left = rect.left() if left is None else min(left, rect.left())
-            top = rect.top() if top is None else min(top, rect.top())
-            right = rect.right() if right is None else max(right, rect.right())
-            bottom = rect.bottom() if bottom is None else max(bottom, rect.bottom())
-        if left is None:
-            return False
-        scene = self.sceneRect()
         dx = float(delta.x())
         dy = float(delta.y())
-        if left + dx < scene.left():
-            dx += scene.left() - (left + dx)
-        if right + dx > scene.right():
-            dx -= (right + dx) - scene.right()
-        if top + dy < scene.top():
-            dy += scene.top() - (top + dy)
-        if bottom + dy > scene.bottom():
-            dy -= (bottom + dy) - scene.bottom()
+        if not self._allow_points_outside_image:
+            left = None
+            top = None
+            right = None
+            bottom = None
+            for shape in movable:
+                rect = shape.boundingRect()
+                if rect is None:
+                    continue
+                left = rect.left() if left is None else min(left, rect.left())
+                top = rect.top() if top is None else min(top, rect.top())
+                right = rect.right() if right is None else max(right, rect.right())
+                bottom = rect.bottom() if bottom is None else max(bottom, rect.bottom())
+            if left is None:
+                return False
+            scene = self.sceneRect()
+            if left + dx < scene.left():
+                dx += scene.left() - (left + dx)
+            if right + dx > scene.right():
+                dx -= (right + dx) - scene.right()
+            if top + dy < scene.top():
+                dy += scene.top() - (top + dy)
+            if bottom + dy > scene.bottom():
+                dy -= (bottom + dy) - scene.bottom()
         bounded = QtCore.QPointF(dx, dy)
         if abs(bounded.x()) < 1e-8 and abs(bounded.y()) < 1e-8:
             return False
-        return self._shared_move_selected_shapes(self.selectedShapes, bounded)
+        return self._shared_move_selected_shapes(movable, bounded)
 
     def _pair_item_at_view_pos(self, pos) -> _LandmarkPairItem | None:
         query = self.mapToScene(pos)
@@ -3801,6 +3918,50 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         self._queue_visible_tiles_refresh()
         self._notify_host_large_image_document_changed()
 
+    def fit_to_selection(self, shapes=None) -> bool:
+        target_shapes = list(
+            shapes if shapes is not None else (self.selectedShapes or [])
+        )
+        if not target_shapes:
+            return False
+        bbox = shapes_bounding_box(target_shapes)
+        if bbox is None:
+            return False
+        min_x, min_y, max_x, max_y = bbox
+        width = max(16.0, float(max_x - min_x))
+        height = max(16.0, float(max_y - min_y))
+        pad_x = width * 0.125
+        pad_y = height * 0.125
+        target_rect = QtCore.QRectF(
+            min_x - pad_x,
+            min_y - pad_y,
+            width + 2.0 * pad_x,
+            height + 2.0 * pad_y,
+        )
+        self._fit_mode = "manual"
+        self.fitInView(target_rect, QtCore.Qt.KeepAspectRatio)
+        self._refresh_overlay_render_metrics()
+        self._queue_visible_tiles_refresh()
+        self._notify_host_large_image_document_changed()
+        return True
+
+    def selectAllVisibleShapes(self) -> list[Shape]:
+        visible = [s for s in list(self._shapes or []) if self._is_selectable_shape(s)]
+        self._apply_selection(visible, emit_signal=True)
+        return visible
+
+    def selectNeighborShape(self, direction: str) -> Shape | None:
+        current = self.selectedShapes[0] if self.selectedShapes else None
+        neighbor = find_neighbor_shape(
+            list(self._shapes or []),
+            current,
+            direction,
+            is_visible=self._is_selectable_shape,
+        )
+        if neighbor is not None:
+            self._apply_selection([neighbor], emit_signal=True)
+        return neighbor
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if self._fit_mode == "fit_window":
@@ -3895,9 +4056,8 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
             if self.current is None:
                 from annolid.gui.shape import Shape
 
-                self.current = Shape(
-                    shape_type=mode if mode != "polygon" else "polygon"
-                )
+                shape_type_for_new = "circle" if mode == "circle_3p" else mode
+                self.current = Shape(shape_type=shape_type_for_new)
                 self.current.addPoint(QtCore.QPointF(snapped_scene_pos))
                 if mode == "point":
                     self.finalise()
@@ -3939,6 +4099,56 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
                 else:
                     self.current.points[1] = QtCore.QPointF(snapped_scene_pos)
                 self.finalise()
+            elif mode == "oriented_rectangle":
+                self._adjoining_default_point_pending = False
+                if len(self.current.points) == 1:
+                    if (
+                        QtCore.QLineF(
+                            self.current.points[0], snapped_scene_pos
+                        ).length()
+                        > 1e-3
+                    ):
+                        self.current.addPoint(QtCore.QPointF(snapped_scene_pos))
+                        self._update_drawing_preview(snapped_scene_pos)
+                elif len(self.current.points) == 2:
+                    corners = oriented_rect_from_three_points(
+                        self.current.points[0],
+                        self.current.points[1],
+                        snapped_scene_pos,
+                    )
+                    if corners is not None:
+                        self.current.points = [
+                            self._clamp_scene_point(QtCore.QPointF(cx, cy))
+                            for cx, cy in corners
+                        ]
+                        self.current.point_labels = [1] * len(self.current.points)
+                        self.finalise()
+            elif mode == "circle_3p":
+                self._adjoining_default_point_pending = False
+                if len(self.current.points) == 1:
+                    if (
+                        QtCore.QLineF(
+                            self.current.points[0], snapped_scene_pos
+                        ).length()
+                        > 1e-3
+                    ):
+                        self.current.addPoint(QtCore.QPointF(snapped_scene_pos))
+                        self._update_drawing_preview(snapped_scene_pos)
+                elif len(self.current.points) == 2:
+                    circle = circle_from_three_points(
+                        self.current.points[0],
+                        self.current.points[1],
+                        snapped_scene_pos,
+                    )
+                    if circle is not None:
+                        (cx, cy), (ex, ey) = circle
+                        self.current.shape_type = "circle"
+                        self.current.points = [
+                            QtCore.QPointF(cx, cy),
+                            QtCore.QPointF(ex, ey),
+                        ]
+                        self.current.point_labels = [1, 1]
+                        self.finalise()
             event.accept()
             return
         if event.button() == QtCore.Qt.LeftButton:
@@ -3989,17 +4199,24 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
                 else:
                     selected = [shape]
                 self._active_shape = shape
+                is_locked_hit = hit_kind == "locked_shape" or (
+                    hasattr(shape, "is_locked") and shape.is_locked()
+                )
                 self._active_vertex_index = (
-                    vertex_index if hit_kind == "vertex" else None
+                    vertex_index
+                    if (hit_kind == "vertex" and not is_locked_hit)
+                    else None
                 )
                 self._active_edge_index = (
-                    int(vertex_index) if hit_kind == "edge" else None
+                    int(vertex_index)
+                    if (hit_kind == "edge" and not is_locked_hit)
+                    else None
                 )
-                if hit_kind == "vertex":
+                if hit_kind == "vertex" and not is_locked_hit:
                     self._set_selected_vertex(shape, int(vertex_index))
                 else:
                     self._set_selected_vertex(None, None)
-                self._dragging_shape = True
+                self._dragging_shape = not is_locked_hit
                 self._shape_moved_during_drag = False
                 self._last_scene_pos = QtCore.QPointF(scene_pos)
                 try:
@@ -4119,20 +4336,59 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
             )
             moved = False
             if self._active_vertex_index is not None:
+                if (
+                    hasattr(self._active_shape, "is_locked")
+                    and self._active_shape.is_locked()
+                ):
+                    event.accept()
+                    return
                 self.overrideCursor(CURSOR_POINT)
                 old_point = QtCore.QPointF(
                     self._active_shape.points[self._active_vertex_index]
                 )
                 target = self._clamp_scene_point(old_point + delta)
-                bounded = target - old_point
-                if abs(bounded.x()) > 1e-8 or abs(bounded.y()) > 1e-8:
-                    self._active_shape.moveVertexBy(self._active_vertex_index, bounded)
-                    self._sync_shared_vertex(
-                        self._active_shape,
-                        self._active_vertex_index,
-                        self._active_shape.points[self._active_vertex_index],
+                if (
+                    str(getattr(self._active_shape, "shape_type", "") or "").lower()
+                    == "oriented_rectangle"
+                    and len(self._active_shape.points) == 4
+                ):
+                    rotate_obb = bool(event.modifiers() & QtCore.Qt.ShiftModifier)
+                    updated_pts = (
+                        rotate_oriented_rect_by_vertex(
+                            self._active_shape.points,
+                            self._active_vertex_index,
+                            target,
+                        )
+                        if rotate_obb
+                        else move_oriented_rect_vertex(
+                            self._active_shape.points,
+                            self._active_vertex_index,
+                            target,
+                        )
                     )
-                    moved = True
+                    clamped_pts = [
+                        self._clamp_scene_point(QtCore.QPointF(px, py))
+                        for px, py in updated_pts
+                    ]
+                    if any(
+                        abs(float(a.x()) - float(b.x())) > 1e-8
+                        or abs(float(a.y()) - float(b.y())) > 1e-8
+                        for a, b in zip(self._active_shape.points, clamped_pts)
+                    ):
+                        self._active_shape.points = clamped_pts
+                        moved = True
+                else:
+                    bounded = target - old_point
+                    if abs(bounded.x()) > 1e-8 or abs(bounded.y()) > 1e-8:
+                        self._active_shape.moveVertexBy(
+                            self._active_vertex_index, bounded
+                        )
+                        self._sync_shared_vertex(
+                            self._active_shape,
+                            self._active_vertex_index,
+                            self._active_shape.points[self._active_vertex_index],
+                        )
+                        moved = True
             else:
                 self.overrideCursor(CURSOR_MOVE)
                 moved = self._bounded_move_selected_shapes(delta)
@@ -4204,10 +4460,31 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
             shape, vertex_index, hit_kind = self._shape_hit_test(scene_pos)
             if shape is not None:
                 label = str(getattr(shape, "label", "") or "")
-                if hit_kind == "vertex":
-                    self.overrideCursor(CURSOR_POINT)
+                if hit_kind == "locked_shape":
+                    self.overrideCursor(CURSOR_DEFAULT)
+                    status_label = f"{label} [Locked]" if label else "[Locked]"
                     self._set_hover_feedback(
-                        self.tr("Click & drag to move point"),
+                        self.tr("Shape '%s' is locked (Ctrl+Shift+L to unlock)") % label
+                        if label
+                        else self.tr("Shape is locked (Ctrl+Shift+L to unlock)"),
+                        status=f"{status_label},{self._scene_xy_text(scene_pos)}",
+                    )
+                elif hit_kind == "vertex":
+                    self.overrideCursor(CURSOR_POINT)
+                    if (
+                        str(getattr(shape, "shape_type", "") or "").lower()
+                        == "oriented_rectangle"
+                    ):
+                        tip = (
+                            self.tr("Drag corner to resize (Shift+Drag to rotate) '%s'")
+                            % label
+                            if label
+                            else self.tr("Drag corner to resize (Shift+Drag to rotate)")
+                        )
+                    else:
+                        tip = self.tr("Click & drag to move point")
+                    self._set_hover_feedback(
+                        tip,
                         status=(
                             f"{label},{self._scene_xy_text(scene_pos)}"
                             if label
@@ -4339,6 +4616,31 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
                 event.accept()
                 return
         elif self.editing():
+            mods = event.modifiers()
+            if (mods & (QtCore.Qt.ControlModifier | QtCore.Qt.MetaModifier)) and (
+                event.key()
+                in (
+                    QtCore.Qt.Key_Left,
+                    QtCore.Qt.Key_Right,
+                    QtCore.Qt.Key_Up,
+                    QtCore.Qt.Key_Down,
+                )
+            ):
+                dir_map = {
+                    QtCore.Qt.Key_Left: "left",
+                    QtCore.Qt.Key_Right: "right",
+                    QtCore.Qt.Key_Up: "up",
+                    QtCore.Qt.Key_Down: "down",
+                }
+                self.selectNeighborShape(dir_map[event.key()])
+                event.accept()
+                return
+            if (
+                mods & (QtCore.Qt.ControlModifier | QtCore.Qt.MetaModifier)
+            ) and event.key() == QtCore.Qt.Key_A:
+                self.selectAllVisibleShapes()
+                event.accept()
+                return
             if event.key() in (QtCore.Qt.Key_Delete, QtCore.Qt.Key_Backspace):
                 if self.selectedVertex() and self.removeSelectedPoint():
                     event.accept()

@@ -1407,6 +1407,7 @@ class MenuController:
             (overlay_menu, large_tiff_menu),
             (
                 w.actions.save,
+                w.actions.saveAs,
                 w.actions.saveAuto,
             ),
             (actions["open_audio"],),
@@ -1517,6 +1518,14 @@ class MenuController:
         )
         view_sections = [
             (self._docks_menu.menuAction(),),
+            (
+                w.actions.fitSelection,
+                w.actions.showAllPolygons,
+                w.actions.hideAllPolygons,
+                w.actions.toggleAllPolygons,
+                w.actions.toggleShowLabelNames,
+                w.actions.toggleAllowPointsOutsideImage,
+            ),
             (
                 w.actions.displayZonesAllFrames,
                 w.actions.keepPrevMode,

@@ -188,23 +188,18 @@ def sample_grid_in_polygon(polygon_points, grid_size=None):
 
 
 def shape_to_dict(shape):
-    """
-    Convert a shape object to a dictionary representation.
-    If the shape is already a dict, return it unmodified.
+    """Convert a shape object to a JSON-safe dictionary representation.
+
+    If ``shape`` is already a dict, return it unmodified.
     """
     if isinstance(shape, dict):
         return shape
-    return {
-        "label": shape.label,
-        "points": [(pt.x(), pt.y()) for pt in shape.points],
-        "group_id": shape.group_id,
-        "shape_type": shape.shape_type,
-        "flags": shape.flags,
-        "description": shape.description,
-        "shared_vertex_ids": list(getattr(shape, "shared_vertex_ids", []) or []),
-        "shared_edge_ids": list(getattr(shape, "shared_edge_ids", []) or []),
-        "mask": None
-        if shape.mask is None
-        else shape.mask,  # Adjust conversion as needed
-        "visible": shape.visible,
-    }
+    from annolid.annotation.shape_io import serialize_shape
+
+    return serialize_shape(
+        shape,
+        include_manual_tag=False,
+        include_point_labels=False,
+        sanitize_flags=False,
+        include_null_mask=True,
+    )

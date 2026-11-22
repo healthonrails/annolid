@@ -375,6 +375,8 @@ class SharedTopologyRegistry:
 
         moved_shared_vertex_ids: set[str] = set()
         for shape in moving_shapes:
+            if not _is_polygon_shape(shape):
+                continue
             ids = _ensure_shared_ids(shape)
             for vertex_id in ids:
                 vertex_key = str(vertex_id or "")
@@ -382,25 +384,31 @@ class SharedTopologyRegistry:
                     moved_shared_vertex_ids.add(vertex_key)
 
         moved = False
+        moved_point_keys: set[tuple[int, int]] = set()
         for shared_vertex_id in moved_shared_vertex_ids:
             for candidate, candidate_index in self.vertex_occurrences(shared_vertex_id):
                 points = _shape_points(candidate)
                 if candidate_index < 0 or candidate_index >= len(points):
+                    continue
+                key = (id(candidate), int(candidate_index))
+                if key in moved_point_keys:
                     continue
                 _set_point(
                     candidate,
                     candidate_index,
                     QtCore.QPointF(points[candidate_index]) + delta_point,
                 )
+                moved_point_keys.add(key)
                 moved = True
 
         for shape in moving_shapes:
-            ids = _ensure_shared_ids(shape)
             points = _shape_points(shape)
             for index, point in enumerate(points):
-                if index < len(ids) and str(ids[index] or ""):
+                key = (id(shape), int(index))
+                if key in moved_point_keys:
                     continue
                 _set_point(shape, index, QtCore.QPointF(point) + delta_point)
+                moved_point_keys.add(key)
                 moved = True
 
         if moved:
@@ -585,8 +593,10 @@ def remove_shared_vertex_at(shape, vertex_index: int, shapes):
             if index < 0 or index >= len(candidate_points):
                 continue
             try:
+                before_count = len(candidate_points)
                 candidate.removePoint(index)
-                removed.append((candidate, index))
+                if len(_shape_points(candidate)) < before_count:
+                    removed.append((candidate, index))
             except Exception:
                 continue
 

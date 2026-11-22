@@ -295,6 +295,25 @@ class WindowLifecycleMixin:
             self.realtime_manager.stop_realtime_inference()
 
     def closeEvent(self, event):
+        if bool(getattr(self, "dirty", False)):
+            if (
+                callable(getattr(self, "_is_auto_save_enabled", None))
+                and self._is_auto_save_enabled()
+                and getattr(self, "filename", None)
+                and callable(getattr(self, "_run_auto_save", None))
+            ):
+                try:
+                    self._run_auto_save()
+                except Exception as exc:
+                    logger.debug("Auto-save flush on close failed: %s", exc)
+            if (
+                bool(getattr(self, "dirty", False))
+                and self.isVisible()
+                and callable(getattr(self, "mayContinue", None))
+                and not self.mayContinue()
+            ):
+                event.ignore()
+                return
         try:
             cancel_prompt = getattr(
                 getattr(self, "canvas", None), "cancel_async_text_prompt", None

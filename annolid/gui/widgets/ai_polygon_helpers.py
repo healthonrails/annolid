@@ -201,7 +201,16 @@ def simplify_ai_polygon_points(
 ) -> list[QtCore.QPointF]:
     """Simplify a polygon while preserving its overall shape."""
     try:
-        arr = np.asarray(points, dtype=np.float32).reshape(-1, 2)
+        if isinstance(points, np.ndarray):
+            arr = np.asarray(points, dtype=np.float32).reshape(-1, 2)
+        else:
+            raw_coords = []
+            for pt in points or []:
+                if hasattr(pt, "x") and hasattr(pt, "y") and callable(pt.x):
+                    raw_coords.append([float(pt.x()), float(pt.y())])
+                else:
+                    raw_coords.append([float(pt[0]), float(pt[1])])
+            arr = np.asarray(raw_coords, dtype=np.float32).reshape(-1, 2)
     except Exception:
         return []
     if arr.shape[0] < 3:

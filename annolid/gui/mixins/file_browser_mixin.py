@@ -263,12 +263,13 @@ class FileBrowserMixin:
             and self.canvas.hShape
             and not self.canvas.hShape.points
         ):
-            self.canvas.deleteShape(self.canvas.hShape)
-            self.remLabels([self.canvas.hShape])
-            self.setDirty()
-            if self.noShapes():
-                for action in self.actions.onShapesPresent:
-                    action.setEnabled(False)
+            empty_shape = self.canvas.hShape
+            if self.canvas.deleteShape(empty_shape):
+                self.remLabels([empty_shape])
+                self.setDirty()
+                if self.noShapes():
+                    for action in self.actions.onShapesPresent:
+                        action.setEnabled(False)
 
     def importDirImages(self, dirpath, pattern=None, load=True):
         self.actions.openNextImg.setEnabled(True)

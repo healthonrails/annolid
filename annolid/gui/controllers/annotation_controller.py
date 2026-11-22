@@ -50,6 +50,7 @@ class AnnotationController(QtCore.QObject):
         self._annotation_service = annotation_service or AnnotationService()
         self._current_annotation: Optional[Dict[str, Any]] = None
         self._current_file_path: Optional[Path] = None
+        self._dirty: bool = False
 
     def load_annotation(self, file_path: Union[str, Path]) -> bool:
         """
@@ -88,6 +89,7 @@ class AnnotationController(QtCore.QObject):
 
             self._current_annotation = annotation_data
             self._current_file_path = file_path
+            self._dirty = False
 
             self.annotation_loaded.emit(annotation_data)
             logger.info(f"Annotation loaded: {file_path}")
@@ -132,6 +134,7 @@ class AnnotationController(QtCore.QObject):
 
             self._current_annotation = annotation_data
             self._current_file_path = save_path
+            self._dirty = False
 
             self.annotation_saved.emit(str(save_path))
             logger.info(f"Annotation saved: {save_path}")
@@ -160,8 +163,10 @@ class AnnotationController(QtCore.QObject):
         try:
             image_path = Path(image_path)
 
+            from annolid.utils.annotation_compat import __version__ as annolid_version
+
             annotation_data = {
-                "version": "5.0.1",
+                "version": annolid_version,
                 "flags": {},
                 "shapes": [],
                 "imagePath": image_path.name,
@@ -173,6 +178,7 @@ class AnnotationController(QtCore.QObject):
 
             self._current_annotation = annotation_data
             self._current_file_path = None  # No file path yet
+            self._dirty = False
 
             self.annotation_loaded.emit(annotation_data)
             logger.info(f"New annotation created for: {image_path}")
@@ -214,6 +220,7 @@ class AnnotationController(QtCore.QObject):
                 self._current_annotation["shapes"] = []
 
             self._current_annotation["shapes"].append(shape_data)
+            self._dirty = True
 
             logger.info(
                 f"Shape added to annotation: {shape_data.get('label', 'Unknown')}"
@@ -247,6 +254,7 @@ class AnnotationController(QtCore.QObject):
                 return False
 
             removed_shape = shapes.pop(shape_index)
+            self._dirty = True
             logger.info(
                 f"Shape removed from annotation: {removed_shape.get('label', 'Unknown')}"
             )
@@ -379,12 +387,5 @@ class AnnotationController(QtCore.QObject):
         return self._current_file_path
 
     def has_unsaved_changes(self) -> bool:
-        """
-        Check if there are unsaved changes.
-
-        Returns:
-            True if there are unsaved changes, False otherwise
-        """
-        # For now, always return False since we don't track changes
-        # This could be enhanced to track modifications
-        return False
+        """Return True if the current annotation has unsaved modifications."""
+        return bool(self._dirty)

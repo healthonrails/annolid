@@ -231,7 +231,11 @@ class LabelPanelMixin:
         tiled_hide_applied = False
 
         try:
-            for shape, visible_flag in list(pending.items()):
+            for entry in list(pending.values()):
+                if isinstance(entry, tuple) and len(entry) == 2:
+                    shape, visible_flag = entry
+                else:
+                    continue
                 if shape is None:
                     continue
 
@@ -246,7 +250,7 @@ class LabelPanelMixin:
                 if not visible_flag and canvas is not None:
                     try:
                         selected = list(getattr(canvas, "selectedShapes", []) or [])
-                        if shape in selected:
+                        if any(s is shape for s in selected):
                             selected = [s for s in selected if s is not shape]
                             if (
                                 str(getattr(self, "_active_image_view", "canvas"))
@@ -422,36 +426,10 @@ class LabelPanelMixin:
             if not hasattr(self, "_pending_shape_visibility"):
                 self._pending_shape_visibility = {}
 
-            self._pending_shape_visibility[shape] = visible_flag
+            self._pending_shape_visibility[id(shape)] = (shape, visible_flag)
             self._schedule_shape_visibility_apply()
 
-        def on_shape_delete_requested(shape: Shape) -> None:
-            if shape is None:
-                return
-            try:
-                self._noSelectionSlot = True
-                self.canvas.selectShapes([shape])
-                with QtCore.QSignalBlocker(self.labelList):
-                    for idx in range(self.labelList.count()):
-                        it = self.labelList.item(idx)
-                        try:
-                            if (
-                                isinstance(it, AnnolidLabelListItem)
-                                and it.shape() is shape
-                            ):
-                                it.setSelected(True)
-                            elif it is not None:
-                                it.setSelected(False)
-                        except Exception:
-                            continue
-            finally:
-                self._noSelectionSlot = False
-            try:
-                self.deleteSelectedShapes()
-            except Exception:
-                pass
-
-        def on_shapes_delete_requested(shapes: list[Shape]) -> None:
+        def _select_shapes_and_run(shapes: list[Shape], callback) -> None:
             shape_list = [s for s in (shapes or []) if s is not None]
             if not shape_list:
                 return
@@ -463,51 +441,58 @@ class LabelPanelMixin:
                     for idx in range(self.labelList.count()):
                         it = self.labelList.item(idx)
                         try:
-                            shape = (
+                            s_obj = (
                                 it.shape()
                                 if isinstance(it, AnnolidLabelListItem)
                                 else None
                             )
                             it.setSelected(
-                                shape is not None and id(shape) in selected_ids
+                                s_obj is not None and id(s_obj) in selected_ids
                             )
                         except Exception:
                             continue
             finally:
                 self._noSelectionSlot = False
             try:
-                self.deleteSelectedShapes()
+                callback()
             except Exception:
                 pass
 
+        def on_shape_delete_requested(shape: Shape) -> None:
+            if shape is not None:
+                _select_shapes_and_run([shape], self.deleteSelectedShapes)
+
+        def on_shapes_delete_requested(shapes: list[Shape]) -> None:
+            _select_shapes_and_run(shapes, self.deleteSelectedShapes)
+
         def on_shapes_switch_requested(shapes: list[Shape]) -> None:
             shape_list = [s for s in (shapes or []) if s is not None]
-            if len(shape_list) != 2:
-                return
-            try:
-                self._noSelectionSlot = True
-                self.canvas.selectShapes(shape_list)
-                selected_ids = {id(s) for s in shape_list}
-                with QtCore.QSignalBlocker(self.labelList):
-                    for idx in range(self.labelList.count()):
-                        it = self.labelList.item(idx)
-                        try:
-                            shape = (
-                                it.shape()
-                                if isinstance(it, AnnolidLabelListItem)
-                                else None
-                            )
-                            it.setSelected(
-                                shape is not None and id(shape) in selected_ids
-                            )
-                        except Exception:
-                            continue
-            finally:
-                self._noSelectionSlot = False
-            try:
-                self.switchSelectedShapeLabels()
-            except Exception:
-                pass
+            if len(shape_list) == 2:
+                _select_shapes_and_run(shape_list, self.switchSelectedShapeLabels)
+
+        def on_shape_edit_label_requested(shape: Shape) -> None:
+            if shape is not None:
+                _select_shapes_and_run([shape], self.editLabel)
+
+        def on_shapes_lock_toggle_requested(shapes: list[Shape]) -> None:
+            if hasattr(self, "toggleLockSelectedShapes"):
+                _select_shapes_and_run(shapes, self.toggleLockSelectedShapes)
+
+        def on_shapes_fit_requested(shapes: list[Shape]) -> None:
+            if hasattr(self, "fitSelection"):
+                _select_shapes_and_run(shapes, self.fitSelection)
+
+        def on_shapes_copy_requested(shapes: list[Shape]) -> None:
+            if hasattr(self, "copySelectedShapes"):
+                _select_shapes_and_run(shapes, self.copySelectedShapes)
+
+        def on_shapes_duplicate_requested(shapes: list[Shape]) -> None:
+            if hasattr(self, "duplicateSelectedShapes"):
+                _select_shapes_and_run(shapes, self.duplicateSelectedShapes)
+
+        def on_shapes_merge_requested(shapes: list[Shape]) -> None:
+            if hasattr(self, "mergeSelectedShapes"):
+                _select_shapes_and_run(shapes, self.mergeSelectedShapes)
 
         with warnings.catch_warnings():
             warnings.filterwarnings(
@@ -515,52 +500,69 @@ class LabelPanelMixin:
                 category=RuntimeWarning,
                 message=r".*Failed to disconnect.*",
             )
-            try:
-                self.labelList.shapeVisibilityChanged.disconnect()
-            except Exception:
-                pass
-            try:
-                self.labelList.shapeDeleteRequested.disconnect()
-            except Exception:
-                pass
-            try:
-                self.labelList.shapesDeleteRequested.disconnect()
-            except Exception:
-                pass
-            try:
-                self.labelList.shapesSwitchRequested.disconnect()
-            except Exception:
-                pass
-            try:
-                self.labelList.labelColorChangeRequested.disconnect()
-            except Exception:
-                pass
-            try:
-                self.labelList.labelColorResetRequested.disconnect()
-            except Exception:
-                pass
-            try:
-                self.uniqLabelList.labelColorChangeRequested.disconnect()
-            except Exception:
-                pass
-            try:
-                self.uniqLabelList.labelColorResetRequested.disconnect()
-            except Exception:
-                pass
+            for sig_name in (
+                "shapeVisibilityChanged",
+                "shapeDeleteRequested",
+                "shapesDeleteRequested",
+                "shapesSwitchRequested",
+                "shapeEditLabelRequested",
+                "shapesLockToggleRequested",
+                "shapesFitRequested",
+                "shapesCopyRequested",
+                "shapesDuplicateRequested",
+                "shapesMergeRequested",
+                "labelColorChangeRequested",
+                "labelColorResetRequested",
+            ):
+                sig = getattr(self.labelList, sig_name, None)
+                if sig is not None:
+                    try:
+                        sig.disconnect()
+                    except Exception:
+                        pass
+            for sig_name in ("labelColorChangeRequested", "labelColorResetRequested"):
+                sig = getattr(self.uniqLabelList, sig_name, None)
+                if sig is not None:
+                    try:
+                        sig.disconnect()
+                    except Exception:
+                        pass
 
-        try:
-            self.labelList.shapeVisibilityChanged.connect(on_shape_visibility_changed)
-            self.labelList.shapeDeleteRequested.connect(on_shape_delete_requested)
-            self.labelList.shapesDeleteRequested.connect(on_shapes_delete_requested)
-            self.labelList.shapesSwitchRequested.connect(on_shapes_switch_requested)
-            self.labelList.labelColorChangeRequested.connect(self._choose_label_color)
-            self.labelList.labelColorResetRequested.connect(self._reset_label_color)
-            self.uniqLabelList.labelColorChangeRequested.connect(
-                self._choose_label_color
-            )
-            self.uniqLabelList.labelColorResetRequested.connect(self._reset_label_color)
-        except Exception:
-            pass
+        signal_bindings = (
+            (self.labelList, "shapeVisibilityChanged", on_shape_visibility_changed),
+            (self.labelList, "shapeDeleteRequested", on_shape_delete_requested),
+            (self.labelList, "shapesDeleteRequested", on_shapes_delete_requested),
+            (self.labelList, "shapesSwitchRequested", on_shapes_switch_requested),
+            (self.labelList, "shapeEditLabelRequested", on_shape_edit_label_requested),
+            (
+                self.labelList,
+                "shapesLockToggleRequested",
+                on_shapes_lock_toggle_requested,
+            ),
+            (self.labelList, "shapesFitRequested", on_shapes_fit_requested),
+            (self.labelList, "shapesCopyRequested", on_shapes_copy_requested),
+            (
+                self.labelList,
+                "shapesDuplicateRequested",
+                on_shapes_duplicate_requested,
+            ),
+            (self.labelList, "shapesMergeRequested", on_shapes_merge_requested),
+            (self.labelList, "labelColorChangeRequested", self._choose_label_color),
+            (self.labelList, "labelColorResetRequested", self._reset_label_color),
+            (
+                self.uniqLabelList,
+                "labelColorChangeRequested",
+                self._choose_label_color,
+            ),
+            (self.uniqLabelList, "labelColorResetRequested", self._reset_label_color),
+        )
+        for widget, sig_name, handler in signal_bindings:
+            sig = getattr(widget, sig_name, None)
+            if sig is not None:
+                try:
+                    sig.connect(handler)
+                except Exception:
+                    pass
 
         if not getattr(self, "_label_list_shortcuts_setup", False):
             self._label_list_shortcuts_setup = True
@@ -755,19 +757,30 @@ class LabelPanelMixin:
         item.setText(f"{base_text} {marker}")
         item.setForeground(QtGui.QBrush(QtGui.QColor(r, g, b)))
 
+    @staticmethod
+    def _format_label_list_entry(shape: Shape) -> tuple[str, str]:
+        base_text = (
+            str(shape.label)
+            if shape.group_id is None
+            else "{} ({})".format(shape.label, shape.group_id)
+        )
+        is_locked = (
+            bool(shape.is_locked())
+            if hasattr(shape, "is_locked")
+            else bool(getattr(shape, "locked", False))
+        )
+        if is_locked:
+            base_text = f"{base_text} [Locked]"
+        marker = "●"
+        if str(getattr(shape, "shape_type", "") or "").lower() == "point":
+            visibility = keypoint_visibility_from_shape_object(shape)
+            marker = "○" if visibility == int(KeypointVisibility.OCCLUDED) else "●"
+        return base_text, marker
+
     def addLabel(self, shape, *, rebuild_unique: bool = True):
-        def marker_for_shape(shape_obj: Shape) -> str:
-            if str(getattr(shape_obj, "shape_type", "") or "").lower() != "point":
-                return "●"
-            visibility = keypoint_visibility_from_shape_object(shape_obj)
-            return "○" if visibility == int(KeypointVisibility.OCCLUDED) else "●"
+        base_text, marker = self._format_label_list_entry(shape)
 
-        if shape.group_id is None:
-            text = str(shape.label)
-        else:
-            text = "{} ({})".format(shape.label, shape.group_id)
-
-        label_list_item = AnnolidLabelListItem(text, shape)
+        label_list_item = AnnolidLabelListItem(base_text, shape)
         try:
             visible = bool(getattr(shape, "visible", True))
             role = getattr(
@@ -792,8 +805,8 @@ class LabelPanelMixin:
         rgb = self._update_shape_color(shape)
         self._set_label_list_item_text(
             label_list_item,
-            base_text=text,
-            marker=marker_for_shape(shape),
+            base_text=base_text,
+            marker=marker,
             rgb=rgb,
         )
         if rebuild_unique:
@@ -884,12 +897,29 @@ class LabelPanelMixin:
         shape = item.shape()
         if shape is None:
             return
+        is_locked = (
+            bool(shape.is_locked())
+            if hasattr(shape, "is_locked")
+            else bool(getattr(shape, "locked", False))
+        )
+        if is_locked:
+            try:
+                self.statusBar().showMessage(
+                    self.tr(
+                        "Shape is locked. Unlock it (Ctrl+Shift+L) before editing."
+                    ),
+                    3000,
+                )
+            except Exception:
+                pass
+            return
 
-        shape_flags = shape.flags or {}
-        safe_flags = {k: bool(v) for k, v in shape_flags.items()}
+        raw_flags = dict(shape.flags or {})
+        bool_flags = {k: v for k, v in raw_flags.items() if isinstance(v, bool)}
+        non_bool_meta = {k: v for k, v in raw_flags.items() if not isinstance(v, bool)}
         text, flags, group_id, description = self.labelDialog.popUp(
             text=str(shape.label),
-            flags=safe_flags,
+            flags=bool_flags,
             group_id=shape.group_id,
             description=shape.description,
         )
@@ -904,28 +934,43 @@ class LabelPanelMixin:
             )
             return
 
+        merged_flags = dict(flags or {})
+        zone_meta_keys = {
+            "semantic_type",
+            "shape_category",
+            "zone_kind",
+            "zone_label",
+        }
+        is_zone = bool(merged_flags.get("zone"))
+        for key, value in non_bool_meta.items():
+            if not is_zone and key in zone_meta_keys:
+                continue
+            if (
+                key == "zone_kind"
+                and value
+                and merged_flags.get("zone_kind") == "custom"
+            ):
+                merged_flags[key] = value
+            else:
+                merged_flags.setdefault(key, value)
+
         shape.label = text
-        shape.flags = flags
+        shape.flags = merged_flags
         shape.group_id = group_id
         shape.description = description
+        self.labelDialog.addLabelHistory(str(text))
+        if getattr(self, "canvas", None) is not None:
+            self.canvas.storeShapes()
 
         rgb = self._update_shape_color(shape)
-        base_text = (
-            str(shape.label)
-            if shape.group_id is None
-            else "{} ({})".format(shape.label, shape.group_id)
-        )
-        marker = "●"
-        if str(getattr(shape, "shape_type", "") or "").lower() == "point":
-            visibility = keypoint_visibility_from_shape_object(shape)
-            marker = "○" if visibility == int(KeypointVisibility.OCCLUDED) else "●"
-
+        base_text, marker = self._format_label_list_entry(shape)
         self._set_label_list_item_text(
             item,
             base_text=base_text,
             marker=marker,
             rgb=rgb,
         )
+        self.canvas.update()
         self.setDirty()
         self._rebuild_unique_label_list()
 
@@ -954,15 +999,7 @@ class LabelPanelMixin:
             if shape is None or id(shape) not in target_ids:
                 continue
             rgb = self._update_shape_color(shape)
-            base_text = (
-                str(shape.label)
-                if shape.group_id is None
-                else "{} ({})".format(shape.label, shape.group_id)
-            )
-            marker = "●"
-            if str(getattr(shape, "shape_type", "") or "").lower() == "point":
-                visibility = keypoint_visibility_from_shape_object(shape)
-                marker = "○" if visibility == int(KeypointVisibility.OCCLUDED) else "●"
+            base_text, marker = self._format_label_list_entry(shape)
             self._set_label_list_item_text(
                 item,
                 base_text=base_text,
@@ -975,10 +1012,11 @@ class LabelPanelMixin:
             s
             for s in self._selected_shapes_for_keypoint_visibility()
             if str(getattr(s, "shape_type", "") or "").lower() == "point"
+            and not (s.is_locked() if hasattr(s, "is_locked") else False)
         ]
         if not shapes:
             self.statusBar().showMessage(
-                "Select one or more keypoint (point) shapes first."
+                "Select one or more unlocked keypoint (point) shapes first."
             )
             return
 
@@ -986,6 +1024,8 @@ class LabelPanelMixin:
         for shape in shapes:
             set_keypoint_visibility_on_shape_object(shape, int(target))
 
+        if getattr(self, "canvas", None) is not None:
+            self.canvas.storeShapes()
         self._refresh_label_list_items_for_shapes(shapes)
         self.canvas.update()
         self.setDirty()
@@ -995,10 +1035,11 @@ class LabelPanelMixin:
             s
             for s in self._selected_shapes_for_keypoint_visibility()
             if str(getattr(s, "shape_type", "") or "").lower() == "point"
+            and not (s.is_locked() if hasattr(s, "is_locked") else False)
         ]
         if not shapes:
             self.statusBar().showMessage(
-                "Select one or more keypoint (point) shapes first."
+                "Select one or more unlocked keypoint (point) shapes first."
             )
             return
 
@@ -1011,6 +1052,8 @@ class LabelPanelMixin:
             )
             set_keypoint_visibility_on_shape_object(shape, int(target))
 
+        if getattr(self, "canvas", None) is not None:
+            self.canvas.storeShapes()
         self._refresh_label_list_items_for_shapes(shapes)
         self.canvas.update()
         self.setDirty()

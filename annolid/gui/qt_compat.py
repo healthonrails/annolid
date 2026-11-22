@@ -25,6 +25,41 @@ def painter_render_hint(name: str) -> Any:
     return _qt_enum(QtGui.QPainter, "RenderHint", name)
 
 
+def event_pos_f(event: Any) -> QtCore.QPointF:
+    """Return event position as ``QPointF`` across Qt5 (``localPos``/``posF``) and Qt6 (``position``)."""
+    position_fn = getattr(event, "position", None)
+    if callable(position_fn):
+        return QtCore.QPointF(position_fn())
+    local_pos_fn = getattr(event, "localPos", None)
+    if callable(local_pos_fn):
+        return QtCore.QPointF(local_pos_fn())
+    pos_f_fn = getattr(event, "posF", None)
+    if callable(pos_f_fn):
+        return QtCore.QPointF(pos_f_fn())
+    pos_fn = getattr(event, "pos", None)
+    if callable(pos_fn):
+        return QtCore.QPointF(pos_fn())
+    raise AttributeError(f"Unsupported Qt event type for position: {type(event)!r}")
+
+
+def event_pos_i(event: Any) -> QtCore.QPoint:
+    """Return integer widget position as ``QPoint`` across Qt5 and Qt6."""
+    return event_pos_f(event).toPoint()
+
+
+def event_global_pos_i(event: Any) -> QtCore.QPoint:
+    """Return integer global position as ``QPoint`` across Qt5 and Qt6."""
+    global_position_fn = getattr(event, "globalPosition", None)
+    if callable(global_position_fn):
+        return global_position_fn().toPoint()
+    global_pos_fn = getattr(event, "globalPos", None)
+    if callable(global_pos_fn):
+        return QtCore.QPoint(global_pos_fn())
+    raise AttributeError(
+        f"Unsupported Qt event type for global position: {type(event)!r}"
+    )
+
+
 def normalize_orientation(value: Any) -> Any:
     enum_value = getattr(value, "value", value)
     enum_name = getattr(value, "name", None)

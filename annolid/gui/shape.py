@@ -109,6 +109,7 @@ class Shape(object):
     point_type = P_ROUND
     point_size = 10
     scale = 1.0
+    show_label_names = True
 
     def __init__(
         self,
@@ -120,6 +121,7 @@ class Shape(object):
         description=None,
         mask=None,
         visible=True,
+        locked=False,
     ):
         self.label = label
         self.group_id = group_id
@@ -138,6 +140,8 @@ class Shape(object):
         self.other_data = {}
         self.mask = mask
         self.visible = visible
+        self.locked = bool(locked)
+        self._mask_paint_cache = None
 
         self._highlightIndex = None
         self._highlightMode = self.NEAR_VERTEX
@@ -154,18 +158,29 @@ class Shape(object):
             # is used for drawing the pending line a different color.
             self.line_color = line_color
 
+    def is_locked(self) -> bool:
+        """Return True if this shape is locked against geometry/label mutation."""
+        if bool(getattr(self, "locked", False)):
+            return True
+        other = getattr(self, "other_data", None)
+        if isinstance(other, dict) and bool(other.get("overlay_locked", False)):
+            return True
+        return False
+
     def setShapeRefined(self, shape_type, points, point_labels, mask=None):
         self._shape_raw = (self.shape_type, self.points, self.point_labels)
         self.shape_type = shape_type
         self.points = points
         self.point_labels = point_labels
         self.mask = mask
+        self._mask_paint_cache = None
 
     def restoreShapeRaw(self):
         if self._shape_raw is None:
             return
         self.shape_type, self.points, self.point_labels = self._shape_raw
         self._shape_raw = None
+        self._mask_paint_cache = None
 
     @property
     def shape_type(self):
@@ -178,6 +193,7 @@ class Shape(object):
         if value not in [
             "polygon",
             "rectangle",
+            "oriented_rectangle",
             "point",
             "line",
             "circle",
@@ -274,11 +290,14 @@ class Shape(object):
                 len(self.points),
             )
             return
+        if i < 0 or i >= len(self.points):
+            return
         self.points.pop(i)
-        self.point_labels.pop(i)
-        if self.shared_vertex_ids:
+        if i < len(self.point_labels):
+            self.point_labels.pop(i)
+        if i < len(self.shared_vertex_ids):
             self.shared_vertex_ids.pop(i)
-        if self.shared_edge_ids:
+        if i < len(self.shared_edge_ids):
             self.shared_edge_ids.pop(i)
 
     def isClosed(self):
@@ -300,6 +319,54 @@ class Shape(object):
         x2, y2 = pt2.x(), pt2.y()
         return QtCore.QRectF(x1, y1, x2 - x1, y2 - y1)
 
+    def _get_cached_mask_render(self, fill_rgba: tuple[int, int, int, int]):
+        """Build or reuse cached (QImage, contour_arrays) for a mask shape."""
+        mask_arr = np.asarray(self.mask)
+        if mask_arr.ndim > 2:
+            mask_arr = mask_arr[..., 0]
+        mask_bool = mask_arr.astype(bool, copy=False)
+        h, w = mask_bool.shape[:2]
+        if h <= 0 or w <= 0:
+            return None, []
+        cache = getattr(self, "_mask_paint_cache", None)
+        if (
+            cache is not None
+            and cache.get("mask_ref") is self.mask
+            and cache.get("shape") == (h, w)
+            and cache.get("fill_rgba") == fill_rgba
+        ):
+            return cache["qimage"], cache["contours"]
+
+        rgba = np.zeros((h, w, 4), dtype=np.uint8)
+        rgba[mask_bool] = fill_rgba
+        rgba = np.ascontiguousarray(rgba)
+        qimage = QtGui.QImage(
+            rgba.data,
+            w,
+            h,
+            w * 4,
+            QtGui.QImage.Format_RGBA8888,
+        ).copy()
+
+        # Reuse cached contours if only fill_rgba (hover/selection) changed.
+        if (
+            cache is not None
+            and cache.get("mask_ref") is self.mask
+            and cache.get("shape") == (h, w)
+        ):
+            contours = cache["contours"]
+        else:
+            contours = _find_mask_contours(mask_bool)
+
+        self._mask_paint_cache = {
+            "mask_ref": self.mask,
+            "shape": (h, w),
+            "fill_rgba": fill_rgba,
+            "qimage": qimage,
+            "contours": contours,
+        }
+        return qimage, contours
+
     def paint(self, painter, image_width=None, image_height=None):
         if not _QT_AVAILABLE:
             return
@@ -310,79 +377,86 @@ class Shape(object):
 
         color = self.select_line_color if self.selected else self.line_color
         pen = QtGui.QPen(color)
-        # Try using integer sizes for smoother drawing(?)
-        pen.setWidth(max(1, int(round(2.0 / self.scale))))
+        # Keep stroke width constant in screen pixels across zoom and HiDPI scales.
+        pen.setWidthF(2.0 / max(float(self.scale or 1.0), 1e-6))
+        if self.is_locked():
+            pen.setStyle(Qt.DashLine)
         painter.setPen(pen)
 
-        if self.mask is not None:
-            image_to_draw = np.zeros(self.mask.shape + (4,), dtype=np.uint8)
-            fill_color = (
-                self.select_fill_color.getRgb()
-                if self.selected
-                else self.fill_color.getRgb()
+        if self.mask is not None and self.points:
+            fill_qcolor = self.select_fill_color if self.selected else self.fill_color
+            fill_rgba = (
+                tuple(fill_qcolor.getRgb())
+                if fill_qcolor is not None
+                else (0, 255, 0, 128)
             )
-            image_to_draw[self.mask] = fill_color
-            qimage = QtGui.QImage.fromData(utils.img_arr_to_data(image_to_draw))
-            painter.drawImage(
-                int(round(self.points[0].x())),
-                int(round(self.points[0].y())),
-                qimage,
-            )
+            qimage, contours = self._get_cached_mask_render(fill_rgba)
+            origin_x = float(self.points[0].x())
+            origin_y = float(self.points[0].y())
+            if qimage is not None and not qimage.isNull():
+                painter.drawImage(
+                    int(round(origin_x)),
+                    int(round(origin_y)),
+                    qimage,
+                )
 
-            line_path = QtGui.QPainterPath()
-            contours = _find_mask_contours(self.mask)
-            for contour in contours:
-                contour = contour + [self.points[0].y(), self.points[0].x()]
-                line_path.moveTo(contour[0, 1], contour[0, 0])
-                for point in contour[1:]:
-                    line_path.lineTo(point[1], point[0])
-            painter.drawPath(line_path)
+            if contours:
+                line_path = QtGui.QPainterPath()
+                for contour in contours:
+                    if len(contour) < 2:
+                        continue
+                    shifted = contour + [origin_y, origin_x]
+                    line_path.moveTo(float(shifted[0, 1]), float(shifted[0, 0]))
+                    for point in shifted[1:]:
+                        line_path.lineTo(float(point[1]), float(point[0]))
+                painter.drawPath(line_path)
 
-        if self.points:
+        if self.points and self.shape_type != "mask":
             # reset the queue used to render per-vertex styling in this paint pass
             self._queued_vertices = []
-            # Do not draw points if it is a mask shape
-            if self.shape_type == "mask":
-                return
             line_path = QtGui.QPainterPath()
-            vrtx_path = QtGui.QPainterPath()
-            negative_vrtx_path = QtGui.QPainterPath()
-            if self.shape_type in ["rectangle"]:
-                assert len(self.points) in [1, 2]
+            dummy_path = QtGui.QPainterPath()
+            if self.shape_type == "rectangle":
                 if len(self.points) == 2:
                     rectangle = self.getRectFromLine(*self.points)
                     line_path.addRect(rectangle)
-                if self.shape_type == "rectangle":
-                    for i in range(len(self.points)):
-                        self.drawVertex(vrtx_path, i)
+                for i in range(len(self.points)):
+                    self.drawVertex(dummy_path, i)
+            elif self.shape_type == "oriented_rectangle":
+                line_path.moveTo(self.points[0])
+                for i, p in enumerate(self.points):
+                    line_path.lineTo(p)
+                    self.drawVertex(dummy_path, i)
+                if len(self.points) >= 3 and (self.isClosed() or len(self.points) == 4):
+                    line_path.lineTo(self.points[0])
             elif self.shape_type == "circle":
-                assert len(self.points) in [1, 2]
                 if len(self.points) == 2:
                     rectangle = self.getCircleRectFromLine(self.points)
-                    line_path.addEllipse(rectangle)
+                    if rectangle is not None:
+                        line_path.addEllipse(rectangle)
                 for i in range(len(self.points)):
-                    self.drawVertex(vrtx_path, i)
+                    self.drawVertex(dummy_path, i)
             elif self.shape_type == "linestrip":
                 line_path.moveTo(self.points[0])
                 for i, p in enumerate(self.points):
                     line_path.lineTo(p)
-                    self.drawVertex(vrtx_path, i)
+                    self.drawVertex(dummy_path, i)
             elif self.shape_type == "points":
-                assert len(self.points) == len(self.point_labels)
+                point_labels = (
+                    self.point_labels
+                    if len(self.point_labels) == len(self.points)
+                    else [1] * len(self.points)
+                )
                 for i, (_point, point_label) in enumerate(
-                    zip(self.points, self.point_labels)
+                    zip(self.points, point_labels)
                 ):
-                    if point_label == 1:
-                        self.drawVertex(vrtx_path, i)
-                    else:
-                        self.drawVertex(negative_vrtx_path, i, is_negative=True)
+                    self.drawVertex(
+                        dummy_path,
+                        i,
+                        is_negative=(point_label != 1),
+                    )
             else:
                 line_path.moveTo(self.points[0])
-                # Uncommenting the following line will draw 2 paths
-                # for the 1st vertex, and make it non-filled, which
-                # may be desirable.
-                # self.drawVertex(vrtx_path, 0)
-
                 is_keypoint_occluded = (
                     self.shape_type == "point"
                     and keypoint_visibility_from_shape_object(self)
@@ -391,7 +465,7 @@ class Shape(object):
                 for i, p in enumerate(self.points):
                     line_path.lineTo(p)
                     self.drawVertex(
-                        vrtx_path,
+                        dummy_path,
                         i,
                         is_occluded=(is_keypoint_occluded and i == 0),
                     )
@@ -405,59 +479,122 @@ class Shape(object):
 
             self._render_queued_vertices(painter)
 
-        # Draw the label near the shape
-        if self.label and (
-            self.shape_type == "polygon" or self.shape_type == "rectangle"
+        # Draw the label badge near the shape when enabled.
+        if (
+            self.label
+            and bool(getattr(self, "show_label_names", True))
+            and self.shape_type
+            in {"polygon", "rectangle", "oriented_rectangle", "circle", "mask"}
         ):
             self._draw_label(painter, image_width, image_height)
 
+    def _format_canvas_label_text(self) -> str:
+        text = str(self.label or "")
+        if self.group_id is not None:
+            text = f"{text} ({self.group_id})"
+        if self.is_locked():
+            text = f"{text} [Locked]"
+        return text
+
     def _draw_label(self, painter, image_width, image_height):
-        # Get the bounding box of the shape
         bounding_rect = self.boundingRect()
-
-        # Check if bounding_rect is valid before using it
         if (
-            bounding_rect is not None
-            and bounding_rect.isValid()
-            and self.should_draw_label(image_width, image_height)
+            bounding_rect is None
+            or not bounding_rect.isValid()
+            or not self.should_draw_label(image_width, image_height)
         ):
-            # Calculate label position (top-left corner of bounding box)
-            label_pos = bounding_rect.topLeft()
+            return
 
-            # Set label style
-            shape_color = self.line_color if self.line_color else Qt.black
-            painter.setPen(shape_color)
+        label_text = self._format_canvas_label_text()
+        if not label_text:
+            return
 
-            # Auto-adjust font size based on shape size
-            font_size = int(
-                max(20, min(bounding_rect.width(), bounding_rect.height()) // 5)
+        painter.save()
+        try:
+            # Draw in constant logical screen pixels regardless of canvas zoom or DPI.
+            anchor_screen = painter.transform().map(bounding_rect.topLeft())
+            painter.resetTransform()
+
+            font = QtGui.QFont()
+            font.setPixelSize(11)
+            font.setBold(True)
+            painter.setFont(font)
+            metrics = QtGui.QFontMetricsF(font)
+            text_w = max(
+                float(metrics.horizontalAdvance(label_text)),
+                float(metrics.boundingRect(label_text).width()),
             )
-            painter.setFont(QtGui.QFont("Arial", font_size, QtGui.QFont.Bold))
+            text_h = max(float(metrics.height()), 12.0)
+            pad_x = 6.0
+            pad_y = 2.0
+            pill_w = text_w + 2.0 * pad_x
+            pill_h = text_h + 2.0 * pad_y
 
-            # Draw label text without background box
-            painter.drawText(label_pos, self.label)
+            x = float(anchor_screen.x())
+            y = float(anchor_screen.y()) - pill_h - 3.0
+            if y < 2.0:
+                # Shape touches top edge: tuck badge cleanly inside its top-left.
+                y = max(2.0, float(anchor_screen.y()) + 3.0)
+
+            device = painter.device()
+            if isinstance(device, (QtGui.QImage, QtGui.QPixmap)) and hasattr(
+                device, "devicePixelRatioF"
+            ):
+                try:
+                    dpr = max(1.0, float(device.devicePixelRatioF()))
+                except Exception:
+                    dpr = 1.0
+                vp_w = float(painter.viewport().width()) / dpr
+            else:
+                vp_w = float(painter.viewport().width())
+            if vp_w > pill_w + 4.0:
+                x = max(2.0, min(x, vp_w - pill_w - 2.0))
+            else:
+                x = max(2.0, x)
+
+            pill = QtCore.QRectF(x, y, pill_w, pill_h)
+
+            accent = (
+                QtGui.QColor(self.line_color)
+                if self.line_color is not None
+                else QtGui.QColor(0, 200, 0)
+            )
+            accent.setAlpha(230)
+            bg = QtGui.QColor(18, 22, 28, 195)
+            painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+            painter.setBrush(QtGui.QBrush(bg))
+            painter.setPen(QtGui.QPen(accent, 1.0))
+            painter.drawRoundedRect(pill, 4.0, 4.0)
+
+            painter.setPen(QtGui.QColor(255, 255, 255, 245))
+            painter.drawText(
+                pill.adjusted(pad_x, 0.0, -pad_x, 0.0),
+                Qt.AlignLeft | Qt.AlignVCenter,
+                label_text,
+            )
+        finally:
+            painter.restore()
 
     def should_draw_label(self, image_width, image_height):
         """Determine if the shape is large enough to draw its label."""
+        if not bool(getattr(self, "show_label_names", True)):
+            return False
         if image_width is None or image_height is None:
-            return False  # No image size, don't draw label
-
+            return False
         if image_width == 0 or image_height == 0:
-            return False  # Avoid division by zero.
+            return False
 
         image_area = image_width * image_height
         if image_area == 0:
-            return False  # avoid division by zero.
+            return False
 
         shape_rect = self.boundingRect()
         if shape_rect is None:
-            return False  # no shape, don't draw label
+            return False
+        if self.selected or self.is_locked():
+            return True
         shape_area = shape_rect.width() * shape_rect.height()
-
-        # Define a threshold (adjust as needed) for the minimum shape size relative to the image
-        # Example: 2% of the image area. Adjust this value.
-        min_area_percentage = 0.02
-        min_area = image_area * min_area_percentage
+        min_area = image_area * 0.01
         return shape_area > min_area
 
     def drawVertex(self, path, i, is_negative=False, is_occluded=False):
@@ -775,23 +912,18 @@ class Shape(object):
         if not self.visible or is_collapsed_polygon(self):
             return False
         if self.mask is not None:
-            if not self.points:
+            if not self.points or self.mask.size == 0:
                 return False
-            y = np.clip(
-                int(round(point.y() - self.points[0].y())),
-                0,
-                self.mask.shape[0] - 1,
-            )
-            x = np.clip(
-                int(round(point.x() - self.points[0].x())),
-                0,
-                self.mask.shape[1] - 1,
-            )
-            return self.mask[y, x]
+            y = int(round(point.y() - self.points[0].y()))
+            x = int(round(point.x() - self.points[0].x()))
+            if y < 0 or y >= self.mask.shape[0] or x < 0 or x >= self.mask.shape[1]:
+                return False
+            return bool(self.mask[y, x])
 
-        if not self.makePath():
+        path = self.makePath()
+        if not path:
             return False
-        return self.makePath().contains(point)
+        return path.contains(point)
 
     def getCircleRectFromLine(self, line):
         """Computes parameters to draw with `QPainterPath::addEllipse`"""
@@ -811,13 +943,30 @@ class Shape(object):
             if len(self.points) == 2:
                 rectangle = self.getRectFromLine(*self.points)
                 path.addRect(rectangle)
+            elif self.shape_type == "mask" and self.mask is not None and self.points:
+                h, w = self.mask.shape[:2]
+                path.addRect(
+                    QtCore.QRectF(
+                        self.points[0].x(), self.points[0].y(), float(w), float(h)
+                    )
+                )
             return path  # Return path even if it's empty
         elif self.shape_type == "circle":
             path = QtGui.QPainterPath()
             if len(self.points) == 2:
                 rectangle = self.getCircleRectFromLine(self.points)
-                path.addEllipse(rectangle)
+                if rectangle is not None:
+                    path.addEllipse(rectangle)
             return path  # Return path even if it's empty
+        elif self.shape_type == "oriented_rectangle":
+            if not self.points:
+                return None
+            path = QtGui.QPainterPath(self.points[0])
+            for p in self.points[1:]:
+                path.lineTo(p)
+            if len(self.points) >= 3:
+                path.closeSubpath()
+            return path
         else:
             if not self.points:
                 return None  # Return None if no points for other shape types
@@ -956,8 +1105,9 @@ class Shape(object):
         )
         seed.points = [QtCore.QPointF(point) for point in edge_points]
         seed.point_labels = [1, 1]
-        start_vertex_id = self.shared_vertex_id(edge_index - 1)
-        end_vertex_id = self.shared_vertex_id(edge_index)
+        prev_index = (int(edge_index) - 1) % len(self.points)
+        start_vertex_id = self.shared_vertex_id(prev_index)
+        end_vertex_id = self.shared_vertex_id(int(edge_index))
         if start_vertex_id or end_vertex_id:
             seed.shared_vertex_ids = [
                 str(start_vertex_id or ""),
@@ -976,6 +1126,17 @@ class Shape(object):
 
     def highlightClear(self):
         self._highlightIndex = None
+
+    def __deepcopy__(self, memo):
+        cls = self.__class__
+        result = cls.__new__(cls)
+        memo[id(self)] = result
+        for k, v in self.__dict__.items():
+            if k == "_mask_paint_cache":
+                setattr(result, k, None)
+            else:
+                setattr(result, k, copy.deepcopy(v, memo))
+        return result
 
     def copy(self):
         return copy.deepcopy(self)
@@ -1047,6 +1208,8 @@ class Shape(object):
         Returns:
             bool: True if the shapes are equal or similar, False otherwise.
         """
+        if self is other:
+            return True
         # Check if the other object is None
         if other is None:
             return False
@@ -1214,15 +1377,19 @@ class MaskShape(MultipoinstShape):
         kernel = np.ones([5, 5], dtype=np.uint8)
         bound = mask - cv2.erode(mask, kernel, iterations=1)
         self.rgba_mask[bound > 128] = self.boundary_color
+        self.rgba_mask = np.ascontiguousarray(self.rgba_mask)
         qimage = QtGui.QImage(
             self.rgba_mask.data,
             self.rgba_mask.shape[1],
             self.rgba_mask.shape[0],
+            self.rgba_mask.shape[1] * 4,
             QtGui.QImage.Format_RGBA8888,
-        )
+        ).copy()
         return qimage
 
     def paint(self, painter, image_width=None, image_height=None):
+        if not self.visible:
+            return
         qimage = self.getQImageMask()
         if qimage is not None:
             painter.drawImage(QtCore.QPoint(0, 0), qimage)
@@ -1345,6 +1512,3 @@ class MaskShape(MultipoinstShape):
         self.points = shape.points
         shapes.append(shape)
         return shapes
-
-    def copy(self):
-        return copy.deepcopy(self)

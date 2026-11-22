@@ -324,12 +324,46 @@ def _rasterize_shape_patch(
     shape_type: Optional[str] = None,
     line_width: int = 10,
     point_size: int = 5,
+    mask: Any = None,
 ) -> Optional[tuple[np.ndarray, tuple[int, int, int, int]]]:
     height, width = int(img_shape[0]), int(img_shape[1])
     if height <= 0 or width <= 0:
         return None
 
-    resolved_type = shape_type or "polygon"
+    resolved_type = (shape_type or "polygon").lower()
+    if resolved_type == "mask" and mask is not None:
+        if isinstance(mask, (str, bytes)):
+            mask_arr = img_b64_to_arr(mask).astype(bool)
+        else:
+            mask_arr = np.asarray(mask)
+            if mask_arr.ndim > 2:
+                mask_arr = mask_arr[..., 0]
+            mask_arr = mask_arr.astype(bool)
+        if mask_arr.ndim != 2 or mask_arr.size == 0:
+            return None
+        x0 = 0
+        y0 = 0
+        if points:
+            xy_pts = _points_to_xy(points)
+            if xy_pts and math.isfinite(xy_pts[0][0]) and math.isfinite(xy_pts[0][1]):
+                x0 = int(round(xy_pts[0][0]))
+                y0 = int(round(xy_pts[0][1]))
+        mh, mw = mask_arr.shape[:2]
+        src_x0 = max(0, -x0)
+        src_y0 = max(0, -y0)
+        dst_x0 = max(0, x0)
+        dst_y0 = max(0, y0)
+        dst_x1 = min(width, x0 + mw)
+        dst_y1 = min(height, y0 + mh)
+        if dst_x1 <= dst_x0 or dst_y1 <= dst_y0:
+            return None
+        crop_w = dst_x1 - dst_x0
+        crop_h = dst_y1 - dst_y0
+        return (
+            mask_arr[src_y0 : src_y0 + crop_h, src_x0 : src_x0 + crop_w].copy(),
+            (dst_x0, dst_y0, dst_x1, dst_y1),
+        )
+
     xy = _points_to_xy(points)
     if not xy:
         return None
@@ -349,6 +383,13 @@ def _rasterize_shape_patch(
         (x1, y1), (x2, y2) = xy[0], xy[1]
         raw_x0, raw_y0 = min(x1, x2) - 2.0, min(y1, y2) - 2.0
         raw_x1, raw_y1 = max(x1, x2) + 2.0, max(y1, y2) + 2.0
+    elif resolved_type == "oriented_rectangle":
+        if len(xy) < 3:
+            return None
+        xs = [p[0] for p in xy]
+        ys = [p[1] for p in xy]
+        raw_x0, raw_y0 = min(xs) - 2.0, min(ys) - 2.0
+        raw_x1, raw_y1 = max(xs) + 2.0, max(ys) + 2.0
     elif resolved_type in {"line", "linestrip"}:
         if len(xy) < 2:
             return None
@@ -407,20 +448,22 @@ def shape_to_mask(
     shape_type: Optional[str] = None,
     line_width: int = 10,
     point_size: int = 5,
+    mask: Any = None,
 ) -> np.ndarray:
     height, width = int(img_shape[0]), int(img_shape[1])
-    mask = np.zeros((height, width), dtype=bool)
+    out_mask = np.zeros((height, width), dtype=bool)
     rasterized = _rasterize_shape_patch(
         img_shape,
         points,
         shape_type=shape_type,
         line_width=line_width,
         point_size=point_size,
+        mask=mask,
     )
     if rasterized is not None:
         patch_mask, (px0, py0, px1, py1) = rasterized
-        mask[py0:py1, px0:px1] = patch_mask
-    return mask
+        out_mask[py0:py1, px0:px1] = patch_mask
+    return out_mask
 
 
 def shapes_to_label(
@@ -436,8 +479,9 @@ def shapes_to_label(
     allowed_labels = set(label_name_list) if label_name_list is not None else None
 
     for shape in shapes:
-        points = shape.get("points")
-        if not points:
+        points = shape.get("points") or []
+        shape_mask = shape.get("mask")
+        if not points and shape_mask is None:
             continue
         label = str(shape.get("label", ""))
         if not label:
@@ -464,6 +508,7 @@ def shapes_to_label(
             img_shape,
             points,
             shape_type=shape.get("shape_type", "polygon"),
+            mask=shape_mask,
         )
         if rasterized is None:
             continue

@@ -72,11 +72,17 @@ canvas:
   double_click: close
   # The max number of edits we can undo
   num_backups: 10
+  # Allow placing/dragging vertices outside image boundaries (amodal annotations)
+  allow_points_outside_image: false
+  # Display shape label badges directly on canvas
+  show_label_names: true
   # show crosshair
   crosshair:
     polygon: false
     rectangle: true
+    oriented_rectangle: true
     circle: false
+    circle_3p: false
     line: false
     point: false
     linestrip: false
@@ -126,6 +132,8 @@ shortcuts:
   save: Ctrl+S
   save_as: Ctrl+Shift+S
   save_to: null
+  # Default migrated from legacy Ctrl+Shift+A (which conflicted with open_prev).
+  toggle_auto_save: Ctrl+Alt+S
   delete_file: Ctrl+Delete
 
   open_next: [D, Ctrl+Shift+D]
@@ -136,10 +144,13 @@ shortcuts:
   zoom_to_original: Ctrl+0
   fit_window: Ctrl+F
   fit_width: Ctrl+Shift+F
+  fit_selection: Ctrl+Shift+G
 
   create_polygon: Ctrl+N
   create_rectangle: Ctrl+R
+  create_oriented_rectangle: null
   create_circle: null
+  create_circle_3p: null
   create_line: null
   create_point: Ctrl+I
   create_linestrip: null
@@ -148,6 +159,8 @@ shortcuts:
   duplicate_polygon: Ctrl+D
   copy_polygon: Ctrl+C
   paste_polygon: Ctrl+V
+  select_all_shapes: Ctrl+A
+  lock_shape: Ctrl+Shift+L
   undo: Ctrl+Z
   undo_last_point: Ctrl+Z
   add_point_to_edge: Ctrl+Shift+P

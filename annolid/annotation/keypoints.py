@@ -7,7 +7,6 @@ import math
 from pathlib import Path
 
 from annolid.utils.annotation_compat import __version__ as LABELME_VERSION
-from annolid.utils.annotation_compat import utils as labelme_utils
 
 from annolid.gui.label_file import LabelFile
 from annolid.gui.shape import Shape
@@ -57,33 +56,14 @@ def _serialize_point(point):
 
 
 def format_shape(shape):
-    data = dict(getattr(shape, "other_data", {}) or {})
-    data.update(
-        {
-            "label": shape.label,
-            "points": [_serialize_point(pt) for pt in shape.points],
-            "group_id": shape.group_id,
-            "shape_type": shape.shape_type,
-            "flags": getattr(shape, "flags", {}) or {},
-            "visible": shape.visible,
-            "description": shape.description,
-        }
+    from annolid.annotation.shape_io import serialize_shape
+
+    return serialize_shape(
+        shape,
+        include_manual_tag=False,
+        include_point_labels=True,
+        sanitize_flags=True,
     )
-    if (
-        str(getattr(shape, "shape_type", "") or "").lower() == "mask"
-        and getattr(shape, "mask", None) is not None
-    ):
-        mask = shape.mask
-        if mask is not None:
-            mask = np.asarray(mask)
-            if mask.ndim == 2:
-                mask = mask.astype(bool)
-            else:
-                mask = mask[..., 0].astype(bool)
-            data["mask"] = labelme_utils.img_arr_to_b64(mask.astype(np.uint8))
-    if shape.point_labels:
-        data["point_labels"] = list(shape.point_labels)
-    return sanitize_labelme_shape_dict(data)
 
 
 def load_existing_json(filename):

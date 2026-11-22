@@ -5,7 +5,16 @@ from annolid.gui.large_image_modes import (
 
 
 def test_tile_native_create_modes_cover_supported_manual_tools() -> None:
-    for mode in ("point", "line", "linestrip", "polygon", "rectangle", "circle"):
+    for mode in (
+        "point",
+        "line",
+        "linestrip",
+        "polygon",
+        "rectangle",
+        "oriented_rectangle",
+        "circle",
+        "circle_3p",
+    ):
         assert is_tile_native_create_mode(mode) is True
 
     for mode in ("ai_polygon", "ai_mask", "grounding_sam", "polygonSAM", ""):

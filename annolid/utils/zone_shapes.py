@@ -12,22 +12,30 @@ def is_zone_shape_payload(shape: Mapping[str, Any] | None) -> bool:
     if not isinstance(flags, Mapping):
         flags = {}
 
-    semantic_type = str(flags.get("semantic_type") or "").strip().lower()
+    semantic_type = (
+        str(flags.get("semantic_type") or shape.get("semantic_type") or "")
+        .strip()
+        .lower()
+    )
     if semantic_type == "zone":
         return True
 
-    shape_category = str(flags.get("shape_category") or "").strip().lower()
+    shape_category = (
+        str(flags.get("shape_category") or shape.get("shape_category") or "")
+        .strip()
+        .lower()
+    )
     if shape_category == "zone":
         return True
 
     if bool(flags.get("zone")):
         return True
 
-    zone_kind = flags.get("zone_kind")
+    zone_kind = flags.get("zone_kind") or shape.get("zone_kind")
     if isinstance(zone_kind, str) and zone_kind.strip():
         return True
 
-    zone_label = flags.get("zone_label")
+    zone_label = flags.get("zone_label") or shape.get("zone_label")
     if isinstance(zone_label, str) and zone_label.strip():
         return True
 

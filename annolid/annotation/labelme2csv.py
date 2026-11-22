@@ -7,6 +7,7 @@ from pathlib import Path
 from tqdm import tqdm
 import argparse
 import cv2
+import numpy as np
 from annolid.utils.annotation_compat import shape_to_mask
 from annolid.utils.shapes import masks_to_bboxes, polygon_center
 from annolid.annotation.masks import binary_mask_to_coco_rle
@@ -652,6 +653,42 @@ def convert_json_to_csv(
                                     motion_index,
                                     timestamp_value,
                                     *_zone_occupancy_flags(zone_specs, x, y),
+                                ]
+                            )
+
+                elif shape_type == "mask" and shape.get("mask") is not None:
+                    mask = shape_to_mask(
+                        img_shape,
+                        points,
+                        shape_type="mask",
+                        mask=shape.get("mask"),
+                    )
+                    bboxs = masks_to_bboxes(mask[None, :, :])
+                    segmentation = binary_mask_to_coco_rle(mask)
+                    class_score = _shape_score(shape)
+                    tracking_id = _normalize_tracking_id(shape.get("group_id"))
+                    if len(bboxs) > 0:
+                        x1, y1, x2, y2 = bboxs[0]
+                        ys, xs = np.nonzero(mask)
+                        cx = float(np.mean(xs)) if len(xs) else float((x1 + x2) / 2.0)
+                        cy = float(np.mean(ys)) if len(ys) else float((y1 + y2) / 2.0)
+                        if csv_writer is not None:
+                            csv_writer.writerow(
+                                [
+                                    frame_number,
+                                    x1,
+                                    y1,
+                                    x2,
+                                    y2,
+                                    cx,
+                                    cy,
+                                    instance_name,
+                                    class_score,
+                                    segmentation,
+                                    tracking_id,
+                                    motion_index,
+                                    timestamp_value,
+                                    *_zone_occupancy_flags(zone_specs, cx, cy),
                                 ]
                             )
 

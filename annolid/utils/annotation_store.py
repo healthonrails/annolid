@@ -771,17 +771,17 @@ class AnnotationStore:
         try:
             with self.store_path.open("r", encoding="utf-8") as fh:
                 for raw_line in fh:
-                    if not frame_keys:
-                        break
                     if '"frame"' not in raw_line:
                         continue
-                    match = self._FRAME_PATTERN.search(raw_line)
-                    if not match:
-                        continue
-                    try:
-                        line_frame = int(match.group(1))
-                    except (TypeError, ValueError):
-                        continue
+                    line_frame = self._frame_number_from_raw_line(raw_line)
+                    if line_frame is None:
+                        match = self._FRAME_PATTERN.search(raw_line)
+                        if not match:
+                            continue
+                        try:
+                            line_frame = int(match.group(1))
+                        except (TypeError, ValueError):
+                            continue
                     if line_frame not in frame_keys:
                         continue
                     try:
@@ -791,8 +791,8 @@ class AnnotationStore:
                     explicit = self._explicit_frame_for_record(data)
                     if explicit != line_frame:
                         continue
+                    # Append-only store: keep the latest record for each frame.
                     results[line_frame] = data
-                    frame_keys.discard(line_frame)
         except OSError:
             return results
 

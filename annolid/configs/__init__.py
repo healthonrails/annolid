@@ -156,6 +156,49 @@ def _migrate_ai_default(config, config_from_yaml=None, config_from_args=None):
     return config
 
 
+def _shortcut_tokens(value) -> set[str]:
+    if not value:
+        return set()
+    if isinstance(value, (list, tuple, set)):
+        return {str(item).strip().lower() for item in value if str(item or "").strip()}
+    token = str(value).strip().lower()
+    return {token} if token else set()
+
+
+def _migrate_conflicting_shortcuts(config, config_from_args=None):
+    """De-conflict legacy ``toggle_auto_save`` when it collides with ``open_prev``.
+
+    Older ``~/.labelmerc`` files mapped both ``open_prev`` and ``toggle_auto_save``
+    to ``Ctrl+Shift+A``, causing Qt ambiguous-shortcut errors where neither fired.
+    Unless ``shortcuts.toggle_auto_save`` was explicitly overridden via CLI/args,
+    migrate the conflicting shortcut to ``Ctrl+Alt+S``.
+    """
+    if not isinstance(config, dict):
+        return config
+
+    if isinstance(config_from_args, dict):
+        arg_shortcuts = config_from_args.get("shortcuts")
+        if isinstance(arg_shortcuts, dict) and arg_shortcuts.get("toggle_auto_save"):
+            return config
+
+    shortcuts = config.get("shortcuts")
+    if not isinstance(shortcuts, dict):
+        return config
+
+    prev_tokens = _shortcut_tokens(shortcuts.get("open_prev"))
+    auto_tokens = _shortcut_tokens(shortcuts.get("toggle_auto_save"))
+    if prev_tokens and auto_tokens and not prev_tokens.isdisjoint(auto_tokens):
+        old_val = shortcuts.get("toggle_auto_save")
+        shortcuts["toggle_auto_save"] = "Ctrl+Alt+S"
+        config["shortcuts"] = shortcuts
+        logger.info(
+            "Migrated conflicting shortcut 'toggle_auto_save' from %r "
+            "(conflicts with 'open_prev') to 'Ctrl+Alt+S'.",
+            old_val,
+        )
+    return config
+
+
 # -----------------------------------------------------------------------------
 
 
@@ -213,4 +256,5 @@ def get_config(config_file_or_yaml=None, config_from_args=None):
 
     config = _migrate_ai_default(config, config_from_yaml, config_from_args)
     config = _coerce_ai_default_if_unknown(config)
+    config = _migrate_conflicting_shortcuts(config, config_from_args=config_from_args)
     return config

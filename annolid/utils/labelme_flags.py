@@ -103,9 +103,12 @@ def sanitize_labelme_shape_dict(shape_data: Any) -> Any:
         "shape_type",
         "flags",
         "visible",
+        "locked",
         "description",
         "mask",
         "point_labels",
+        "shared_vertex_ids",
+        "shared_edge_ids",
     }
     for key, value in moved_meta.items():
         if key in reserved_keys:

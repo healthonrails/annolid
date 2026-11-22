@@ -25,6 +25,11 @@ class CanvasWorkflowMixin:
 
     def image_to_canvas(self, qimage, filename, frame_number):
         render_started_ts = time.perf_counter()
+        prev_shapes = (
+            [shape.copy() for shape in (getattr(self.canvas, "shapes", None) or [])]
+            if self._config.get("keep_prev")
+            else []
+        )
         self.resetState()
         self.canvas.setEnabled(True)
         self._active_image_view = "canvas"
@@ -41,15 +46,9 @@ class CanvasWorkflowMixin:
         sync_frame_jump = getattr(self, "_sync_frame_jump_input", None)
         if callable(sync_frame_jump):
             sync_frame_jump(int(frame_number))
-        if self._config["keep_prev"]:
-            prev_shapes = self.canvas.shapes
         pixmap = QtGui.QPixmap.fromImage(qimage)
         self.canvas.loadPixmap(pixmap)
-        if self._config["keep_prev"] and self.noShapes():
-            self.loadShapes(prev_shapes, replace=False)
-            self.setDirty()
-        else:
-            self.setClean()
+        self.setClean()
 
         video_file_key_for_zoom = (
             str(self.video_file) if self.video_file else str(self.filename)
@@ -80,15 +79,37 @@ class CanvasWorkflowMixin:
                     orientation, self.scroll_values[orientation][self.filename]
                 )
 
+        def _apply_keep_prev_if_needed(label_loaded: bool) -> None:
+            if not (self._config.get("keep_prev") and prev_shapes and not label_loaded):
+                return
+            if self.noShapes():
+                self.loadShapes(prev_shapes, replace=False)
+                self.setDirty()
+                return
+            # Avoid duplicating persistent zones already placed by loadPredictShapes.
+            existing_labels = {
+                str(getattr(s, "label", "") or "")
+                for s in (getattr(self.canvas, "shapes", None) or [])
+            }
+            carry = [
+                s
+                for s in prev_shapes
+                if str(getattr(s, "label", "") or "") not in existing_labels
+            ]
+            if carry:
+                self.loadShapes(carry, replace=False)
+                self.setDirty()
+
         should_defer_enrichment = bool(
             getattr(self, "_defer_first_frame_enrichment", False)
         ) and bool(getattr(self, "video_file", None))
         if should_defer_enrichment:
             setattr(self, "_defer_first_frame_enrichment", False)
-            self._run_fast_annotation_enrichment(
+            label_loaded = self._run_fast_annotation_enrichment(
                 frame_number=int(frame_number),
                 filename=filename,
             )
+            _apply_keep_prev_if_needed(label_loaded)
             self._schedule_frame_enrichment(
                 frame_number=int(frame_number),
                 filename=filename,
@@ -102,24 +123,26 @@ class CanvasWorkflowMixin:
                 int(self._FIRST_FRAME_ENRICHMENT_DELAY_MS),
             )
             return
-        self._run_frame_enrichment(
+        label_loaded = self._run_frame_enrichment(
             frame_number=int(frame_number),
             filename=filename,
             qimage=qimage,
         )
+        _apply_keep_prev_if_needed(label_loaded)
 
     def _run_fast_annotation_enrichment(
         self,
         *,
         frame_number: int,
         filename: Path,
-    ) -> None:
+    ) -> bool:
         try:
-            self.loadPredictShapes(frame_number, filename)
+            return bool(self.loadPredictShapes(frame_number, filename))
         except Exception:
             logger.debug(
                 "Failed to load shapes for frame %s", frame_number, exc_info=True
             )
+            return False
 
     def _schedule_frame_enrichment(
         self,
@@ -172,9 +195,9 @@ class CanvasWorkflowMixin:
         frame_number: int,
         filename: Path,
         qimage: QtGui.QImage,
-    ) -> None:
+    ) -> bool:
         enrich_started_ts = time.perf_counter()
-        self._run_fast_annotation_enrichment(
+        label_loaded = self._run_fast_annotation_enrichment(
             frame_number=int(frame_number),
             filename=filename,
         )
@@ -187,6 +210,7 @@ class CanvasWorkflowMixin:
             frame_number,
             (time.perf_counter() - enrich_started_ts) * 1000.0,
         )
+        return label_loaded
 
     def _run_visual_overlay_enrichment(
         self,

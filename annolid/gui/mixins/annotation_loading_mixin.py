@@ -391,6 +391,7 @@ class AnnotationLoadingMixin:
                 description=description,
                 mask=shape_data.get("mask"),
                 visible=visible,
+                locked=bool(shape_data.get("locked", False)),
             )
             for x, y in points:
                 shape.addPoint(QtCore.QPointF(x, y))
@@ -426,6 +427,11 @@ class AnnotationLoadingMixin:
 
     def loadLabels(self, shapes):
         s = self._materialize_label_shapes(shapes)
+        canvas = getattr(self, "canvas", None)
+        if canvas is not None and hasattr(canvas, "shapesBackups"):
+            # Reset undo baseline to the loaded file state so pressing Undo
+            # immediately after opening a labeled image does not wipe all shapes.
+            canvas.shapesBackups = []
         self.loadShapes(s)
         return s
 
@@ -2526,6 +2532,9 @@ class AnnotationLoadingMixin:
                 )
                 continue
 
+            canvas = getattr(self, "canvas", None)
+            if canvas is not None and hasattr(canvas, "shapesBackups"):
+                canvas.shapesBackups = []
             self.loadShapes(frame_shapes)
             label_loaded = True
 
@@ -2575,7 +2584,7 @@ class AnnotationLoadingMixin:
 
         if label_loaded:
             self._enqueue_neighbor_label_prefetch(frame_number, frame_path)
-            return
+            return True
 
         # Do not fall back to tracking CSV for shape overlays in the frame loader.
         fallback_shapes: list[Shape] = []
@@ -2585,7 +2594,11 @@ class AnnotationLoadingMixin:
                 frame_path,
                 persistent_zone_shapes=persistent_zone_shapes,
             )
+        canvas = getattr(self, "canvas", None)
+        if canvas is not None and hasattr(canvas, "shapesBackups"):
+            canvas.shapesBackups = []
         self.loadShapes(fallback_shapes)
+        return False
 
         if not label_loaded and self.caption_widget is not None:
             applied = self._apply_timeline_caption_if_available(

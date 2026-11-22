@@ -104,7 +104,7 @@ class ShapeEditingMixin:
             except Exception:
                 pass
 
-        if active_editor is not canvas:
+        if active_editor is not canvas and not selected_shapes:
             editor_selection = list(getattr(active_editor, "selectedShapes", []) or [])
             if editor_selection:
                 try:
@@ -112,6 +112,8 @@ class ShapeEditingMixin:
                 except Exception:
                     pass
 
+        had_selection = bool(getattr(canvas, "selectedShapes", None))
+        all_locked = had_selection and all(s.is_locked() for s in canvas.selectedShapes)
         deleted = canvas.deleteSelected() or []
         if deleted and active_editor is not canvas:
             try:
@@ -134,16 +136,39 @@ class ShapeEditingMixin:
                 self.labelList.clearSelection()
             except Exception:
                 pass
+        elif all_locked:
+            try:
+                self.statusBar().showMessage(
+                    self.tr(
+                        "Selected shape(s) are locked. Unlock (Ctrl+Shift+L) before deleting."
+                    ),
+                    3000,
+                )
+            except Exception:
+                pass
 
     def canMergeSelectedShapes(self) -> bool:
         canvas = self.canvas
-        return (
-            self._active_shape_editor() is canvas
-            and canvas.editing()
-            and len(canvas.selectedShapes) >= 2
-            and all(
-                s.shape_type in {"polygon", "rectangle"} for s in canvas.selectedShapes
-            )
+        if (
+            self._active_shape_editor() is not canvas
+            or not canvas.editing()
+            or len(canvas.selectedShapes) < 2
+        ):
+            return False
+        selected = list(canvas.selectedShapes)
+        if any(
+            s.is_locked() or not bool(getattr(s, "visible", True)) for s in selected
+        ):
+            return False
+        if all(
+            s.shape_type == "mask" and getattr(s, "mask", None) is not None
+            for s in selected
+        ):
+            return True
+        return all(
+            s.shape_type in {"polygon", "rectangle", "oriented_rectangle"}
+            and getattr(s, "mask", None) is None
+            for s in selected
         )
 
     def mergeSelectedShapes(self, _value=False) -> bool:
@@ -192,6 +217,252 @@ class ShapeEditingMixin:
         self._rebuild_unique_label_list()
         self.shapeSelectionChanged(duplicated)
         self.setDirty()
+
+    def _collect_selected_shapes_for_action(self) -> list:
+        canvas = getattr(self, "canvas", None)
+        selected = list(getattr(canvas, "selectedShapes", None) or [])
+        if selected:
+            return selected
+        result = []
+        label_list = getattr(self, "labelList", None)
+        if label_list is not None:
+            for item in label_list.selectedItems():
+                shape = item.shape() if hasattr(item, "shape") else None
+                if shape is not None and not any(s is shape for s in result):
+                    result.append(shape)
+        return result
+
+    def copySelectedShapes(self, _value=False) -> list:
+        selected = self._collect_selected_shapes_for_action()
+        if not selected:
+            return []
+        copied = []
+        for shape in selected:
+            clone = shape.copy()
+            clone.locked = False
+            clone.selected = False
+            clone.shared_vertex_ids = []
+            clone.shared_edge_ids = []
+            copied.append(clone)
+        self._copied_shapes = copied
+        paste_action = getattr(getattr(self, "actions", None), "pasteShapes", None)
+        if paste_action is not None:
+            paste_action.setEnabled(True)
+        try:
+            self.statusBar().showMessage(
+                self.tr("Copied %d shape(s).") % len(copied), 2500
+            )
+        except Exception:
+            pass
+        return list(copied)
+
+    @staticmethod
+    def _shape_coord_signature(shape) -> tuple:
+        pts = tuple(
+            (round(float(p.x()), 2), round(float(p.y()), 2))
+            for p in (getattr(shape, "points", None) or [])
+        )
+        return (str(getattr(shape, "shape_type", "") or ""), pts)
+
+    def pasteSelectedShapes(self, _value=False) -> list:
+        canvas = getattr(self, "canvas", None)
+        clipboard = list(getattr(self, "_copied_shapes", None) or [])
+        if canvas is None or not clipboard:
+            return []
+        pasted = []
+        for template in clipboard:
+            clone = template.copy()
+            clone.locked = False
+            clone.selected = False
+            clone.shared_vertex_ids = []
+            clone.shared_edge_ids = []
+            pasted.append(clone)
+
+        existing_sigs = {
+            self._shape_coord_signature(s)
+            for s in (getattr(canvas, "shapes", None) or [])
+        }
+        if any(self._shape_coord_signature(s) in existing_sigs for s in pasted):
+            canvas.boundedShiftShapes(pasted)
+
+        for shape in pasted:
+            canvas.shapes.append(shape)
+            canvas.visible[id(shape)] = bool(getattr(shape, "visible", True))
+            self.addLabel(shape, rebuild_unique=False)
+        if hasattr(canvas, "_shared_finalize_topology_edit"):
+            canvas._shared_finalize_topology_edit()
+        canvas.storeShapes()
+        large_view = getattr(self, "large_image_view", None)
+        if large_view is not None and hasattr(large_view, "set_shapes"):
+            try:
+                large_view.set_shapes(list(canvas.shapes))
+            except Exception:
+                pass
+        self._rebuild_unique_label_list()
+        canvas.selectShapes(pasted)
+        canvas.update()
+        self.setDirty()
+        return pasted
+
+    def selectAllShapes(self, _value=False) -> list:
+        canvas = getattr(self, "canvas", None)
+        if canvas is None or not hasattr(canvas, "selectAllVisibleShapes"):
+            return []
+        if not canvas.editing() and hasattr(self, "toggleDrawMode"):
+            self.toggleDrawMode(True)
+        return canvas.selectAllVisibleShapes()
+
+    def setSelectedShapesLocked(self, locked: bool) -> int:
+        selected = self._collect_selected_shapes_for_action()
+        if not selected:
+            return 0
+        target = bool(locked)
+        changed = []
+        for shape in selected:
+            if bool(getattr(shape, "locked", False)) != target:
+                shape.locked = target
+                changed.append(shape)
+        if not changed:
+            return 0
+        canvas = getattr(self, "canvas", None)
+        if canvas is not None:
+            canvas.storeShapes()
+        if hasattr(self, "_refresh_label_list_items_for_shapes"):
+            self._refresh_label_list_items_for_shapes(changed)
+        if hasattr(self, "_refresh_shape_views"):
+            self._refresh_shape_views()
+        elif canvas is not None:
+            canvas.update()
+        self.shapeSelectionChanged(selected)
+        self.setDirty()
+        try:
+            verb = "Locked" if target else "Unlocked"
+            self.statusBar().showMessage(
+                self.tr("%s %d shape(s).") % (verb, len(changed)), 2500
+            )
+        except Exception:
+            pass
+        return len(changed)
+
+    def toggleLockSelectedShapes(self, _value=False) -> bool:
+        selected = self._collect_selected_shapes_for_action()
+        if not selected:
+            return False
+        all_locked = all(s.is_locked() for s in selected)
+        target = not all_locked
+        self.setSelectedShapesLocked(target)
+        return target
+
+    def _set_all_shapes_visible(self, visible: bool) -> int:
+        canvas = getattr(self, "canvas", None)
+        if canvas is None:
+            return 0
+        shapes = list(getattr(canvas, "shapes", None) or [])
+        if not shapes:
+            return 0
+        visible_flag = bool(visible)
+        changed = 0
+        for shape in shapes:
+            if visible_flag and is_collapsed_polygon(shape):
+                try:
+                    restore_polygon_shape(shape)
+                except Exception:
+                    pass
+            if bool(getattr(shape, "visible", True)) != visible_flag:
+                changed += 1
+            self._sync_shape_visibility_without_signal(shape, visible_flag)
+        if not visible_flag and getattr(canvas, "selectedShapes", None):
+            canvas.deSelectShape()
+        if hasattr(self, "_refresh_shape_views"):
+            self._refresh_shape_views()
+        else:
+            canvas.update()
+        if hasattr(self, "_update_polygon_tool_action_state"):
+            try:
+                self._update_polygon_tool_action_state()
+            except Exception:
+                pass
+        if changed:
+            self.setDirty()
+        return changed
+
+    def showAllShapes(self, _value=False) -> int:
+        return self._set_all_shapes_visible(True)
+
+    def hideAllShapes(self, _value=False) -> int:
+        return self._set_all_shapes_visible(False)
+
+    def toggleAllShapes(self, _value=False) -> int:
+        canvas = getattr(self, "canvas", None)
+        shapes = (
+            list(getattr(canvas, "shapes", None) or []) if canvas is not None else []
+        )
+        if not shapes:
+            return 0
+        any_visible = any(bool(getattr(s, "visible", True)) for s in shapes)
+        return self._set_all_shapes_visible(not any_visible)
+
+    def undoLastPointAction(self, _value=False) -> None:
+        editor = self._active_shape_editor()
+        if editor is not None and hasattr(editor, "undoLastPoint"):
+            editor.undoLastPoint()
+
+    def addPointToEdgeAction(self, _value=False) -> bool:
+        canvas = getattr(self, "canvas", None)
+        if canvas is None or not hasattr(canvas, "addPointToEdge"):
+            return False
+        if canvas.addPointToEdge():
+            canvas.storeShapes()
+            self.setDirty()
+            return True
+        return False
+
+    def toggleShowLabelNames(self, enabled: bool) -> None:
+        flag = bool(enabled)
+        canvas_cfg = self._config.setdefault("canvas", {})
+        if isinstance(canvas_cfg, dict):
+            canvas_cfg["show_label_names"] = flag
+        canvas = getattr(self, "canvas", None)
+        if canvas is not None and hasattr(canvas, "setShowLabelNames"):
+            canvas.setShowLabelNames(flag)
+        large_view = getattr(self, "large_image_view", None)
+        if large_view is not None and hasattr(large_view, "setShowLabelNames"):
+            large_view.setShowLabelNames(flag)
+
+    def toggleAllowPointsOutsideImage(self, enabled: bool) -> None:
+        flag = bool(enabled)
+        canvas_cfg = self._config.setdefault("canvas", {})
+        if isinstance(canvas_cfg, dict):
+            canvas_cfg["allow_points_outside_image"] = flag
+        canvas = getattr(self, "canvas", None)
+        if canvas is not None and hasattr(canvas, "setAllowPointsOutsideImage"):
+            canvas.setAllowPointsOutsideImage(flag)
+        large_view = getattr(self, "large_image_view", None)
+        if large_view is not None and hasattr(large_view, "setAllowPointsOutsideImage"):
+            large_view.setAllowPointsOutsideImage(flag)
+
+    def saveFileAs(self, _value=False) -> bool:
+        if not getattr(self, "filename", None):
+            return False
+        default_path = ""
+        try:
+            default_path = self.getLabelFile()
+        except Exception:
+            default_path = str(self.filename)
+        target, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            self.tr("Save Annotations As"),
+            default_path,
+            self.tr("Label files (*.json)"),
+        )
+        if not target:
+            return False
+        if not str(target).lower().endswith(".json"):
+            target = f"{target}.json"
+        if hasattr(self, "_saveFile"):
+            self._saveFile(target)
+            return True
+        return False
 
     def _selected_shapes_for_polygon_tools(self) -> list:
         shapes = []
@@ -261,6 +532,8 @@ class ShapeEditingMixin:
         if not shapes:
             return 0
         for shape in shapes:
+            if shape.is_locked():
+                continue
             if not bool(getattr(shape, "visible", True)):
                 continue
             if is_collapsed_polygon(shape):
@@ -272,6 +545,8 @@ class ShapeEditingMixin:
                 self._sync_shape_visibility_without_signal(shape, False) or synced_any
             )
         if collapsed:
+            if getattr(self, "canvas", None) is not None:
+                self.canvas.storeShapes()
             if not synced_any:
                 self._refresh_shape_views()
             self._rebuild_unique_label_list()
@@ -289,6 +564,8 @@ class ShapeEditingMixin:
         if not shapes:
             return 0
         for shape in shapes:
+            if shape.is_locked():
+                continue
             if not is_collapsed_polygon(shape):
                 continue
             if not restore_polygon_shape(shape):
@@ -298,6 +575,8 @@ class ShapeEditingMixin:
                 self._sync_shape_visibility_without_signal(shape, True) or synced_any
             )
         if restored:
+            if getattr(self, "canvas", None) is not None:
+                self.canvas.storeShapes()
             if not synced_any:
                 self._refresh_shape_views()
             self._rebuild_unique_label_list()
@@ -445,6 +724,12 @@ class ShapeEditingMixin:
                         preselected_polygons=preselected_polygons,
                     )
                     self.addLabel(shape)
+                if editor is self.canvas and getattr(
+                    self.canvas, "shapesBackups", None
+                ):
+                    self.canvas.shapesBackups[-1] = [
+                        s.copy() for s in self.canvas.shapes
+                    ]
                 self.actions.editMode.setEnabled(True)
                 self.actions.undoLastPoint.setEnabled(False)
                 self.actions.undo.setEnabled(True)
@@ -480,6 +765,8 @@ class ShapeEditingMixin:
                 preselected_polygons=preselected_polygons,
             )
             self.addLabel(shape)
+        if editor is canvas and getattr(canvas, "shapesBackups", None):
+            canvas.shapesBackups[-1] = [s.copy() for s in canvas.shapes]
         self.actions.editMode.setEnabled(True)
         self.actions.undoLastPoint.setEnabled(False)
         self.actions.undo.setEnabled(True)

@@ -207,7 +207,7 @@ def _shape_to_polygon_points(
         except Exception:
             return None
 
-    if shape_type == "polygon":
+    if shape_type in {"polygon", "oriented_rectangle"}:
         poly = [_pt(p) for p in points]
         out = [[x, y] for x, y in poly if x is not None and y is not None]  # type: ignore[misc]
         return out if len(out) >= 3 else None
@@ -551,6 +551,28 @@ def convert(
                 mask_union = np.zeros((int(h), int(w)), dtype=np.uint8)
                 segmentations: List[List[float]] = []
                 for shape in shapes:
+                    st = str(shape.get("shape_type") or "polygon").lower().strip()
+                    if st == "mask" and shape.get("mask") is not None:
+                        try:
+                            shape_mask = labelme.utils.shape_to_mask(
+                                (int(h), int(w)),
+                                shape.get("points") or [],
+                                "mask",
+                                mask=shape.get("mask"),
+                            )
+                            mask_union = np.maximum(
+                                mask_union, shape_mask.astype(np.uint8)
+                            )
+                            from annolid.annotation.masks import mask_to_polygons
+
+                            polys, _ = mask_to_polygons(shape_mask.astype(np.uint8))
+                            for poly_flat in polys:
+                                coords = [float(v) for v in poly_flat]
+                                if len(coords) >= 6:
+                                    segmentations.append(coords)
+                        except Exception:
+                            continue
+                        continue
                     poly = _shape_to_polygon_points(
                         shape,
                         image_hw=(int(h), int(w)),

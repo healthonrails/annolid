@@ -6,13 +6,17 @@ TILE_NATIVE_CREATE_MODES = (
     "linestrip",
     "polygon",
     "rectangle",
+    "oriented_rectangle",
     "circle",
+    "circle_3p",
 )
 
 LARGE_IMAGE_DRAW_MODE_LABELS = {
     "polygon": "Polygon",
     "rectangle": "Rectangle",
+    "oriented_rectangle": "Oriented Rectangle",
     "circle": "Circle",
+    "circle_3p": "Circle (3-Point)",
     "point": "Point",
     "line": "Line",
     "linestrip": "Line Strip",

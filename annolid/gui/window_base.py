@@ -136,12 +136,19 @@ class AnnolidLabelListWidget(ReorderableListWidget):
     shapeDeleteRequested = QtCore.Signal(object)
     shapesDeleteRequested = QtCore.Signal(object)
     shapesSwitchRequested = QtCore.Signal(object)
+    shapeEditLabelRequested = QtCore.Signal(object)
+    shapesLockToggleRequested = QtCore.Signal(object)
+    shapesFitRequested = QtCore.Signal(object)
+    shapesCopyRequested = QtCore.Signal(object)
+    shapesDuplicateRequested = QtCore.Signal(object)
+    shapesMergeRequested = QtCore.Signal(object)
     labelColorChangeRequested = QtCore.Signal(str)
     labelColorResetRequested = QtCore.Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        self._syncing_bulk_visibility = False
 
         self.itemChanged.connect(self._on_item_changed)
 
@@ -167,6 +174,31 @@ class AnnolidLabelListWidget(ReorderableListWidget):
         # don't repeatedly trigger visibility wiring downstream.
         item.setData(self.VISIBILITY_STATE_ROLE, bool(is_visible))
         self.shapeVisibilityChanged.emit(shape, bool(is_visible))
+
+        # LabelMe v6.2+ bulk visibility: if this item is part of a multi-selection,
+        # apply the same visibility state to every selected item while preserving selection.
+        if not self._syncing_bulk_visibility and item.isSelected():
+            selected_items = [
+                it
+                for it in self.selectedItems()
+                if isinstance(it, AnnolidLabelListItem) and it is not item
+            ]
+            if selected_items:
+                self._syncing_bulk_visibility = True
+                try:
+                    target_state = (
+                        QtCore.Qt.Checked if is_visible else QtCore.Qt.Unchecked
+                    )
+                    for other in selected_items:
+                        other_shape = other.shape()
+                        if other_shape is None:
+                            continue
+                        with QtCore.QSignalBlocker(self):
+                            other.setCheckState(target_state)
+                            other.setData(self.VISIBILITY_STATE_ROLE, bool(is_visible))
+                        self.shapeVisibilityChanged.emit(other_shape, bool(is_visible))
+                finally:
+                    self._syncing_bulk_visibility = False
 
     def _is_checkbox_click(
         self, item: QtWidgets.QListWidgetItem, pos: QtCore.QPoint
@@ -238,13 +270,49 @@ class AnnolidLabelListWidget(ReorderableListWidget):
             return
 
         menu = QtWidgets.QMenu(self)
+        edit_action = None
+        if len(selected_shapes) == 1:
+            edit_action = menu.addAction(self.tr("Edit label..."))
+            if selected_shapes[0].is_locked():
+                edit_action.setEnabled(False)
+        all_locked = all(s.is_locked() for s in selected_shapes)
+        lock_action = menu.addAction(
+            self.tr("Unlock selected shapes")
+            if (all_locked and len(selected_shapes) > 1)
+            else self.tr("Unlock shape")
+            if all_locked
+            else self.tr("Lock selected shapes")
+            if len(selected_shapes) > 1
+            else self.tr("Lock shape")
+        )
+        fit_action = menu.addAction(self.tr("Fit to selection"))
+        copy_action = menu.addAction(self.tr("Copy"))
+        duplicate_action = menu.addAction(self.tr("Duplicate"))
+        merge_action = None
+        if len(selected_shapes) >= 2:
+            merge_action = menu.addAction(self.tr("Merge selected shapes"))
         switch_action = None
         if len(selected_shapes) == 2:
             switch_action = menu.addAction(self.tr("Switch selected shape labels"))
+
+        # Include host-registered extra labelList menu actions (e.g., keypoint visibility).
+        host_window = self.window()
+        extra_menu = getattr(getattr(host_window, "menus", None), "labelList", None)
+        if extra_menu is not None and extra_menu.actions():
+            menu.addSeparator()
+            for extra_act in extra_menu.actions():
+                if extra_act.isSeparator():
+                    continue
+                menu.addAction(extra_act)
+
+        menu.addSeparator()
         if len(selected_shapes) > 1:
             delete_action = menu.addAction(self.tr("Delete selected shapes"))
         else:
             delete_action = menu.addAction(self.tr("Delete shape"))
+        if all_locked:
+            delete_action.setEnabled(False)
+
         labels = sorted(
             {
                 str(getattr(shape, "label", "") or "").strip()
@@ -264,7 +332,19 @@ class AnnolidLabelListWidget(ReorderableListWidget):
                     menu.addAction(self.tr("Reset color for '%s'") % label)
                 ] = label
         chosen = menu.exec_(global_pos)
-        if switch_action is not None and chosen is switch_action:
+        if edit_action is not None and chosen is edit_action:
+            self.shapeEditLabelRequested.emit(selected_shapes[0])
+        elif chosen is lock_action:
+            self.shapesLockToggleRequested.emit(selected_shapes)
+        elif chosen is fit_action:
+            self.shapesFitRequested.emit(selected_shapes)
+        elif chosen is copy_action:
+            self.shapesCopyRequested.emit(selected_shapes)
+        elif chosen is duplicate_action:
+            self.shapesDuplicateRequested.emit(selected_shapes)
+        elif merge_action is not None and chosen is merge_action:
+            self.shapesMergeRequested.emit(selected_shapes)
+        elif switch_action is not None and chosen is switch_action:
             self.shapesSwitchRequested.emit(selected_shapes)
         elif chosen is delete_action:
             if len(selected_shapes) > 1:
@@ -706,16 +786,61 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
             shortcut=self._shortcut("fit_width"),
         )
         self.actions.fitWidth.setIcon(self._icon("fit_width.svg"))
+        self.actions.fitSelection = self._mk_action(
+            self.tr("Fit to Selection"),
+            self.fitSelection,
+            shortcut=self._shortcut("fit_selection"),
+            enabled=False,
+        )
+        self.actions.fitSelection.setIcon(self._icon("fit_window.svg"))
         self.actions.brightnessContrast = self._mk_action(
             self.tr("Brightness/Contrast"),
             self.brightnessContrast,
         )
         self.actions.brightnessContrast.setIcon(self._icon("contrast.svg"))
         self.actions.deleteFile = self._mk_action(
-            self.tr("Delete File"), getattr(self, "deleteFile", None)
+            self.tr("Delete File"),
+            getattr(self, "deleteFile", None),
+            shortcut=self._shortcut("delete_file"),
         )
         self.actions.deleteFile.setIcon(
             self.style().standardIcon(QtWidgets.QStyle.SP_TrashIcon)
+        )
+        self.actions.editLabel = self._mk_action(
+            self.tr("Edit Label"),
+            getattr(self, "editLabel", None),
+            shortcut=self._shortcut("edit_label"),
+            enabled=False,
+        )
+        self.actions.editLabel.setIcon(self._icon("edit_polygons.svg"))
+        self.actions.toggleLockShapes = self._mk_action(
+            self.tr("Lock / Unlock Shape"),
+            getattr(self, "toggleLockSelectedShapes", None),
+            shortcut=self._shortcut("lock_shape"),
+            enabled=False,
+        )
+        self.actions.toggleLockShapes.setIcon(
+            self.style().standardIcon(QtWidgets.QStyle.SP_DialogApplyButton)
+        )
+        self.actions.copyShapes = self._mk_action(
+            self.tr("Copy Polygons"),
+            getattr(self, "copySelectedShapes", None),
+            shortcut=self._shortcut("copy_polygon"),
+            enabled=False,
+        )
+        self.actions.copyShapes.setIcon(self._icon("duplicate_polygons.svg"))
+        self.actions.pasteShapes = self._mk_action(
+            self.tr("Paste Polygons"),
+            getattr(self, "pasteSelectedShapes", None),
+            shortcut=self._shortcut("paste_polygon"),
+            enabled=False,
+        )
+        self.actions.pasteShapes.setIcon(self._icon("duplicate_polygons.svg"))
+        self.actions.selectAllShapes = self._mk_action(
+            self.tr("Select All Shapes"),
+            getattr(self, "selectAllShapes", None),
+            shortcut=self._shortcut("select_all_shapes"),
+            enabled=False,
         )
         self.actions.deleteShapes = self._mk_action(
             self.tr("Delete Polygons"),
@@ -761,12 +886,56 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         )
         self.actions.restorePolygons.setIcon(self._icon("undo.svg"))
         self.actions.restorePolygons.setEnabled(False)
-        self.actions.removePoint = self._mk_action(
-            self.tr("Remove Point"), getattr(self, "removeSelectedPoint", None)
+        self.actions.addPointToEdge = self._mk_action(
+            self.tr("Add Point to Edge"),
+            getattr(self, "addPointToEdgeAction", None),
+            shortcut=self._shortcut("add_point_to_edge"),
+            enabled=False,
         )
-        self.actions.undo = self._mk_action(self.tr("Undo"), self.undoShapeEdit)
+        self.actions.removePoint = self._mk_action(
+            self.tr("Remove Point"),
+            getattr(self, "removeSelectedPoint", None),
+            shortcut=self._shortcut("remove_selected_point"),
+        )
+        self.actions.undo = self._mk_action(
+            self.tr("Undo"),
+            self.undoShapeEdit,
+            shortcut=self._shortcut("undo"),
+        )
         self.actions.undo.setIcon(self._icon("undo.svg"))
-        self.actions.undoLastPoint = self._mk_action(self.tr("Undo Last Point"))
+        self.actions.undoLastPoint = self._mk_action(
+            self.tr("Undo Last Point"),
+            getattr(self, "undoLastPointAction", None),
+            enabled=False,
+        )
+        self.actions.showAllPolygons = self._mk_action(
+            self.tr("Show All Shapes"),
+            getattr(self, "showAllShapes", None),
+            shortcut=self._shortcut("show_all_polygons"),
+        )
+        self.actions.hideAllPolygons = self._mk_action(
+            self.tr("Hide All Shapes"),
+            getattr(self, "hideAllShapes", None),
+            shortcut=self._shortcut("hide_all_polygons"),
+        )
+        self.actions.toggleAllPolygons = self._mk_action(
+            self.tr("Toggle All Shapes"),
+            getattr(self, "toggleAllShapes", None),
+            shortcut=self._shortcut("toggle_all_polygons"),
+        )
+        canvas_cfg = self._config.get("canvas") or {}
+        self.actions.toggleShowLabelNames = self._mk_action(
+            self.tr("Show Labels on Canvas"),
+            getattr(self, "toggleShowLabelNames", None),
+            checkable=True,
+            checked=bool(canvas_cfg.get("show_label_names", True)),
+        )
+        self.actions.toggleAllowPointsOutsideImage = self._mk_action(
+            self.tr("Allow Points Outside Image"),
+            getattr(self, "toggleAllowPointsOutsideImage", None),
+            checkable=True,
+            checked=bool(canvas_cfg.get("allow_points_outside_image", False)),
+        )
 
         self.actions.createMode = self._mk_action(
             self.tr("Create Polygons"),
@@ -775,18 +944,42 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         )
         self.actions.createMode.setIcon(self._icon("create_polygons.svg"))
         self.actions.createRectangleMode = self._mk_action(
-            self.tr("Rectangle"), checkable=True
+            self.tr("Rectangle"),
+            checkable=True,
+            shortcut=self._shortcut("create_rectangle"),
         )
         self.actions.createRectangleMode.setIcon(
             self.style().standardIcon(QtWidgets.QStyle.SP_FileDialogDetailedView)
         )
+        self.actions.createOrientedRectangleMode = self._mk_action(
+            self.tr("Oriented Rectangle"),
+            checkable=True,
+            shortcut=self._shortcut("create_oriented_rectangle"),
+        )
+        self.actions.createOrientedRectangleMode.setIcon(
+            self.style().standardIcon(QtWidgets.QStyle.SP_FileDialogDetailedView)
+        )
         self.actions.createCircleMode = self._mk_action(
-            self.tr("Circle"), checkable=True
+            self.tr("Circle"),
+            checkable=True,
+            shortcut=self._shortcut("create_circle"),
         )
         self.actions.createCircleMode.setIcon(
             self.style().standardIcon(QtWidgets.QStyle.SP_BrowserReload)
         )
-        self.actions.createLineMode = self._mk_action(self.tr("Line"), checkable=True)
+        self.actions.createCircle3PMode = self._mk_action(
+            self.tr("Circle (3-Point)"),
+            checkable=True,
+            shortcut=self._shortcut("create_circle_3p"),
+        )
+        self.actions.createCircle3PMode.setIcon(
+            self.style().standardIcon(QtWidgets.QStyle.SP_BrowserReload)
+        )
+        self.actions.createLineMode = self._mk_action(
+            self.tr("Line"),
+            checkable=True,
+            shortcut=self._shortcut("create_line"),
+        )
         self.actions.createLineMode.setIcon(
             self.style().standardIcon(QtWidgets.QStyle.SP_ArrowRight)
         )
@@ -799,7 +992,9 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
             self.style().standardIcon(QtWidgets.QStyle.SP_DialogApplyButton)
         )
         self.actions.createLineStripMode = self._mk_action(
-            self.tr("Line Strip"), checkable=True
+            self.tr("Line Strip"),
+            checkable=True,
+            shortcut=self._shortcut("create_linestrip"),
         )
         self.actions.createLineStripMode.setIcon(
             self.style().standardIcon(QtWidgets.QStyle.SP_MediaSeekForward)
@@ -837,7 +1032,9 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         self.actions.menu = (
             self.actions.createMode,
             self.actions.createRectangleMode,
+            self.actions.createOrientedRectangleMode,
             self.actions.createCircleMode,
+            self.actions.createCircle3PMode,
             self.actions.createLineMode,
             self.actions.createPointMode,
             self.actions.createLineStripMode,
@@ -846,8 +1043,20 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
             self.actions.createAiMaskMode,
         )
         self.actions.editMenu = (
+            None,
+            self.actions.editLabel,
+            self.actions.toggleLockShapes,
+            self.actions.fitSelection,
+            None,
+            self.actions.copyShapes,
+            self.actions.pasteShapes,
+            self.actions.duplicateShapes,
+            self.actions.deleteShapes,
+            self.actions.selectAllShapes,
+            None,
             self.actions.undo,
             self.actions.undoLastPoint,
+            self.actions.addPointToEdge,
             self.actions.removePoint,
             self.actions.mergeShapes,
             self.actions.inferPagePolygons,
@@ -876,13 +1085,23 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
             # Qt handles Ctrl/Cmd platform mapping for standard Save.
             "save": QtGui.QKeySequence.Save,
             "save_as": QtGui.QKeySequence.SaveAs,
-            "toggle_auto_save": "Ctrl+Shift+A",
+            "toggle_auto_save": "Ctrl+Alt+S",
             "toggle_keypoint_sequence": "Ctrl+Shift+K",
             "create_polygon": "Ctrl+N",
+            "create_rectangle": "Ctrl+R",
             "create_point": "Ctrl+I",
             "edit_polygon": "Ctrl+J",
+            "edit_label": "Ctrl+E",
             "delete_polygon": "Delete",
             "duplicate_polygon": "Ctrl+D",
+            "copy_polygon": "Ctrl+C",
+            "paste_polygon": "Ctrl+V",
+            "select_all_shapes": "Ctrl+A",
+            "lock_shape": "Ctrl+Shift+L",
+            "fit_selection": "Ctrl+Shift+G",
+            "undo": "Ctrl+Z",
+            "add_point_to_edge": "Ctrl+Shift+P",
+            "toggle_all_polygons": "T",
         }
         return defaults.get(key)
 
@@ -980,9 +1199,146 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         if self._has_renderable_image() and hasattr(self, "paintCanvas"):
             self.paintCanvas()
 
+    def _sync_scroll_area_layout(self) -> None:
+        scroll_area = getattr(self, "_main_scroll_area", None)
+        if scroll_area is None:
+            return
+        try:
+            stack = getattr(self, "_viewer_stack", None)
+            if stack is not None:
+                stack.updateGeometry()
+            scroll_area.updateGeometry()
+            layout = scroll_area.layout()
+            if layout is not None:
+                layout.activate()
+            QtWidgets.QApplication.sendPostedEvents(None, QtCore.QEvent.LayoutRequest)
+        except Exception:
+            pass
+
     def zoomRequest(self, delta: int, pos) -> None:
         step = 10 if delta > 0 else -10
+        canvas = getattr(self, "canvas", None)
+        bars = getattr(self, "scrollBars", None)
+        h_bar = bars.get(QtCore.Qt.Horizontal) if isinstance(bars, dict) else None
+        v_bar = bars.get(QtCore.Qt.Vertical) if isinstance(bars, dict) else None
+
+        anchor_img = None
+        vp_x = None
+        vp_y = None
+        if (
+            canvas is not None
+            and pos is not None
+            and getattr(self, "_active_image_view", "canvas") == "canvas"
+            and hasattr(canvas, "transformPos")
+        ):
+            old_h_val = float(h_bar.value()) if h_bar is not None else 0.0
+            old_v_val = float(v_bar.value()) if v_bar is not None else 0.0
+            anchor_img = canvas.transformPos(QtCore.QPointF(pos))
+            vp_x = float(pos.x()) - old_h_val
+            vp_y = float(pos.y()) - old_v_val
+
         self._step_zoom(step)
+
+        # Keep the exact image pixel under cursor `pos` anchored after zoom.
+        if (
+            canvas is not None
+            and anchor_img is not None
+            and vp_x is not None
+            and vp_y is not None
+            and getattr(self, "_active_image_view", "canvas") == "canvas"
+        ):
+            self._sync_scroll_area_layout()
+            new_scale = float(getattr(canvas, "scale", 1.0) or 1.0)
+            new_offset = (
+                canvas.offsetToCenter()
+                if hasattr(canvas, "offsetToCenter")
+                else QtCore.QPointF(0.0, 0.0)
+            )
+            new_canvas_x = (float(anchor_img.x()) + float(new_offset.x())) * new_scale
+            new_canvas_y = (float(anchor_img.y()) + float(new_offset.y())) * new_scale
+            if h_bar is not None:
+                h_bar.setValue(int(round(new_canvas_x - vp_x)))
+            if v_bar is not None:
+                v_bar.setValue(int(round(new_canvas_y - vp_y)))
+
+    def fitSelection(self, _value=False) -> bool:
+        """Zoom and scroll canvas (or tiled view) to frame selected shape(s)."""
+        from annolid.gui.shape_geometry import shapes_bounding_box
+
+        canvas = getattr(self, "canvas", None)
+        if canvas is None or not self._has_renderable_image():
+            return False
+        selected = list(getattr(canvas, "selectedShapes", None) or [])
+        if not selected and getattr(self, "_active_image_view", "canvas") == "tiled":
+            tiled = getattr(self, "large_image_view", None)
+            selected = list(getattr(tiled, "selectedShapes", None) or [])
+        if not selected:
+            label_list = getattr(self, "labelList", None)
+            if label_list is not None:
+                for item in label_list.selectedItems():
+                    shape = item.shape() if hasattr(item, "shape") else None
+                    if shape is not None:
+                        selected.append(shape)
+        if not selected:
+            return False
+
+        if getattr(self, "_active_image_view", "canvas") == "tiled":
+            tiled = getattr(self, "large_image_view", None)
+            if tiled is not None and hasattr(tiled, "fit_to_selection"):
+                if not tiled.fit_to_selection(selected):
+                    return False
+                self.zoomMode = self.MANUAL_ZOOM
+                if getattr(self.actions, "fitWindow", None) is not None:
+                    self.actions.fitWindow.setChecked(False)
+                if getattr(self.actions, "fitWidth", None) is not None:
+                    self.actions.fitWidth.setChecked(False)
+                zoom_pct = max(
+                    1, min(1000, int(round(float(tiled.current_scale()) * 100.0)))
+                )
+                self.zoomWidget.blockSignals(True)
+                try:
+                    self.zoomWidget.setValue(zoom_pct)
+                finally:
+                    self.zoomWidget.blockSignals(False)
+                return True
+
+        bbox = shapes_bounding_box(selected)
+        if bbox is None:
+            return False
+        min_x, min_y, max_x, max_y = bbox
+        sel_w = max(16.0, float(max_x - min_x))
+        sel_h = max(16.0, float(max_y - min_y))
+        view_w, view_h = self._viewport_size()
+        # Add 25% margin around selection for comfortable editing context.
+        ratio = min(float(view_w) / (sel_w * 1.25), float(view_h) / (sel_h * 1.25))
+        zoom_pct = max(1, min(1000, int(round(ratio * 100.0))))
+        self.zoomMode = self.MANUAL_ZOOM
+        if getattr(self.actions, "fitWindow", None) is not None:
+            self.actions.fitWindow.setChecked(False)
+        if getattr(self.actions, "fitWidth", None) is not None:
+            self.actions.fitWidth.setChecked(False)
+        self.setZoom(zoom_pct)
+        if hasattr(self, "paintCanvas"):
+            self.paintCanvas()
+        self._sync_scroll_area_layout()
+
+        scale = float(getattr(canvas, "scale", zoom_pct / 100.0) or 1.0)
+        offset = (
+            canvas.offsetToCenter()
+            if hasattr(canvas, "offsetToCenter")
+            else QtCore.QPointF(0.0, 0.0)
+        )
+        cx_widget = (0.5 * (min_x + max_x) + float(offset.x())) * scale
+        cy_widget = (0.5 * (min_y + max_y) + float(offset.y())) * scale
+        bars = getattr(self, "scrollBars", None)
+        if isinstance(bars, dict):
+            h_bar = bars.get(QtCore.Qt.Horizontal)
+            v_bar = bars.get(QtCore.Qt.Vertical)
+            if h_bar is not None:
+                h_bar.setValue(int(round(cx_widget - view_w * 0.5)))
+            if v_bar is not None:
+                v_bar.setValue(int(round(cy_widget - view_h * 0.5)))
+        return True
 
     def setZoomToOriginal(self) -> None:
         self.zoomMode = self.MANUAL_ZOOM
@@ -1196,26 +1552,22 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
 
     def toggleActions(self, value: bool) -> None:
         enabled = bool(value)
-        names = (
+        image_actions = (
             "close",
             "openNextImg",
             "openPrevImg",
             "save",
             "saveAs",
             "deleteFile",
-            "deleteShapes",
-            "duplicateShapes",
-            "mergeShapes",
-            "startAdjoiningPolygon",
-            "inferPagePolygons",
-            "collapsePolygons",
-            "restorePolygons",
-            "removePoint",
-            "undo",
-            "undoLastPoint",
+            "selectAllShapes",
+            "showAllPolygons",
+            "hideAllPolygons",
+            "toggleAllPolygons",
             "createMode",
             "createRectangleMode",
+            "createOrientedRectangleMode",
             "createCircleMode",
+            "createCircle3PMode",
             "createLineMode",
             "createPointMode",
             "createLineStripMode",
@@ -1231,22 +1583,45 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
             "brightnessContrast",
             "keepPrevMode",
         )
-        for name in names:
+        for name in image_actions:
             action = getattr(self.actions, name, None)
             if action is not None:
                 action.setEnabled(enabled)
         if enabled:
-            self._update_adjoining_polygon_action_state()
-            self._update_polygon_tool_action_state()
+            canvas = getattr(self, "canvas", None)
+            undo_act = getattr(self.actions, "undo", None)
+            if undo_act is not None:
+                undo_act.setEnabled(bool(getattr(canvas, "isShapeRestorable", False)))
+            paste_act = getattr(self.actions, "pasteShapes", None)
+            if paste_act is not None:
+                paste_act.setEnabled(bool(getattr(self, "_copied_shapes", None)))
+            if canvas is not None:
+                self.shapeSelectionChanged(
+                    list(getattr(canvas, "selectedShapes", None) or [])
+                )
+            else:
+                self._update_adjoining_polygon_action_state()
+                self._update_polygon_tool_action_state()
         else:
-            action = getattr(self.actions, "startAdjoiningPolygon", None)
-            if action is not None:
-                action.setEnabled(False)
-            for name in (
+            contextual_actions = (
+                "editLabel",
+                "toggleLockShapes",
+                "fitSelection",
+                "copyShapes",
+                "pasteShapes",
+                "deleteShapes",
+                "duplicateShapes",
+                "mergeShapes",
+                "startAdjoiningPolygon",
                 "inferPagePolygons",
                 "collapsePolygons",
                 "restorePolygons",
-            ):
+                "addPointToEdge",
+                "removePoint",
+                "undo",
+                "undoLastPoint",
+            )
+            for name in contextual_actions:
                 action = getattr(self.actions, name, None)
                 if action is not None:
                     action.setEnabled(False)
@@ -1277,10 +1652,28 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         selected_list = list(selected_shapes or [])
         selected_ids = {id(s) for s in selected_list}
         has_selected = len(selected_ids) > 0
+        has_unlocked = any(not s.is_locked() for s in selected_list)
         if getattr(self.actions, "deleteShapes", None) is not None:
-            self.actions.deleteShapes.setEnabled(has_selected)
+            self.actions.deleteShapes.setEnabled(has_selected and has_unlocked)
         if getattr(self.actions, "duplicateShapes", None) is not None:
             self.actions.duplicateShapes.setEnabled(has_selected)
+        if getattr(self.actions, "copyShapes", None) is not None:
+            self.actions.copyShapes.setEnabled(has_selected)
+        if getattr(self.actions, "pasteShapes", None) is not None:
+            self.actions.pasteShapes.setEnabled(
+                bool(getattr(self, "_copied_shapes", None))
+            )
+        if getattr(self.actions, "editLabel", None) is not None:
+            self.actions.editLabel.setEnabled(len(selected_list) == 1 and has_unlocked)
+        if getattr(self.actions, "toggleLockShapes", None) is not None:
+            self.actions.toggleLockShapes.setEnabled(has_selected)
+            if has_selected:
+                all_locked = all(s.is_locked() for s in selected_list)
+                self.actions.toggleLockShapes.setText(
+                    self.tr("Unlock Shape") if all_locked else self.tr("Lock Shape")
+                )
+        if getattr(self.actions, "fitSelection", None) is not None:
+            self.actions.fitSelection.setEnabled(has_selected)
         self._update_adjoining_polygon_action_state()
         self._update_polygon_tool_action_state()
         # Avoid feedback loops: selecting shapes on the canvas updates the list,

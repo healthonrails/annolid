@@ -84,175 +84,171 @@ class NavigationWorkflowMixin:
 
     def openNextImg(self, _value=False, load=True):
         keep_prev = self._config["keep_prev"]
-        if Qt.KeyboardModifiers() == (Qt.ControlModifier | Qt.ShiftModifier):
+        if QtWidgets.QApplication.keyboardModifiers() == (
+            Qt.ControlModifier | Qt.ShiftModifier
+        ):
             self._config["keep_prev"] = True
 
-        if self._using_large_image_page_navigation():
+        try:
+            if self._using_large_image_page_navigation():
+                if not self.mayContinue():
+                    return
+                page_count = int(
+                    self._largeImagePageCount()
+                    if hasattr(self, "_largeImagePageCount")
+                    else getattr(self, "num_frames", 0) or 0
+                )
+                if page_count <= 0:
+                    return
+                current_page = max(
+                    0,
+                    int(
+                        self._largeImageCurrentPage()
+                        if hasattr(self, "_largeImageCurrentPage")
+                        else getattr(self, "frame_number", 0) or 0
+                    ),
+                )
+                if current_page >= page_count - 1:
+                    if getattr(self, "isPlaying", False):
+                        self.stopPlaying()
+                        if hasattr(self, "_set_play_button_state"):
+                            self._set_play_button_state(False)
+                    self._update_frame_display_and_emit_update()
+                    return
+                self.setLargeImagePageNumber(current_page + 1)
+                self._update_frame_display_and_emit_update()
+                return
+
+            self._set_active_view("canvas")
+
             if not self.mayContinue():
-                self._config["keep_prev"] = keep_prev
                 return
-            page_count = int(
-                self._largeImagePageCount()
-                if hasattr(self, "_largeImagePageCount")
-                else getattr(self, "num_frames", 0) or 0
-            )
-            if page_count <= 0:
-                self._config["keep_prev"] = keep_prev
-                return
-            current_page = max(
-                0,
-                int(
-                    self._largeImageCurrentPage()
-                    if hasattr(self, "_largeImageCurrentPage")
-                    else getattr(self, "frame_number", 0) or 0
-                ),
-            )
-            if current_page >= page_count - 1:
-                if getattr(self, "isPlaying", False):
-                    self.stopPlaying()
-                    if hasattr(self, "_set_play_button_state"):
-                        self._set_play_button_state(False)
-                self._config["keep_prev"] = keep_prev
-                self._update_frame_display_and_emit_update()
-                return
-            self.setLargeImagePageNumber(current_page + 1)
-            self._config["keep_prev"] = keep_prev
-            self._update_frame_display_and_emit_update()
-            return
 
-        self._set_active_view("canvas")
-
-        if not self.mayContinue():
-            return
-
-        if self.video_loader is not None:
-            if self.frame_number >= self.num_frames:
-                self.frame_number = 0
-                self.set_frame_number(self.frame_number)
-
-            if self.frame_number < self.num_frames:
-                if self.step_size + self.frame_number <= self.num_frames:
-                    self.frame_number += self.step_size
+            if self.video_loader is not None:
+                last_frame = max(0, int(self.num_frames) - 1)
+                if self.frame_number >= last_frame:
+                    if getattr(self, "isPlaying", False):
+                        self.frame_number = last_frame
+                        self.togglePlay()
+                    else:
+                        self.frame_number = 0
                 else:
-                    self.frame_number += 1
-            else:
-                self.frame_number = self.num_frames
-                self.togglePlay()
-            self._suppress_audio_seek = True
-            try:
-                self.set_frame_number(self.frame_number)
-                self._set_seekbar_value_without_signal(self.frame_number)
-            finally:
-                self._suppress_audio_seek = False
-            if not bool(
-                getattr(self, "_uniq_label_selection_connected", False)
-            ) and hasattr(self, "uniqLabelList"):
+                    step = max(1, int(self.step_size or 1))
+                    if self.frame_number + step <= last_frame:
+                        self.frame_number += step
+                    else:
+                        self.frame_number = last_frame
+                self._suppress_audio_seek = True
                 try:
-                    self.uniqLabelList.itemSelectionChanged.connect(
-                        self.handle_uniq_label_list_selection_change
-                    )
-                    self._uniq_label_selection_connected = True
-                except Exception:
-                    pass
+                    self.set_frame_number(self.frame_number)
+                    self._set_seekbar_value_without_signal(self.frame_number)
+                finally:
+                    self._suppress_audio_seek = False
+                if not bool(
+                    getattr(self, "_uniq_label_selection_connected", False)
+                ) and hasattr(self, "uniqLabelList"):
+                    try:
+                        self.uniqLabelList.itemSelectionChanged.connect(
+                            self.handle_uniq_label_list_selection_change
+                        )
+                        self._uniq_label_selection_connected = True
+                    except Exception:
+                        pass
 
-        else:
-            visible_files = self._checked_file_paths()
-            if len(visible_files) <= 0:
-                self._config["keep_prev"] = keep_prev
-                self._update_frame_display_and_emit_update()
-                return
-
-            filename = None
-            if self.filename is None or self.filename not in visible_files:
-                filename = visible_files[0]
             else:
-                currIndex = visible_files.index(self.filename)
-                if currIndex + 1 < len(visible_files):
-                    filename = visible_files[currIndex + 1]
+                visible_files = self._checked_file_paths()
+                if len(visible_files) <= 0:
+                    self._update_frame_display_and_emit_update()
+                    return
+
+                filename = None
+                if self.filename is None or self.filename not in visible_files:
+                    filename = visible_files[0]
                 else:
-                    filename = visible_files[-1]
-            self.filename = filename
+                    currIndex = visible_files.index(self.filename)
+                    if currIndex + 1 < len(visible_files):
+                        filename = visible_files[currIndex + 1]
+                    else:
+                        filename = visible_files[-1]
+                self.filename = filename
 
-            if self.filename and load:
-                self.loadFile(self.filename)
-                self._set_current_file_item(self.filename)
-                if self.caption_widget is not None:
-                    self.caption_widget.set_image_path(self.filename)
+                if self.filename and load:
+                    self.loadFile(self.filename)
+                    self._set_current_file_item(self.filename)
+                    if self.caption_widget is not None:
+                        self.caption_widget.set_image_path(self.filename)
 
-        self._config["keep_prev"] = keep_prev
-        self._update_frame_display_and_emit_update()
+            self._update_frame_display_and_emit_update()
+        finally:
+            self._config["keep_prev"] = keep_prev
 
     def openPrevImg(self, _value=False):
         keep_prev = self._config["keep_prev"]
-        if Qt.KeyboardModifiers() == (Qt.ControlModifier | Qt.ShiftModifier):
+        if QtWidgets.QApplication.keyboardModifiers() == (
+            Qt.ControlModifier | Qt.ShiftModifier
+        ):
             self._config["keep_prev"] = True
 
-        if self._using_large_image_page_navigation():
-            if not self.mayContinue():
-                self._config["keep_prev"] = keep_prev
-                return
-            page_count = int(
-                self._largeImagePageCount()
-                if hasattr(self, "_largeImagePageCount")
-                else getattr(self, "num_frames", 0) or 0
-            )
-            if page_count <= 0:
-                self._config["keep_prev"] = keep_prev
-                return
-            prev_page = max(
-                0,
-                int(
-                    self._largeImageCurrentPage()
-                    if hasattr(self, "_largeImageCurrentPage")
-                    else getattr(self, "frame_number", 0) or 0
+        try:
+            if self._using_large_image_page_navigation():
+                if not self.mayContinue():
+                    return
+                page_count = int(
+                    self._largeImagePageCount()
+                    if hasattr(self, "_largeImagePageCount")
+                    else getattr(self, "num_frames", 0) or 0
                 )
-                - 1,
-            )
-            self.setLargeImagePageNumber(prev_page)
-            self._config["keep_prev"] = keep_prev
-            self._update_frame_display_and_emit_update()
-            return
-
-        self._set_active_view("canvas")
-
-        if not self.mayContinue():
-            return
-
-        if self.video_loader is not None:
-            if self.frame_number > 1:
-                if self.frame_number - self.step_size >= 1:
-                    self.frame_number -= self.step_size
-                else:
-                    self.frame_number -= 1
-            else:
-                self.frame_number = 0
-            self.set_frame_number(self.frame_number)
-            self._set_seekbar_value_without_signal(self.frame_number)
-
-        else:
-            visible_files = self._checked_file_paths()
-            if len(visible_files) <= 0:
-                return
-            if self.filename is None or self.filename not in visible_files:
-                filename = visible_files[0]
-                self.loadFile(filename)
-                self._set_current_file_item(filename)
-                if self.caption_widget is not None:
-                    self.caption_widget.set_image_path(self.filename)
-                self._config["keep_prev"] = keep_prev
+                if page_count <= 0:
+                    return
+                prev_page = max(
+                    0,
+                    int(
+                        self._largeImageCurrentPage()
+                        if hasattr(self, "_largeImageCurrentPage")
+                        else getattr(self, "frame_number", 0) or 0
+                    )
+                    - 1,
+                )
+                self.setLargeImagePageNumber(prev_page)
                 self._update_frame_display_and_emit_update()
                 return
 
-            currIndex = visible_files.index(self.filename)
-            if currIndex - 1 >= 0:
-                filename = visible_files[currIndex - 1]
-                if filename:
+            self._set_active_view("canvas")
+
+            if not self.mayContinue():
+                return
+
+            if self.video_loader is not None:
+                step = max(1, int(self.step_size or 1))
+                self.frame_number = max(0, int(self.frame_number) - step)
+                self.set_frame_number(self.frame_number)
+                self._set_seekbar_value_without_signal(self.frame_number)
+
+            else:
+                visible_files = self._checked_file_paths()
+                if len(visible_files) <= 0:
+                    return
+                if self.filename is None or self.filename not in visible_files:
+                    filename = visible_files[0]
                     self.loadFile(filename)
                     self._set_current_file_item(filename)
                     if self.caption_widget is not None:
                         self.caption_widget.set_image_path(self.filename)
+                    self._update_frame_display_and_emit_update()
+                    return
 
-        self._config["keep_prev"] = keep_prev
+                currIndex = visible_files.index(self.filename)
+                if currIndex - 1 >= 0:
+                    filename = visible_files[currIndex - 1]
+                    if filename:
+                        self.loadFile(filename)
+                        self._set_current_file_item(filename)
+                        if self.caption_widget is not None:
+                            self.caption_widget.set_image_path(self.filename)
+
+            self._update_frame_display_and_emit_update()
+        finally:
+            self._config["keep_prev"] = keep_prev
         self._update_frame_display_and_emit_update()
 
     def _emit_live_frame_update(self):

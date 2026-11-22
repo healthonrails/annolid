@@ -73,22 +73,36 @@ class PlaybackDrawMixin:
                 )
                 continue
             self.tools.addAction(item)
+        kp_action = getattr(self, "toggle_keypoint_sequence_action", None)
+        if kp_action is not None and kp_action not in tool:
+            try:
+                self.tools.add_stacked_action(
+                    kp_action,
+                    "Keypoint\nSequence",
+                    width=58,
+                    min_height=68,
+                    icon_size=QtCore.QSize(32, 32),
+                )
+            except Exception:
+                self.tools.addAction(kp_action)
         self.canvas.menus[0].clear()
         utils.addActions(self.canvas.menus[0], menu)
         self.menus.edit.clear()
         actions = (
             self.actions.createMode,
             self.actions.createRectangleMode,
+            getattr(self.actions, "createOrientedRectangleMode", None),
             self.actions.createCircleMode,
+            getattr(self.actions, "createCircle3PMode", None),
             self.actions.createLineMode,
             self.actions.createPointMode,
             self.actions.createLineStripMode,
             self.actions.editMode,
-            getattr(self.actions, "inferPagePolygons", None),
-            getattr(self.actions, "collapsePolygons", None),
-            getattr(self.actions, "restorePolygons", None),
         )
-        utils.addActions(self.menus.edit, actions + self.actions.editMenu)
+        utils.addActions(
+            self.menus.edit,
+            tuple(a for a in actions if a is not None) + self.actions.editMenu,
+        )
 
     def scrollRequest(self, delta, orientation):
         orientation = normalize_orientation(orientation)
@@ -190,7 +204,11 @@ class PlaybackDrawMixin:
         draw_actions = {
             "polygon": getattr(self.actions, "createMode", None),
             "rectangle": getattr(self.actions, "createRectangleMode", None),
+            "oriented_rectangle": getattr(
+                self.actions, "createOrientedRectangleMode", None
+            ),
             "circle": getattr(self.actions, "createCircleMode", None),
+            "circle_3p": getattr(self.actions, "createCircle3PMode", None),
             "point": getattr(self.actions, "createPointMode", None),
             "line": getattr(self.actions, "createLineMode", None),
             "linestrip": getattr(self.actions, "createLineStripMode", None),
@@ -333,7 +351,17 @@ class PlaybackDrawMixin:
             mode="rectangle",
         )
         _wire(
+            getattr(self.actions, "createOrientedRectangleMode", None),
+            edit=False,
+            mode="oriented_rectangle",
+        )
+        _wire(
             getattr(self.actions, "createCircleMode", None), edit=False, mode="circle"
+        )
+        _wire(
+            getattr(self.actions, "createCircle3PMode", None),
+            edit=False,
+            mode="circle_3p",
         )
         _wire(getattr(self.actions, "createLineMode", None), edit=False, mode="line")
         _wire(getattr(self.actions, "createPointMode", None), edit=False, mode="point")
@@ -372,7 +400,11 @@ class PlaybackDrawMixin:
             "edit": getattr(self.actions, "editMode", None),
             "polygon": getattr(self.actions, "createMode", None),
             "rectangle": getattr(self.actions, "createRectangleMode", None),
+            "oriented_rectangle": getattr(
+                self.actions, "createOrientedRectangleMode", None
+            ),
             "circle": getattr(self.actions, "createCircleMode", None),
+            "circle_3p": getattr(self.actions, "createCircle3PMode", None),
             "line": getattr(self.actions, "createLineMode", None),
             "point": getattr(self.actions, "createPointMode", None),
             "linestrip": getattr(self.actions, "createLineStripMode", None),

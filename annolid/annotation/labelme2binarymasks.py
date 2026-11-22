@@ -60,7 +60,7 @@ class LabelMeProcessor:
         polygons = [
             (shape["points"], shape["label"])
             for shape in self.data["shapes"]
-            if shape["shape_type"] == "polygon"
+            if shape.get("shape_type") in {"polygon", "oriented_rectangle"}
         ]
         return polygons
 

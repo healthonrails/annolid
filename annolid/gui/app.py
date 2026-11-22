@@ -255,13 +255,31 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         self._prediction_appended_frames = set()
         self._follow_prediction_progress = True
 
+        canvas_cfg = self._config.get("canvas") or {}
         self.canvas = self.labelList.canvas = Canvas(
             epsilon=self._config["epsilon"],
-            double_click=self._config["canvas"]["double_click"],
-            num_backups=self._config["canvas"]["num_backups"],
-            crosshair=self._config["canvas"]["crosshair"],
+            double_click=canvas_cfg.get("double_click", "close"),
+            num_backups=canvas_cfg.get("num_backups", 10),
+            crosshair=canvas_cfg.get("crosshair"),
+            allow_points_outside_image=bool(
+                canvas_cfg.get("allow_points_outside_image", False)
+            ),
+            show_label_names=bool(canvas_cfg.get("show_label_names", True)),
             sam=self._config["sam"],
         )
+        # Restore persisted Auto Save preference when the user previously toggled it
+        # and no explicit override was passed via constructor config.
+        if (
+            not isinstance(self.config, dict) or "auto_save" not in self.config
+        ) and self.settings.contains("app/auto_save"):
+            saved_auto = bool(self.settings.value("app/auto_save", False, type=bool))
+            self._config["auto_save"] = saved_auto
+            if getattr(self.actions, "saveAuto", None) is not None:
+                self.actions.saveAuto.blockSignals(True)
+                try:
+                    self.actions.saveAuto.setChecked(saved_auto)
+                finally:
+                    self.actions.saveAuto.blockSignals(False)
         try:
             self.canvas.setShowPoseEdges(self._show_pose_edges)
         except Exception:
@@ -271,6 +289,15 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         except Exception:
             pass
         self.feature_states["viewers"] = setup_viewers_feature(feature_deps)
+        if getattr(self, "large_image_view", None) is not None:
+            if hasattr(self.large_image_view, "setAllowPointsOutsideImage"):
+                self.large_image_view.setAllowPointsOutsideImage(
+                    bool(canvas_cfg.get("allow_points_outside_image", False))
+                )
+            if hasattr(self.large_image_view, "setShowLabelNames"):
+                self.large_image_view.setShowLabelNames(
+                    bool(canvas_cfg.get("show_label_names", True))
+                )
         self.canvas.zoomRequest.connect(self.zoomRequest)
 
         self.canvas.scrollRequest.connect(self.scrollRequest)
@@ -289,6 +316,11 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
         )
         self.canvas.drawingPolygon.connect(self.toggleDrawingSensitive)
         self.canvas.vertexSelected.connect(self.actions.removePoint.setEnabled)
+        if (
+            hasattr(self.canvas, "edgeSelected")
+            and getattr(self.actions, "addPointToEdge", None) is not None
+        ):
+            self.canvas.edgeSelected.connect(self.actions.addPointToEdge.setEnabled)
         self._setup_label_list_connections()
         self._setup_file_list_connections()
 

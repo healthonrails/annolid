@@ -8,19 +8,20 @@ import time
 from pathlib import Path
 from typing import Any, Set
 
-import numpy as np
 from PIL import Image
 from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtCore import Qt
 
+from annolid.annotation.shape_io import serialize_shape
 from annolid.annotation.timestamps import convert_frame_number_to_time
 from annolid.gui.label_file import LabelFile, LabelFileError
-from annolid.gui.window_base import PY2, utils
+from annolid.gui.window_base import utils
 from annolid.infrastructure import AnnotationStore
 from annolid.infrastructure.filesystem import (
     get_frame_number_from_json,
 )
 from annolid.utils.logger import logger
+from annolid.utils.zone_shapes import is_zone_shape_payload
 
 
 class _LabelStatsTaskSignals(QtCore.QObject):
@@ -185,41 +186,16 @@ class PersistenceLifecycleMixin:
         lf = LabelFile()
         has_zone_shapes = False
 
-        def with_manual_tag(description: str | None) -> str:
-            text = (description or "").strip()
-            if not text:
-                return "manul"
-            lowered_tokens = {token.strip().lower() for token in text.split(",")}
-            if "manul" in lowered_tokens:
-                return text
-            return f"{text}, manul"
-
         def format_shape(s):
             nonlocal has_zone_shapes
-            data = s.other_data.copy()
-            s_flags = getattr(s, "flags", None) or {}
-            if (
-                (s.description and "zone" in s.description.lower())
-                or bool(s_flags.get("zone"))
-                or str(s_flags.get("semantic_type") or "").strip().lower() == "zone"
-            ):
-                has_zone_shapes = True
-            if len(s.points) <= 1:
-                s.shape_type = "point"
-            data.update(
-                dict(
-                    label=s.label.encode("utf-8") if PY2 else s.label,
-                    points=[(p.x(), p.y()) for p in s.points],
-                    group_id=s.group_id,
-                    shape_type=s.shape_type,
-                    flags=s.flags,
-                    mask=None
-                    if s.mask is None
-                    else utils.img_arr_to_b64(s.mask.astype(np.uint8)),
-                    visible=s.visible,
-                    description=with_manual_tag(s.description),
-                )
+            data = serialize_shape(
+                s,
+                include_manual_tag=True,
+                sanitize_flags=False,
+                include_null_mask=True,
             )
+            if is_zone_shape_payload(data):
+                has_zone_shapes = True
             return data
 
         shapes = [format_shape(item.shape()) for item in self.labelList]
@@ -307,6 +283,10 @@ class PersistenceLifecycleMixin:
 
             self.labelFile = lf
             items = self.fileListWidget.findItems(self.imagePath, Qt.MatchExactly)
+            if not items and self.filename and self.filename != self.imagePath:
+                items = self.fileListWidget.findItems(
+                    str(self.filename), Qt.MatchExactly
+                )
             if len(items) > 0:
                 if len(items) != 1:
                     raise RuntimeError("There are duplicate files.")
@@ -1240,12 +1220,25 @@ class PersistenceLifecycleMixin:
         self._cancel_auto_save()
         self.dirty = False
         self.actions.save.setEnabled(False)
-        self.actions.createMode.setEnabled(True)
-        self.actions.createRectangleMode.setEnabled(True)
-        self.actions.createCircleMode.setEnabled(True)
-        self.actions.createLineMode.setEnabled(True)
-        self.actions.createPointMode.setEnabled(True)
-        self.actions.createLineStripMode.setEnabled(True)
+        canvas = getattr(self, "canvas", None)
+        is_editing = canvas is None or bool(canvas.editing())
+        if is_editing:
+            for name in (
+                "createMode",
+                "createRectangleMode",
+                "createOrientedRectangleMode",
+                "createCircleMode",
+                "createCircle3PMode",
+                "createLineMode",
+                "createPointMode",
+                "createLineStripMode",
+            ):
+                act = getattr(self.actions, name, None)
+                if act is not None:
+                    act.setEnabled(True)
+        undo_act = getattr(self.actions, "undo", None)
+        if undo_act is not None and canvas is not None:
+            undo_act.setEnabled(bool(getattr(canvas, "isShapeRestorable", False)))
         title = "Annolid"
         if self.filename is not None:
             title = self.getTitle()

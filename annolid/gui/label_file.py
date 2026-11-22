@@ -5,8 +5,7 @@ import os.path as osp
 
 import PIL.Image
 
-from annolid.utils.annotation_compat import PY2
-from annolid.utils.annotation_compat import QT4
+from annolid.annotation.shape_io import deserialize_shape_record
 from annolid.utils.annotation_compat import __version__
 from annolid.utils.logger import logger
 from annolid.utils.annotation_compat import utils
@@ -28,12 +27,7 @@ def _allow_large_pil_images():
 @contextlib.contextmanager
 def open(name, mode):
     assert mode in ["r", "w"]
-    if PY2:
-        mode += "b"
-        encoding = None
-    else:
-        encoding = "utf-8"
-    with io.open(name, mode, encoding=encoding) as file_obj:
+    with io.open(name, mode, encoding="utf-8") as file_obj:
         yield file_obj
 
 
@@ -46,6 +40,8 @@ class LabelFile(object):
 
     def __init__(self, filename=None, is_video_frame=None):
         self.shapes = []
+        self.flags = {}
+        self.otherData = {}
         self.imagePath = None
         self.imageData = None
         self.imageHeight = None
@@ -69,9 +65,7 @@ class LabelFile(object):
 
         with io.BytesIO() as f:
             ext = osp.splitext(filename)[1].lower()
-            if PY2 and QT4:
-                format = "PNG"
-            elif ext in [".jpg", ".jpeg"]:
+            if ext in [".jpg", ".jpeg"]:
                 format = "JPEG"
             else:
                 format = "PNG"
@@ -90,18 +84,6 @@ class LabelFile(object):
             "imageWidth",
             "caption",
         ]
-        shape_keys = [
-            "label",
-            "points",
-            "group_id",
-            "shape_type",
-            "flags",
-            "description",
-            "mask",
-            "visible",
-            "shared_vertex_ids",
-            "shared_edge_ids",
-        ]
         try:
             data = load_labelme_json(filename)
         except AnnotationStoreError as err:
@@ -119,12 +101,9 @@ class LabelFile(object):
 
             if data.get("imageData") is not None:
                 imageData = base64.b64decode(data["imageData"])
-                if PY2 and QT4:
-                    imageData = utils.img_data_to_png_data(imageData)
             elif data.get("imagePath") is not None and data["imagePath"] != "":
                 # relative path from label file to relative path from cwd
                 resolved_image_path = osp.join(osp.dirname(filename), data["imagePath"])
-                imagePath = resolved_image_path
                 if osp.exists(resolved_image_path):
                     imageData = self.load_image_file(resolved_image_path)
                 elif not self.is_video_frame:
@@ -138,41 +117,13 @@ class LabelFile(object):
             imageWidth = data.get("imageWidth")
             if data.get("imagePath") is not None:
                 imagePath = data["imagePath"]
-            if self.is_video_frame is None and imageData is not None:
+            if not self.is_video_frame and imageData is not None:
                 imageHeight, imageWidth = self._check_image_height_and_width(
-                    base64.b64encode(imageData).decode("utf-8"),
+                    imageData,
                     imageHeight,
                     imageWidth,
                 )
-            shapes = [
-                dict(
-                    label=s["label"],
-                    points=s["points"],
-                    shape_type=s.get("shape_type", "polygon"),
-                    flags=s.get("flags", {}),
-                    description=s.get("description"),
-                    group_id=s.get("group_id"),
-                    # Only hydrate mask payload for true mask shapes.
-                    # Legacy files can contain a stale "mask" key on polygon
-                    # records, which would otherwise render as a filled bitmap
-                    # overlay on canvas even when we expect polygon geometry.
-                    mask=utils.img_b64_to_arr(s["mask"]).astype(bool)
-                    if (
-                        str(s.get("shape_type", "polygon")).lower() == "mask"
-                        and s.get("mask")
-                    )
-                    else None,
-                    # Backward-compatible default: missing/null visibility should
-                    # keep shapes visible in the canvas and checked in the list.
-                    visible=True
-                    if s.get("visible") is None
-                    else bool(s.get("visible")),
-                    shared_vertex_ids=list(s.get("shared_vertex_ids") or []),
-                    shared_edge_ids=list(s.get("shared_edge_ids") or []),
-                    other_data={k: v for k, v in s.items() if k not in shape_keys},
-                )
-                for s in data["shapes"]
-            ]
+            shapes = [deserialize_shape_record(s) for s in data["shapes"]]
         except Exception as e:
             raise LabelFileError(e)
 
@@ -198,22 +149,30 @@ class LabelFile(object):
     @staticmethod
     def _check_image_height_and_width(imageData, imageHeight, imageWidth):
         try:
-            raw = base64.b64decode(
-                imageData.encode("utf-8") if isinstance(imageData, str) else imageData
-            )
+            if isinstance(imageData, (bytes, bytearray)):
+                raw = bytes(imageData)
+            else:
+                raw = base64.b64decode(imageData.encode("utf-8"))
             with _allow_large_pil_images():
                 with PIL.Image.open(io.BytesIO(raw)) as image:
                     actual_width, actual_height = image.size
         except Exception:
-            img_arr = utils.img_b64_to_arr(imageData)
+            if isinstance(imageData, (bytes, bytearray)):
+                img_arr = utils.img_data_to_arr(bytes(imageData))
+            else:
+                img_arr = utils.img_b64_to_arr(imageData)
             actual_height, actual_width = img_arr.shape[:2]
-        if imageHeight is not None and actual_height != imageHeight:
+        if imageHeight is None:
+            imageHeight = actual_height
+        elif actual_height != imageHeight:
             logger.error(
                 "imageHeight does not match with imageData or imagePath, "
                 "so getting imageHeight from actual image."
             )
             imageHeight = actual_height
-        if imageWidth is not None and actual_width != imageWidth:
+        if imageWidth is None:
+            imageWidth = actual_width
+        elif actual_width != imageWidth:
             logger.error(
                 "imageWidth does not match with imageData or imagePath, "
                 "so getting imageWidth from actual image."
@@ -234,10 +193,10 @@ class LabelFile(object):
         caption=None,
     ):
         if imageData is not None:
-            imageData = base64.b64encode(imageData).decode("utf-8")
             imageHeight, imageWidth = self._check_image_height_and_width(
                 imageData, imageHeight, imageWidth
             )
+            imageData = base64.b64encode(imageData).decode("utf-8")
         if otherData is None:
             otherData = {}
         if flags is None:
