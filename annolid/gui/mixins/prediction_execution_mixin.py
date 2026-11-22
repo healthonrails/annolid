@@ -676,13 +676,10 @@ class PredictionExecutionMixin:
                 self.video_processor = processor
             elif self._is_yolo_model(model_name, model_weight):
                 from annolid.segmentation.yolos import InferenceProcessor
+                from annolid.yolo import is_prompt_free_yoloe as _is_prompt_free_yoloe
 
                 weight_lower = (model_weight or "").lower()
-                is_prompt_free_yoloe = "yoloe" in weight_lower and (
-                    "-pf." in weight_lower
-                    or weight_lower.endswith("-pf")
-                    or "-pf_" in weight_lower
-                )
+                is_prompt_free_yoloe = _is_prompt_free_yoloe(model_weight)
 
                 visual_prompts = {}
                 class_names = None
@@ -728,15 +725,34 @@ class PredictionExecutionMixin:
                     pose_keypoint_names = list(self._pose_schema.keypoints)
                 if getattr(self, "_pose_schema_path", None):
                     pose_schema_path = self._pose_schema_path
-                self.video_processor = InferenceProcessor(
-                    model_name=model_weight,
-                    model_type="yolo",
-                    class_names=class_names,
-                    keypoint_names=pose_keypoint_names,
-                    pose_schema_path=pose_schema_path,
-                    yoloe_text_prompt=bool(yoloe_text_prompt),
-                    prompt_class_names=prompt_class_names,
+
+                yolo_cache_key = (
+                    str(model_weight or ""),
+                    tuple(class_names or ()),
+                    tuple(prompt_class_names or ()),
+                    bool(yoloe_text_prompt),
+                    tuple(pose_keypoint_names or ()),
+                    str(pose_schema_path or ""),
                 )
+                cached_yolo = getattr(self, "_yolo_inference_processor", None)
+                if (
+                    cached_yolo is not None
+                    and getattr(self, "_yolo_inference_processor_key", None)
+                    == yolo_cache_key
+                ):
+                    self.video_processor = cached_yolo
+                else:
+                    self.video_processor = InferenceProcessor(
+                        model_name=model_weight,
+                        model_type="yolo",
+                        class_names=class_names,
+                        keypoint_names=pose_keypoint_names,
+                        pose_schema_path=pose_schema_path,
+                        yoloe_text_prompt=bool(yoloe_text_prompt),
+                        prompt_class_names=prompt_class_names,
+                    )
+                    self._yolo_inference_processor = self.video_processor
+                    self._yolo_inference_processor_key = yolo_cache_key
             elif self._is_dino_kpseg_model(model_name, model_weight):
                 from annolid.segmentation.yolos import InferenceProcessor
 
@@ -1228,6 +1244,11 @@ class PredictionExecutionMixin:
                     end_frame=inference_end_frame,
                     step=int(inference_step),
                     skip_existing=True,
+                    output_directory=(
+                        Path(self.video_results_folder)
+                        if self.video_results_folder
+                        else None
+                    ),
                     save_pose_bbox=self._save_pose_bbox,
                 )
                 watch_start_frame = int(inference_start_frame)

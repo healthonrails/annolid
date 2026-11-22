@@ -18,14 +18,20 @@ def export_yolo_model(
     model: str = DEFAULT_MODEL,
     *,
     export_format: str = DEFAULT_FORMAT,
+    imgsz: int | None = None,
+    half: bool = False,
+    device: str | None = None,
 ):
     """Export a YOLO model for realtime inference."""
-    from annolid.yolo import configure_ultralytics_cache
+    from annolid.yolo import export_yolo_weights
 
-    configure_ultralytics_cache()
-    yolo_cls = _load_yolo_class()
-    yolo_model = yolo_cls(model)
-    return yolo_model.export(format=export_format)
+    return export_yolo_weights(
+        model,
+        export_format=export_format,
+        imgsz=imgsz,
+        half=half,
+        device=device,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -43,12 +49,34 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_FORMAT,
         help=f"Ultralytics export format (default: {DEFAULT_FORMAT}).",
     )
+    parser.add_argument(
+        "--imgsz",
+        type=int,
+        default=None,
+        help="Optional export image size (e.g. 640).",
+    )
+    parser.add_argument(
+        "--half",
+        action="store_true",
+        help="Export FP16 weights where supported.",
+    )
+    parser.add_argument(
+        "--device",
+        default=None,
+        help="Optional target device (e.g. 'cpu', 'mps', '0').",
+    )
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    exported = export_yolo_model(args.model, export_format=args.export_format)
+    exported = export_yolo_model(
+        args.model,
+        export_format=args.export_format,
+        imgsz=args.imgsz,
+        half=bool(args.half),
+        device=args.device,
+    )
     if exported is not None:
         print(exported)
     return 0

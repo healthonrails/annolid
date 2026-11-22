@@ -268,6 +268,7 @@ class TrainingDashboardWidget(QtWidgets.QWidget):
         self._tb_process: Optional[subprocess.Popen] = None
         self._tb_url = "http://127.0.0.1:6006/"
         self._runs: Dict[str, TrainingRunState] = {}
+        self._training_managers: List[QtCore.QObject] = []
         self._selected_run_key: Optional[str] = None
         self._follow_log = True
 
@@ -285,6 +286,8 @@ class TrainingDashboardWidget(QtWidgets.QWidget):
         super().closeEvent(event)
 
     def register_training_manager(self, manager: QtCore.QObject) -> None:
+        if manager not in self._training_managers:
+            self._training_managers.append(manager)
         started = getattr(manager, "training_started", None)
         finished = getattr(manager, "training_finished", None)
         if hasattr(started, "connect"):
@@ -379,6 +382,14 @@ class TrainingDashboardWidget(QtWidgets.QWidget):
         )
         self.selected_run_label.setStyleSheet("color: #666;")
         header_row.addWidget(self.selected_run_label, 1)
+        self.stop_training_btn = QtWidgets.QPushButton("Stop Training", details)
+        self.stop_training_btn.clicked.connect(self._stop_selected_training)
+        self.stop_training_btn.setEnabled(False)
+        header_row.addWidget(self.stop_training_btn)
+        self.run_inference_btn = QtWidgets.QPushButton("Run Inference…", details)
+        self.run_inference_btn.clicked.connect(self._run_inference_for_selected_run)
+        self.run_inference_btn.setEnabled(False)
+        header_row.addWidget(self.run_inference_btn)
         self.open_log_btn = QtWidgets.QPushButton("Open Log", details)
         self.open_log_btn.clicked.connect(self._open_selected_log)
         self.open_log_btn.setEnabled(False)
@@ -798,12 +809,58 @@ class TrainingDashboardWidget(QtWidgets.QWidget):
                 break
         self._refresh_selected_details()
 
+    def _find_run_checkpoint(self, state: TrainingRunState) -> Optional[Path]:
+        for filename in ("best.pt", "last.pt"):
+            candidate = state.run_dir / "weights" / filename
+            if candidate.is_file():
+                return candidate
+        return None
+
+    def _stop_selected_training(self) -> None:
+        stopped_any = False
+        for manager in list(self._training_managers):
+            is_running = getattr(manager, "is_running", None)
+            stop_fn = getattr(manager, "stop_training", None)
+            if callable(stop_fn) and (not callable(is_running) or is_running()):
+                try:
+                    if stop_fn():
+                        stopped_any = True
+                except Exception:
+                    pass
+        if stopped_any:
+            self.stop_training_btn.setEnabled(False)
+
+    def _run_inference_for_selected_run(self) -> None:
+        key = self._selected_run_key
+        if not key or key not in self._runs:
+            return
+        ckpt = self._find_run_checkpoint(self._runs[key])
+        if ckpt is None:
+            return
+        win = self.window()
+        parent_win = win.parent() if win is not None else None
+        for target in (parent_win, win):
+            if target is not None and hasattr(target, "open_inference_wizard"):
+                try:
+                    target.open_inference_wizard(model_path=str(ckpt))
+                    return
+                except TypeError:
+                    pass
+                except Exception:
+                    pass
+        from annolid.gui.widgets.inference_wizard import InferenceWizard
+
+        wizard = InferenceWizard(model_path=str(ckpt), parent=self)
+        wizard.exec_()
+
     def _refresh_selected_details(self) -> None:
         key = self._selected_run_key
         if not key:
             self.selected_run_label.setText("Select a run to view details.")
             self.selected_run_label.setStyleSheet("color: #666;")
             self.open_log_btn.setEnabled(False)
+            self.stop_training_btn.setEnabled(False)
+            self.run_inference_btn.setEnabled(False)
             self.progress_bar.setEnabled(False)
             self.progress_bar.setValue(0)
             self.progress_bar.setFormat("Progress: —")
@@ -825,6 +882,13 @@ class TrainingDashboardWidget(QtWidgets.QWidget):
         self.open_log_btn.setEnabled(
             state.log_path is not None and state.log_path.exists()
         )
+        can_stop = state.status == "running" and any(
+            callable(getattr(m, "stop_training", None))
+            and (not callable(getattr(m, "is_running", None)) or m.is_running())
+            for m in self._training_managers
+        )
+        self.stop_training_btn.setEnabled(can_stop)
+        self.run_inference_btn.setEnabled(self._find_run_checkpoint(state) is not None)
 
         self._render_epoch_table(state)
         self._render_progress(state)

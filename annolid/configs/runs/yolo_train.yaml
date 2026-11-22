@@ -1,11 +1,22 @@
 model: yolo
 
 train:
+  # Accepts a YOLO data.yaml, a dataset folder containing data.yaml, or a COCO dataset folder/spec.
   data: /path/to/data.yaml
+  # Pretrained Ultralytics model name (e.g. yolo11n-seg.pt, yolo26s-pose.pt) or a local .pt checkpoint.
   weights: yolo11n-seg.pt
-  epochs: 300
+  # Optional fine-tuning preset: balanced | small_dataset | fast | high_accuracy
+  preset: balanced
+  epochs: 150
   imgsz: 640
   batch: 16
+  patience: 50
+  # Fine-tuning options (uncomment or adjust as needed):
+  # freeze: 10
+  # lr0: 0.005
+  # cos_lr: true
+  # optimizer: auto
+  # cache: ram
   device: "0"
   project: /path/to/yolo_runs
   plots: true

@@ -8,6 +8,7 @@ This page summarizes the main workflows supported by Annolid today. Start with t
 | --- | --- |
 | Label and track animals in a video | [Standard GUI Video Workflow](#1-standard-gui-video-workflow) |
 | Track sparse body-part points without training a pose model | [Sparse Keypoint Tracking Workflow](#sparse-keypoint-tracking-workflow) |
+| Fine-tune and run inference with YOLO / YOLOE models | [YOLO & YOLOE Workflow](yolo_workflow.md) |
 | Run model training, prediction, or evaluation from scripts | [CLI Model Workflow](#3-cli-model-workflow) |
 | Score behavior events or time budgets | [Behavior Analysis Workflow](#4-behavior-analysis-workflow) |
 | Generate kinematics, IRR, cohort stats, or HTML5/SVG reports | [Reporting, Statistics & Analysis Studio](reporting_and_statistics.md) |

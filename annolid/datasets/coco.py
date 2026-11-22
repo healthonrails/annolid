@@ -203,6 +203,35 @@ def discover_coco_annotations_dir(
     return None
 
 
+def _annotation_has_segmentation(ann: Dict[str, Any]) -> bool:
+    seg = ann.get("segmentation")
+    if isinstance(seg, list):
+        for poly in seg:
+            if isinstance(poly, list) and len(poly) >= 6:
+                return True
+        return False
+    if isinstance(seg, dict):
+        counts = seg.get("counts")
+        size = seg.get("size")
+        return bool(
+            counts is not None and isinstance(size, (list, tuple)) and len(size) == 2
+        )
+    return False
+
+
+def _coco_has_segmentation(*, config_path: Path, payload: Dict[str, Any]) -> bool:
+    ann_paths = resolve_coco_annotation_paths(config_path=config_path, payload=payload)
+    for ann_path in ann_paths.values():
+        if ann_path is None or not ann_path.exists():
+            continue
+        ann_payload = _load_json_dict(ann_path)
+        annotations = ann_payload.get("annotations")
+        for ann in annotations if isinstance(annotations, list) else []:
+            if isinstance(ann, dict) and _annotation_has_segmentation(ann):
+                return True
+    return False
+
+
 def infer_coco_task(*, config_path: Path, payload: Dict[str, Any]) -> str:
     if (
         payload.get("kpt_shape")
@@ -211,6 +240,7 @@ def infer_coco_task(*, config_path: Path, payload: Dict[str, Any]) -> str:
     ):
         return "pose"
 
+    has_seg = False
     ann_paths = resolve_coco_annotation_paths(config_path=config_path, payload=payload)
     for ann_path in ann_paths.values():
         if ann_path is None or not ann_path.exists():
@@ -218,16 +248,32 @@ def infer_coco_task(*, config_path: Path, payload: Dict[str, Any]) -> str:
         ann_payload = _load_json_dict(ann_path)
         categories = ann_payload.get("categories")
         for category in categories if isinstance(categories, list) else []:
-            if isinstance(category, dict) and isinstance(
-                category.get("keypoints"), list
-            ):
+            kpts = category.get("keypoints") if isinstance(category, dict) else None
+            if isinstance(kpts, list) and len(kpts) > 0:
                 return "pose"
         annotations = ann_payload.get("annotations")
         for ann in annotations if isinstance(annotations, list) else []:
-            keypoints = ann.get("keypoints") if isinstance(ann, dict) else None
+            if not isinstance(ann, dict):
+                continue
+            keypoints = ann.get("keypoints")
             if isinstance(keypoints, list) and len(keypoints) >= 3:
                 return "pose"
-    return "detect"
+            if not has_seg and _annotation_has_segmentation(ann):
+                has_seg = True
+    return "seg" if has_seg else "detect"
+
+
+def _normalize_coco_expected_task(expected_task: Optional[str]) -> Optional[str]:
+    if expected_task is None:
+        return None
+    token = str(expected_task).strip().lower()
+    if not token:
+        return None
+    if token in {"seg", "segment", "segmentation"}:
+        return "seg"
+    if token in {"detect", "detection", "bbox"}:
+        return "detect"
+    return token
 
 
 def materialize_coco_spec_as_yolo(
@@ -238,11 +284,34 @@ def materialize_coco_spec_as_yolo(
     expected_task: Optional[str] = None,
 ) -> Path:
     payload = read_yaml_dict(config_path)
-    task = infer_coco_task(config_path=config_path, payload=payload)
-    if expected_task is not None and task != str(expected_task).strip().lower():
-        raise ValueError(
-            f"Expected a COCO {expected_task} dataset, but inferred {task} from {config_path}"
-        )
+    inferred_task = infer_coco_task(config_path=config_path, payload=payload)
+    norm_expected = _normalize_coco_expected_task(expected_task)
+
+    if norm_expected is None:
+        target_task = inferred_task
+    elif norm_expected == "pose":
+        if inferred_task != "pose":
+            raise ValueError(
+                f"Expected a COCO pose dataset, but inferred {inferred_task} from {config_path}"
+            )
+        target_task = "pose"
+    elif norm_expected == "seg":
+        if inferred_task != "seg" and not _coco_has_segmentation(
+            config_path=config_path, payload=payload
+        ):
+            raise ValueError(
+                f"Expected a COCO seg dataset, but inferred {inferred_task} from {config_path}"
+            )
+        target_task = "seg"
+    elif norm_expected == "detect":
+        # COCO segmentation and pose datasets also carry bounding boxes and can train detectors.
+        target_task = "detect"
+    else:
+        if inferred_task != norm_expected:
+            raise ValueError(
+                f"Expected a COCO {expected_task} dataset, but inferred {inferred_task} from {config_path}"
+            )
+        target_task = norm_expected
 
     target_dir = (
         Path(output_dir).expanduser().resolve()
@@ -250,10 +319,16 @@ def materialize_coco_spec_as_yolo(
         else Path(tempfile.mkdtemp(prefix=f"{config_path.stem}_coco_yolo_")).resolve()
     )
 
-    if task == "pose":
+    if target_task == "pose":
         spec = load_coco_pose_spec(config_path)
         return materialize_coco_pose_as_yolo(
             spec=spec,
+            output_dir=target_dir,
+            link_mode=link_mode,
+        )
+    if target_task == "seg":
+        return materialize_coco_segmentation_as_yolo(
+            config_path=config_path,
             output_dir=target_dir,
             link_mode=link_mode,
         )
@@ -269,6 +344,35 @@ def materialize_coco_detection_as_yolo(
     config_path: Path,
     output_dir: Path,
     link_mode: str = "hardlink",
+) -> Path:
+    return _materialize_coco_boxes_or_segments_as_yolo(
+        config_path=config_path,
+        output_dir=output_dir,
+        link_mode=link_mode,
+        segmentation=False,
+    )
+
+
+def materialize_coco_segmentation_as_yolo(
+    *,
+    config_path: Path,
+    output_dir: Path,
+    link_mode: str = "hardlink",
+) -> Path:
+    return _materialize_coco_boxes_or_segments_as_yolo(
+        config_path=config_path,
+        output_dir=output_dir,
+        link_mode=link_mode,
+        segmentation=True,
+    )
+
+
+def _materialize_coco_boxes_or_segments_as_yolo(
+    *,
+    config_path: Path,
+    output_dir: Path,
+    link_mode: str = "hardlink",
+    segmentation: bool = False,
 ) -> Path:
     payload = read_yaml_dict(config_path)
     root_path = resolve_coco_root_path(config_path=config_path, payload=payload)
@@ -313,7 +417,7 @@ def materialize_coco_detection_as_yolo(
             val_split=val_split,
             seed=int(val_seed),
         )
-        counts["train"] = _convert_coco_detection_split(
+        counts["train"] = _convert_coco_split(
             split_name="train",
             ann_path=ann_paths["train"],
             image_root=image_root_path,
@@ -322,8 +426,9 @@ def materialize_coco_detection_as_yolo(
             category_id_to_index=category_id_to_index,
             include_image_ids=train_ids,
             link_mode=link_mode,
+            segmentation=segmentation,
         )
-        counts["val"] = _convert_coco_detection_split(
+        counts["val"] = _convert_coco_split(
             split_name="val",
             ann_path=ann_paths["train"],
             image_root=image_root_path,
@@ -332,6 +437,7 @@ def materialize_coco_detection_as_yolo(
             category_id_to_index=category_id_to_index,
             include_image_ids=val_ids,
             link_mode=link_mode,
+            segmentation=segmentation,
         )
         auto_val_split_used = counts["val"] > 0
     else:
@@ -339,7 +445,7 @@ def materialize_coco_detection_as_yolo(
             ann_path = ann_paths.get(split)
             if ann_path is None:
                 continue
-            counts[split] = _convert_coco_detection_split(
+            counts[split] = _convert_coco_split(
                 split_name=split,
                 ann_path=ann_path,
                 image_root=image_root_path,
@@ -348,6 +454,7 @@ def materialize_coco_detection_as_yolo(
                 category_id_to_index=category_id_to_index,
                 include_image_ids=None,
                 link_mode=link_mode,
+                segmentation=segmentation,
             )
 
     yolo_payload: Dict[str, Any] = {
@@ -470,7 +577,138 @@ def iter_existing_paths(paths: Iterable[Optional[Path]]) -> Iterable[Path]:
             yield path
 
 
-def _convert_coco_detection_split(
+def _merge_multi_segment(
+    segments: List[List[Tuple[float, float]]],
+) -> List[Tuple[float, float]]:
+    """Merge multi-part polygon contours into a single closed YOLO-seg contour."""
+    if not segments:
+        return []
+    merged = list(segments[0])
+    for seg in segments[1:]:
+        if len(seg) < 3:
+            continue
+        best_dist = float("inf")
+        best_i = 0
+        best_j = 0
+        for i, (mx, my) in enumerate(merged):
+            for j, (sx, sy) in enumerate(seg):
+                dx = mx - sx
+                dy = my - sy
+                dist_sq = dx * dx + dy * dy
+                if dist_sq < best_dist:
+                    best_dist = dist_sq
+                    best_i = i
+                    best_j = j
+        rotated = seg[best_j:] + seg[:best_j] + [seg[best_j]]
+        merged = (
+            merged[: best_i + 1] + rotated + [merged[best_i]] + merged[best_i + 1 :]
+        )
+    return merged
+
+
+def _decode_coco_rle_to_polygons(
+    rle: Dict[str, Any],
+) -> List[List[Tuple[float, float]]]:
+    """Decode uncompressed or compressed COCO RLE dict into polygon contours."""
+    import cv2
+    import numpy as np
+
+    counts = rle.get("counts")
+    size = rle.get("size")
+    if counts is None or not isinstance(size, (list, tuple)) or len(size) != 2:
+        return []
+    try:
+        height, width = int(size[0]), int(size[1])
+    except Exception:
+        return []
+    if height <= 0 or width <= 0:
+        return []
+
+    mask: Optional[Any] = None
+    if isinstance(counts, list):
+        flat = np.zeros(height * width, dtype=np.uint8)
+        pos = 0
+        val = 0
+        for run in counts:
+            try:
+                length = max(0, int(run))
+            except Exception:
+                return []
+            end = min(flat.size, pos + length)
+            if val == 1 and end > pos:
+                flat[pos:end] = 1
+            pos = end
+            val = 1 - val
+            if pos >= flat.size:
+                break
+        mask = flat.reshape((height, width), order="F")
+    elif isinstance(counts, (str, bytes)):
+        try:
+            from pycocotools import mask as coco_mask_util  # type: ignore
+
+            rle_payload = {
+                "size": [height, width],
+                "counts": counts.encode("utf-8") if isinstance(counts, str) else counts,
+            }
+            decoded = coco_mask_util.decode(rle_payload)
+            mask = np.asarray(decoded, dtype=np.uint8)
+        except Exception:
+            return []
+    else:
+        return []
+
+    if mask is None or mask.size == 0:
+        return []
+    if mask.ndim == 3:
+        mask = mask[:, :, 0]
+    mask = np.ascontiguousarray((mask > 0).astype(np.uint8))
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    polygons: List[List[Tuple[float, float]]] = []
+    for contour in contours:
+        pts = contour.reshape(-1, 2)
+        if pts.shape[0] < 3:
+            continue
+        polygons.append([(float(x), float(y)) for x, y in pts])
+    return polygons
+
+
+def _extract_coco_segmentation_polygon(
+    ann: Dict[str, Any],
+) -> List[Tuple[float, float]]:
+    """Extract a single merged polygon (pixel coordinates) from a COCO annotation."""
+    seg = ann.get("segmentation")
+    segments: List[List[Tuple[float, float]]] = []
+    if isinstance(seg, list):
+        for poly in seg:
+            if not isinstance(poly, list) or len(poly) < 6:
+                continue
+            pts: List[Tuple[float, float]] = []
+            try:
+                for idx in range(0, len(poly) - 1, 2):
+                    pts.append((float(poly[idx]), float(poly[idx + 1])))
+            except Exception:
+                continue
+            if len(pts) >= 3:
+                segments.append(pts)
+    elif isinstance(seg, dict):
+        segments = _decode_coco_rle_to_polygons(seg)
+
+    if segments:
+        return _merge_multi_segment(segments)
+
+    # Fallback: convert bbox to a 4-corner polygon so mixed annotations stay valid YOLO-seg.
+    bbox = ann.get("bbox")
+    if isinstance(bbox, list) and len(bbox) >= 4:
+        try:
+            x, y, bw, bh = [float(v) for v in bbox[:4]]
+        except Exception:
+            return []
+        if bw > 0.0 and bh > 0.0:
+            return [(x, y), (x + bw, y), (x + bw, y + bh), (x, y + bh)]
+    return []
+
+
+def _convert_coco_split(
     *,
     split_name: str,
     ann_path: Path,
@@ -480,6 +718,7 @@ def _convert_coco_detection_split(
     category_id_to_index: Dict[int, int],
     include_image_ids: Optional[set[int]],
     link_mode: str,
+    segmentation: bool = False,
 ) -> int:
     payload = _load_json_dict(ann_path)
     images = payload.get("images")
@@ -545,27 +784,38 @@ def _convert_coco_detection_split(
 
         lines: List[str] = []
         for ann in ann_by_image.get(image_id, []):
-            if ann.get("iscrowd"):
-                continue
-            bbox = ann.get("bbox")
-            if not isinstance(bbox, list) or len(bbox) < 4:
-                continue
-            try:
-                x, y, bw, bh = [float(v) for v in bbox[:4]]
-            except Exception:
-                continue
-            if bw <= 0.0 or bh <= 0.0:
+            if ann.get("iscrowd") and not segmentation:
                 continue
             category_id = _safe_int(ann.get("category_id"))
             if category_id is None:
                 continue
             cls_idx = int(category_id_to_index.get(category_id, 0))
 
-            cx = (x + bw / 2.0) / float(width)
-            cy = (y + bh / 2.0) / float(height)
-            nw = bw / float(width)
-            nh = bh / float(height)
-            lines.append(f"{cls_idx} {cx:.6f} {cy:.6f} {nw:.6f} {nh:.6f}")
+            if segmentation:
+                poly_pts = _extract_coco_segmentation_polygon(ann)
+                if len(poly_pts) < 3:
+                    continue
+                coords: List[str] = []
+                for px, py in poly_pts:
+                    nx = min(1.0, max(0.0, px / float(width)))
+                    ny = min(1.0, max(0.0, py / float(height)))
+                    coords.append(f"{nx:.6f} {ny:.6f}")
+                lines.append(f"{cls_idx} " + " ".join(coords))
+            else:
+                bbox = ann.get("bbox")
+                if not isinstance(bbox, list) or len(bbox) < 4:
+                    continue
+                try:
+                    x, y, bw, bh = [float(v) for v in bbox[:4]]
+                except Exception:
+                    continue
+                if bw <= 0.0 or bh <= 0.0:
+                    continue
+                cx = min(1.0, max(0.0, (x + bw / 2.0) / float(width)))
+                cy = min(1.0, max(0.0, (y + bh / 2.0) / float(height)))
+                nw = min(1.0, max(0.0, bw / float(width)))
+                nh = min(1.0, max(0.0, bh / float(height)))
+                lines.append(f"{cls_idx} {cx:.6f} {cy:.6f} {nw:.6f} {nh:.6f}")
 
         dst_label.write_text(
             ("\n".join(lines) + ("\n" if lines else "")),
@@ -573,6 +823,30 @@ def _convert_coco_detection_split(
         )
         written += 1
     return int(written)
+
+
+def _convert_coco_detection_split(
+    *,
+    split_name: str,
+    ann_path: Path,
+    image_root: Path,
+    root_path: Path,
+    output_dir: Path,
+    category_id_to_index: Dict[int, int],
+    include_image_ids: Optional[set[int]],
+    link_mode: str,
+) -> int:
+    return _convert_coco_split(
+        split_name=split_name,
+        ann_path=ann_path,
+        image_root=image_root,
+        root_path=root_path,
+        output_dir=output_dir,
+        category_id_to_index=category_id_to_index,
+        include_image_ids=include_image_ids,
+        link_mode=link_mode,
+        segmentation=False,
+    )
 
 
 def _split_image_ids_for_val(

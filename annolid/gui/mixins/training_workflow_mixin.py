@@ -104,6 +104,7 @@ class TrainingWorkflowMixin:
             yolo_model_file = dlg.yolo_model_file
             yolo_device = getattr(dlg, "yolo_device", None)
             yolo_plots = getattr(dlg, "yolo_plots", False)
+            yolo_resume = bool(getattr(dlg, "yolo_resume", False))
             yolo_train_overrides = (
                 dlg.get_yolo_train_overrides()
                 if hasattr(dlg, "get_yolo_train_overrides")
@@ -301,6 +302,7 @@ class TrainingWorkflowMixin:
                 plots=yolo_plots,
                 train_overrides=yolo_train_overrides,
                 out_dir=out_dir,
+                resume=yolo_resume,
             )
 
         elif algo == "DINO KPSEG":

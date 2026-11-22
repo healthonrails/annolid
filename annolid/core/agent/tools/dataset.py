@@ -179,6 +179,21 @@ def _recommend_models_from_summary(
                 "reason": "COCO keypoint annotations are compatible with keypoint detection workflows.",
             }
         )
+    elif coco_task == "seg":
+        recommendations.append(
+            {
+                "model": "yolo",
+                "task": "segmentation",
+                "reason": "COCO instance segmentation datasets can be materialized into a YOLO segmentation dataset.",
+            }
+        )
+        recommendations.append(
+            {
+                "model": "maskrcnn_detectron2",
+                "task": "segmentation",
+                "reason": "COCO instance annotations are compatible with Detectron2/Mask R-CNN workflows.",
+            }
+        )
     elif "coco_instances" in external_kinds or coco_task == "detect":
         recommendations.append(
             {

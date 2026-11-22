@@ -128,14 +128,17 @@ def find_latest_checkpoint(
       <runs_root>/<task>/<model>/<run_name>/weights/<filename>
     """
     root = Path(runs_root) if runs_root is not None else shared_runs_root()
-    root = root.expanduser().resolve()
-    if not root.exists():
-        return None
+    try:
+        root = root.expanduser().resolve()
+        if not root.exists():
+            return None
 
-    task_slug = _slugify(task)
-    model_slug = _slugify(model)
-    pattern = f"{task_slug}/{model_slug}/*/weights/{filename}"
-    candidates = [p for p in root.glob(pattern) if p.is_file()]
-    if not candidates:
+        task_slug = _slugify(task)
+        model_slug = _slugify(model)
+        pattern = f"{task_slug}/{model_slug}/*/weights/{filename}"
+        candidates = [p for p in root.glob(pattern) if p.is_file()]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda p: p.stat().st_mtime)
+    except OSError:
         return None
-    return max(candidates, key=lambda p: p.stat().st_mtime)

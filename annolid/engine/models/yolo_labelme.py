@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from annolid.engine.registry import ModelPluginBase, register_model
+from annolid.yolo import is_prompt_free_yoloe
 
 
 def _split_classes(value: Optional[str]) -> List[str]:
@@ -20,8 +21,7 @@ def _split_classes(value: Optional[str]) -> List[str]:
 
 
 def _looks_like_prompt_free_yoloe(weight: str) -> bool:
-    w = str(weight or "").lower()
-    return "yoloe" in w and ("-pf." in w or w.endswith("-pf") or "-pf_" in w)
+    return is_prompt_free_yoloe(weight)
 
 
 def _load_visual_prompts_json(path: Path) -> Tuple[Dict[str, Any], Optional[List[str]]]:
@@ -109,7 +109,10 @@ def _load_visual_prompts_from_labelme(path: Path) -> Tuple[Dict[str, Any], List[
 @register_model
 class YOLOLabelMePlugin(ModelPluginBase):
     name = "yolo_labelme"
-    description = "Run Ultralytics YOLO/YOLOE inference and export LabelMe JSON (supports YOLOE text + visual prompts)."
+    description = (
+        "Run Ultralytics YOLO/YOLOE inference and export LabelMe JSON "
+        "(supports custom trained weights, YOLOE text/visual prompts, batching, and CSV export)."
+    )
     required_capabilities = ("yolo",)
     predict_help_sections = (
         (
@@ -121,7 +124,29 @@ class YOLOLabelMePlugin(ModelPluginBase):
         ),
         (
             "Outputs and run location",
-            ("--output-dir",),
+            (
+                "--output-dir",
+                "--save-video",
+                "--save-csv",
+            ),
+        ),
+        (
+            "Model and runtime",
+            (
+                "--device",
+                "--imgsz",
+                "--half",
+                "--batch",
+            ),
+        ),
+        (
+            "Inference controls",
+            (
+                "--conf",
+                "--iou",
+                "--max-det",
+                "--skip-existing",
+            ),
         ),
         (
             "Prompting controls",
@@ -146,6 +171,11 @@ class YOLOLabelMePlugin(ModelPluginBase):
             ("--save-pose-bbox",),
         ),
     )
+    predict_examples = (
+        "annolid-run predict yolo_labelme --weights /path/to/best.pt --source /path/to/video.mp4 --conf 0.3 --save-csv",
+        "annolid-run predict yolo_labelme --weights yoloe-26s-seg.pt --source /path/to/video.mp4 --classes 'mouse,arena'",
+        "annolid-run predict yolo_labelme --weights yolo11s-seg.pt --source /path/to/video.mp4 --no-tracking --batch 8 --skip-existing",
+    )
 
     def add_predict_args(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument(
@@ -162,6 +192,61 @@ class YOLOLabelMePlugin(ModelPluginBase):
             "--output-dir",
             default=None,
             help="Output directory. Default: <source-without-suffix>/",
+        )
+        parser.add_argument(
+            "--device",
+            default=None,
+            help="Inference device: auto, 'cpu', 'mps', or '0' for CUDA GPU 0",
+        )
+        parser.add_argument(
+            "--conf",
+            type=float,
+            default=None,
+            help="Confidence threshold (e.g. 0.25)",
+        )
+        parser.add_argument(
+            "--iou",
+            type=float,
+            default=None,
+            help="NMS IoU threshold (e.g. 0.7)",
+        )
+        parser.add_argument(
+            "--imgsz",
+            type=int,
+            default=None,
+            help="Inference image size in pixels (e.g. 640)",
+        )
+        parser.add_argument(
+            "--max-det",
+            type=int,
+            default=None,
+            help="Maximum detections per frame",
+        )
+        parser.add_argument(
+            "--half",
+            action="store_true",
+            help="Use FP16 half precision on supported GPUs",
+        )
+        parser.add_argument(
+            "--batch",
+            type=int,
+            default=1,
+            help="Frame batch size for video inference when --no-tracking is set",
+        )
+        parser.add_argument(
+            "--skip-existing",
+            action="store_true",
+            help="Resume by skipping frames that already have saved annotations",
+        )
+        parser.add_argument(
+            "--save-video",
+            default=None,
+            help="Optional path to write an annotated preview video",
+        )
+        parser.add_argument(
+            "--save-csv",
+            action="store_true",
+            help="Also export Annolid tracking CSV files next to --output-dir",
         )
         parser.add_argument(
             "--classes",
@@ -240,6 +325,18 @@ class YOLOLabelMePlugin(ModelPluginBase):
             prompt_class_names = None
             yoloe_text_prompt = False
 
+        device_arg = (
+            str(args.device).strip()
+            if getattr(args, "device", None) is not None and str(args.device).strip()
+            else None
+        )
+        half_arg = True if bool(getattr(args, "half", False)) else None
+        save_video_path = (
+            Path(args.save_video).expanduser().resolve()
+            if getattr(args, "save_video", None)
+            else None
+        )
+
         processor = InferenceProcessor(
             model_name=weights,
             model_type="yolo",
@@ -247,6 +344,12 @@ class YOLOLabelMePlugin(ModelPluginBase):
             persist_json=True,
             yoloe_text_prompt=bool(yoloe_text_prompt),
             prompt_class_names=prompt_class_names,
+            device=device_arg,
+            conf=getattr(args, "conf", None),
+            iou=getattr(args, "iou", None),
+            imgsz=getattr(args, "imgsz", None),
+            max_det=getattr(args, "max_det", None),
+            half=half_arg,
         )
 
         message = processor.run_inference(
@@ -255,13 +358,33 @@ class YOLOLabelMePlugin(ModelPluginBase):
             start_frame=int(args.start_frame),
             end_frame=(int(args.end_frame) if args.end_frame is not None else None),
             step=int(args.step),
-            skip_existing=False,
+            skip_existing=bool(getattr(args, "skip_existing", False)),
             output_directory=output_dir,
             enable_tracking=not bool(args.no_tracking),
             tracker=(str(args.tracker).strip() if args.tracker else None),
             save_pose_bbox=bool(args.save_pose_bbox)
             if bool(args.save_pose_bbox)
             else None,
+            conf=getattr(args, "conf", None),
+            iou=getattr(args, "iou", None),
+            imgsz=getattr(args, "imgsz", None),
+            max_det=getattr(args, "max_det", None),
+            device=device_arg,
+            half=half_arg,
+            batch_size=max(1, int(getattr(args, "batch", 1) or 1)),
+            save_video_path=save_video_path,
         )
         print(str(message))
+
+        if bool(getattr(args, "save_csv", False)):
+            from annolid.annotation.labelme2csv import convert_json_to_csv
+
+            tracking_csv = output_dir.parent / f"{output_dir.name}_tracking.csv"
+            tracked_csv = output_dir.parent / f"{output_dir.name}_tracked.csv"
+            convert_json_to_csv(
+                str(output_dir),
+                csv_file=str(tracking_csv),
+                tracked_csv_file=str(tracked_csv),
+            )
+            print(f"[YOLO] Exported CSV: {tracking_csv} (tracked: {tracked_csv})")
         return 0

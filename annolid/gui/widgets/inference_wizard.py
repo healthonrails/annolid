@@ -16,7 +16,15 @@ from qtpy import QtCore, QtWidgets
 from qtpy.QtCore import Qt, Signal
 
 from annolid.gui.qt_threads import configure_worker_thread_stack
+from annolid.gui.widgets.yolo_training_ui_shared import (
+    infer_yolo_task,
+    parse_yolo_weight_spec,
+    populate_yolo_device_combo,
+    task_key_to_label,
+    yolo_registry_weight_configs,
+)
 from annolid.utils.logger import logger
+from annolid.yolo import discover_yolo_checkpoints
 
 
 class SelectModelPage(QtWidgets.QWizardPage):
@@ -68,9 +76,22 @@ class SelectModelPage(QtWidgets.QWizardPage):
         file_group = QtWidgets.QGroupBox("Model File")
         file_layout = QtWidgets.QVBoxLayout(file_group)
 
+        # Quick-pick YOLO trained runs & built-in presets
+        self.yolo_quick_row = QtWidgets.QWidget()
+        quick_layout = QtWidgets.QHBoxLayout(self.yolo_quick_row)
+        quick_layout.setContentsMargins(0, 0, 0, 0)
+        quick_layout.addWidget(QtWidgets.QLabel("Quick pick:"))
+        self.yolo_quick_combo = QtWidgets.QComboBox()
+        self._populate_yolo_quick_combo()
+        self.yolo_quick_combo.currentIndexChanged.connect(self._on_yolo_quick_selected)
+        quick_layout.addWidget(self.yolo_quick_combo, 1)
+        file_layout.addWidget(self.yolo_quick_row)
+
         model_layout = QtWidgets.QHBoxLayout()
         self.model_edit = QtWidgets.QLineEdit()
-        self.model_edit.setPlaceholderText("Select trained model file")
+        self.model_edit.setPlaceholderText(
+            "Select trained model file or YOLO weight (e.g. best.pt, yolo11n-seg.pt)"
+        )
         self.model_edit.textChanged.connect(self._validate_model)
         model_layout.addWidget(self.model_edit, 1)
 
@@ -111,9 +132,41 @@ class SelectModelPage(QtWidgets.QWizardPage):
 
         self.registerField("modelPath*", self.model_edit)
 
+    def _populate_yolo_quick_combo(self) -> None:
+        self.yolo_quick_combo.blockSignals(True)
+        try:
+            self.yolo_quick_combo.clear()
+            self.yolo_quick_combo.addItem("— Select trained run or preset —", "")
+            seen: set[str] = set()
+            try:
+                for ckpt in discover_yolo_checkpoints(limit=8):
+                    p = str(ckpt.path)
+                    if p in seen:
+                        continue
+                    seen.add(p)
+                    self.yolo_quick_combo.addItem(f"Trained: {ckpt.display_name}", p)
+            except Exception:
+                pass
+            if seen:
+                self.yolo_quick_combo.insertSeparator(self.yolo_quick_combo.count())
+            for cfg in yolo_registry_weight_configs(include_yoloe=True):
+                wf = str(cfg.weight_file).strip()
+                if not wf or wf.lower() in seen:
+                    continue
+                seen.add(wf.lower())
+                self.yolo_quick_combo.addItem(f"Preset: {cfg.display_name} ({wf})", wf)
+        finally:
+            self.yolo_quick_combo.blockSignals(False)
+
+    def _on_yolo_quick_selected(self) -> None:
+        val = str(self.yolo_quick_combo.currentData() or "").strip()
+        if val:
+            self.model_edit.setText(val)
+
     def _on_type_changed(self, button: QtWidgets.QAbstractButton) -> None:
         model_type = button.objectName()
         self.config_group.setVisible(model_type == "detectron2")
+        self.yolo_quick_row.setVisible(model_type == "yolo")
         self._validate_model()
         self.completeChanged.emit()
 
@@ -121,7 +174,7 @@ class SelectModelPage(QtWidgets.QWizardPage):
         model_type = self.get_model_type()
 
         if model_type == "yolo":
-            filter_str = "YOLO Models (*.pt);;All Files (*)"
+            filter_str = "YOLO Models (*.pt *.onnx *.engine *.mlpackage);;All Files (*)"
         elif model_type == "dino_kpseg":
             filter_str = "Checkpoints (*.pt *.pth *.ckpt);;All Files (*)"
         elif model_type == "detectron2":
@@ -142,15 +195,39 @@ class SelectModelPage(QtWidgets.QWizardPage):
         if path:
             self.config_edit.setText(path)
 
+    def _is_valid_yolo_preset_name(self, value: str) -> bool:
+        if self.get_model_type() != "yolo":
+            return False
+        text = str(value or "").strip()
+        if not text or "/" in text or "\\" in text:
+            return False
+        if parse_yolo_weight_spec(text) is not None:
+            return True
+        low = text.lower()
+        return low.startswith("yolo") and low.endswith(".pt")
+
     def _validate_model(self) -> None:
         path = self.model_edit.text().strip()
         if not path:
             self.model_info.setText("")
             return
 
-        if Path(path).exists():
-            size = Path(path).stat().st_size / (1024 * 1024)
-            self.model_info.setText(f"✓ Model found ({size:.1f} MB)")
+        candidate = Path(path).expanduser()
+        if candidate.exists():
+            size = candidate.stat().st_size / (1024 * 1024)
+            extra = ""
+            if self.get_model_type() == "yolo":
+                task = infer_yolo_task(str(candidate))
+                if task:
+                    extra = f" • {task_key_to_label(task) or task}"
+            self.model_info.setText(f"✓ Model found ({size:.1f} MB{extra})")
+            self.model_info.setStyleSheet("color: green;")
+        elif self._is_valid_yolo_preset_name(path):
+            task = infer_yolo_task(path)
+            task_hint = f" ({task_key_to_label(task) or task})" if task else ""
+            self.model_info.setText(
+                f"✓ Ultralytics pretrained weight{task_hint} (will auto-download if not cached)"
+            )
             self.model_info.setStyleSheet("color: green;")
         else:
             self.model_info.setText("❌ File not found")
@@ -159,11 +236,14 @@ class SelectModelPage(QtWidgets.QWizardPage):
         self.completeChanged.emit()
 
     def _select_recent(self, item: QtWidgets.QListWidgetItem) -> None:
-        self.model_edit.setText(item.text())
+        path = item.data(Qt.UserRole) or item.text()
+        self.model_edit.setText(str(path))
 
     def isComplete(self) -> bool:
         path = self.model_edit.text().strip()
-        return bool(path and Path(path).exists())
+        if not path:
+            return False
+        return Path(path).expanduser().exists() or self._is_valid_yolo_preset_name(path)
 
     def get_model_type(self) -> str:
         checked = self.type_group.checkedButton()
@@ -178,9 +258,25 @@ class SelectModelPage(QtWidgets.QWizardPage):
 
     def set_recent_models(self, models: List[str]) -> None:
         self.recent_list.clear()
-        for m in models[:5]:
-            if Path(m).exists():
-                self.recent_list.addItem(m)
+        seen: set[str] = set()
+        for m in models:
+            raw = str(m or "").strip()
+            if not raw or raw in seen:
+                continue
+            p = Path(raw).expanduser()
+            if not p.exists():
+                continue
+            seen.add(raw)
+            parent_hint = (
+                p.parent.parent.name if p.parent.name == "weights" else p.parent.name
+            )
+            label = f"{parent_hint}/{p.name}" if parent_hint else p.name
+            item = QtWidgets.QListWidgetItem(label)
+            item.setData(Qt.UserRole, str(p))
+            item.setToolTip(str(p))
+            self.recent_list.addItem(item)
+            if self.recent_list.count() >= 8:
+                break
 
 
 class SelectVideosPage(QtWidgets.QWizardPage):
@@ -443,12 +539,51 @@ class ConfigureInferencePage(QtWidgets.QWizardPage):
 
         layout.addWidget(detect_group)
 
+        # YOLO runtime & performance settings
+        yolo_group = QtWidgets.QGroupBox("YOLO Runtime Settings")
+        yolo_layout = QtWidgets.QFormLayout(yolo_group)
+        self.yolo_group = yolo_group
+
+        self.iou_threshold_spin = QtWidgets.QDoubleSpinBox()
+        self.iou_threshold_spin.setRange(0.05, 1.0)
+        self.iou_threshold_spin.setSingleStep(0.05)
+        self.iou_threshold_spin.setValue(0.70)
+        yolo_layout.addRow("NMS IoU threshold:", self.iou_threshold_spin)
+
+        self.imgsz_spin = QtWidgets.QSpinBox()
+        self.imgsz_spin.setRange(0, 2048)
+        self.imgsz_spin.setSingleStep(32)
+        self.imgsz_spin.setValue(640)
+        self.imgsz_spin.setSpecialValueText("Model default")
+        yolo_layout.addRow("Image size:", self.imgsz_spin)
+
+        self.device_combo = QtWidgets.QComboBox()
+        populate_yolo_device_combo(self.device_combo)
+        yolo_layout.addRow("Device:", self.device_combo)
+
+        self.batch_size_spin = QtWidgets.QSpinBox()
+        self.batch_size_spin.setRange(1, 64)
+        self.batch_size_spin.setValue(1)
+        self.batch_size_spin.setToolTip(
+            "Batch frames for faster GPU inference when object tracking is disabled."
+        )
+        yolo_layout.addRow("Frame batch size:", self.batch_size_spin)
+
+        self.skip_existing_check = QtWidgets.QCheckBox(
+            "Skip frames with existing annotations (resume)"
+        )
+        self.skip_existing_check.setChecked(True)
+        yolo_layout.addRow("", self.skip_existing_check)
+
+        layout.addWidget(yolo_group)
+
         # Tracking settings
         track_group = QtWidgets.QGroupBox("Tracking Settings")
         track_layout = QtWidgets.QFormLayout(track_group)
 
         self.enable_tracking_check = QtWidgets.QCheckBox("Enable object tracking")
         self.enable_tracking_check.setChecked(True)
+        self.enable_tracking_check.toggled.connect(self._sync_tracking_batch_state)
         track_layout.addRow("", self.enable_tracking_check)
 
         self.tracker_combo = QtWidgets.QComboBox()
@@ -461,6 +596,7 @@ class ConfigureInferencePage(QtWidgets.QWizardPage):
             ]
         )
         track_layout.addRow("Tracker:", self.tracker_combo)
+        self._sync_tracking_batch_state(True)
 
         layout.addWidget(track_group)
 
@@ -611,6 +747,12 @@ class ConfigureInferencePage(QtWidgets.QWizardPage):
         except Exception:
             pass
 
+    def _sync_tracking_batch_state(self, tracking_enabled: bool) -> None:
+        self.tracker_combo.setEnabled(bool(tracking_enabled))
+        self.batch_size_spin.setEnabled(not bool(tracking_enabled))
+        if tracking_enabled:
+            self.batch_size_spin.setValue(1)
+
     def initializePage(self) -> None:
         super().initializePage()
         wizard = self.wizard()
@@ -620,6 +762,7 @@ class ConfigureInferencePage(QtWidgets.QWizardPage):
                 model_type = str(wizard.select_model_page.get_model_type() or "")
             except Exception:
                 model_type = ""
+        self.yolo_group.setVisible(model_type == "yolo")
         self.dino_group.setVisible(model_type == "dino_kpseg")
 
     def _persist_dino_settings(self, *_args: Any) -> None:
@@ -640,6 +783,11 @@ class ConfigureInferencePage(QtWidgets.QWizardPage):
     def get_config(self) -> Dict[str, Any]:
         return {
             "score_threshold": self.score_threshold_spin.value(),
+            "iou_threshold": self.iou_threshold_spin.value(),
+            "imgsz": self.imgsz_spin.value() or None,
+            "device": str(self.device_combo.currentData() or "").strip() or None,
+            "batch_size": self.batch_size_spin.value(),
+            "skip_existing": self.skip_existing_check.isChecked(),
             "top_k": self.top_k_spin.value(),
             "enable_tracking": self.enable_tracking_check.isChecked(),
             "tracker": self.tracker_combo.currentText(),
@@ -679,9 +827,11 @@ class InferenceWorker(QtCore.QObject):
         self._stop_event = threading.Event()
         self._processed_videos = 0
         self._processed_frames = 0
+        self._total_detections = 0
         self._errors: List[str] = []
         self._output_dirs: List[Path] = []
         self._processor = None
+        self._processor_key: Optional[tuple] = None
         self._segmentor = None
 
     def is_stopped(self) -> bool:
@@ -699,12 +849,11 @@ class InferenceWorker(QtCore.QObject):
             self.finished.emit(self._build_summary(total_videos))
             return
 
-        if not self._config.get("save_labelme", True):
+        model_type = str(self._config.get("model_type") or "").lower()
+        if self._config.get("save_video") and model_type != "yolo":
             self.log.emit(
-                "LabelMe output is required for this workflow; ignoring the toggle."
+                "Annotated video export is currently supported for YOLO models only."
             )
-        if self._config.get("save_video"):
-            self.log.emit("Annotated video export is not available in this workflow.")
 
         for idx, video in enumerate(videos, start=1):
             if self._stop_event.is_set():
@@ -742,6 +891,7 @@ class InferenceWorker(QtCore.QObject):
             "total_videos": total_videos,
             "processed_videos": self._processed_videos,
             "processed_frames": self._processed_frames,
+            "total_detections": self._total_detections,
             "errors": list(self._errors),
             "output_dirs": [str(p) for p in self._output_dirs],
             "stopped": self._stop_event.is_set(),
@@ -860,16 +1010,32 @@ class InferenceWorker(QtCore.QObject):
                 "stabilize_lr": True,
             }
 
-        if (
-            self._processor is None
-            or getattr(self._processor, "model_type", "") != model_type
-        ):
-            resolved_type = "dinokpseg" if model_type == "dino_kpseg" else "yolo"
+        resolved_type = "dinokpseg" if model_type == "dino_kpseg" else "yolo"
+        persist_json = bool(self._config.get("save_labelme", True))
+        device_val = str(self._config.get("device") or "").strip() or None
+        conf_val = self._config.get("score_threshold")
+        iou_val = self._config.get("iou_threshold")
+        imgsz_raw = self._config.get("imgsz")
+        imgsz_val = int(imgsz_raw) if imgsz_raw else None
+        max_det_raw = self._config.get("top_k")
+        max_det_val = int(max_det_raw) if max_det_raw else None
+        batch_size_val = max(1, int(self._config.get("batch_size") or 1))
+        skip_existing_val = bool(self._config.get("skip_existing", True))
+
+        proc_key = (resolved_type, str(model_path), persist_json, device_val)
+        if self._processor is None or self._processor_key != proc_key:
             self._processor = InferenceProcessor(
                 model_name=model_path,
                 model_type=resolved_type,
+                persist_json=persist_json,
                 dino_kpseg_inference_config=dino_cfg,
+                device=device_val,
+                conf=conf_val,
+                iou=iou_val,
+                imgsz=imgsz_val,
+                max_det=max_det_val,
             )
+            self._processor_key = proc_key
         elif model_type == "dino_kpseg":
             try:
                 self._processor.set_dino_kpseg_inference_config(dino_cfg)
@@ -881,17 +1047,23 @@ class InferenceWorker(QtCore.QObject):
         output_dir = self._resolve_output_dir(video_path)
         progress_callback = self._make_progress_callback(video_index, total_videos)
 
+        save_video_path: Optional[Path] = None
+        if model_type == "yolo" and bool(self._config.get("save_video", False)):
+            save_video_path = output_dir.parent / f"{output_dir.name}_annotated.mp4"
+
         self._output_dirs.append(output_dir)
         tracker_name = self._config.get("tracker")
         tracker = self._resolve_tracker()
         if tracker is None and tracker_name and tracker_name not in self._TRACKER_MAP:
             self.log.emit(f"Tracker '{tracker_name}' is not supported; using default.")
+
+        self._processor.detection_count = 0
         message = self._processor.run_inference(
             source=str(video_path),
             start_frame=start_frame,
             end_frame=end_frame,
             step=1,
-            skip_existing=True,
+            skip_existing=skip_existing_val,
             pred_worker=self,
             stop_event=self._stop_event,
             output_directory=output_dir,
@@ -899,11 +1071,21 @@ class InferenceWorker(QtCore.QObject):
             enable_tracking=bool(self._config.get("enable_tracking", True)),
             tracker=tracker,
             save_pose_bbox=self._config.get("save_pose_bbox"),
+            conf=conf_val,
+            iou=iou_val,
+            imgsz=imgsz_val,
+            max_det=max_det_val,
+            device=device_val,
+            batch_size=batch_size_val,
+            save_video_path=save_video_path,
         )
 
+        self._total_detections += int(getattr(self._processor, "detection_count", 0))
         frame_count = self._parse_frame_count(message)
         if frame_count is not None:
             self._processed_frames += frame_count
+        if save_video_path is not None and save_video_path.exists():
+            self.log.emit(f"Saved annotated video: {save_video_path.name}")
 
         if isinstance(message, str) and message.startswith("Error:"):
             raise RuntimeError(message)
@@ -1156,8 +1338,14 @@ class InferenceProgressPage(QtWidgets.QWizardPage):
 
         self.progress_bar.setValue(100)
         self.frame_label.setText("")
-        self.result_videos.setText(f"{processed}/{total}")
-        self.result_detections.setText("—")
+        frames = summary.get("processed_frames", 0)
+        self.result_videos.setText(
+            f"{processed}/{total}" + (f" ({frames} frames)" if frames else "")
+        )
+        detections = summary.get("total_detections")
+        self.result_detections.setText(
+            str(detections) if detections is not None else "—"
+        )
 
         output_dirs = summary.get("output_dirs") or []
         if self._output_path:
@@ -1239,13 +1427,14 @@ class InferenceWizard(QtWidgets.QWizard):
         self,
         model_path: Optional[str] = None,
         video_path: Optional[str] = None,
+        recent_models: Optional[List[str]] = None,
         parent: Optional[QtWidgets.QWidget] = None,
     ) -> None:
         super().__init__(parent)
 
         self.setWindowTitle("Run Inference")
         self.setWizardStyle(QtWidgets.QWizard.ModernStyle)
-        self.setMinimumSize(700, 550)
+        self.setMinimumSize(720, 600)
 
         # Set up pages
         self.select_model_page = SelectModelPage()
@@ -1257,6 +1446,17 @@ class InferenceWizard(QtWidgets.QWizard):
         self.addPage(self.select_videos_page)
         self.addPage(self.configure_page)
         self.addPage(self.progress_page)
+
+        # Populate recent trained models
+        if recent_models is None:
+            try:
+                recent_models = [
+                    str(ckpt.path) for ckpt in discover_yolo_checkpoints(limit=8)
+                ]
+            except Exception:
+                recent_models = []
+        if recent_models:
+            self.select_model_page.set_recent_models(recent_models)
 
         # Pre-fill if provided
         if model_path:

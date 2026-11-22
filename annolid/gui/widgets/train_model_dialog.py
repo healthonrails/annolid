@@ -1,33 +1,40 @@
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from qtpy import QtCore, QtWidgets
 
 from annolid.utils.devices import get_device
-from annolid.gui.models_registry import (
-    MODEL_REGISTRY,
-    PATCH_SIMILARITY_DEFAULT_MODEL,
-)
+from annolid.gui.models_registry import PATCH_SIMILARITY_DEFAULT_MODEL
 from annolid.gui.widgets.dino_training_ui_shared import (
     apply_dino_bce_control_state,
     apply_dino_head_control_state,
     configure_dino_model_combo,
     create_dino_head_loss_controls,
 )
+from annolid.gui.widgets.yolo_training_ui_shared import (
+    compute_weight_for_selectors,
+    default_yolo_plots_enabled,
+    format_yolo_dataset_summary,
+    format_yolo_weight_display,
+    get_yolo_train_preset,
+    parse_yolo_weight_spec,
+    populate_yolo_device_combo,
+    populate_yolo_family_combo,
+    populate_yolo_preset_combo,
+    populate_yolo_size_combo,
+    populate_yolo_task_combo,
+    populate_yolo_weight_combo,
+    select_or_insert_yolo_weight,
+    task_key_to_label,
+    yolo_registry_weight_configs,
+)
 from annolid.segmentation.dino_kpseg import defaults as dino_defaults
-
-
-YOLO11_TASK_SUFFIXES = {
-    "Detection": "",
-    "Instance Segmentation": "-seg",
-    "Pose Estimation": "-pose",
-    "Oriented Detection": "-obb",
-    "Classification": "-cls",
-}
-YOLO11_MODEL_SIZES = ("n", "s", "m", "l", "x")
+from annolid.yolo import (
+    YOLO_MODEL_SIZES as YOLO11_MODEL_SIZES,  # noqa: F401
+    YOLO_TASK_SUFFIXES as YOLO11_TASK_SUFFIXES,  # noqa: F401
+)
 
 
 class TrainModelDialog(QtWidgets.QDialog):
@@ -61,7 +68,9 @@ class TrainModelDialog(QtWidgets.QDialog):
         self.yolo_epochs = 100
         self.dino_epochs = 210
         self.yolo_device = self._default_yolo_device()
-        self.yolo_plots = True
+        self.yolo_plots = default_yolo_plots_enabled()
+        self.yolo_preset = "balanced"
+        self.yolo_resume = False
 
         # IMPORTANT: choose YOLO weights from registry (no hardcode)
         self.yolo_model_file = self._default_yolo_weight_from_registry()
@@ -152,21 +161,23 @@ class TrainModelDialog(QtWidgets.QDialog):
         self.yolo_lr0 = 0.01
         self.yolo_lrf = 0.01
         self.yolo_weight_decay = 0.0005
-        self.yolo_patience = 100
+        self.yolo_patience = 50
         self.yolo_close_mosaic = 10
         self.yolo_optimizer = "auto"
-        self.yolo_cos_lr = False
+        self.yolo_cos_lr = True
         self.yolo_cache: Any = False  # False | True | "disk"
+        self.yolo_freeze = 0
+        self._applying_yolo_preset = False
 
         self._build_ui()
         self.update_ui_for_algorithm()
 
-        self.resize(760, 520)
+        self.resize(800, 580)
         self.setSizeGripEnabled(True)
 
     # -------------------- Public API used by app.py
     def get_yolo_train_overrides(self) -> Dict[str, Any]:
-        return {
+        overrides: Dict[str, Any] = {
             "lr0": float(self.yolo_lr0),
             "lrf": float(self.yolo_lrf),
             "weight_decay": float(self.yolo_weight_decay),
@@ -175,10 +186,10 @@ class TrainModelDialog(QtWidgets.QDialog):
             "optimizer": str(self.yolo_optimizer),
             "cos_lr": bool(self.yolo_cos_lr),
             "cache": self.yolo_cache,
-            "plots": bool(self.yolo_plots),
-            "device": str(self.yolo_device or ""),
-            "model": str(self.yolo_model_file or ""),
         }
+        if int(self.yolo_freeze) > 0:
+            overrides["freeze"] = int(self.yolo_freeze)
+        return overrides
 
     # -------------------- UI construction
     def _build_ui(self) -> None:
@@ -236,7 +247,7 @@ class TrainModelDialog(QtWidgets.QDialog):
         self._bind_spin_int(self.imgsz_spin, "image_size")
 
         self.epochs_spin = QtWidgets.QSpinBox(self)
-        self.epochs_spin.setRange(1, 300)
+        self.epochs_spin.setRange(1, 1000)
         self.epochs_spin.setValue(int(self.epochs))
         self.epochs_spin.valueChanged.connect(self._on_epochs_changed)
 
@@ -246,18 +257,52 @@ class TrainModelDialog(QtWidgets.QDialog):
         self.max_iter_spin.setValue(int(self.max_iterations))
         self._bind_spin_int(self.max_iter_spin, "max_iterations")
 
+        self.yolo_preset_combo = QtWidgets.QComboBox(self)
+        populate_yolo_preset_combo(
+            self.yolo_preset_combo, default_key=self.yolo_preset, include_custom=True
+        )
+        self.yolo_preset_combo.currentIndexChanged.connect(self._on_yolo_preset_changed)
+
         self.yolo_plots_checkbox = QtWidgets.QCheckBox(
             "Save training plots (curves PNG, confusion matrix, etc.)", self
         )
         self.yolo_plots_checkbox.setChecked(bool(self.yolo_plots))
         self._bind_checkbox(self.yolo_plots_checkbox, "yolo_plots")
 
+        self.yolo_resume_checkbox = QtWidgets.QCheckBox(
+            "Resume interrupted run (exact epoch & optimizer state)", self
+        )
+        self.yolo_resume_checkbox.setChecked(bool(self.yolo_resume))
+        self.yolo_resume_checkbox.setEnabled(False)
+        self.yolo_resume_checkbox.setToolTip(
+            "When checked, passes resume=True to Ultralytics (use with last.pt). "
+            "Leave unchecked to fine-tune from a checkpoint on a new dataset or schedule."
+        )
+        self._bind_checkbox(self.yolo_resume_checkbox, "yolo_resume")
+
         # File inputs (shared)
         self.configFileLineEdit = QtWidgets.QLineEdit(self)
+        self.configFileLineEdit.editingFinished.connect(self._on_config_line_edited)
         self.configFileButton = QtWidgets.QPushButton("Browse…", self)
         self.configFileButton.clicked.connect(self.on_config_file_button_clicked)
+        self.configFolderButton = QtWidgets.QPushButton("Folder…", self)
+        self.configFolderButton.setToolTip(
+            "Select a YOLO dataset folder or COCO dataset folder directly."
+        )
+        self.configFolderButton.clicked.connect(self.on_config_folder_button_clicked)
+
+        self.yolo_dataset_summary_label = QtWidgets.QLabel("", self)
+        self.yolo_dataset_summary_label.setWordWrap(True)
+        self.yolo_dataset_summary_label.setStyleSheet("color: #666; font-size: 11px;")
+        self.yolo_dataset_summary_label.setVisible(False)
 
         self.trainedModelLineEdit = QtWidgets.QLineEdit(self)
+        self.trainedModelLineEdit.setPlaceholderText(
+            "Optional: local best.pt / last.pt for fine-tuning or resuming"
+        )
+        self.trainedModelLineEdit.textChanged.connect(
+            self._on_trained_model_text_changed
+        )
         self.trainedModelButton = QtWidgets.QPushButton("Browse…", self)
         self.trainedModelButton.clicked.connect(self.on_trained_model_button_clicked)
 
@@ -267,24 +312,24 @@ class TrainModelDialog(QtWidgets.QDialog):
 
     # -------------------- YOLO weights selection (registry + convenience)
     def _yolo_weight_configs(self) -> List[Any]:
-        """Return YOLO-ish configs from MODEL_REGISTRY."""
-        cfgs: List[Any] = []
-        for cfg in MODEL_REGISTRY:
-            wf = str(getattr(cfg, "weight_file", "") or "").strip()
-            if not wf:
-                continue
-            wf_l = wf.lower()
-            if wf_l.endswith((".pt", ".pth")) and wf_l.startswith("yolo"):
-                cfgs.append(cfg)
-        return cfgs
+        """Return trainable YOLO configs from MODEL_REGISTRY."""
+        return yolo_registry_weight_configs(include_yoloe=False)
 
     def _default_yolo_weight_from_registry(self) -> str:
         cfgs = self._yolo_weight_configs()
-        return str(cfgs[0].weight_file) if cfgs else ""
+        return str(cfgs[0].weight_file) if cfgs else "yolo11n-seg.pt"
 
-    def _compute_yolo_weight_name(self, task_text: str, size_text: str) -> str:
-        suffix = YOLO11_TASK_SUFFIXES.get(task_text, "")
-        return f"yolo11{size_text.lower()}{suffix}.pt"
+    def _compute_yolo_weight_name(
+        self, task_text: str, size_text: str, *, family: Optional[str] = None
+    ) -> str:
+        fam = family
+        if fam is None and hasattr(self, "yolo_family_combo"):
+            fam = str(self.yolo_family_combo.currentData() or "yolo11")
+        return compute_weight_for_selectors(
+            family=str(fam or "yolo11"),
+            task=task_text,
+            size=size_text,
+        )
 
     def _try_select_registry_weight(self, weight_file: str) -> bool:
         """Select preset combo item matching weight_file. Returns True if matched."""
@@ -303,46 +348,34 @@ class TrainModelDialog(QtWidgets.QDialog):
     def _parse_task_size_from_weight(
         self, weight_file: str
     ) -> Tuple[Optional[str], Optional[str]]:
-        """
-        Best-effort parse for yolo11{size}{suffix}.pt, e.g. yolo11n-seg.pt.
-        Returns (task_name, size_letter) or (None, None).
-        """
-        wf = (weight_file or "").strip().lower()
-        m = re.match(r"^yolo11([nslmx])(?:(-seg|-pose|-obb|-cls))?\.pt$", wf)
-        if not m:
+        parsed = parse_yolo_weight_spec(weight_file)
+        if parsed is None:
             return (None, None)
-        size = m.group(1).upper()
-        suffix = m.group(2) or ""
-        suffix_to_task = {v: k for k, v in YOLO11_TASK_SUFFIXES.items()}
-        task = suffix_to_task.get(suffix, "Detection")
-        return (task, size)
+        _family, task_label, size = parsed
+        return (task_label, size)
 
     def _update_yolo_model_label(self) -> None:
         wf = str(self.yolo_model_file or "").strip()
         if not wf:
             self.yolo_model_label.setText("Selected weights: (none)")
             return
-
-        in_registry = False
-        if hasattr(self, "yolo_weights_combo"):
-            for i in range(self.yolo_weights_combo.count()):
-                item_wf = str(self.yolo_weights_combo.itemData(i) or "").strip().lower()
-                if item_wf == wf.lower():
-                    in_registry = True
-                    break
-
-        tag = "" if in_registry else " (not in registry)"
-        self.yolo_model_label.setText(f"Selected weights: {wf}{tag}")
+        display = format_yolo_weight_display(wf)
+        if display and display != wf:
+            self.yolo_model_label.setText(f"Selected weights: {display}")
+        else:
+            self.yolo_model_label.setText(f"Selected weights: {wf}")
 
     def _build_yolo_model_selector(self) -> None:
-        self.yolo_model_groupbox = QtWidgets.QGroupBox("YOLO Weights", self)
+        self.yolo_model_groupbox = QtWidgets.QGroupBox("YOLO Base Weights", self)
         grid = QtWidgets.QGridLayout(self.yolo_model_groupbox)
 
-        # Preset dropdown from MODEL_REGISTRY
+        # Preset dropdown from MODEL_REGISTRY + recent trained runs
         self.yolo_weights_combo = QtWidgets.QComboBox(self.yolo_model_groupbox)
-        yolo_cfgs = self._yolo_weight_configs()
-        for cfg in yolo_cfgs:
-            self.yolo_weights_combo.addItem(cfg.display_name, userData=cfg.weight_file)
+        populate_yolo_weight_combo(
+            self.yolo_weights_combo,
+            default_weight=self.yolo_model_file,
+            include_recent_runs=True,
+        )
 
         # Optional browse button for custom weight path
         self.yolo_weights_browse_btn = QtWidgets.QPushButton(
@@ -358,13 +391,19 @@ class TrainModelDialog(QtWidgets.QDialog):
         preset_row_layout.addWidget(self.yolo_weights_combo, 1)
         preset_row_layout.addWidget(self.yolo_weights_browse_btn, 0)
 
-        # Convenience task + size selectors (auto-matches presets when possible)
+        # Family + Task + Size selectors
+        self.yolo_family_combo = QtWidgets.QComboBox(self.yolo_model_groupbox)
+        populate_yolo_family_combo(self.yolo_family_combo, default="yolo11")
+        self.yolo_family_combo.currentIndexChanged.connect(
+            self.update_yolo_model_filename
+        )
+
         self.yolo_task_combo = QtWidgets.QComboBox(self.yolo_model_groupbox)
-        self.yolo_task_combo.addItems(list(YOLO11_TASK_SUFFIXES.keys()))
+        populate_yolo_task_combo(self.yolo_task_combo, default_task="seg")
         self.yolo_task_combo.currentTextChanged.connect(self.update_yolo_model_filename)
 
         self.yolo_size_combo = QtWidgets.QComboBox(self.yolo_model_groupbox)
-        self.yolo_size_combo.addItems([s.upper() for s in YOLO11_MODEL_SIZES])
+        populate_yolo_size_combo(self.yolo_size_combo, default="n")
         self.yolo_size_combo.currentTextChanged.connect(self.update_yolo_model_filename)
 
         self.yolo_model_label = QtWidgets.QLabel(self.yolo_model_groupbox)
@@ -374,13 +413,19 @@ class TrainModelDialog(QtWidgets.QDialog):
             wf = str(self.yolo_weights_combo.currentData() or "").strip()
             if wf:
                 self.yolo_model_file = wf
-                # best-effort: sync task/size combos if it's a yolo11 naming
-                task, size = self._parse_task_size_from_weight(wf)
-                if task:
+                parsed = parse_yolo_weight_spec(wf)
+                if parsed is not None:
+                    family, task_label, size = parsed
+                    self.yolo_family_combo.blockSignals(True)
+                    fam_idx = self.yolo_family_combo.findData(family)
+                    if fam_idx >= 0:
+                        self.yolo_family_combo.setCurrentIndex(fam_idx)
+                    self.yolo_family_combo.blockSignals(False)
+
                     self.yolo_task_combo.blockSignals(True)
-                    self.yolo_task_combo.setCurrentText(task)
+                    self.yolo_task_combo.setCurrentText(task_label)
                     self.yolo_task_combo.blockSignals(False)
-                if size:
+
                     self.yolo_size_combo.blockSignals(True)
                     self.yolo_size_combo.setCurrentText(size)
                     self.yolo_size_combo.blockSignals(False)
@@ -389,26 +434,19 @@ class TrainModelDialog(QtWidgets.QDialog):
         self.yolo_weights_combo.currentIndexChanged.connect(_on_preset_changed)
 
         # Layout
-        grid.addWidget(QtWidgets.QLabel("Weights preset"), 0, 0)
-        grid.addWidget(preset_row, 0, 1, 1, 3)
-        grid.addWidget(QtWidgets.QLabel("Task"), 1, 0)
-        grid.addWidget(self.yolo_task_combo, 1, 1)
-        grid.addWidget(QtWidgets.QLabel("Model Size"), 1, 2)
-        grid.addWidget(self.yolo_size_combo, 1, 3)
-        grid.addWidget(self.yolo_model_label, 2, 0, 1, 4)
+        grid.addWidget(QtWidgets.QLabel("Weights / Recent"), 0, 0)
+        grid.addWidget(preset_row, 0, 1, 1, 5)
+        grid.addWidget(QtWidgets.QLabel("Family"), 1, 0)
+        grid.addWidget(self.yolo_family_combo, 1, 1)
+        grid.addWidget(QtWidgets.QLabel("Task"), 1, 2)
+        grid.addWidget(self.yolo_task_combo, 1, 3)
+        grid.addWidget(QtWidgets.QLabel("Size"), 1, 4)
+        grid.addWidget(self.yolo_size_combo, 1, 5)
+        grid.addWidget(self.yolo_model_label, 2, 0, 1, 6)
 
-        # Defaults: set task/size, then prefer registry match
-        self.yolo_task_combo.setCurrentText("Instance Segmentation")
-        self.yolo_size_combo.setCurrentText("N")
-
-        # Choose initial weight:
-        # 1) if yolo_model_file already set (registry default), select it
-        # 2) else try match task/size to registry
-        # 3) else fall back to computed filename
-        if self.yolo_model_file and self._try_select_registry_weight(
-            self.yolo_model_file
-        ):
-            pass
+        if self.yolo_model_file:
+            select_or_insert_yolo_weight(self.yolo_weights_combo, self.yolo_model_file)
+            _on_preset_changed()
         else:
             self.update_yolo_model_filename()
 
@@ -419,13 +457,10 @@ class TrainModelDialog(QtWidgets.QDialog):
         size_text = self.yolo_size_combo.currentText()
         computed = self._compute_yolo_weight_name(task_text, size_text)
 
-        # Prefer an exact preset match if available
-        if self._try_select_registry_weight(computed):
-            # preset handler sets yolo_model_file + label
-            return
-
-        # Otherwise fall back to computed filename (still usable if user has local file)
-        self.yolo_model_file = computed
+        self.yolo_weights_combo.blockSignals(True)
+        selected = select_or_insert_yolo_weight(self.yolo_weights_combo, computed)
+        self.yolo_weights_combo.blockSignals(False)
+        self.yolo_model_file = selected or computed
         self._update_yolo_model_label()
 
     def on_yolo_weights_browse_clicked(self) -> None:
@@ -438,9 +473,9 @@ class TrainModelDialog(QtWidgets.QDialog):
         if not path:
             return
         self.yolo_model_file = path
-
-        # If the selected file matches a registry preset, select it; else keep "not in registry"
-        self._try_select_registry_weight(Path(path).name)
+        self.yolo_weights_combo.blockSignals(True)
+        select_or_insert_yolo_weight(self.yolo_weights_combo, path)
+        self.yolo_weights_combo.blockSignals(False)
         self._update_yolo_model_label()
 
     # -------------------- DINO model selector
@@ -488,27 +523,9 @@ class TrainModelDialog(QtWidgets.QDialog):
 
     def _build_device_selector(self) -> None:
         self.yolo_device_combo = QtWidgets.QComboBox(self)
-        options = [
-            ("Auto (recommended)", ""),
-            ("CPU", "cpu"),
-        ]
-        try:
-            import torch  # type: ignore
-
-            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-                options.insert(1, ("Apple MPS", "mps"))
-            if torch.cuda.is_available():
-                options.insert(1, ("CUDA (GPU 0)", "0"))
-        except Exception:
-            pass
-
-        default_index = 0
-        for idx, (label, value) in enumerate(options):
-            self.yolo_device_combo.addItem(label, userData=value)
-            if str(value) == str(self.yolo_device):
-                default_index = idx
-
-        self.yolo_device_combo.setCurrentIndex(default_index)
+        populate_yolo_device_combo(
+            self.yolo_device_combo, default_device=self.yolo_device
+        )
         self.yolo_device_combo.currentIndexChanged.connect(self._on_device_changed)
 
     # -------------------- Tabs
@@ -527,6 +544,7 @@ class TrainModelDialog(QtWidgets.QDialog):
         self._training_form.setLabelAlignment(QtCore.Qt.AlignRight)
         self._training_form.setFormAlignment(QtCore.Qt.AlignTop)
 
+        self._training_form.addRow("Preset", self.yolo_preset_combo)
         self._training_form.addRow("Device", self.yolo_device_combo)
         self._training_form.addRow("Batch size", self.batch_spin)
         self._training_form.addRow("Image size", self.imgsz_spin)
@@ -539,20 +557,26 @@ class TrainModelDialog(QtWidgets.QDialog):
         self._io_form.setLabelAlignment(QtCore.Qt.AlignRight)
         self._io_form.setFormAlignment(QtCore.Qt.AlignTop)
 
-        self._io_config_row = self._make_row(
-            self.configFileLineEdit, self.configFileButton
-        )
+        self._io_config_row = QtWidgets.QWidget(self)
+        io_cfg_layout = QtWidgets.QHBoxLayout(self._io_config_row)
+        io_cfg_layout.setContentsMargins(0, 0, 0, 0)
+        io_cfg_layout.addWidget(self.configFileLineEdit, 1)
+        io_cfg_layout.addWidget(self.configFileButton, 0)
+        io_cfg_layout.addWidget(self.configFolderButton, 0)
+
         self._io_model_row = self._make_row(
             self.trainedModelLineEdit, self.trainedModelButton
         )
         self._io_out_row = self._make_row(self.outDirLineEdit, self.outDirButton)
 
         self._io_config_label = QtWidgets.QLabel("Dataset YAML", self.io_groupbox)
-        self._io_model_label = QtWidgets.QLabel("Resume from (.pt)", self.io_groupbox)
+        self._io_model_label = QtWidgets.QLabel("Checkpoint (.pt)", self.io_groupbox)
         self._io_out_label = QtWidgets.QLabel("Output directory", self.io_groupbox)
 
         self._io_form.addRow(self._io_config_label, self._io_config_row)
+        self._io_form.addRow("", self.yolo_dataset_summary_label)
         self._io_form.addRow(self._io_model_label, self._io_model_row)
+        self._io_form.addRow("", self.yolo_resume_checkbox)
         self._io_form.addRow(self._io_out_label, self._io_out_row)
 
         self.dino_data_format_combo = QtWidgets.QComboBox(self.io_groupbox)
@@ -686,6 +710,9 @@ class TrainModelDialog(QtWidgets.QDialog):
 
         # Training form rows
         self._set_form_row_visible(
+            self._training_form, self.yolo_preset_combo, yolo_selected
+        )
+        self._set_form_row_visible(
             self._training_form, self.yolo_device_combo, yolo_selected or dino_selected
         )
         self._set_form_row_visible(self._training_form, self.imgsz_spin, yolo_selected)
@@ -713,27 +740,35 @@ class TrainModelDialog(QtWidgets.QDialog):
 
         # IO labels
         self._io_config_label.setText(
-            "Dataset YAML" if (yolo_selected or dino_selected) else "Config folder"
+            "Dataset YAML / Folder"
+            if yolo_selected
+            else ("Dataset YAML / Spec" if dino_selected else "Config folder")
         )
         if keypoint_selected:
             self._io_config_label.setText("Dataset folder (COCO keypoints)")
         self._io_model_label.setText(
-            "Resume from (.pt)" if yolo_selected else "Model weights (.pth)"
+            "Fine-tune / Resume (.pt)" if yolo_selected else "Model weights (.pth)"
         )
         self.configFileButton.setText(
             "Browse YAML\u2026" if (yolo_selected or dino_selected) else "Browse\u2026"
         )
+        self.configFolderButton.setVisible(yolo_selected)
 
         # Resume / model weights row — show for YOLO and Keypoint RCNN
         self._set_form_row_visible(
             self._io_form, self._io_model_row, bool(yolo_selected or keypoint_selected)
         )
         self._set_form_row_visible(
+            self._io_form, self.yolo_resume_checkbox, bool(yolo_selected)
+        )
+        self._set_form_row_visible(
+            self._io_form,
+            self.yolo_dataset_summary_label,
+            bool(yolo_selected and self.yolo_dataset_summary_label.text()),
+        )
+        self._set_form_row_visible(
             self._io_form, self.dino_data_format_combo, bool(dino_selected)
         )
-
-        if dino_selected:
-            self._io_config_label.setText("Dataset YAML / Spec")
 
         self._update_dino_augment_enabled_state()
 
@@ -748,6 +783,109 @@ class TrainModelDialog(QtWidgets.QDialog):
         value = self.yolo_device_combo.currentData()
         self.yolo_device = str(value or "").strip().lower()
 
+    def _on_yolo_preset_changed(self) -> None:
+        key = str(self.yolo_preset_combo.currentData() or "").strip().lower()
+        self.yolo_preset = key or "custom"
+        if not key or key == "custom":
+            return
+        try:
+            preset = get_yolo_train_preset(key)
+        except ValueError:
+            return
+        self.apply_yolo_preset(preset.key)
+
+    def apply_yolo_preset(self, preset_key: str) -> None:
+        """Apply a curated YOLO fine-tuning preset to Basic and Advanced controls."""
+        preset = get_yolo_train_preset(preset_key)
+        self._applying_yolo_preset = True
+        try:
+            self.yolo_preset = preset.key
+            idx = self.yolo_preset_combo.findData(preset.key)
+            if idx >= 0 and self.yolo_preset_combo.currentIndex() != idx:
+                self.yolo_preset_combo.blockSignals(True)
+                self.yolo_preset_combo.setCurrentIndex(idx)
+                self.yolo_preset_combo.blockSignals(False)
+
+            self.yolo_epochs = int(preset.epochs)
+            if self.algo == "YOLO":
+                self.epochs_spin.setValue(int(preset.epochs))
+            self.batch_spin.setValue(int(preset.batch))
+            self.imgsz_spin.setValue(int(preset.imgsz))
+
+            self.yolo_lr0 = float(preset.lr0)
+            self.yolo_lrf = float(preset.lrf)
+            self.yolo_weight_decay = float(preset.weight_decay)
+            self.yolo_patience = int(preset.patience)
+            self.yolo_close_mosaic = int(preset.close_mosaic)
+            self.yolo_optimizer = str(preset.optimizer)
+            self.yolo_cos_lr = bool(preset.cos_lr)
+            self.yolo_cache = preset.cache
+            self.yolo_freeze = int(preset.freeze)
+
+            if hasattr(self, "_yolo_lr0_spin"):
+                self._yolo_lr0_spin.setValue(float(preset.lr0))
+                self._yolo_lrf_spin.setValue(float(preset.lrf))
+                self._yolo_wd_spin.setValue(float(preset.weight_decay))
+                self._yolo_patience_spin.setValue(int(preset.patience))
+                self._yolo_close_mosaic_spin.setValue(int(preset.close_mosaic))
+                self._yolo_freeze_spin.setValue(int(preset.freeze))
+                self._yolo_cos_lr_cb.setChecked(bool(preset.cos_lr))
+
+                for i in range(self._yolo_optimizer_combo.count()):
+                    if (
+                        str(self._yolo_optimizer_combo.itemData(i)).lower()
+                        == str(preset.optimizer).lower()
+                    ):
+                        self._yolo_optimizer_combo.setCurrentIndex(i)
+                        break
+                for i in range(self._yolo_cache_combo.count()):
+                    if self._yolo_cache_combo.itemData(i) == preset.cache:
+                        self._yolo_cache_combo.setCurrentIndex(i)
+                        break
+        finally:
+            self._applying_yolo_preset = False
+
+    def _on_config_line_edited(self) -> None:
+        text = self.configFileLineEdit.text().strip()
+        self.config_file = text or None
+        if self.algo == "YOLO" and text:
+            self._inspect_yolo_dataset_path(text)
+
+    def _inspect_yolo_dataset_path(self, path_str: str) -> None:
+        if not path_str:
+            self.yolo_dataset_summary_label.setText("")
+            self._set_form_row_visible(
+                self._io_form, self.yolo_dataset_summary_label, False
+            )
+            return
+        try:
+            from annolid.yolo.dataset_prep import inspect_yolo_dataset
+
+            summary = inspect_yolo_dataset(path_str)
+        except Exception:
+            return
+        if not summary.is_valid:
+            msg = "; ".join(summary.issues[:2])
+            self.yolo_dataset_summary_label.setStyleSheet(
+                "color: #b45309; font-size: 11px;"
+            )
+            self.yolo_dataset_summary_label.setText(f"Dataset check: {msg}")
+            self._set_form_row_visible(
+                self._io_form, self.yolo_dataset_summary_label, True
+            )
+            return
+
+        self.yolo_dataset_summary_label.setStyleSheet(
+            "color: #15803d; font-size: 11px;"
+        )
+        self.yolo_dataset_summary_label.setText(format_yolo_dataset_summary(summary))
+        self._set_form_row_visible(self._io_form, self.yolo_dataset_summary_label, True)
+        # Auto-sync YOLO task selector when dataset task is unambiguous
+        if summary.task in {"detect", "seg", "pose", "obb", "cls"}:
+            task_label = task_key_to_label(summary.task)
+            if task_label and self.yolo_task_combo.currentText() != task_label:
+                self.yolo_task_combo.setCurrentText(task_label)
+
     def on_config_file_button_clicked(self) -> None:
         file_dialog = QtWidgets.QFileDialog(self)
         file_dialog.setFileMode(QtWidgets.QFileDialog.ExistingFile)
@@ -761,16 +899,37 @@ class TrainModelDialog(QtWidgets.QDialog):
             if selected_files:
                 self.config_file = selected_files[0]
                 self.configFileLineEdit.setText(self.config_file)
+                if self.algo == "YOLO":
+                    self._inspect_yolo_dataset_path(self.config_file)
+
+    def on_config_folder_button_clicked(self) -> None:
+        folder = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "Select YOLO or COCO Dataset Folder"
+        )
+        if folder:
+            self.config_file = folder
+            self.configFileLineEdit.setText(folder)
+            if self.algo == "YOLO":
+                self._inspect_yolo_dataset_path(folder)
+
+    def _on_trained_model_text_changed(self, text: str) -> None:
+        cleaned = str(text or "").strip()
+        self.trained_model = cleaned or None
+        has_ckpt = bool(cleaned)
+        self.yolo_resume_checkbox.setEnabled(has_ckpt)
+        if not has_ckpt and self.yolo_resume_checkbox.isChecked():
+            self.yolo_resume_checkbox.setChecked(False)
 
     def on_trained_model_button_clicked(self) -> None:
-        self.trained_model, _ = QtWidgets.QFileDialog.getOpenFileName(
+        selected, _ = QtWidgets.QFileDialog.getOpenFileName(
             parent=self,
-            caption="Select Model Weights (Resume)",
+            caption="Select Model Checkpoint (Fine-tune / Resume)",
             directory=str(Path()),
             filter="YOLO/Model Weights (*.pt *.pth);;All Files (*.*)",
         )
-        if self.trained_model:
-            self.trainedModelLineEdit.setText(self.trained_model)
+        if selected:
+            self.trained_model = selected
+            self.trainedModelLineEdit.setText(selected)
 
     def on_out_dir_button_clicked(self) -> None:
         self.out_dir = QtWidgets.QFileDialog.getExistingDirectory(
@@ -791,6 +950,7 @@ class TrainModelDialog(QtWidgets.QDialog):
         lr0.setSingleStep(0.001)
         lr0.setValue(float(self.yolo_lr0))
         self._bind_spin_float(lr0, "yolo_lr0")
+        self._yolo_lr0_spin = lr0
 
         lrf = QtWidgets.QDoubleSpinBox(box)
         lrf.setDecimals(6)
@@ -798,6 +958,7 @@ class TrainModelDialog(QtWidgets.QDialog):
         lrf.setSingleStep(0.001)
         lrf.setValue(float(self.yolo_lrf))
         self._bind_spin_float(lrf, "yolo_lrf")
+        self._yolo_lrf_spin = lrf
 
         wd = QtWidgets.QDoubleSpinBox(box)
         wd.setDecimals(6)
@@ -805,16 +966,28 @@ class TrainModelDialog(QtWidgets.QDialog):
         wd.setSingleStep(0.0001)
         wd.setValue(float(self.yolo_weight_decay))
         self._bind_spin_float(wd, "yolo_weight_decay")
+        self._yolo_wd_spin = wd
 
         patience = QtWidgets.QSpinBox(box)
         patience.setRange(0, 1000)
         patience.setValue(int(self.yolo_patience))
         self._bind_spin_int(patience, "yolo_patience")
+        self._yolo_patience_spin = patience
 
         close_mosaic = QtWidgets.QSpinBox(box)
         close_mosaic.setRange(0, 100)
         close_mosaic.setValue(int(self.yolo_close_mosaic))
         self._bind_spin_int(close_mosaic, "yolo_close_mosaic")
+        self._yolo_close_mosaic_spin = close_mosaic
+
+        freeze = QtWidgets.QSpinBox(box)
+        freeze.setRange(0, 24)
+        freeze.setValue(int(self.yolo_freeze))
+        freeze.setToolTip(
+            "Freeze leading backbone layers (e.g. 10) for small-dataset fine-tuning. 0 trains all layers."
+        )
+        self._bind_spin_int(freeze, "yolo_freeze")
+        self._yolo_freeze_spin = freeze
 
         optimizer = QtWidgets.QComboBox(box)
         optimizer_options = [
@@ -832,10 +1005,12 @@ class TrainModelDialog(QtWidgets.QDialog):
         optimizer.currentIndexChanged.connect(
             lambda _=None: setattr(self, "yolo_optimizer", str(optimizer.currentData()))
         )
+        self._yolo_optimizer_combo = optimizer
 
         cos_lr = QtWidgets.QCheckBox("Cosine LR schedule", box)
         cos_lr.setChecked(bool(self.yolo_cos_lr))
         self._bind_checkbox(cos_lr, "yolo_cos_lr")
+        self._yolo_cos_lr_cb = cos_lr
 
         cache = QtWidgets.QComboBox(box)
         cache_options = [
@@ -852,12 +1027,14 @@ class TrainModelDialog(QtWidgets.QDialog):
         cache.currentIndexChanged.connect(
             lambda _=None: setattr(self, "yolo_cache", cache.currentData())
         )
+        self._yolo_cache_combo = cache
 
         form.addRow("Learning rate (lr0)", lr0)
         form.addRow("Final LR fraction (lrf)", lrf)
         form.addRow("Weight decay", wd)
         form.addRow("Early stop patience", patience)
         form.addRow("Close mosaic (epoch)", close_mosaic)
+        form.addRow("Freeze backbone layers", freeze)
         form.addRow("Optimizer", optimizer)
         form.addRow("Dataset cache", cache)
         form.addRow("", cos_lr)

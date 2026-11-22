@@ -96,3 +96,96 @@ def test_resolve_weight_path_keeps_explicit_unresolved_paths(
     unresolved = Path("models") / "yolo11n.pt"
 
     assert runtime.resolve_weight_path(str(unresolved)) == unresolved
+
+
+def test_resolve_yolo_device_prefers_explicit_then_cuda_mps_cpu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import torch
+
+    assert runtime.resolve_yolo_device("cpu") == "cpu"
+    assert runtime.resolve_yolo_device(0) == "0"
+    assert runtime.resolve_yolo_device("mps") == "mps"
+    assert runtime.resolve_yolo_device("cuda") == "0"
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(runtime, "_mps_is_available", lambda _torch: True)
+    assert runtime.resolve_yolo_device(None) == "0"
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(runtime, "_mps_is_available", lambda _torch: True)
+    assert runtime.resolve_yolo_device("") == "mps"
+
+    monkeypatch.setattr(runtime, "_mps_is_available", lambda _torch: False)
+    assert runtime.resolve_yolo_device(None) == "cpu"
+
+
+def test_ensure_mps_fallback_env_sets_default_on_darwin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runtime.sys, "platform", "darwin")
+    monkeypatch.delenv("PYTORCH_ENABLE_MPS_FALLBACK", raising=False)
+
+    assert runtime.ensure_mps_fallback_env() is True
+    assert runtime.os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] == "1"
+
+    # Explicit user override is preserved
+    monkeypatch.setenv("PYTORCH_ENABLE_MPS_FALLBACK", "0")
+    assert runtime.ensure_mps_fallback_env() is False
+    assert runtime.os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] == "0"
+
+
+def test_select_backend_supports_mps_and_explicit_device(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import torch
+
+    pt_file = tmp_path / "yolo11n.pt"
+    pt_file.write_bytes(b"pt")
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(runtime, "_mps_is_available", lambda _torch: True)
+
+    backend = runtime.select_backend(str(pt_file))
+    assert backend.backend == "PyTorch (MPS)"
+    assert backend.device == torch.device("mps")
+
+    cpu_backend = runtime.select_backend(str(pt_file), device="cpu")
+    assert cpu_backend.device == torch.device("cpu")
+
+
+def test_export_yolo_weights_forwards_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = {}
+
+    class _FakeYOLO:
+        def __init__(self, weights):
+            captured["weights"] = weights
+
+        def export(self, **kwargs):
+            captured["export_kwargs"] = kwargs
+            return "/tmp/best.onnx"
+
+    monkeypatch.setattr(runtime, "configure_ultralytics_cache", lambda: None)
+    monkeypatch.setattr(
+        runtime, "import_ultralytics_symbol", lambda name, purpose="": _FakeYOLO
+    )
+    monkeypatch.setattr(runtime, "resolve_weight_path", lambda w: Path(w))
+
+    result = runtime.export_yolo_weights(
+        "/tmp/best.pt",
+        export_format="onnx",
+        imgsz=640,
+        half=True,
+        device="0",
+    )
+
+    assert result == "/tmp/best.onnx"
+    assert captured["weights"] == "/tmp/best.pt"
+    assert captured["export_kwargs"] == {
+        "format": "onnx",
+        "imgsz": 640,
+        "half": True,
+        "device": "0",
+    }

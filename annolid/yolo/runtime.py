@@ -2,6 +2,7 @@ from dataclasses import dataclass
 import importlib
 import os
 import shutil
+import sys
 from pathlib import Path
 from typing import Any, Iterable, Optional, Tuple
 
@@ -338,13 +339,84 @@ def resolve_weight_path(
     return Path(weight_name)
 
 
+def ensure_mps_fallback_env() -> bool:
+    """Enable PyTorch MPS CPU fallback on macOS unless explicitly overridden by user."""
+    if sys.platform != "darwin":
+        return False
+    os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+    return os.environ.get("PYTORCH_ENABLE_MPS_FALLBACK") == "1"
+
+
+def _mps_is_available(torch_module: Any) -> bool:
+    try:
+        mps_backend = getattr(getattr(torch_module, "backends", None), "mps", None)
+        return bool(mps_backend is not None and mps_backend.is_available())
+    except Exception:
+        return False
+
+
+def resolve_yolo_device(requested: Optional[Any] = None) -> str:
+    """Resolve an Ultralytics-compatible device token ('0', 'mps', 'cpu', etc.)."""
+    raw = "" if requested is None else str(requested).strip()
+    lowered = raw.lower()
+    if lowered in {"cpu"}:
+        return "cpu"
+    if lowered in {"mps"}:
+        ensure_mps_fallback_env()
+        return "mps"
+    if lowered in {"cuda", "gpu"}:
+        return "0"
+    if raw and lowered != "auto":
+        return raw
+
+    try:
+        import torch
+    except Exception:
+        return "cpu"
+
+    if torch.cuda.is_available():
+        return "0"
+    if _mps_is_available(torch):
+        ensure_mps_fallback_env()
+        return "mps"
+    return "cpu"
+
+
+def list_available_yolo_devices() -> list[tuple[str, str]]:
+    """Return UI-friendly (label, value) device choices for YOLO training/inference."""
+    options: list[tuple[str, str]] = [("Auto (recommended)", "")]
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            try:
+                count = int(torch.cuda.device_count() or 1)
+            except Exception:
+                count = 1
+            for idx in range(count):
+                try:
+                    name = torch.cuda.get_device_name(idx)
+                    options.append((f"CUDA (GPU {idx}) — {name}", str(idx)))
+                except Exception:
+                    options.append((f"CUDA (GPU {idx})", str(idx)))
+        if _mps_is_available(torch):
+            options.append(("Apple MPS", "mps"))
+    except Exception:
+        pass
+    options.append(("CPU", "cpu"))
+    return options
+
+
 def select_backend(
-    weight_name: str, search_roots: Optional[Iterable[Path]] = None
+    weight_name: str,
+    search_roots: Optional[Iterable[Path]] = None,
+    *,
+    device: Optional[str] = None,
 ) -> YOLOModelSpec:
     """
     Detect available hardware and return the best backend for the provided model.
 
-    The selection order follows TensorRT (if installed) -> CUDA -> CPU.
+    The selection order follows TensorRT (if engine exists + CUDA) -> CUDA -> Apple MPS -> CPU.
     """
     import torch
 
@@ -359,35 +431,61 @@ def select_backend(
             weight_path=resolved, device=torch.device("cpu"), backend="CoreML (CPU)"
         )
 
-    # TensorRT takes precedence when available and an engine exists alongside the weight.
-    if torch.cuda.is_available():
-        device = torch.device("cuda:0")
+    requested = "" if device is None else str(device).strip().lower()
+    prefer_cpu = requested == "cpu"
+    prefer_mps = requested == "mps"
+    prefer_cuda = (
+        requested.startswith("cuda") or requested.isdigit() or requested == "gpu"
+    )
+
+    # TensorRT takes precedence when CUDA is used and an engine exists alongside the weight.
+    if not prefer_cpu and not prefer_mps and torch.cuda.is_available():
+        cuda_idx = "0"
+        if requested.isdigit():
+            cuda_idx = requested
+        elif requested.startswith("cuda:") and requested.split(":", 1)[1].isdigit():
+            cuda_idx = requested.split(":", 1)[1]
+        torch_device = torch.device(f"cuda:{cuda_idx}")
         engine_path = resolved.with_suffix(".engine")
         if engine_path.is_file():
             logger.info("Using TensorRT engine for %s", engine_path)
             return YOLOModelSpec(
-                weight_path=engine_path, device=device, backend="TensorRT (GPU)"
+                weight_path=engine_path, device=torch_device, backend="TensorRT (GPU)"
             )
 
         # Fall back to the resolved weight on GPU.
         if resolved.suffix == ".pt" or resolved.exists():
             logger.info("Using PyTorch backend on CUDA for %s", resolved)
             return YOLOModelSpec(
-                weight_path=resolved, device=device, backend="PyTorch (GPU)"
+                weight_path=resolved, device=torch_device, backend="PyTorch (GPU)"
             )
         raise FileNotFoundError(
             f"CUDA available but weight '{resolved}' could not be located."
         )
 
-    # CPU fallback
-    device = torch.device("cpu")
-    if resolved.suffix == ".pt" or resolved.exists():
-        logger.warning(
-            "No compatible GPU detected; running %s on CPU. Expect reduced performance.",
-            resolved,
+    # Apple Silicon MPS acceleration
+    if not prefer_cpu and not prefer_cuda and _mps_is_available(torch):
+        ensure_mps_fallback_env()
+        torch_device = torch.device("mps")
+        if resolved.suffix == ".pt" or resolved.exists():
+            logger.info("Using PyTorch backend on Apple MPS for %s", resolved)
+            return YOLOModelSpec(
+                weight_path=resolved, device=torch_device, backend="PyTorch (MPS)"
+            )
+        raise FileNotFoundError(
+            f"MPS available but weight '{resolved}' could not be located."
         )
+
+    # CPU fallback
+    torch_device = torch.device("cpu")
+    if resolved.suffix == ".pt" or resolved.exists():
+        if not prefer_cpu:
+            logger.warning(
+                "No compatible GPU detected; running %s on CPU. Expect reduced performance.",
+                resolved,
+            )
         return YOLOModelSpec(
-            weight_path=resolved, device=device, backend="PyTorch (CPU)"
+            weight_path=resolved, device=torch_device, backend="PyTorch (CPU)"
         )
 
     raise FileNotFoundError(
@@ -395,7 +493,12 @@ def select_backend(
     )
 
 
-def load_yolo_model(weight_name: str, search_roots: Optional[Iterable[Path]] = None):
+def load_yolo_model(
+    weight_name: str,
+    search_roots: Optional[Iterable[Path]] = None,
+    *,
+    device: Optional[str] = None,
+):
     """
     Load a YOLO model with automatic backend selection.
 
@@ -403,7 +506,7 @@ def load_yolo_model(weight_name: str, search_roots: Optional[Iterable[Path]] = N
         tuple(model, YOLOModelSpec)
     """
     configure_ultralytics_cache()
-    spec = select_backend(weight_name, search_roots=search_roots)
+    spec = select_backend(weight_name, search_roots=search_roots, device=device)
     YOLO = import_ultralytics_symbol("YOLO", purpose="YOLO inference")
 
     model = YOLO(str(spec.weight_path))
@@ -413,3 +516,28 @@ def load_yolo_model(weight_name: str, search_roots: Optional[Iterable[Path]] = N
     ):
         model.to(spec.device)
     return model, spec
+
+
+def export_yolo_weights(
+    weight_name: str,
+    *,
+    export_format: str = "onnx",
+    imgsz: int = 640,
+    half: bool = False,
+    device: Optional[str] = None,
+    **kwargs: Any,
+) -> Any:
+    """Export YOLO weights to an Ultralytics-supported deployment format."""
+    configure_ultralytics_cache()
+    resolved = resolve_weight_path(weight_name)
+    YOLO = import_ultralytics_symbol("YOLO", purpose="YOLO export")
+    model = YOLO(str(resolved))
+    export_kwargs: dict[str, Any] = {
+        "format": str(export_format),
+        "imgsz": int(imgsz),
+        "half": bool(half),
+    }
+    if device is not None and str(device).strip():
+        export_kwargs["device"] = str(device).strip()
+    export_kwargs.update(kwargs)
+    return model.export(**export_kwargs)

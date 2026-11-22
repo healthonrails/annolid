@@ -16,6 +16,7 @@ from annolid.annotation.pose_schema import PoseSchema
 from annolid.yolo import (
     configure_ultralytics_cache,
     import_ultralytics_symbol,
+    is_yoloe_model,
     resolve_weight_path,
 )
 from annolid.utils.annotation_store import AnnotationStore
@@ -40,6 +41,12 @@ class InferenceProcessor:
         yoloe_text_prompt: bool = True,
         prompt_class_names: Optional[list] = None,
         dino_kpseg_inference_config: Optional[dict] = None,
+        device: Optional[str] = None,
+        conf: Optional[float] = None,
+        iou: Optional[float] = None,
+        imgsz: Optional[int] = None,
+        max_det: Optional[int] = None,
+        half: Optional[bool] = None,
     ) -> None:
         """
         Initializes the InferenceProcessor with a specified model.
@@ -57,6 +64,14 @@ class InferenceProcessor:
         self.model_name = str(self.model_path)
         self._is_coreml = self._detect_coreml_export(self.model_name)
         self._yoloe_text_prompt: bool = bool(yoloe_text_prompt)
+        self.device: Optional[str] = (
+            str(device).strip() if device is not None and str(device).strip() else None
+        )
+        self.conf: Optional[float] = float(conf) if conf is not None else None
+        self.iou: Optional[float] = float(iou) if iou is not None else None
+        self.imgsz: Optional[int] = int(imgsz) if imgsz is not None else None
+        self.max_det: Optional[int] = int(max_det) if max_det is not None else None
+        self.half: Optional[bool] = bool(half) if half is not None else None
         self.class_names: Optional[list] = [
             str(c).strip() for c in (class_names or []) if str(c).strip()
         ] or None
@@ -69,6 +84,7 @@ class InferenceProcessor:
         self.model = self._load_model(class_names)
         self._apply_prompt_names_to_model()
         self.frame_count: int = 0
+        self.detection_count: int = 0
         self.track_history = defaultdict(list)
         self.pose_schema: Optional[PoseSchema] = None
         self._instance_label_to_gid: Dict[str, int] = {}
@@ -421,45 +437,9 @@ class InferenceProcessor:
         # Detection models have no mask or keypoint geometry to export.
         return getattr(result, "masks", None) is None
 
-    def run_inference(
-        self,
-        source: str,
-        visual_prompts: dict = None,
-        *,
-        pred_worker=None,
-        stop_event=None,
-        start_frame: int = 0,
-        end_frame: Optional[int] = None,
-        step: int = 1,
-        skip_existing: bool = True,
-        output_directory: Optional[Path] = None,
-        progress_callback=None,
-        enable_tracking: bool = True,
-        tracker: Optional[str] = None,
-        save_pose_bbox: Optional[bool] = None,
-    ) -> str:
-        """
-        Runs inference on the given source and writes results into Annolid's annotation store.
-
-        When `self.persist_json=True`, per-frame LabelMe-compatible JSON files are also written
-        alongside the store entries (without overwriting manually labeled frames).
-
-        Args:
-            source (str): Path to the video file.
-
-        Returns:
-            A string message indicating the completion and frame count.
-        """
-        output_directory = (
-            Path(output_directory) if output_directory else Path(source).with_suffix("")
-        )
-        output_directory.mkdir(parents=True, exist_ok=True)
-        start_frame = max(0, int(start_frame))
-        end_frame = None if end_frame is None else int(end_frame)
-        step = max(1, abs(int(step)))
-        skip_existing = bool(skip_existing)
-        self.frame_count = 0
-        self.track_history.clear()
+    @staticmethod
+    def _make_stop_checker(pred_worker=None, stop_event=None):
+        """Return a callable that checks stop_event, pred_worker, and Qt thread interruption."""
 
         def should_stop() -> bool:
             try:
@@ -485,6 +465,228 @@ class InferenceProcessor:
             except Exception:
                 pass
             return False
+
+        return should_stop
+
+    def _build_ultralytics_infer_kwargs(
+        self,
+        *,
+        conf: Optional[float] = None,
+        iou: Optional[float] = None,
+        imgsz: Optional[int] = None,
+        max_det: Optional[int] = None,
+        device: Optional[str] = None,
+        half: Optional[bool] = None,
+        stream: bool = False,
+    ) -> Dict[str, object]:
+        kwargs: Dict[str, object] = {"verbose": False}
+        if stream:
+            kwargs["stream"] = True
+
+        eff_conf = conf if conf is not None else getattr(self, "conf", None)
+        eff_iou = iou if iou is not None else getattr(self, "iou", None)
+        eff_imgsz = imgsz if imgsz is not None else getattr(self, "imgsz", None)
+        eff_max_det = max_det if max_det is not None else getattr(self, "max_det", None)
+        eff_device = (
+            str(device).strip()
+            if device is not None and str(device).strip()
+            else getattr(self, "device", None)
+        )
+        eff_half = half if half is not None else getattr(self, "half", None)
+
+        if eff_conf is not None:
+            kwargs["conf"] = float(eff_conf)
+        if eff_iou is not None:
+            kwargs["iou"] = float(eff_iou)
+        if eff_imgsz is not None:
+            kwargs["imgsz"] = int(eff_imgsz)
+        if eff_max_det is not None:
+            kwargs["max_det"] = int(eff_max_det)
+        if eff_device:
+            kwargs["device"] = str(eff_device)
+        if eff_half is not None:
+            dev_lower = str(eff_device or "").lower()
+            if bool(eff_half) and (
+                bool(getattr(self, "_is_coreml", False)) or dev_lower == "cpu"
+            ):
+                logger.debug(
+                    "Ignoring half=True for CoreML/CPU backend (%s).",
+                    eff_device or "coreml",
+                )
+            else:
+                kwargs["half"] = bool(eff_half)
+        return kwargs
+
+    @staticmethod
+    def _load_yoloe_vp_predictor():
+        return import_ultralytics_symbol(
+            "YOLOEVPSegPredictor",
+            module_name="ultralytics.models.yolo.yoloe",
+            purpose="YOLOE visual prompt inference",
+        )
+
+    @staticmethod
+    def _probe_video_frame_count(source: str) -> int:
+        try:
+            src_path = Path(str(source))
+            if src_path.is_file() and src_path.suffix.lower() in {
+                ".jpg",
+                ".jpeg",
+                ".png",
+                ".bmp",
+                ".tif",
+                ".tiff",
+                ".webp",
+            }:
+                return 1
+        except Exception:
+            pass
+        try:
+            import cv2
+
+            cap = cv2.VideoCapture(str(source))
+            try:
+                if not cap.isOpened():
+                    return 0
+                return max(0, int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0)
+            finally:
+                cap.release()
+        except Exception:
+            return 0
+
+    def _has_any_existing_outputs(self, output_dir: Path) -> bool:
+        try:
+            store = AnnotationStore.for_frame_path(
+                self._labelme_json_path(output_dir, frame_index=0)
+            )
+            if store.store_path.exists() and store.store_path.stat().st_size > 0:
+                return True
+        except Exception:
+            pass
+        try:
+            return any(output_dir.glob("*.json"))
+        except OSError:
+            return False
+
+    def _frame_is_already_processed(
+        self, output_dir: Path, *, frame_index: int
+    ) -> bool:
+        if self._frame_has_existing_output(output_dir, frame_index=int(frame_index)):
+            return True
+        return self._frame_has_existing_store_record(
+            output_dir, frame_index=int(frame_index)
+        )
+
+    def _run_ultralytics_call(
+        self,
+        source_or_frame,
+        *,
+        infer_kwargs: Dict[str, object],
+        enable_tracking: bool,
+        tracker: Optional[str],
+        visual_prompts: Optional[dict],
+        vp_predictor=None,
+    ):
+        """Dispatch predict() or track() consistently across streaming and frame loops."""
+        if visual_prompts is not None and is_yoloe_model(self.model_name):
+            predictor = vp_predictor or self._load_yoloe_vp_predictor()
+            return self.model.predict(
+                source_or_frame,
+                visual_prompts=visual_prompts,
+                predictor=predictor,
+                **infer_kwargs,
+            )
+
+        if bool(getattr(self, "_is_coreml", False)) or not enable_tracking:
+            return self.model.predict(source_or_frame, **infer_kwargs)
+
+        track_kwargs = dict(infer_kwargs)
+        track_kwargs["persist"] = True
+        if tracker:
+            track_kwargs["tracker"] = tracker
+        try:
+            return self.model.track(source_or_frame, **track_kwargs)
+        except Exception as exc:
+            if tracker:
+                logger.warning(
+                    "Tracker '%s' failed; falling back to default tracker. Error: %s",
+                    tracker,
+                    exc,
+                )
+                track_kwargs.pop("tracker", None)
+                try:
+                    return self.model.track(source_or_frame, **track_kwargs)
+                except Exception as fallback_exc:
+                    if "pose" in self.model_name.lower():
+                        logger.warning(
+                            "Tracking unavailable for pose model '%s'; falling back to predict(). Error: %s",
+                            self.model_name,
+                            fallback_exc,
+                        )
+                        return self.model.predict(source_or_frame, **infer_kwargs)
+                    raise
+            if "pose" in self.model_name.lower():
+                logger.warning(
+                    "Tracking unavailable for pose model '%s'; falling back to predict(). Error: %s",
+                    self.model_name,
+                    exc,
+                )
+                return self.model.predict(source_or_frame, **infer_kwargs)
+            raise
+
+    def run_inference(
+        self,
+        source: str,
+        visual_prompts: dict = None,
+        *,
+        pred_worker=None,
+        stop_event=None,
+        start_frame: int = 0,
+        end_frame: Optional[int] = None,
+        step: int = 1,
+        skip_existing: bool = True,
+        output_directory: Optional[Path] = None,
+        progress_callback=None,
+        enable_tracking: bool = True,
+        tracker: Optional[str] = None,
+        save_pose_bbox: Optional[bool] = None,
+        conf: Optional[float] = None,
+        iou: Optional[float] = None,
+        imgsz: Optional[int] = None,
+        max_det: Optional[int] = None,
+        device: Optional[str] = None,
+        half: Optional[bool] = None,
+        batch_size: int = 1,
+        save_video_path: Optional[Path] = None,
+    ) -> str:
+        """
+        Runs inference on the given source and writes results into Annolid's annotation store.
+
+        When `self.persist_json=True`, per-frame LabelMe-compatible JSON files are also written
+        alongside the store entries (without overwriting manually labeled frames).
+
+        Args:
+            source (str): Path to the video or image file.
+
+        Returns:
+            A string message indicating the completion and frame count.
+        """
+        output_directory = (
+            Path(output_directory) if output_directory else Path(source).with_suffix("")
+        )
+        output_directory.mkdir(parents=True, exist_ok=True)
+        start_frame = max(0, int(start_frame))
+        end_frame = None if end_frame is None else int(end_frame)
+        step = max(1, abs(int(step)))
+        skip_existing = bool(skip_existing)
+        batch_size = max(1, int(batch_size or 1))
+        self.frame_count = 0
+        self.detection_count = 0
+        self.track_history.clear()
+
+        should_stop = self._make_stop_checker(
+            pred_worker=pred_worker, stop_event=stop_event
+        )
 
         if visual_prompts is not None:
             try:
@@ -526,18 +728,25 @@ class InferenceProcessor:
         # For GUI-driven video inference we need stable, correct frame indices for:
         # - progress watcher (expects <folder>_000000123.json)
         # - resuming from an arbitrary frame after stopping
-        #
-        # Ultralytics' video streaming API doesn't provide start-frame support,
-        # so use a CV2 loop whenever a non-default window/stride is requested.
+        # - batched non-tracking video inference and annotated video export
         try:
             source_path = Path(source)
         except Exception:
             source_path = None
-        if (
+
+        use_cv2_loop = bool(
             source_path is not None
             and source_path.is_file()
-            and (start_frame != 0 or end_frame is not None or step != 1)
-        ):
+            and (
+                start_frame != 0
+                or end_frame is not None
+                or step != 1
+                or batch_size > 1
+                or save_video_path is not None
+                or (skip_existing and self._has_any_existing_outputs(output_directory))
+            )
+        )
+        if use_cv2_loop:
             return self._run_yolo_video_inference_cv2(
                 source,
                 output_directory=output_directory,
@@ -552,57 +761,55 @@ class InferenceProcessor:
                 enable_tracking=enable_tracking,
                 tracker=tracker,
                 save_pose_bbox=save_pose_bbox,
+                conf=conf,
+                iou=iou,
+                imgsz=imgsz,
+                max_det=max_det,
+                device=device,
+                half=half,
+                batch_size=batch_size,
+                save_video_path=save_video_path,
             )
 
-        # Use visual prompts if supported by the model (YOLOE)
-        if visual_prompts is not None and "yoloe" in self.model_name.lower():
-            try:
-                YOLOEVPSegPredictor = import_ultralytics_symbol(
-                    "YOLOEVPSegPredictor",
-                    module_name="ultralytics.models.yolo.yoloe",
-                    purpose="YOLOE visual prompt inference",
-                )
+        infer_kwargs = self._build_ultralytics_infer_kwargs(
+            conf=conf,
+            iou=iou,
+            imgsz=imgsz,
+            max_det=max_det,
+            device=device,
+            half=half,
+            stream=True,
+        )
 
+        vp_predictor = None
+        if visual_prompts is not None and is_yoloe_model(self.model_name):
+            try:
+                vp_predictor = self._load_yoloe_vp_predictor()
                 logger.info("Running prediction with visual prompts.")
-                results = self.model.predict(
-                    source,
-                    visual_prompts=visual_prompts,
-                    predictor=YOLOEVPSegPredictor,
-                    stream=True,
-                    verbose=False,
-                )
-            except Exception as e:
-                logger.error("Error during visual prompt prediction: %s", e)
-                return f"Error: {e}"
-        else:
-            if self._is_coreml or "pose" in self.model_name.lower():
-                logger.info(
-                    "Detected CoreML/pose export; using predict() instead of track()."
-                )
-                results = self.model.predict(source, stream=True, verbose=False)
-            elif not enable_tracking:
-                results = self.model.predict(source, stream=True, verbose=False)
-            else:
-                track_kwargs = {
-                    "persist": True,
-                    "stream": True,
-                    "verbose": False,
-                }
-                if tracker:
-                    track_kwargs["tracker"] = tracker
-                try:
-                    results = self.model.track(source, **track_kwargs)
-                except Exception as exc:
-                    if tracker:
-                        logger.warning(
-                            "Tracker '%s' failed; falling back to default tracker. Error: %s",
-                            tracker,
-                            exc,
-                        )
-                        track_kwargs.pop("tracker", None)
-                        results = self.model.track(source, **track_kwargs)
-                    else:
-                        raise
+            except Exception as exc:
+                logger.error("Error during visual prompt prediction: %s", exc)
+                return f"Error: {exc}"
+
+        try:
+            results = self._run_ultralytics_call(
+                source,
+                infer_kwargs=infer_kwargs,
+                enable_tracking=enable_tracking,
+                tracker=tracker,
+                visual_prompts=visual_prompts,
+                vp_predictor=vp_predictor,
+            )
+        except Exception as exc:
+            if visual_prompts is not None and is_yoloe_model(self.model_name):
+                logger.error("Error during visual prompt prediction: %s", exc)
+                return f"Error: {exc}"
+            raise
+
+        total_frames = (
+            self._probe_video_frame_count(source)
+            if (progress_callback and source_path is not None and source_path.is_file())
+            else 0
+        )
 
         stopped = False
         try:
@@ -617,6 +824,11 @@ class InferenceProcessor:
                 )
                 self.save_yolo_to_labelme(annotations, frame_shape, output_directory)
                 self.frame_count += 1
+                if progress_callback and total_frames:
+                    try:
+                        progress_callback(self.frame_count, total_frames)
+                    except Exception:
+                        pass
         finally:
             try:
                 close = getattr(results, "close", None)
@@ -647,30 +859,9 @@ class InferenceProcessor:
     ) -> str:
         import cv2
 
-        def should_stop() -> bool:
-            try:
-                if stop_event is not None and stop_event.is_set():
-                    return True
-            except Exception:
-                pass
-            try:
-                if (
-                    pred_worker is not None
-                    and hasattr(pred_worker, "is_stopped")
-                    and pred_worker.is_stopped()
-                ):
-                    return True
-            except Exception:
-                pass
-            try:
-                from qtpy import QtCore  # Optional dependency for GUI runs
-
-                thread = QtCore.QThread.currentThread()
-                if thread is not None and thread.isInterruptionRequested():
-                    return True
-            except Exception:
-                pass
-            return False
+        should_stop = self._make_stop_checker(
+            pred_worker=pred_worker, stop_event=stop_event
+        )
 
         cap = cv2.VideoCapture(str(source))
         if not cap.isOpened():
@@ -712,13 +903,25 @@ class InferenceProcessor:
                     if not ok:
                         break
                     self.frame_count += 1
-                    frame_index += 1
                     processed_steps += 1
                     if progress_callback and total_steps:
                         try:
                             progress_callback(processed_steps, total_steps)
                         except Exception:
                             pass
+                    if int(step) > 1:
+                        for _ in range(int(step) - 1):
+                            frame_index += 1
+                            if end_frame is not None and frame_index > int(end_frame):
+                                break
+                            if should_stop():
+                                stopped = True
+                                break
+                            if not cap.grab():
+                                break
+                        if stopped:
+                            break
+                    frame_index += 1
                     continue
                 ok, frame = cap.read()
                 if not ok:
@@ -792,39 +995,29 @@ class InferenceProcessor:
         enable_tracking: bool = True,
         tracker: Optional[str] = None,
         save_pose_bbox: Optional[bool] = None,
+        conf: Optional[float] = None,
+        iou: Optional[float] = None,
+        imgsz: Optional[int] = None,
+        max_det: Optional[int] = None,
+        device: Optional[str] = None,
+        half: Optional[bool] = None,
+        batch_size: int = 1,
+        save_video_path: Optional[Path] = None,
     ) -> str:
         import cv2
 
-        def should_stop() -> bool:
-            try:
-                if stop_event is not None and stop_event.is_set():
-                    return True
-            except Exception:
-                pass
-            try:
-                if (
-                    pred_worker is not None
-                    and hasattr(pred_worker, "is_stopped")
-                    and pred_worker.is_stopped()
-                ):
-                    return True
-            except Exception:
-                pass
-            try:
-                from qtpy import QtCore  # Optional dependency for GUI runs
-
-                thread = QtCore.QThread.currentThread()
-                if thread is not None and thread.isInterruptionRequested():
-                    return True
-            except Exception:
-                pass
-            return False
+        should_stop = self._make_stop_checker(
+            pred_worker=pred_worker, stop_event=stop_event
+        )
 
         cap = cv2.VideoCapture(str(source))
         if not cap.isOpened():
             return f"Error: unable to open {source}"
 
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+        fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+        if fps <= 0.0:
+            fps = 30.0
         start_frame = max(0, int(start_frame))
         end_frame = None if end_frame is None else int(end_frame)
         if total_frames > 0 and end_frame is not None:
@@ -839,7 +1032,123 @@ class InferenceProcessor:
         total_steps = max(1, (max_frames + step - 1) // step) if max_frames else 0
         processed_steps = 0
 
+        infer_kwargs = self._build_ultralytics_infer_kwargs(
+            conf=conf,
+            iou=iou,
+            imgsz=imgsz,
+            max_det=max_det,
+            device=device,
+            half=half,
+            stream=False,
+        )
+
+        # Cache visual prompt predictor class once instead of importing every frame.
+        vp_predictor = None
+        if visual_prompts is not None and is_yoloe_model(self.model_name):
+            try:
+                vp_predictor = self._load_yoloe_vp_predictor()
+            except Exception as exc:
+                logger.warning(
+                    "YOLOE visual prompt predictor unavailable; falling back to plain predict(): %s",
+                    exc,
+                )
+                visual_prompts = None
+
+        use_batching = (
+            int(batch_size or 1) > 1
+            and (not enable_tracking or bool(getattr(self, "_is_coreml", False)))
+            and visual_prompts is None
+        )
+        effective_batch = max(1, int(batch_size or 1)) if use_batching else 1
+
+        writer = None
+        video_out_path = Path(save_video_path) if save_video_path is not None else None
+
+        def _write_annotated_frame(frame_bgr: np.ndarray, result_obj) -> None:
+            nonlocal writer
+            if video_out_path is None:
+                return
+            try:
+                rendered = (
+                    result_obj.plot()
+                    if result_obj is not None and hasattr(result_obj, "plot")
+                    else frame_bgr
+                )
+                if rendered is None:
+                    rendered = frame_bgr
+                if writer is None:
+                    video_out_path.parent.mkdir(parents=True, exist_ok=True)
+                    h, w = rendered.shape[:2]
+                    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                    writer = cv2.VideoWriter(str(video_out_path), fourcc, fps, (w, h))
+                if writer is not None and writer.isOpened():
+                    writer.write(rendered)
+            except Exception as exc:
+                logger.debug("Failed to write annotated video frame: %s", exc)
+
+        def _flush_batch(pending: List[Tuple[int, np.ndarray]]) -> None:
+            nonlocal processed_steps
+            if not pending:
+                return
+            batch_frames = [item[1] for item in pending]
+            batch_results: List[object] = []
+            try:
+                raw_results = self.model.predict(batch_frames, **infer_kwargs)
+                if isinstance(raw_results, (list, tuple)):
+                    batch_results = list(raw_results)
+                else:
+                    batch_results = list(raw_results or [])
+            except Exception as exc:
+                logger.error(
+                    "Batched YOLO inference failed for frames %s..%s: %s",
+                    pending[0][0],
+                    pending[-1][0],
+                    exc,
+                    exc_info=True,
+                )
+                batch_results = [None] * len(pending)
+
+            for idx_in_batch, (f_idx, f_bgr) in enumerate(pending):
+                frame_shape = (f_bgr.shape[0], f_bgr.shape[1], 3)
+                res_obj = (
+                    batch_results[idx_in_batch]
+                    if idx_in_batch < len(batch_results)
+                    else None
+                )
+                annotations = []
+                if res_obj is not None:
+                    try:
+                        annotations = self.extract_yolo_results(
+                            res_obj,
+                            save_bbox=self._should_save_yolo_bbox(
+                                res_obj, save_pose_bbox
+                            ),
+                        )
+                    except Exception as exc:
+                        logger.error(
+                            "Failed extracting YOLO results at frame %s: %s",
+                            f_idx,
+                            exc,
+                            exc_info=True,
+                        )
+                _write_annotated_frame(f_bgr, res_obj)
+                self.save_yolo_to_labelme(
+                    annotations,
+                    frame_shape,
+                    output_directory,
+                    frame_index=f_idx,
+                )
+                self.frame_count += 1
+                processed_steps += 1
+                if progress_callback and total_steps:
+                    try:
+                        progress_callback(processed_steps, total_steps)
+                    except Exception:
+                        pass
+            pending.clear()
+
         stopped = False
+        pending_batch: List[Tuple[int, np.ndarray]] = []
         try:
             if int(start_frame) > 0:
                 try:
@@ -853,99 +1162,87 @@ class InferenceProcessor:
                     break
                 if end_frame is not None and frame_index > int(end_frame):
                     break
-                if bool(skip_existing) and self._frame_has_existing_output(
+                if bool(skip_existing) and self._frame_is_already_processed(
                     output_directory, frame_index=int(frame_index)
                 ):
                     ok = cap.grab()
                     if not ok:
                         break
                     self.frame_count += 1
-                    frame_index += 1
                     processed_steps += 1
                     if progress_callback and total_steps:
                         try:
                             progress_callback(processed_steps, total_steps)
                         except Exception:
                             pass
+                    if step > 1:
+                        for _ in range(step - 1):
+                            frame_index += 1
+                            if end_frame is not None and frame_index > int(end_frame):
+                                break
+                            if should_stop():
+                                stopped = True
+                                break
+                            if not cap.grab():
+                                break
+                        if stopped:
+                            break
+                    frame_index += 1
                     continue
+
                 ok, frame = cap.read()
                 if not ok:
                     break
 
-                frame_shape = (frame.shape[0], frame.shape[1], 3)
-                annotations = []
-                try:
-                    if (
-                        visual_prompts is not None
-                        and "yoloe" in self.model_name.lower()
-                    ):
-                        try:
-                            YOLOEVPSegPredictor = import_ultralytics_symbol(
-                                "YOLOEVPSegPredictor",
-                                module_name="ultralytics.models.yolo.yoloe",
-                                purpose="YOLOE visual prompt inference",
-                            )
-
-                            results = self.model.predict(
-                                frame,
-                                visual_prompts=visual_prompts,
-                                predictor=YOLOEVPSegPredictor,
-                                verbose=False,
-                            )
-                        except Exception:
-                            results = self.model.predict(frame, verbose=False)
-                    else:
-                        if self._is_coreml or "pose" in self.model_name.lower():
-                            results = self.model.predict(frame, verbose=False)
-                        elif not enable_tracking:
-                            results = self.model.predict(frame, verbose=False)
-                        else:
-                            track_kwargs = {"persist": True, "verbose": False}
-                            if tracker:
-                                track_kwargs["tracker"] = tracker
-                            try:
-                                results = self.model.track(frame, **track_kwargs)
-                            except Exception as exc:
-                                if tracker:
-                                    logger.warning(
-                                        "Tracker '%s' failed; falling back to default tracker. Error: %s",
-                                        tracker,
-                                        exc,
-                                    )
-                                    track_kwargs.pop("tracker", None)
-                                    results = self.model.track(frame, **track_kwargs)
-                                else:
-                                    raise
-                    if isinstance(results, (list, tuple)) and results:
-                        annotations = self.extract_yolo_results(
-                            results[0],
-                            save_bbox=self._should_save_yolo_bbox(
-                                results[0], save_pose_bbox
-                            ),
-                        )
-                except Exception as exc:
-                    logger.error(
-                        "YOLO inference failed at frame %s: %s",
-                        frame_index,
-                        exc,
-                        exc_info=True,
-                    )
+                if use_batching:
+                    pending_batch.append((int(frame_index), frame))
+                    if len(pending_batch) >= effective_batch:
+                        _flush_batch(pending_batch)
+                else:
+                    frame_shape = (frame.shape[0], frame.shape[1], 3)
                     annotations = []
-
-                # Always write a store record (and optional JSON) to mark the frame as processed.
-                self.save_yolo_to_labelme(
-                    annotations,
-                    frame_shape,
-                    output_directory,
-                    frame_index=frame_index,
-                )
-                self.frame_count += 1
-                processed_steps += 1
-                if progress_callback and total_steps:
+                    res_obj = None
                     try:
-                        progress_callback(processed_steps, total_steps)
-                    except Exception:
-                        pass
+                        results = self._run_ultralytics_call(
+                            frame,
+                            infer_kwargs=infer_kwargs,
+                            enable_tracking=enable_tracking,
+                            tracker=tracker,
+                            visual_prompts=visual_prompts,
+                            vp_predictor=vp_predictor,
+                        )
+                        if isinstance(results, (list, tuple)) and results:
+                            res_obj = results[0]
+                            annotations = self.extract_yolo_results(
+                                res_obj,
+                                save_bbox=self._should_save_yolo_bbox(
+                                    res_obj, save_pose_bbox
+                                ),
+                            )
+                    except Exception as exc:
+                        logger.error(
+                            "YOLO inference failed at frame %s: %s",
+                            frame_index,
+                            exc,
+                            exc_info=True,
+                        )
+                        annotations = []
+
+                    _write_annotated_frame(frame, res_obj)
+                    # Always write a store record (and optional JSON) to mark the frame as processed.
+                    self.save_yolo_to_labelme(
+                        annotations,
+                        frame_shape,
+                        output_directory,
+                        frame_index=frame_index,
+                    )
+                    self.frame_count += 1
+                    processed_steps += 1
+                    if progress_callback and total_steps:
+                        try:
+                            progress_callback(processed_steps, total_steps)
+                        except Exception:
+                            pass
 
                 if step > 1:
                     for _ in range(step - 1):
@@ -961,8 +1258,16 @@ class InferenceProcessor:
                     if stopped:
                         break
                 frame_index += 1
+
+            if pending_batch and not stopped:
+                _flush_batch(pending_batch)
         finally:
             cap.release()
+            if writer is not None:
+                try:
+                    writer.release()
+                except Exception:
+                    pass
 
         if stopped:
             return f"Stopped#{self.frame_count}"
@@ -1079,11 +1384,23 @@ class InferenceProcessor:
 
         boxes_obj = getattr(detection_result, "boxes", None)
         boxes_xywh = boxes_obj.xywh.cpu() if boxes_obj is not None else []
+        boxes_xywh_list = None
+        if boxes_obj is not None:
+            try:
+                raw_xywh = boxes_xywh.tolist()
+                if isinstance(raw_xywh, list):
+                    boxes_xywh_list = raw_xywh
+            except Exception:
+                boxes_xywh_list = None
         boxes_conf = getattr(boxes_obj, "conf", None) if boxes_obj is not None else None
         boxes_conf_list = None
         if boxes_conf is not None:
             try:
-                boxes_conf_list = boxes_conf.cpu().tolist()
+                raw_conf = boxes_conf.cpu().tolist()
+                if isinstance(raw_conf, list):
+                    boxes_conf_list = raw_conf
+                else:
+                    boxes_conf_list = [raw_conf]
             except Exception:
                 boxes_conf_list = None
 
@@ -1093,7 +1410,11 @@ class InferenceProcessor:
 
         num_instances = 0
         try:
-            num_instances = int(len(boxes_xywh))
+            num_instances = (
+                len(boxes_xywh_list)
+                if boxes_xywh_list is not None
+                else int(len(boxes_xywh))
+            )
         except Exception:
             num_instances = 0
         if num_instances == 0 and kpts_xy is not None:
@@ -1115,7 +1436,23 @@ class InferenceProcessor:
 
         masks = getattr(detection_result, "masks", None)
         names = getattr(detection_result, "names", {}) or {}
-        cls_ids = [int(box.cls) for box in boxes_obj] if boxes_obj is not None else []
+        cls_ids: List[int] = []
+        if boxes_obj is not None:
+            cls_tensor = getattr(boxes_obj, "cls", None)
+            if cls_tensor is not None:
+                try:
+                    raw_cls = cls_tensor.int().cpu().tolist()
+                    if isinstance(raw_cls, list):
+                        cls_ids = [int(c) for c in raw_cls]
+                    else:
+                        cls_ids = [int(raw_cls)]
+                except Exception:
+                    cls_ids = []
+            if not cls_ids:
+                try:
+                    cls_ids = [int(box.cls) for box in boxes_obj]
+                except Exception:
+                    cls_ids = []
         class_names: List[str] = []
         for idx in range(num_instances):
             name = ""
@@ -1167,8 +1504,14 @@ class InferenceProcessor:
                         keypoint_shape.other_data["class_name"] = class_name
                     annotations.append(keypoint_shape)
 
-            if save_bbox and idx < len(boxes_xywh):
-                x, y, w, h = boxes_xywh[idx].tolist()
+            box_coords = None
+            if boxes_xywh_list is not None and idx < len(boxes_xywh_list):
+                box_coords = boxes_xywh_list[idx]
+            elif idx < len(boxes_xywh):
+                box_coords = boxes_xywh[idx].tolist()
+
+            if save_bbox and box_coords is not None:
+                x, y, w, h = box_coords
                 x1, y1 = x - w / 2, y - h / 2
                 x2, y2 = x + w / 2, y + h / 2
                 bbox_shape = Shape(
@@ -1185,8 +1528,8 @@ class InferenceProcessor:
                     bbox_shape.other_data["score"] = float(boxes_conf_list[idx])
                 annotations.append(bbox_shape)
 
-            if save_track and idx < len(boxes_xywh):
-                x, y, w, h = boxes_xywh[idx].tolist()
+            if save_track and box_coords is not None:
+                x, y, w, h = box_coords
                 track_key = str(group_id)
                 track = self.track_history[track_key]
                 track.append((float(x), float(y)))
@@ -1232,10 +1575,19 @@ class InferenceProcessor:
                                 segmentation_shape.other_data["instance_label"] = (
                                     instance_label
                                 )
+                                if boxes_conf_list is not None and idx < len(
+                                    boxes_conf_list
+                                ):
+                                    segmentation_shape.other_data["score"] = float(
+                                        boxes_conf_list[idx]
+                                    )
                                 annotations.append(segmentation_shape)
                     except Exception as exc:
                         logger.error("Error processing mask: %s", exc)
 
+        self.detection_count = int(getattr(self, "detection_count", 0)) + int(
+            num_instances
+        )
         return annotations
 
     @staticmethod

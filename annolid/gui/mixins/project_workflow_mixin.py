@@ -485,12 +485,24 @@ class ProjectWorkflowMixin:
         else:
             self._start_maskrcnn_training_from_wizard(config)
 
-        if config.get("open_dashboard"):
+        if config.get("open_dashboard") or config.get("open_tensorboard"):
             self._open_training_dashboard()
+        if config.get("open_tensorboard"):
+            dialog = getattr(self, "_training_dashboard_dialog", None)
+            dashboard = getattr(dialog, "dashboard", None)
+            if dashboard is not None and hasattr(dashboard, "_start_tensorboard"):
+                try:
+                    dashboard._start_tensorboard()
+                except Exception as exc:
+                    logger.debug("Could not launch TensorBoard from wizard: %s", exc)
 
     def _start_yolo_training_from_wizard(self, config: dict) -> None:
         """Start YOLO training with wizard configuration."""
         try:
+            from annolid.gui.widgets.yolo_training_ui_shared import (
+                default_yolo_plots_enabled,
+            )
+
             manager = (
                 self.ensure_yolo_training_manager()
                 if hasattr(self, "ensure_yolo_training_manager")
@@ -498,19 +510,55 @@ class ProjectWorkflowMixin:
             )
             if manager is None:
                 return
-            manager.start_training(
-                yolo_model_file=config.get("model", "yolo11n-seg.pt"),
-                model_path=None,
-                data_config_path=config.get("dataset_path"),
-                epochs=config.get("epochs", 100),
-                image_size=config.get("imgsz", 640),
-                batch_size=config.get("batch", 8),
-                device=config.get("device", ""),
-                plots=True,
-                train_overrides=None,
-                out_dir=config.get("output_dir"),
+
+            selected_model = str(config.get("model") or "yolo11n-seg.pt").strip()
+            selected_candidate = Path(selected_model).expanduser()
+            if selected_candidate.is_file():
+                model_path: Optional[str] = str(selected_candidate.resolve())
+                yolo_model_file = selected_candidate.name
+            else:
+                model_path = None
+                yolo_model_file = selected_model
+
+            train_overrides: dict = {}
+            for key in (
+                "lr0",
+                "lrf",
+                "weight_decay",
+                "patience",
+                "close_mosaic",
+                "optimizer",
+                "cos_lr",
+                "cache",
+            ):
+                if key in config and config[key] is not None:
+                    train_overrides[key] = config[key]
+            freeze_val = config.get("freeze")
+            if freeze_val is not None and int(freeze_val) > 0:
+                train_overrides["freeze"] = int(freeze_val)
+
+            plots_val = (
+                bool(config["plots"])
+                if "plots" in config and config["plots"] is not None
+                else default_yolo_plots_enabled()
             )
-            self.statusBar().showMessage(self.tr("YOLO training started"), 3000)
+            resume_val = bool(config.get("resume", False))
+
+            started = manager.start_training(
+                yolo_model_file=yolo_model_file,
+                model_path=model_path,
+                data_config_path=config.get("dataset_path"),
+                epochs=int(config.get("epochs", 100)),
+                image_size=int(config.get("imgsz", 640)),
+                batch_size=int(config.get("batch", 8)),
+                device=config.get("device", ""),
+                plots=plots_val,
+                train_overrides=train_overrides or None,
+                out_dir=config.get("output_dir"),
+                resume=resume_val,
+            )
+            if started:
+                self.statusBar().showMessage(self.tr("YOLO training started"), 3000)
         except Exception as e:
             QtWidgets.QMessageBox.critical(
                 self,
@@ -669,13 +717,55 @@ class ProjectWorkflowMixin:
         except Exception as exc:
             logger.debug("Could not open labeling progress dashboard: %s", exc)
 
-    def open_inference_wizard(self) -> None:
+    def open_inference_wizard(self, model_path: Optional[str] = None) -> None:
         """Open the inference wizard for running model predictions."""
         from annolid.gui.widgets.inference_wizard import InferenceWizard
+        from annolid.yolo import discover_yolo_checkpoints
 
         video_path = self.video_file if self.video_file else None
+        recent_models: list[str] = []
+        seen: set[str] = set()
 
-        wizard = InferenceWizard(video_path=video_path, parent=self)
+        def _append_model(candidate: Optional[str]) -> None:
+            raw = str(candidate or "").strip()
+            if not raw or raw in seen:
+                return
+            seen.add(raw)
+            recent_models.append(raw)
+
+        if model_path:
+            _append_model(model_path)
+
+        ai_mgr = getattr(self, "ai_model_manager", None)
+        if ai_mgr is not None:
+            try:
+                current_weight = ai_mgr.get_current_weight()
+                if current_weight and Path(current_weight).expanduser().is_file():
+                    if not model_path:
+                        model_path = str(Path(current_weight).expanduser().resolve())
+                    _append_model(current_weight)
+            except Exception:
+                pass
+            try:
+                for cfg in ai_mgr.all_model_configs:
+                    wf = str(getattr(cfg, "weight_file", "") or "").strip()
+                    if wf and Path(wf).expanduser().is_file():
+                        _append_model(wf)
+            except Exception:
+                pass
+
+        try:
+            for ckpt in discover_yolo_checkpoints(limit=12):
+                _append_model(str(ckpt.path))
+        except Exception:
+            pass
+
+        wizard = InferenceWizard(
+            video_path=video_path,
+            model_path=model_path,
+            recent_models=recent_models,
+            parent=self,
+        )
         wizard.exec_()
 
     def open_polygon_classifier_workbench(self) -> None:

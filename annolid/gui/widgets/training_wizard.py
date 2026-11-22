@@ -21,31 +21,41 @@ from typing import Any, Dict, List, Optional
 from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtCore import Qt, Signal
 
-from annolid.gui.models_registry import MODEL_REGISTRY
 from annolid.gui.widgets.dino_training_ui_shared import (
     apply_dino_bce_control_state,
     apply_dino_head_control_state,
     configure_dino_model_combo,
     create_dino_head_loss_controls,
 )
+from annolid.gui.widgets.yolo_training_ui_shared import (
+    compute_weight_for_selectors,
+    default_yolo_plots_enabled,
+    format_yolo_weight_display,
+    get_yolo_train_preset,
+    parse_yolo_weight_spec,
+    populate_yolo_device_combo,
+    populate_yolo_family_combo,
+    populate_yolo_preset_combo,
+    populate_yolo_size_combo,
+    populate_yolo_task_combo,
+    populate_yolo_weight_combo,
+    select_or_insert_yolo_weight,
+    task_key_to_label,
+    yolo_registry_weight_configs,
+)
 from annolid.segmentation.dino_kpseg import defaults as dino_defaults
-
+from annolid.yolo import (
+    YOLO_MODEL_SIZES as YOLO11_MODEL_SIZES,
+    YOLO_TASK_SUFFIXES as YOLO11_TASK_SUFFIXES,  # noqa: F401
+    recommend_preset_for_dataset,
+)
 
 YOLO_TASKS = {
     "Detection": "",
     "Instance Segmentation": "-seg",
     "Pose Estimation": "-pose",
 }
-YOLO_SIZES = ("n", "s", "m", "l", "x")
-
-YOLO11_TASK_SUFFIXES = {
-    "Detection": "",
-    "Instance Segmentation": "-seg",
-    "Pose Estimation": "-pose",
-    "Oriented Detection": "-obb",
-    "Classification": "-cls",
-}
-YOLO11_MODEL_SIZES = ("n", "s", "m", "l", "x")
+YOLO_SIZES = YOLO11_MODEL_SIZES
 
 
 # ---------------------------
@@ -324,6 +334,7 @@ class SelectDatasetPage(QtWidgets.QWizardPage):
     def _reset_preview(self) -> None:
         # Some signals may fire during construction before these widgets
         # are created; guard against AttributeError by checking presence.
+        self._dataset_summary = None
         try:
             self.info_classes.setText("—")
             self.info_train.setText("—")
@@ -336,38 +347,30 @@ class SelectDatasetPage(QtWidgets.QWizardPage):
         self._reset_preview()
 
         if self.get_dataset_type() == "yolo":
-            p = Path(self.yolo_picker.path())
-            if not self.yolo_picker.path():
+            raw_path = self.yolo_picker.path()
+            p = Path(raw_path)
+            if not raw_path:
                 self.yolo_picker.setStatus("—", None)
-            elif p.exists() and p.is_file():
-                self.yolo_picker.setStatus("Found ✓", True)
+            elif p.exists() and (p.is_file() or p.is_dir()):
                 self._parse_yolo_yaml(p)
             else:
                 self.yolo_picker.setStatus("Not found", False)
 
-            # Keep other status muted when not active
             if self.coco_picker.path():
                 self.coco_picker.setStatus("—", None)
             if self.labelme_picker.path():
                 self.labelme_picker.setStatus("—", None)
 
         elif self.get_dataset_type() == "coco":
-            d = Path(self.coco_picker.path())
-            if not self.coco_picker.path():
+            raw_path = self.coco_picker.path()
+            d = Path(raw_path)
+            if not raw_path:
                 self.coco_picker.setStatus("—", None)
             elif d.exists() and d.is_dir():
-                train_json = d / "train.json"
-                if train_json.exists():
-                    self.coco_picker.setStatus("OK ✓", True)
-                    self._parse_coco_dir(d)
-                else:
-                    self.coco_picker.setStatus("Missing train.json", False)
-                    # still parse what we can
-                    self._parse_coco_dir(d)
+                self._parse_coco_dir(d)
             else:
                 self.coco_picker.setStatus("Not found", False)
 
-            # Keep other status muted when not active
             if self.yolo_picker.path():
                 self.yolo_picker.setStatus("—", None)
             if self.labelme_picker.path():
@@ -390,41 +393,51 @@ class SelectDatasetPage(QtWidgets.QWizardPage):
 
         self.completeChanged.emit()
 
-    def _parse_yolo_yaml(self, path: Path) -> None:
-        try:
-            import yaml
+    def _apply_dataset_summary_preview(
+        self, summary: Any, picker: PathPicker, *, fallback_type: str
+    ) -> None:
+        self._dataset_summary = summary
+        if summary.is_valid:
+            picker.setStatus("OK ✓", True)
+        else:
+            issue = summary.issues[0] if summary.issues else "Invalid dataset"
+            picker.setStatus(issue[:42], False)
 
-            with open(path, "r") as f:
-                data = yaml.safe_load(f)
-
-            names = data.get("names", [])
-            if isinstance(names, dict):
-                names = list(names.values())
-            if not isinstance(names, list):
-                names = [names]
+        names = list(summary.class_names)
+        if names:
             preview = [str(n) for n in names[:6]]
             self.info_classes.setText(
                 f"{len(names)}: {', '.join(preview)}{'…' if len(names) > 6 else ''}"
             )
+        else:
+            self.info_classes.setText("—")
 
-            train_path = data.get("train", "")
-            val_path = data.get("val", "")
-            base = path.parent
+        self.info_train.setText(
+            f"{summary.train_images} images" if summary.train_images else "—"
+        )
+        self.info_val.setText(
+            f"{summary.val_images} images" if summary.val_images else "—"
+        )
+        task_label = (
+            task_key_to_label(summary.task) if summary.task != "unknown" else None
+        )
+        if summary.kpt_shape:
+            self.info_type.setText(
+                f"{task_label or 'Pose Estimation'} ({summary.kpt_shape[0]} kpts)"
+            )
+        else:
+            self.info_type.setText(task_label or fallback_type)
 
-            train_count = self._count_images(base / train_path) if train_path else 0
-            val_count = self._count_images(base / val_path) if val_path else 0
+    def _parse_yolo_yaml(self, path: Path) -> None:
+        try:
+            from annolid.yolo.dataset_prep import inspect_yolo_dataset
 
-            self.info_train.setText(str(train_count) if train_count else "—")
-            self.info_val.setText(str(val_count) if val_count else "—")
-
-            if "kpt_shape" in data:
-                self.info_type.setText("Pose Estimation")
-            elif any("segment" in str(v).lower() for v in data.values()):
-                self.info_type.setText("Instance Segmentation")
-            else:
-                self.info_type.setText("Detection")
-
+            summary = inspect_yolo_dataset(path)
+            self._apply_dataset_summary_preview(
+                summary, self.yolo_picker, fallback_type="YOLO Detection"
+            )
         except Exception as e:
+            self.yolo_picker.setStatus("Invalid YAML", False)
             self.info_classes.setText(f"Error: {e}")
 
     def _parse_labelme_yaml(self, path: Path) -> None:
@@ -459,27 +472,16 @@ class SelectDatasetPage(QtWidgets.QWizardPage):
 
     def _parse_coco_dir(self, path: Path) -> None:
         try:
-            train_json = path / "train.json"
-            val_json = path / "val.json"
+            from annolid.yolo.dataset_prep import inspect_yolo_dataset
 
-            if train_json.exists():
-                import json
-
-                with open(train_json, "r") as f:
-                    data = json.load(f)
-                cats = data.get("categories", [])
-                self.info_classes.setText(f"{len(cats)} categories")
-                self.info_train.setText(f"{len(data.get('images', []))} images")
-                self.info_type.setText("COCO Detection/Segmentation")
-
-            if val_json.exists():
-                import json
-
-                with open(val_json, "r") as f:
-                    data = json.load(f)
-                self.info_val.setText(f"{len(data.get('images', []))} images")
-
+            summary = inspect_yolo_dataset(path)
+            self._apply_dataset_summary_preview(
+                summary,
+                self.coco_picker,
+                fallback_type="COCO Detection/Segmentation",
+            )
         except Exception as e:
+            self.coco_picker.setStatus("Invalid COCO", False)
             self.info_classes.setText(f"Error: {e}")
 
     def _count_images(self, path: Path) -> int:
@@ -487,7 +489,6 @@ class SelectDatasetPage(QtWidgets.QWizardPage):
             return 0
         extensions = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
         if path.is_file():
-            # list file
             return sum(1 for line in path.read_text().splitlines() if line.strip())
         return sum(1 for f in path.iterdir() if f.suffix.lower() in extensions)
 
@@ -524,49 +525,62 @@ class SelectDatasetPage(QtWidgets.QWizardPage):
         from annolid.gui.widgets.dataset_wizard import DatasetExportWizard
 
         wizard = DatasetExportWizard(parent=self)
-
-        # Connect to the export complete signal
         wizard.export_complete.connect(self._on_dataset_export_complete)
-
         wizard.exec_()
 
     def _on_dataset_export_complete(self, output_path: Path, format_type: str) -> None:
-        """Handle dataset export completion by updating the training wizard."""
-        self.source_tabs.setCurrentIndex(0)  # Switch to dataset tab
-
+        """Handle dataset export completion by updating the matching dataset tab."""
         if format_type == "yolo":
-            # Look for data.yaml in YOLO_dataset folder
+            self.source_tabs.setCurrentIndex(0)
             data_yaml = output_path / "YOLO_dataset" / "data.yaml"
             if data_yaml.exists():
                 self.yolo_picker.setPath(str(data_yaml))
             else:
-                # Fallback: look for data.yaml directly in output
                 data_yaml = output_path / "data.yaml"
                 if data_yaml.exists():
                     self.yolo_picker.setPath(str(data_yaml))
+                else:
+                    self.yolo_picker.setPath(str(output_path))
 
         elif format_type == "coco":
-            # For COCO, set the path to the output directory
-            self.yolo_picker.setPath(str(output_path))
+            self.source_tabs.setCurrentIndex(1)
+            self.coco_picker.setPath(str(output_path))
 
         elif format_type == "jsonl":
-            # Look for dataset_index.jsonl
+            self.source_tabs.setCurrentIndex(0)
             index_file = output_path / "dataset_index.jsonl"
             if index_file.exists():
                 self.yolo_picker.setPath(str(index_file))
             else:
                 self.yolo_picker.setPath(str(output_path))
 
+    def get_dataset_summary(self) -> Any:
+        return getattr(self, "_dataset_summary", None)
+
     def isComplete(self) -> bool:
         p = self.get_dataset_path().strip()
         if not p:
             return False
-        if self.get_dataset_type() == "yolo":
+        dtype = self.get_dataset_type()
+        if dtype == "labelme":
             return Path(p).exists() and Path(p).is_file()
-        if self.get_dataset_type() == "labelme":
-            return Path(p).exists() and Path(p).is_file()
+        summary = getattr(self, "_dataset_summary", None)
+        if summary is not None:
+            return bool(summary.is_valid)
+        if dtype == "yolo":
+            return Path(p).exists() and (Path(p).is_file() or Path(p).is_dir())
         d = Path(p)
-        return d.exists() and d.is_dir() and (d / "train.json").exists()
+        return (
+            d.exists()
+            and d.is_dir()
+            and (
+                (d / "train.json").exists()
+                or (d / "annotations" / "train.json").exists()
+                or (d / "annotations" / "instances_train.json").exists()
+                or (d / "annotations" / "person_keypoints_train.json").exists()
+                or (d / "train" / "annotations.json").exists()
+            )
+        )
 
     def get_dataset_path(self) -> str:
         dtype = self.get_dataset_type()
@@ -586,31 +600,24 @@ class SelectDatasetPage(QtWidgets.QWizardPage):
 
 
 # ---------------------------
-# YOLO model selection helpers (from train_model_dialog)
+# YOLO model selection helpers (delegating to shared catalog)
 # ---------------------------
 
 
 def _yolo_weight_configs() -> List[Any]:
-    """Return YOLO-ish configs from MODEL_REGISTRY."""
-    cfgs: List[Any] = []
-    for cfg in MODEL_REGISTRY:
-        wf = str(getattr(cfg, "weight_file", "") or "").strip()
-        if not wf:
-            continue
-        wf_l = wf.lower()
-        if wf_l.endswith((".pt", ".pth")) and wf_l.startswith("yolo"):
-            cfgs.append(cfg)
-    return cfgs
+    """Return trainable YOLO configs from MODEL_REGISTRY."""
+    return yolo_registry_weight_configs(include_yoloe=False)
 
 
 def _default_yolo_weight_from_registry() -> str:
     cfgs = _yolo_weight_configs()
-    return str(cfgs[0].weight_file) if cfgs else ""
+    return str(cfgs[0].weight_file) if cfgs else "yolo11n-seg.pt"
 
 
-def _compute_yolo_weight_name(task_text: str, size_text: str) -> str:
-    suffix = YOLO11_TASK_SUFFIXES.get(task_text, "")
-    return f"yolo11{size_text.lower()}{suffix}.pt"
+def _compute_yolo_weight_name(
+    task_text: str, size_text: str, *, family: str = "yolo11"
+) -> str:
+    return compute_weight_for_selectors(family=family, task=task_text, size=size_text)
 
 
 def _try_select_registry_weight(weight_file: str, combo: QtWidgets.QComboBox) -> bool:
@@ -817,10 +824,34 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
             backend = wizard.select_backend_page.get_backend()
             if backend == "yolo":
                 self.stack.setCurrentWidget(self.yolo_widget)
+                self._sync_yolo_defaults_from_dataset(
+                    wizard.select_dataset_page.get_dataset_summary()
+                )
             elif backend == "dino_kpseg":
                 self.stack.setCurrentWidget(self.dino_widget)
             else:
                 self.stack.setCurrentWidget(self.maskrcnn_widget)
+
+    def _sync_yolo_defaults_from_dataset(self, summary: Any) -> None:
+        if summary is None or not getattr(summary, "is_valid", False):
+            return
+        dataset_key = str(getattr(summary, "source_path", ""))
+        if dataset_key and dataset_key == getattr(self, "_synced_yolo_dataset_key", ""):
+            return
+        self._synced_yolo_dataset_key = dataset_key
+
+        task = str(getattr(summary, "task", "") or "").strip().lower()
+        task_label = task_key_to_label(task)
+        if task_label and self.yolo_task_combo.currentText() != task_label:
+            # Only auto-sync task when user hasn't picked a local checkpoint path.
+            current_weight = str(self.yolo_weights_combo.currentData() or "").strip()
+            if not (current_weight and Path(current_weight).is_file()):
+                self.yolo_task_combo.setCurrentText(task_label)
+
+        train_images = int(getattr(summary, "train_images", 0) or 0)
+        if train_images > 0:
+            rec = recommend_preset_for_dataset(train_images)
+            self._apply_yolo_train_preset(rec.key)
 
     # ---- YOLO ----
 
@@ -836,11 +867,13 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
         model_layout.setHorizontalSpacing(12)
         model_layout.setVerticalSpacing(10)
 
-        # Preset dropdown from MODEL_REGISTRY
+        # Preset + Recent trained runs dropdown
         self.yolo_weights_combo = QtWidgets.QComboBox()
-        yolo_cfgs = _yolo_weight_configs()
-        for cfg in yolo_cfgs:
-            self.yolo_weights_combo.addItem(cfg.display_name, userData=cfg.weight_file)
+        populate_yolo_weight_combo(
+            self.yolo_weights_combo,
+            default_weight=_default_yolo_weight_from_registry(),
+            include_recent_runs=True,
+        )
 
         # Optional browse button for custom weight path
         self.yolo_weights_browse_btn = QtWidgets.QPushButton("Browse…")
@@ -852,19 +885,24 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
         preset_row_layout.addWidget(self.yolo_weights_combo, 1)
         preset_row_layout.addWidget(self.yolo_weights_browse_btn, 0)
 
-        model_layout.addWidget(QtWidgets.QLabel("Preset:"), 0, 0)
-        model_layout.addWidget(preset_row, 0, 1, 1, 3)
+        model_layout.addWidget(QtWidgets.QLabel("Weights / Recent:"), 0, 0)
+        model_layout.addWidget(preset_row, 0, 1, 1, 5)
 
-        # Convenience task + size selectors (auto-matches presets when possible)
+        # Family + Task + Size selectors
+        self.yolo_family_combo = QtWidgets.QComboBox()
+        populate_yolo_family_combo(self.yolo_family_combo, default="yolo11")
+        self.yolo_family_combo.currentIndexChanged.connect(
+            self._update_yolo_model_from_task_size
+        )
+
         self.yolo_task_combo = QtWidgets.QComboBox()
-        self.yolo_task_combo.addItems(list(YOLO11_TASK_SUFFIXES.keys()))
-        self.yolo_task_combo.setCurrentText("Instance Segmentation")
+        populate_yolo_task_combo(self.yolo_task_combo, default_task="seg")
         self.yolo_task_combo.currentTextChanged.connect(
             self._update_yolo_model_from_task_size
         )
 
         self.yolo_size_combo = QtWidgets.QComboBox()
-        self.yolo_size_combo.addItems([s.upper() for s in YOLO11_MODEL_SIZES])
+        populate_yolo_size_combo(self.yolo_size_combo, default="n")
         self.yolo_size_combo.currentTextChanged.connect(
             self._update_yolo_model_from_task_size
         )
@@ -873,15 +911,27 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
         self.yolo_model_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
         self.yolo_model_label.setStyleSheet("font-weight: 900;")
 
-        model_layout.addWidget(QtWidgets.QLabel("Task:"), 1, 0)
-        model_layout.addWidget(self.yolo_task_combo, 1, 1)
-        model_layout.addWidget(QtWidgets.QLabel("Size:"), 1, 2)
-        model_layout.addWidget(self.yolo_size_combo, 1, 3)
+        self.yolo_resume_check = QtWidgets.QCheckBox(
+            "Resume interrupted run (exact epoch & optimizer state from checkpoint)"
+        )
+        self.yolo_resume_check.setChecked(False)
+        self.yolo_resume_check.setEnabled(False)
+        self.yolo_resume_check.setToolTip(
+            "Enable when continuing an interrupted run from last.pt. "
+            "Leave unchecked to fine-tune from a checkpoint on a new schedule or dataset."
+        )
 
-        model_layout.addWidget(QtWidgets.QLabel("Model:"), 2, 0)
-        model_layout.addWidget(self.yolo_model_label, 2, 1, 1, 3)
+        model_layout.addWidget(QtWidgets.QLabel("Family:"), 1, 0)
+        model_layout.addWidget(self.yolo_family_combo, 1, 1)
+        model_layout.addWidget(QtWidgets.QLabel("Task:"), 1, 2)
+        model_layout.addWidget(self.yolo_task_combo, 1, 3)
+        model_layout.addWidget(QtWidgets.QLabel("Size:"), 1, 4)
+        model_layout.addWidget(self.yolo_size_combo, 1, 5)
 
-        # Connect preset change handler
+        model_layout.addWidget(QtWidgets.QLabel("Selected:"), 2, 0)
+        model_layout.addWidget(self.yolo_model_label, 2, 1, 1, 5)
+        model_layout.addWidget(self.yolo_resume_check, 3, 0, 1, 6)
+
         self.yolo_weights_combo.currentIndexChanged.connect(
             self._on_yolo_preset_changed
         )
@@ -891,6 +941,15 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
         # Training params
         train_group = QtWidgets.QGroupBox("Core Parameters")
         train_layout = QtWidgets.QFormLayout(train_group)
+
+        self.yolo_train_preset_combo = QtWidgets.QComboBox()
+        populate_yolo_preset_combo(
+            self.yolo_train_preset_combo, default_key="balanced", include_custom=True
+        )
+        self.yolo_train_preset_combo.currentIndexChanged.connect(
+            self._on_yolo_train_preset_changed
+        )
+        train_layout.addRow("Fine-tune preset:", self.yolo_train_preset_combo)
 
         self.yolo_device_combo = QtWidgets.QComboBox()
         self._populate_device_combo(self.yolo_device_combo)
@@ -915,30 +974,73 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
         layout.addWidget(train_group)
 
         # Advanced (collapsible)
-        advanced_group = QtWidgets.QGroupBox("Advanced Options")
+        advanced_group = QtWidgets.QGroupBox("Advanced Fine-tuning Options")
         advanced_group.setCheckable(True)
         advanced_group.setChecked(False)
         advanced_layout = QtWidgets.QFormLayout(advanced_group)
 
         self.yolo_lr_spin = QtWidgets.QDoubleSpinBox()
-        self.yolo_lr_spin.setRange(0.0001, 0.2)
-        self.yolo_lr_spin.setDecimals(4)
+        self.yolo_lr_spin.setRange(0.00001, 0.2)
+        self.yolo_lr_spin.setDecimals(5)
+        self.yolo_lr_spin.setSingleStep(0.001)
         self.yolo_lr_spin.setValue(0.01)
-        advanced_layout.addRow("Learning rate:", self.yolo_lr_spin)
+        advanced_layout.addRow("Learning rate (lr0):", self.yolo_lr_spin)
+
+        self.yolo_lrf_spin = QtWidgets.QDoubleSpinBox()
+        self.yolo_lrf_spin.setRange(0.0001, 1.0)
+        self.yolo_lrf_spin.setDecimals(4)
+        self.yolo_lrf_spin.setSingleStep(0.005)
+        self.yolo_lrf_spin.setValue(0.01)
+        advanced_layout.addRow("Final LR fraction (lrf):", self.yolo_lrf_spin)
 
         self.yolo_patience_spin = QtWidgets.QSpinBox()
-        self.yolo_patience_spin.setRange(1, 500)
-        self.yolo_patience_spin.setValue(100)
+        self.yolo_patience_spin.setRange(0, 500)
+        self.yolo_patience_spin.setValue(50)
         advanced_layout.addRow("Early stop patience:", self.yolo_patience_spin)
+
+        self.yolo_freeze_spin = QtWidgets.QSpinBox()
+        self.yolo_freeze_spin.setRange(0, 24)
+        self.yolo_freeze_spin.setValue(0)
+        self.yolo_freeze_spin.setToolTip(
+            "Freeze leading backbone layers (e.g. 10) for small lab datasets. 0 trains all layers."
+        )
+        advanced_layout.addRow("Freeze backbone layers:", self.yolo_freeze_spin)
+
+        self.yolo_close_mosaic_spin = QtWidgets.QSpinBox()
+        self.yolo_close_mosaic_spin.setRange(0, 100)
+        self.yolo_close_mosaic_spin.setValue(10)
+        advanced_layout.addRow(
+            "Close mosaic (last N epochs):", self.yolo_close_mosaic_spin
+        )
+
+        self.yolo_optimizer_combo = QtWidgets.QComboBox()
+        for label, value in (
+            ("Auto", "auto"),
+            ("SGD", "SGD"),
+            ("Adam", "Adam"),
+            ("AdamW", "AdamW"),
+        ):
+            self.yolo_optimizer_combo.addItem(label, userData=value)
+        advanced_layout.addRow("Optimizer:", self.yolo_optimizer_combo)
+
+        self.yolo_cos_lr_check = QtWidgets.QCheckBox("Use cosine LR schedule")
+        self.yolo_cos_lr_check.setChecked(True)
+        advanced_layout.addRow("", self.yolo_cos_lr_check)
 
         self.yolo_cache_check = QtWidgets.QCheckBox("Cache images in RAM")
         advanced_layout.addRow("", self.yolo_cache_check)
 
+        self.yolo_plots_check = QtWidgets.QCheckBox(
+            "Save Ultralytics training plots (PNG curves, confusion matrix)"
+        )
+        self.yolo_plots_check.setChecked(default_yolo_plots_enabled())
+        advanced_layout.addRow("", self.yolo_plots_check)
+
         layout.addWidget(advanced_group)
         layout.addStretch()
 
-        # Initialize with default selection
         self._on_yolo_preset_changed()
+        self._apply_yolo_train_preset("balanced")
 
         return widget
 
@@ -1275,59 +1377,90 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
     # ---- helpers ----
 
     def _populate_device_combo(self, combo: QtWidgets.QComboBox) -> None:
-        options = [("Auto (recommended)", "")]
+        populate_yolo_device_combo(combo)
+
+    def _on_yolo_train_preset_changed(self) -> None:
+        key = str(self.yolo_train_preset_combo.currentData() or "").strip().lower()
+        if not key or key == "custom":
+            return
+        self._apply_yolo_train_preset(key)
+
+    def _apply_yolo_train_preset(self, preset_key: str) -> None:
         try:
-            import torch
+            preset = get_yolo_train_preset(preset_key)
+        except ValueError:
+            return
+        idx = self.yolo_train_preset_combo.findData(preset.key)
+        if idx >= 0 and self.yolo_train_preset_combo.currentIndex() != idx:
+            self.yolo_train_preset_combo.blockSignals(True)
+            self.yolo_train_preset_combo.setCurrentIndex(idx)
+            self.yolo_train_preset_combo.blockSignals(False)
 
-            if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-                options.append(("Apple MPS", "mps"))
-            if torch.cuda.is_available():
-                # show GPU name if possible
-                try:
-                    name = torch.cuda.get_device_name(0)
-                    options.insert(1, (f"CUDA (GPU 0) — {name}", "0"))
-                except Exception:
-                    options.insert(1, ("CUDA (GPU 0)", "0"))
-        except ImportError:
-            pass
-        options.append(("CPU", "cpu"))
+        self.yolo_epochs_spin.setValue(int(preset.epochs))
+        self.yolo_batch_spin.setValue(int(preset.batch))
+        self.yolo_imgsz_spin.setValue(int(preset.imgsz))
+        self.yolo_lr_spin.setValue(float(preset.lr0))
+        self.yolo_lrf_spin.setValue(float(preset.lrf))
+        self.yolo_patience_spin.setValue(int(preset.patience))
+        self.yolo_freeze_spin.setValue(int(preset.freeze))
+        self.yolo_close_mosaic_spin.setValue(int(preset.close_mosaic))
+        self.yolo_cos_lr_check.setChecked(bool(preset.cos_lr))
+        self.yolo_cache_check.setChecked(bool(preset.cache))
 
-        combo.clear()
-        for label, value in options:
-            combo.addItem(label, userData=value)
+        for i in range(self.yolo_optimizer_combo.count()):
+            if (
+                str(self.yolo_optimizer_combo.itemData(i)).lower()
+                == str(preset.optimizer).lower()
+            ):
+                self.yolo_optimizer_combo.setCurrentIndex(i)
+                break
 
     def _update_yolo_model(self) -> None:
+        family = str(self.yolo_family_combo.currentData() or "yolo11")
         task = self.yolo_task_combo.currentText()
-        size = self.yolo_size_combo.currentText().lower()
-        suffix = YOLO_TASKS.get(task, "-seg")
-        self.yolo_model_label.setText(f"yolo11{size}{suffix}.pt")
+        size = self.yolo_size_combo.currentText()
+        computed = _compute_yolo_weight_name(task, size, family=family)
+        self.yolo_model_label.setText(computed)
 
     def _on_yolo_preset_changed(self) -> None:
-        """Handle preset dropdown change - update model file and sync task/size combos."""
+        """Handle weight dropdown change - sync family/task/size combos and resume state."""
         wf = str(self.yolo_weights_combo.currentData() or "").strip()
         if wf:
-            # best-effort: sync task/size combos if it's a yolo11 naming
-            task, size = self._parse_task_size_from_weight(wf)
-            if task:
+            parsed = parse_yolo_weight_spec(wf)
+            if parsed is not None:
+                family, task_label, size = parsed
+                self.yolo_family_combo.blockSignals(True)
+                fam_idx = self.yolo_family_combo.findData(family)
+                if fam_idx >= 0:
+                    self.yolo_family_combo.setCurrentIndex(fam_idx)
+                self.yolo_family_combo.blockSignals(False)
+
                 self.yolo_task_combo.blockSignals(True)
-                self.yolo_task_combo.setCurrentText(task)
+                self.yolo_task_combo.setCurrentText(task_label)
                 self.yolo_task_combo.blockSignals(False)
-            if size:
+
                 self.yolo_size_combo.blockSignals(True)
                 self.yolo_size_combo.setCurrentText(size)
                 self.yolo_size_combo.blockSignals(False)
+
+        is_local_ckpt = bool(wf and Path(wf).expanduser().is_file())
+        self.yolo_resume_check.setEnabled(is_local_ckpt)
+        if not is_local_ckpt and self.yolo_resume_check.isChecked():
+            self.yolo_resume_check.setChecked(False)
         self._update_yolo_model_label()
 
     def _update_yolo_model_from_task_size(self) -> None:
-        """Update model selection when task/size combos change."""
+        """Update model selection when family/task/size combos change."""
+        family = str(self.yolo_family_combo.currentData() or "yolo11")
         task = self.yolo_task_combo.currentText()
         size = self.yolo_size_combo.currentText()
-        expected_name = _compute_yolo_weight_name(task, size)
+        expected_name = _compute_yolo_weight_name(task, size, family=family)
 
-        # Try to select matching preset from registry
-        if not _try_select_registry_weight(expected_name, self.yolo_weights_combo):
-            # If no match, just update the label
-            pass
+        self.yolo_weights_combo.blockSignals(True)
+        select_or_insert_yolo_weight(self.yolo_weights_combo, expected_name)
+        self.yolo_weights_combo.blockSignals(False)
+        self.yolo_resume_check.setEnabled(False)
+        self.yolo_resume_check.setChecked(False)
         self._update_yolo_model_label()
 
     def _update_yolo_model_label(self) -> None:
@@ -1336,26 +1469,17 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
         if not wf:
             self.yolo_model_label.setText("Selected weights: (none)")
             return
-        self.yolo_model_label.setText(f"Selected weights: {wf}")
+        display = format_yolo_weight_display(wf)
+        self.yolo_model_label.setText(f"Selected weights: {display or wf}")
 
     def _parse_task_size_from_weight(
         self, weight_file: str
     ) -> tuple[str | None, str | None]:
-        """
-        Best-effort parse for yolo11{size}{suffix}.pt, e.g. yolo11n-seg.pt.
-        Returns (task_name, size_letter) or (None, None).
-        """
-        import re
-
-        wf = (weight_file or "").strip().lower()
-        m = re.match(r"^yolo11([nslmx])(?:(-seg|-pose|-obb|-cls))?\.pt$", wf)
-        if not m:
+        parsed = parse_yolo_weight_spec(weight_file)
+        if parsed is None:
             return (None, None)
-        size = m.group(1).upper()
-        suffix = m.group(2) or ""
-        suffix_to_task = {v: k for k, v in YOLO11_TASK_SUFFIXES.items()}
-        task = suffix_to_task.get(suffix, "Detection")
-        return (task, size)
+        _family, task_label, size = parsed
+        return (task_label, size)
 
     def _browse_yolo_weights(self) -> None:
         """Browse for custom YOLO weights file."""
@@ -1363,19 +1487,12 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
             self, "Select YOLO Weights", "", "Model Files (*.pt *.pth);;All Files (*)"
         )
         if path:
-            # Add custom entry to combo if not already present
-            custom_name = f"Custom: {Path(path).name}"
-            # Check if already exists
-            exists = False
-            for i in range(self.yolo_weights_combo.count()):
-                if str(self.yolo_weights_combo.itemData(i)) == path:
-                    exists = True
-                    self.yolo_weights_combo.setCurrentIndex(i)
-                    break
-            if not exists:
-                self.yolo_weights_combo.addItem(custom_name, userData=path)
-                self.yolo_weights_combo.setCurrentText(custom_name)
-            self._update_yolo_model_label()
+            select_or_insert_yolo_weight(
+                self.yolo_weights_combo,
+                path,
+                display_label=f"Custom: {Path(path).name}",
+            )
+            self._on_yolo_preset_changed()
 
     def _browse_output(self) -> None:
         folder = QtWidgets.QFileDialog.getExistingDirectory(
@@ -1398,16 +1515,26 @@ class ConfigureParametersPage(QtWidgets.QWizardPage):
         }
 
         if backend == "yolo":
+            preset_key = str(self.yolo_train_preset_combo.currentData() or "custom")
             config.update(
                 {
                     "model": str(self.yolo_weights_combo.currentData() or ""),
+                    "preset": self.yolo_train_preset_combo.currentText(),
+                    "preset_key": preset_key,
                     "epochs": self.yolo_epochs_spin.value(),
                     "batch": self.yolo_batch_spin.value(),
                     "imgsz": self.yolo_imgsz_spin.value(),
                     "device": self.yolo_device_combo.currentData() or "",
                     "lr0": self.yolo_lr_spin.value(),
+                    "lrf": self.yolo_lrf_spin.value(),
                     "patience": self.yolo_patience_spin.value(),
+                    "freeze": self.yolo_freeze_spin.value(),
+                    "close_mosaic": self.yolo_close_mosaic_spin.value(),
+                    "optimizer": str(self.yolo_optimizer_combo.currentData() or "auto"),
+                    "cos_lr": self.yolo_cos_lr_check.isChecked(),
                     "cache": self.yolo_cache_check.isChecked(),
+                    "plots": self.yolo_plots_check.isChecked(),
+                    "resume": self.yolo_resume_check.isChecked(),
                 }
             )
 
@@ -1555,13 +1682,26 @@ class TrainingSummaryPage(QtWidgets.QWizardPage):
 
         params_rows = []
         if backend == "yolo":
+            mode_label = (
+                "Resume interrupted run"
+                if bool(config.get("resume", False))
+                else "Fine-tune / Train"
+            )
             params_rows += [
                 row("Model", str(config.get("model", "yolo11n-seg.pt"))),
+                row("Mode", mode_label),
                 row("Preset", str(config.get("preset", "Balanced"))),
                 row("Epochs", str(config.get("epochs", 100))),
                 row("Batch", str(config.get("batch", 8))),
                 row("Image size", str(config.get("imgsz", 640))),
                 row("Device", str(config.get("device", "auto") or "auto")),
+                row("LR (lr0)", str(config.get("lr0", 0.01))),
+                row("Patience", str(config.get("patience", 50))),
+                row("Freeze layers", str(config.get("freeze", 0))),
+                row("Optimizer", str(config.get("optimizer", "auto"))),
+                row("Cosine LR", "Yes" if config.get("cos_lr", True) else "No"),
+                row("RAM cache", "Yes" if config.get("cache", False) else "No"),
+                row("Plots", "Yes" if config.get("plots", False) else "No"),
             ]
         elif backend == "dino_kpseg":
             freeze_bn_val = config.get("freeze_bn", None)
@@ -1683,8 +1823,13 @@ class TrainingWizard(QtWidgets.QWizard):
 
         # Prefill dataset if provided
         if dataset_path:
-            self.select_dataset_page.source_tabs.setCurrentIndex(0)
-            self.select_dataset_page.yolo_picker.setPath(dataset_path)
+            ds_candidate = Path(dataset_path).expanduser()
+            if ds_candidate.is_dir() and not (ds_candidate / "data.yaml").is_file():
+                self.select_dataset_page.source_tabs.setCurrentIndex(1)
+                self.select_dataset_page.coco_picker.setPath(dataset_path)
+            else:
+                self.select_dataset_page.source_tabs.setCurrentIndex(0)
+                self.select_dataset_page.yolo_picker.setPath(dataset_path)
 
         # Buttons
         self.setButtonText(QtWidgets.QWizard.FinishButton, "Start Training")

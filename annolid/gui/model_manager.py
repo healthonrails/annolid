@@ -119,6 +119,67 @@ class AIModelManager(QtCore.QObject):
         """Rebuild the combo box while preserving or applying a selection."""
         self._refresh_combo(target_selection)
 
+    def select_or_add_custom_model(
+        self,
+        weight_path: Path | str,
+        *,
+        display_name: Optional[str] = None,
+    ) -> Optional[str]:
+        """Register (if needed) and immediately select a local trained model checkpoint."""
+        try:
+            resolved = Path(weight_path).expanduser().resolve()
+        except OSError:
+            return None
+        if not resolved.is_file():
+            return None
+
+        self._discover_recent_runs()
+        target_name: Optional[str] = None
+        for cfg in self.all_model_configs:
+            wf = str(getattr(cfg, "weight_file", "") or "").strip()
+            if not wf:
+                continue
+            try:
+                if Path(wf).expanduser().resolve() == resolved:
+                    target_name = cfg.display_name
+                    break
+            except OSError:
+                if wf == str(resolved):
+                    target_name = cfg.display_name
+                    break
+
+        if not target_name:
+            if display_name and str(display_name).strip():
+                candidate_name = str(display_name).strip()
+            else:
+                parent_hint = (
+                    resolved.parent.parent.name
+                    if resolved.parent.name == "weights"
+                    else resolved.parent.name
+                )
+                candidate_name = (
+                    f"YOLO: {parent_hint}" if parent_hint else resolved.stem
+                )
+            existing_names = {cfg.display_name for cfg in self.all_model_configs}
+            unique_name = candidate_name
+            suffix = 2
+            while unique_name in existing_names:
+                unique_name = f"{candidate_name} ({suffix})"
+                suffix += 1
+            self._custom_model_configs.append(
+                ModelConfig(
+                    display_name=unique_name,
+                    identifier=str(resolved),
+                    weight_file=str(resolved),
+                )
+            )
+            self._save_custom_models()
+            target_name = unique_name
+
+        self._refresh_combo(target_name)
+        self._handle_index_changed()
+        return target_name
+
     def eventFilter(self, obj: QtCore.QObject, event: QtCore.QEvent) -> bool:  # noqa: N802
         """Keep the model list in sync with on-disk weight files."""
         if obj is self._combo and event.type() == QtCore.QEvent.MouseButtonPress:
@@ -725,32 +786,69 @@ class AIModelManager(QtCore.QObject):
     def _discover_recent_runs(self) -> None:
         """Scan the runs directory for recently trained YOLO and DINO KPSEG models."""
         from annolid.utils.runs import shared_runs_root
+        from annolid.yolo import discover_yolo_checkpoints
 
         root = shared_runs_root()
-        if not root.exists():
+        try:
+            if not root.exists():
+                self._auto_discovered_configs = []
+                return
+        except OSError:
             self._auto_discovered_configs = []
             return
 
         candidates: List[Tuple[float, ModelConfig]] = []
+        seen_weights: set[str] = set()
 
-        def _scan_dir(parent_dir: Path, prefix: str):
-            if not parent_dir.exists():
-                return
-            for run_dir in parent_dir.iterdir():
-                if not run_dir.is_dir():
+        # Discover YOLO runs across both managed (<runs>/yolo/<model>/<run>/weights/best.pt)
+        # and legacy/Ultralytics (<runs>/train/<run>/weights/best.pt, etc.) layouts.
+        try:
+            for ckpt in discover_yolo_checkpoints(runs_root=root, limit=10):
+                weight_key = str(ckpt.path)
+                if weight_key in seen_weights:
                     continue
-                weight_file = run_dir / "weights" / "best.pt"
-                if weight_file.exists():
-                    mtime = weight_file.stat().st_mtime
-                    cfg = ModelConfig(
-                        display_name=f"{prefix}: {run_dir.name}",
-                        identifier=str(weight_file),
-                        weight_file=str(weight_file),
+                seen_weights.add(weight_key)
+                candidates.append(
+                    (
+                        ckpt.mtime,
+                        ModelConfig(
+                            display_name=ckpt.display_name,
+                            identifier=weight_key,
+                            weight_file=weight_key,
+                        ),
                     )
-                    candidates.append((mtime, cfg))
+                )
+        except OSError:
+            pass
 
-        # YOLO runs are typically in root / "train"
-        _scan_dir(root / "train", "YOLO")
+        def _scan_dir(parent_dir: Path, prefix: str) -> None:
+            try:
+                if not parent_dir.exists():
+                    return
+                entries = list(parent_dir.iterdir())
+            except OSError:
+                return
+            for run_dir in entries:
+                try:
+                    if not run_dir.is_dir():
+                        continue
+                    weight_file = run_dir / "weights" / "best.pt"
+                    if not weight_file.is_file():
+                        continue
+                    weight_key = str(weight_file.resolve())
+                    if weight_key in seen_weights:
+                        continue
+                    seen_weights.add(weight_key)
+                    mtime = weight_file.stat().st_mtime
+                except OSError:
+                    continue
+                cfg = ModelConfig(
+                    display_name=f"{prefix}: {run_dir.name}",
+                    identifier=weight_key,
+                    weight_file=weight_key,
+                )
+                candidates.append((mtime, cfg))
+
         # DINO runs are typically in root / "dino_kpseg" / "train"
         _scan_dir(root / "dino_kpseg" / "train", "DINO KPSEG")
 

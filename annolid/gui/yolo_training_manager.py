@@ -1,6 +1,5 @@
 import atexit
 import os
-import platform
 import tempfile
 import threading
 import time
@@ -9,25 +8,38 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import yaml
-from qtpy import QtCore, QtWidgets
+from qtpy import QtCore, QtGui, QtWidgets
 
 from annolid.gui.qt_threads import configure_worker_thread_stack
 from annolid.gui.workers import FlexibleWorker
-from annolid.datasets.coco import (
-    build_coco_spec_from_dataset_path,
-    load_coco_class_names,
-    load_coco_keypoint_meta,
-    looks_like_coco_spec,
-    materialize_coco_spec_as_yolo,
-    resolve_coco_annotation_paths,
-)
 from annolid.utils.logger import logger
 from annolid.utils.runs import allocate_run_dir, shared_runs_root
+from annolid.yolo import infer_yolo_task
+from annolid.yolo.dataset_prep import (
+    YOLODatasetError,
+    check_training_preflight,
+    count_dataset_images,
+    infer_flip_idx,
+    prepare_yolo_dataset,
+)
+
+_RESERVED_OVERRIDE_KEYS = frozenset(
+    {"model", "data", "device", "plots", "project", "name", "resume"}
+)
 
 
 @dataclass(frozen=True)
 class _CLITrainingOutcome:
     save_dir: str
+    best_weights: Optional[str] = None
+
+
+def _locate_run_checkpoint(run_dir: Path) -> Optional[Path]:
+    for filename in ("best.pt", "last.pt"):
+        candidate = run_dir / "weights" / filename
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 class YOLOTrainingManager(QtCore.QObject):
@@ -56,453 +68,29 @@ class YOLOTrainingManager(QtCore.QObject):
         expected_task: Optional[str] = None,
     ) -> Optional[str]:
         """Resolve training data config and persist a YOLO-compatible temp YAML."""
-        config_path = Path(config_file).expanduser().resolve()
-        if not config_path.exists():
-            QtWidgets.QMessageBox.warning(
-                self._window,
-                "Invalid Dataset",
-                f"Dataset configuration file not found:\n{config_path}",
-            )
-            return None
-
-        if config_path.is_dir():
-            prepared = self._prepare_from_coco_annotations_dir(config_path)
-            if prepared is None:
-                return None
-            config_path = prepared
-
         try:
-            with config_path.open("r", encoding="utf-8") as stream:
-                data_cfg: Dict[str, Any] = yaml.safe_load(stream)
-            if not isinstance(data_cfg, dict):
-                raise ValueError("Dataset configuration must be a YAML mapping.")
-        except Exception as exc:
-            logger.exception("Failed to load YOLO dataset config: %s", config_path)
-            QtWidgets.QMessageBox.critical(
-                self._window,
-                "Dataset Error",
-                f"Could not read dataset configuration:\n{config_path}\n\n{exc}",
-            )
-            return None
-
-        config_path, data_cfg = self._upgrade_from_nearby_coco(
-            config_path=config_path,
-            data_cfg=data_cfg,
-            expected_task=expected_task,
-        )
-
-        if looks_like_coco_spec(data_cfg):
-            prepared = self._materialize_coco_spec(
-                config_path,
+            prepared = prepare_yolo_dataset(
+                config_file,
                 expected_task=expected_task,
             )
-            if prepared is None:
-                return None
-            config_path = prepared
-            try:
-                with config_path.open("r", encoding="utf-8") as stream:
-                    data_cfg = yaml.safe_load(stream)
-                if not isinstance(data_cfg, dict):
-                    raise ValueError("Dataset configuration must be a YAML mapping.")
-            except Exception as exc:
-                logger.exception(
-                    "Failed to load staged YOLO dataset config: %s", config_path
-                )
-                QtWidgets.QMessageBox.critical(
-                    self._window,
-                    "Dataset Error",
-                    f"Could not read staged YOLO dataset config:\n{config_path}\n\n{exc}",
-                )
-                return None
-
-        base_dir = config_path.parent
-
-        def is_remote(path_str: str) -> bool:
-            return path_str.startswith(("http://", "https://", "rtsp://", "rtmp://"))
-
-        root_dir = base_dir
-        if data_cfg.get("path"):
-            root_candidate = Path(str(data_cfg["path"])).expanduser()
-            if not root_candidate.is_absolute():
-                root_candidate = (base_dir / root_candidate).resolve()
-            root_dir = root_candidate
-            data_cfg["path"] = str(root_dir)
-        else:
-            data_cfg["path"] = str(base_dir)
-
-        def resolve_entry(entry: Any) -> Any:
-            if isinstance(entry, str):
-                if not entry.strip():
-                    return entry
-                if is_remote(entry):
-                    return entry
-                entry_path = Path(entry).expanduser()
-                resolved = (
-                    entry_path if entry_path.is_absolute() else root_dir / entry_path
-                )
-                return str(resolved.resolve())
-            if isinstance(entry, (list, tuple)):
-                return [resolve_entry(item) for item in entry]
-            return entry
-
-        for split in ("train", "val", "test"):
-            if split in data_cfg and data_cfg[split]:
-                data_cfg[split] = resolve_entry(data_cfg[split])
-
-        if not self._ensure_required_splits(data_cfg, root_dir=root_dir):
-            return None
-
-        missing_paths: List[str] = []
-        for split in ("train", "val", "test"):
-            value = data_cfg.get(split)
-            if not value:
-                continue
-            entries = value if isinstance(value, list) else [value]
-            for entry in entries:
-                if isinstance(entry, str) and not is_remote(entry):
-                    candidate = Path(entry)
-                    if any(char in entry for char in ("*", "?", "[")):
-                        continue
-                    if not candidate.exists():
-                        missing_paths.append(f"{split}: {entry}")
-
-        if missing_paths:
-            QtWidgets.QMessageBox.warning(
-                self._window,
-                "Dataset Missing Files",
-                "The following dataset paths could not be found:\n"
-                + "\n".join(missing_paths),
-            )
-            return None
-
-        self._ensure_required_class_metadata(
-            data_cfg,
-            root_dir=root_dir,
-            config_path=config_path,
-        )
-
-        # Pose datasets: auto-generate flip_idx if missing, so fliplr/flipud augmentations work.
-        if data_cfg.get("kpt_shape") and not data_cfg.get("flip_idx"):
-            flip_idx = self._infer_flip_idx(data_cfg)
-            if flip_idx:
-                data_cfg["flip_idx"] = flip_idx
-
-        if str(expected_task or "").strip().lower() == "pose" and not data_cfg.get(
-            "kpt_shape"
-        ):
-            QtWidgets.QMessageBox.warning(
-                self._window,
-                "Pose Dataset Required",
-                "The selected YOLO pose model requires a dataset with 'kpt_shape'.\n\n"
-                "Choose a YOLO pose dataset or a COCO keypoints dataset.",
-            )
-            return None
-
-        return self._write_temp_config(data_cfg, config_path)
-
-    def _upgrade_from_nearby_coco(
-        self,
-        *,
-        config_path: Path,
-        data_cfg: Dict[str, Any],
-        expected_task: Optional[str],
-    ) -> Tuple[Path, Dict[str, Any]]:
-        task = str(expected_task or "").strip().lower()
-        if task != "pose":
-            return config_path, data_cfg
-        if data_cfg.get("kpt_shape") or looks_like_coco_spec(data_cfg):
-            return config_path, data_cfg
-
-        candidate_roots: List[Path] = [config_path.parent]
-        raw_root = data_cfg.get("path")
-        if raw_root:
-            root_candidate = Path(str(raw_root)).expanduser()
-            if not root_candidate.is_absolute():
-                root_candidate = (config_path.parent / root_candidate).resolve()
-            candidate_roots.append(root_candidate)
-
-        seen: set[Path] = set()
-        for candidate_root in candidate_roots:
-            if candidate_root in seen or not candidate_root.exists():
-                continue
-            seen.add(candidate_root)
-            payload = build_coco_spec_from_dataset_path(candidate_root)
-            if not payload:
-                continue
-            ann_paths = resolve_coco_annotation_paths(
-                config_path=candidate_root / "auto_pose_spec.yaml",
-                payload=payload,
-            )
-            keypoint_ann = next(
-                (
-                    ann_path
-                    for ann_path in ann_paths.values()
-                    if ann_path is not None and ann_path.exists()
-                ),
-                None,
-            )
-            if keypoint_ann is None:
-                continue
-            keypoint_meta = load_coco_keypoint_meta(keypoint_ann)
-            if int(keypoint_meta.get("num_keypoints") or 0) <= 0:
-                continue
-
-            temp_spec_path = Path(
-                self._write_temp_config(
-                    payload,
-                    candidate_root / "auto_pose_spec.yaml",
-                )
-            )
-            try:
-                upgraded_cfg = (
-                    yaml.safe_load(temp_spec_path.read_text(encoding="utf-8")) or {}
-                )
-            except Exception:
-                upgraded_cfg = dict(payload)
-            return temp_spec_path, upgraded_cfg
-
-        return config_path, data_cfg
-
-    def _ensure_required_class_metadata(
-        self,
-        data_cfg: Dict[str, Any],
-        *,
-        root_dir: Path,
-        config_path: Path,
-    ) -> None:
-        names = self._normalize_class_names(data_cfg.get("names"))
-        if names:
-            data_cfg["names"] = names
-            data_cfg["nc"] = len(names)
-            return
-
-        try:
-            nc = int(data_cfg.get("nc"))
-        except Exception:
-            nc = 0
-        if nc > 0:
-            data_cfg["names"] = [f"class_{i}" for i in range(nc)]
-            data_cfg["nc"] = nc
-            return
-
-        kpt_names = data_cfg.get("kpt_names")
-        if isinstance(kpt_names, dict) and kpt_names:
-            class_count = len(kpt_names)
-            if class_count > 0:
-                data_cfg["names"] = [f"class_{i}" for i in range(class_count)]
-                data_cfg["nc"] = class_count
-                return
-
-        coco_names = self._infer_class_names_from_coco(
-            root_dir=root_dir,
-            config_path=config_path,
-        )
-        if coco_names:
-            data_cfg["names"] = coco_names
-            data_cfg["nc"] = len(coco_names)
-            return
-
-        # Ultralytics requires at least one class definition for all training YAMLs.
-        data_cfg["names"] = ["animal"]
-        data_cfg["nc"] = 1
-
-    def _normalize_class_names(self, value: Any) -> Optional[List[str]]:
-        if isinstance(value, str):
-            label = value.strip()
-            return [label] if label else None
-        if isinstance(value, (list, tuple)):
-            names = [str(item).strip() for item in value if str(item).strip()]
-            return names if names else None
-        if isinstance(value, dict):
-            entries: List[Tuple[int, str]] = []
-            for key, name in value.items():
-                label = str(name).strip()
-                if not label:
-                    continue
-                try:
-                    key_i = int(key)
-                except Exception:
-                    continue
-                entries.append((key_i, label))
-            if not entries:
-                return None
-            entries.sort(key=lambda item: item[0])
-            return [label for _, label in entries]
-        return None
-
-    def _infer_class_names_from_coco(
-        self,
-        *,
-        root_dir: Path,
-        config_path: Path,
-    ) -> Optional[List[str]]:
-        candidates: List[Path] = [root_dir, config_path.parent]
-        seen: set[Path] = set()
-        for candidate_root in candidates:
-            if candidate_root in seen:
-                continue
-            seen.add(candidate_root)
-            payload = build_coco_spec_from_dataset_path(candidate_root)
-            if not payload:
-                continue
-            ann_paths = resolve_coco_annotation_paths(
-                config_path=candidate_root / "auto_discovered_coco_spec.yaml",
-                payload=payload,
-            )
-            for split in ("train", "val", "test"):
-                ann_path = ann_paths.get(split)
-                if ann_path is None or not ann_path.exists():
-                    continue
-                names = [name for name in load_coco_class_names(ann_path) if name]
-                if names:
-                    return names
-        return None
-
-    def _ensure_required_splits(
-        self,
-        data_cfg: Dict[str, Any],
-        *,
-        root_dir: Path,
-    ) -> bool:
-        missing = [split for split in ("train", "val") if not data_cfg.get(split)]
-        if not missing:
-            return True
-
-        guessed = {
-            "train": [
-                root_dir / "images" / "train",
-                root_dir / "train",
-            ],
-            "val": [
-                root_dir / "images" / "val",
-                root_dir / "val",
-                root_dir / "images" / "valid",
-                root_dir / "valid",
-                root_dir / "images" / "validation",
-                root_dir / "validation",
-            ],
-        }
-        for split in list(missing):
-            for candidate in guessed[split]:
-                if candidate.exists():
-                    data_cfg[split] = str(candidate.resolve())
-                    missing.remove(split)
-                    break
-
-        if not missing:
-            return True
-
-        QtWidgets.QMessageBox.warning(
-            self._window,
-            "Dataset Split Required",
-            "YOLO training requires both 'train' and 'val' in the dataset YAML.\n\n"
-            f"Missing: {', '.join(missing)}",
-        )
-        return False
-
-    def _infer_flip_idx(self, data_cfg: Dict[str, Any]) -> Optional[List[int]]:
-        kpt_shape = data_cfg.get("kpt_shape")
-        if not isinstance(kpt_shape, (list, tuple)) or len(kpt_shape) < 1:
-            return None
-        try:
-            nkpt = int(kpt_shape[0])
-        except Exception:
-            return None
-        if nkpt <= 0:
-            return None
-
-        kpt_labels = data_cfg.get("kpt_labels")
-        if not isinstance(kpt_labels, dict) or not kpt_labels:
-            return None
-
-        labels_by_idx: Dict[int, str] = {}
-        for key, value in kpt_labels.items():
-            try:
-                idx = int(key)
-            except Exception:
-                continue
-            if idx < 0 or idx >= nkpt:
-                continue
-            label = str(value or "").strip()
-            if not label:
-                continue
-            labels_by_idx[idx] = label
-
-        if len(labels_by_idx) != nkpt:
-            return None
-
-        idx_by_label = {lbl.lower(): i for i, lbl in labels_by_idx.items()}
-
-        def counterpart(label: str) -> Optional[str]:
-            s = label.lower()
-            swaps = [
-                ("left", "right"),
-                ("right", "left"),
-                ("l_", "r_"),
-                ("r_", "l_"),
-                ("l-", "r-"),
-                ("r-", "l-"),
-            ]
-            for a, b in swaps:
-                if a in s:
-                    return s.replace(a, b)
-            return None
-
-        flip_idx: List[int] = []
-        for i in range(nkpt):
-            label = labels_by_idx[i]
-            other = counterpart(label)
-            if other and other in idx_by_label:
-                flip_idx.append(idx_by_label[other])
+        except YOLODatasetError as exc:
+            if exc.critical:
+                QtWidgets.QMessageBox.critical(self._window, exc.title, exc.message)
             else:
-                flip_idx.append(i)
-
-        if len(flip_idx) != nkpt:
+                QtWidgets.QMessageBox.warning(self._window, exc.title, exc.message)
             return None
-        return flip_idx
-
-    def _prepare_from_coco_annotations_dir(
-        self, annotations_dir: Path
-    ) -> Optional[Path]:
-        payload = build_coco_spec_from_dataset_path(annotations_dir)
-        if payload is None:
-            QtWidgets.QMessageBox.warning(
-                self._window,
-                "Invalid COCO Folder",
-                "Could not find COCO train/val annotations. Select either a COCO annotations folder, a dataset root that contains an annotations subfolder, or a dataset root with split-local annotations.json files.",
-            )
-            return None
-
-        cfg_stub = annotations_dir / "coco_pose_spec.yaml"
-        temp_spec = Path(self._write_temp_config(payload, cfg_stub))
-        return temp_spec
-
-    def _materialize_coco_spec(
-        self,
-        config_path: Path,
-        *,
-        expected_task: Optional[str] = None,
-    ) -> Optional[Path]:
-        try:
-            stage_dir = Path(
-                tempfile.mkdtemp(prefix=f"{config_path.stem}_coco_yolo_")
-            ).resolve()
-            self._temp_dataset_dirs.append(stage_dir)
-            staged_yaml = materialize_coco_spec_as_yolo(
-                config_path=config_path,
-                output_dir=stage_dir,
-                link_mode="hardlink",
-                expected_task=expected_task,
-            )
-            return staged_yaml
         except Exception as exc:
-            logger.exception("Failed to convert COCO spec to a YOLO dataset.")
+            logger.exception("Failed to prepare YOLO dataset config: %s", config_file)
             QtWidgets.QMessageBox.critical(
                 self._window,
                 "Dataset Error",
-                f"Failed to convert COCO annotations into a YOLO dataset.\n\n{exc}",
+                f"Could not prepare dataset configuration:\n{config_file}\n\n{exc}",
             )
             return None
+
+        self._temp_configs.extend(prepared.temp_configs)
+        self._temp_dataset_dirs.extend(prepared.temp_dataset_dirs)
+        return str(prepared.data_yaml)
 
     def start_training(
         self,
@@ -517,6 +105,7 @@ class YOLOTrainingManager(QtCore.QObject):
         plots: bool,
         train_overrides: Optional[Dict[str, Any]],
         out_dir: Optional[str],
+        resume: bool = False,
     ) -> bool:
         """Launch YOLO training on a background thread."""
         expected_task = self._infer_expected_task(
@@ -525,17 +114,12 @@ class YOLOTrainingManager(QtCore.QObject):
         )
         config_path = Path(data_config_path).expanduser().resolve()
         if config_path not in self._temp_configs:
-            # Ensure the dataset config is resolved to an absolute, temporary
-            # YAML with paths fixed up for Ultralytics. If preparation fails,
-            # abort early.
             prepared_cfg = self.prepare_data_config(
                 str(config_path),
                 expected_task=expected_task,
             )
             if not prepared_cfg:
                 return False
-            # From this point forward use the prepared temp config path so
-            # downstream cleanup/removal is safe.
             data_config_path = prepared_cfg
         else:
             data_config_path = str(config_path)
@@ -549,18 +133,22 @@ class YOLOTrainingManager(QtCore.QObject):
             self._release_temp_config(data_config_path)
             return False
 
-        from annolid.yolo import resolve_weight_path
+        from annolid.yolo import resolve_weight_path, resolve_yolo_device
         from annolid.yolo.ultralytics_cli import (
             build_yolo_train_command,
             ensure_parent_dir,
+            format_yolo_cli_error,
             run_yolo_cli,
         )
+
+        resolved_device = resolve_yolo_device(device)
 
         if not self._confirm_preflight(
             data_config_path=data_config_path,
             batch_size=batch_size,
-            device=device,
+            device=resolved_device,
             plots=plots,
+            expected_task=expected_task,
         ):
             self._release_temp_config(data_config_path)
             return False
@@ -589,19 +177,20 @@ class YOLOTrainingManager(QtCore.QObject):
         )
         self._show_start_notification()
 
+        model_label = Path(model_path or yolo_model_file).stem or "yolo"
         runs_root = (
             Path(out_dir).expanduser().resolve() if out_dir else shared_runs_root()
         )
         run_dir = allocate_run_dir(
             task="yolo",
-            model=Path(yolo_model_file).stem,
+            model=model_label,
             runs_root=runs_root,
         )
         run_rel = run_dir.relative_to(runs_root)
         self.training_started.emit(
             {
                 "task": "yolo",
-                "model": Path(yolo_model_file).stem,
+                "model": model_label,
                 "run_dir": str(run_dir),
             }
         )
@@ -627,7 +216,10 @@ class YOLOTrainingManager(QtCore.QObject):
                 for key, value in dict(train_overrides).items():
                     if value is None:
                         continue
-                    overrides[str(key)] = value
+                    key_str = str(key).strip()
+                    if not key_str or key_str.lower() in _RESERVED_OVERRIDE_KEYS:
+                        continue
+                    overrides[key_str] = value
 
             cmd = build_yolo_train_command(
                 model=str(model_arg),
@@ -635,12 +227,13 @@ class YOLOTrainingManager(QtCore.QObject):
                 epochs=int(epochs),
                 imgsz=int(image_size),
                 batch=int(batch_size),
-                device=(str(device).strip() if device else None),
+                device=resolved_device,
                 project=str(runs_root),
                 name=str(run_rel),
                 exist_ok=True,
                 plots=bool(plots),
                 workers=0,  # avoid multiprocessing when invoked from GUI threads
+                resume=bool(resume),
                 overrides=overrides,
             )
 
@@ -662,8 +255,9 @@ class YOLOTrainingManager(QtCore.QObject):
                     "epochs": int(epochs),
                     "imgsz": int(image_size),
                     "batch": int(batch_size),
-                    "device": str(device or ""),
+                    "device": str(resolved_device or ""),
                     "plots": bool(plots),
+                    "resume": bool(resume),
                     "run_dir": str(run_dir),
                     "started_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
                 },
@@ -710,16 +304,25 @@ class YOLOTrainingManager(QtCore.QObject):
                     stop_event=stop_event,
                     output_sink=sink,
                 )
+                if stop_event is not None and stop_event.is_set():
+                    tb_logger.poll_and_log_metrics()
+                    tb_logger.finalize(ok=False, error="Training cancelled by user.")
+                    raise RuntimeError("YOLO training cancelled by user.")
                 if completed.returncode != 0:
-                    tail = "\n".join(completed.output_tail[-50:])
                     raise RuntimeError(
-                        f"YOLO CLI failed (exit {completed.returncode}) while training {chosen_model!r}.\n\n"
-                        f"Command: {' '.join(completed.command)}\n\n"
-                        f"Last output:\n{tail}"
+                        format_yolo_cli_error(
+                            completed,
+                            model=str(chosen_model),
+                            device=resolved_device,
+                        )
                     )
                 tb_logger.poll_and_log_metrics()
                 tb_logger.finalize(ok=True)
-                return _CLITrainingOutcome(save_dir=str(run_dir))
+                ckpt = _locate_run_checkpoint(run_dir)
+                return _CLITrainingOutcome(
+                    save_dir=str(run_dir),
+                    best_weights=(str(ckpt) if ckpt is not None else None),
+                )
             except Exception as exc:
                 tb_logger.finalize(ok=False, error=str(exc))
                 raise
@@ -744,11 +347,13 @@ class YOLOTrainingManager(QtCore.QObject):
         def on_finished(outcome):
             self._handle_finished(outcome, thread, worker, data_config_path)
             save_dir = getattr(outcome, "save_dir", None)
+            best_weights = getattr(outcome, "best_weights", None)
             self.training_finished.emit(
                 {
                     "task": "yolo",
-                    "model": Path(yolo_model_file).stem,
+                    "model": model_label,
                     "run_dir": str(save_dir or run_dir),
+                    "best_weights": best_weights,
                     "ok": not isinstance(outcome, Exception),
                 }
             )
@@ -759,20 +364,39 @@ class YOLOTrainingManager(QtCore.QObject):
         QtCore.QTimer.singleShot(0, thread.start)
         return True
 
+    def stop_training(self) -> bool:
+        """Request graceful cancellation of the active YOLO training job."""
+        if not self._active_jobs:
+            return False
+        stopped_any = False
+        for _thread, worker, _temp_cfg in list(self._active_jobs):
+            try:
+                worker.request_stop()
+                stopped_any = True
+            except Exception:
+                logger.debug("Could not signal YOLO worker stop.", exc_info=True)
+        if stopped_any and self._window is not None:
+            try:
+                self._window.statusBar().showMessage(
+                    self._window.tr("Stopping YOLO training...")
+                )
+            except Exception:
+                pass
+        return stopped_any
+
     def _infer_expected_task(
         self,
         yolo_model_file: str,
         *,
         model_path: Optional[str],
     ) -> Optional[str]:
-        model_token = str(model_path or yolo_model_file or "").strip().lower()
-        if not model_token:
-            return None
-        if "-pose" in model_token or model_token.endswith("pose.pt"):
-            return "pose"
-        if "-seg" in model_token or model_token.endswith("seg.pt"):
-            return "seg"
+        inferred = infer_yolo_task(model_path, fallback_weight=yolo_model_file)
+        if inferred in {"pose", "seg", "obb", "cls"}:
+            return inferred
         return None
+
+    def _infer_flip_idx(self, data_cfg: Dict[str, Any]) -> Optional[List[int]]:
+        return infer_flip_idx(data_cfg)
 
     def _confirm_preflight(
         self,
@@ -781,56 +405,15 @@ class YOLOTrainingManager(QtCore.QObject):
         batch_size: int,
         device: Optional[str],
         plots: bool,
+        expected_task: Optional[str] = None,
     ) -> bool:
-        warnings: List[str] = []
-
-        data_cfg: Dict[str, Any] = {}
-        resolved_yaml = Path(data_config_path).expanduser()
-        try:
-            data_cfg = yaml.safe_load(resolved_yaml.read_text(encoding="utf-8")) or {}
-        except Exception:
-            data_cfg = {}
-
-        train_count = self._count_images(data_cfg.get("train"))
-        val_count = self._count_images(data_cfg.get("val"))
-
-        if train_count and batch_size > train_count:
-            warnings.append(
-                f"Batch size ({batch_size}) is larger than the training set ({train_count} images). "
-                "This can result in very few optimizer steps and poor convergence."
-            )
-
-        if train_count and train_count < 50:
-            warnings.append(
-                f"Training set is very small ({train_count} images). Consider labeling more frames for better accuracy."
-            )
-
-        if val_count and val_count < 10:
-            warnings.append(
-                f"Validation set is very small ({val_count} images). Metrics may be unstable/noisy."
-            )
-
-        kpt_shape = data_cfg.get("kpt_shape")
-        if kpt_shape and not data_cfg.get("flip_idx"):
-            warnings.append(
-                "Pose dataset has 'kpt_shape' but no 'flip_idx' in data.yaml; Ultralytics disables flip augmentations."
-            )
-
-        device_str = str(device or "").strip().lower()
-        if not device_str:
-            warnings.append(
-                "Device is set to Auto. If training is slow, explicitly select 'mps' (Apple Silicon) or CUDA GPU."
-            )
-        elif device_str == "cpu":
-            warnings.append(
-                "Training on CPU is usually much slower. If available, prefer 'mps' (Apple Silicon) or CUDA GPU."
-            )
-
-        if plots and platform.system().lower() == "darwin":
-            warnings.append(
-                "Ultralytics training plots may crash on macOS in GUI/threaded runs (Bus error). If this happens, disable plots."
-            )
-
+        warnings = check_training_preflight(
+            data_config_path,
+            batch_size=batch_size,
+            device=device,
+            plots=plots,
+            expected_task=expected_task,
+        )
         if not warnings:
             return True
 
@@ -849,38 +432,7 @@ class YOLOTrainingManager(QtCore.QObject):
         return reply == QtWidgets.QMessageBox.Yes
 
     def _count_images(self, entry: Union[str, List[str], Tuple[str, ...], None]) -> int:
-        if not entry:
-            return 0
-
-        if isinstance(entry, (list, tuple)):
-            return sum(self._count_images(item) for item in entry)
-
-        path_str = str(entry).strip()
-        if not path_str or path_str.startswith(("http://", "https://")):
-            return 0
-        if any(ch in path_str for ch in ("*", "?", "[")):
-            return 0
-
-        p = Path(path_str).expanduser()
-        try:
-            if p.is_dir():
-                exts = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
-                return sum(1 for f in p.rglob("*") if f.suffix.lower() in exts)
-            if p.is_file() and p.suffix.lower() == ".txt":
-                count = 0
-                for line in p.read_text(encoding="utf-8").splitlines():
-                    line = line.strip()
-                    if not line:
-                        continue
-                    candidate = Path(line)
-                    if not candidate.is_absolute():
-                        candidate = p.parent / candidate
-                    if candidate.exists():
-                        count += 1
-                return count
-        except OSError:
-            return 0
-        return 0
+        return count_dataset_images(entry)
 
     def is_running(self) -> bool:
         return self._training_running
@@ -889,6 +441,10 @@ class YOLOTrainingManager(QtCore.QObject):
         """Stop running jobs and remove temporary config files."""
         while self._active_jobs:
             thread, worker, temp_config = self._active_jobs.pop()
+            try:
+                worker.request_stop()
+            except Exception:
+                pass
             try:
                 self._stop_thread(thread, "YOLO training thread")
             except RuntimeError:
@@ -924,6 +480,40 @@ class YOLOTrainingManager(QtCore.QObject):
     # ------------------------------------------------------------------ #
     # Internal helpers
     # ------------------------------------------------------------------ #
+    def _refresh_window_models(self) -> None:
+        ai_mgr = getattr(self._window, "ai_model_manager", None)
+        if ai_mgr is not None and hasattr(ai_mgr, "refresh"):
+            try:
+                ai_mgr.refresh()
+            except Exception:
+                logger.debug("Could not refresh AI model dropdown.", exc_info=True)
+
+    def _activate_trained_model(self, weights_path: Path) -> None:
+        ai_mgr = getattr(self._window, "ai_model_manager", None)
+        if ai_mgr is None:
+            return
+        if hasattr(ai_mgr, "select_or_add_custom_model"):
+            try:
+                ai_mgr.select_or_add_custom_model(weights_path)
+                return
+            except Exception:
+                logger.debug("Could not activate trained model.", exc_info=True)
+        self._refresh_window_models()
+
+    def _launch_inference_for_weights(self, weights_path: Path) -> None:
+        if hasattr(self._window, "open_inference_wizard"):
+            try:
+                self._window.open_inference_wizard(model_path=str(weights_path))
+                return
+            except TypeError:
+                try:
+                    self._window.open_inference_wizard()
+                    return
+                except Exception:
+                    pass
+            except Exception:
+                logger.debug("Could not launch InferenceWizard.", exc_info=True)
+
     def _handle_finished(
         self,
         outcome: Any,
@@ -963,15 +553,60 @@ class YOLOTrainingManager(QtCore.QObject):
             return
 
         save_dir = getattr(outcome, "save_dir", None)
-        details = f"\nResults are saved to:\n{save_dir}" if save_dir else ""
-        QtWidgets.QMessageBox.information(
-            self._window,
-            "Training Completed",
-            "YOLO model training completed successfully!" + details,
+        best_weights_str = getattr(outcome, "best_weights", None)
+        best_weights = (
+            Path(best_weights_str)
+            if best_weights_str and Path(best_weights_str).is_file()
+            else (_locate_run_checkpoint(Path(save_dir)) if save_dir else None)
         )
+
+        # Immediately expose the newly trained checkpoint in the GUI model selector.
+        self._refresh_window_models()
+
         self._window.statusBar().showMessage(
             self._window.tr("YOLO training completed.")
         )
+
+        if best_weights is None:
+            details = f"\nResults are saved to:\n{save_dir}" if save_dir else ""
+            QtWidgets.QMessageBox.information(
+                self._window,
+                "Training Completed",
+                "YOLO model training completed successfully!" + details,
+            )
+            return
+
+        box = QtWidgets.QMessageBox(self._window)
+        box.setIcon(QtWidgets.QMessageBox.Information)
+        box.setWindowTitle("Training Completed")
+        box.setText("YOLO model training completed successfully!")
+        info_lines = []
+        if best_weights is not None:
+            info_lines.append(f"Best weights:\n{best_weights}")
+        if save_dir:
+            info_lines.append(f"Run folder:\n{save_dir}")
+        box.setInformativeText("\n\n".join(info_lines))
+
+        use_btn = box.addButton("Use Model Now", QtWidgets.QMessageBox.AcceptRole)
+        infer_btn = box.addButton("Run Inference...", QtWidgets.QMessageBox.ActionRole)
+        folder_btn = (
+            box.addButton("Open Run Folder", QtWidgets.QMessageBox.ActionRole)
+            if save_dir
+            else None
+        )
+        box.addButton(QtWidgets.QMessageBox.Ok)
+        box.exec_()
+
+        clicked = box.clickedButton()
+        if clicked == use_btn:
+            self._activate_trained_model(best_weights)
+        elif clicked == infer_btn:
+            self._activate_trained_model(best_weights)
+            self._launch_inference_for_weights(best_weights)
+        elif folder_btn is not None and clicked == folder_btn and save_dir:
+            QtGui.QDesktopServices.openUrl(
+                QtCore.QUrl.fromLocalFile(str(Path(save_dir).resolve()))
+            )
 
     def _show_start_notification(self) -> None:
         self._close_start_notification()
@@ -992,7 +627,6 @@ class YOLOTrainingManager(QtCore.QObject):
         dialog = self._start_dialog
         if dialog is None:
             return
-        # Clear the reference early to avoid races with the dialog's finished signal
         self._start_dialog = None
         try:
             if dialog.isVisible():
@@ -1035,8 +669,6 @@ class YOLOTrainingManager(QtCore.QObject):
             self._temp_configs.remove(path_obj)
             should_delete = True
         except ValueError:
-            # Never delete user-provided configs here. Only manager-created
-            # temp configs tracked in _temp_configs should be removed.
             should_delete = False
         if not should_delete:
             return

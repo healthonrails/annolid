@@ -1,24 +1,52 @@
 from __future__ import annotations
 
+import importlib.util
 import os
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from queue import Empty, Full, Queue
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set
 
 
 def locate_yolo_cli() -> List[str]:
-    """Return the command prefix used to invoke the Ultralytics YOLO CLI."""
+    """Return the command prefix used to invoke the Ultralytics YOLO CLI.
+
+    Prefers the ``yolo`` console script living alongside ``sys.executable`` so
+    venv-based GUI/CLI launches work even when the venv's ``bin``/``Scripts``
+    directory is not on ``PATH``. Falls back to ``PATH`` lookup and finally to
+    invoking ``ultralytics.cfg.entrypoint`` with ``sys.executable``.
+    """
+    exe_names = ("yolo.exe", "yolo") if os.name == "nt" else ("yolo",)
+    py_dir = Path(sys.executable).resolve().parent if sys.executable else None
+    if py_dir is not None:
+        for name in exe_names:
+            candidate = py_dir / name
+            try:
+                if candidate.is_file() and os.access(candidate, os.X_OK):
+                    return [str(candidate)]
+            except OSError:
+                continue
+
     exe = shutil.which("yolo")
     if exe:
         return [exe]
+
+    if sys.executable and importlib.util.find_spec("ultralytics") is not None:
+        return [
+            sys.executable,
+            "-c",
+            "import sys; from ultralytics.cfg import entrypoint; entrypoint()",
+        ]
+
     raise RuntimeError(
-        "Ultralytics YOLO CLI not found. Install 'ultralytics' so the 'yolo' command is available."
+        "Ultralytics YOLO CLI not found. Install the optional YOLO runtime with "
+        '`python -m pip install "annolid[yolo]"`.'
     )
 
 
@@ -35,13 +63,42 @@ def _format_cli_value(value: Any) -> str:
     return json.dumps(value)
 
 
-def _append_kv(cmd: List[str], key: str, value: Any) -> None:
+def _append_kv(
+    cmd: List[str],
+    key: str,
+    value: Any,
+    *,
+    seen_keys: Optional[Set[str]] = None,
+) -> None:
     if value is None:
         return
     rendered = _format_cli_value(value)
     if rendered == "":
         return
-    cmd.append(f"{key}={rendered}")
+    norm_key = str(key).strip()
+    if not norm_key:
+        return
+    if seen_keys is not None:
+        if norm_key in seen_keys:
+            return
+        seen_keys.add(norm_key)
+    cmd.append(f"{norm_key}={rendered}")
+
+
+def _append_overrides(
+    cmd: List[str],
+    overrides: Optional[Dict[str, Any]],
+    *,
+    seen_keys: Set[str],
+    reserved_keys: Set[str],
+) -> None:
+    if not overrides:
+        return
+    for key in sorted(overrides.keys()):
+        norm_key = str(key).strip()
+        if not norm_key or norm_key in reserved_keys or norm_key in seen_keys:
+            continue
+        _append_kv(cmd, norm_key, overrides[key], seen_keys=seen_keys)
 
 
 def build_yolo_train_command(
@@ -57,28 +114,45 @@ def build_yolo_train_command(
     exist_ok: Optional[bool] = None,
     plots: Optional[bool] = None,
     workers: Optional[int] = None,
+    resume: Optional[bool] = None,
+    freeze: Optional[int] = None,
+    patience: Optional[int] = None,
+    cache: Optional[Any] = None,
     overrides: Optional[Dict[str, Any]] = None,
     yolo_cmd: Optional[Sequence[str]] = None,
 ) -> List[str]:
     cmd: List[str] = list(yolo_cmd or locate_yolo_cli())
     cmd.append("train")
-    _append_kv(cmd, "model", model)
-    _append_kv(cmd, "data", data)
-    _append_kv(cmd, "epochs", int(epochs))
-    _append_kv(cmd, "imgsz", int(imgsz))
-    _append_kv(cmd, "batch", int(batch) if batch is not None else None)
+    seen: Set[str] = set()
+    _append_kv(cmd, "model", model, seen_keys=seen)
+    _append_kv(cmd, "data", data, seen_keys=seen)
+    _append_kv(cmd, "epochs", int(epochs), seen_keys=seen)
+    _append_kv(cmd, "imgsz", int(imgsz), seen_keys=seen)
+    _append_kv(cmd, "batch", int(batch) if batch is not None else None, seen_keys=seen)
 
     device_str = str(device).strip() if device is not None else ""
-    _append_kv(cmd, "device", device_str if device_str else None)
-    _append_kv(cmd, "project", project)
-    _append_kv(cmd, "name", name)
-    _append_kv(cmd, "exist_ok", exist_ok)
-    _append_kv(cmd, "plots", plots)
-    _append_kv(cmd, "workers", workers)
+    _append_kv(cmd, "device", device_str if device_str else None, seen_keys=seen)
+    _append_kv(cmd, "project", project, seen_keys=seen)
+    _append_kv(cmd, "name", name, seen_keys=seen)
+    _append_kv(cmd, "exist_ok", exist_ok, seen_keys=seen)
+    _append_kv(cmd, "plots", plots, seen_keys=seen)
+    _append_kv(cmd, "workers", workers, seen_keys=seen)
+    if resume:
+        _append_kv(cmd, "resume", True, seen_keys=seen)
+    if freeze is not None and int(freeze) > 0:
+        _append_kv(cmd, "freeze", int(freeze), seen_keys=seen)
+    if patience is not None:
+        _append_kv(cmd, "patience", int(patience), seen_keys=seen)
+    if cache is not None:
+        _append_kv(cmd, "cache", cache, seen_keys=seen)
 
-    if overrides:
-        for key in sorted(overrides.keys()):
-            _append_kv(cmd, key, overrides[key])
+    # Primary explicit arguments (and model/data) must never be clobbered by overrides.
+    _append_overrides(
+        cmd,
+        overrides,
+        seen_keys=seen,
+        reserved_keys={"model", "data"},
+    )
 
     return cmd
 
@@ -101,23 +175,27 @@ def build_yolo_val_command(
 ) -> List[str]:
     cmd: List[str] = list(yolo_cmd or locate_yolo_cli())
     cmd.append("val")
-    _append_kv(cmd, "model", model)
-    _append_kv(cmd, "data", data)
-    _append_kv(cmd, "imgsz", int(imgsz) if imgsz is not None else None)
-    _append_kv(cmd, "batch", int(batch) if batch is not None else None)
+    seen: Set[str] = set()
+    _append_kv(cmd, "model", model, seen_keys=seen)
+    _append_kv(cmd, "data", data, seen_keys=seen)
+    _append_kv(cmd, "imgsz", int(imgsz) if imgsz is not None else None, seen_keys=seen)
+    _append_kv(cmd, "batch", int(batch) if batch is not None else None, seen_keys=seen)
 
     device_str = str(device).strip() if device is not None else ""
-    _append_kv(cmd, "device", device_str if device_str else None)
-    _append_kv(cmd, "project", project)
-    _append_kv(cmd, "name", name)
-    _append_kv(cmd, "split", split)
-    _append_kv(cmd, "plots", plots)
-    _append_kv(cmd, "save_json", save_json)
-    _append_kv(cmd, "workers", workers)
+    _append_kv(cmd, "device", device_str if device_str else None, seen_keys=seen)
+    _append_kv(cmd, "project", project, seen_keys=seen)
+    _append_kv(cmd, "name", name, seen_keys=seen)
+    _append_kv(cmd, "split", split, seen_keys=seen)
+    _append_kv(cmd, "plots", plots, seen_keys=seen)
+    _append_kv(cmd, "save_json", save_json, seen_keys=seen)
+    _append_kv(cmd, "workers", workers, seen_keys=seen)
 
-    if overrides:
-        for key in sorted(overrides.keys()):
-            _append_kv(cmd, key, overrides[key])
+    _append_overrides(
+        cmd,
+        overrides,
+        seen_keys=seen,
+        reserved_keys={"model", "data"},
+    )
 
     return cmd
 
@@ -171,6 +249,10 @@ def run_yolo_cli(
     # Prevent matplotlib backends from requiring a GUI environment in training.
     merged_env.setdefault("MPLBACKEND", "Agg")
     merged_env.setdefault("PYTHONUNBUFFERED", "1")
+    # On Apple Silicon, allow unsupported PyTorch MPS ops to fall back to CPU
+    # instead of crashing mid-training unless the user explicitly disabled it.
+    if sys.platform == "darwin":
+        merged_env.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
     if output_sink is None:
 
@@ -269,6 +351,49 @@ def run_yolo_cli(
         # An inherited pipe held by another process must not block cleanup.
         if not reader.is_alive() and proc.stdout is not None:
             proc.stdout.close()
+
+
+def format_yolo_cli_error(
+    completed: YOLOCLICompleted,
+    *,
+    model: Optional[str] = None,
+    device: Optional[str] = None,
+) -> str:
+    """Format an actionable diagnostic message for a failed YOLO CLI invocation."""
+    tail_lines = completed.output_tail[-50:]
+    tail = "\n".join(tail_lines)
+    header = f"YOLO CLI failed (exit {completed.returncode})"
+    if model:
+        header += f" while training {model!r}"
+    header += "."
+
+    hints: List[str] = []
+    tail_lower = tail.lower()
+    device_lower = str(device or "").strip().lower()
+    if device_lower == "mps" or any(
+        token in tail_lower
+        for token in (
+            "not currently implemented for the mps",
+            "mps backend out of memory",
+            "placeholder storage has not been allocated on mps",
+            "mpsgraph",
+        )
+    ):
+        hints.append(
+            "Apple MPS backend error detected. Re-run with --device cpu (or select CPU in Device), "
+            "or reduce batch size / image size."
+        )
+    elif "out of memory" in tail_lower or "cuda out of memory" in tail_lower:
+        hints.append(
+            "GPU out-of-memory detected. Try a smaller batch size (e.g. --batch 4) "
+            "or smaller image size (e.g. --imgsz 640)."
+        )
+
+    parts = [header, f"Command: {' '.join(completed.command)}"]
+    if hints:
+        parts.append("Suggestion:\n- " + "\n- ".join(hints))
+    parts.append(f"Last output:\n{tail}")
+    return "\n\n".join(parts)
 
 
 def ensure_parent_dir(path_str: str) -> str:
