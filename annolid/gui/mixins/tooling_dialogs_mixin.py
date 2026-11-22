@@ -117,6 +117,14 @@ class ToolingDialogsMixin:
             self._viewer_stack.setCurrentIndex(0)
             return
 
+        frame_loader = getattr(self, "frame_loader", None)
+        trim_cache = getattr(frame_loader, "trim_cache", None)
+        if callable(trim_cache):
+            try:
+                trim_cache(keep_entries=1)
+            except Exception:
+                pass
+
         stack = getattr(self, "_viewer_stack", None)
         if stack is None:
             logger.warning("Cannot switch view to %s: _viewer_stack is missing.", mode)

@@ -2437,8 +2437,27 @@ class Canvas(
             self.drawingPolygon.emit(False)
         self.update()
 
+    def _has_active_ai_prompt_state(self) -> bool:
+        """Return True when frame change may need to cancel/clear AI prompt state."""
+        if self.is_text_prompt_running():
+            return True
+        if self.current is not None or hasattr(self, "sam_image_scale"):
+            return True
+        sam_mask = getattr(self, "sam_mask", None)
+        if sam_mask is not None and (
+            bool(getattr(sam_mask, "points", None))
+            or getattr(sam_mask, "mask", None) is not None
+        ):
+            return True
+        if getattr(self, "_adjoining_source", None) is not None:
+            return True
+        return False
+
     def loadPixmap(self, pixmap, clear_shapes=True):
-        previous_signature = self._ai_model_image_signature_value()
+        guard_prompt_state = self._has_active_ai_prompt_state()
+        previous_signature = (
+            self._ai_model_image_signature_value() if guard_prompt_state else None
+        )
         try:
             previous_pixmap_key = (
                 int(self.pixmap.cacheKey())
@@ -2457,15 +2476,19 @@ class Canvas(
         self._invalidate_ai_model_image_signature_cache()
         self._ai_polygon_preview_cache = None
         self._ai_model_image_dirty = previous_pixmap_key != current_pixmap_key
-        current_signature = self._ai_model_image_signature_value()
-        if previous_signature != current_signature and self.is_text_prompt_running():
-            self.cancel_async_text_prompt(wait_ms=0, reason="frame_changed")
-        if (
-            previous_signature is not None
-            and current_signature is not None
-            and previous_signature != current_signature
-        ):
-            self._clear_ai_prompt_state()
+        if guard_prompt_state:
+            current_signature = self._ai_model_image_signature_value()
+            if (
+                previous_signature != current_signature
+                and self.is_text_prompt_running()
+            ):
+                self.cancel_async_text_prompt(wait_ms=0, reason="frame_changed")
+            if (
+                previous_signature is not None
+                and current_signature is not None
+                and previous_signature != current_signature
+            ):
+                self._clear_ai_prompt_state()
         if self._ai_model is not None and not self.pixmap.isNull():
             if self._inflight_prompt_workers:
                 self._ai_model_image_dirty = True

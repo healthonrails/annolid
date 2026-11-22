@@ -30,11 +30,46 @@ class CanvasWorkflowMixin:
             if self._config.get("keep_prev")
             else []
         )
+        canvas = getattr(self, "canvas", None)
+        can_batch_canvas_updates = bool(
+            canvas is not None
+            and callable(getattr(canvas, "setUpdatesEnabled", None))
+            and callable(getattr(canvas, "updatesEnabled", None))
+        )
+        had_updates_enabled = (
+            bool(canvas.updatesEnabled()) if can_batch_canvas_updates else True
+        )
+        if can_batch_canvas_updates and had_updates_enabled:
+            canvas.setUpdatesEnabled(False)
+        try:
+            self._image_to_canvas_body(
+                qimage=qimage,
+                filename=filename,
+                frame_number=frame_number,
+                prev_shapes=prev_shapes,
+                render_started_ts=render_started_ts,
+            )
+        finally:
+            if can_batch_canvas_updates and had_updates_enabled:
+                canvas.setUpdatesEnabled(True)
+                if callable(getattr(canvas, "update", None)):
+                    canvas.update()
+
+    def _image_to_canvas_body(
+        self,
+        *,
+        qimage,
+        filename,
+        frame_number,
+        prev_shapes,
+        render_started_ts: float,
+    ) -> None:
         self.resetState()
         self.canvas.setEnabled(True)
         self._active_image_view = "canvas"
-        if getattr(self, "_viewer_stack", None) is not None:
-            self._viewer_stack.setCurrentWidget(self.canvas)
+        viewer_stack = getattr(self, "_viewer_stack", None)
+        if viewer_stack is not None and viewer_stack.currentWidget() is not self.canvas:
+            viewer_stack.setCurrentWidget(self.canvas)
         self.canvas.setPatchSimilarityOverlay(None)
         self._deactivate_pca_map()
         if isinstance(filename, str):
@@ -239,8 +274,12 @@ class CanvasWorkflowMixin:
                 else True
             )
 
-        if getattr(self, "large_image_view", None) is not None:
-            self.large_image_view.clear()
+        large_image_view = getattr(self, "large_image_view", None)
+        if large_image_view is not None and (
+            getattr(self, "large_image_backend", None) is not None
+            or getattr(self, "_active_image_view", "canvas") != "canvas"
+        ):
+            large_image_view.clear()
         frame_rgb = None
         if needs_depth_overlay or needs_flow_overlay:
             try:

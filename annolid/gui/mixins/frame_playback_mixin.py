@@ -25,17 +25,30 @@ class FramePlaybackMixin:
             if hasattr(self, "_set_play_button_state"):
                 self._set_play_button_state(True)
 
+    @staticmethod
+    def _control_matches_int_value(control, target: int) -> bool:
+        value_attr = getattr(control, "value", None)
+        if not callable(value_attr):
+            return False
+        try:
+            return int(value_attr()) == int(target)
+        except Exception:
+            return False
+
     def _sync_frame_jump_input(self, frame_number: int) -> None:
         frame_jump = getattr(self, "frameJumpInput", None)
         if frame_jump is None:
             return
+        target = int(frame_number)
+        if self._control_matches_int_value(frame_jump, target):
+            return
         try:
             with QtCore.QSignalBlocker(frame_jump):
-                frame_jump.setValue(int(frame_number))
+                frame_jump.setValue(target)
         except Exception:
             try:
                 previous = frame_jump.blockSignals(True)
-                frame_jump.setValue(int(frame_number))
+                frame_jump.setValue(target)
                 frame_jump.blockSignals(previous)
             except Exception:
                 pass
@@ -44,19 +57,68 @@ class FramePlaybackMixin:
         seekbar = getattr(self, "seekbar", None)
         if seekbar is None:
             return
+        target = int(frame_number)
+        if self._control_matches_int_value(seekbar, target):
+            return
         try:
             with QtCore.QSignalBlocker(seekbar):
-                seekbar.setValue(int(frame_number))
+                seekbar.setValue(target)
         except Exception:
             try:
                 previous = seekbar.blockSignals(True)
-                seekbar.setValue(int(frame_number))
+                seekbar.setValue(target)
                 seekbar.blockSignals(previous)
             except Exception:
                 try:
-                    seekbar.setValue(int(frame_number))
+                    seekbar.setValue(target)
                 except Exception:
                     pass
+
+    def _resolve_frame_timestamp_ms(self, frame_number: int) -> Optional[float]:
+        frame_loader = getattr(self, "frame_loader", None)
+        get_cached_ts = getattr(frame_loader, "get_cached_timestamp", None)
+        if callable(get_cached_ts):
+            try:
+                cached = get_cached_ts(int(frame_number))
+                if cached is not None:
+                    return cached
+            except Exception:
+                pass
+        fps = getattr(self, "fps", None)
+        try:
+            fps_val = float(fps) if fps is not None else 0.0
+        except (TypeError, ValueError):
+            fps_val = 0.0
+        if fps_val > 0.0:
+            return (float(frame_number) / fps_val) * 1000.0
+        video_loader = getattr(self, "video_loader", None)
+        if video_loader is not None and hasattr(video_loader, "get_time_stamp"):
+            try:
+                return video_loader.get_time_stamp()
+            except Exception:
+                return None
+        return None
+
+    def _on_frame_load_error(self, frame_idx: int, message: str) -> None:
+        """Surface frame decode errors without blocking playback with a modal dialog."""
+        current = getattr(self, "frame_number", None)
+        if current is not None:
+            try:
+                if int(frame_idx) != int(current):
+                    return
+            except Exception:
+                pass
+        status_bar_fn = getattr(self, "statusBar", None)
+        if callable(status_bar_fn):
+            try:
+                status_bar = status_bar_fn()
+                if status_bar is not None:
+                    status_bar.showMessage(
+                        f"Frame {int(frame_idx)} decode warning: {message}",
+                        4000,
+                    )
+            except Exception:
+                pass
 
     def _on_frame_loaded(self, frame_idx: int, qimage: QtGui.QImage) -> None:
         """Render frame updates with a bounded-lag tolerance during playback.
@@ -90,6 +152,12 @@ class FramePlaybackMixin:
                         current_idx,
                     )
                     return
+        if qimage is None or (hasattr(qimage, "isNull") and qimage.isNull()):
+            logger.debug("Skipping null QImage for frame %s.", frame_idx)
+            return
+        resolved_ts = self._resolve_frame_timestamp_ms(int(frame_idx))
+        if resolved_ts is not None:
+            self.current_frame_time_stamp = resolved_ts
         frame_path = self._frame_image_path(frame_idx)
         self.image_to_canvas(qimage, frame_path, frame_idx)
 
@@ -107,7 +175,11 @@ class FramePlaybackMixin:
         return Path()
 
     def set_frame_number(self, frame_number):
-        if frame_number >= self.num_frames or frame_number < 0:
+        total_frames = getattr(self, "num_frames", None)
+        if total_frames is None:
+            return
+        frame_number = int(frame_number)
+        if frame_number >= int(total_frames) or frame_number < 0:
             return
         self.frame_number = frame_number
         self._sync_frame_jump_input(frame_number)
@@ -133,9 +205,7 @@ class FramePlaybackMixin:
                 if audio_loader:
                     audio_loader.play(start_frame=frame_number)
         self.filename = str(self._frame_image_path(frame_number))
-        self.current_frame_time_stamp = self.video_loader.get_time_stamp()
-        if self.frame_loader is not None:
-            self.frame_loader.request(frame_number)
+        self.current_frame_time_stamp = self._resolve_frame_timestamp_ms(frame_number)
         if self.caption_widget is not None:
             self.caption_widget.set_image_path(self.filename)
         should_refresh_embedding = True
@@ -145,6 +215,8 @@ class FramePlaybackMixin:
             should_refresh_embedding = (int(frame_number) % stride) == 0
         if should_refresh_embedding:
             self._update_embedding_query_frame()
+        if self.frame_loader is not None:
+            self.frame_loader.request(frame_number)
 
     def load_tracking_results(
         self, cur_video_folder, video_filename, *, non_blocking=True

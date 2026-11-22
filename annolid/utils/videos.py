@@ -92,37 +92,37 @@ def extract_frames_with_opencv(video_path, output_dir=None, start_number=0, qual
     if not cap.isOpened():
         raise RuntimeError(f"Failed to open video file: {video_path}")
 
-    # Get the total number of frames in the video
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    try:
+        # Get the total number of frames in the video
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    # Count existing JPEG files in the output directory
-    existing_frames = len([f for f in os.listdir(output_dir) if f.endswith(".jpg")])
+        # Count existing JPEG files in the output directory
+        existing_frames = len([f for f in os.listdir(output_dir) if f.endswith(".jpg")])
 
-    # Check if the output directory already has the required number of frames
-    if existing_frames >= total_frames:
-        logger.info(
-            f"Output directory already contains {existing_frames} frames, skipping extraction."
-        )
+        # Check if the output directory already has the required number of frames
+        if existing_frames >= total_frames:
+            logger.info(
+                f"Output directory already contains {existing_frames} frames, skipping extraction."
+            )
+            return output_dir
+
+        # Extract frames
+        frame_number = start_number
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break  # Exit loop if no frame is returned (end of video)
+
+            # Construct the output file path with the video name and a 9-digit zero-padded numbering
+            output_filename = os.path.join(output_dir, f"{frame_number:09d}.jpg")
+
+            # Save the frame as a JPEG image with specified quality
+            cv2.imwrite(output_filename, frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
+
+            frame_number += 1
+    finally:
+        # Release the video capture object
         cap.release()
-        return output_dir
-
-    # Extract frames
-    frame_number = start_number
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break  # Exit loop if no frame is returned (end of video)
-
-        # Construct the output file path with the video name and a 9-digit zero-padded numbering
-        output_filename = os.path.join(output_dir, f"{frame_number:09d}.jpg")
-
-        # Save the frame as a JPEG image with specified quality
-        cv2.imwrite(output_filename, frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
-
-        frame_number += 1
-
-    # Release the video capture object
-    cap.release()
 
     logger.info(f"Frames extracted and saved in: {output_dir}")
     return output_dir
@@ -170,11 +170,14 @@ def collect_video_metadata(input_folder):
             logger.info(f"Error opening video file: {video_file}")
             continue
 
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        codec = cap.get(cv2.CAP_PROP_FOURCC)
+        try:
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            codec = cap.get(cv2.CAP_PROP_FOURCC)
+        finally:
+            cap.release()
 
         metadata_entry = {
             "video_name": video_file,
@@ -188,8 +191,6 @@ def collect_video_metadata(input_folder):
         metadata.append(metadata_entry)
 
         logger.info(f"Collected metadata for {video_file}")
-
-        cap.release()
 
     return metadata
 

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import base64
 import math
+import os
 import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Generator, List, Optional, Sequence
@@ -461,8 +463,117 @@ def encode_rgb_image_data_uri(
     return f"data:{mime};base64,{data}"
 
 
+DEFAULT_MAX_FORWARD_GRAB_SKIP = 16
+
+
+def _default_max_forward_grab_skip() -> int:
+    raw = os.environ.get("ANNOLID_MAX_FORWARD_GRAB_SKIP", "").strip()
+    if not raw:
+        return DEFAULT_MAX_FORWARD_GRAB_SKIP
+    try:
+        parsed = int(raw)
+    except ValueError:
+        return DEFAULT_MAX_FORWARD_GRAB_SKIP
+    return max(0, min(parsed, 64))
+
+
+def _read_cap_pos_frames(cap) -> Optional[int]:
+    try:
+        raw = cap.get(cv2.CAP_PROP_POS_FRAMES)
+    except Exception:
+        return None
+    if raw is None:
+        return None
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(val) or val < 0.0:
+        return None
+    return int(round(val))
+
+
+def read_capture_frame_bgr(
+    cap,
+    frame_index: int,
+    *,
+    expected_next: Optional[int],
+    max_forward_grab_skip: int = DEFAULT_MAX_FORWARD_GRAB_SKIP,
+    grab_skip_disabled: bool = False,
+) -> tuple[bool, Optional[np.ndarray], Optional[int], bool]:
+    """Read BGR frame at ``frame_index`` with drift-verified forward grab-skip.
+
+    Returns ``(ok, frame_bgr, next_expected_index, grab_skip_disabled)``.
+    When ``cap.grab()`` or sequential ``cap.read()`` drifts from OpenCV's
+    reported ``CAP_PROP_POS_FRAMES`` (for example on VFR or drop-frame
+    containers), automatically falls back to an explicit ``CAP_PROP_POS_FRAMES``
+    seek and disables grab-skip for subsequent reads on the same capture.
+    """
+    target = int(frame_index)
+    used_fast_path = False
+    ok = False
+    frame_bgr = None
+
+    if expected_next is not None:
+        delta = target - int(expected_next)
+        if delta == 0:
+            ok, frame_bgr = cap.read()
+            used_fast_path = True
+        elif (
+            not grab_skip_disabled
+            and max_forward_grab_skip > 0
+            and 1 <= delta <= int(max_forward_grab_skip)
+        ):
+            grabbed_all = True
+            for _ in range(delta):
+                if not cap.grab():
+                    grabbed_all = False
+                    break
+            if grabbed_all:
+                pos_before_read = _read_cap_pos_frames(cap)
+                if pos_before_read is not None and pos_before_read != target:
+                    logger.debug(
+                        "Detected frame-index drift after grab-skip (expected=%d, reported=%d); "
+                        "falling back to explicit seek and disabling grab-skip.",
+                        target,
+                        pos_before_read,
+                    )
+                    grab_skip_disabled = True
+                else:
+                    ok, frame_bgr = cap.read()
+                    used_fast_path = True
+
+    if used_fast_path and ok and frame_bgr is not None:
+        pos_after_read = _read_cap_pos_frames(cap)
+        if pos_after_read is not None and pos_after_read != target + 1:
+            logger.debug(
+                "Detected post-read frame-index drift (expected_next=%d, reported=%d); "
+                "re-reading via explicit seek and disabling grab-skip.",
+                target + 1,
+                pos_after_read,
+            )
+            grab_skip_disabled = True
+            ok = False
+            frame_bgr = None
+
+    if not ok or frame_bgr is None:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, target)
+        ok, frame_bgr = cap.read()
+        if not ok or frame_bgr is None:
+            return False, None, None, grab_skip_disabled
+        pos_after_seek = _read_cap_pos_frames(cap)
+        if pos_after_seek is not None and pos_after_seek != target + 1:
+            # Backend/container does not advance POS_FRAMES monotonically; force
+            # explicit seeks on subsequent calls rather than trusting stream pos.
+            return True, frame_bgr, None, True
+
+    return True, frame_bgr, target + 1, grab_skip_disabled
+
+
 class CV2Video:
-    """Lightweight OpenCV video reader that returns RGB frames."""
+    """Thread-safe OpenCV video reader that returns RGB frames."""
+
+    _MAX_FORWARD_GRAB_SKIP = DEFAULT_MAX_FORWARD_GRAB_SKIP
 
     def __init__(
         self,
@@ -470,6 +581,7 @@ class CV2Video:
         use_decord: bool = False,
         *,
         cache_first_frame: bool = False,
+        max_forward_grab_skip: Optional[int] = None,
     ):
         _ = use_decord  # kept for backward compatibility with older signature
         self.video_file = Path(video_file).expanduser().resolve()
@@ -479,18 +591,35 @@ class CV2Video:
         if not self.cap.isOpened():
             raise RuntimeError(f"Unable to open video: {self.video_file}")
 
+        self._lock = threading.RLock()
+        self._released = False
         self._frame_count = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
         self.frame_count = int(self._frame_count)
         self._fps: Optional[float] = None
         self.current_frame_timestamp_msec: Optional[float] = None
         self.current_frame_timestamp: Optional[float] = None
         self._last_frame_index: Optional[int] = None
+        self._next_frame_index: Optional[int] = 0
+        resolved_grab_skip = (
+            _default_max_forward_grab_skip()
+            if max_forward_grab_skip is None
+            else max(0, int(max_forward_grab_skip))
+        )
+        self._max_forward_grab_skip = resolved_grab_skip
+        self._grab_skip_disabled = resolved_grab_skip <= 0
         self._cache_first_frame = bool(cache_first_frame)
         self._first_frame = None
+        self._first_frame_timestamp_msec: Optional[float] = None
         width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
         height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
         self._width: Optional[int] = width if width > 0 else None
         self._height: Optional[int] = height if height > 0 else None
+
+    def __enter__(self) -> "CV2Video":
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self.release()
 
     def total_frames(self) -> int:
         return int(self._frame_count)
@@ -500,42 +629,108 @@ class CV2Video:
         return self.get_fps()
 
     def get_fps(self) -> float:
-        if self._fps is None:
-            fps = float(self.cap.get(cv2.CAP_PROP_FPS) or 0.0)
-            self._fps = fps if fps > 0 else 0.0
-        return float(self._fps)
+        with self._lock:
+            if self._fps is None:
+                if self._released or self.cap is None:
+                    self._fps = 0.0
+                else:
+                    fps = float(self.cap.get(cv2.CAP_PROP_FPS) or 0.0)
+                    self._fps = fps if (math.isfinite(fps) and fps > 0) else 0.0
+            return float(self._fps)
+
+    def _read_bgr_at_index_locked(self, frame_index: int):
+        """Position capture to `frame_index` and read BGR frame while holding `_lock`."""
+        ok, frame_bgr, next_expected, grab_disabled = read_capture_frame_bgr(
+            self.cap,
+            frame_index,
+            expected_next=self._next_frame_index,
+            max_forward_grab_skip=self._max_forward_grab_skip,
+            grab_skip_disabled=self._grab_skip_disabled,
+        )
+        self._next_frame_index = next_expected
+        self._grab_skip_disabled = grab_disabled
+        return ok, frame_bgr
+
+    def _resolve_timestamp_msec_locked(self, frame_index: int) -> Optional[float]:
+        raw_ts = self.cap.get(cv2.CAP_PROP_POS_MSEC)
+        ts_val: Optional[float] = None
+        if raw_ts is not None:
+            try:
+                parsed = float(raw_ts)
+                if math.isfinite(parsed) and parsed >= 0.0:
+                    ts_val = parsed
+            except (TypeError, ValueError):
+                ts_val = None
+        if frame_index > 0 and (ts_val is None or ts_val <= 0.0):
+            fps = self.get_fps()
+            if fps > 0.0:
+                ts_val = (float(frame_index) / fps) * 1000.0
+        return ts_val
 
     def load_frame(self, frame_number: int):
-        if frame_number < 0 or frame_number >= self.total_frames():
-            raise KeyError(f"Frame index out of bounds: {frame_number}")
+        frame_index = int(frame_number)
+        with self._lock:
+            if self._released or self.cap is None:
+                raise RuntimeError(f"Video reader has been released: {self.video_file}")
+            if frame_index < 0 or frame_index >= self._frame_count:
+                raise KeyError(f"Frame index out of bounds: {frame_index}")
 
-        expected_next = (
-            self._last_frame_index + 1 if self._last_frame_index is not None else None
-        )
-        if expected_next is None or frame_number != expected_next:
-            self.cap.set(cv2.CAP_PROP_POS_FRAMES, int(frame_number))
+            if (
+                frame_index == 0
+                and self._cache_first_frame
+                and self._first_frame is not None
+            ):
+                self.current_frame_timestamp_msec = self._first_frame_timestamp_msec
+                self.current_frame_timestamp = self._first_frame_timestamp_msec
+                return self._first_frame.copy()
 
-        ok, frame_bgr = self.cap.read()
-        if not ok or frame_bgr is None:
-            raise KeyError(f"Cannot load frame number: {frame_number}")
+            ok, frame_bgr = self._read_bgr_at_index_locked(frame_index)
+            if not ok or frame_bgr is None:
+                self._last_frame_index = None
+                self._next_frame_index = None
+                raise KeyError(f"Cannot load frame number: {frame_index}")
 
-        self._last_frame_index = int(frame_number)
-        ts = self.cap.get(cv2.CAP_PROP_POS_MSEC)
-        self.current_frame_timestamp_msec = float(ts) if ts is not None else None
-        self.current_frame_timestamp = self.current_frame_timestamp_msec
+            self._last_frame_index = frame_index
+            ts_val = self._resolve_timestamp_msec_locked(frame_index)
+            self.current_frame_timestamp_msec = ts_val
+            self.current_frame_timestamp = ts_val
 
-        return cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            if self._width is None or self._height is None:
+                self._height, self._width = (
+                    int(frame_rgb.shape[0]),
+                    int(frame_rgb.shape[1]),
+                )
+            if frame_index == 0 and self._cache_first_frame:
+                self._first_frame = frame_rgb.copy()
+                self._first_frame_timestamp_msec = ts_val
+            return frame_rgb
 
     def last_timestamp_sec(self) -> Optional[float]:
-        if self.current_frame_timestamp_msec is None:
-            return None
-        ts = float(self.current_frame_timestamp_msec) / 1000.0
-        return ts if ts >= 0 else None
+        with self._lock:
+            if self.current_frame_timestamp_msec is None:
+                return None
+            ts = float(self.current_frame_timestamp_msec) / 1000.0
+            return ts if ts >= 0 else None
 
     def release(self) -> None:
+        lock = getattr(self, "_lock", None)
+        if lock is not None:
+            with lock:
+                self._release_locked()
+        else:
+            self._release_locked()
+
+    def _release_locked(self) -> None:
+        self._released = True
+        self._first_frame = None
+        self._first_frame_timestamp_msec = None
+        self._last_frame_index = None
+        self._next_frame_index = None
         try:
-            if getattr(self, "cap", None) is not None and self.cap.isOpened():
-                self.cap.release()
+            cap = getattr(self, "cap", None)
+            if cap is not None and cap.isOpened():
+                cap.release()
         except Exception:
             pass
 
@@ -544,26 +739,30 @@ class CV2Video:
     # ------------------------------------------------------------------
 
     def get_first_frame(self):
-        if self._cache_first_frame:
-            if self._first_frame is None:
-                self._first_frame = self.load_frame(0)
-            return self._first_frame
-        return self.load_frame(0)
+        with self._lock:
+            if self._cache_first_frame:
+                if self._first_frame is None:
+                    self._first_frame = self.load_frame(0)
+                return self._first_frame
+            return self.load_frame(0)
 
     def get_width(self) -> int:
-        if self._width is None:
-            frame = self.get_first_frame()
-            self._width = int(frame.shape[1])
-        return int(self._width)
+        with self._lock:
+            if self._width is None:
+                frame = self.get_first_frame()
+                self._width = int(frame.shape[1])
+            return int(self._width)
 
     def get_height(self) -> int:
-        if self._height is None:
-            frame = self.get_first_frame()
-            self._height = int(frame.shape[0])
-        return int(self._height)
+        with self._lock:
+            if self._height is None:
+                frame = self.get_first_frame()
+                self._height = int(frame.shape[0])
+            return int(self._height)
 
     def get_time_stamp(self) -> Optional[float]:
-        return self.current_frame_timestamp_msec
+        with self._lock:
+            return self.current_frame_timestamp_msec
 
     def get_frames_in_batches(
         self, start_frame: int, end_frame: int, batch_size: int

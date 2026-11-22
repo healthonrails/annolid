@@ -3,7 +3,11 @@ import numpy as np
 import os.path
 from qtpy import QtGui
 from qtpy.QtGui import QImage
-import qimage2ndarray
+
+try:
+    import qimage2ndarray
+except ImportError:  # Optional dependency
+    qimage2ndarray = None
 
 
 def load_image_from_path(img_path):
@@ -109,6 +113,66 @@ def convert_qt_image_to_cv_image(in_image):
     return convert_qt_image_to_rgb_cv_image(in_image)
 
 
+def numpy_to_qimage(frame: np.ndarray, *, fallback_qimage2ndarray=None) -> QtGui.QImage:
+    """Convert a NumPy image array to an owned, detached ``QImage``.
+
+    Uses a single-copy direct ``QImage`` construction for contiguous ``uint8``
+    grayscale, RGB, and RGBA arrays, avoiding extra intermediate allocations.
+    """
+    if frame is None:
+        raise ValueError("Cannot convert an empty frame to QImage.")
+
+    arr = np.asarray(frame)
+    if arr.dtype == np.uint8:
+        arr_contig = np.ascontiguousarray(arr)
+        if arr_contig.ndim == 2:
+            h, w = arr_contig.shape
+            image = QtGui.QImage(
+                arr_contig.data,
+                w,
+                h,
+                arr_contig.strides[0],
+                QtGui.QImage.Format_Grayscale8,
+            )
+            return image.copy()
+        if arr_contig.ndim == 3 and arr_contig.shape[2] == 3:
+            h, w, _ = arr_contig.shape
+            image = QtGui.QImage(
+                arr_contig.data,
+                w,
+                h,
+                arr_contig.strides[0],
+                QtGui.QImage.Format_RGB888,
+            )
+            return image.copy()
+        if arr_contig.ndim == 3 and arr_contig.shape[2] == 4:
+            h, w, _ = arr_contig.shape
+            image = QtGui.QImage(
+                arr_contig.data,
+                w,
+                h,
+                arr_contig.strides[0],
+                QtGui.QImage.Format_RGBA8888,
+            )
+            return image.copy()
+
+    converter = (
+        fallback_qimage2ndarray
+        if fallback_qimage2ndarray is not None
+        else qimage2ndarray
+    )
+    if converter is not None:
+        # Always detach the QImage from the source array so later loader shutdown
+        # cannot invalidate memory referenced by live Qt objects.
+        return QtGui.QImage(converter.array2qimage(arr)).copy()
+
+    if arr.ndim in (2, 3) and (arr.ndim == 2 or arr.shape[2] in (3, 4)):
+        clipped = np.ascontiguousarray(np.clip(arr, 0, 255).astype(np.uint8))
+        return numpy_to_qimage(clipped, fallback_qimage2ndarray=None)
+
+    raise ValueError(f"Unsupported frame shape for QImage conversion: {arr.shape}")
+
+
 def convert_cv_image_to_qt_image(in_mat):
     """
     Convert an OpenCV image to an owned Qt image.
@@ -119,4 +183,4 @@ def convert_cv_image_to_qt_image(in_mat):
     Returns:
         QImage: Owned Qt image detached from ``in_mat``.
     """
-    return QtGui.QImage(qimage2ndarray.array2qimage(in_mat)).copy()
+    return numpy_to_qimage(in_mat)

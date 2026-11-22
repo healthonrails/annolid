@@ -57,6 +57,8 @@ class AnnotationLoadingMixin:
     _ZONE_OVERLAY_CACHE_PATH_KEY = "_zone_overlay_cache_path"
     _ZONE_OVERLAY_CACHE_MTIME_KEY = "_zone_overlay_cache_mtime_ns"
     _ZONE_OVERLAY_CACHE_PAYLOADS_KEY = "_zone_overlay_cache_payloads"
+    _ZONE_OVERLAY_FILE_CACHE_KEY = "_zone_overlay_file_cache"
+    _ZONE_OVERLAY_FILE_CACHE_MAX_ENTRIES = 64
     _FRAME_LABEL_CACHE_KEY = "_frame_label_cache"
     _FRAME_LABEL_CACHE_MAX_ENTRIES = 48
     _FRAME_STORE_HAS_FRAME_CACHE_KEY = "_frame_store_has_frame_cache"
@@ -140,45 +142,104 @@ class AnnotationLoadingMixin:
     def _display_zones_on_all_frames_enabled(self) -> bool:
         return bool(getattr(self, "_display_zones_on_all_frames", True))
 
+    def _manual_pair_json_paths_for_dir(self, directory: Path) -> list[Path]:
+        """Return sorted `.json` paths in `directory` that have sibling `.png` files."""
+        try:
+            stat_result = directory.stat()
+            signature = (
+                int(getattr(stat_result, "st_mtime_ns", 0)),
+                int(getattr(stat_result, "st_size", 0)),
+            )
+        except OSError:
+            return []
+
+        cache_key = ("manual_pair_jsons", str(directory))
+        cached = self._frame_label_index_cache_get(cache_key, signature)
+        if isinstance(cached, list):
+            return list(cached)
+
+        png_stems: set[str] = set()
+        json_entries: list[tuple[str, Path]] = []
+        try:
+            with os.scandir(directory) as it:
+                for entry in it:
+                    try:
+                        if not entry.is_file():
+                            continue
+                    except OSError:
+                        continue
+                    name = entry.name
+                    dot_idx = name.rfind(".")
+                    if dot_idx <= 0:
+                        continue
+                    ext = name[dot_idx:].lower()
+                    stem = name[:dot_idx]
+                    if ext == ".png":
+                        png_stems.add(stem)
+                    elif ext == ".json":
+                        json_entries.append((stem, Path(entry.path)))
+        except OSError:
+            return []
+
+        matched = sorted(
+            (path for stem, path in json_entries if stem in png_stems),
+            key=lambda p: p.name,
+        )
+        self._frame_label_index_cache_set(cache_key, signature, list(matched))
+        return matched
+
     def _zone_overlay_candidate_files(self, frame_path: Optional[Path]) -> list[Path]:
         candidates: list[Path] = []
+        seen: set[Path] = set()
 
-        def _append(path_value) -> None:
+        def _append(path_value, *, verify_exists: bool = True) -> None:
             if not path_value:
                 return
             path = Path(path_value).expanduser()
-            if path not in candidates:
-                candidates.append(path)
+            if path in seen:
+                return
+            if verify_exists and not (path.exists() and path.is_file()):
+                return
+            seen.add(path)
+            candidates.append(path)
 
         zone_path = getattr(self, "zone_path", None)
         if zone_path:
-            _append(zone_path)
-        _append(zone_file_for_source(getattr(self, "video_file", None)))
-        _append(zone_file_for_source(getattr(self, "filename", None)))
+            _append(zone_path, verify_exists=True)
+        _append(
+            zone_file_for_source(getattr(self, "video_file", None)), verify_exists=True
+        )
+        _append(
+            zone_file_for_source(getattr(self, "filename", None)), verify_exists=True
+        )
         if frame_path is not None:
-            _append(zone_file_for_source(frame_path))
-            manual_pair_jsons = sorted(frame_path.parent.glob("*.json"))
-            for json_path in manual_pair_jsons:
-                if json_path.with_suffix(".png").exists():
-                    _append(json_path)
-        return [path for path in candidates if path.exists() and path.is_file()]
+            _append(zone_file_for_source(frame_path), verify_exists=True)
+            for json_path in self._manual_pair_json_paths_for_dir(frame_path.parent):
+                # Already verified via os.scandir in `_manual_pair_json_paths_for_dir`.
+                _append(json_path, verify_exists=False)
+        return candidates
 
     def _load_zone_payloads_from_file(self, zone_file: Path) -> list[dict]:
         try:
             stat_result = zone_file.stat()
             mtime_ns = int(getattr(stat_result, "st_mtime_ns", 0))
+            size = int(getattr(stat_result, "st_size", 0))
         except OSError:
             return []
 
-        cached_path = getattr(self, self._ZONE_OVERLAY_CACHE_PATH_KEY, None)
-        cached_mtime = getattr(self, self._ZONE_OVERLAY_CACHE_MTIME_KEY, None)
-        cached_payloads = getattr(self, self._ZONE_OVERLAY_CACHE_PAYLOADS_KEY, None)
-        if (
-            cached_path == str(zone_file)
-            and cached_mtime == mtime_ns
-            and isinstance(cached_payloads, list)
-        ):
-            return [dict(payload) for payload in cached_payloads]
+        signature = (mtime_ns, size)
+        file_key = str(zone_file)
+        file_cache = getattr(self, self._ZONE_OVERLAY_FILE_CACHE_KEY, None)
+        if isinstance(file_cache, OrderedDict):
+            cached_entry = file_cache.get(file_key)
+            if (
+                isinstance(cached_entry, tuple)
+                and len(cached_entry) == 2
+                and cached_entry[0] == signature
+                and isinstance(cached_entry[1], list)
+            ):
+                file_cache.move_to_end(file_key)
+                return [dict(payload) for payload in cached_entry[1]]
 
         try:
             payload = json.loads(zone_file.read_text(encoding="utf-8"))
@@ -190,14 +251,19 @@ class AnnotationLoadingMixin:
             )
             normalized = []
 
-        setattr(self, self._ZONE_OVERLAY_CACHE_PATH_KEY, str(zone_file))
+        stored = [dict(item) for item in normalized]
+        if not isinstance(file_cache, OrderedDict):
+            file_cache = OrderedDict()
+            setattr(self, self._ZONE_OVERLAY_FILE_CACHE_KEY, file_cache)
+        file_cache[file_key] = (signature, stored)
+        file_cache.move_to_end(file_key)
+        while len(file_cache) > int(self._ZONE_OVERLAY_FILE_CACHE_MAX_ENTRIES):
+            file_cache.popitem(last=False)
+
+        setattr(self, self._ZONE_OVERLAY_CACHE_PATH_KEY, file_key)
         setattr(self, self._ZONE_OVERLAY_CACHE_MTIME_KEY, mtime_ns)
-        setattr(
-            self,
-            self._ZONE_OVERLAY_CACHE_PAYLOADS_KEY,
-            [dict(item) for item in normalized],
-        )
-        return [dict(payload) for payload in normalized]
+        setattr(self, self._ZONE_OVERLAY_CACHE_PAYLOADS_KEY, stored)
+        return [dict(payload) for payload in stored]
 
     def _persistent_zone_shapes_for_frame(
         self, frame_path: Optional[Path]
@@ -1906,18 +1972,11 @@ class AnnotationLoadingMixin:
             return dict(cached)
 
         frame_map: dict[int, Path] = {}
-        try:
-            for entry in directory.iterdir():
-                if not entry.is_file() or str(entry.suffix).lower() != ".json":
-                    continue
-                if not entry.with_suffix(".png").exists():
-                    continue
-                frame_number = AnnotationStore.frame_number_from_path(entry)
-                if frame_number is None:
-                    continue
-                frame_map[int(frame_number)] = entry
-        except OSError:
-            return {}
+        for entry in self._manual_pair_json_paths_for_dir(directory):
+            frame_number = AnnotationStore.frame_number_from_path(entry)
+            if frame_number is None:
+                continue
+            frame_map[int(frame_number)] = entry
 
         self._frame_label_index_cache_set(cache_key, signature, dict(frame_map))
         return frame_map
@@ -2077,6 +2136,8 @@ class AnnotationLoadingMixin:
             self._FRAME_STORE_HAS_FRAME_CACHE_KEY,
             self._FRAME_LABEL_SOURCE_INDEX_CACHE_KEY,
             self._TRACKING_SHAPE_CACHE_KEY,
+            self._ZONE_OVERLAY_FILE_CACHE_KEY,
+            self._FRAME_LABEL_PREFETCH_QUEUE_KEY,
         ):
             cache = getattr(self, cache_key, None)
             if hasattr(cache, "clear"):
@@ -2086,11 +2147,13 @@ class AnnotationLoadingMixin:
                     setattr(self, cache_key, None)
             else:
                 setattr(self, cache_key, None)
+        setattr(self, self._FRAME_LABEL_PREFETCH_ACTIVE_KEY, False)
 
     def _enqueue_neighbor_label_prefetch(
         self, frame_number: int, frame_path: Optional[Path]
     ) -> None:
-        if not getattr(self, "video_file", None):
+        active_video = str(getattr(self, "video_file", "") or "")
+        if not active_video:
             return
         total_frames = int(getattr(self, "num_frames", 0) or 0)
         if total_frames <= 0:
@@ -2113,7 +2176,10 @@ class AnnotationLoadingMixin:
         if not bool(getattr(self, self._FRAME_LABEL_PREFETCH_ACTIVE_KEY, False)):
             setattr(self, self._FRAME_LABEL_PREFETCH_ACTIVE_KEY, True)
             QtCore.QTimer.singleShot(
-                0, lambda: self._drain_label_prefetch_queue(frame_path)
+                0,
+                lambda v=active_video, p=frame_path: self._drain_label_prefetch_queue(
+                    p, video_token=v
+                ),
             )
 
     def _frame_path_for_index(
@@ -2146,15 +2212,31 @@ class AnnotationLoadingMixin:
             if token is None:
                 continue
             if self._label_file_cache_get(candidate, token) is not None:
-                continue
+                break
             try:
-                label_file = LabelFile(str(candidate), is_video_frame=True)
+                token_kind = str(token[0]) if token else ""
+                if token_kind == "store_preferred":
+                    label_file = self._load_store_backed_label_file(candidate)
+                    if label_file is None:
+                        continue
+                else:
+                    label_file = LabelFile(str(candidate), is_video_frame=True)
                 self._label_file_cache_set(candidate, token, label_file)
             except Exception:
                 continue
             break
 
-    def _drain_label_prefetch_queue(self, fallback_path: Optional[Path]) -> None:
+    def _drain_label_prefetch_queue(
+        self,
+        fallback_path: Optional[Path],
+        *,
+        video_token: Optional[str] = None,
+    ) -> None:
+        if video_token is not None:
+            current_video = str(getattr(self, "video_file", "") or "")
+            if current_video != video_token:
+                setattr(self, self._FRAME_LABEL_PREFETCH_ACTIVE_KEY, False)
+                return
         queue = getattr(self, self._FRAME_LABEL_PREFETCH_QUEUE_KEY, None)
         if not isinstance(queue, deque):
             setattr(self, self._FRAME_LABEL_PREFETCH_ACTIVE_KEY, False)
@@ -2167,7 +2249,10 @@ class AnnotationLoadingMixin:
             processed += 1
         if queue:
             QtCore.QTimer.singleShot(
-                0, lambda: self._drain_label_prefetch_queue(fallback_path)
+                0,
+                lambda v=video_token, p=fallback_path: self._drain_label_prefetch_queue(
+                    p, video_token=v
+                ),
             )
             return
         setattr(self, self._FRAME_LABEL_PREFETCH_ACTIVE_KEY, False)
@@ -2598,11 +2683,17 @@ class AnnotationLoadingMixin:
         if canvas is not None and hasattr(canvas, "shapesBackups"):
             canvas.shapesBackups = []
         self.loadShapes(fallback_shapes)
+        if self.caption_widget is not None:
+            try:
+                applied = self._apply_timeline_caption_if_available(
+                    frame_number, only_if_empty=False
+                )
+                if not applied:
+                    self.caption_widget.set_caption("")
+            except Exception:
+                logger.debug(
+                    "Failed to sync caption for unlabeled frame %s.",
+                    frame_number,
+                    exc_info=True,
+                )
         return False
-
-        if not label_loaded and self.caption_widget is not None:
-            applied = self._apply_timeline_caption_if_available(
-                frame_number, only_if_empty=False
-            )
-            if not applied:
-                self.caption_widget.set_caption("")

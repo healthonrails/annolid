@@ -20,6 +20,11 @@ except ImportError:
 
 import numpy as np
 
+from annolid.core.media.video import (
+    DEFAULT_MAX_FORWARD_GRAB_SKIP,
+    read_capture_frame_bgr,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -388,18 +393,52 @@ class VideoService:
         Returns:
             List of frame arrays
         """
-        frames = []
+        if not HAS_CV2:
+            return []
+
+        frames: List[np.ndarray] = []
+        step_size = max(1, int(step))
+        start_idx = max(0, int(start_frame))
+        end_idx = int(end_frame)
+        if start_idx > end_idx:
+            return frames
+
+        use_current_capture = (
+            self._current_video_path is not None
+            and Path(video_path) == self._current_video_path
+            and self._video_capture is not None
+            and self._video_capture.isOpened()
+        )
+        capture = (
+            self._video_capture
+            if use_current_capture
+            else cv2.VideoCapture(str(video_path))
+        )
+        if capture is None or not capture.isOpened():
+            return frames
 
         try:
-            for frame_idx in range(start_frame, end_frame + 1, step):
-                frame = self.extract_frame_at_index(video_path, frame_idx)
-                if frame is not None:
-                    frames.append(frame)
+            next_expected: Optional[int] = None
+            grab_skip_disabled = False
+            for frame_idx in range(start_idx, end_idx + 1, step_size):
+                ret, frame_bgr, next_expected, grab_skip_disabled = (
+                    read_capture_frame_bgr(
+                        capture,
+                        frame_idx,
+                        expected_next=next_expected,
+                        max_forward_grab_skip=DEFAULT_MAX_FORWARD_GRAB_SKIP,
+                        grab_skip_disabled=grab_skip_disabled,
+                    )
+                )
+                if ret and frame_bgr is not None:
+                    frames.append(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB))
                 else:
                     break  # Stop if we can't read a frame
-
         except Exception as e:
             logger.error(f"Failed to extract frame range: {e}")
+        finally:
+            if not use_current_capture:
+                capture.release()
 
         return frames
 
@@ -433,21 +472,25 @@ class VideoService:
         return metadata
 
     def _extract_frame_from_capture(
-        self, capture: cv2.VideoCapture, frame_index: int
+        self,
+        capture: cv2.VideoCapture,
+        frame_index: int,
+        *,
+        expected_next: Optional[int] = None,
+        max_grab_skip: int = DEFAULT_MAX_FORWARD_GRAB_SKIP,
     ) -> Optional[np.ndarray]:
         """Extract a frame from an open video capture."""
         try:
-            # Set frame position
-            capture.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
-
-            # Read frame
-            ret, frame = capture.read()
-            if ret:
+            ret, frame, _next_expected, _grab_disabled = read_capture_frame_bgr(
+                capture,
+                int(frame_index),
+                expected_next=expected_next,
+                max_forward_grab_skip=max_grab_skip,
+            )
+            if ret and frame is not None:
                 # Convert BGR to RGB
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                return frame_rgb
-            else:
-                return None
+                return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            return None
 
         except Exception as e:
             logger.error(f"Failed to extract frame from capture: {e}")

@@ -42,6 +42,7 @@ from annolid.infrastructure.filesystem import (
 from annolid.utils.cancellation import ObservableStopEvent
 from annolid.utils.logger import logger
 from annolid.utils.devices import clear_device_cache
+from annolid.utils.qt2cv import numpy_to_qimage
 
 try:
     import qimage2ndarray
@@ -55,34 +56,8 @@ except ImportError:  # PyTorch is optional for lighter desktop bundles
 
 
 def _array_to_qimage(frame: np.ndarray) -> QtGui.QImage:
-    """Convert a NumPy frame to QImage, with optional qimage2ndarray acceleration."""
-    if qimage2ndarray is not None:
-        # Always detach the QImage from the source array so later loader shutdown
-        # cannot invalidate memory referenced by live Qt objects.
-        return qimage2ndarray.array2qimage(frame).copy()
-
-    if frame is None:
-        raise ValueError("Cannot convert an empty frame to QImage.")
-
-    arr = np.ascontiguousarray(frame)
-    if arr.ndim == 2:
-        h, w = arr.shape
-        image = QtGui.QImage(
-            arr.data, w, h, arr.strides[0], QtGui.QImage.Format_Grayscale8
-        )
-    elif arr.ndim == 3 and arr.shape[2] == 3:
-        h, w, _ = arr.shape
-        image = QtGui.QImage(arr.data, w, h, arr.strides[0], QtGui.QImage.Format_RGB888)
-    elif arr.ndim == 3 and arr.shape[2] == 4:
-        h, w, _ = arr.shape
-        image = QtGui.QImage(
-            arr.data, w, h, arr.strides[0], QtGui.QImage.Format_RGBA8888
-        )
-    else:
-        raise ValueError(f"Unsupported frame shape for QImage conversion: {arr.shape}")
-
-    # Ensure the returned image owns its data after this function returns.
-    return image.copy()
+    """Convert a NumPy frame to an owned, detached QImage."""
+    return numpy_to_qimage(frame, fallback_qimage2ndarray=qimage2ndarray)
 
 
 class PredictionWorker(QObject):
@@ -696,124 +671,528 @@ class TrackAllWorker(QThread):
 
 class LoadFrameThread(QtCore.QObject):
     """
-    Thread for loading video frames with optimized performance.
+    Worker for loading video frames with FIFO playback ordering,
+    memory-bounded LRU caching, generation-guarded video switching,
+    and preemptible idle lookahead prefetching.
     """
 
     res_frame = QtCore.Signal(int, QtGui.QImage)
+    frame_error = QtCore.Signal(int, str)
     process = QtCore.Signal()
-    video_loader = None
+    _prefetch_process = QtCore.Signal()
 
-    def __init__(self, parent=None):
+    _DEFAULT_CACHE_MAX_ENTRIES = 32
+    _DEFAULT_CACHE_MAX_BYTES = 64 * 1024 * 1024
+    _MIN_CACHE_ENTRIES = 1
+    _DEFAULT_PREFETCH_AHEAD = 3
+
+    @classmethod
+    def _resolve_default_cache_bytes(cls) -> int:
+        raw = os.environ.get("ANNOLID_FRAME_CACHE_MB", "").strip()
+        if not raw:
+            return cls._DEFAULT_CACHE_MAX_BYTES
+        try:
+            mb = float(raw)
+        except ValueError:
+            return cls._DEFAULT_CACHE_MAX_BYTES
+        if mb <= 0:
+            return cls._DEFAULT_CACHE_MAX_BYTES
+        clamped_mb = max(4.0, min(mb, 1024.0))
+        return int(clamped_mb * 1024 * 1024)
+
+    def __init__(
+        self,
+        parent=None,
+        *,
+        cache_size: int = _DEFAULT_CACHE_MAX_ENTRIES,
+        max_cache_bytes: Optional[int] = None,
+        prefetch_enabled: bool = True,
+        prefetch_ahead: int = _DEFAULT_PREFETCH_AHEAD,
+    ):
         """Initialize the frame loader while maintaining original interface."""
         super().__init__(parent)
 
         # Cross-thread synchronization for queue/cache state.
         self.working_lock = Lock()
+        self._video_loader = None
 
-        # Keep only a tiny number of pending requests; scrub interactions
-        # should favor the newest frame, not backlog old requests.
-        self.frame_queue = deque(maxlen=3)
-        # Small LRU cache for recently displayed frames.
+        # Bounded pending demand queue: FIFO for sequential playback,
+        # cleared to latest-only for non-sequential scrubbing/jumps.
+        self.frame_queue = deque(maxlen=4)
+        # Memory-bounded LRU cache for recently decoded frames.
         self._frame_cache: "OrderedDict[int, QtGui.QImage]" = OrderedDict()
-        self._cache_size = 3
+        self._timestamp_cache: Dict[int, Optional[float]] = {}
+        self._cache_size = max(1, int(cache_size))
+        resolved_bytes = (
+            self._resolve_default_cache_bytes()
+            if max_cache_bytes is None
+            else int(max_cache_bytes)
+        )
+        self._max_cache_bytes = max(1, resolved_bytes)
+        self._cache_bytes = 0
         self._last_frame = None  # Keep last frame for error recovery
+        self._last_frame_bytes = 0
         self._shutting_down = False
         self._is_processing = False
-        self._active_frame_number = None
+        self._process_scheduled = False
+        self._active_frame_number: Optional[int] = None
+        self._generation = 0
 
-        # Ensure frame processing runs on the worker thread event loop
+        # Idle lookahead prefetch state (always preempted by demand requests).
+        self._prefetch_enabled = bool(prefetch_enabled)
+        self._prefetch_ahead = max(0, int(prefetch_ahead))
+        self._prefetch_queue: deque[int] = deque()
+        self._prefetch_scheduled = False
+        self._last_requested_frame: Optional[int] = None
+        self._last_request_step: int = 1
+
+        # Ensure frame processing runs on the worker thread event loop.
         self.process.connect(self._optimized_load, type=QtCore.Qt.QueuedConnection)
+        self._prefetch_process.connect(
+            self._run_prefetch_step, type=QtCore.Qt.QueuedConnection
+        )
+
+    @property
+    def video_loader(self):
+        return self._video_loader
+
+    @video_loader.setter
+    def video_loader(self, loader) -> None:
+        self.set_video_loader(loader, release_previous=False)
+
+    def set_video_loader(self, loader, *, release_previous: bool = False) -> None:
+        """Attach a new video loader and invalidate stale queue/cache state."""
+        previous_loader = None
+        with self.working_lock:
+            if loader is self._video_loader:
+                return
+            previous_loader = self._video_loader
+            self._video_loader = loader
+            self._generation += 1
+            self.frame_queue.clear()
+            self._prefetch_queue.clear()
+            self._frame_cache.clear()
+            self._timestamp_cache.clear()
+            self._cache_bytes = 0
+            self._last_frame = None
+            self._last_frame_bytes = 0
+            self._last_requested_frame = None
+            self._last_request_step = 1
+        if (
+            release_previous
+            and previous_loader is not None
+            and hasattr(previous_loader, "release")
+        ):
+            try:
+                previous_loader.release()
+            except Exception:
+                logger.debug(
+                    "Failed to release previous video loader on switch.",
+                    exc_info=True,
+                )
+
+    def set_cache_limits(
+        self,
+        *,
+        max_entries: Optional[int] = None,
+        max_bytes: Optional[int] = None,
+    ) -> None:
+        """Update cache entry/byte limits and evict immediately if over budget."""
+        with self.working_lock:
+            if max_entries is not None:
+                self._cache_size = max(1, int(max_entries))
+            if max_bytes is not None:
+                self._max_cache_bytes = max(1, int(max_bytes))
+            self._evict_cache_locked()
+
+    def trim_cache(self, *, keep_entries: int = 1) -> None:
+        """Reclaim cached frame memory while keeping the `keep_entries` newest frames."""
+        target = max(0, int(keep_entries))
+        with self.working_lock:
+            self._prefetch_queue.clear()
+            while len(self._frame_cache) > target:
+                evicted_key, evicted_img = self._frame_cache.popitem(last=False)
+                self._timestamp_cache.pop(evicted_key, None)
+                self._cache_bytes = max(
+                    0, self._cache_bytes - self._qimage_byte_size(evicted_img)
+                )
+            if target == 0:
+                self._last_frame = None
+                self._last_frame_bytes = 0
+                self._cache_bytes = 0
+            elif self._frame_cache:
+                newest = next(reversed(self._frame_cache.values()))
+                self._last_frame = newest
+                self._last_frame_bytes = self._qimage_byte_size(newest)
+
+    def clear_cache(self) -> None:
+        """Clear cached frames and cancel pending prefetch work."""
+        with self.working_lock:
+            self._generation += 1
+            self._frame_cache.clear()
+            self._timestamp_cache.clear()
+            self._cache_bytes = 0
+            self._prefetch_queue.clear()
+            self._last_frame = None
+            self._last_frame_bytes = 0
+
+    def get_cached_frame(self, frame_number: int) -> Optional[QtGui.QImage]:
+        """Return a cached QImage for `frame_number` without blocking on decode."""
+        try:
+            key = int(frame_number)
+        except (TypeError, ValueError):
+            return None
+        with self.working_lock:
+            cached = self._frame_cache.get(key)
+            if cached is not None:
+                self._frame_cache.move_to_end(key)
+            return cached
+
+    def get_cached_timestamp(self, frame_number: int) -> Optional[float]:
+        """Return cached timestamp (ms) for `frame_number` if decoded."""
+        try:
+            key = int(frame_number)
+        except (TypeError, ValueError):
+            return None
+        with self.working_lock:
+            return self._timestamp_cache.get(key)
+
+    @staticmethod
+    def _qimage_byte_size(qimage: QtGui.QImage) -> int:
+        if qimage is None:
+            return 0
+        if hasattr(qimage, "sizeInBytes"):
+            try:
+                return max(0, int(qimage.sizeInBytes()))
+            except Exception:
+                pass
+        if hasattr(qimage, "byteCount"):
+            try:
+                return max(0, int(qimage.byteCount()))
+            except Exception:
+                pass
+        try:
+            return max(0, int(qimage.width()) * int(qimage.height()) * 4)
+        except Exception:
+            return 0
+
+    def _evict_cache_locked(self) -> None:
+        """Evict oldest cached frames until within entry-count and byte budgets."""
+        max_entries = max(1, int(self._cache_size))
+        min_entries = min(self._MIN_CACHE_ENTRIES, max_entries)
+        while len(self._frame_cache) > max_entries or (
+            self._cache_bytes > self._max_cache_bytes
+            and len(self._frame_cache) > min_entries
+        ):
+            evicted_key, evicted_img = self._frame_cache.popitem(last=False)
+            self._timestamp_cache.pop(evicted_key, None)
+            self._cache_bytes = max(
+                0, self._cache_bytes - self._qimage_byte_size(evicted_img)
+            )
+        if not self._frame_cache:
+            self._cache_bytes = 0
+        elif (
+            self._last_frame is not None
+            and self._last_frame_bytes * 2 > self._max_cache_bytes
+            and self._last_frame not in self._frame_cache.values()
+        ):
+            # Avoid pinning an evicted oversized frame outside the byte budget.
+            newest = next(reversed(self._frame_cache.values()))
+            self._last_frame = newest
+            self._last_frame_bytes = self._qimage_byte_size(newest)
+
+    def _update_cache_locked(
+        self,
+        frame_number: int,
+        qimage: QtGui.QImage,
+        timestamp_ms: Optional[float] = None,
+    ) -> None:
+        """Update LRU frame cache while enforcing entry-count and byte budgets."""
+        key = int(frame_number)
+        existing = self._frame_cache.get(key)
+        if existing is not None:
+            self._cache_bytes = max(
+                0, self._cache_bytes - self._qimage_byte_size(existing)
+            )
+        frame_bytes = self._qimage_byte_size(qimage)
+        self._frame_cache[key] = qimage
+        self._frame_cache.move_to_end(key)
+        self._timestamp_cache[key] = timestamp_ms
+        self._cache_bytes += frame_bytes
+        if frame_bytes > 0:
+            self._last_frame_bytes = frame_bytes
+        self._evict_cache_locked()
+
+    def _update_cache(
+        self,
+        frame_number: int,
+        qimage: QtGui.QImage,
+        timestamp_ms: Optional[float] = None,
+    ):
+        """Update frame cache with size and memory-budget management."""
+        with self.working_lock:
+            self._update_cache_locked(frame_number, qimage, timestamp_ms=timestamp_ms)
+
+    def _enqueue_prefetch_locked(self, base_frame: int) -> bool:
+        """Queue idle lookahead frames in the current navigation direction.
+
+        Caller must hold `self.working_lock`. Returns True if `_prefetch_process`
+        should be emitted outside the lock.
+        """
+        if (
+            not self._prefetch_enabled
+            or self._prefetch_ahead <= 0
+            or self._shutting_down
+            or self._video_loader is None
+        ):
+            return False
+        total_frames_fn = getattr(self._video_loader, "total_frames", None)
+        if not callable(total_frames_fn):
+            return False
+        try:
+            total_frames = int(total_frames_fn())
+        except Exception:
+            return False
+        if total_frames <= 1:
+            return False
+
+        max_entries = max(1, int(self._cache_size))
+        affordable_prefetch_slots = max_entries - 1
+        if self._last_frame_bytes > 0:
+            affordable_total = self._max_cache_bytes // self._last_frame_bytes
+            affordable_prefetch_slots = min(
+                affordable_prefetch_slots, max(0, affordable_total - 1)
+            )
+        if affordable_prefetch_slots <= 0:
+            # Avoid prefetching when a single frame leaves no room without
+            # immediately evicting the currently displayed frame.
+            self._prefetch_queue.clear()
+            return False
+
+        step = int(self._last_request_step or 1)
+        if step == 0:
+            step = 1
+        max_steps = self._prefetch_ahead if step > 0 else min(1, self._prefetch_ahead)
+        max_steps = min(max_steps, affordable_prefetch_slots)
+
+        self._prefetch_queue.clear()
+        for offset in range(1, max_steps + 1):
+            candidate = int(base_frame) + (step * offset)
+            if candidate < 0 or candidate >= total_frames:
+                break
+            if candidate in self._frame_cache:
+                continue
+            self._prefetch_queue.append(candidate)
+
+        if self._prefetch_queue and not self._prefetch_scheduled:
+            self._prefetch_scheduled = True
+            return True
+        return False
+
+    def _decode_frame_from_loader(
+        self, video_loader, frame_number: int
+    ) -> Tuple[QtGui.QImage, Optional[float]]:
+        frame = video_loader.load_frame(frame_number)
+        timestamp_ms = None
+        get_ts = getattr(video_loader, "get_time_stamp", None)
+        if callable(get_ts):
+            try:
+                timestamp_ms = get_ts()
+            except Exception:
+                timestamp_ms = None
+        qimage = _array_to_qimage(frame)
+        return qimage, timestamp_ms
 
     def _optimized_load(self):
-        """Optimized version of load() with better error handling and caching."""
-        if self._shutting_down:
-            return
-
-        # Quick check without lock
-        if not self.frame_queue:
-            return
-
-        # Use context manager for automatic lock release
+        """Decode the next pending demand frame with FIFO playback ordering."""
         with self.working_lock:
-            if not self.frame_queue:
+            self._process_scheduled = False
+            if self._shutting_down or not self.frame_queue:
                 return
-            frame_number = self.frame_queue.pop()
+            frame_number = int(self.frame_queue.popleft())
+            video_loader = self._video_loader
+            generation = self._generation
             self._is_processing = True
-            self._active_frame_number = int(frame_number)
+            self._active_frame_number = frame_number
 
+        decoded_ok = False
         try:
-            # Check cache first
             with self.working_lock:
                 cached_frame = self._frame_cache.get(frame_number)
                 if cached_frame is not None:
                     self._frame_cache.move_to_end(frame_number)
 
             if cached_frame is not None:
+                decoded_ok = True
                 self.res_frame.emit(frame_number, cached_frame)
+            elif video_loader is None:
+                logger.debug(
+                    "Skipping frame %s load: no active video loader.", frame_number
+                )
             else:
-                # Load frame
-                frame = self.video_loader.load_frame(frame_number)
-
-                # Convert frame to QImage
-                qimage = _array_to_qimage(frame)
-
-                # Update cache
-                self._update_cache(frame_number, qimage)
-
-                # Keep last successful frame
-                self._last_frame = qimage
-
-                # Emit the frame
-                self.res_frame.emit(frame_number, qimage)
+                qimage, timestamp_ms = self._decode_frame_from_loader(
+                    video_loader, frame_number
+                )
+                should_emit = False
+                with self.working_lock:
+                    if not self._shutting_down and generation == self._generation:
+                        self._update_cache_locked(
+                            frame_number, qimage, timestamp_ms=timestamp_ms
+                        )
+                        self._last_frame = qimage
+                        should_emit = True
+                        decoded_ok = True
+                if should_emit:
+                    self.res_frame.emit(frame_number, qimage)
 
         except KeyError as e:
-            logger.error(f"Error loading frame {frame_number}: {e}")
-            self._handle_error(frame_number)
+            if not self._shutting_down:
+                logger.error(f"Error loading frame {frame_number}: {e}")
+                self._handle_error(frame_number, str(e), generation=generation)
         except Exception as e:
-            logger.error(f"Unexpected error loading frame {frame_number}: {e}")
-            self._handle_error(frame_number)
+            if not self._shutting_down:
+                logger.error(f"Unexpected error loading frame {frame_number}: {e}")
+                self._handle_error(frame_number, str(e), generation=generation)
         finally:
+            trigger_next = False
+            trigger_prefetch = False
             with self.working_lock:
                 self._active_frame_number = None
                 self._is_processing = False
+                has_more = bool(self.frame_queue) and not self._shutting_down
+                if has_more and not self._process_scheduled:
+                    self._process_scheduled = True
+                    trigger_next = True
+                elif (
+                    not has_more
+                    and not self._shutting_down
+                    and decoded_ok
+                    and generation == self._generation
+                ):
+                    trigger_prefetch = self._enqueue_prefetch_locked(frame_number)
 
-        # Schedule next frame if pending
+            if trigger_next:
+                self.process.emit()
+            elif trigger_prefetch:
+                self._prefetch_process.emit()
+
+    @QtCore.Slot()
+    def _run_prefetch_step(self) -> None:
+        """Decode at most one lookahead frame while idle; yield to demand requests."""
         with self.working_lock:
-            has_more = bool(self.frame_queue)
+            self._prefetch_scheduled = False
+            if (
+                self._shutting_down
+                or self._is_processing
+                or self.frame_queue
+                or not self._prefetch_queue
+            ):
+                return
+            target_frame = None
+            while self._prefetch_queue:
+                candidate = int(self._prefetch_queue.popleft())
+                if candidate not in self._frame_cache:
+                    target_frame = candidate
+                    break
+            if target_frame is None:
+                return
+            video_loader = self._video_loader
+            generation = self._generation
+            if video_loader is None:
+                return
+            self._is_processing = True
+            self._active_frame_number = target_frame
 
-        if has_more and not self._shutting_down:
-            self.process.emit()
+        try:
+            qimage, timestamp_ms = self._decode_frame_from_loader(
+                video_loader, target_frame
+            )
+            with self.working_lock:
+                if not self._shutting_down and generation == self._generation:
+                    self._update_cache_locked(
+                        target_frame, qimage, timestamp_ms=timestamp_ms
+                    )
+        except Exception:
+            logger.debug(
+                "Idle prefetch skipped for frame %s.", target_frame, exc_info=True
+            )
+            with self.working_lock:
+                self._prefetch_queue.clear()
+        finally:
+            trigger_demand = False
+            trigger_more_prefetch = False
+            with self.working_lock:
+                self._active_frame_number = None
+                self._is_processing = False
+                if self.frame_queue and not self._shutting_down:
+                    if not self._process_scheduled:
+                        self._process_scheduled = True
+                        trigger_demand = True
+                elif (
+                    self._prefetch_queue
+                    and not self._shutting_down
+                    and not self._prefetch_scheduled
+                    and generation == self._generation
+                ):
+                    self._prefetch_scheduled = True
+                    trigger_more_prefetch = True
 
-    def _update_cache(self, frame_number: int, qimage: QtGui.QImage):
-        """Update frame cache with size management."""
+            if trigger_demand:
+                self.process.emit()
+            elif trigger_more_prefetch:
+                self._prefetch_process.emit()
+
+    def _handle_error(
+        self,
+        frame_number: int,
+        message: str = "",
+        *,
+        generation: Optional[int] = None,
+    ):
+        """Handle frame loading errors with fallback and diagnostic signal."""
         with self.working_lock:
-            self._frame_cache[frame_number] = qimage
-            self._frame_cache.move_to_end(frame_number)
-            while len(self._frame_cache) > self._cache_size:
-                self._frame_cache.popitem(last=False)
-
-    def _handle_error(self, frame_number: int):
-        """Handle frame loading errors with fallback."""
-        if self._last_frame is not None:
-            # Use last successful frame as fallback
-            self.res_frame.emit(frame_number, self._last_frame)
-        with self.working_lock:
-            has_more = bool(self.frame_queue)
-        if has_more and not self._shutting_down:
-            self.process.emit()
+            if self._shutting_down:
+                return
+            if generation is not None and generation != self._generation:
+                return
+            fallback_frame = self._last_frame
+        if message:
+            self.frame_error.emit(int(frame_number), str(message))
+        if fallback_frame is not None:
+            # Use last successful frame as fallback so canvas does not go blank.
+            self.res_frame.emit(int(frame_number), fallback_frame)
 
     def request(self, frame_number):
-        """Optimized request method with better queue management."""
+        """Request a frame, serving cache hits immediately and coalescing scrubs."""
         if self._shutting_down:
             return
 
         frame_number = int(frame_number)
+        should_trigger = False
+        should_schedule_prefetch = False
         with self.working_lock:
+            if self._shutting_down:
+                return
+            if (
+                self._last_requested_frame is not None
+                and frame_number != self._last_requested_frame
+            ):
+                delta = frame_number - self._last_requested_frame
+                if 1 <= abs(delta) <= 16:
+                    self._last_request_step = delta
+            self._last_requested_frame = frame_number
+            self._prefetch_queue.clear()
+
             # Serve immediately when already cached.
             cached_frame = self._frame_cache.get(frame_number)
             if cached_frame is not None:
                 self._frame_cache.move_to_end(frame_number)
-                should_trigger = False
+                # Drop any stale uncached demand requests so they cannot overwrite.
+                self.frame_queue.clear()
+                if not self._is_processing:
+                    should_schedule_prefetch = self._enqueue_prefetch_locked(
+                        frame_number
+                    )
             else:
                 is_processing = bool(self._is_processing)
                 active_frame = (
@@ -824,25 +1203,27 @@ class LoadFrameThread(QtCore.QObject):
                 is_sequential_playback = (
                     is_processing
                     and active_frame is not None
-                    and frame_number >= active_frame
+                    and frame_number > active_frame
                     and frame_number - active_frame <= 2
                 )
 
-                # During sequential playback, keep near-future requests so decode
-                # can continue smoothly after seeks. For scrubbing/non-sequential
-                # jumps, keep only the latest request.
+                # During sequential playback, keep near-future requests in FIFO order
+                # so decode stays smooth. For scrubbing/jumps, keep only the latest.
                 if is_sequential_playback:
                     if frame_number not in self.frame_queue:
                         self.frame_queue.append(frame_number)
-                    should_trigger = False
                 else:
-                    was_empty = len(self.frame_queue) == 0
                     self.frame_queue.clear()
                     self.frame_queue.append(frame_number)
-                    should_trigger = (not is_processing) and was_empty
+
+                if not is_processing and not self._process_scheduled:
+                    self._process_scheduled = True
+                    should_trigger = True
 
         if cached_frame is not None:
             self.res_frame.emit(frame_number, cached_frame)
+            if should_schedule_prefetch:
+                self._prefetch_process.emit()
             return
 
         if should_trigger:
@@ -851,14 +1232,22 @@ class LoadFrameThread(QtCore.QObject):
     @QtCore.Slot()
     def shutdown(self):
         """Flush pending work and mark loader for deletion."""
-        self._shutting_down = True
         with self.working_lock:
+            self._shutting_down = True
+            self._generation += 1
             self.frame_queue.clear()
+            self._prefetch_queue.clear()
             self._frame_cache.clear()
+            self._timestamp_cache.clear()
+            self._cache_bytes = 0
+            self._last_frame = None
+            self._last_frame_bytes = 0
             self._active_frame_number = None
             self._is_processing = False
-            video_loader = self.video_loader
-            self.video_loader = None
+            self._process_scheduled = False
+            self._prefetch_scheduled = False
+            video_loader = self._video_loader
+            self._video_loader = None
         if video_loader is not None and hasattr(video_loader, "release"):
             try:
                 video_loader.release()

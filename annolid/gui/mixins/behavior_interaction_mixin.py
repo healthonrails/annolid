@@ -493,11 +493,8 @@ class BehaviorInteractionMixin:
     def _jump_to_frame_from_log(self, frame: int) -> None:
         if self.seekbar is None or self.num_frames is None:
             return
-        target = max(0, min(frame, self.num_frames - 1))
-        if self.seekbar.value() != target:
-            self.seekbar.setValue(target)
-        else:
-            self.set_frame_number(target)
+        target = max(0, min(int(frame), int(self.num_frames) - 1))
+        self.set_frame_number(target)
         self._update_embedding_query_frame()
 
     def _update_embedding_query_frame(self) -> None:

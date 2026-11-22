@@ -184,9 +184,17 @@ class EmbeddingSearchWidget(QtWidgets.QWidget):
         self._refresh_file_list()
 
     def set_video_path(self, path: Optional[Path]) -> None:
+        raw_key = str(path) if path else None
+        if raw_key == getattr(self, "_video_path_raw_key", None):
+            return
+        self._video_path_raw_key = raw_key
         self._video_path = Path(path).expanduser().resolve() if path else None
 
     def set_annotation_dir(self, path: Optional[Path]) -> None:
+        raw_key = str(path) if path else None
+        if raw_key == getattr(self, "_annotation_dir_raw_key", None):
+            return
+        self._annotation_dir_raw_key = raw_key
         self._annotation_dir = Path(path).expanduser().resolve() if path else None
 
     def set_query_frame_index(self, frame_index: Optional[int]) -> None:

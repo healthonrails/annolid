@@ -108,8 +108,9 @@ class VideoWorkflowMixin:
             )
             self._refresh_embedding_file_list()
             _log_step("setup_paths_and_embedding")
+            previous_video_loader = getattr(self, "video_loader", None)
             try:
-                self.video_loader = self._create_video_loader(video_filename)
+                new_video_loader = self._create_video_loader(video_filename)
             except Exception as exc:
                 logger.warning(
                     "Lifecycle open loader init failed for %s: %s", video_filename, exc
@@ -119,13 +120,33 @@ class VideoWorkflowMixin:
                     "Not a valid media file",
                     "Please check and open a valid video or TIFF stack file.",
                 )
+                if getattr(self, "frame_loader", None) is not None:
+                    self.frame_loader.video_loader = None
+                if previous_video_loader is not None and hasattr(
+                    previous_video_loader, "release"
+                ):
+                    try:
+                        previous_video_loader.release()
+                    except Exception:
+                        logger.debug(
+                            "Failed to release previous video loader after open failure.",
+                            exc_info=True,
+                        )
                 self.video_file = None
                 self.video_loader = None
                 return
+            self.video_loader = new_video_loader
+            clear_annot_caches = getattr(self, "_clear_frame_annotation_caches", None)
+            if callable(clear_annot_caches):
+                clear_annot_caches()
+            if previous_video_loader is not None:
+                self.frame_number = 0
             _log_step("create_video_loader")
             self._configure_project_schema_for_video(video_filename)
             self.fps = self.video_loader.get_fps()
             self.num_frames = self.video_loader.total_frames()
+            if self.num_frames and self.frame_number >= self.num_frames:
+                self.frame_number = 0
             _log_step("read_video_metadata")
             if (
                 self.fps
@@ -142,8 +163,9 @@ class VideoWorkflowMixin:
                         fps=self.fps,
                     )
             self.behavior_log_widget.set_fps(self.fps)
+            max_frame_index = max(0, int(self.num_frames or 0) - 1)
             if self.timeline_panel is not None:
-                self.timeline_panel.set_time_range(0, self.num_frames - 1)
+                self.timeline_panel.set_time_range(0, max_frame_index)
                 self.timeline_panel.refresh_behavior_catalog()
             self._apply_timeline_dock_visibility(video_open=True)
             if self.caption_widget is not None:
@@ -190,7 +212,7 @@ class VideoWorkflowMixin:
             self.seekbar.valueChanged.connect(lambda f: self.set_frame_number(int(f)))
 
             self.seekbar.setMinimum(0)
-            self.seekbar.setMaximum(self.num_frames - 1)
+            self.seekbar.setMaximum(max_frame_index)
             self.seekbar.setEnabled(True)
             self.seekbar.resizeEvent()
             self.seekbar.setTooltipCallable(self.tooltip_callable)
@@ -204,7 +226,7 @@ class VideoWorkflowMixin:
             self.frameJumpLabel = QtWidgets.QLabel("Frame:", self)
             self.frameJumpInput = self._create_frame_jump_input(
                 minimum=0,
-                maximum=self.num_frames - 1,
+                maximum=max_frame_index,
                 value=int(self.frame_number or 0),
             )
             self.saveButton = QtWidgets.QPushButton("Save Timestamps", self)
@@ -216,11 +238,46 @@ class VideoWorkflowMixin:
             self.statusBar().addPermanentWidget(self.saveButton)
             _log_step("setup_seekbar_controls")
 
-            self.frame_loader.video_loader = self.video_loader
-            self.frame_loader.moveToThread(self.frame_worker)
-            self.frame_loader.res_frame.connect(self._on_frame_loaded)
+            if getattr(self, "frame_loader", None) is None:
+                from annolid.gui.workers import LoadFrameThread
+
+                self.frame_loader = LoadFrameThread()
+            previous_frame_loader_video = getattr(
+                self.frame_loader, "video_loader", None
+            )
+            if hasattr(self.frame_loader, "set_video_loader"):
+                self.frame_loader.set_video_loader(
+                    self.video_loader, release_previous=True
+                )
+            else:
+                self.frame_loader.video_loader = self.video_loader
+                previous_frame_loader_video = None
+            if (
+                previous_video_loader is not None
+                and previous_video_loader is not self.video_loader
+                and previous_video_loader is not previous_frame_loader_video
+                and hasattr(previous_video_loader, "release")
+            ):
+                try:
+                    previous_video_loader.release()
+                except Exception:
+                    logger.debug(
+                        "Failed to release previous video loader on switch.",
+                        exc_info=True,
+                    )
+            if self.frame_loader.thread() is not self.frame_worker:
+                self.frame_loader.moveToThread(self.frame_worker)
+            if not bool(
+                getattr(self.frame_loader, "_annolid_signals_connected", False)
+            ):
+                self.frame_loader.res_frame.connect(self._on_frame_loaded)
+                if hasattr(self.frame_loader, "frame_error") and hasattr(
+                    self, "_on_frame_load_error"
+                ):
+                    self.frame_loader.frame_error.connect(self._on_frame_load_error)
+                setattr(self.frame_loader, "_annolid_signals_connected", True)
             if not self.frame_worker.isRunning():
-                self.frame_worker.start(priority=QtCore.QThread.IdlePriority)
+                self.frame_worker.start(priority=QtCore.QThread.NormalPriority)
             _log_step("connect_frame_loader")
 
             # Prioritize first-frame paint; defer expensive enrichment work so the

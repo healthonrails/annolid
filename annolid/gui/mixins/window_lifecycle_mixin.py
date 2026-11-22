@@ -212,6 +212,9 @@ class WindowLifecycleMixin:
             self.behavior_controls_widget.show_warning(None)
         self._stop_frame_loader()
         self.frame_loader = LoadFrameThread()
+        clear_annot_caches = getattr(self, "_clear_frame_annotation_caches", None)
+        if callable(clear_annot_caches):
+            clear_annot_caches()
         if self.video_processor is not None and hasattr(
             self.video_processor, "cutie_processor"
         ):

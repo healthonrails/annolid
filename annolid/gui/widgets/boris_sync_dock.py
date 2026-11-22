@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 import math
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 from qtpy import QtCore, QtGui, QtWidgets
+
+from annolid.utils.qt2cv import numpy_to_qimage
 
 from annolid.behavior.external_data import (
     ExternalDataError,
@@ -69,6 +72,10 @@ class SecondaryVideoTile(QtWidgets.QFrame):
         self._displayed_frame: Optional[int] = None
         self._pending_time_s: Optional[float] = None
         self._current_qimage: Optional[QtGui.QImage] = None
+        self._frame_cache: "OrderedDict[int, QtGui.QImage]" = OrderedDict()
+        self._frame_cache_max_entries: int = 12
+        self._frame_cache_max_bytes: int = 16 * 1024 * 1024
+        self._frame_cache_bytes: int = 0
         self._audio_buffer: Optional[AudioBuffer] = audio_buffer
         self._audio_load_attempted: bool = audio_buffer is not None
 
@@ -224,6 +231,38 @@ class SecondaryVideoTile(QtWidgets.QFrame):
             f"t={max(0.0, cam_time):.3f}s{clamped_note}{audio_note}"
         )
 
+    @staticmethod
+    def _qimage_byte_size(qimg: QtGui.QImage) -> int:
+        if hasattr(qimg, "sizeInBytes"):
+            try:
+                return max(0, int(qimg.sizeInBytes()))
+            except Exception:
+                pass
+        if hasattr(qimg, "byteCount"):
+            try:
+                return max(0, int(qimg.byteCount()))
+            except Exception:
+                pass
+        return max(0, int(qimg.width()) * int(qimg.height()) * 4)
+
+    def _put_cached_frame(self, frame_idx: int, qimg: QtGui.QImage) -> None:
+        existing = self._frame_cache.get(frame_idx)
+        if existing is not None:
+            self._frame_cache_bytes = max(
+                0, self._frame_cache_bytes - self._qimage_byte_size(existing)
+            )
+        self._frame_cache[frame_idx] = qimg
+        self._frame_cache.move_to_end(frame_idx)
+        self._frame_cache_bytes += self._qimage_byte_size(qimg)
+        while len(self._frame_cache) > self._frame_cache_max_entries or (
+            self._frame_cache_bytes > self._frame_cache_max_bytes
+            and len(self._frame_cache) > 1
+        ):
+            _, evicted = self._frame_cache.popitem(last=False)
+            self._frame_cache_bytes = max(
+                0, self._frame_cache_bytes - self._qimage_byte_size(evicted)
+            )
+
     def _flush_pending_seek(self) -> None:
         if self._pending_time_s is None or self._reader is None:
             return
@@ -248,24 +287,21 @@ class SecondaryVideoTile(QtWidgets.QFrame):
         if self._displayed_frame == target_frame and self._current_qimage is not None:
             return
 
-        try:
-            rgb = self._reader.load_frame(target_frame)
-        except Exception as exc:
-            self.viewport_label.setText(f"Decode error at frame {target_frame}: {exc}")
-            return
-
-        rgb_contig = np.ascontiguousarray(rgb)
-        if rgb_contig.ndim == 2:
-            h, w = rgb_contig.shape
-            qimg = QtGui.QImage(
-                rgb_contig.data, w, h, w, QtGui.QImage.Format_Grayscale8
-            ).copy()
+        cached_qimg = self._frame_cache.get(target_frame)
+        if cached_qimg is not None:
+            self._frame_cache.move_to_end(target_frame)
+            qimg = cached_qimg
         else:
-            h, w, ch = rgb_contig.shape
-            fmt = (
-                QtGui.QImage.Format_RGBA8888 if ch == 4 else QtGui.QImage.Format_RGB888
-            )
-            qimg = QtGui.QImage(rgb_contig.data, w, h, w * ch, fmt).copy()
+            try:
+                rgb = self._reader.load_frame(target_frame)
+            except Exception as exc:
+                self.viewport_label.setText(
+                    f"Decode error at frame {target_frame}: {exc}"
+                )
+                return
+
+            qimg = numpy_to_qimage(rgb)
+            self._put_cached_frame(target_frame, qimg)
 
         self._displayed_frame = target_frame
         self._current_qimage = qimg
@@ -291,6 +327,9 @@ class SecondaryVideoTile(QtWidgets.QFrame):
 
     def close_reader(self) -> None:
         self._coalesce_timer.stop()
+        self._frame_cache.clear()
+        self._frame_cache_bytes = 0
+        self._current_qimage = None
         reader = self._reader
         self._reader = None
         if reader is not None and hasattr(reader, "release"):

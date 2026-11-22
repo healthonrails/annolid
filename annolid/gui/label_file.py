@@ -101,12 +101,16 @@ class LabelFile(object):
 
             if data.get("imageData") is not None:
                 imageData = base64.b64decode(data["imageData"])
-            elif data.get("imagePath") is not None and data["imagePath"] != "":
+            elif (
+                not self.is_video_frame
+                and data.get("imagePath") is not None
+                and data["imagePath"] != ""
+            ):
                 # relative path from label file to relative path from cwd
                 resolved_image_path = osp.join(osp.dirname(filename), data["imagePath"])
                 if osp.exists(resolved_image_path):
                     imageData = self.load_image_file(resolved_image_path)
-                elif not self.is_video_frame:
+                else:
                     logger.warning(
                         "Referenced image file not found for %s: %s",
                         filename,

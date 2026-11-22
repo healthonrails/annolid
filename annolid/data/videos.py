@@ -5,14 +5,17 @@ import cv2
 import numpy as np
 import random
 import subprocess
+import threading
 from typing import Generator, List, Optional, Sequence
 from pathlib import Path
 from PIL import Image
 from annolid.utils.logger import logger
 
 from annolid.core.media.video import (
+    CV2Video,
     get_keyframe_timestamps as _get_keyframe_timestamps,
     get_video_fps as _get_video_fps,
+    read_capture_frame_bgr,
 )
 
 get_keyframe_timestamps = _get_keyframe_timestamps
@@ -215,70 +218,71 @@ def key_frames(
     if not cap.isOpened():
         raise RuntimeError(f"Unable to open video file: {video_file}")
 
-    keyframe_times = get_keyframe_timestamps(video_file)
+    try:
+        keyframe_times = get_keyframe_timestamps(video_file)
 
-    extraction_points: List[tuple[str, float]] = []
-    if keyframe_times:
-        # Use timestamps directly to minimize rounding errors.
-        seen_times = set()
-        for ts in keyframe_times:
-            rounded = round(ts, 6)
-            if rounded in seen_times:
+        extraction_points: List[tuple[str, float]] = []
+        if keyframe_times:
+            # Use timestamps directly to minimize rounding errors.
+            seen_times = set()
+            for ts in keyframe_times:
+                rounded = round(ts, 6)
+                if rounded in seen_times:
+                    continue
+                seen_times.add(rounded)
+                extraction_points.append(("time", ts))
+        else:
+            # Fallback: sample frames roughly every second based on FPS.
+            fps = cap.get(cv2.CAP_PROP_FPS) or 0
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+            if total_frames <= 0:
+                extraction_points = [("index", 0)]
+            else:
+                step = max(int(round(fps)) or 1, 1)
+                indices = list(range(0, total_frames, step))
+                if indices[-1] != total_frames - 1:
+                    indices.append(total_frames - 1)
+                extraction_points = [("index", idx) for idx in indices]
+
+        video_name = Path(video_file).stem
+        video_name = video_name.replace(" ", "_")
+        if out_dir is None:
+            out_dir = Path(video_file).parent / video_name
+            out_dir = out_dir.with_suffix("")
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        saved_indices = set()
+
+        for mode, value in extraction_points:
+            if mode == "time":
+                cap.set(cv2.CAP_PROP_POS_MSEC, value * 1000.0)
+            else:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, int(value))
+
+            ret, frame = cap.read()
+            if not ret or frame is None:
                 continue
-            seen_times.add(rounded)
-            extraction_points.append(("time", ts))
-    else:
-        # Fallback: sample frames roughly every second based on FPS.
-        fps = cap.get(cv2.CAP_PROP_FPS) or 0
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
-        if total_frames <= 0:
-            extraction_points = [("index", 0)]
-        else:
-            step = max(int(round(fps)) or 1, 1)
-            indices = list(range(0, total_frames, step))
-            if indices[-1] != total_frames - 1:
-                indices.append(total_frames - 1)
-            extraction_points = [("index", idx) for idx in indices]
 
-    video_name = Path(video_file).stem
-    video_name = video_name.replace(" ", "_")
-    if out_dir is None:
-        out_dir = Path(video_file).parent / video_name
-        out_dir = out_dir.with_suffix("")
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+            frame_idx = int(cap.get(cv2.CAP_PROP_POS_FRAMES)) - 1
+            if frame_idx < 0:
+                frame_idx = int(
+                    value
+                    if mode == "index"
+                    else round(value * (cap.get(cv2.CAP_PROP_FPS) or 0))
+                )
 
-    saved_indices = set()
+            if frame_idx in saved_indices:
+                continue
+            saved_indices.add(frame_idx)
 
-    for mode, value in extraction_points:
-        if mode == "time":
-            cap.set(cv2.CAP_PROP_POS_MSEC, value * 1000.0)
-        else:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, int(value))
-
-        ret, frame = cap.read()
-        if not ret or frame is None:
-            continue
-
-        frame_idx = int(cap.get(cv2.CAP_PROP_POS_FRAMES)) - 1
-        if frame_idx < 0:
-            frame_idx = int(
-                value
-                if mode == "index"
-                else round(value * (cap.get(cv2.CAP_PROP_FPS) or 0))
+            out_frame_file = (
+                out_dir / f"{(video_name).replace(' ', '_')}_{frame_idx:08}.png"
             )
-
-        if frame_idx in saved_indices:
-            continue
-        saved_indices.add(frame_idx)
-
-        out_frame_file = (
-            out_dir / f"{(video_name).replace(' ', '_')}_{frame_idx:08}.png"
-        )
-        cv2.imwrite(str(out_frame_file), frame)
-        logger.info("Saved keyframe preview to %s", out_frame_file)
-
-    cap.release()
+            cv2.imwrite(str(out_frame_file), frame)
+            logger.info("Saved keyframe preview to %s", out_frame_file)
+    finally:
+        cap.release()
 
     logger.info("Keyframe extraction complete. Frames located at %s", out_dir)
     return out_dir
@@ -387,9 +391,6 @@ def video_loader(video_file=None):
     return CV2Video(video_file)
 
 
-from annolid.core.media.video import CV2Video  # noqa: E402
-
-
 class TiffStackVideo:
     """
     Treat a multi-page TIFF (including simple 3D stacks) as a read-only video.
@@ -410,6 +411,9 @@ class TiffStackVideo:
         if not self.tiff_path.exists():
             raise FileNotFoundError(f"TIFF file not found: {self.tiff_path}")
 
+        self._lock = threading.RLock()
+        self._released = False
+
         # Keep a PIL handle for on-demand access
         self._pil = Image.open(str(self.tiff_path))
         try:
@@ -426,36 +430,54 @@ class TiffStackVideo:
         self.current_frame_timestamp: Optional[float] = None  # milliseconds
         self._fps = float(fps) if fps and fps > 0 else 1.0
 
+    def __enter__(self) -> "TiffStackVideo":
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self.release()
+
     def _load_frame_rgb(self, index: int) -> np.ndarray:
-        if index < 0 or index >= self.total_frames():
-            raise KeyError(f"Frame index out of bounds: {index}")
+        frame_index = int(index)
+        with self._lock:
+            if self._released or self._pil is None:
+                raise RuntimeError(f"TIFF reader has been released: {self.tiff_path}")
+            if frame_index < 0 or frame_index >= self.total_frames():
+                raise KeyError(f"Frame index out of bounds: {frame_index}")
 
-        # Seeking is cheap for TIFFs; PIL handles page offsets internally.
-        try:
-            self._pil.seek(index)
-            img = self._pil
-        except Exception as e:
-            raise KeyError(f"Cannot seek to frame {index}: {e}")
+            if frame_index == 0 and getattr(self, "first_frame", None) is not None:
+                return self.first_frame.copy()
 
-        # Convert to display-friendly RGB uint8.
-        # This handles grayscale, palette, or high bit-depth images.
-        try:
-            # Convert using PIL to ensure 8-bit viewable data
-            if img.mode != "RGB":
-                # For typical 16-bit grayscale ('I;16') or others, this will
-                # map to 8-bit display. For scientific fidelity consider
-                # adding normalization; here we prioritize display.
-                img = img.convert("RGB")
-            arr = np.array(img, copy=True)
-            if arr.dtype != np.uint8:
-                # Defensive: ensure uint8 for GUI
-                arr = np.clip(arr, 0, 255).astype(np.uint8)
-            return arr
-        except Exception as e:
-            raise KeyError(f"Failed to convert frame {index} to RGB array: {e}")
+            # Seeking is cheap for TIFFs; PIL handles page offsets internally.
+            try:
+                self._pil.seek(frame_index)
+                img = self._pil
+            except Exception as e:
+                raise KeyError(f"Cannot seek to frame {frame_index}: {e}")
+
+            # Convert to display-friendly RGB uint8.
+            # This handles grayscale, palette, or high bit-depth images.
+            try:
+                # Convert using PIL to ensure 8-bit viewable data
+                if img.mode != "RGB":
+                    # For typical 16-bit grayscale ('I;16') or others, this will
+                    # map to 8-bit display. For scientific fidelity consider
+                    # adding normalization; here we prioritize display.
+                    img = img.convert("RGB")
+                arr = np.array(img, copy=True)
+                if arr.dtype != np.uint8:
+                    # Defensive: ensure uint8 for GUI
+                    arr = np.clip(arr, 0, 255).astype(np.uint8)
+                return arr
+            except Exception as e:
+                raise KeyError(
+                    f"Failed to convert frame {frame_index} to RGB array: {e}"
+                )
 
     def get_first_frame(self) -> np.ndarray:
-        return self.first_frame
+        with self._lock:
+            if self.first_frame is not None:
+                return self.first_frame
+            return self.load_frame(0)
 
     def get_width(self) -> int:
         return self.width
@@ -467,14 +489,17 @@ class TiffStackVideo:
         return self._fps
 
     def load_frame(self, frame_number: int) -> np.ndarray:
-        frame = self._load_frame_rgb(frame_number)
-        self._last_frame_index = frame_number
-        # Synthesize timestamp in milliseconds from frame index and fps
-        self.current_frame_timestamp = (frame_number / self._fps) * 1000.0
-        return frame
+        frame_index = int(frame_number)
+        with self._lock:
+            frame = self._load_frame_rgb(frame_index)
+            self._last_frame_index = frame_index
+            # Synthesize timestamp in milliseconds from frame index and fps
+            self.current_frame_timestamp = (frame_index / self._fps) * 1000.0
+            return frame
 
     def get_time_stamp(self) -> Optional[float]:
-        return self.current_frame_timestamp
+        with self._lock:
+            return self.current_frame_timestamp
 
     def total_frames(self) -> int:
         return int(self.frame_count)
@@ -485,30 +510,44 @@ class TiffStackVideo:
         if start_frame >= end_frame:
             raise ValueError("Start frame must be less than end frame.")
 
-        end_frame = min(end_frame, self.total_frames())
+        end_frame = min(int(end_frame), self.total_frames())
+        batch_size = max(1, int(batch_size))
         if end_frame - start_frame < batch_size:
-            batch_size = end_frame - start_frame
+            batch_size = max(1, end_frame - int(start_frame))
 
-        for batch_start in range(start_frame, end_frame, batch_size):
+        for batch_start in range(int(start_frame), end_frame, batch_size):
             batch_end = min(batch_start + batch_size, end_frame)
             for frame_number in range(batch_start, batch_end):
                 yield self.load_frame(frame_number)
 
-    def get_frames_between(self, start_frame: int, end_frame: int) -> List[np.ndarray]:
+    def get_frames_between(self, start_frame: int, end_frame: int) -> np.ndarray:
         if start_frame >= end_frame:
             raise ValueError("Start frame must be less than end frame.")
-        end_frame = min(end_frame, self.total_frames())
+        end_frame = min(int(end_frame), self.total_frames())
         frames: List[np.ndarray] = []
-        for frame_number in range(start_frame, end_frame):
+        for frame_number in range(int(start_frame), end_frame):
             frames.append(self.load_frame(frame_number))
-        return np.stack(frames)
+        return np.stack(frames) if frames else np.zeros((0, 0, 0, 0), dtype=np.uint8)
 
     def release(self):
-        try:
-            if getattr(self, "_pil", None) is not None:
-                self._pil.close()
-        except Exception:
-            pass
+        lock = getattr(self, "_lock", None)
+        if lock is not None:
+            with lock:
+                self._release_locked()
+        else:
+            self._release_locked()
+
+    def _release_locked(self):
+        self._released = True
+        self.first_frame = None
+        self._last_frame_index = None
+        pil = getattr(self, "_pil", None)
+        self._pil = None
+        if pil is not None:
+            try:
+                pil.close()
+            except Exception:
+                pass
 
     def __del__(self):
         self.release()
@@ -758,45 +797,57 @@ def extract_frames_from_video(
     if not cap or not cap.isOpened():
         raise RuntimeError(f"Unable to open video: {video_path}")
 
-    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
-    if frame_count <= 0:
-        cap.release()
-        return []
-
-    if frame_indices:
-        indices = sorted({idx for idx in frame_indices if 0 <= idx < frame_count})
-    else:
-        if num_frames <= 1:
-            indices = [frame_count // 2]
-        else:
-            num_frames = min(num_frames, frame_count)
-            indices = (
-                [
-                    int(round(i * (frame_count - 1) / (num_frames - 1)))
-                    for i in range(num_frames)
-                ]
-                if frame_count > 1
-                else [0]
-            )
-
     saved_paths: List[str] = []
-    for idx in indices:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-        ret, frame = cap.read()
-        if not ret or frame is None:
-            continue
-        if name_pattern:
-            try:
-                filename = name_pattern.format(video_stem=video_path.stem, frame=idx)
-            except Exception:
-                filename = f"{video_path.stem}_{idx:09d}.{image_format}"
-        else:
-            filename = f"{video_path.stem}_frame{idx:09d}.{image_format}"
-        out_path = Path(output_folder) / filename
-        if cv2.imwrite(str(out_path), frame):
-            saved_paths.append(str(out_path))
+    try:
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+        if frame_count <= 0:
+            return []
 
-    cap.release()
+        if frame_indices:
+            indices = sorted(
+                {int(idx) for idx in frame_indices if 0 <= int(idx) < frame_count}
+            )
+        else:
+            if num_frames <= 1:
+                indices = [frame_count // 2]
+            else:
+                num_frames = min(num_frames, frame_count)
+                indices = (
+                    [
+                        int(round(i * (frame_count - 1) / (num_frames - 1)))
+                        for i in range(num_frames)
+                    ]
+                    if frame_count > 1
+                    else [0]
+                )
+
+        next_expected: Optional[int] = 0
+        grab_skip_disabled = False
+        max_grab_skip = CV2Video._MAX_FORWARD_GRAB_SKIP
+        for idx in indices:
+            ret, frame, next_expected, grab_skip_disabled = read_capture_frame_bgr(
+                cap,
+                idx,
+                expected_next=next_expected,
+                max_forward_grab_skip=max_grab_skip,
+                grab_skip_disabled=grab_skip_disabled,
+            )
+            if not ret or frame is None:
+                continue
+            if name_pattern:
+                try:
+                    filename = name_pattern.format(
+                        video_stem=video_path.stem, frame=idx
+                    )
+                except Exception:
+                    filename = f"{video_path.stem}_{idx:09d}.{image_format}"
+            else:
+                filename = f"{video_path.stem}_frame{idx:09d}.{image_format}"
+            out_path = Path(output_folder) / filename
+            if cv2.imwrite(str(out_path), frame):
+                saved_paths.append(str(out_path))
+    finally:
+        cap.release()
     return saved_paths
 
 

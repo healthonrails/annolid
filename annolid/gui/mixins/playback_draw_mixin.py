@@ -117,6 +117,10 @@ class PlaybackDrawMixin:
         self.setScroll(orientation, value)
 
     def resetState(self):
+        had_large_image = (
+            getattr(self, "large_image_backend", None) is not None
+            or getattr(self, "_active_image_view", "canvas") != "canvas"
+        )
         self.labelList.clear()
         self.filename = None
         self.imagePath = None
@@ -125,15 +129,18 @@ class PlaybackDrawMixin:
         self.otherData = None
         self.large_image_backend = None
         self._active_image_view = "canvas"
-        if getattr(self, "large_image_view", None) is not None:
+        if had_large_image and getattr(self, "large_image_view", None) is not None:
             self.large_image_view.clear()
         if hasattr(self, "_refreshVectorOverlayDock"):
             self._refreshVectorOverlayDock()
+        viewer_stack = getattr(self, "_viewer_stack", None)
+        canvas = getattr(self, "canvas", None)
         if (
-            getattr(self, "_viewer_stack", None) is not None
-            and getattr(self, "canvas", None) is not None
+            viewer_stack is not None
+            and canvas is not None
+            and viewer_stack.currentWidget() is not canvas
         ):
-            self._viewer_stack.setCurrentWidget(self.canvas)
+            viewer_stack.setCurrentWidget(canvas)
         self.canvas.resetState()
 
     def playVideo(self, isPlaying=False):

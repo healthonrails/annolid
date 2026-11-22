@@ -295,9 +295,7 @@ class CanvasAiPromptMixin:
             if qimage.isNull():
                 return None
             image_data = _canvas_attr("utils", _default_utils).img_qt_to_arr(qimage)
-            digest = hashlib.sha1(
-                np.ascontiguousarray(image_data).tobytes()
-            ).hexdigest()
+            digest = hashlib.sha1(np.ascontiguousarray(image_data)).hexdigest()
             signature = (
                 "image",
                 digest,

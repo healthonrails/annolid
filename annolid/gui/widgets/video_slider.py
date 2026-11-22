@@ -300,7 +300,10 @@ class VideoSlider(QtWidgets.QGraphicsView):
         if input_val is None or not (self._val_min <= input_val <= self._val_max):
             self.input_value.setText(str(self._val_main))
             return
+        old = self.value()
         self.setValue(input_val)
+        if old != self._val_main:
+            self.valueChanged.emit(self._val_main)
 
     def value(self) -> float:
         """Returns value of slider."""
@@ -314,9 +317,11 @@ class VideoSlider(QtWidgets.QGraphicsView):
         self.handle.setPos(x, 0)
         self.ensureVisible(x, 0, self._handle_width, 0, 3, 0)
         if hasattr(self, "input_value"):
-            # Update input text value with slider's current value
-            self.input_value.setText(str(normalized_val))
-            self.input_value.setCursorPosition(len(str(normalized_val)))
+            # Update input text value only when changed to avoid redundant relayouts
+            text = str(normalized_val)
+            if self.input_value.text() != text:
+                self.input_value.setText(text)
+                self.input_value.setCursorPosition(len(text))
 
     def setMinimum(self, min: float) -> float:
         """Sets minimum value for slider."""

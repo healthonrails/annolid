@@ -200,10 +200,16 @@ class PredictionExecutionMixin:
 
         rendered = False
         video_loader = getattr(self, "video_loader", None)
+        frame_loader = getattr(self, "frame_loader", None)
         if video_loader is not None:
             try:
-                frame_rgb = video_loader.load_frame(target)
-                qimage = convert_cv_image_to_qt_image(frame_rgb)
+                qimage = None
+                get_cached = getattr(frame_loader, "get_cached_frame", None)
+                if callable(get_cached):
+                    qimage = get_cached(target)
+                if qimage is None:
+                    frame_rgb = video_loader.load_frame(target)
+                    qimage = convert_cv_image_to_qt_image(frame_rgb)
                 frame_path = self._frame_image_path(target)
                 self.frame_number = target
                 if getattr(self, "timeline_panel", None) is not None:

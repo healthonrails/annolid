@@ -317,9 +317,6 @@ class DepthManager(QtCore.QObject):
         if qimg.isNull():
             return
         self.window.canvas.loadPixmap(QtGui.QPixmap.fromImage(qimg), clear_shapes=False)
-        if self.window.video_loader:
-            with contextlib.suppress(Exception):
-                self.window.video_loader.load_frame(self.window.frame_number)
         self.window.loadPredictShapes(self.window.frame_number, self.window.filename)
 
     def _handle_video_depth_finished(

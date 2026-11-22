@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from qtpy import QtWidgets
+from qtpy import QtCore, QtWidgets
 from qtpy.QtCore import Qt
 
 from annolid.annotation.timestamps import convert_frame_number_to_time
@@ -14,12 +14,24 @@ class NavigationWorkflowMixin:
         seekbar = getattr(self, "seekbar", None)
         if seekbar is None:
             return
+        target = int(value)
+        val_fn = getattr(seekbar, "value", None)
+        if callable(val_fn):
+            try:
+                if int(val_fn()) == target:
+                    return
+            except Exception:
+                pass
         try:
-            blocker = QtWidgets.QSignalBlocker(seekbar)
-            seekbar.setValue(int(value))
-            del blocker
+            with QtCore.QSignalBlocker(seekbar):
+                seekbar.setValue(target)
         except Exception:
-            seekbar.setValue(int(value))
+            try:
+                previous = seekbar.blockSignals(True)
+                seekbar.setValue(target)
+                seekbar.blockSignals(previous)
+            except Exception:
+                seekbar.setValue(target)
 
     def _using_large_image_page_navigation(self) -> bool:
         return bool(
@@ -249,7 +261,6 @@ class NavigationWorkflowMixin:
             self._update_frame_display_and_emit_update()
         finally:
             self._config["keep_prev"] = keep_prev
-        self._update_frame_display_and_emit_update()
 
     def _emit_live_frame_update(self):
         if (
