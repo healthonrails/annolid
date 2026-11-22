@@ -545,8 +545,9 @@ class ShapeEditingMixin:
                 self._sync_shape_visibility_without_signal(shape, False) or synced_any
             )
         if collapsed:
-            if getattr(self, "canvas", None) is not None:
-                self.canvas.storeShapes()
+            canvas = getattr(self, "canvas", None)
+            if canvas is not None and hasattr(canvas, "storeShapes"):
+                canvas.storeShapes()
             if not synced_any:
                 self._refresh_shape_views()
             self._rebuild_unique_label_list()
@@ -575,8 +576,9 @@ class ShapeEditingMixin:
                 self._sync_shape_visibility_without_signal(shape, True) or synced_any
             )
         if restored:
-            if getattr(self, "canvas", None) is not None:
-                self.canvas.storeShapes()
+            canvas = getattr(self, "canvas", None)
+            if canvas is not None and hasattr(canvas, "storeShapes"):
+                canvas.storeShapes()
             if not synced_any:
                 self._refresh_shape_views()
             self._rebuild_unique_label_list()

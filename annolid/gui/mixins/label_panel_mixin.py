@@ -231,9 +231,15 @@ class LabelPanelMixin:
         tiled_hide_applied = False
 
         try:
-            for entry in list(pending.values()):
+            for key, entry in list(pending.items()):
                 if isinstance(entry, tuple) and len(entry) == 2:
                     shape, visible_flag = entry
+                elif (
+                    isinstance(entry, bool)
+                    and key is not None
+                    and not isinstance(key, int)
+                ):
+                    shape, visible_flag = key, entry
                 else:
                     continue
                 if shape is None:

@@ -151,10 +151,16 @@ def test_load_history_messages_preserves_tool_metadata() -> None:
         session_id="gui:test",
         max_history_messages=20,
     )
-    assert len(history) == 2
+    assert len(history) == 3
     assert history[0]["role"] == "assistant"
     assert "tool_calls" in history[0]
-    assert history[1] == {"role": "assistant", "content": "done"}
+    assert history[1] == {
+        "role": "tool",
+        "content": '{"ok": true}',
+        "tool_call_id": "call_1",
+        "name": "camera_snapshot",
+    }
+    assert history[2] == {"role": "assistant", "content": "done"}
 
 
 def test_load_history_messages_sanitizes_tool_metadata() -> None:
