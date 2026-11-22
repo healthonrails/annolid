@@ -96,6 +96,7 @@ nav:
       - Simulation and FlyBody: simulation_flybody.md
       - Two-Mouse 3D Simulation: two_mice_simulation.md
       - COCO Data Flow: coco_data_flow.md
+      - DeepLabCut, SLEAP & Pose Interoperability: pose_interoperability.md
       - YOLO & YOLOE Fine-Tuning and Inference: yolo_workflow.md
       - Tutorials Overview: tutorials.md
       - Merge Canvas Shapes (GUI): tutorials/merge_canvas_shapes.md

@@ -46,7 +46,7 @@ python -m annolid.engine.cli index-to-yolo \
   --task pose
 ```
 
-### 3) Import DeepLabCut training data into LabelMe + optional indexing
+### 3) Import DeepLabCut / SLEAP / Lightning Pose data into LabelMe + optional indexing
 
 ```bash
 python -m annolid.engine.cli import-deeplabcut-training-data \
@@ -54,6 +54,16 @@ python -m annolid.engine.cli import-deeplabcut-training-data \
   --labeled-data labeled-data \
   --instance-label mouse \
   --write-pose-schema
+
+python -m annolid.engine.cli import-pose \
+  /path/to/labels.pkg.slp \
+  --output-dir /path/to/sleap_labelme \
+  --write-index
+
+python -m annolid.engine.cli export-pose \
+  /path/to/labelme_dir \
+  --format deeplabcut-csv \
+  --output /path/to/exported_dlc.csv
 ```
 
 ## Completion checklist

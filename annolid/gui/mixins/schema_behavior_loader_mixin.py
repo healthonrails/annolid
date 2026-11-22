@@ -84,6 +84,14 @@ class SchemaBehaviorLoaderMixin:
         source_path = Path(behavior_csv_file)
         fps = self.fps if self.fps and self.fps > 0 else 29.97
 
+        if source_path.suffix.lower() in (".h5", ".hdf", ".hdf5"):
+            if not self._load_deeplabcut_table(behavior_csv_file):
+                logger.debug(
+                    "Skipped loading '%s' because it is not a supported DeepLabCut HDF5 export.",
+                    source_path.name,
+                )
+            return
+
         if source_path.suffix.lower() == ".boris":
             try:
                 imported = import_boris_project(source_path)
@@ -156,66 +164,48 @@ class SchemaBehaviorLoaderMixin:
         if callable(refresh_badges):
             refresh_badges()
 
+    def _clear_deeplabcut_table(self) -> None:
+        self._df_deeplabcut = None
+        self._df_deeplabcut_columns = None
+        self._df_deeplabcut_scorer = None
+        self._df_deeplabcut_bodyparts = None
+        self._df_deeplabcut_animal_ids = None
+        self._df_deeplabcut_multi_animal = False
+
     def _load_deeplabcut_table(self, behavior_csv_file: str) -> bool:
-        """Load DeepLabCut tracking results stored as a multi-index CSV."""
+        """Load DeepLabCut / Lightning Pose tracking results (3- or 4-level CSV or H5)."""
         import pandas as pd
 
+        from annolid.annotation.pose_interop.deeplabcut import parse_dlc_table
+
         try:
-            df_dlc = pd.read_csv(
-                behavior_csv_file,
-                header=[0, 1, 2],
-                index_col=0,
-            )
-        except (ValueError, pd.errors.ParserError) as exc:
+            table = parse_dlc_table(behavior_csv_file, for_training=False)
+        except Exception as exc:
             logger.debug(
-                "Skipping %s: not a DeepLabCut multi-index CSV (%s).",
+                "Skipping %s: not a DeepLabCut multi-index table (%s).",
                 Path(behavior_csv_file).name,
                 exc,
             )
-            self._df_deeplabcut = None
-            self._df_deeplabcut_columns = None
-            self._df_deeplabcut_scorer = None
-            self._df_deeplabcut_bodyparts = None
-            self._df_deeplabcut_animal_ids = None
-            self._df_deeplabcut_multi_animal = False
+            self._clear_deeplabcut_table()
             return False
 
-        nlevels = df_dlc.columns.nlevels
-        if nlevels == 4:
-            expected_names = ["scorer", "animal", "bodyparts", "coords"]
-            self._df_deeplabcut_multi_animal = True
-        elif nlevels == 3:
-            expected_names = ["scorer", "bodyparts", "coords"]
-            self._df_deeplabcut_multi_animal = False
-        else:
-            logger.debug(
-                "Skipping %s: expected 3 or 4 column levels, found %s.",
-                Path(behavior_csv_file).name,
-                nlevels,
-            )
-            self._df_deeplabcut = None
-            self._df_deeplabcut_columns = None
-            self._df_deeplabcut_scorer = None
-            self._df_deeplabcut_bodyparts = None
-            self._df_deeplabcut_animal_ids = None
-            self._df_deeplabcut_multi_animal = False
-            return False
-
-        df_dlc.columns = df_dlc.columns.set_names(expected_names)
-
+        df_dlc = table.df
         index_numeric = pd.to_numeric(df_dlc.index, errors="coerce")
         if index_numeric.isna().any():
             logger.debug(
                 "DeepLabCut table %s has non-numeric frame index; using positional indices.",
                 Path(behavior_csv_file).name,
             )
-            df_dlc.reset_index(drop=True, inplace=True)
+            df_dlc = df_dlc.reset_index(drop=True)
         else:
             df_dlc.index = index_numeric.astype(int)
 
         self._df_deeplabcut = df_dlc
         self._df_deeplabcut_columns = df_dlc.columns
-        self._df_deeplabcut_scorer = None
-        self._df_deeplabcut_bodyparts = None
-        self._df_deeplabcut_animal_ids = None
+        self._df_deeplabcut_scorer = table.scorer
+        self._df_deeplabcut_bodyparts = list(table.bodyparts)
+        self._df_deeplabcut_animal_ids = (
+            list(table.individuals) if table.multi_animal else [None]
+        )
+        self._df_deeplabcut_multi_animal = bool(table.multi_animal)
         return True

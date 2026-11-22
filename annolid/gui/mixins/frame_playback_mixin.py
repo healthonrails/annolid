@@ -169,35 +169,23 @@ class FramePlaybackMixin:
         frame_number: int,
         is_multi_animal: Optional[bool] = None,
     ) -> None:
-        """
-        Load DeepLabCut tracking results for a given frame and convert them into shape objects.
-
-        This method extracts x, y coordinates for each body part and, if applicable, for each animal.
-        It then creates shape objects for visualization.
-
-        Args:
-            frame_number (int): The index of the frame to extract tracking data from.
-            is_multi_animal (bool, optional): Force multi-animal parsing. Auto-detected when None.
-
-        Notes:
-            - Assumes self._df_deeplabcut is a multi-index Pandas DataFrame.
-            - Multi-animal mode expects an 'animal' level in the column index.
-            - Logs warnings for missing data instead of failing.
-
-        Raises:
-            KeyError: If expected columns are missing.
-            Exception: For unexpected errors during shape extraction.
-        """
+        """Load DeepLabCut / Lightning Pose tracking results for a frame into ``Shape`` objects."""
         if self._df_deeplabcut is None or self._df_deeplabcut.empty:
             return
 
+        import math
         import pandas as pd
 
         if is_multi_animal is None:
-            is_multi_animal = getattr(self, "_df_deeplabcut_multi_animal", False)
+            is_multi_animal = bool(
+                getattr(self, "_df_deeplabcut_multi_animal", False)
+                or self._df_deeplabcut.columns.nlevels == 4
+            )
 
         try:
             row = self._df_deeplabcut.loc[frame_number]
+            if isinstance(row, pd.DataFrame):
+                row = row.iloc[0]
         except KeyError:
             if 0 <= frame_number < len(self._df_deeplabcut.index):
                 row = self._df_deeplabcut.iloc[frame_number]
@@ -225,34 +213,79 @@ class FramePlaybackMixin:
 
             if self._df_deeplabcut_animal_ids is None:
                 if is_multi_animal:
-                    self._df_deeplabcut_animal_ids = (
-                        self._df_deeplabcut.columns.get_level_values("animal").unique()
+                    level_names = list(self._df_deeplabcut.columns.names or [])
+                    if "individuals" in level_names:
+                        ind_level = "individuals"
+                    elif "animal" in level_names:
+                        ind_level = "animal"
+                    else:
+                        ind_level = 1
+                    self._df_deeplabcut_animal_ids = list(
+                        self._df_deeplabcut.columns.get_level_values(ind_level).unique()
                     )
                 else:
                     self._df_deeplabcut_animal_ids = [None]
 
             if self._df_deeplabcut_bodyparts is None:
-                self._df_deeplabcut_bodyparts = (
-                    self._df_deeplabcut.columns.get_level_values("bodyparts").unique()
+                level_names = list(self._df_deeplabcut.columns.names or [])
+                bp_level = (
+                    "bodyparts"
+                    if "bodyparts" in level_names
+                    else (2 if is_multi_animal else 1)
+                )
+                self._df_deeplabcut_bodyparts = list(
+                    self._df_deeplabcut.columns.get_level_values(bp_level).unique()
                 )
 
-            for animal_id in self._df_deeplabcut_animal_ids:
+            for animal_idx, animal_id in enumerate(self._df_deeplabcut_animal_ids):
                 for bodypart in self._df_deeplabcut_bodyparts:
-                    x_col = (
-                        (self._df_deeplabcut_scorer, animal_id, bodypart, "x")
-                        if is_multi_animal
-                        else (self._df_deeplabcut_scorer, bodypart, "x")
-                    )
-                    y_col = (
-                        (self._df_deeplabcut_scorer, animal_id, bodypart, "y")
-                        if is_multi_animal
-                        else (self._df_deeplabcut_scorer, bodypart, "y")
-                    )
+                    if is_multi_animal:
+                        x_col = (self._df_deeplabcut_scorer, animal_id, bodypart, "x")
+                        y_col = (self._df_deeplabcut_scorer, animal_id, bodypart, "y")
+                        l_col = (
+                            self._df_deeplabcut_scorer,
+                            animal_id,
+                            bodypart,
+                            "likelihood",
+                        )
+                    else:
+                        x_col = (self._df_deeplabcut_scorer, bodypart, "x")
+                        y_col = (self._df_deeplabcut_scorer, bodypart, "y")
+                        l_col = (self._df_deeplabcut_scorer, bodypart, "likelihood")
 
-                    x, y = row.get(x_col, None), row.get(y_col, None)
+                    x = row.get(x_col, None)
+                    y = row.get(y_col, None)
                     if pd.notna(x) and pd.notna(y):
-                        shape = Shape(label=bodypart, shape_type="point", visible=True)
-                        shape.addPoint((x, y))
+                        xf, yf = float(x), float(y)
+                        if not (math.isfinite(xf) and math.isfinite(yf)):
+                            continue
+                        label = (
+                            f"{animal_id}_{bodypart}"
+                            if is_multi_animal and animal_id is not None
+                            else str(bodypart)
+                        )
+                        shape = Shape(
+                            label=label,
+                            group_id=animal_idx if is_multi_animal else None,
+                            shape_type="point",
+                            visible=True,
+                        )
+                        shape.addPoint(QtCore.QPointF(xf, yf))
+                        other_data = getattr(shape, "other_data", None)
+                        if not isinstance(other_data, dict):
+                            other_data = {}
+                            shape.other_data = other_data
+                        other_data["display_label"] = str(bodypart)
+                        if is_multi_animal and animal_id is not None:
+                            other_data["instance_label"] = str(animal_id)
+                        like = row.get(l_col, None)
+                        if pd.notna(like):
+                            try:
+                                lf = float(like)
+                                if math.isfinite(lf):
+                                    other_data["score"] = lf
+                            except (TypeError, ValueError):
+                                pass
                         shapes.append(shape)
 
         except KeyError as e:

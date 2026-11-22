@@ -534,6 +534,14 @@ def test_execution_paths_use_layer_imports() -> None:
         in convert_dlc_dialog
     )
 
+    convert_sleap_dialog = (
+        repo_root / "annolid" / "gui" / "widgets" / "convert_sleap_dialog.py"
+    ).read_text(encoding="utf-8")
+    assert (
+        "from annolid.services.export import export_pose_dataset, import_sleap_dataset"
+        in convert_sleap_dialog
+    )
+
     agent_analysis = (
         repo_root / "annolid" / "gui" / "mixins" / "agent_analysis_mixin.py"
     ).read_text(encoding="utf-8")

@@ -427,13 +427,13 @@ class ToolingDialogsMixin:
     def convert_sleap_h5_to_labelme(self):
         from annolid.gui.widgets.convert_sleap_dialog import ConvertSleapDialog
 
-        convert_sleap_h5_widget = ConvertSleapDialog()
+        convert_sleap_h5_widget = ConvertSleapDialog(parent=self)
         convert_sleap_h5_widget.exec_()
 
     def convert_deeplabcut_csv_to_labelme(self):
         from annolid.gui.widgets.convert_deeplabcut_dialog import ConvertDLCDialog
 
-        convert_deeplabcut_widget = ConvertDLCDialog()
+        convert_deeplabcut_widget = ConvertDLCDialog(parent=self)
         convert_deeplabcut_widget.exec_()
 
     def convert_labelme2yolo_format(self):

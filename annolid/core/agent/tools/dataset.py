@@ -25,6 +25,7 @@ from annolid.datasets.labelme_collection import (
 from annolid.services.export import (
     build_yolo_dataset_from_index,
     import_deeplabcut_dataset,
+    import_sleap_dataset,
 )
 from annolid.utils.annotation_store import load_labelme_json
 
@@ -125,8 +126,17 @@ def _detect_external_dataset_kinds(dataset_root: Path) -> list[str]:
     root = Path(dataset_root).expanduser().resolve()
     kinds: list[str] = []
     labeled_data = root / "labeled-data"
-    if labeled_data.exists() and any(labeled_data.rglob("CollectedData_*.csv")):
+    if labeled_data.exists() and (
+        any(labeled_data.rglob("CollectedData_*.csv"))
+        or any(labeled_data.rglob("CollectedData_*.h5"))
+    ):
         kinds.append("deeplabcut")
+    if (
+        any(root.rglob("*.slp"))
+        or any(root.rglob("*.pkg.slp"))
+        or any(root.rglob("*.analysis.h5"))
+    ):
+        kinds.append("sleap")
     coco_payload = _infer_coco_payload(root)
     annotations_dir = root / "annotations"
     if annotations_dir.exists():
@@ -250,6 +260,21 @@ def _recommend_models_from_summary(
                 "reason": "DeepLabCut training data can be imported, indexed, and exported into a YOLO pose dataset.",
             }
         )
+    elif "sleap" in external_kinds:
+        recommendations.append(
+            {
+                "model": "dino_kpseg",
+                "task": "keypoint_segmentation",
+                "reason": "SLEAP (.slp/.pkg.slp/.analysis.h5) pose files can be imported into LabelMe annotations + PoseSchema for DinoKPSEG training.",
+            }
+        )
+        recommendations.append(
+            {
+                "model": "yolo",
+                "task": "pose",
+                "reason": "SLEAP pose files can be imported, indexed, and exported into a YOLO pose dataset.",
+            }
+        )
     elif has_points:
         recommendations.append(
             {
@@ -347,6 +372,10 @@ def inspect_dataset_folder(dataset_root: Path) -> dict[str, object]:
     if not has_saved_trainable_spec and "deeplabcut" in external_kinds:
         next_actions.append(
             "Run annolid_dataset_prepare with mode=deeplabcut_import to convert DeepLabCut training data into LabelMe plus an Annolid index."
+        )
+    if not has_saved_trainable_spec and "sleap" in external_kinds:
+        next_actions.append(
+            "Run annolid_dataset_prepare with mode=sleap_import to convert SLEAP (.slp/.pkg.slp/.analysis.h5) files into LabelMe JSON + PoseSchema."
         )
     if coco_cfg is not None and not coco_cfg_path:
         next_actions.append(
@@ -530,6 +559,7 @@ class AnnolidDatasetPrepareTool(FunctionTool):
                         "labelme_spec",
                         "yolo_from_labelme",
                         "deeplabcut_import",
+                        "sleap_import",
                         "coco_spec",
                         "coco_to_yolo",
                     ],
@@ -736,6 +766,63 @@ class AnnolidDatasetPrepareTool(FunctionTool):
                 if write_index:
                     index_summary = index_labelme_dataset(
                         sources=[labeled_root_resolved],
+                        index_file=resolved_index_file,
+                        recursive=True,
+                        include_empty=False,
+                        dedupe=True,
+                        source="annolid_bot",
+                    )
+                    result = {
+                        **import_summary,
+                        "index_file": str(resolved_index_file.resolve()),
+                        "index_summary": index_summary,
+                    }
+                else:
+                    result = import_summary
+            elif mode_name == "sleap_import":
+                sleap_candidates = sorted(
+                    list(root.rglob("*.pkg.slp"))
+                    + [
+                        p
+                        for p in root.rglob("*.slp")
+                        if not p.name.lower().endswith(".pkg.slp")
+                    ]
+                    + list(root.rglob("*.analysis.h5"))
+                )
+                if not sleap_candidates:
+                    raise FileNotFoundError(
+                        f"No SLEAP (.slp, .pkg.slp, .analysis.h5) file found under {root}"
+                    )
+                sleap_file = sleap_candidates[0]
+                default_out = root / f"{sleap_file.stem.replace('.pkg', '')}_labelme"
+                dest_dir = (
+                    _resolve_write_path(output_dir, allowed_dir=self._allowed_dir)
+                    if str(output_dir or "").strip()
+                    else _resolve_write_path(
+                        str(default_out), allowed_dir=self._allowed_dir
+                    )
+                )
+                import_summary = import_sleap_dataset(
+                    sleap_file,
+                    dest_dir,
+                    save_frames=True,
+                    overwrite=bool(overwrite),
+                )
+                if write_index:
+                    idx_raw = (
+                        Path(index_file).expanduser()
+                        if str(index_file or "").strip()
+                        else Path(DEFAULT_LABEL_INDEX_DIRNAME)
+                        / DEFAULT_LABEL_INDEX_NAME
+                    )
+                    idx_candidate = (
+                        idx_raw if idx_raw.is_absolute() else dest_dir / idx_raw
+                    )
+                    resolved_index_file = _resolve_write_path(
+                        str(idx_candidate), allowed_dir=self._allowed_dir
+                    )
+                    index_summary = index_labelme_dataset(
+                        sources=[dest_dir],
                         index_file=resolved_index_file,
                         recursive=True,
                         include_empty=False,

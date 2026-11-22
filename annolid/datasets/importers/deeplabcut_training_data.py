@@ -1,21 +1,35 @@
 from __future__ import annotations
 
-import json
-import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-import pandas as pd
-from annolid.utils.annotation_compat import __version__ as LABELME_VERSION
 from PIL import Image, ImageOps
+import pandas as pd
 
+from annolid.annotation.keypoint_visibility import KeypointVisibility
+from annolid.annotation.pose_interop.deeplabcut import (
+    detect_dlc_csv_header_levels,
+    discover_dlc_config_near,
+    parse_dlc_table,
+)
+from annolid.annotation.pose_interop.labelme import build_labelme_point_shape
+from annolid.annotation.pose_interop.model import (
+    dedup_pairs,
+    dedup_preserve_order,
+    infer_edges_for_keypoints,
+    is_finite_number,
+)
 from annolid.annotation.pose_schema import PoseSchema
+from annolid.utils.annotation_compat import __version__ as LABELME_VERSION
+from annolid.utils.atomic_io import atomic_write_json
+
+_MAX_RECORDED_ERRORS = 25
 
 
 @dataclass(frozen=True)
 class DeepLabCutTrainingImportConfig:
-    """Import DeepLabCut `labeled-data/**/CollectedData_*.csv` into LabelMe JSON."""
+    """Import DeepLabCut / Lightning Pose ``labeled-data/**/CollectedData_*.{csv,h5}`` into LabelMe JSON."""
 
     source_dir: Path
     labeled_data_root: Path = Path("labeled-data")
@@ -25,24 +39,35 @@ class DeepLabCutTrainingImportConfig:
 
 
 def _detect_dlc_header_levels(csv_path: Path) -> int:
-    lines = csv_path.read_text(encoding="utf-8", errors="ignore").splitlines()
-    if len(lines) < 3:
-        return 3
-    first = lines[0].split(",", 1)[0].strip().lower()
-    second = lines[1].split(",", 1)[0].strip().lower() if len(lines) > 1 else ""
-    third = lines[2].split(",", 1)[0].strip().lower() if len(lines) > 2 else ""
-    fourth = lines[3].split(",", 1)[0].strip().lower() if len(lines) > 3 else ""
+    return detect_dlc_csv_header_levels(csv_path)
 
-    if (
-        first == "scorer"
-        and second in ("individuals", "animals")
-        and third == "bodyparts"
-        and fourth == "coords"
-    ):
-        return 4
-    if first == "scorer" and second == "bodyparts" and third == "coords":
-        return 3
-    return 3
+
+def _iter_collected_data_files(root: Path, *, recursive: bool) -> Iterable[Path]:
+    """Yield ``CollectedData_*.csv`` and ``CollectedData_*.h5`` (deduping sibling pairs in favor of CSV)."""
+    patterns = ("CollectedData_*.csv", "CollectedData_*.h5")
+    found: List[Path] = []
+    for pattern in patterns:
+        it = root.rglob(pattern) if recursive else root.glob(pattern)
+        found.extend(p for p in it if p.is_file())
+
+    # If both CollectedData_scorer.csv and CollectedData_scorer.h5 sit side by side,
+    # prefer the CSV to avoid importing the same rows twice.
+    csv_stems = {
+        (p.parent.resolve(), p.stem.lower())
+        for p in found
+        if p.suffix.lower() == ".csv"
+    }
+    for path in sorted(found):
+        if (
+            path.suffix.lower() == ".h5"
+            and (
+                path.parent.resolve(),
+                path.stem.lower(),
+            )
+            in csv_stems
+        ):
+            continue
+        yield path
 
 
 def _iter_collected_data_csvs(root: Path, *, recursive: bool) -> Iterable[Path]:
@@ -54,44 +79,11 @@ def _iter_collected_data_csvs(root: Path, *, recursive: bool) -> Iterable[Path]:
 
 
 def _is_number(value: Any) -> bool:
-    try:
-        return (
-            value is not None
-            and not (isinstance(value, float) and math.isnan(value))
-            and float(value) == float(value)
-        )
-    except Exception:
-        return False
+    return is_finite_number(value)
 
 
 def _infer_mouse_edges(keypoints: Sequence[str]) -> List[Tuple[str, str]]:
-    kp = {str(name).strip() for name in keypoints if str(name).strip()}
-
-    def add(edges: List[Tuple[str, str]], a: str, b: str) -> None:
-        if a in kp and b in kp and a != b:
-            edges.append((a, b))
-
-    edges: List[Tuple[str, str]] = []
-    add(edges, "nose", "neck")
-    add(edges, "neck", "back")
-    add(edges, "back", "root_tail")
-    add(edges, "root_tail", "mid_tail")
-    add(edges, "mid_tail", "tip_tail")
-
-    add(edges, "left_ear", "nose")
-    add(edges, "right_ear", "nose")
-
-    add(edges, "left_front_limb", "neck")
-    add(edges, "right_front_limb", "neck")
-    add(edges, "left_hind_limb", "back")
-    add(edges, "right_hind_limb", "back")
-
-    add(edges, "left_front_claw", "left_front_limb")
-    add(edges, "right_front_claw", "right_front_limb")
-    add(edges, "left_hind_claw", "left_hind_limb")
-    add(edges, "right_hind_claw", "right_hind_limb")
-
-    return list(dict.fromkeys(edges))
+    return infer_edges_for_keypoints(keypoints, preset="mouse")
 
 
 def build_pose_schema_from_keypoints(
@@ -100,19 +92,41 @@ def build_pose_schema_from_keypoints(
     instances: Optional[Sequence[str]] = None,
     instance_separator: str = "_",
     preset: Optional[str] = "mouse",
+    edges: Optional[Sequence[Tuple[str, str]]] = None,
 ) -> PoseSchema:
-    base_keypoints = [str(k).strip() for k in keypoints if str(k).strip()]
+    base_keypoints = dedup_preserve_order(keypoints)
     symmetry_pairs = PoseSchema.infer_symmetry_pairs(base_keypoints)
-    edges: List[Tuple[str, str]] = []
-    if preset and str(preset).lower() == "mouse":
-        edges = _infer_mouse_edges(base_keypoints)
+    resolved_edges = (
+        dedup_pairs(edges)
+        if edges
+        else infer_edges_for_keypoints(base_keypoints, preset=preset)
+    )
     return PoseSchema(
         keypoints=base_keypoints,
-        edges=edges,
+        edges=resolved_edges,
         symmetry_pairs=symmetry_pairs,
-        instances=[str(i).strip() for i in (instances or []) if str(i).strip()],
+        instances=dedup_preserve_order(instances or []),
         instance_separator=str(instance_separator or "_"),
     )
+
+
+def _normalize_path_parts(path_parts: Sequence[str]) -> List[str]:
+    """Normalize Windows and POSIX path segments while preserving absolute markers."""
+    normalized: List[str] = []
+    for raw in path_parts:
+        text = str(raw or "").strip()
+        if not text or text.lower() == "nan":
+            continue
+        # Convert Windows backslashes to POSIX separators for cross-platform CSV imports.
+        posix_text = text.replace("\\", "/")
+        if posix_text.startswith("/") and not normalized:
+            normalized.append(posix_text)
+        else:
+            for seg in posix_text.split("/"):
+                seg = seg.strip()
+                if seg:
+                    normalized.append(seg)
+    return normalized
 
 
 def _resolve_image_path(
@@ -122,7 +136,7 @@ def _resolve_image_path(
     csv_dir: Path,
     path_parts: Sequence[str],
 ) -> Optional[Path]:
-    parts = [str(p).strip() for p in path_parts if str(p).strip()]
+    parts = _normalize_path_parts(path_parts)
     candidates: List[Path] = []
 
     if parts:
@@ -134,6 +148,7 @@ def _resolve_image_path(
         candidates.append(csv_dir / parts[-1])
         if len(parts) >= 2:
             candidates.append(csv_dir / parts[-2] / parts[-1])
+
     resolved_source = source_dir.expanduser().resolve()
     resolved_labeled = labeled_root.expanduser().resolve()
     for candidate in candidates:
@@ -144,7 +159,7 @@ def _resolve_image_path(
                 or resolved.is_relative_to(resolved_labeled)
             ):
                 continue
-            if resolved.exists():
+            if resolved.is_file():
                 return resolved
         except Exception:
             continue
@@ -182,15 +197,17 @@ def _extract_keypoints_from_row(
     kp_cols: Sequence[Tuple[Any, ...]],
     multi_animal: bool,
     default_instance: str,
+    instance_to_gid: Optional[Dict[str, int]] = None,
+    instance_separator: str = "_",
 ) -> Tuple[List[Dict[str, Any]], List[str], List[str]]:
-    """Return (shapes, instances, base_keypoints)."""
+    """Return ``(shapes, instances, base_keypoints)`` with LabelMe-safe boolean flags."""
     shapes: List[Dict[str, Any]] = []
     instances: List[str] = []
     base_keypoints: List[str] = []
+    gid_map = instance_to_gid if instance_to_gid is not None else {}
 
-    # Index columns for multi-index: (..., 'x'|'y'|'likelihood')
     # single: (scorer, bodypart, coord)
-    # multi: (scorer, individual, bodypart, coord)
+    # multi:  (scorer, individual, bodypart, coord)
     by_key: Dict[Tuple[str, str], Dict[str, float]] = {}
 
     for col in kp_cols:
@@ -219,20 +236,53 @@ def _extract_keypoints_from_row(
             instances.append(instance_label)
         if bodypart and bodypart not in base_keypoints:
             base_keypoints.append(bodypart)
+
+        gid: Optional[int] = None
+        if multi_animal and instance_label:
+            if instance_label not in gid_map:
+                gid_map[instance_label] = len(gid_map)
+            gid = gid_map[instance_label]
+
         shapes.append(
-            {
-                "label": f"{instance_label}_{bodypart}" if instance_label else bodypart,
-                "points": [[values["x"], values["y"]]],
-                "shape_type": "point",
-                "flags": {
-                    "instance_label": str(instance_label),
-                    "display_label": str(bodypart),
-                },
-                "visible": True,
-            }
+            build_labelme_point_shape(
+                keypoint_label=bodypart,
+                x=values["x"],
+                y=values["y"],
+                instance_label=instance_label or None,
+                group_id=gid,
+                visibility=int(KeypointVisibility.VISIBLE),
+                score=values.get("likelihood"),
+                is_predicted=False,
+                prefix_with_instance=bool(instance_label),
+                instance_separator=instance_separator,
+            )
         )
 
     return shapes, instances, base_keypoints
+
+
+def _extract_row_path_parts(
+    row: pd.Series, path_cols: Sequence[Tuple[Any, ...]]
+) -> List[str]:
+    parts: List[str] = []
+    if path_cols:
+        for col in path_cols[:3]:
+            value = row.get(col)
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text and text.lower() != "nan":
+                parts.append(text)
+    if not parts:
+        idx = row.name
+        if isinstance(idx, tuple):
+            for elem in idx:
+                text = str(elem).strip()
+                if text and text.lower() != "nan":
+                    parts.append(text)
+        elif isinstance(idx, str) and idx.strip():
+            parts.append(idx.strip())
+    return parts
 
 
 def import_deeplabcut_training_data(
@@ -251,63 +301,54 @@ def import_deeplabcut_training_data(
     if not labeled_root.exists():
         raise FileNotFoundError(f"labeled-data root not found: {labeled_root}")
 
-    collected_csvs = [
-        p
-        for p in _iter_collected_data_csvs(labeled_root, recursive=cfg.recursive)
-        if p.is_file()
-    ]
+    dlc_config = discover_dlc_config_near(labeled_root) or discover_dlc_config_near(
+        source_dir
+    )
+
+    collected_files = list(
+        _iter_collected_data_files(labeled_root, recursive=cfg.recursive)
+    )
     written = 0
     skipped_existing = 0
     missing_images = 0
     errors = 0
+    error_details: List[str] = []
     keypoints_seen: List[str] = []
     instances_seen: List[str] = []
+    instance_to_gid: Dict[str, int] = {}
 
-    for csv_path in sorted(collected_csvs):
+    if dlc_config:
+        for idx, ind in enumerate(dlc_config.individuals):
+            instance_to_gid.setdefault(ind, idx)
+
+    def _record_error(message: str) -> None:
+        nonlocal errors
+        errors += 1
+        if len(error_details) < _MAX_RECORDED_ERRORS:
+            error_details.append(message)
+
+    for data_path in collected_files:
         try:
-            header_levels = _detect_dlc_header_levels(csv_path)
-            df = pd.read_csv(csv_path, header=list(range(header_levels)))
-        except Exception:
-            errors += 1
+            table = parse_dlc_table(data_path, for_training=True)
+        except Exception as exc:
+            _record_error(f"Failed to parse {data_path.name}: {exc}")
             continue
 
-        if not isinstance(df.columns, pd.MultiIndex):
-            errors += 1
-            continue
+        df = table.df
+        kp_cols = table.keypoint_columns
+        multi_animal = table.multi_animal
+        path_cols = table.path_columns
 
-        kp_cols, multi_animal = _dlc_keypoint_columns(df.columns)
-        if not kp_cols:
-            continue
-
-        # Identify path columns: those whose last level isn't a coordinate.
-        coord_set = {"x", "y", "likelihood"}
-        path_cols = [
-            col for col in df.columns if str(col[-1]).strip().lower() not in coord_set
-        ]
-
-        for _, row in df.iterrows():
+        for row_num, (_, row) in enumerate(df.iterrows()):
             try:
-                path_parts = []
-                if path_cols:
-                    for col in path_cols[:3]:
-                        value = row.get(col)
-                        if value is None:
-                            continue
-                        text = str(value).strip()
-                        if text and text.lower() != "nan":
-                            path_parts.append(text)
-                else:
-                    idx = row.name
-                    if isinstance(idx, str) and idx.strip():
-                        path_parts.append(idx.strip())
-
+                path_parts = _extract_row_path_parts(row, path_cols)
                 image_path = _resolve_image_path(
                     source_dir=source_dir,
                     labeled_root=labeled_root,
-                    csv_dir=csv_path.parent,
+                    csv_dir=data_path.parent,
                     path_parts=path_parts,
                 )
-                if image_path is None or not image_path.exists():
+                if image_path is None or not image_path.is_file():
                     missing_images += 1
                     continue
                 out_json = image_path.with_suffix(".json")
@@ -317,6 +358,8 @@ def import_deeplabcut_training_data(
                     kp_cols=kp_cols,
                     multi_animal=multi_animal,
                     default_instance=str(cfg.instance_label),
+                    instance_to_gid=instance_to_gid,
+                    instance_separator=instance_separator,
                 )
                 for kp in keypoints:
                     if kp not in keypoints_seen:
@@ -330,11 +373,11 @@ def import_deeplabcut_training_data(
                     continue
 
                 try:
-                    pil = Image.open(image_path)
-                    pil = ImageOps.exif_transpose(pil)
-                    width, height = pil.size
-                except Exception:
-                    errors += 1
+                    with Image.open(image_path) as pil_raw:
+                        pil = ImageOps.exif_transpose(pil_raw)
+                        width, height = pil.size
+                except Exception as exc:
+                    _record_error(f"Could not read image '{image_path.name}': {exc}")
                     continue
 
                 payload: Dict[str, Any] = {
@@ -349,22 +392,29 @@ def import_deeplabcut_training_data(
                 if not multi_animal:
                     payload["instance_label"] = str(cfg.instance_label)
 
-                out_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+                atomic_write_json(out_json, payload, indent=2)
                 written += 1
-            except Exception:
-                errors += 1
+            except Exception as exc:
+                _record_error(f"Failed row {row_num} in {data_path.name}: {exc}")
                 continue
+
+    if dlc_config and dlc_config.bodyparts:
+        keypoints_seen = dedup_preserve_order(
+            [kp for kp in dlc_config.bodyparts if kp in keypoints_seen] + keypoints_seen
+        )
 
     schema_path = None
     if write_pose_schema and keypoints_seen:
-        insts: List[str] = []
-        if len(instances_seen) > 1:
-            insts = list(instances_seen)
+        insts: List[str] = list(instances_seen) if len(instances_seen) > 1 else []
+        config_edges = (
+            list(dlc_config.skeleton) if (dlc_config and dlc_config.skeleton) else None
+        )
         schema = build_pose_schema_from_keypoints(
             keypoints_seen,
             instances=insts,
             instance_separator=instance_separator,
             preset=pose_schema_preset,
+            edges=config_edges,
         )
         schema_out = pose_schema_out or (labeled_root / "pose_schema.json")
         schema_out = (
@@ -376,14 +426,20 @@ def import_deeplabcut_training_data(
     return {
         "source_dir": str(source_dir),
         "labeled_data_root": str(labeled_root),
-        "collected_csv_files": len(collected_csvs),
+        "collected_csv_files": len(collected_files),
         "instance_label": str(cfg.instance_label),
         "multi_instance": len(instances_seen) > 1,
         "keypoints": list(keypoints_seen),
         "instances": list(instances_seen),
         "pose_schema": schema_path,
+        "config_yaml": (
+            str(dlc_config.config_path)
+            if dlc_config and dlc_config.config_path
+            else None
+        ),
         "json_written": written,
         "json_skipped_existing": skipped_existing,
         "missing_images": missing_images,
         "errors": errors,
+        "error_details": error_details,
     }

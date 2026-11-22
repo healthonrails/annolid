@@ -81,6 +81,8 @@ _ROOT_COMMAND_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "collect-labels",
             "index-to-yolo",
             "import-deeplabcut-training-data",
+            "import-pose",
+            "export-pose",
             "dino-kpseg-embeddings",
             "dino-kpseg-audit",
             "dino-kpseg-split",
@@ -120,7 +122,7 @@ def _root_help_epilog() -> str:
         "  Tracking: track-qc, repair-tracks, gap-report, tracking-stats, kinematics, zone-analysis, segment-body-parts, body-part-ethogram\n"
         "  Behavior: time-budget, behavior-qc, behavior-irr, behavior-cohort, boris-import, boris-export, report\n"
         "  Agent: agent, agent-behavior, agent-status, agent-capabilities, agent-security-*, agent-cron-*\n"
-        "  Data: collect-labels, index-to-yolo, import-deeplabcut-training-data\n"
+        "  Data: collect-labels, index-to-yolo, import-deeplabcut-training-data, import-pose, export-pose\n"
         "  Utilities: citations-*, validate-agent-output, validate-agent-tools"
     )
 
@@ -1037,6 +1039,83 @@ def _cmd_import_deeplabcut_training_data(args: argparse.Namespace) -> int:
         summary["index_file"] = str(index_file)
         summary["index_summary"] = index_summary
 
+    print(json.dumps(summary, indent=2))
+    return 0
+
+
+def _cmd_import_pose(args: argparse.Namespace) -> int:
+    from annolid.datasets.labelme_collection import index_labelme_dataset
+    from annolid.services.export import import_pose_dataset
+
+    summary = import_pose_dataset(
+        args.source,
+        args.output_dir,
+        source_format=str(args.format or "auto"),
+        video_path=args.video,
+        pose_schema_path=args.pose_schema,
+        config_path=args.config,
+        save_frames=not bool(args.no_save_frames),
+        video_index=args.video_index,
+        min_likelihood=args.min_likelihood,
+        is_multi_animal=args.multi_animal,
+        default_instance=str(args.instance_label or "mouse"),
+        prefer_user_instances=not bool(args.keep_both_user_and_predicted),
+        include_predicted=not bool(args.user_only),
+        include_occluded=not bool(args.skip_occluded),
+        write_pose_schema=not bool(args.no_pose_schema),
+        pose_schema_preset=str(args.pose_schema_preset or "auto"),
+        filename_prefix=args.filename_prefix,
+        prefix_labels_with_instance=bool(args.prefix_instance_labels),
+        instance_separator=str(args.instance_separator or "_"),
+        overwrite=not bool(args.no_overwrite),
+        recursive=not bool(args.no_recursive),
+    )
+
+    if bool(args.write_index):
+        out_root = Path(
+            summary.get("output_dir")
+            or summary.get("labeled_data_root")
+            or args.output_dir
+        )
+        index_file = (
+            Path(args.index_file)
+            if args.index_file
+            else (out_root / "annolid_dataset.jsonl")
+        )
+        if not index_file.is_absolute():
+            index_file = out_root / index_file
+        index_summary = index_labelme_dataset(
+            sources=[out_root],
+            index_file=index_file,
+            recursive=True,
+            include_empty=False,
+            dedupe=True,
+        )
+        summary["index_file"] = str(index_file)
+        summary["index_summary"] = index_summary
+
+    print(json.dumps(summary, indent=2))
+    return 0
+
+
+def _cmd_export_pose(args: argparse.Namespace) -> int:
+    from annolid.services.export import export_pose_dataset
+
+    summary = export_pose_dataset(
+        args.source,
+        args.output,
+        target_format=str(args.format),
+        source_format=str(args.source_format or "auto"),
+        pose_schema=args.pose_schema,
+        video_path=args.video,
+        scorer=str(args.scorer or "annolid"),
+        multi_animal=args.multi_animal,
+        video_name=args.video_name,
+        copy_images=not bool(args.no_copy_images),
+        embed_images=bool(args.embed_images),
+        write_config_yaml=not bool(args.no_config_yaml),
+        recursive=bool(args.recursive),
+    )
     print(json.dumps(summary, indent=2))
     return 0
 
@@ -4262,6 +4341,211 @@ def _build_root_parser() -> argparse.ArgumentParser:
         help="Skip writing annolid_dataset.jsonl",
     )
     imp_p.set_defaults(write_index=True, _handler=_cmd_import_deeplabcut_training_data)
+
+    import_pose_p = sub.add_parser(
+        "import-pose",
+        help="Import DeepLabCut (CSV/H5/training), Lightning Pose, SLEAP (.slp/.pkg.slp/.analysis.h5), or COCO pose files into LabelMe JSON + PoseSchema.",
+    )
+    import_pose_p.add_argument(
+        "source",
+        help="Input pose file or folder (.csv, .h5, .slp, .pkg.slp, .json, video, or DLC project folder).",
+    )
+    import_pose_p.add_argument(
+        "--output-dir",
+        "-o",
+        default=None,
+        help="Output directory for LabelMe JSON files (defaults to <source_stem>_labelme/).",
+    )
+    import_pose_p.add_argument(
+        "--format",
+        default="auto",
+        help="Source format: auto, deeplabcut-csv, deeplabcut-h5, deeplabcut-training, lightning-pose, sleap, sleap-slp, sleap-h5, coco (default: auto).",
+    )
+    import_pose_p.add_argument(
+        "--video",
+        default=None,
+        help="Optional video file path for frame dimensions or frame extraction.",
+    )
+    import_pose_p.add_argument(
+        "--config",
+        default=None,
+        help="Optional DeepLabCut config.yaml for skeleton edges and bodypart ordering.",
+    )
+    import_pose_p.add_argument(
+        "--pose-schema",
+        default=None,
+        help="Optional existing PoseSchema JSON/YAML for canonical keypoint name mapping.",
+    )
+    import_pose_p.add_argument(
+        "--pose-schema-preset",
+        default="auto",
+        help="Skeleton edge inference preset when source has no explicit edges (auto, mouse, none; default: auto).",
+    )
+    import_pose_p.add_argument(
+        "--no-pose-schema",
+        action="store_true",
+        help="Skip writing pose_schema.json.",
+    )
+    import_pose_p.add_argument(
+        "--no-save-frames",
+        action="store_true",
+        help="Do not extract embedded SLEAP frames or video frames.",
+    )
+    import_pose_p.add_argument(
+        "--video-index",
+        type=int,
+        default=None,
+        help="Optional single video index to extract from a multi-video SLEAP .slp file.",
+    )
+    import_pose_p.add_argument(
+        "--min-likelihood",
+        type=float,
+        default=None,
+        help="Drop keypoints with likelihood/score below this threshold.",
+    )
+    import_pose_p.add_argument(
+        "--multi-animal",
+        action="store_true",
+        default=None,
+        help="Hint multi-animal layout (auto-detected by default).",
+    )
+    import_pose_p.add_argument(
+        "--instance-label",
+        default="mouse",
+        help="Default instance label for single-animal inputs (default: mouse).",
+    )
+    import_pose_p.add_argument(
+        "--instance-separator",
+        default="_",
+        help="Instance prefix separator (default: _).",
+    )
+    import_pose_p.add_argument(
+        "--prefix-instance-labels",
+        action="store_true",
+        help="Prefix point shape labels with '<instance><sep><keypoint>'.",
+    )
+    import_pose_p.add_argument(
+        "--filename-prefix",
+        default=None,
+        help="Optional filename prefix for output JSON files.",
+    )
+    import_pose_p.add_argument(
+        "--user-only",
+        action="store_true",
+        help="For SLEAP .slp files, import user-labeled instances only (skip predictions).",
+    )
+    import_pose_p.add_argument(
+        "--keep-both-user-and-predicted",
+        action="store_true",
+        help="For SLEAP .slp files, keep predicted instances alongside user labels on the same frame.",
+    )
+    import_pose_p.add_argument(
+        "--skip-occluded",
+        action="store_true",
+        help="Drop occluded keypoints (finite coords with visible=False).",
+    )
+    import_pose_p.add_argument(
+        "--no-overwrite",
+        action="store_true",
+        help="Do not overwrite existing LabelMe JSON files.",
+    )
+    import_pose_p.add_argument(
+        "--no-recursive",
+        action="store_true",
+        help="Do not recursively scan subfolders for DLC CollectedData files.",
+    )
+    import_pose_p.add_argument(
+        "--write-index",
+        action="store_true",
+        help="Also write an Annolid dataset JSONL index after importing.",
+    )
+    import_pose_p.add_argument(
+        "--index-file",
+        default=None,
+        help="Optional index file path when --write-index is set.",
+    )
+    import_pose_p.set_defaults(_handler=_cmd_import_pose)
+
+    export_pose_p = sub.add_parser(
+        "export-pose",
+        help="Export Annolid LabelMe / AnnotationStore / Tracking CSV / COCO pose data to DeepLabCut (CSV or training project), Lightning Pose, SimBA, or SLEAP (.slp / .analysis.h5).",
+    )
+    export_pose_p.add_argument(
+        "source",
+        help="Input LabelMe directory, single LabelMe JSON, Annolid *_tracking.csv, COCO JSON, or pose file.",
+    )
+    export_pose_p.add_argument(
+        "--output",
+        "-o",
+        required=True,
+        help="Output file path (.csv, .h5, .slp, .pkg.slp) or project directory (for deeplabcut-project).",
+    )
+    export_pose_p.add_argument(
+        "--format",
+        required=True,
+        choices=(
+            "deeplabcut-csv",
+            "deeplabcut-project",
+            "lightning-pose",
+            "simba",
+            "sleap-h5",
+            "sleap-slp",
+            "labelme",
+        ),
+        help="Target pose format.",
+    )
+    export_pose_p.add_argument(
+        "--source-format",
+        default="auto",
+        help="Input format hint (default: auto).",
+    )
+    export_pose_p.add_argument(
+        "--pose-schema",
+        default=None,
+        help="Optional PoseSchema JSON/YAML for keypoint ordering, edges, and symmetry pairs.",
+    )
+    export_pose_p.add_argument(
+        "--video",
+        default=None,
+        help="Optional source video path recorded in SLEAP metadata.",
+    )
+    export_pose_p.add_argument(
+        "--scorer",
+        default="annolid",
+        help="Scorer name for DeepLabCut / Lightning Pose exports (default: annolid).",
+    )
+    export_pose_p.add_argument(
+        "--multi-animal",
+        action="store_true",
+        default=None,
+        help="Force 4-level multi-animal DLC header (auto-detected by default).",
+    )
+    export_pose_p.add_argument(
+        "--video-name",
+        default=None,
+        help="Subfolder name under labeled-data/ for deeplabcut-project export.",
+    )
+    export_pose_p.add_argument(
+        "--no-copy-images",
+        action="store_true",
+        help="Do not copy sidecar images into labeled-data/ for deeplabcut-project export.",
+    )
+    export_pose_p.add_argument(
+        "--embed-images",
+        action="store_true",
+        help="Embed sidecar frame images inside SLEAP .pkg.slp export.",
+    )
+    export_pose_p.add_argument(
+        "--no-config-yaml",
+        action="store_true",
+        help="Skip writing config.yaml for deeplabcut-project export.",
+    )
+    export_pose_p.add_argument(
+        "--recursive",
+        action="store_true",
+        help="Recursively scan subdirectories for LabelMe JSON files.",
+    )
+    export_pose_p.set_defaults(_handler=_cmd_export_pose)
 
     tb_p = sub.add_parser(
         "dino-kpseg-embeddings",

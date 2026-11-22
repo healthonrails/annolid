@@ -650,15 +650,19 @@ class MenuController:
             },
             {
                 "name": "convert_sleap",
-                "text": w.tr("&Convert SLEAP to labelme"),
+                "text": w.tr("&SLEAP (.slp / .h5) Import && Export…"),
                 "slot": w.convert_sleap_h5_to_labelme,
-                "tip": w.tr("Convert SLEAP to labelme"),
+                "tip": w.tr(
+                    "Import SLEAP (.slp, .pkg.slp, .analysis.h5) or export Annolid pose annotations to SLEAP"
+                ),
             },
             {
                 "name": "convert_deeplabcut",
-                "text": w.tr("&Convert DeepLabCut CSV to labelme"),
+                "text": w.tr("&DeepLabCut / Lightning Pose Import && Export…"),
                 "slot": w.convert_deeplabcut_csv_to_labelme,
-                "tip": w.tr("Convert DeepLabCut CSV to labelme"),
+                "tip": w.tr(
+                    "Import DeepLabCut / Lightning Pose CSV/H5 or training data, or export Annolid annotations to DLC / SimBA format"
+                ),
             },
             {
                 "name": "convert_labelme2yolo_format",
