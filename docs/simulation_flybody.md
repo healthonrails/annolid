@@ -148,6 +148,8 @@ otherData.simulation
 The Annolid GUI can now open simulation/FlyBody NDJSON directly in the embedded
 Three.js viewer.
 
+![Annolid Three.js simulation viewer rendering the 3D FlyBody anatomical trajectory example with timeline controls](imgs/showcase/sim_flybody_3d.png)
+
 Menu path:
 
 ```text

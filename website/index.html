@@ -5,510 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta
     name="description"
-    content="Annolid is a practical platform for animal behavior annotation, segmentation, tracking, and behavior analysis."
+    content="Annolid is a practical platform for animal behavior annotation, segmentation, tracking, 3D simulation, and quantitative behavior analysis."
   />
   <title>Annolid | Research-Grade Animal Behavior AI</title>
-  <style>
-    :root {
-      --bg: #07111f;
-      --bg-soft: #0d1b30;
-      --panel: rgba(10, 20, 35, 0.8);
-      --line: rgba(163, 201, 255, 0.16);
-      --text: #f2f7ff;
-      --muted: #adc0db;
-      --accent: #61d0ff;
-      --warm: #f4c35c;
-      --success: #5fe4ba;
-      --shadow: 0 28px 90px rgba(0, 0, 0, 0.34);
-      --radius-xl: 28px;
-      --radius-lg: 20px;
-      --content: 1180px;
-    }
-
-    * {
-      box-sizing: border-box;
-    }
-
-    body {
-      margin: 0;
-      min-height: 100vh;
-      font-family: "Avenir Next", Avenir, "Segoe UI", sans-serif;
-      color: var(--text);
-      background:
-        radial-gradient(circle at top left, rgba(97, 208, 255, 0.18), transparent 28%),
-        radial-gradient(circle at 85% 12%, rgba(244, 195, 92, 0.14), transparent 18%),
-        linear-gradient(180deg, #08111d 0%, #0a1525 44%, #07111f 100%);
-    }
-
-    body::before {
-      content: "";
-      position: fixed;
-      inset: 0;
-      background-image:
-        linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
-      background-size: 46px 46px;
-      mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.6), transparent 88%);
-      pointer-events: none;
-    }
-
-    a {
-      color: inherit;
-      text-decoration: none;
-    }
-
-    img {
-      max-width: 100%;
-      display: block;
-    }
-
-    .shell {
-      width: min(calc(100% - 32px), var(--content));
-      margin: 0 auto;
-      position: relative;
-    }
-
-    .site-header {
-      position: sticky;
-      top: 0;
-      z-index: 10;
-      backdrop-filter: blur(16px);
-      background: rgba(7, 14, 26, 0.56);
-      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-    }
-
-    .nav {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 20px;
-      min-height: 78px;
-    }
-
-    .brand {
-      display: inline-flex;
-      align-items: center;
-      gap: 14px;
-    }
-
-    .brand-mark {
-      width: 54px;
-      height: 54px;
-      padding: 7px;
-      border-radius: 16px;
-      background: rgba(255, 255, 255, 0.05);
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      box-shadow: 0 12px 28px rgba(97, 208, 255, 0.12);
-    }
-
-    .brand-copy strong {
-      display: block;
-      font-size: 1rem;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-    }
-
-    .brand-copy span {
-      color: var(--muted);
-      font-size: 0.92rem;
-    }
-
-    .nav-links {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      flex-wrap: wrap;
-    }
-
-    .button {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      min-height: 44px;
-      padding: 0 16px;
-      border-radius: 999px;
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      color: var(--muted);
-      transition: transform 180ms ease, border-color 180ms ease, color 180ms ease, background 180ms ease;
-    }
-
-    .button:hover {
-      transform: translateY(-1px);
-      color: var(--text);
-      border-color: rgba(97, 208, 255, 0.38);
-      background: rgba(255, 255, 255, 0.04);
-    }
-
-    .button-primary {
-      color: #07111f;
-      background: linear-gradient(135deg, var(--warm), #ffe7a5);
-      border-color: transparent;
-      font-weight: 700;
-      box-shadow: 0 16px 32px rgba(244, 195, 92, 0.24);
-    }
-
-    .hero {
-      padding: 76px 0 42px;
-    }
-
-    .hero-grid,
-    .capability-grid,
-    .path-grid,
-    .surface-grid {
-      display: grid;
-      gap: 18px;
-    }
-
-    .hero-grid {
-      grid-template-columns: minmax(0, 1.06fr) minmax(320px, 0.94fr);
-      align-items: stretch;
-    }
-
-    .eyebrow {
-      display: inline-flex;
-      margin-bottom: 16px;
-      padding: 8px 14px;
-      border-radius: 999px;
-      background: rgba(97, 208, 255, 0.08);
-      border: 1px solid rgba(97, 208, 255, 0.16);
-      color: #d7ecff;
-      font-size: 0.8rem;
-      font-weight: 700;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
-    }
-
-    h1 {
-      margin: 0 0 18px;
-      font-size: clamp(3rem, 6vw, 5.8rem);
-      line-height: 0.92;
-      letter-spacing: -0.05em;
-      max-width: 11ch;
-    }
-
-    .hero-copy,
-    .section-heading p,
-    .card p,
-    .path p,
-    .surface p,
-    .cta-panel p {
-      color: var(--muted);
-      line-height: 1.75;
-    }
-
-    .hero-copy {
-      max-width: 60ch;
-      font-size: 1.05rem;
-      margin: 0 0 24px;
-    }
-
-    .hero-actions {
-      display: flex;
-      gap: 12px;
-      flex-wrap: wrap;
-      margin-bottom: 28px;
-    }
-
-    .metrics {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 14px;
-    }
-
-    .metric,
-    .hero-panel,
-    .card,
-    .path,
-    .surface,
-    .cta-panel {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      box-shadow: var(--shadow);
-      overflow: hidden;
-    }
-
-    .metric {
-      padding: 18px;
-      border-radius: 16px;
-    }
-
-    .metric strong {
-      display: block;
-      margin-bottom: 6px;
-      font-size: 1.1rem;
-    }
-
-    .metric span {
-      color: var(--muted);
-      font-size: 0.95rem;
-    }
-
-    .workflow-strip {
-      display: flex;
-      gap: 10px;
-      flex-wrap: wrap;
-      margin-top: 18px;
-    }
-
-    .workflow-strip span {
-      display: inline-flex;
-      align-items: center;
-      min-height: 38px;
-      padding: 0 14px;
-      border-radius: 999px;
-      background: rgba(255, 255, 255, 0.05);
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      color: #d7ecff;
-      font-size: 0.84rem;
-      font-weight: 700;
-    }
-
-    .hero-panel {
-      padding: 20px;
-      border-radius: var(--radius-xl);
-      background:
-        linear-gradient(180deg, rgba(18, 34, 56, 0.95), rgba(8, 18, 32, 0.9)),
-        var(--panel);
-    }
-
-    .hero-panel-head {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 12px;
-      margin-bottom: 14px;
-    }
-
-    .status {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      color: var(--success);
-      font-size: 0.84rem;
-      font-weight: 700;
-    }
-
-    .status::before {
-      content: "";
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: currentColor;
-      box-shadow: 0 0 0 7px rgba(95, 228, 186, 0.12);
-    }
-
-    .panel-signal {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 12px;
-      margin-bottom: 14px;
-    }
-
-    .panel-signal div {
-      padding: 14px;
-      border-radius: 16px;
-      background: rgba(255, 255, 255, 0.05);
-      border: 1px solid rgba(255, 255, 255, 0.08);
-    }
-
-    .panel-signal span {
-      display: block;
-      margin-bottom: 4px;
-      color: #9bc0e6;
-      font-size: 0.75rem;
-      font-weight: 700;
-      letter-spacing: 0.06em;
-      text-transform: uppercase;
-    }
-
-    .panel-screen img {
-      width: 100%;
-      border-radius: 16px;
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      box-shadow: 0 18px 40px rgba(0, 0, 0, 0.28);
-    }
-
-    main section {
-      padding: 28px 0;
-    }
-
-    .section-heading {
-      max-width: 56ch;
-      margin-bottom: 18px;
-    }
-
-    h2 {
-      margin: 0 0 10px;
-      font-size: clamp(1.9rem, 3vw, 3rem);
-      letter-spacing: -0.04em;
-      line-height: 1.02;
-    }
-
-    .capability-grid,
-    .path-grid,
-    .surface-grid,
-    .docs-grid {
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-    }
-
-    .card,
-    .path,
-    .surface,
-    .docs-link {
-      padding: 22px;
-      border-radius: 20px;
-    }
-
-    .docs-grid {
-      display: grid;
-      gap: 18px;
-    }
-
-    .docs-link {
-      display: block;
-      background: var(--panel);
-      border: 1px solid var(--line);
-      box-shadow: var(--shadow);
-      transition: transform 180ms ease, border-color 180ms ease, background 180ms ease;
-    }
-
-    .docs-link:hover {
-      transform: translateY(-2px);
-      border-color: rgba(97, 208, 255, 0.38);
-      background: rgba(14, 26, 44, 0.96);
-    }
-
-    .docs-link strong {
-      display: block;
-      margin-bottom: 8px;
-      font-size: 1.08rem;
-    }
-
-    .docs-link span {
-      color: var(--muted);
-      line-height: 1.7;
-    }
-
-    .kicker {
-      display: block;
-      margin-bottom: 10px;
-      color: #8fdcff;
-      font-size: 0.78rem;
-      font-weight: 700;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-    }
-
-    h3 {
-      margin: 0 0 10px;
-      font-size: 1.08rem;
-    }
-
-    .path ul,
-    .surface ul {
-      margin: 14px 0 0;
-      padding-left: 18px;
-      color: var(--muted);
-      line-height: 1.8;
-    }
-
-    .cta {
-      padding: 42px 0 82px;
-    }
-
-    .cta-panel {
-      padding: 28px;
-      border-radius: 28px;
-      background:
-        linear-gradient(135deg, rgba(97, 208, 255, 0.12), rgba(244, 195, 92, 0.12)),
-        rgba(12, 23, 40, 0.9);
-    }
-
-    .citations {
-      padding: 0 0 46px;
-    }
-
-    .citation-grid {
-      display: grid;
-      grid-template-columns: 1fr;
-      gap: 14px;
-    }
-
-    .citation-card {
-      padding: 20px;
-      border-radius: 18px;
-      background: var(--panel);
-      border: 1px solid var(--line);
-      box-shadow: var(--shadow);
-    }
-
-    .citation-card p {
-      margin: 0;
-      color: var(--muted);
-      line-height: 1.75;
-    }
-
-    .citation-card code {
-      display: block;
-      margin-top: 12px;
-      padding: 12px;
-      border-radius: 12px;
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      background: rgba(0, 0, 0, 0.2);
-      color: #d8ebff;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-      font-size: 0.83rem;
-      line-height: 1.55;
-      white-space: pre-wrap;
-    }
-
-    .footer {
-      padding: 0 0 32px;
-      color: var(--muted);
-      font-size: 0.94rem;
-    }
-
-    .footer-bar {
-      display: flex;
-      justify-content: space-between;
-      gap: 14px;
-      flex-wrap: wrap;
-      padding-top: 18px;
-      border-top: 1px solid rgba(255, 255, 255, 0.08);
-    }
-
-    @media (max-width: 980px) {
-      .hero-grid,
-      .metrics,
-      .capability-grid,
-      .path-grid,
-      .surface-grid,
-      .panel-signal {
-        grid-template-columns: 1fr;
-      }
-    }
-
-    @media (max-width: 720px) {
-      .nav {
-        padding: 14px 0;
-        align-items: flex-start;
-        flex-direction: column;
-      }
-
-      .nav-links,
-      .hero-actions {
-        width: 100%;
-      }
-
-      .button {
-        width: 100%;
-      }
-
-      .hero {
-        padding-top: 50px;
-      }
-    }
-  </style>
+  <link rel="icon" type="image/png" href="website-assets/images/annolid_logo.png" />
+  <link rel="stylesheet" href="website-assets/css/main.css" />
+  <script src="website-assets/js/main.js" defer></script>
 </head>
 <body>
   <header class="site-header">
@@ -523,10 +25,11 @@
         </span>
       </a>
       <nav class="nav-links" aria-label="Primary">
-        <a class="button" href="https://github.com/healthonrails/annolid">GitHub</a>
+        <a class="button" href="#showcase">Live Demo</a>
+        <a class="button" href="#simulations">3D Simulation</a>
         <a class="button" href="/portal/workflows/">Workflows</a>
-        <a class="button" href="/portal/reference/">Reference</a>
         <a class="button" href="/portal/tutorials/">Tutorials</a>
+        <a class="button" href="https://github.com/healthonrails/annolid">GitHub</a>
         <a class="button button-primary" href="/portal/installation/">Get Started</a>
       </nav>
     </div>
@@ -536,92 +39,441 @@
     <section class="hero">
       <div class="shell hero-grid">
         <div>
-          <span class="eyebrow">Research-grade vision tooling</span>
-          <h1>Animal behavior analysis with a cleaner operational surface.</h1>
+          <span class="eyebrow">Desktop GUI · Composable CLI · 3D Simulation</span>
+          <h1>Annotate, track, and quantify animal behavior in one workspace.</h1>
           <p class="hero-copy">
-            Annolid brings annotation, segmentation, tracking, pose estimation, and behavior
-            analysis into one practical environment for labs that need reproducible results
-            without a brittle pile of disconnected tools.
+            Annolid unifies instance segmentation, sparse keypoint tracking, ethogram scoring,
+            spatial zone analysis, Track QC, HTML5/SVG scientific reports, and interactive 3D
+            simulations so labs move from raw video to reproducible statistics without fragile glue code.
           </p>
           <div class="hero-actions">
             <a class="button button-primary" href="/portal/installation/">Install Annolid</a>
-            <a class="button" href="/portal/tutorials/">Open Tutorials</a>
+            <a class="button" href="/portal/tutorials/mouse083_resident_intruder_showcase/">Explore Real Walkthrough</a>
+            <a class="button" href="/portal/assets/reports/mouse083_report.html" target="_blank" rel="noopener">Open Live Report</a>
             <a class="button" href="/portal/">Browse Docs</a>
+          </div>
+          <div class="install-bar" aria-label="Quick install command">
+            <code id="quickInstallCmd">pip install "annolid[gui]" &amp;&amp; annolid</code>
+            <button class="copy-btn" type="button" data-copy-target="#quickInstallCmd">Copy</button>
           </div>
           <div class="metrics">
             <div class="metric">
               <strong>One workspace</strong>
-              <span>Annotation, segmentation, tracking, and review in one lab-ready flow.</span>
+              <span>Polygons, keypoints, behavior flags, timelines, and Annolid Bot in one desktop UI.</span>
             </div>
             <div class="metric">
-              <strong>Human-in-the-loop</strong>
-              <span>Correct predictions quickly instead of accepting opaque model output.</span>
+              <strong>Human-in-the-loop QC</strong>
+              <span>Flag occlusion gaps and velocity spikes automatically and jump straight to the frame.</span>
             </div>
             <div class="metric">
-              <strong>Research-ready outputs</strong>
-              <span>Keep results structured enough for reruns and downstream analysis.</span>
+              <strong>Real + simulated twins</strong>
+              <span>Pair lab recordings with offline 3D Two-Mouse, Fly-Brain, and FlyBody simulations.</span>
             </div>
           </div>
-          <div class="workflow-strip" aria-label="Workflow">
-            <span>Frames</span>
-            <span>Annotation</span>
-            <span>Segmentation</span>
-            <span>Tracking</span>
-            <span>Behavior Export</span>
+          <div class="workflow-strip" aria-label="Core pipeline stages">
+            <span>Video &amp; Seed Frame</span>
+            <span>Cutie / SAM3 / YOLO</span>
+            <span>DINOv3 Keypoints</span>
+            <span>Track QC &amp; Zones</span>
+            <span>Ethogram &amp; HTML5 Report</span>
           </div>
         </div>
 
-        <aside class="hero-panel" aria-label="Platform overview">
+        <aside class="hero-panel" aria-label="Live resident-intruder tracking preview">
           <div class="hero-panel-head">
-            <strong>Platform view</strong>
-            <span class="status">Active workflow</span>
+            <strong>Real Assay: mouse083_task1_annotator1</strong>
+            <span class="status">4,881 frames · 30 FPS</span>
           </div>
-          <p class="hero-copy">
-            Move from raw video to reviewed behavior outputs with a tighter path for labeling,
-            identity tracking, segmentation, and export.
+          <p class="hero-panel-copy">
+            Tethered black resident and white intruder tracked end-to-end with instance polygons,
+            14 anatomical keypoints, ethogram flags, spatial zones, and automated Track QC.
           </p>
+          <div class="panel-screen">
+            <img
+              src="website-assets/images/showcase/mouse083_tracking_demo.gif"
+              alt="Animated Annolid tracking demo on mouse083_task1_annotator1 showing resident and intruder polygons, 14 keypoints, trails, and live behavior state"
+              data-zoomable
+            />
+            <div class="panel-caption">
+              <span>2 instance masks + 14 keypoints + live ethogram state</span>
+              <a class="sim-link" href="/portal/tutorials/mouse083_resident_intruder_showcase/">Full walkthrough →</a>
+            </div>
+          </div>
           <div class="panel-signal">
             <div>
-              <span>Operational mode</span>
-              <strong>Human-in-the-loop review</strong>
+              <span>Tracking coverage</span>
+              <strong>100% / 99.9%</strong>
             </div>
             <div>
-              <span>Primary destination</span>
-              <strong>Lab-ready analysis outputs</strong>
+              <span>Social bouts</span>
+              <strong>25 inv · 7 mount</strong>
             </div>
-          </div>
-          <div class="panel-screen">
-            <img src="website-assets/images/annolid_gui.png" alt="Annolid GUI showing annotation and analysis tools" />
+            <div>
+              <span>Auto Track QC</span>
+              <strong>5-frame gap flagged</strong>
+            </div>
           </div>
         </aside>
       </div>
     </section>
 
+    <section id="showcase">
+      <div class="shell">
+        <div class="section-heading">
+          <span class="kicker">Real-World Feature Showcase</span>
+          <h2>Walk through every stage on real resident-intruder data</h2>
+          <p>
+            Every screenshot and chart below is generated directly from <code>mouse083_task1_annotator1.mp4</code>
+            and its Annolid tracking outputs using <code>annolid</code> and <code>annolid-run</code>. Click any visual to inspect full resolution.
+          </p>
+        </div>
+
+        <div class="showcase-tabs" role="tablist" aria-label="Feature showcase tabs">
+          <button class="showcase-tab" role="tab" id="tab-tracking" aria-selected="true" aria-controls="panel-tracking">Multi-Animal Tracking</button>
+          <button class="showcase-tab" role="tab" id="tab-gui" aria-selected="false" aria-controls="panel-gui" tabindex="-1">Desktop GUI</button>
+          <button class="showcase-tab" role="tab" id="tab-storyboard" aria-selected="false" aria-controls="panel-storyboard" tabindex="-1">Occlusion &amp; Track QC</button>
+          <button class="showcase-tab" role="tab" id="tab-ethogram" aria-selected="false" aria-controls="panel-ethogram" tabindex="-1">Ethogram &amp; Kinematics</button>
+          <button class="showcase-tab" role="tab" id="tab-zones" aria-selected="false" aria-controls="panel-zones" tabindex="-1">Spatial Zones</button>
+          <button class="showcase-tab" role="tab" id="tab-report" aria-selected="false" aria-controls="panel-report" tabindex="-1">HTML5/SVG Reports</button>
+          <button class="showcase-tab" role="tab" id="tab-bodyparts" aria-selected="false" aria-controls="panel-bodyparts" tabindex="-1">Body Parts</button>
+        </div>
+
+        <div class="showcase-stage">
+          <article class="showcase-panel" role="tabpanel" id="panel-tracking" aria-labelledby="tab-tracking">
+            <div class="showcase-media">
+              <img
+                src="website-assets/images/showcase/mouse083_tracking_hero.png"
+                alt="mouse083_task1_annotator1 frame 260 showing resident and intruder instance polygons, 14 keypoints, motion trails, and investigation label"
+                data-zoomable
+              />
+            </div>
+            <div class="showcase-details">
+              <span class="kicker">Instance Masks + Sparse Keypoints</span>
+              <h3>Identity-preserving masks and 14 anatomical landmarks</h3>
+              <p>
+                Track whole-animal instance polygons with Cutie, SAM3, or YOLO, and pair them with
+                7 named landmarks per animal using DINOv3, TAPNext, or CoWTracker—without training a custom pose model first.
+              </p>
+              <ul class="showcase-bullets">
+                <li><strong>78,091</strong> tracked shape records across <strong>4,881</strong> frames (30 FPS)</li>
+                <li>Mask-constrained keypoint association eliminates cross-animal label swaps</li>
+                <li>LabelMe-compatible JSON + RLE CSV contracts stay editable at every frame</li>
+              </ul>
+              <div class="showcase-cmd">
+                <code id="cmd-tracking">annolid-run track-qc mouse083_task1_annotator1_tracked.csv --expected-instances 2 --fps 30</code>
+                <button class="copy-btn" type="button" data-copy-target="#cmd-tracking">Copy</button>
+              </div>
+              <div class="showcase-links">
+                <a class="button button-primary button-subtle" href="/portal/tutorials/mouse083_resident_intruder_showcase/">Read Full Walkthrough</a>
+                <a class="button button-subtle" href="/portal/dinov3_keypoint_tracking/">DINOv3 Keypoints</a>
+              </div>
+            </div>
+          </article>
+
+          <article class="showcase-panel" role="tabpanel" id="panel-gui" aria-labelledby="tab-gui" hidden>
+            <div class="showcase-media">
+              <img
+                src="website-assets/images/showcase/mouse083_gui_workspace.png"
+                alt="Annolid desktop GUI showing mouse083_task1_annotator1 with polygons, keypoints, behavior overlay pill, Flags dock, and Label Instances"
+                data-zoomable
+              />
+            </div>
+            <div class="showcase-details">
+              <span class="kicker">Interactive Desktop Workspace</span>
+              <h3>Label, track, score behaviors, and inspect in one UI</h3>
+              <p>
+                Open videos directly without pre-extracting frames. Review masks and keypoints alongside
+                synchronized Flags, Label Instances, Behavior Log, Timeline playhead scrubbing, and Annolid Bot.
+              </p>
+              <ul class="showcase-bullets">
+                <li>Viewport-pinned behavior overlay pills (<code>• investigation</code>) and shape locking</li>
+                <li>BORIS-compatible live keyboard coding, exclusion matrix, and secondary camera sync</li>
+                <li>Built-in Annolid Bot dock for multimodal guidance and typed <code>annolid-run</code> automation</li>
+              </ul>
+              <div class="showcase-cmd">
+                <code id="cmd-gui">annolid mouse083_task1_annotator1.mp4</code>
+                <button class="copy-btn" type="button" data-copy-target="#cmd-gui">Copy</button>
+              </div>
+              <div class="showcase-links">
+                <a class="button button-primary button-subtle" href="/portal/getting_started/">20-Minute Quickstart</a>
+                <a class="button button-subtle" href="/portal/workflows/">Workflow Guide</a>
+              </div>
+            </div>
+          </article>
+
+          <article class="showcase-panel" role="tabpanel" id="panel-storyboard" aria-labelledby="tab-storyboard" hidden>
+            <div class="showcase-media">
+              <img
+                src="website-assets/images/showcase/mouse083_behavior_storyboard.png"
+                alt="Four-panel storyboard of mouse083 showing seed frame, social investigation, mounting bout, and Track QC occlusion gap alert at frame 3362"
+                data-zoomable
+              />
+            </div>
+            <div class="showcase-details">
+              <span class="kicker">Human-in-the-Loop Track QC</span>
+              <h3>Surface occlusions and swaps before computing statistics</h3>
+              <p>
+                During high-overlap mounting bouts, single-pass trackers can briefly drop an occluded animal.
+                Annolid's Track QC automatically ranks the highest-risk windows so researchers repair only the frames that matter.
+              </p>
+              <ul class="showcase-bullets">
+                <li>Flags the exact 5-frame <code>intruder</code> occlusion gap (<code>frames 3361–3366</code>) during mounting</li>
+                <li>Prioritized review queue scores velocity spikes, area jumps, and missing instances</li>
+                <li>Double-click any alert in Analysis Studio to jump the canvas straight to that frame</li>
+              </ul>
+              <div class="showcase-cmd">
+                <code id="cmd-qc">annolid-run repair-tracks ./mouse083_task1_annotator1/ --expected-instances 2</code>
+                <button class="copy-btn" type="button" data-copy-target="#cmd-qc">Copy</button>
+              </div>
+              <div class="showcase-links">
+                <a class="button button-primary button-subtle" href="/portal/identity_governor/">Identity Repair &amp; QC</a>
+                <a class="button button-subtle" href="/portal/sam3/">SAM3 Correction</a>
+              </div>
+            </div>
+          </article>
+
+          <article class="showcase-panel" role="tabpanel" id="panel-ethogram" aria-labelledby="tab-ethogram" hidden>
+            <div class="showcase-media">
+              <img
+                src="website-assets/images/showcase/mouse083_ethogram_kinematics.png"
+                alt="Ethogram timeline raster, inter-animal centroid distance curve, arena thigmotaxis trajectories, and behavior time budget for mouse083"
+                data-zoomable
+              />
+            </div>
+            <div class="showcase-details">
+              <span class="kicker">Ethograms, Kinematics &amp; Social Proximity</span>
+              <h3>Align behavioral bouts with physical trajectories</h3>
+              <p>
+                Combine frame-level behavior flags or BORIS event logs with calibrated speed, freezing detection,
+                inter-animal distance, and 54 automatically detected anatomical body-part contact bouts.
+              </p>
+              <ul class="showcase-bullets">
+                <li><strong>investigation</strong>: 25 bouts (39.1 s · 24.0%) · <strong>mount</strong>: 7 bouts (19.9 s · 12.2%)</li>
+                <li>Inter-mouse proximity spans <code>15.7 px</code> (contact) to <code>694.8 px</code> with clear thigmotaxis</li>
+                <li>Includes Inter-Rater Reliability (Cohen's &amp; Fleiss' kappa) and cohort hypothesis testing</li>
+              </ul>
+              <div class="showcase-cmd">
+                <code id="cmd-kin">annolid-run kinematics mouse083_task1_annotator1_tracked.csv --fps 30 --output-dir ./kin_out</code>
+                <button class="copy-btn" type="button" data-copy-target="#cmd-kin">Copy</button>
+              </div>
+              <div class="showcase-links">
+                <a class="button button-primary button-subtle" href="/portal/tutorials/behavior_timeline_flags_bot/">Behavior Scoring Guide</a>
+                <a class="button button-subtle" href="/portal/reporting_and_statistics/">Statistics &amp; IRR</a>
+              </div>
+            </div>
+          </article>
+
+          <article class="showcase-panel" role="tabpanel" id="panel-zones" aria-labelledby="tab-zones" hidden>
+            <div class="showcase-media">
+              <img
+                src="website-assets/images/showcase/mouse083_zone_analysis.png"
+                alt="Spatial zone polygons left_nest_zone, center_arena, and right_port_zone overlaid on mouse083 alongside occupancy duration and entry count bars"
+                data-zoomable
+              />
+            </div>
+            <div class="showcase-details">
+              <span class="kicker">Spatial Zone &amp; Place-Preference Analysis</span>
+              <h3>Draw reusable zones once and score across cohorts</h3>
+              <p>
+                Author polygon, rectangle, or circle zones in <strong>Video Tools → Zones</strong> with explicit
+                chamber/phase metadata, then export occupancy, entry counts, first-entry latency, and social proximity metrics.
+              </p>
+              <ul class="showcase-bullets">
+                <li><code>right_port_zone</code>: resident 72.5 s (15×), intruder 66.4 s (12×)</li>
+                <li><code>left_nest_zone</code>: resident 63.4 s (12×), intruder 61.2 s (13×)</li>
+                <li>Supports 3×3 presets, neutral transit connectors, and zone-occupancy audit policies</li>
+              </ul>
+              <div class="showcase-cmd">
+                <code id="cmd-zone">annolid-run zone-analysis mouse083_task1_annotator1_tracked.csv --zone-file mouse083_zones.json --fps 30</code>
+                <button class="copy-btn" type="button" data-copy-target="#cmd-zone">Copy</button>
+              </div>
+              <div class="showcase-links">
+                <a class="button button-primary button-subtle" href="/portal/zone_analysis/">Zone Analysis Reference</a>
+                <a class="button button-subtle" href="/portal/tutorials/draw_zones_quickstart/">Draw Zones Quickstart</a>
+              </div>
+            </div>
+          </article>
+
+          <article class="showcase-panel" role="tabpanel" id="panel-report" aria-labelledby="tab-report" hidden>
+            <div class="showcase-media">
+              <img
+                src="website-assets/images/showcase/mouse083_report_preview.png"
+                alt="Self-contained HTML5 and inline SVG unified scientific report generated by annolid-run report on mouse083"
+                data-zoomable
+              />
+            </div>
+            <div class="showcase-details">
+              <span class="kicker">Self-Contained HTML5 + Inline SVG</span>
+              <h3>Share publication-ready analysis reports in one click</h3>
+              <p>
+                Run <strong>Analysis → Analysis &amp; Reporting Studio</strong> or <code>annolid-run report</code> to bundle
+                Track QC, Kinematics, Spatial Zones, Body-Part Ethograms, and Time Budgets into a single offline HTML5 file.
+              </p>
+              <ul class="showcase-bullets">
+                <li>Deterministic inline SVG trajectories, activity budgets, zone bars, and ethogram rasters</li>
+                <li>Simultaneously emits <code>analysis_report.html</code>, <code>.md</code>, and versioned <code>.json</code></li>
+                <li>Zero external CDN dependencies—email or archive alongside raw video data</li>
+              </ul>
+              <div class="showcase-cmd">
+                <code id="cmd-report">annolid-run report mouse083_task1_annotator1_tracked.csv --events-csv events.csv --zone-file zones.json --fps 30</code>
+                <button class="copy-btn" type="button" data-copy-target="#cmd-report">Copy</button>
+              </div>
+              <div class="showcase-links">
+                <a class="button button-primary button-subtle" href="/portal/assets/reports/mouse083_report.html" target="_blank" rel="noopener">Open Live HTML5 Report</a>
+                <a class="button button-subtle" href="/portal/reporting_and_statistics/">Analysis Studio Docs</a>
+              </div>
+            </div>
+          </article>
+
+          <article class="showcase-panel" role="tabpanel" id="panel-bodyparts" aria-labelledby="tab-bodyparts" hidden>
+            <div class="showcase-media">
+              <img
+                src="website-assets/images/showcase/sim_body_part_segmentation.png"
+                alt="Side-by-side 3D ground truth vs Annolid predicted head, torso, and tail body-part segmentation on resident-intruder mice"
+                data-zoomable
+              />
+            </div>
+            <div class="showcase-details">
+              <span class="kicker">Hierarchical Instance Body-Part Segmentation</span>
+              <h3>Sub-divide tracked animals into anatomical regions with zero bleed</h3>
+              <p>
+                Decompose already-tracked whole-animal polygons into non-overlapping <code>head</code>, <code>torso</code>,
+                and <code>tail</code> masks strictly inside each parent ROI—even during close huddling and coiled postures.
+              </p>
+              <ul class="showcase-bullets">
+                <li>Supports <code>seeded</code>, <code>keypoint_guided</code>, and zero-supervision <code>unsupervised</code> modes</li>
+                <li>CPU-fast Lab/gradient backend (~1–3 ms/crop) plus optional DINOv3 hybrid features</li>
+                <li>Feeds directly into <code>annolid-run body-part-ethogram</code> for directed contact scoring</li>
+              </ul>
+              <div class="showcase-cmd">
+                <code id="cmd-bodyparts">annolid-run segment-body-parts social_assay.mp4 --mode auto --backbone fast --export-csv</code>
+                <button class="copy-btn" type="button" data-copy-target="#cmd-bodyparts">Copy</button>
+              </div>
+              <div class="showcase-links">
+                <a class="button button-primary button-subtle" href="/portal/body_part_segmentation/">Body-Part Segmentation Docs</a>
+                <a class="button button-subtle" href="/portal/reporting_and_statistics/">Body-Part Ethograms</a>
+              </div>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="simulations">
+      <div class="shell">
+        <div class="section-heading">
+          <span class="kicker">Offline 3D Simulation &amp; NeuroAI</span>
+          <h2>From real recordings to 3D digital twins and connectomes</h2>
+          <p>
+            Test pose trackers, body-part segmenters, and sensorimotor neural circuits inside Annolid's bundled
+            offline Three.js viewers—no external CDN or cloud GPU required.
+          </p>
+        </div>
+
+        <div class="sim-grid">
+          <article class="sim-card">
+            <div class="sim-thumb">
+              <img
+                src="website-assets/images/showcase/sim_two_mice_arena.png"
+                alt="Annolid Two-Mouse 3D Three.js simulation showing procedural C57BL/6 and BALB/c mice on aspen bedding"
+                data-zoomable
+              />
+            </div>
+            <div class="sim-body">
+              <span class="kicker">Two-Mouse 3D Open Field</span>
+              <h3>Procedural C57BL/6 &amp; BALB/c Arena</h3>
+              <p>
+                Layered CPG locomotion (walk, trot, half-bound gallop), social investigation, rearing,
+                grooming, and camera presets running 100% offline in Three.js.
+              </p>
+              <a class="sim-link" href="/portal/two_mice_simulation/">Explore Two-Mouse 3D Simulation →</a>
+            </div>
+          </article>
+
+          <article class="sim-card">
+            <div class="sim-thumb">
+              <img
+                src="website-assets/images/showcase/sim_two_mice_pose.png"
+                alt="Overhead view of Two-Mouse 3D simulation with 13-keypoint anatomical pose skeleton overlay"
+                data-zoomable
+              />
+            </div>
+            <div class="sim-body">
+              <span class="kicker">Synthetic Pose &amp; Ground Truth</span>
+              <h3>Reproducible 13-Keypoint Benchmarks</h3>
+              <p>
+                Export seeded COCO keypoint datasets with exact foot-contact and occlusion metadata to
+                benchmark tracking models before annotating new lab cohorts.
+              </p>
+              <a class="sim-link" href="/portal/two_mice_simulation/#reproducible-pose-capture">Generate Seeded Pose Datasets →</a>
+            </div>
+          </article>
+
+          <article class="sim-card">
+            <div class="sim-thumb">
+              <img
+                src="website-assets/images/showcase/sim_fly_brain_connectome.png"
+                alt="Fly-Brain Connectome mode in Three.js showing live 264-neuron Drosophila LIF spike raster, descending neuron bars, dopamine plasticity, and Chrimson optogenetics driving the 3D mouse rig"
+                data-zoomable
+              />
+            </div>
+            <div class="sim-body">
+              <span class="kicker">NeuroAI · Connectome-in-the-Loop</span>
+              <h3>Fly-Brain LIF Spiking Connectome Mode</h3>
+              <p>
+                A 264-neuron biophysical <em>Drosophila</em> LIF connectome (FlyWire / male-cns:v1.0) with live spike rasters,
+                KC→MBON dopamine plasticity, and one-click Chrimson optogenetics driving the 3D mouse rig.
+              </p>
+              <a class="sim-link" href="/portal/two_mice_simulation/#fly-brain-connectome-mode-fly_brain1">Launch Fly-Brain Mode (?fly_brain=1) →</a>
+            </div>
+          </article>
+
+          <article class="sim-card">
+            <div class="sim-thumb">
+              <img
+                src="website-assets/images/showcase/sim_flybody_3d.png"
+                alt="Annolid Three.js 3D FlyBody viewer displaying the articulated Drosophila mesh, floor grid, FlyBody behavior control strip, and timeline scrubber"
+                data-zoomable
+              />
+            </div>
+            <div class="sim-body">
+              <span class="kicker">FlyBody 3D &amp; Connectome Rollouts</span>
+              <h3>Biomechanical Fruit-Fly Simulation Viewer</h3>
+              <p>
+                Lift 2D or depth-assisted Annolid pose tracks into 3D FlyBody site targets, play back
+                articulated meshes, and run connectome-driven walking, grooming, and flight rollouts.
+              </p>
+              <a class="sim-link" href="/portal/simulation_flybody/">Explore FlyBody 3D Docs →</a>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
     <section>
       <div class="shell">
         <div class="section-heading">
-          <h2>Built for the full analysis loop</h2>
+          <span class="kicker">Interoperability &amp; Ecosystem</span>
+          <h2>Built to work with the tools your lab already uses</h2>
           <p>
-            The landing page should communicate the same thing as the software: operational
-            clarity, modern computer vision workflows, and tools built for real experiments
-            instead of isolated benchmark demos.
+            Keep your datasets portable across annotation, pose estimation, behavioral coding, and downstream statistics.
           </p>
         </div>
         <div class="capability-grid">
           <article class="card">
-            <span class="kicker">Annotation</span>
-            <h3>Precise labels without workflow drag</h3>
-            <p>Create and refine instance labels, masks, and keypoints with tooling designed for iterative review instead of one-pass labeling.</p>
+            <span class="kicker">Pose &amp; Model Interop</span>
+            <h3>DeepLabCut, SLEAP, YOLO &amp; COCO</h3>
+            <p>Import and export DeepLabCut, SLEAP, Lightning Pose, SimBA, YOLO/YOLOE, and LabelMe/COCO formats with round-trip safety.</p>
           </article>
           <article class="card">
-            <span class="kicker">Segmentation</span>
-            <h3>Practical model workflows</h3>
-            <p>Run segmentation pipelines that support research iteration while keeping outputs and review state understandable.</p>
+            <span class="kicker">Ethology &amp; Physiology</span>
+            <h3>BORIS Live Coding &amp; Sensor Sync</h3>
+            <p>Import/export <code>.boris</code> projects, synchronize multi-camera audio/video, and overlay external photometry or TTL traces.</p>
           </article>
           <article class="card">
-            <span class="kicker">Tracking</span>
-            <h3>Identity continuity in difficult scenes</h3>
-            <p>Handle overlap, motion, and interaction-heavy videos with workflows that prioritize correction, visibility, and reproducibility.</p>
+            <span class="kicker">Agent Automation</span>
+            <h3>Annolid Bot, MCP &amp; Typed CLI</h3>
+            <p>Run multimodal assistance, <code>annolid-run</code> workflows, MCP tools, and reproducible behavior-agent manifests locally.</p>
           </article>
         </div>
       </div>
@@ -630,86 +482,43 @@
     <section>
       <div class="shell">
         <div class="section-heading">
-          <h2>Choose the path that matches your team</h2>
+          <span class="kicker">Documentation Hub</span>
+          <h2>Go straight to the guide you need</h2>
           <p>
-            Annolid is useful whether you are curating training data, validating model output,
-            or building a repeatable analysis system for a lab or shared facility.
-          </p>
-        </div>
-        <div class="path-grid">
-          <article class="path">
-            <span class="kicker">For labeling teams</span>
-            <h3>Curate high-quality training data</h3>
-            <p>Build clean annotation sets for detection, segmentation, pose, and behavior workflows.</p>
-            <ul>
-              <li>Frame extraction and review</li>
-              <li>Interactive correction loops</li>
-              <li>Export-friendly shape semantics</li>
-            </ul>
-          </article>
-          <article class="path">
-            <span class="kicker">For model operators</span>
-            <h3>Validate pipelines against real experiments</h3>
-            <p>Test inference and post-processing in the same environment where review and comparison actually happen.</p>
-            <ul>
-              <li>Segmentation and tracking evaluation</li>
-              <li>Video batch workflows</li>
-              <li>Human-in-the-loop quality control</li>
-            </ul>
-          </article>
-          <article class="path">
-            <span class="kicker">For labs</span>
-            <h3>Turn ad hoc analysis into a system</h3>
-            <p>Create a repeatable path from acquisition to export so collaborators can reproduce results instead of rebuilding them.</p>
-            <ul>
-              <li>Operational docs and tutorials</li>
-              <li>Structured outputs for downstream analysis</li>
-              <li>Research-ready deployment surface</li>
-            </ul>
-          </article>
-        </div>
-      </div>
-    </section>
-
-    <section>
-      <div class="shell">
-        <div class="section-heading">
-          <h2>Go straight to the docs surface you need</h2>
-          <p>
-            The landing page stays at <code>annolid.com</code>. Product documentation lives under
-            the docs portal and book paths so users can move directly into the right surface.
+            The canonical documentation portal lives under <code>/portal/</code> alongside worked tutorials,
+            model references, and the notebook-oriented Jupyter Book under <code>/book/</code>.
           </p>
         </div>
         <div class="docs-grid">
-          <a class="docs-link" href="/portal/">
-            <span class="kicker">Docs portal</span>
-            <strong>Open the documentation hub</strong>
-            <span>Start from the canonical MkDocs entry point for installation, workflows, deployment, and reference material.</span>
+          <a class="docs-link" href="/portal/tutorials/mouse083_resident_intruder_showcase/">
+            <span class="kicker">Featured Example</span>
+            <strong>Resident-Intruder Walkthrough</strong>
+            <span>Follow the complete <code>mouse083_task1_annotator1</code> pipeline from seed frame to HTML5 report.</span>
           </a>
           <a class="docs-link" href="/portal/installation/">
             <span class="kicker">Installation</span>
-            <strong>Get Annolid running</strong>
-            <span>Jump directly to platform-specific setup guidance without going through the full docs index first.</span>
+            <strong>Install Annolid in Minutes</strong>
+            <span>One-line installers, <code>uv</code> virtual environments, and platform-specific GPU setup.</span>
           </a>
-          <a class="docs-link" href="/portal/tutorials/">
-            <span class="kicker">Tutorials</span>
-            <strong>Follow practical walkthroughs</strong>
-            <span>Open curated tutorials for real labeling, segmentation, tracking, and behavior analysis workflows.</span>
+          <a class="docs-link" href="/portal/workflows/">
+            <span class="kicker">Workflows</span>
+            <strong>Core GUI, CLI &amp; Bot Flows</strong>
+            <span>Standard video tracking, text-prompt segmentation, sparse keypoints, and identity repair.</span>
           </a>
-          <a class="docs-link" href="/portal/reference/">
-            <span class="kicker">Reference</span>
-            <strong>Find operational details fast</strong>
-            <span>Use the reference surface for deployment notes, technical links, and high-signal operational guidance.</span>
+          <a class="docs-link" href="/portal/reporting_and_statistics/">
+            <span class="kicker">Analysis Studio</span>
+            <strong>Kinematics, IRR &amp; Cohort Stats</strong>
+            <span>Unified HTML5/SVG reports, planar homography calibration, Cohen's/Fleiss' kappa, and FDR tests.</span>
+          </a>
+          <a class="docs-link" href="/portal/two_mice_simulation/">
+            <span class="kicker">3D Simulation</span>
+            <strong>Two-Mouse &amp; Fly-Brain Connectome</strong>
+            <span>Offline Three.js open-field digital twins, pose capture, and biophysical LIF spiking circuits.</span>
           </a>
           <a class="docs-link" href="/portal/deployment/">
-            <span class="kicker">Deployment</span>
-            <strong>Understand the publication model</strong>
-            <span>Inspect how landing page, docs, redirects, and external site sync are deployed to the public site.</span>
-          </a>
-          <a class="docs-link" href="/book/">
-            <span class="kicker">Book</span>
-            <strong>Open the Jupyter Book</strong>
-            <span>Go directly to the notebook-oriented Annolid book that is published separately under <code>/book/</code>.</span>
+            <span class="kicker">Maintainers</span>
+            <strong>Docs &amp; Website Authoring Flow</strong>
+            <span>Preview landing page + portal locally with live watch mode, strict checks, and showcase generators.</span>
           </a>
         </div>
       </div>
@@ -719,16 +528,17 @@
       <div class="shell">
         <div class="cta-panel">
           <div class="section-heading">
-            <h2>Use the landing page as a front door, not a detour.</h2>
+            <h2>Ready to run Annolid on your own recordings?</h2>
             <p>
-              Start with installation if you want to run Annolid now, or go directly to the
-              docs portal if you already know the workflow you need.
+              Install locally in minutes, follow the 20-minute Quickstart, or inspect the live HTML5/SVG
+              report generated from <code>mouse083_task1_annotator1</code>.
             </p>
           </div>
           <div class="hero-actions">
             <a class="button button-primary" href="/portal/installation/">Install Annolid</a>
-            <a class="button" href="/portal/">Open Docs Portal</a>
-            <a class="button" href="/book/">Open Book</a>
+            <a class="button" href="/portal/getting_started/">20-Minute Quickstart</a>
+            <a class="button" href="/portal/assets/reports/mouse083_report.html" target="_blank" rel="noopener">View Live Example Report</a>
+            <a class="button" href="/book/">Open Jupyter Book</a>
           </div>
         </div>
       </div>
@@ -738,14 +548,17 @@
       <div class="shell">
         <div class="section-heading">
           <h2>Cite Annolid</h2>
-          <p>If Annolid supports your work, please cite one or more of the references below.</p>
+          <p>If Annolid supports your research, please cite one or more of the references below.</p>
         </div>
         <div class="citation-grid">
           <article class="citation-card">
-            <p>
-              Yang C, Cleland TA. <a href="https://arxiv.org/abs/2403.18690">Annolid: Annotate, Segment, and Track Anything You Need</a>. arXiv:2403.18690 (2024).
-            </p>
-            <code>@misc{yang2024annolid,
+            <div class="citation-head">
+              <p>
+                Yang C, Cleland TA. <a href="https://arxiv.org/abs/2403.18690">Annolid: Annotate, Segment, and Track Anything You Need</a>. arXiv:2403.18690 (2024).
+              </p>
+              <button class="copy-btn" type="button" data-copy-target="#bib-2024">Copy BibTeX</button>
+            </div>
+            <code id="bib-2024">@misc{yang2024annolid,
   title={Annolid: Annotate, Segment, and Track Anything You Need},
   author={Chen Yang and Thomas A. Cleland},
   year={2024},
@@ -755,10 +568,13 @@
 }</code>
           </article>
           <article class="citation-card">
-            <p>
-              Yang C, Forest J, Einhorn M, Cleland TA. <a href="https://arxiv.org/abs/2312.07723">Automated Behavioral Analysis Using Instance Segmentation</a>. arXiv:2312.07723 (2023).
-            </p>
-            <code>@article{yang2023automated,
+            <div class="citation-head">
+              <p>
+                Yang C, Forest J, Einhorn M, Cleland TA. <a href="https://arxiv.org/abs/2312.07723">Automated Behavioral Analysis Using Instance Segmentation</a>. arXiv:2312.07723 (2023).
+              </p>
+              <button class="copy-btn" type="button" data-copy-target="#bib-2023">Copy BibTeX</button>
+            </div>
+            <code id="bib-2023">@article{yang2023automated,
   title={Automated Behavioral Analysis Using Instance Segmentation},
   author={Yang, Chen and Forest, Jeremy and Einhorn, Matthew and Cleland, Thomas A},
   journal={arXiv preprint arXiv:2312.07723},
@@ -766,10 +582,13 @@
 }</code>
           </article>
           <article class="citation-card">
-            <p>
-              Yang C, Forest J, Einhorn M, Cleland T. <a href="https://github.com/healthonrails/annolid">Annolid: an instance segmentation-based multiple animal tracking and behavior analysis package</a> (2020).
-            </p>
-            <code>@misc{yang2020annolid,
+            <div class="citation-head">
+              <p>
+                Yang C, Forest J, Einhorn M, Cleland T. <a href="https://github.com/healthonrails/annolid">Annolid: an instance segmentation-based multiple animal tracking and behavior analysis package</a> (2020).
+              </p>
+              <button class="copy-btn" type="button" data-copy-target="#bib-2020">Copy BibTeX</button>
+            </div>
+            <code id="bib-2020">@misc{yang2020annolid,
   author = {Chen Yang and Jeremy Forest and Matthew Einhorn and Thomas Cleland},
   title = {Annolid: an instance segmentation-based multiple animal tracking and behavior analysis package},
   howpublished = {\url{https://github.com/healthonrails/annolid}},
@@ -783,9 +602,17 @@
 
   <footer class="footer">
     <div class="shell footer-bar">
-      <span>Annolid for annotation, segmentation, tracking, and behavior analysis. Copyright 2026.</span>
-      <span><a href="https://www.cplab.net/">CPLab</a> | <a href="https://github.com/healthonrails/annolid">GitHub</a> | <a href="/portal/">Docs portal</a> | <a href="#citations">Citations</a></span>
+      <span>Annolid for annotation, segmentation, tracking, simulation, and behavior analysis. Copyright 2026.</span>
+      <span><a href="https://www.cplab.net/">CPLab</a> | <a href="https://github.com/healthonrails/annolid">GitHub</a> | <a href="/portal/">Docs portal</a> | <a href="/book/">Book</a> | <a href="#citations">Citations</a></span>
     </div>
   </footer>
+
+  <div class="lightbox" id="annolidLightbox" hidden role="dialog" aria-modal="true" aria-label="Full-resolution image preview">
+    <button class="lightbox-close" id="annolidLightboxClose" type="button" aria-label="Close preview">&times;</button>
+    <div class="lightbox-inner">
+      <img id="annolidLightboxImg" src="" alt="" />
+      <p class="lightbox-caption" id="annolidLightboxCaption"></p>
+    </div>
+  </div>
 </body>
 </html>

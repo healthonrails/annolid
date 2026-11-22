@@ -18,6 +18,8 @@ social investigation, rearing, and grooming. This is a procedural visualization,
 not a validated animal biomechanics model. Heart rate and respiration in the HUD
 are illustrative estimates.
 
+![Two-Mouse Three.js 3D simulation showing procedural C57BL/6 and BALB/c mice on an aspen-bedded open-field floor](imgs/showcase/sim_two_mice_arena.png)
+
 ## Viewing and playback
 
 Drag to orbit, scroll to zoom, and use **Simulation Controls → Camera** for an
@@ -52,6 +54,8 @@ local assets (`annolid/gui/assets/threejs/`), so it works offline without extern
 access. A loading error is displayed if WebGL initialization fails.
 
 ## Reproducible pose capture
+
+![Top-down view of the Two-Mouse Three.js simulation with the 13-keypoint pose skeleton overlay enabled](imgs/showcase/sim_two_mice_pose.png)
 
 The existing `dataset=1`, `seed`, `frame`, and `fps` query parameters and
 `window.annolidPoseDataset.getFrame()` / `setFrame(index)` API remain available.
@@ -132,6 +136,8 @@ This mode runs a live biophysical *Drosophila* LIF spiking connectome
 (`two_mice_fly_brain.js`, using Shiu et al. 2024 / FlyWire / MaleCNS LIF parameters
 and canonical pathways from `annolid/simulation/fly_brain.py`) in a closed
 sensorimotor loop driving the 3D mouse rig through `two_mice_control.js`:
+
+![Fly-Brain connectome mode in the Two-Mouse Three.js simulation showing the live 264-neuron LIF spike raster, descending neuron activity bars, KC-to-MBON plasticity, Chrimson optogenetics panel, and reward zone](imgs/showcase/sim_fly_brain_connectome.png)
 
 - **Sensory → Descending circuits**:
   - Golden **Sucrose Reward Zone** radiates an olfactory gradient into `ORN_L/R` → `PFL3_L/R` → `LAL_Inh` → `DNa02_L/R` (left/right chemotaxis steering) and `CX_Forward_Goal` → `DNp09` (forward walking/trotting).

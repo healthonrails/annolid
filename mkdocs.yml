@@ -89,6 +89,7 @@ nav:
       - One-Line Installer: one_line_install_choices.md
   - Workflows:
       - Workflow Overview: workflows.md
+      - Featured Walkthrough (mouse083): tutorials/mouse083_resident_intruder_showcase.md
       - Large TIFF and Atlas Overlays: atlas_overlay_workflow.md
       - Large Image Guide: large_image_guide.md
       - Video Depth Anything: video_depth_anything.md

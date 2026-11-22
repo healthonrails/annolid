@@ -23,6 +23,14 @@ For three-chamber social setups, mark connecting tubes as neutral transit with e
 
 Legacy zone JSON files are still accepted when they use bounded compatibility hints, but explicit metadata is the preferred contract for new projects.
 
+## Worked Visual Example (`mouse083_task1_annotator1`)
+
+The example below defines three equal-height arena zones (`left_nest_zone`, `center_arena`, and `right_port_zone`) on the `mouse083_task1_annotator1` home-cage recording and scores occupancy and entry counts with `annolid-run zone-analysis`:
+
+![Spatial zone polygons overlaid on mouse083_task1_annotator1 alongside computed zone occupancy durations and entry counts](imgs/showcase/mouse083_zone_analysis.png)
+
+See the [Resident-Intruder End-to-End Walkthrough](tutorials/mouse083_resident_intruder_showcase.md#5-spatial-zone-place-preference-analysis) for the complete command, occupancy table, and live HTML5 report.
+
 ## Supported Outputs
 
 ### Legacy Place-Preference CSV

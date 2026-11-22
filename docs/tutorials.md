@@ -6,6 +6,7 @@ This page points to practical tutorial material that exists in the repository to
 
 | If you need to... | Use |
 | --- | --- |
+| Follow a complete worked real-data demo (polygons, 14 keypoints, QC, zones, report) | [Resident-Intruder End-to-End Walkthrough (`mouse083_task1_annotator1`)](tutorials/mouse083_resident_intruder_showcase.md) |
 | Learn the basic GUI tracking loop | [Tracking four interacting mice with one labeled frame](https://youtu.be/PNbPA649r78) and [Workflows](workflows.md) |
 | Downsample or preprocess videos | [GUI video downsample workflow](tutorials/video_downsample_workflow.md) and [Video Processing with FFmpeg](tutorials/video_ffmpeg_processing.md) |
 | Speed up CUTIE tracking | [Segment-based batch tracking](tutorials/segment-based-batch-tracking.md#11-reduce-cutie-analysis-time) and [GUI video downsample workflow](tutorials/video_downsample_workflow.md#practical-presets) |
@@ -26,6 +27,7 @@ This page points to practical tutorial material that exists in the repository to
 
 ## Focused Markdown Tutorials
 
+- [Resident-Intruder End-to-End Walkthrough (`mouse083_task1_annotator1`)](tutorials/mouse083_resident_intruder_showcase.md)
 - [GUI video downsample workflow (single video + batch overrides)](tutorials/video_downsample_workflow.md)
 - [Behavior labeling with Timeline, Flags, and Annolid Bot](tutorials/behavior_timeline_flags_bot.md)
 - [Segment-based batch tracking](tutorials/segment-based-batch-tracking.md)

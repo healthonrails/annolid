@@ -1,4 +1,4 @@
-.PHONY: release release-patch release-minor release-major book-build book-preview portal-build portal-preview
+.PHONY: release release-patch release-minor release-major book-build book-preview portal-build portal-preview site-build site-preview site-watch site-check showcase-sims showcase-video
 
 release:
 	@if [ -z "$(VERSION)" ]; then \
@@ -39,3 +39,25 @@ portal-build:
 
 portal-preview:
 	@source .venv/bin/activate && mkdocs serve --config-file mkdocs.yml
+
+site-build:
+	@.venv/bin/python scripts/site_workflow.py stage
+
+site-preview:
+	@.venv/bin/python scripts/site_workflow.py preview --port $(or $(PORT),8080)
+
+site-watch:
+	@.venv/bin/python scripts/site_workflow.py preview --watch --port $(or $(PORT),8080)
+
+site-check:
+	@.venv/bin/python scripts/site_workflow.py check
+
+showcase-sims:
+	@.venv/bin/python scripts/generate_docs_showcase.py --skip-video
+
+showcase-video:
+	@if [ -z "$(VIDEO)" ]; then \
+		echo "Usage: make showcase-video VIDEO=/path/to/tracked_video.mp4"; \
+		exit 1; \
+	fi
+	@.venv/bin/python scripts/generate_docs_showcase.py --video "$(VIDEO)" --skip-simulations

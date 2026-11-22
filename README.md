@@ -14,7 +14,7 @@ Annolid brings image and video annotation, instance segmentation, multi-animal t
 
 ![Annolid desktop interface for video annotation and instance segmentation](docs/imgs/annolid_ui.png)
 
-**See it in action:** [Tracking four interacting mice with one labeled frame — a 10-minute experiment](https://youtu.be/PNbPA649r78).
+**See it in action:** [Resident-intruder walkthrough (`mouse083_task1_annotator1`)](docs/tutorials/mouse083_resident_intruder_showcase.md) · [Two-Mouse & Fly-Brain 3D Simulation](docs/two_mice_simulation.md) · [Tracking four interacting mice with one labeled frame — a 10-minute experiment](https://youtu.be/PNbPA649r78).
 
 ## Table of Contents
 

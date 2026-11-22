@@ -6,6 +6,7 @@ This page summarizes the main workflows supported by Annolid today. Start with t
 
 | Goal | Start Here |
 | --- | --- |
+| See a complete worked real-data example (GUI, tracking, QC, zones, HTML5 report) | [Resident-Intruder Walkthrough (`mouse083_task1_annotator1`)](tutorials/mouse083_resident_intruder_showcase.md) |
 | Label and track animals in a video | [Standard GUI Video Workflow](#1-standard-gui-video-workflow) |
 | Track sparse body-part points without training a pose model | [Sparse Keypoint Tracking Workflow](#sparse-keypoint-tracking-workflow) |
 | Import or export DeepLabCut, SLEAP, Lightning Pose, or SimBA pose data | [DeepLabCut, SLEAP & Pose Interoperability](pose_interoperability.md) |

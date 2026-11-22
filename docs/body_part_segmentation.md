@@ -9,6 +9,8 @@ Unlike full-frame segmentation trackers—which operate on the entire image and 
 - **Disjoint intra-instance partition**: sibling body parts inside the same parent instance never overlap.
 - **360° circular & coiled posture invariance**: every instance crop is projected into a pose-normalized canonical body frame `(u, v, thickness)` combining continuous 2D directional dipoles (keypoints, prototype activations, temporal pose, and intrinsic appearance contrast for `aspect_ratio < 1.15` circular postures) with an **intrinsic masked geodesic spine** (`tortuosity > 1.18`) for C-shaped, U-shaped, and coiled animals.
 
+![Side-by-side comparison of 3D ground truth vs Annolid predicted head, torso, and tail body-part segmentation on two interacting mice](imgs/showcase/sim_body_part_segmentation.png)
+
 ---
 
 ## Modes and Feature Backends

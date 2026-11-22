@@ -18,6 +18,10 @@ Annolid uses a canonical behavior catalog in the project schema (`project.annoli
 
 This keeps behavior names consistent across manual scoring and agent-generated labels.
 
+![Scored ethogram timeline raster, inter-animal proximity curve, arena trajectories, and behavior time budget on mouse083_task1_annotator1](../imgs/showcase/mouse083_ethogram_kinematics.png)
+
+For a full worked session scoring `investigation`, `mount`, and `other` across 4,881 frames alongside tracking and HTML5 reporting, see [Resident-Intruder End-to-End Walkthrough](mouse083_resident_intruder_showcase.md).
+
 ## Quick Start (Manual Workflow)
 
 1. Open a video in Annolid.

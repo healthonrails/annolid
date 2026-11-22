@@ -37,7 +37,7 @@ For a user install that does not need source editing, prefer the one-line instal
 
 ## First GUI Session Checklist
 
-![Annolid annotation view with polygons and the Keep Previous Annotation menu option](imgs/Annotation_keep_previous.png)
+![Annolid desktop GUI displaying mouse083_task1_annotator1 with instance polygons, keypoints, behavior overlay pill, Flags dock, and Label Instances](imgs/showcase/mouse083_gui_workspace.png)
 
 - Open a short video.
 - Pick a representative seed frame.
@@ -46,7 +46,7 @@ For a user install that does not need source editing, prefer the one-line instal
 - Review overlap, occlusion, swaps, and high-motion sections early.
 - Save LabelMe-compatible JSON files and export any analysis CSVs you need.
 
-See [Workflows](workflows.md) for detailed operating patterns.
+See the [Resident-Intruder End-to-End Walkthrough (`mouse083_task1_annotator1`)](tutorials/mouse083_resident_intruder_showcase.md) for a real worked example with live tracking results, or [Workflows](workflows.md) for detailed operating patterns.
 
 ## First CLI Session Checklist
 

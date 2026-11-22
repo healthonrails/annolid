@@ -11,6 +11,10 @@ reviewable keypoint trajectories from a few manual seed frames. It is not a new
 DINO model, and it is not a replacement for supervised pose estimation when you
 need a reusable model trained across many videos, camera setups, or animals.
 
+![Multi-animal instance polygons paired with 14 anatomical keypoints and skeleton links on mouse083_task1_annotator1](imgs/showcase/mouse083_tracking_hero.png)
+
+For an end-to-end worked example combining whole-animal instance polygons with 14 anatomical keypoints (`nose`, `left_ear`, `right_ear`, `neck`, `left_hip`, `right_hip`, `tail_base` per mouse), see the [Resident-Intruder Walkthrough (`mouse083_task1_annotator1`)](tutorials/mouse083_resident_intruder_showcase.md).
+
 ## When To Use It
 
 Use DINOv3 Keypoint Tracker when:
