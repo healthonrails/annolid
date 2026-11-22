@@ -678,11 +678,24 @@ def test_execution_paths_use_layer_imports() -> None:
         repo_root / "annolid" / "gui" / "widgets" / "ai_chat_widget.py"
     ).read_text(encoding="utf-8")
     assert "from annolid.infrastructure.agent_config import (" in ai_chat_widget
-    assert "from annolid.infrastructure.agent_workspace import " in ai_chat_widget
+    assert "from annolid.infrastructure.agent_workspace import (" in ai_chat_widget
     assert "from annolid.services.chat_bus import (" in ai_chat_widget
     assert "from annolid.services.chat_session import (" in ai_chat_widget
     assert "from annolid.services.chat_backend_support import (" in ai_chat_widget
     assert "from annolid.core.agent" not in ai_chat_widget
+
+    for gui_chat_module in (
+        "ai_chat_bubble.py",
+        "ai_chat_slash_mixin.py",
+        "ai_chat_behavior_mixin.py",
+        "ai_chat_actions_mixin.py",
+        "ai_chat_backend_pdf_mixin.py",
+        "ai_chat_backend_video_mixin.py",
+    ):
+        module_source = (
+            repo_root / "annolid" / "gui" / "widgets" / gui_chat_module
+        ).read_text(encoding="utf-8")
+        assert "from annolid.core.agent" not in module_source
 
     ai_chat_manager = (
         repo_root / "annolid" / "gui" / "widgets" / "ai_chat_manager.py"

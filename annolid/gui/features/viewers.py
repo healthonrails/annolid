@@ -77,6 +77,23 @@ class _LazyAIChatManager:
             return None
         return getattr(self._manager, "ai_chat_dock", None)
 
+    @property
+    def _task_scheduler(self):
+        if self._manager is None:
+            return None
+        return getattr(self._manager, "_task_scheduler", None)
+
+    @property
+    def _cron_service(self):
+        if self._manager is None:
+            return None
+        return getattr(self._manager, "_cron_service", None)
+
+    def __getattr__(self, name: str):
+        if self._manager is None:
+            raise AttributeError(name)
+        return getattr(self._manager, name)
+
 
 class _LazySam2Manager:
     """SAM2 manager facade that keeps SAM2 setup off the GUI startup path."""

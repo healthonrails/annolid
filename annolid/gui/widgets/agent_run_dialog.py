@@ -68,7 +68,8 @@ class AgentRunDialog(QtWidgets.QDialog):
         self.vision_score_spin = QtWidgets.QDoubleSpinBox()
         self.vision_score_spin.setRange(0.0, 1.0)
         self.vision_score_spin.setSingleStep(0.05)
-        self.vision_score_spin.setValue(float(cfg.get("vision_score_threshold", 0.5)))
+        raw_score = cfg.get("vision_score_threshold")
+        self.vision_score_spin.setValue(0.5 if raw_score is None else float(raw_score))
         self.vision_score_spin.setDecimals(2)
 
         self.vision_device_edit = QtWidgets.QLineEdit(
@@ -115,12 +116,16 @@ class AgentRunDialog(QtWidgets.QDialog):
 
         self.stride_spin = QtWidgets.QSpinBox()
         self.stride_spin.setRange(1, 10_000)
-        self.stride_spin.setValue(int(cfg.get("stride", 1)))
+        raw_stride = cfg.get("stride")
+        self.stride_spin.setValue(1 if raw_stride is None else int(raw_stride))
         layout.addRow(self.tr("Frame stride"), self.stride_spin)
 
         self.max_frames_spin = QtWidgets.QSpinBox()
         self.max_frames_spin.setRange(-1, 1_000_000_000)
-        self.max_frames_spin.setValue(int(cfg.get("max_frames", -1)))
+        raw_max_frames = cfg.get("max_frames")
+        self.max_frames_spin.setValue(
+            -1 if raw_max_frames is None else int(raw_max_frames)
+        )
         self.max_frames_spin.setToolTip(self.tr("-1 = unlimited"))
         layout.addRow(self.tr("Max frames (-1 = unlimited)"), self.max_frames_spin)
 
@@ -146,7 +151,11 @@ class AgentRunDialog(QtWidgets.QDialog):
             self._update_vision_controls
         )
         self.llm_adapter_combo.currentTextChanged.connect(self._update_llm_controls)
-        self.include_summary_chk.toggled.connect(self._update_llm_controls)
+        self.include_summary_chk.toggled.connect(
+            lambda _checked: self._update_llm_controls(
+                self.llm_adapter_combo.currentText()
+            )
+        )
 
         self._update_vision_controls(self.vision_adapter_combo.currentText())
         self._update_llm_controls(self.llm_adapter_combo.currentText())

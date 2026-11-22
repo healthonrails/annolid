@@ -107,7 +107,10 @@ def explain_image_with_annolid_bot(
     )
 
     try:
-        set_image_path(path)
+        try:
+            set_image_path(path, explicit=True)
+        except TypeError:
+            set_image_path(path)
         if callable(register_temp_image):
             register_temp_image(path)
         if callable(set_chat_mode):
@@ -116,6 +119,11 @@ def explain_image_with_annolid_bot(
         prompt_input.setFocus()
         send_chat()
     except Exception as exc:
+        if callable(set_chat_mode):
+            try:
+                set_chat_mode("default")
+            except Exception:
+                pass
         return False, f"Failed to send image to Annolid Bot: {exc}"
     return True, "Sent selected image to Annolid Bot for description."
 

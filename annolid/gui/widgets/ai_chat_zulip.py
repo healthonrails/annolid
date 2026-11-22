@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping
+from typing import Any, Dict, Iterable, Mapping
+
+from qtpy import QtCore
+
+from annolid.services.chat_bus import MessageBus, OutboundMessage, ZulipChannel
 
 
 DEFAULT_ZULIP_TOPIC = "annolid"
@@ -74,3 +79,56 @@ def missing_zulip_config_fields(config: Mapping[str, Any] | None) -> list[str]:
         if not str(payload.get(key) or "").strip():
             missing.append(key)
     return missing
+
+
+class _ZulipSendTask(QtCore.QRunnable):
+    """Background worker that delivers a single draft message to Zulip."""
+
+    def __init__(
+        self,
+        widget: Any,
+        *,
+        config: Dict[str, Any],
+        chat_id: str,
+        content: str,
+        target_summary: str,
+    ) -> None:
+        super().__init__()
+        self._widget = widget
+        self._config = dict(config or {})
+        self._chat_id = str(chat_id or "").strip()
+        self._content = str(content or "")
+        self._target_summary = str(target_summary or "").strip()
+
+    def run(self) -> None:  # pragma: no cover
+        try:
+            asyncio.run(self._send())
+        except Exception as exc:
+            QtCore.QMetaObject.invokeMethod(
+                self._widget,
+                "_finish_zulip_send",
+                QtCore.Qt.QueuedConnection,
+                QtCore.Q_ARG(bool, False),
+                QtCore.Q_ARG(str, str(exc)),
+                QtCore.Q_ARG(str, self._target_summary),
+            )
+        else:
+            QtCore.QMetaObject.invokeMethod(
+                self._widget,
+                "_finish_zulip_send",
+                QtCore.Qt.QueuedConnection,
+                QtCore.Q_ARG(bool, True),
+                QtCore.Q_ARG(str, ""),
+                QtCore.Q_ARG(str, self._target_summary),
+            )
+
+    async def _send(self) -> None:
+        channel = ZulipChannel(self._config, MessageBus())
+        await channel.send(
+            OutboundMessage(
+                channel="zulip",
+                chat_id=self._chat_id,
+                content=self._content,
+                metadata={"source": "annolid_bot_ui"},
+            )
+        )

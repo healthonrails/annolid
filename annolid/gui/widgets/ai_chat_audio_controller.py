@@ -36,12 +36,26 @@ class ChatAudioController:
         self._prompt_text_edit = prompt_text_edit
         self._get_last_assistant_text = get_last_assistant_text
         self._is_recording = False
+        self._is_transcribing = False
+        self._closed = False
+        self._tts_lock = threading.Lock()
+        self._tts_generation = 0
         self._asr_pipeline = None
         self._asr_lock = threading.Lock()
-        self._ui_bridge = _AudioUiBridge()
+        bridge_parent = (
+            status_label if isinstance(status_label, QtCore.QObject) else None
+        )
+        self._ui_bridge = _AudioUiBridge(bridge_parent)
         self._ui_bridge.statusText.connect(self._status_label.setText)
         self._ui_bridge.talkButtonText.connect(self._talk_button.setText)
         self._ui_bridge.promptText.connect(self._prompt_text_edit.setPlainText)
+
+    def shutdown(self) -> None:
+        """Stop active voice recording and suppress further UI bridge updates."""
+        self._closed = True
+        self._is_recording = False
+        with self._tts_lock:
+            self._tts_generation += 1
 
     @property
     def is_recording(self) -> bool:
@@ -55,10 +69,16 @@ class ChatAudioController:
         self.speak_text_async(text)
 
     def speak_text_async(self, text: str) -> None:
+        if self._closed:
+            return
         value = str(text or "").strip()
         if not value:
             self._set_status_text("No text to read.")
             return
+
+        with self._tts_lock:
+            self._tts_generation += 1
+            generation = self._tts_generation
 
         def _run_tts() -> None:
             try:
@@ -72,11 +92,15 @@ class ChatAudioController:
 
                 any_played = False
                 for idx, chunk in enumerate(chunks, start=1):
+                    if self._closed or self._tts_generation != generation:
+                        return
                     if len(chunks) > 1:
                         self._set_status_text(f"Reading chunk {idx}/{len(chunks)}…")
                     audio_data = synthesize_tts(chunk, settings)
                     if not audio_data:
                         raise RuntimeError("No audio generated.")
+                    if self._closed or self._tts_generation != generation:
+                        return
                     samples, sample_rate = audio_data
                     played = play_audio_buffer(samples, sample_rate, blocking=True)
                     if not played:
@@ -84,9 +108,11 @@ class ChatAudioController:
                     any_played = True
                 if not any_played:
                     raise RuntimeError("No audio was played.")
-                self._set_status_text("Reply read aloud.")
+                if not self._closed and self._tts_generation == generation:
+                    self._set_status_text("Reply read aloud.")
             except Exception as exc:
-                self._set_status_text(f"Read failed: {exc}")
+                if not self._closed and self._tts_generation == generation:
+                    self._set_status_text(f"Read failed: {exc}")
 
         threading.Thread(target=_run_tts, daemon=True).start()
 
@@ -143,6 +169,11 @@ class ChatAudioController:
                     yield " ".join(current)
 
     def toggle_recording(self) -> None:
+        if self._closed:
+            return
+        if self._is_transcribing and not self._is_recording:
+            self._set_status_text("Still processing previous speech…")
+            return
         if not self._is_recording:
             self._is_recording = True
             self._set_talk_button_text("Stop")
@@ -150,7 +181,6 @@ class ChatAudioController:
             threading.Thread(target=self._record_voice, daemon=True).start()
         else:
             self._is_recording = False
-            self._set_talk_button_text("Talk")
             self._set_status_text("Processing speech…")
 
     def _record_voice(self) -> None:
@@ -191,9 +221,10 @@ class ChatAudioController:
             return
 
         final_text = ""
-        if audio_chunks:
+        if audio_chunks and not self._closed:
             audio_data = np.concatenate(audio_chunks, axis=0).reshape(-1)
             if np.abs(audio_data).max(initial=0.0) >= 1e-4:
+                self._is_transcribing = True
                 fd, audio_path = tempfile.mkstemp(prefix="annolid_talk_", suffix=".wav")
                 os.close(fd)
                 try:
@@ -203,13 +234,9 @@ class ChatAudioController:
                     self._set_status_text(f"Transcription failed: {exc}")
                     self._set_talk_button_text("Talk")
                     self._is_recording = False
-                    try:
-                        if os.path.exists(audio_path):
-                            os.remove(audio_path)
-                    except OSError:
-                        pass
                     return
                 finally:
+                    self._is_transcribing = False
                     try:
                         if os.path.exists(audio_path):
                             os.remove(audio_path)
@@ -293,10 +320,25 @@ class ChatAudioController:
         }
 
     def _set_status_text(self, text: str) -> None:
-        self._ui_bridge.statusText.emit(str(text or ""))
+        if self._closed:
+            return
+        try:
+            self._ui_bridge.statusText.emit(str(text or ""))
+        except RuntimeError:
+            self._closed = True
 
     def _set_talk_button_text(self, text: str) -> None:
-        self._ui_bridge.talkButtonText.emit(str(text or ""))
+        if self._closed:
+            return
+        try:
+            self._ui_bridge.talkButtonText.emit(str(text or ""))
+        except RuntimeError:
+            self._closed = True
 
     def _set_prompt_text(self, text: str) -> None:
-        self._ui_bridge.promptText.emit(str(text or ""))
+        if self._closed:
+            return
+        try:
+            self._ui_bridge.promptText.emit(str(text or ""))
+        except RuntimeError:
+            self._closed = True

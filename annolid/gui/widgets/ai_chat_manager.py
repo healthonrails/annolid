@@ -5,7 +5,7 @@ import importlib
 import importlib.util
 import threading
 from annolid.utils.logger import logger
-from typing import Optional
+from typing import Any, Optional
 
 from qtpy import QtCore, QtWidgets
 
@@ -16,19 +16,23 @@ from annolid.services.chat_dreaming import run_chat_dream_run_for_workspace
 from annolid.services.chat_manager_runtime import (
     AgentBusService,
     AgentLoop,
+    AgentSessionManager,
     ChannelManager,
     CronJob,
     CronPayload,
     CronSchedule,
     CronService,
     FunctionToolRegistry,
+    PersistentSessionStore,
     ScheduledTask,
     TaskScheduler,
     WhatsAppChannel,
     WhatsAppPythonBridge,
     WhatsAppWebhookServer,
+    build_tool_permission_context,
     default_cron_store_path,
     register_nanobot_style_tools,
+    resolve_allowed_tools,
 )
 from annolid.gui.widgets.ai_chat_widget import AIChatWidget
 from annolid.gui.widgets.ai_chat_zulip import missing_zulip_config_fields
@@ -139,13 +143,17 @@ def _sync_dream_cron_job(
                 cron_service.enable_job(job.id, enabled=False)
         return None
 
+    every_ms = max(1, int(interval_hours)) * 3600 * 1000
     if dream_jobs:
         first = dream_jobs[0]
-        if not bool(first.enabled):
-            cron_service.enable_job(first.id, enabled=True)
-        return str(first.id)
+        current_every_ms = getattr(getattr(first, "schedule", None), "every_ms", None)
+        if current_every_ms != every_ms and hasattr(cron_service, "remove_job"):
+            cron_service.remove_job(first.id)
+        else:
+            if not bool(first.enabled):
+                cron_service.enable_job(first.id, enabled=True)
+            return str(first.id)
 
-    every_ms = max(1, int(interval_hours)) * 3600 * 1000
     job = cron_service.add_job(
         name="dream",
         schedule=CronSchedule(kind="every", every_ms=every_ms),
@@ -179,9 +187,12 @@ class AIChatManager(QtCore.QObject):
         self._cron_service: Optional[CronService] = None
         self._task_scheduler: Optional[TaskScheduler] = None
         self._background_start_lock = threading.Lock()
+        self._dock_added = False
+        self._hid_unrelated_docks = False
 
     def _on_dock_visibility_changed(self, visible: bool) -> None:
-        if not visible:
+        if not visible and self._hid_unrelated_docks:
+            self._hid_unrelated_docks = False
             self.window.set_unrelated_docks_visible(True)
 
     def _ensure_dock(self) -> tuple[QtWidgets.QDockWidget, AIChatWidget]:
@@ -216,7 +227,9 @@ class AIChatManager(QtCore.QObject):
         hide_other_docks: bool = True,
     ) -> None:
         dock, widget = self._ensure_dock()
-        self.window.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock)
+        if not self._dock_added:
+            self.window.addDockWidget(QtCore.Qt.RightDockWidgetArea, dock)
+            self._dock_added = True
 
         widget.set_canvas(getattr(self.window, "canvas", None))
         widget.set_host_window(self.window)
@@ -234,6 +247,7 @@ class AIChatManager(QtCore.QObject):
 
         if not dock.isVisible():
             if hide_other_docks:
+                self._hid_unrelated_docks = True
                 self.window.set_unrelated_docks_visible(False, exclude=[dock])
             dock.show()
 
@@ -355,7 +369,7 @@ class AIChatManager(QtCore.QObject):
                                 whatsapp_cfg["enabled"] = False
                                 logger.warning(
                                     "WhatsApp auto-start disabled: missing optional dependencies (%s). "
-                                    'Install with: pip install "annolid[whatsapp]"',
+                                    'Install with: pip install "annolid[bot]" (or pip install "websockets>=12")',
                                     ", ".join(missing_deps),
                                 )
                             else:
@@ -412,11 +426,34 @@ class AIChatManager(QtCore.QObject):
                             box_cfg=box_cfg,
                             task_scheduler=self._task_scheduler,
                         )
+                        # Enforce configured tool policy on background channels as well.
+                        default_model = str(
+                            getattr(config.agents.defaults, "model", "") or ""
+                        )
+                        all_bg_tool_names = list(tools.tool_names)
+                        resolved_policy = resolve_allowed_tools(
+                            all_tool_names=all_bg_tool_names,
+                            tools_cfg=config.tools,
+                            provider="",
+                            model=default_model,
+                        )
+                        permission_ctx = build_tool_permission_context(
+                            all_tool_names=all_bg_tool_names,
+                            resolved_policy=resolved_policy,
+                        )
+                        for tool_name in all_bg_tool_names:
+                            if tool_name not in resolved_policy.allowed_tools:
+                                tools.unregister(tool_name)
 
-                        # In background mode, we use a standard loop.
+                        # In background mode, persist sessions and apply bounded timeouts.
                         loop_instance = AgentLoop(
                             tools=tools,
+                            memory_store=PersistentSessionStore(AgentSessionManager()),
                             workspace=workspace,
+                            llm_timeout_seconds=120.0,
+                            tool_timeout_seconds=max(
+                                30.0, float(int(config.tools.exec.timeout or 60))
+                            ),
                             strict_runtime_tool_guard=bool(
                                 getattr(
                                     config.agents.defaults,
@@ -424,6 +461,7 @@ class AIChatManager(QtCore.QObject):
                                     True,
                                 )
                             ),
+                            tool_permission_context=permission_ctx,
                         )
                         logger.info(
                             "AgentLoop initialized with workspace: %s", workspace
@@ -585,79 +623,88 @@ class AIChatManager(QtCore.QObject):
             self._background_thread.start()
 
     def cleanup(self) -> None:
-        """Stop background services and the event loop."""
+        """Stop chat widget workers, background services, and the event loop."""
         shutdown_wait_s = 8.0
-        start_task = self._channel_start_task
-        self._channel_start_task = None
+        widget = self.ai_chat_widget
+        if widget is not None and hasattr(widget, "shutdown"):
+            try:
+                widget.shutdown(wait_ms=2000)
+            except Exception:
+                logger.exception("Failed shutting down Annolid Bot chat widget")
+
+        with self._background_start_lock:
+            loop = self._background_loop
+            start_task = self._channel_start_task
+            self._channel_start_task = None
+            server = self._whatsapp_webhook_server
+            self._whatsapp_webhook_server = None
+            bridge = self._whatsapp_python_bridge
+            self._whatsapp_python_bridge = None
+            channel_manager = self._channel_manager
+            self._channel_manager = None
+            cron_service = self._cron_service
+            self._cron_service = None
+            task_scheduler = self._task_scheduler
+            self._task_scheduler = None
+            bus_service = self._bus_service
+            self._bus_service = None
+            bg_thread = self._background_thread
+
+        def _stop_async_service(coro: Any, label: str) -> None:
+            if loop is None or loop.is_closed():
+                return
+            fut = None
+            try:
+                fut = asyncio.run_coroutine_threadsafe(coro, loop)
+                fut.result(timeout=shutdown_wait_s)
+            except TimeoutError:
+                if fut is not None:
+                    fut.cancel()
+                logger.exception(
+                    "Timed out stopping %s; cancelled pending stop",
+                    label,
+                )
+            except Exception:
+                logger.exception("Failed stopping %s", label)
+
         if start_task is not None:
-            start_task.cancel()
-        server = self._whatsapp_webhook_server
-        self._whatsapp_webhook_server = None
+            if loop is not None and not loop.is_closed():
+                try:
+                    loop.call_soon_threadsafe(start_task.cancel)
+                except RuntimeError:
+                    pass
+            else:
+                try:
+                    start_task.cancel()
+                except Exception:
+                    pass
         if server is not None:
             try:
                 server.stop()
             except Exception:
                 logger.exception("Failed stopping WhatsApp webhook server")
-        bridge = self._whatsapp_python_bridge
-        self._whatsapp_python_bridge = None
-        if bridge is not None and self._background_loop is not None:
-            try:
-                fut = asyncio.run_coroutine_threadsafe(
-                    bridge.stop(), self._background_loop
-                )
-                fut.result(timeout=shutdown_wait_s)
-            except TimeoutError:
-                fut.cancel()
-                logger.exception(
-                    "Timed out stopping WhatsApp Python bridge; cancelled pending stop"
-                )
-            except Exception:
-                logger.exception("Failed stopping WhatsApp Python bridge")
-        if self._channel_manager is not None and self._background_loop is not None:
-            try:
-                fut = asyncio.run_coroutine_threadsafe(
-                    self._channel_manager.stop_all(), self._background_loop
-                )
-                fut.result(timeout=shutdown_wait_s)
-            except Exception:
-                logger.exception("Failed stopping channel manager")
-            self._channel_manager = None
-        if self._cron_service is not None and self._background_loop is not None:
-            try:
-                fut = asyncio.run_coroutine_threadsafe(
-                    self._cron_service.stop(), self._background_loop
-                )
-                fut.result(timeout=shutdown_wait_s)
-            except Exception:
-                logger.exception("Failed stopping cron service")
-            self._cron_service = None
-        if self._task_scheduler is not None and self._background_loop is not None:
-            try:
-                fut = asyncio.run_coroutine_threadsafe(
-                    self._task_scheduler.stop(), self._background_loop
-                )
-                fut.result(timeout=shutdown_wait_s)
-            except Exception:
-                logger.exception("Failed stopping task scheduler")
-            self._task_scheduler = None
-        if self._bus_service is not None and self._background_loop is not None:
-            try:
-                fut = asyncio.run_coroutine_threadsafe(
-                    self._bus_service.stop(), self._background_loop
-                )
-                fut.result(timeout=shutdown_wait_s)
-            except Exception:
-                logger.exception("Failed stopping bus service")
-            self._bus_service = None
+        if bridge is not None:
+            _stop_async_service(bridge.stop(), "WhatsApp Python bridge")
+        if channel_manager is not None:
+            _stop_async_service(channel_manager.stop_all(), "channel manager")
+        if cron_service is not None:
+            _stop_async_service(cron_service.stop(), "cron service")
+        if task_scheduler is not None:
+            _stop_async_service(task_scheduler.stop(), "task scheduler")
+        if bus_service is not None:
+            _stop_async_service(bus_service.stop(), "bus service")
 
-        if self._background_loop is not None:
-            # Thread-safe way to stop the loop from another thread (main Qt thread)
-            self._background_loop.call_soon_threadsafe(self._background_loop.stop)
+        if loop is not None and not loop.is_closed():
+            try:
+                # Thread-safe way to stop the loop from another thread (main Qt thread)
+                loop.call_soon_threadsafe(loop.stop)
+            except RuntimeError:
+                pass
 
-        if self._background_thread is not None:
+        if bg_thread is not None:
             # We use daemon=True, but joining ensures it stops gracefully if possible.
             # Don't block for too long during GUI shutdown.
-            self._background_thread.join(timeout=3.0)
+            bg_thread.join(timeout=3.0)
             self._background_thread = None
 
     async def _on_automation_task_run(self, task: ScheduledTask) -> Optional[str]:

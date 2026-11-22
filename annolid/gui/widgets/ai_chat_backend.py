@@ -20,6 +20,8 @@ from typing import Mapping
 from qtpy import QtCore
 from qtpy.QtCore import QRunnable
 
+from annolid.gui.widgets.ai_chat_backend_pdf_mixin import StreamingChatPdfMixin
+from annolid.gui.widgets.ai_chat_backend_video_mixin import StreamingChatVideoMixin
 from annolid.infrastructure.agent_config import load_agent_config as load_config
 from annolid.infrastructure.agent_workspace import get_agent_workspace_path
 from annolid.services.agent_update import (
@@ -49,7 +51,6 @@ from annolid.services.chat_agent_core import (
 from annolid.services.chat_agent_core import (
     AutomationSchedulerTool,
     CronTool,
-    DownloadPdfTool,
     EmailTool,
     RenameFileTool,
 )
@@ -168,6 +169,7 @@ from annolid.services.chat_realtime import (
     list_logs_tool as gui_list_logs_tool,
     list_log_files_tool as gui_list_log_files_tool,
     read_log_file_tool as gui_read_log_file_tool,
+    redact_camera_source_for_bot_display as gui_redact_camera_source_for_bot_display,
     search_logs_tool as gui_search_logs_tool,
     open_log_folder_tool as gui_open_log_folder_tool,
     remove_log_folder_tool as gui_remove_log_folder_tool,
@@ -188,13 +190,9 @@ from annolid.services.chat_shape_files import (
     relabel_shapes_in_annotation_tool as gui_relabel_shapes_in_annotation_tool,
 )
 from annolid.services.chat_tracking_stats import (
-    analyze_chat_tracking_stats_tool as gui_analyze_chat_tracking_stats_tool,
     run_chat_qc_slash_tool as gui_run_chat_qc_slash_tool,
     run_chat_report_slash_tool as gui_run_chat_report_slash_tool,
     run_chat_stats_slash_tool as gui_run_chat_stats_slash_tool,
-)
-from annolid.services.chat_tracking_correction import (
-    correct_chat_tracking_ndjson_tool as gui_correct_tracking_ndjson_tool,
 )
 from annolid.gui.realtime_launch import build_realtime_launch_payload
 from annolid.services.chat_runtime import (
@@ -295,14 +293,12 @@ from annolid.services.chat_devtools import (
 )
 from annolid.services.chat_dreaming import run_chat_dream_action
 from annolid.services.chat_video import (
-    behavior_catalog_tool as gui_behavior_catalog_tool,
     label_chat_behavior_segments_tool,
     open_chat_video_tool,
-    process_chat_video_behaviors_tool,
+    process_chat_video_behaviors_tool as process_chat_video_behaviors_tool,
     resolve_chat_video_path_for_gui_tool,
-    score_chat_aggression_bouts_tool,
+    score_chat_aggression_bouts_tool as score_chat_aggression_bouts_tool,
     segment_track_chat_video_tool,
-    sam3_agent_video_track_tool,
 )
 from annolid.utils.llm_settings import resolve_agent_runtime_config
 from annolid.utils.citations import (
@@ -421,6 +417,7 @@ class _AgentExecutionContext:
     tools: FunctionToolRegistry
     system_prompt: str
     strict_runtime_tool_guard: bool
+    tool_permission_context: Optional[Any] = None
 
 
 @dataclass(frozen=True)
@@ -480,7 +477,11 @@ class _TaskCancelledError(RuntimeError):
     """Raised when a streaming chat task is cancelled by the user."""
 
 
-class StreamingChatTask(QRunnable):
+class StreamingChatTask(
+    StreamingChatPdfMixin,
+    StreamingChatVideoMixin,
+    QRunnable,
+):
     """Stream a chat response from the selected provider back to a widget."""
 
     def __init__(
@@ -587,6 +588,7 @@ class StreamingChatTask(QRunnable):
             self.chat_mode = str(chat_mode or "default").strip().lower() or "default"
             self.selected_skill_names = []
             self.selected_tool_names = []
+        self.inbound = inbound
         self.widget = widget
         self.session_store = session_store or get_chat_session_store()
         self.workspace = get_chat_workspace()
@@ -600,6 +602,7 @@ class StreamingChatTask(QRunnable):
         self._tool_first_live_web_missed = False
         self._model_was_called = False
         self._web_fallback_results: List[WebFallbackResult] = []
+        self._last_tool_permission_context: Optional[Any] = None
         self.turn_id = self._build_turn_id(inbound=inbound)
         self._turn_status = TURN_STATUS_QUEUED
 
@@ -1011,7 +1014,10 @@ class StreamingChatTask(QRunnable):
         )
         if provider_kind_name == "codex_cli":
             self._emit_progress("Using Codex CLI runtime")
-            self._run_openai(
+            # Run off the active event loop so run_codex_cli_chat() can safely
+            # invoke asyncio.run() without hitting a nested-loop RuntimeError.
+            await asyncio.to_thread(
+                self._run_openai,
                 provider_name=self.provider,
                 timeout_s=self._agent_loop_llm_timeout_seconds(
                     prompt_needs_tools=False
@@ -1051,7 +1057,7 @@ class StreamingChatTask(QRunnable):
                 prompt=self.prompt,
                 text=tool_first_text,
                 persist_turn=lambda user, assistant: self._persist_turn(
-                    user, assistant, persist_session_history=False
+                    user, assistant, persist_session_history=True
                 ),
                 emit_final=lambda message, is_error: self._emit_final(
                     message, is_error=is_error
@@ -1070,16 +1076,24 @@ class StreamingChatTask(QRunnable):
         )
         media = self._build_media_payload()
 
-        result = await loop.run(
-            self.prompt,
-            session_id=self.session_id,
-            channel="gui",
-            chat_id="annolid_bot",
-            media=media,
-            system_prompt=context.system_prompt,
-            skill_names=list(self.selected_skill_names or []),
-            on_progress=self._emit_progress,
-        )
+        try:
+            result = await loop.run(
+                self.prompt,
+                session_id=self.session_id,
+                channel="gui",
+                chat_id="annolid_bot",
+                media=media,
+                system_prompt=context.system_prompt,
+                skill_names=list(self.selected_skill_names or []),
+                on_progress=self._emit_progress,
+            )
+        finally:
+            close_fn = getattr(loop, "close", None)
+            if callable(close_fn):
+                with contextlib.suppress(Exception):
+                    maybe_coro = close_fn()
+                    if asyncio.iscoroutine(maybe_coro):
+                        await maybe_coro
         self._raise_if_cancelled()
         self._emit_progress("Received model response")
         (
@@ -1110,7 +1124,17 @@ class StreamingChatTask(QRunnable):
         context: _AgentExecutionContext,
         prompt_needs_tools: bool,
     ) -> Dict[str, Any]:
-        configured_mcp_servers = self.settings.get("tools", {}).get("mcp_servers", {})
+        configured_mcp_servers: Dict[str, Any] = {}
+        try:
+            agent_cfg = load_config()
+            cfg_servers = getattr(getattr(agent_cfg, "tools", None), "mcp_servers", {})
+            if isinstance(cfg_servers, dict):
+                configured_mcp_servers.update(cfg_servers)
+        except Exception:
+            pass
+        settings_servers = self.settings.get("tools", {}).get("mcp_servers", {})
+        if isinstance(settings_servers, dict):
+            configured_mcp_servers.update(settings_servers)
         mcp_needed = prompt_needs_tools and self._prompt_may_need_mcp(self.prompt)
         if mcp_needed and len(context.tools) > 0:
             return configured_mcp_servers
@@ -1137,6 +1161,81 @@ class StreamingChatTask(QRunnable):
             recover_nudge_s=self._ollama_plain_recovery_nudge_timeout_seconds(),
         )
 
+    def _should_prompt_destructive_tool_approval(self) -> bool:
+        widget = self.widget
+        if widget is None or not hasattr(widget, "request_tool_approval_json"):
+            return False
+        raw = (self.settings or {}).get("confirm_destructive_tools")
+        if raw is not None:
+            if isinstance(raw, bool):
+                return raw
+            text = str(raw).strip().lower()
+            if text in {"0", "false", "no", "off"}:
+                return False
+            if text in {"1", "true", "yes", "on"}:
+                return True
+        is_visible = getattr(widget, "isVisible", None)
+        if callable(is_visible):
+            try:
+                return bool(is_visible())
+            except Exception:
+                return False
+        return False
+
+    @staticmethod
+    def _format_tool_approval_args_preview(args: Dict[str, Any]) -> str:
+        sensitive_tokens = (
+            "password",
+            "token",
+            "secret",
+            "api_key",
+            "apikey",
+            "authorization",
+            "cookie",
+            "credential",
+            "consent",
+        )
+        sanitized: Dict[str, Any] = {}
+        for key, value in dict(args or {}).items():
+            key_text = str(key)
+            lowered = key_text.lower()
+            if any(tok in lowered for tok in sensitive_tokens):
+                sanitized[key_text] = "[REDACTED]"
+            else:
+                text_val = str(value)
+                sanitized[key_text] = (
+                    text_val[:200] + "..." if len(text_val) > 200 else value
+                )
+        try:
+            rendered = json.dumps(sanitized, ensure_ascii=False, indent=2, default=str)
+        except Exception:
+            rendered = str(sanitized)
+        return rendered[:600] + ("..." if len(rendered) > 600 else "")
+
+    async def _request_destructive_tool_approval(
+        self,
+        tool_name: str,
+        args: Dict[str, Any],
+        reason: str,
+    ) -> bool:
+        if self._is_cancel_requested():
+            return False
+        payload = {
+            "tool_name": str(tool_name or "").strip(),
+            "reason": str(reason or "").strip(),
+            "args_preview": self._format_tool_approval_args_preview(args),
+        }
+        self._emit_progress(f"Waiting for confirmation: {payload['tool_name']}")
+        invoked = await asyncio.to_thread(
+            self._invoke_widget_json_slot,
+            "request_tool_approval_json",
+            payload,
+        )
+        if not invoked:
+            return False
+        result = get_chat_widget_action_result(self.widget, "tool_approval")
+        return bool(isinstance(result, dict) and result.get("approved", False))
+
     def _build_agent_loop_instance(
         self,
         *,
@@ -1144,6 +1243,11 @@ class StreamingChatTask(QRunnable):
         prompt_needs_tools: bool,
         mcp_servers: Dict[str, Any],
     ):
+        approval_cb = (
+            self._request_destructive_tool_approval
+            if self._should_prompt_destructive_tool_approval()
+            else None
+        )
         return build_chat_agent_loop(
             tools=context.tools,
             llm_callable=self._resolve_loop_llm_callable(),
@@ -1159,6 +1263,8 @@ class StreamingChatTask(QRunnable):
             tool_timeout_seconds=self._agent_loop_tool_timeout_seconds(),
             browser_first_for_web=self._browser_first_for_web(),
             strict_runtime_tool_guard=context.strict_runtime_tool_guard,
+            tool_permission_context=getattr(context, "tool_permission_context", None),
+            tool_approval_callback=approval_cb,
         )
 
     def _build_media_payload(self) -> Optional[List[str]]:
@@ -1277,6 +1383,7 @@ class StreamingChatTask(QRunnable):
             strict_runtime_tool_guard=bool(
                 getattr(agent_cfg.agents.defaults, "strict_runtime_tool_guard", True)
             ),
+            tool_permission_context=self._last_tool_permission_context,
         )
 
     def _load_execution_prerequisites(
@@ -1313,6 +1420,9 @@ class StreamingChatTask(QRunnable):
             always_disabled_tools=_GUI_ALWAYS_DISABLED_TOOLS,
             web_tools=_GUI_WEB_TOOLS,
             resolve_policy=resolve_allowed_tools,
+        )
+        self._last_tool_permission_context = getattr(
+            prepared, "permission_context", None
         )
         return (
             prepared.tools,
@@ -2100,133 +2210,6 @@ class StreamingChatTask(QRunnable):
             max_pages=max_pages,
         )
 
-    def _tool_gui_pdf_summarize(
-        self,
-        path: str = "",
-        max_pages: int = 80,
-        max_extract_chars: int = 350000,
-    ) -> Dict[str, Any]:
-        normalized_max_pages = max(1, min(int(max_pages or 80), 200))
-        normalized_max_extract_chars = max(
-            10000, min(int(max_extract_chars or 350000), 2000000)
-        )
-        attempted_pdf_paths: set[str] = set()
-        path_text = str(path or "").strip()
-        if path_text:
-            resolved_explicit = self._resolve_pdf_path_for_gui_tool(path_text)
-            if resolved_explicit is not None and resolved_explicit.exists():
-                canonical = self._canonical_existing_path(resolved_explicit)
-                if canonical:
-                    attempted_pdf_paths.add(canonical)
-                summary_text = self._summarize_pdf_path_with_cache(
-                    resolved_explicit,
-                    max_pages=normalized_max_pages,
-                    max_extract_chars=normalized_max_extract_chars,
-                )
-                if summary_text:
-                    return {
-                        "ok": True,
-                        "path": str(resolved_explicit),
-                        "title": str(resolved_explicit.name),
-                        "summary": summary_text,
-                        "text": summary_text,
-                    }
-            opened = self._run_async(self._tool_gui_open_pdf(path_text))
-            if isinstance(opened, dict) and bool(opened.get("error")):
-                return {
-                    "ok": False,
-                    "error": str(opened.get("error") or "Failed to open PDF."),
-                    "open_pdf": opened,
-                }
-
-        summary_text = self._summarize_active_pdf_with_cache_compat(
-            max_pages=normalized_max_pages,
-            max_extract_chars=normalized_max_extract_chars,
-        )
-        if summary_text:
-            state = self._tool_gui_pdf_get_state()
-            return {
-                "ok": True,
-                "path": str(state.get("path") or ""),
-                "title": str(state.get("title") or ""),
-                "summary": summary_text,
-                "text": summary_text,
-            }
-        active_state = dict(self._tool_gui_pdf_get_state() or {})
-        active_canonical = self._canonical_existing_path(
-            str(active_state.get("path") or "")
-        )
-        if active_canonical:
-            attempted_pdf_paths.add(active_canonical)
-
-        source = self._resolve_pdf_summary_source(path_text=path_text)
-        source_mode = str(source.get("mode") or "").strip()
-        if source_mode == "pdf_path":
-            pdf_path = source.get("path")
-            if isinstance(pdf_path, Path):
-                canonical = self._canonical_existing_path(pdf_path)
-                if canonical and canonical in attempted_pdf_paths:
-                    pdf_path = None
-            if isinstance(pdf_path, Path):
-                summary_text = self._summarize_pdf_path_with_cache(
-                    pdf_path,
-                    max_pages=normalized_max_pages,
-                    max_extract_chars=normalized_max_extract_chars,
-                )
-                if summary_text:
-                    return {
-                        "ok": True,
-                        "path": str(pdf_path),
-                        "title": str(pdf_path.name),
-                        "summary": summary_text,
-                        "text": summary_text,
-                    }
-        elif source_mode == "cache_md":
-            cache_path = source.get("path")
-            if isinstance(cache_path, Path):
-                summary_text = self._summarize_cached_pdf_markdown(cache_path)
-                if summary_text:
-                    return {
-                        "ok": True,
-                        "path": "",
-                        "title": str(source.get("title") or ""),
-                        "summary": summary_text,
-                        "text": summary_text,
-                    }
-
-        prepared = self._prepare_active_pdf_for_summary_from_web()
-        if bool(prepared.get("ok")):
-            summary_text = self._summarize_active_pdf_with_cache_compat(
-                max_pages=normalized_max_pages,
-                max_extract_chars=normalized_max_extract_chars,
-            )
-            if summary_text:
-                state = self._tool_gui_pdf_get_state()
-                return {
-                    "ok": True,
-                    "path": str(state.get("path") or ""),
-                    "title": str(state.get("title") or ""),
-                    "summary": summary_text,
-                    "text": summary_text,
-                }
-
-        source_hint = str(source.get("hint") or "").strip()
-        if bool(prepared.get("error")) and source_hint:
-            source_hint = (
-                f"{source_hint}; web_prepare={str(prepared.get('error') or '')}"
-            )
-        if not summary_text:
-            return {
-                "ok": False,
-                "error": (
-                    "Failed to summarize PDF from active view, session context, "
-                    "or cached extraction."
-                ),
-                "source_hint": source_hint,
-                "prepare_pdf": prepared if bool(prepared.get("error")) else {},
-            }
-        return {"ok": False, "error": "Failed to summarize PDF."}
-
     @staticmethod
     def _canonical_existing_path(path_value: Any) -> str:
         text = str(path_value or "").strip()
@@ -2242,286 +2225,6 @@ class StreamingChatTask(QRunnable):
         except (OSError, ValueError):
             return ""
         return ""
-
-    def _summarize_pdf_path_with_cache(
-        self,
-        pdf_path: Path,
-        *,
-        max_pages: int,
-        max_extract_chars: int,
-    ) -> str:
-        candidate = Path(pdf_path).expanduser()
-        if not candidate.exists() or not candidate.is_file():
-            return ""
-        return gui_summarize_active_pdf_with_cache(
-            workspace=self.workspace,
-            get_pdf_state=lambda: {
-                "ok": True,
-                "has_pdf": True,
-                "path": str(candidate),
-                "title": str(candidate.name),
-            },
-            build_summary=self._build_extractive_summary,
-            build_llm_summary=self._build_llm_pdf_summary,
-            require_llm_summary=True,
-            max_pages=max_pages,
-            max_extract_chars=max_extract_chars,
-            on_telemetry=self._log_pdf_summary_telemetry,
-        )
-
-    @staticmethod
-    def _extract_cached_markdown_paths(text: str) -> List[Path]:
-        value = str(text or "")
-        if not value.strip():
-            return []
-        paths: list[Path] = []
-        for match in re.findall(r"Cached extraction:\s*([^\n\r]+)", value, flags=re.I):
-            candidate = Path(str(match or "").strip().strip("\"'`")).expanduser()
-            if str(candidate).lower().endswith(".md"):
-                paths.append(candidate)
-        for match in re.findall(
-            r"(?:~?/|/)[^\n\r]+?pdf_text_cache[^\n\r]+?\.md",
-            value,
-            flags=re.I,
-        ):
-            candidate = Path(str(match or "").strip().strip("\"'`")).expanduser()
-            paths.append(candidate)
-        deduped: list[Path] = []
-        seen: set[str] = set()
-        for path_obj in paths:
-            key = str(path_obj)
-            if key in seen:
-                continue
-            seen.add(key)
-            deduped.append(path_obj)
-        return deduped
-
-    def _resolve_pdf_summary_source(self, *, path_text: str = "") -> Dict[str, Any]:
-        active_state = dict(self._tool_gui_pdf_get_state() or {})
-        active_path = str(active_state.get("path") or "").strip()
-        if (
-            bool(active_state.get("ok"))
-            and bool(active_state.get("has_pdf"))
-            and active_path
-        ):
-            candidate = Path(active_path).expanduser()
-            if candidate.exists() and candidate.is_file():
-                return {"mode": "pdf_path", "path": candidate, "hint": "active_pdf"}
-
-        if path_text:
-            resolved = self._resolve_pdf_path_for_gui_tool(path_text)
-            if resolved is not None and resolved.exists() and resolved.is_file():
-                return {"mode": "pdf_path", "path": resolved, "hint": "explicit_path"}
-
-        context_blobs: list[str] = [str(self.prompt or "").strip()]
-        history = self._load_history_messages()
-        for message in reversed(history[-80:]):
-            if not isinstance(message, dict):
-                continue
-            content = str(message.get("content") or "").strip()
-            if content:
-                context_blobs.append(content)
-
-        for blob in context_blobs:
-            for raw in self._extract_pdf_path_candidates(blob):
-                resolved = self._resolve_pdf_path_for_gui_tool(raw)
-                if resolved is None:
-                    try:
-                        candidate = Path(
-                            str(raw or "").strip().strip("\"'`")
-                        ).expanduser()
-                    except Exception:
-                        candidate = None
-                    if candidate is not None:
-                        try:
-                            if candidate.exists() and candidate.is_file():
-                                resolved = candidate
-                        except (OSError, ValueError):
-                            resolved = None
-                if resolved is not None and resolved.exists() and resolved.is_file():
-                    return {
-                        "mode": "pdf_path",
-                        "path": resolved,
-                        "hint": "session_pdf_path",
-                    }
-
-        for blob in context_blobs:
-            for cache_path in self._extract_cached_markdown_paths(blob):
-                if cache_path.exists() and cache_path.is_file():
-                    return {
-                        "mode": "cache_md",
-                        "path": cache_path,
-                        "title": str(cache_path.name),
-                        "hint": "session_cached_md",
-                    }
-
-        cache_dir = self.workspace / "pdf_text_cache"
-        if cache_dir.exists() and cache_dir.is_dir():
-            try:
-                cache_files = sorted(
-                    cache_dir.glob("*.md"),
-                    key=lambda p: p.stat().st_mtime if p.exists() else 0.0,
-                    reverse=True,
-                )
-            except Exception:
-                cache_files = []
-            if cache_files:
-                return {
-                    "mode": "cache_md",
-                    "path": cache_files[0],
-                    "title": str(cache_files[0].name),
-                    "hint": "latest_cached_md",
-                }
-
-        available = self._list_available_pdfs(limit=1)
-        if available:
-            candidate = available[0]
-            if candidate.exists() and candidate.is_file():
-                return {
-                    "mode": "pdf_path",
-                    "path": candidate,
-                    "hint": "recent_local_pdf",
-                }
-        return {"mode": "", "hint": "no_pdf_source"}
-
-    def _summarize_cached_pdf_markdown(self, cache_path: Path) -> str:
-        candidate = Path(cache_path).expanduser()
-        if not candidate.exists() or not candidate.is_file():
-            return ""
-        try:
-            raw_text = str(candidate.read_text(encoding="utf-8") or "").strip()
-        except Exception:
-            return ""
-        if not raw_text:
-            return ""
-        source_pdf_path = ""
-        source_match = re.search(
-            r"^\s*Source:\s*(.+?\.pdf)\s*$",
-            raw_text,
-            flags=re.IGNORECASE | re.MULTILINE,
-        )
-        if source_match:
-            source_pdf_path = str(source_match.group(1) or "").strip()
-        summary = self._build_llm_pdf_summary(
-            raw_text,
-            max_chars=1800,
-            pdf_path=source_pdf_path,
-        )
-        if not summary:
-            return ""
-        source_label = Path(source_pdf_path).name if source_pdf_path else candidate.stem
-        return (
-            f"Summary of cached PDF ({source_label}):\n"
-            f"{summary}\n\n"
-            f"Cached extraction: {candidate}"
-        )
-
-    @staticmethod
-    def _extract_pdf_path_from_web_save_payload(payload: Dict[str, Any]) -> str:
-        if not isinstance(payload, dict):
-            return ""
-        saved_path = str(payload.get("saved_path") or "").strip()
-        if saved_path.lower().endswith(".pdf") and Path(saved_path).exists():
-            return saved_path
-        if bool(payload.get("queued")):
-            return ""
-        saved_kind = str(
-            payload.get("last_saved_kind") or payload.get("kind") or ""
-        ).lower()
-        last_saved_path = str(payload.get("last_saved_path") or "").strip()
-        if (
-            saved_kind == "pdf"
-            and last_saved_path.lower().endswith(".pdf")
-            and Path(last_saved_path).exists()
-        ):
-            return last_saved_path
-        return ""
-
-    def _prepare_active_pdf_for_summary_from_web(self) -> Dict[str, Any]:
-        web_state = dict(self._tool_gui_web_get_state() or {})
-        if not bool(web_state.get("ok")) or not bool(web_state.get("has_page")):
-            return {
-                "ok": False,
-                "error": "No active web page available for PDF preparation.",
-            }
-
-        source_url = str(web_state.get("url") or "").strip()
-        if source_url:
-            opened_from_url = self._run_async(self._tool_gui_open_pdf(source_url))
-            if isinstance(opened_from_url, dict) and bool(opened_from_url.get("ok")):
-                state_after_url_open = dict(self._tool_gui_pdf_get_state() or {})
-                if bool(state_after_url_open.get("ok")) and bool(
-                    state_after_url_open.get("has_pdf")
-                ):
-                    return {
-                        "ok": True,
-                        "mode": "open_url",
-                        "path": str(state_after_url_open.get("path") or ""),
-                    }
-
-        initial_save = dict(self._tool_gui_web_save_current() or {})
-        saved_pdf_path = self._extract_pdf_path_from_web_save_payload(initial_save)
-        if not saved_pdf_path and bool(initial_save.get("queued")):
-            deadline = time.monotonic() + 2.5
-            while time.monotonic() < deadline:
-                QtCore.QThread.msleep(125)
-                polled = dict(self._tool_gui_web_save_current() or {})
-                saved_pdf_path = self._extract_pdf_path_from_web_save_payload(polled)
-                if saved_pdf_path:
-                    break
-                if not bool(polled.get("queued")):
-                    break
-        if not saved_pdf_path:
-            return {
-                "ok": False,
-                "error": "Could not save a PDF from the active web viewer.",
-                "web_save": initial_save,
-            }
-
-        opened_saved = self._run_async(self._tool_gui_open_pdf(saved_pdf_path))
-        if isinstance(opened_saved, dict) and bool(opened_saved.get("error")):
-            return {
-                "ok": False,
-                "error": str(opened_saved.get("error") or "Failed to open saved PDF."),
-                "web_save": initial_save,
-                "open_pdf": opened_saved,
-            }
-        state_after_save_open = dict(self._tool_gui_pdf_get_state() or {})
-        if not bool(state_after_save_open.get("ok")) or not bool(
-            state_after_save_open.get("has_pdf")
-        ):
-            return {
-                "ok": False,
-                "error": "Saved PDF could not be activated for summarization.",
-                "web_save": initial_save,
-                "path": saved_pdf_path,
-            }
-        return {
-            "ok": True,
-            "mode": "saved_pdf",
-            "path": str(state_after_save_open.get("path") or saved_pdf_path),
-        }
-
-    async def _download_pdf_for_gui_tool(self, url: str) -> Optional[Path]:
-        text = str(url or "").strip()
-        if not text.lower().startswith(("http://", "https://")):
-            return None
-        workspace = get_agent_workspace_path()
-        downloader = DownloadPdfTool(allowed_dir=workspace)
-        try:
-            payload_raw = await downloader.execute(url=text)
-            payload = json.loads(str(payload_raw or "{}"))
-        except Exception:
-            return None
-        if not isinstance(payload, dict) or payload.get("error"):
-            return None
-        output_path = str(payload.get("output_path") or "").strip()
-        if not output_path:
-            return None
-        candidate = Path(output_path).expanduser()
-        if not candidate.exists() or not candidate.is_file():
-            return None
-        return candidate
 
     @staticmethod
     def _run_async(awaitable: Any) -> Any:
@@ -3162,35 +2865,6 @@ class StreamingChatTask(QRunnable):
             on_telemetry=self._log_pdf_summary_telemetry,
         )
 
-    def _log_pdf_summary_telemetry(self, telemetry: Dict[str, Any]) -> None:
-        payload = dict(telemetry or {})
-        if not payload:
-            return
-        ok = bool(payload.get("ok"))
-        if ok:
-            logger.info(
-                "annolid-bot pdf summarize session=%s model=%s ok=1 cache_hit=%d pages=%s text_chars=%s extract_ms=%.1f summary_ms=%.1f total_ms=%.1f path=%s cache=%s",
-                self.session_id,
-                self.model,
-                int(bool(payload.get("cache_hit"))),
-                int(payload.get("pages_scanned") or 0),
-                int(payload.get("text_chars") or 0),
-                float(payload.get("extract_ms") or 0.0),
-                float(payload.get("summary_ms") or 0.0),
-                float(payload.get("total_ms") or 0.0),
-                str(payload.get("pdf_path") or ""),
-                str(payload.get("cache_path") or ""),
-            )
-            return
-        logger.warning(
-            "annolid-bot pdf summarize session=%s model=%s ok=0 reason=%s total_ms=%.1f path=%s",
-            self.session_id,
-            self.model,
-            str(payload.get("reason") or "unknown"),
-            float(payload.get("total_ms") or 0.0),
-            str(payload.get("pdf_path") or ""),
-        )
-
     def _upgrade_pdf_summary_response(self, text: str) -> str:
         if not self._looks_like_pdf_summary_request(self.prompt):
             return text
@@ -3544,164 +3218,6 @@ class StreamingChatTask(QRunnable):
             fallback_payload.setdefault("sam3_error", sam3_error)
         return fallback_payload
 
-    def _resolve_gui_track_fallback_model_name(self) -> str:
-        host = self.host_window_widget or self.window()
-        combo = getattr(host, "_selectAiModelComboBox", None)
-        candidates: list[str] = []
-        current = ""
-        if combo is not None:
-            try:
-                current = str(combo.currentText() or "").strip()
-                for index in range(int(combo.count())):
-                    item = str(combo.itemText(index) or "").strip()
-                    if not item or item.lower() == "sam3":
-                        continue
-                    if item not in candidates:
-                        candidates.append(item)
-            except Exception:
-                current = ""
-                candidates = []
-        if current and current.lower() != "sam3":
-            return current
-        if candidates:
-            return candidates[0]
-        return "Cutie"
-
-    def _tool_sam3_agent_video_track(
-        self,
-        *,
-        video_path: str,
-        agent_prompt: str,
-        window_size: int = 5,
-        stride: int | None = None,
-        output_dir: str | None = None,
-        summary_filename: str | None = None,
-        checkpoint_path: str | None = None,
-        propagation_direction: str = "forward",
-        device: str | None = None,
-        agent_det_thresh: float = 0.3,
-        score_threshold_detection: float | None = None,
-        new_det_thresh: float | None = None,
-        max_num_objects: int = 16,
-        multiplex_count: int = 16,
-        compile_model: bool = False,
-        offload_video_to_cpu: bool = True,
-        use_explicit_window_reseed: bool = True,
-        boundary_mask_match_iou_threshold: float = 0.2,
-        allow_private_state_mutation: bool = False,
-        reject_implausible_masks: bool = False,
-        llm_provider: str = "",
-        llm_model: str = "",
-        llm_profile: str = "",
-        max_generations: int = 100,
-        debug: bool = False,
-        dry_run: bool = False,
-    ) -> Dict[str, Any]:
-        raw_result = sam3_agent_video_track_tool(
-            allowed_dir=Path(self.workspace),
-            allowed_read_roots=self._vcs_read_roots(),
-            video_path=video_path,
-            agent_prompt=agent_prompt,
-            window_size=window_size,
-            stride=stride,
-            output_dir=output_dir,
-            summary_filename=summary_filename,
-            checkpoint_path=checkpoint_path,
-            propagation_direction=propagation_direction,
-            device=device,
-            agent_det_thresh=agent_det_thresh,
-            score_threshold_detection=score_threshold_detection,
-            new_det_thresh=new_det_thresh,
-            max_num_objects=max_num_objects,
-            multiplex_count=multiplex_count,
-            compile_model=compile_model,
-            offload_video_to_cpu=offload_video_to_cpu,
-            use_explicit_window_reseed=use_explicit_window_reseed,
-            boundary_mask_match_iou_threshold=boundary_mask_match_iou_threshold,
-            allow_private_state_mutation=allow_private_state_mutation,
-            reject_implausible_masks=reject_implausible_masks,
-            llm_provider=llm_provider,
-            llm_model=llm_model,
-            llm_profile=llm_profile,
-            max_generations=max_generations,
-            debug=debug,
-            dry_run=dry_run,
-        )
-        if isinstance(raw_result, dict):
-            return raw_result
-        try:
-            parsed = json.loads(str(raw_result or ""))
-        except Exception as exc:
-            return {
-                "ok": False,
-                "error": f"Failed to parse SAM3 agent tracking response: {exc}",
-                "video_path": str(video_path or "").strip(),
-                "agent_prompt": str(agent_prompt or "").strip(),
-            }
-        if isinstance(parsed, dict):
-            return parsed
-        return {
-            "ok": False,
-            "error": "SAM3 agent tracking returned an unexpected response.",
-            "video_path": str(video_path or "").strip(),
-            "agent_prompt": str(agent_prompt or "").strip(),
-        }
-
-    def _tool_gui_sam3_agent_video_track(
-        self,
-        *,
-        video_path: str,
-        agent_prompt: str,
-        **kwargs: Any,
-    ) -> Dict[str, Any]:
-        def invoke_segment_track(
-            vpath: str,
-            prompt: str,
-            mode_norm: str,
-            countgd: bool,
-            model: str,
-            frame: int,
-        ) -> bool:
-            return self._invoke_widget_slot(
-                "bot_segment_track_video",
-                QtCore.Q_ARG(str, vpath),
-                QtCore.Q_ARG(str, prompt),
-                QtCore.Q_ARG(str, mode_norm),
-                QtCore.Q_ARG(bool, countgd),
-                QtCore.Q_ARG(str, model),
-                QtCore.Q_ARG(int, frame),
-            )
-
-        try:
-            payload = self._tool_sam3_agent_video_track(
-                video_path=video_path,
-                agent_prompt=agent_prompt,
-                **kwargs,
-            )
-        except Exception as exc:
-            return self._fallback_from_sam3_agent_to_gui_tracking(
-                path=video_path,
-                text_prompt=agent_prompt,
-                mode="track",
-                use_countgd=False,
-                to_frame=None,
-                invoke_segment_track=invoke_segment_track,
-                sam3_error=str(exc),
-            )
-        if isinstance(payload, dict) and bool(payload.get("ok", False)):
-            return payload
-        return self._fallback_from_sam3_agent_to_gui_tracking(
-            path=video_path,
-            text_prompt=agent_prompt,
-            mode="track",
-            use_countgd=False,
-            to_frame=None,
-            invoke_segment_track=invoke_segment_track,
-            sam3_error=str(
-                (payload or {}).get("error") or "SAM3 agent returned failure."
-            ),
-        )
-
     def _resolve_behavior_labeling_llm_route(
         self,
         *,
@@ -3746,113 +3262,8 @@ class StreamingChatTask(QRunnable):
             llm_provider=llm_provider,
             llm_model=llm_model,
         )
-
-        def _normalize_instance_count(value: Any) -> Optional[int]:
-            try:
-                parsed = int(value)
-            except Exception:
-                return None
-            return parsed if parsed > 0 else None
-
-        def _invoke_label_behavior_slot(
-            resolved_path: str,
-            labels: str,
-            use_defined: bool,
-            mode_norm: str,
-            frames: int,
-            seconds: float,
-            sample_frames: int,
-            max_seg: int,
-            subj: str,
-            overwrite: bool,
-            profile: str,
-            provider: str,
-            model: str,
-            video_description_text: str,
-            instance_count_value: Optional[int],
-            experiment_context_text: str,
-            behavior_definitions_text: str,
-            focus_points_text: str,
-            subject_term_text: str,
-        ) -> bool:
-            json_payload = json.dumps(
-                {
-                    "video_path": str(resolved_path),
-                    "behavior_labels_csv": str(labels),
-                    "use_defined_behavior_list": bool(use_defined),
-                    "segment_mode": str(mode_norm),
-                    "segment_frames": int(frames),
-                    "segment_seconds": float(seconds),
-                    "sample_frames_per_segment": int(sample_frames),
-                    "max_segments": int(max_seg),
-                    "subject": str(subj),
-                    "overwrite_existing": bool(overwrite),
-                    "llm_profile": str(profile),
-                    "llm_provider": str(provider),
-                    "llm_model": str(model),
-                    "video_description": str(video_description_text or "").strip(),
-                    "instance_count": (
-                        int(instance_count_value)
-                        if instance_count_value is not None
-                        and int(instance_count_value) > 0
-                        else 0
-                    ),
-                    "experiment_context": str(experiment_context_text or "").strip(),
-                    "behavior_definitions": str(
-                        behavior_definitions_text or ""
-                    ).strip(),
-                    "focus_points": str(focus_points_text or "").strip(),
-                    "subject_term": str(subject_term_text or "").strip(),
-                }
-            )
-            json_result = self._invoke_widget_json_slot(
-                "bot_label_behavior_segments_json",
-                QtCore.Q_ARG(str, json_payload),
-            )
-            if bool(json_result.get("ok", False)):
-                return True
-            if not bool(json_result.get("transport_error", False)):
-                # The JSON slot executed and returned a semantic failure payload.
-                # Do not fall back to positional signatures (which can emit noisy
-                # invoke warnings). Let downstream action-result handling report
-                # the real error to the user.
-                return True
-            # Prefer the current signature (includes use_defined_behavior_list).
-            ok = self._invoke_widget_slot(
-                "bot_label_behavior_segments",
-                QtCore.Q_ARG(str, resolved_path),
-                QtCore.Q_ARG(str, labels),
-                QtCore.Q_ARG(bool, bool(use_defined)),
-                QtCore.Q_ARG(str, mode_norm),
-                QtCore.Q_ARG(int, frames),
-                QtCore.Q_ARG(float, float(seconds)),
-                QtCore.Q_ARG(int, int(sample_frames)),
-                QtCore.Q_ARG(int, max_seg),
-                QtCore.Q_ARG(str, subj),
-                QtCore.Q_ARG(bool, overwrite),
-                QtCore.Q_ARG(str, profile),
-                QtCore.Q_ARG(str, provider),
-                QtCore.Q_ARG(str, model),
-            )
-            if ok:
-                return True
-            # Backward-compatibility: older widgets may not yet include
-            # the use_defined_behavior_list bool parameter.
-            return self._invoke_widget_slot(
-                "bot_label_behavior_segments",
-                QtCore.Q_ARG(str, resolved_path),
-                QtCore.Q_ARG(str, labels),
-                QtCore.Q_ARG(str, mode_norm),
-                QtCore.Q_ARG(int, frames),
-                QtCore.Q_ARG(float, float(seconds)),
-                QtCore.Q_ARG(int, int(sample_frames)),
-                QtCore.Q_ARG(int, max_seg),
-                QtCore.Q_ARG(str, subj),
-                QtCore.Q_ARG(bool, overwrite),
-                QtCore.Q_ARG(str, profile),
-                QtCore.Q_ARG(str, provider),
-                QtCore.Q_ARG(str, model),
-            )
+        _normalize_instance_count = self._normalize_positive_instance_count
+        _invoke_label_behavior_slot = self._invoke_label_behavior_segments_slot
 
         if frames_per_grid is not None:
             sample_frames_per_segment = int(frames_per_grid)
@@ -3918,368 +3329,6 @@ class StreamingChatTask(QRunnable):
                 subject_term_text=str(subject_term_text or ""),
             ),
             get_action_result=self._get_widget_action_result,
-        )
-
-    def _tool_gui_process_video_behaviors(
-        self,
-        *,
-        path: str,
-        text_prompt: str = "animal",
-        mode: str = "track",
-        use_countgd: bool = False,
-        model_name: str = "",
-        to_frame: Optional[int] = None,
-        behavior_labels: Any = None,
-        use_defined_behavior_list: bool = True,
-        segment_mode: str = "timeline",
-        segment_frames: int = 60,
-        segment_seconds: Optional[float] = None,
-        sample_frames_per_segment: int = 4,
-        frames_per_grid: Optional[int] = None,
-        max_segments: int = 0,
-        subject: str = "Agent",
-        subject_term: str = "",
-        overwrite_existing: bool = False,
-        llm_profile: str = "",
-        llm_provider: str = "",
-        llm_model: str = "",
-        video_description: str = "",
-        instance_count: Optional[int] = None,
-        experiment_context: str = "",
-        behavior_definitions: str = "",
-        focus_points: str = "",
-        run_tracking: bool = True,
-        run_behavior_labeling: bool = True,
-    ) -> Dict[str, Any]:
-        llm_provider, llm_model = self._resolve_behavior_labeling_llm_route(
-            llm_provider=llm_provider,
-            llm_model=llm_model,
-        )
-
-        def _normalize_instance_count(value: Any) -> Optional[int]:
-            try:
-                parsed = int(value)
-            except Exception:
-                return None
-            return parsed if parsed > 0 else None
-
-        def _invoke_label_behavior_slot(
-            resolved_path: str,
-            labels: str,
-            use_defined: bool,
-            mode_norm: str,
-            frames: int,
-            seconds: float,
-            sample_frames: int,
-            max_seg: int,
-            subj: str,
-            overwrite: bool,
-            profile: str,
-            provider: str,
-            model: str,
-            video_description_text: str,
-            instance_count_value: Optional[int],
-            experiment_context_text: str,
-            behavior_definitions_text: str,
-            focus_points_text: str,
-            subject_term_text: str,
-        ) -> bool:
-            json_payload = json.dumps(
-                {
-                    "video_path": str(resolved_path),
-                    "behavior_labels_csv": str(labels),
-                    "use_defined_behavior_list": bool(use_defined),
-                    "segment_mode": str(mode_norm),
-                    "segment_frames": int(frames),
-                    "segment_seconds": float(seconds),
-                    "sample_frames_per_segment": int(sample_frames),
-                    "max_segments": int(max_seg),
-                    "subject": str(subj),
-                    "overwrite_existing": bool(overwrite),
-                    "llm_profile": str(profile),
-                    "llm_provider": str(provider),
-                    "llm_model": str(model),
-                    "video_description": str(video_description_text or "").strip(),
-                    "instance_count": (
-                        int(instance_count_value)
-                        if instance_count_value is not None
-                        and int(instance_count_value) > 0
-                        else 0
-                    ),
-                    "experiment_context": str(experiment_context_text or "").strip(),
-                    "behavior_definitions": str(
-                        behavior_definitions_text or ""
-                    ).strip(),
-                    "focus_points": str(focus_points_text or "").strip(),
-                    "subject_term": str(subject_term_text or "").strip(),
-                }
-            )
-            json_result = self._invoke_widget_json_slot(
-                "bot_label_behavior_segments_json",
-                QtCore.Q_ARG(str, json_payload),
-            )
-            if bool(json_result.get("ok", False)):
-                return True
-            if not bool(json_result.get("transport_error", False)):
-                return True
-            ok = self._invoke_widget_slot(
-                "bot_label_behavior_segments",
-                QtCore.Q_ARG(str, resolved_path),
-                QtCore.Q_ARG(str, labels),
-                QtCore.Q_ARG(bool, bool(use_defined)),
-                QtCore.Q_ARG(str, mode_norm),
-                QtCore.Q_ARG(int, frames),
-                QtCore.Q_ARG(float, float(seconds)),
-                QtCore.Q_ARG(int, int(sample_frames)),
-                QtCore.Q_ARG(int, max_seg),
-                QtCore.Q_ARG(str, subj),
-                QtCore.Q_ARG(bool, overwrite),
-                QtCore.Q_ARG(str, profile),
-                QtCore.Q_ARG(str, provider),
-                QtCore.Q_ARG(str, model),
-            )
-            if ok:
-                return True
-            return self._invoke_widget_slot(
-                "bot_label_behavior_segments",
-                QtCore.Q_ARG(str, resolved_path),
-                QtCore.Q_ARG(str, labels),
-                QtCore.Q_ARG(str, mode_norm),
-                QtCore.Q_ARG(int, frames),
-                QtCore.Q_ARG(float, float(seconds)),
-                QtCore.Q_ARG(int, int(sample_frames)),
-                QtCore.Q_ARG(int, max_seg),
-                QtCore.Q_ARG(str, subj),
-                QtCore.Q_ARG(bool, overwrite),
-                QtCore.Q_ARG(str, profile),
-                QtCore.Q_ARG(str, provider),
-                QtCore.Q_ARG(str, model),
-            )
-
-        if frames_per_grid is not None:
-            sample_frames_per_segment = int(frames_per_grid)
-
-        return process_chat_video_behaviors_tool(
-            path=path,
-            text_prompt=text_prompt,
-            mode=mode,
-            use_countgd=use_countgd,
-            model_name=model_name,
-            to_frame=to_frame,
-            behavior_labels=behavior_labels,
-            use_defined_behavior_list=use_defined_behavior_list,
-            segment_mode=segment_mode,
-            segment_frames=segment_frames,
-            segment_seconds=segment_seconds,
-            sample_frames_per_segment=sample_frames_per_segment,
-            max_segments=max_segments,
-            subject=subject,
-            overwrite_existing=overwrite_existing,
-            llm_profile=llm_profile,
-            llm_provider=llm_provider,
-            llm_model=llm_model,
-            video_description=video_description,
-            instance_count=instance_count,
-            experiment_context=experiment_context,
-            behavior_definitions=behavior_definitions,
-            focus_points=focus_points,
-            subject_term=subject_term,
-            run_tracking=run_tracking,
-            run_behavior_labeling=run_behavior_labeling,
-            resolve_video_path=self._resolve_video_path_for_gui_tool,
-            invoke_segment_track=lambda vpath,
-            prompt,
-            mode_norm,
-            countgd,
-            model,
-            frame: self._invoke_widget_slot(
-                "bot_segment_track_video",
-                QtCore.Q_ARG(str, vpath),
-                QtCore.Q_ARG(str, prompt),
-                QtCore.Q_ARG(str, mode_norm),
-                QtCore.Q_ARG(bool, countgd),
-                QtCore.Q_ARG(str, model),
-                QtCore.Q_ARG(int, frame),
-            ),
-            invoke_label_behavior=lambda resolved_path,
-            labels,
-            use_defined,
-            mode_norm,
-            frames,
-            seconds,
-            sample_frames,
-            max_seg,
-            subj,
-            overwrite,
-            profile,
-            provider,
-            model,
-            video_description_text,
-            instance_count_value,
-            experiment_context_text,
-            behavior_definitions_text,
-            focus_points_text,
-            subject_term_text: _invoke_label_behavior_slot(
-                resolved_path=resolved_path,
-                labels=labels,
-                use_defined=bool(use_defined),
-                mode_norm=mode_norm,
-                frames=int(frames),
-                seconds=float(seconds),
-                sample_frames=int(sample_frames),
-                max_seg=int(max_seg),
-                subj=str(subj),
-                overwrite=bool(overwrite),
-                profile=str(profile),
-                provider=str(provider),
-                model=str(model),
-                video_description_text=str(video_description_text or ""),
-                instance_count_value=_normalize_instance_count(instance_count_value),
-                experiment_context_text=str(experiment_context_text or ""),
-                behavior_definitions_text=str(behavior_definitions_text or ""),
-                focus_points_text=str(focus_points_text or ""),
-                subject_term_text=str(subject_term_text or ""),
-            ),
-            get_action_result=self._get_widget_action_result,
-        )
-
-    def _tool_gui_score_aggression_bouts(
-        self,
-        *,
-        path: str,
-        artifacts_ndjson: str = "",
-        run_id: str = "",
-        episode_id: str = "",
-        results_dir: str = "",
-        context_prompt: str = "",
-        assay: str = "",
-        default_assay: str = "aggression",
-        model_policy: str = "annolid_behavior_agent_v1",
-        bout_frame_gap: int = 20,
-        no_memory: bool = False,
-        no_analysis: bool = False,
-        fail_on_validation_error: bool = False,
-    ) -> Dict[str, Any]:
-        return score_chat_aggression_bouts_tool(
-            path=path,
-            artifacts_ndjson=artifacts_ndjson,
-            run_id=run_id,
-            episode_id=episode_id,
-            results_dir=results_dir,
-            context_prompt=context_prompt,
-            assay=assay,
-            default_assay=default_assay,
-            model_policy=model_policy,
-            bout_frame_gap=bout_frame_gap,
-            no_memory=no_memory,
-            no_analysis=no_analysis,
-            fail_on_validation_error=fail_on_validation_error,
-            resolve_video_path=self._resolve_video_path_for_gui_tool,
-        )
-
-    def _tool_gui_behavior_catalog(
-        self,
-        *,
-        action: str,
-        code: str = "",
-        name: str = "",
-        description: str = "",
-        category_id: str = "",
-        modifier_ids: Any = None,
-        key_binding: str = "",
-        is_state: Optional[bool] = None,
-        exclusive_with: Any = None,
-        save: bool = True,
-    ) -> Dict[str, Any]:
-        def _invoke_behavior_catalog_slot(payload_json: str) -> bool:
-            return self._invoke_widget_json_slot(
-                "bot_manage_behavior_catalog_json",
-                QtCore.Q_ARG(str, payload_json),
-            )
-
-        return gui_behavior_catalog_tool(
-            action=action,
-            code=code,
-            name=name,
-            description=description,
-            category_id=category_id,
-            modifier_ids=modifier_ids,
-            key_binding=key_binding,
-            is_state=is_state,
-            exclusive_with=exclusive_with,
-            save=save,
-            invoke_behavior_catalog=_invoke_behavior_catalog_slot,
-            get_action_result=self._get_widget_action_result,
-        )
-
-    def _tool_gui_analyze_tracking_stats(
-        self,
-        *,
-        root_dir: str = "",
-        output_dir: str = "",
-        video_id: str = "",
-        top_k: int = 10,
-        include_plots: bool = True,
-    ) -> Dict[str, Any]:
-        initial_root = None
-        host = getattr(self.widget, "host_window_widget", None) if self.widget else None
-        if host is not None:
-            for attr in ("video_results_folder", "annotation_dir", "lastOpenDir"):
-                raw = getattr(host, attr, None)
-                text = str(raw or "").strip()
-                if text:
-                    initial_root = Path(text).expanduser()
-                    break
-        if initial_root is None:
-            initial_root = Path(self.workspace).expanduser()
-        return gui_analyze_chat_tracking_stats_tool(
-            root_dir=root_dir,
-            output_dir=output_dir,
-            video_id=video_id,
-            top_k=top_k,
-            include_plots=include_plots,
-            default_root_dir=initial_root,
-        )
-
-    def _tool_gui_correct_tracking_ndjson(
-        self,
-        *,
-        ndjson_path: str,
-        source_ndjson_path: str = "",
-        output_ndjson_path: str = "",
-        video_path: str = "",
-        agent_prompt: str = "",
-        run_sam3_agent: bool = False,
-        window_size: int = 5,
-        stride: Optional[int] = None,
-        replace_only_empty_shapes: bool = True,
-        allow_append_new_frames: bool = False,
-        replace_all_shapes: bool = False,
-        temporal_repair: bool = False,
-        start_frame: int = 0,
-        expected_instance_count: Optional[int] = None,
-        max_gap_frames: int = 5,
-        max_match_distance: float = 80.0,
-    ) -> Dict[str, Any]:
-        return gui_correct_tracking_ndjson_tool(
-            ndjson_path=ndjson_path,
-            source_ndjson_path=source_ndjson_path,
-            output_ndjson_path=output_ndjson_path,
-            video_path=video_path,
-            agent_prompt=agent_prompt,
-            run_sam3_agent=run_sam3_agent,
-            window_size=window_size,
-            stride=stride,
-            replace_only_empty_shapes=replace_only_empty_shapes,
-            allow_append_new_frames=allow_append_new_frames,
-            replace_all_shapes=replace_all_shapes,
-            temporal_repair=temporal_repair,
-            start_frame=start_frame,
-            expected_instance_count=expected_instance_count,
-            max_gap_frames=max_gap_frames,
-            max_match_distance=max_match_distance,
-            allowed_dir=Path(self.workspace),
-            allowed_read_roots=self._vcs_read_roots(),
         )
 
     def _get_widget_action_result(self, action_name: str) -> Dict[str, Any]:
@@ -5325,8 +4374,11 @@ class StreamingChatTask(QRunnable):
                     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                     snapshot_file = snapshots_dir / f"camera_probe_{stamp}.jpg"
                     if frame is not None:
+                        safe_source_label = gui_redact_camera_source_for_bot_display(
+                            str(source)
+                        )
                         annotated_snapshot = _annotate_snapshot_frame(
-                            frame, str(source)
+                            frame, safe_source_label
                         )
                     if frame is not None and cv2.imwrite(str(snapshot_file), frame):
                         snapshot_path = str(snapshot_file)

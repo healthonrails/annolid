@@ -1586,6 +1586,7 @@ class MenuController:
                 actions["project_schema"],
                 actions["pose_schema"],
                 actions["open_agent_workspace_onboarding"],
+                actions["open_agent_capabilities"],
                 actions["open_memory_manager"],
             ),
             (actions["toggle_pose_bbox_save"],),

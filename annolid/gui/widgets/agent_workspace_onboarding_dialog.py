@@ -133,14 +133,20 @@ class AgentWorkspaceOnboardingDialog(QtWidgets.QDialog):
         )
 
     def _run_preview(self) -> None:
-        payload = self._build_onboard_payload(force_dry_run=True)
+        try:
+            payload = self._build_onboard_payload(force_dry_run=True)
+        except Exception as exc:
+            self.summary_label.setText(f"Preview failed: {exc}")
+            return
         self._render_onboard_result(payload, title="Preview completed.")
-        self._refresh_status()
 
     def _run_apply(self) -> None:
-        payload = self._build_onboard_payload(force_dry_run=False)
+        try:
+            payload = self._build_onboard_payload(force_dry_run=False)
+        except Exception as exc:
+            self.summary_label.setText(f"Apply failed: {exc}")
+            return
         self._render_onboard_result(payload, title="Apply completed.")
-        self._refresh_status()
 
     def _restore_latest_backup(self) -> None:
         dry_run = bool(self.dry_run_check.isChecked())
@@ -155,17 +161,24 @@ class AgentWorkspaceOnboardingDialog(QtWidgets.QDialog):
             )
             if answer != QtWidgets.QMessageBox.Yes:
                 return
-        payload = restore_agent_workspace_backup(
-            workspace=self._workspace(),
-            latest=True,
-            dry_run=dry_run,
-            backup_before_restore=True,
-        )
+        try:
+            payload = restore_agent_workspace_backup(
+                workspace=self._workspace(),
+                latest=True,
+                dry_run=dry_run,
+                backup_before_restore=True,
+            )
+        except Exception as exc:
+            self.summary_label.setText(f"Restore failed: {exc}")
+            return
         self._render_restore_result(payload)
-        self._refresh_status()
 
     def _refresh_status(self) -> None:
-        payload = get_agent_status(workspace=self._workspace())
+        try:
+            payload = get_agent_status(workspace=self._workspace())
+        except Exception as exc:
+            self.summary_label.setText(f"Status refresh failed: {exc}")
+            return
         templates = dict(payload.get("workspace_templates") or {})
         rows = []
         missing = 0
