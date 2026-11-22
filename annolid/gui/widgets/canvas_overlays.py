@@ -2,16 +2,114 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+import hashlib
+from typing import Any, Callable, Iterable
+
 import numpy as np
-from qtpy import QtCore, QtGui
+from qtpy import QtCore, QtGui, QtWidgets
 
 from annolid.annotation.pose_schema import PoseSchema
 
 _CURSOR_POINT = QtCore.Qt.PointingHandCursor
 
+_VALID_BEHAVIOR_OVERLAY_POSITIONS = frozenset(
+    {"top_left", "top_right", "bottom_left", "bottom_right"}
+)
 
-class CanvasOverlayMixin:
-    """Pose skeleton, RGBA preview maps, explicit landmark pairs, and behavior banner."""
+_FALLBACK_BEHAVIOR_PALETTE: tuple[tuple[int, int, int], ...] = (
+    (56, 189, 248),  # sky
+    (52, 211, 153),  # emerald
+    (251, 191, 36),  # amber
+    (248, 113, 113),  # coral
+    (167, 139, 250),  # violet
+    (244, 114, 182),  # rose
+    (45, 212, 191),  # teal
+    (251, 146, 60),  # orange
+    (96, 165, 250),  # blue
+    (163, 230, 53),  # lime
+    (232, 121, 249),  # fuchsia
+    (129, 140, 248),  # indigo
+)
+
+
+@dataclass(frozen=True)
+class BehaviorOverlayItem:
+    """Structured behavior badge rendered by CanvasOverlayMixin."""
+
+    label: str
+    kind: str = "state"  # "state", "point", or "skipped"
+    subject: str | None = None
+    color: tuple[int, int, int] | None = None
+
+
+@dataclass(frozen=True)
+class _PositionedBehaviorPill:
+    """Layout result for a single rendered behavior pill."""
+
+    rect: QtCore.QRectF
+    text: str
+    item: BehaviorOverlayItem | None
+    is_overflow: bool
+    dot_diameter: float
+    dot_gap: float
+    pad_x: float
+
+
+def _normalize_rgb_tuple(value: Any) -> tuple[int, int, int] | None:
+    if value is None:
+        return None
+    if isinstance(value, QtGui.QColor):
+        if value.isValid():
+            return (value.red(), value.green(), value.blue())
+        return None
+    if isinstance(value, str):
+        color = QtGui.QColor(value.strip())
+        if color.isValid():
+            return (color.red(), color.green(), color.blue())
+        return None
+    if isinstance(value, (tuple, list)) and len(value) >= 3:
+        try:
+            r = max(0, min(255, int(value[0])))
+            g = max(0, min(255, int(value[1])))
+            b = max(0, min(255, int(value[2])))
+            return (r, g, b)
+        except Exception:
+            return None
+    return None
+
+
+class BehaviorOverlayMixin:
+    """Shared viewport-pinned, color-coded behavior pill overlay for Canvas and TiledImageView."""
+
+    def _init_behavior_overlay_state(
+        self,
+        *,
+        show_behavior_overlay: bool = True,
+        behavior_overlay_position: str = "top_left",
+    ) -> None:
+        raw_pos = str(behavior_overlay_position or "top_left").strip().lower()
+        self.behavior_text_color = QtGui.QColor(248, 250, 252)
+        self.behavior_text_background = QtGui.QColor(18, 22, 28, 205)
+        self.current_behavior_text = None
+        self._show_behavior_overlay = bool(show_behavior_overlay)
+        self._behavior_overlay_position = (
+            raw_pos if raw_pos in _VALID_BEHAVIOR_OVERLAY_POSITIONS else "top_left"
+        )
+        self._behavior_overlay_items = None
+        self._behavior_color_provider = None
+        self._last_behavior_overlay_rects: list[QtCore.QRectF] = []
+
+    def _request_behavior_overlay_repaint(self) -> None:
+        self.update()
+
+    def _notify_behavior_overlay_changed(self) -> None:
+        signal = getattr(self, "behaviorOverlayChanged", None)
+        if signal is not None and hasattr(signal, "emit"):
+            try:
+                signal.emit()
+            except Exception:
+                pass
 
     def setBehaviorText(self, text):
         normalized = str(text).strip() if text is not None else None
@@ -20,7 +118,512 @@ class CanvasOverlayMixin:
         if normalized == self.current_behavior_text:
             return
         self.current_behavior_text = normalized
-        self.update()
+        # Clear any stale structured items when callers update via plain text.
+        self._behavior_overlay_items = None
+        self._request_behavior_overlay_repaint()
+        self._notify_behavior_overlay_changed()
+
+    def setBehaviorOverlayItems(
+        self, items: Iterable[BehaviorOverlayItem] | None
+    ) -> None:
+        """Attach rich behavior badge metadata (kind, subject, color) for canvas rendering."""
+        if items is None:
+            normalized_items = None
+        else:
+            cleaned: list[BehaviorOverlayItem] = []
+            for entry in items:
+                if not isinstance(entry, BehaviorOverlayItem):
+                    continue
+                label = str(entry.label or "").strip()
+                if not label:
+                    continue
+                kind = str(entry.kind or "state").strip().lower()
+                if kind not in {"state", "point", "skipped"}:
+                    kind = "state"
+                subject = (
+                    (str(entry.subject).strip() or None) if entry.subject else None
+                )
+                color = _normalize_rgb_tuple(entry.color)
+                cleaned.append(
+                    BehaviorOverlayItem(
+                        label=label,
+                        kind=kind,
+                        subject=subject,
+                        color=color,
+                    )
+                )
+            normalized_items = tuple(cleaned) if cleaned else None
+        if normalized_items == getattr(self, "_behavior_overlay_items", None):
+            return
+        self._behavior_overlay_items = normalized_items
+        self._request_behavior_overlay_repaint()
+        self._notify_behavior_overlay_changed()
+
+    def setBehaviorColorProvider(self, provider: Callable[[str], Any] | None) -> None:
+        """Register an optional label -> RGB/QColor resolver for behavior pills."""
+        self._behavior_color_provider = provider
+        if self.hasBehaviorOverlay():
+            self._request_behavior_overlay_repaint()
+        self._notify_behavior_overlay_changed()
+
+    def showBehaviorOverlay(self) -> bool:
+        return bool(getattr(self, "_show_behavior_overlay", True))
+
+    def setShowBehaviorOverlay(self, enabled: bool) -> None:
+        flag = bool(enabled)
+        if flag == bool(getattr(self, "_show_behavior_overlay", True)):
+            return
+        self._show_behavior_overlay = flag
+        self._request_behavior_overlay_repaint()
+        self._notify_behavior_overlay_changed()
+
+    def behaviorOverlayPosition(self) -> str:
+        pos = str(getattr(self, "_behavior_overlay_position", "top_left") or "top_left")
+        return pos if pos in _VALID_BEHAVIOR_OVERLAY_POSITIONS else "top_left"
+
+    def setBehaviorOverlayPosition(self, position: str) -> None:
+        normalized = str(position or "top_left").strip().lower()
+        if normalized not in _VALID_BEHAVIOR_OVERLAY_POSITIONS:
+            raise ValueError(
+                f"Unsupported behavior overlay position: {position!r}. "
+                f"Expected one of {sorted(_VALID_BEHAVIOR_OVERLAY_POSITIONS)}."
+            )
+        if normalized == self.behaviorOverlayPosition():
+            return
+        self._behavior_overlay_position = normalized
+        if self.hasBehaviorOverlay():
+            self._request_behavior_overlay_repaint()
+        self._notify_behavior_overlay_changed()
+
+    def _resolved_behavior_overlay_items(self) -> tuple[BehaviorOverlayItem, ...]:
+        structured = getattr(self, "_behavior_overlay_items", None)
+        if structured:
+            return tuple(structured)
+        raw_text = getattr(self, "current_behavior_text", None)
+        if not raw_text:
+            return ()
+        items: list[BehaviorOverlayItem] = []
+        seen: set[str] = set()
+        for part in str(raw_text).split(","):
+            label = part.strip()
+            if not label or label in seen:
+                continue
+            seen.add(label)
+            items.append(BehaviorOverlayItem(label=label, kind="state"))
+        return tuple(items)
+
+    def hasBehaviorOverlay(self) -> bool:
+        """Return True when the viewer currently has visible behavior badges to paint."""
+        if not self.showBehaviorOverlay():
+            return False
+        return bool(self._resolved_behavior_overlay_items())
+
+    def _resolve_behavior_accent_color(self, item: BehaviorOverlayItem) -> QtGui.QColor:
+        rgb = item.color
+        if rgb is None:
+            provider = getattr(self, "_behavior_color_provider", None)
+            if callable(provider):
+                try:
+                    rgb = _normalize_rgb_tuple(provider(item.label))
+                except Exception:
+                    rgb = None
+        if rgb is None:
+            digest = hashlib.md5(item.label.lower().encode("utf-8")).hexdigest()
+            rgb = _FALLBACK_BEHAVIOR_PALETTE[
+                int(digest, 16) % len(_FALLBACK_BEHAVIOR_PALETTE)
+            ]
+
+        r, g, b = rgb
+        if item.kind == "skipped" and item.label.lower() in {
+            "no_behavior",
+            "unclassified",
+            "background",
+            "none",
+        }:
+            return QtGui.QColor(148, 163, 184)
+
+        # Lift overly dark label colors so indicator dot & border stay legible on dark pills.
+        luminance = 0.299 * r + 0.587 * g + 0.114 * b
+        if luminance < 92.0:
+            blend = 0.48
+            r = int(round(r + (255 - r) * blend))
+            g = int(round(g + (255 - g) * blend))
+            b = int(round(b + (255 - b) * blend))
+        return QtGui.QColor(r, g, b)
+
+    def _enclosing_scroll_viewport(self) -> QtWidgets.QWidget | None:
+        """Return the enclosing QScrollArea viewport if Canvas is scrolled inside one."""
+        try:
+            parent = self.parentWidget()
+            for _ in range(4):
+                if parent is None:
+                    break
+                grandparent = parent.parentWidget()
+                if isinstance(grandparent, QtWidgets.QScrollArea):
+                    viewport = grandparent.viewport()
+                    if viewport is parent:
+                        return viewport
+                parent = grandparent
+        except Exception:
+            return None
+        return None
+
+    def _behavior_overlay_anchor_rect(self, painter: QtGui.QPainter) -> QtCore.QRectF:
+        """Return the visible anchor rectangle in widget-logical coordinates."""
+        device = painter.device()
+        vp_rect = painter.viewport()
+        if isinstance(device, (QtGui.QImage, QtGui.QPixmap)) and hasattr(
+            device, "devicePixelRatioF"
+        ):
+            try:
+                dpr = max(1.0, float(device.devicePixelRatioF()))
+            except Exception:
+                dpr = 1.0
+            vp_w = float(vp_rect.width()) / dpr
+            vp_h = float(vp_rect.height()) / dpr
+        else:
+            vp_w = float(vp_rect.width())
+            vp_h = float(vp_rect.height())
+
+        if device is self and self.width() > 0 and self.height() > 0:
+            widget_rect = QtCore.QRectF(
+                0.0, 0.0, float(self.width()), float(self.height())
+            )
+        elif vp_w > 0.0 and vp_h > 0.0:
+            widget_rect = QtCore.QRectF(0.0, 0.0, vp_w, vp_h)
+        else:
+            widget_rect = QtCore.QRectF(
+                0.0,
+                0.0,
+                float(max(self.width(), 1)),
+                float(max(self.height(), 1)),
+            )
+
+        visible_rect = QtCore.QRectF(widget_rect)
+        if device is self:
+            viewport = self._enclosing_scroll_viewport()
+            if viewport is not None and viewport.width() > 0 and viewport.height() > 0:
+                try:
+                    origin = self.mapFrom(viewport, QtCore.QPoint(0, 0))
+                    vp_in_canvas = QtCore.QRectF(
+                        float(origin.x()),
+                        float(origin.y()),
+                        float(viewport.width()),
+                        float(viewport.height()),
+                    )
+                    clipped = widget_rect.intersected(vp_in_canvas)
+                    if clipped.width() >= 40.0 and clipped.height() >= 24.0:
+                        visible_rect = clipped
+                except Exception:
+                    pass
+
+        pixmap = getattr(self, "pixmap", None)
+        if pixmap is not None and not pixmap.isNull():
+            try:
+                scale = max(float(getattr(self, "scale", 1.0) or 1.0), 1e-6)
+                offset = self.offsetToCenter()
+                img_rect = QtCore.QRectF(
+                    float(offset.x()) * scale,
+                    float(offset.y()) * scale,
+                    float(pixmap.width()) * scale,
+                    float(pixmap.height()) * scale,
+                )
+                frame_visible = visible_rect.intersected(img_rect)
+                if frame_visible.width() >= 180.0 and frame_visible.height() >= 64.0:
+                    return frame_visible
+            except Exception:
+                pass
+        return visible_rect
+
+    @staticmethod
+    def _behavior_overlay_font(anchor_rect: QtCore.QRectF) -> QtGui.QFont:
+        ref_dim = min(max(anchor_rect.width(), 1.0), max(anchor_rect.height(), 1.0))
+        font_px = int(round(max(11.0, min(16.0, ref_dim * 0.025))))
+        font = QtGui.QFont()
+        font.setPixelSize(font_px)
+        font.setBold(True)
+        return font
+
+    def _layout_behavior_pills(
+        self,
+        items: tuple[BehaviorOverlayItem, ...],
+        anchor_rect: QtCore.QRectF,
+        font: QtGui.QFont,
+    ) -> list[_PositionedBehaviorPill]:
+        if not items or anchor_rect.width() <= 4.0 or anchor_rect.height() <= 4.0:
+            return []
+
+        ref_dim = min(max(anchor_rect.width(), 1.0), max(anchor_rect.height(), 1.0))
+        margin = max(8.0, min(14.0, round(ref_dim * 0.02)))
+        avail_w = max(48.0, anchor_rect.width() - 2.0 * margin)
+        avail_h = max(24.0, anchor_rect.height() - 2.0 * margin)
+
+        metrics = QtGui.QFontMetricsF(font)
+        font_px = max(
+            10.0,
+            float(font.pixelSize() if font.pixelSize() > 0 else metrics.height()),
+        )
+        text_h = max(float(metrics.height()), font_px + 2.0)
+        pad_x = max(8.0, round(font_px * 0.65))
+        pad_y = max(4.0, round(font_px * 0.35))
+        pill_h = text_h + 2.0 * pad_y
+        dot_d = max(6.0, round(font_px * 0.46))
+        dot_gap = max(5.0, round(font_px * 0.42))
+        gap_x = 6.0
+        gap_y = 6.0
+
+        max_rows = max(
+            1,
+            min(3, int((avail_h * 0.38 + gap_y) // (pill_h + gap_y))),
+        )
+        max_text_w = max(24.0, avail_w - 2.0 * pad_x - dot_d - dot_gap)
+
+        def _measure_text(text: str) -> float:
+            return max(
+                float(metrics.horizontalAdvance(text)),
+                float(metrics.boundingRect(text).width()),
+            )
+
+        measured: list[tuple[BehaviorOverlayItem, str, float]] = []
+        for item in items:
+            raw_display = (
+                f"{item.label} \u00b7 {item.subject}" if item.subject else item.label
+            )
+            text_w = _measure_text(raw_display)
+            if text_w > max_text_w:
+                display = metrics.elidedText(
+                    raw_display, QtCore.Qt.ElideRight, max_text_w
+                )
+                text_w = min(max_text_w, _measure_text(display))
+            else:
+                display = raw_display
+            pill_w = min(avail_w, pad_x + dot_d + dot_gap + text_w + pad_x)
+            measured.append((item, display, pill_w))
+
+        # Flow pills into rows, keeping within max_rows and avail_w.
+        rows: list[list[tuple[BehaviorOverlayItem | None, str, float, bool]]] = [[]]
+        row_widths: list[float] = [0.0]
+        overflow_start_idx: int | None = None
+
+        for idx, (item, display, pill_w) in enumerate(measured):
+            cur_row = rows[-1]
+            needed = pill_w if not cur_row else (gap_x + pill_w)
+            if not cur_row or row_widths[-1] + needed <= avail_w + 0.5:
+                cur_row.append((item, display, pill_w, False))
+                row_widths[-1] += needed
+            elif len(rows) < max_rows:
+                rows.append([(item, display, pill_w, False)])
+                row_widths.append(pill_w)
+            else:
+                overflow_start_idx = idx
+                break
+
+        if overflow_start_idx is not None:
+            hidden_count = len(measured) - overflow_start_idx
+            last_row = rows[-1]
+
+            def _overflow_entry(count: int) -> tuple[None, str, float, bool]:
+                label = f"+{count} more"
+                ow = min(avail_w, 2.0 * pad_x + _measure_text(label))
+                return (None, label, ow, True)
+
+            overflow_pill = _overflow_entry(hidden_count)
+            while last_row:
+                current_w = sum(entry[2] for entry in last_row) + gap_x * max(
+                    0, len(last_row) - 1
+                )
+                if current_w + gap_x + overflow_pill[2] <= avail_w + 0.5:
+                    break
+                last_row.pop()
+                hidden_count += 1
+                overflow_pill = _overflow_entry(hidden_count)
+            last_row.append(overflow_pill)
+
+        rows = [row for row in rows if row]
+        if not rows:
+            return []
+
+        position = self.behaviorOverlayPosition()
+        align_right = position.endswith("right")
+        align_bottom = position.startswith("bottom")
+
+        total_h = len(rows) * pill_h + max(0, len(rows) - 1) * gap_y
+        if align_bottom:
+            start_y = max(
+                anchor_rect.top() + margin,
+                anchor_rect.bottom() - margin - total_h,
+            )
+        else:
+            start_y = anchor_rect.top() + margin
+
+        positioned: list[_PositionedBehaviorPill] = []
+        y = start_y
+        for row in rows:
+            row_w = sum(entry[2] for entry in row) + gap_x * max(0, len(row) - 1)
+            if align_right:
+                x = max(
+                    anchor_rect.left() + margin,
+                    anchor_rect.right() - margin - row_w,
+                )
+            else:
+                x = anchor_rect.left() + margin
+            for item, display, pill_w, is_overflow in row:
+                rect = QtCore.QRectF(x, y, pill_w, pill_h)
+                positioned.append(
+                    _PositionedBehaviorPill(
+                        rect=rect,
+                        text=display,
+                        item=item,
+                        is_overflow=is_overflow,
+                        dot_diameter=dot_d,
+                        dot_gap=dot_gap,
+                        pad_x=pad_x,
+                    )
+                )
+                x += pill_w + gap_x
+            y += pill_h + gap_y
+        return positioned
+
+    def _draw_behavior_text_banner(self, painter: QtGui.QPainter) -> None:
+        if not self.showBehaviorOverlay():
+            self._last_behavior_overlay_rects = []
+            return
+        items = self._resolved_behavior_overlay_items()
+        if not items:
+            self._last_behavior_overlay_rects = []
+            return
+
+        painter.save()
+        try:
+            painter.resetTransform()
+            painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
+            try:
+                painter.setRenderHint(QtGui.QPainter.TextAntialiasing, True)
+            except AttributeError:
+                pass
+
+            anchor_rect = self._behavior_overlay_anchor_rect(painter)
+            font = self._behavior_overlay_font(anchor_rect)
+            painter.setFont(font)
+
+            pills = self._layout_behavior_pills(items, anchor_rect, font)
+            self._last_behavior_overlay_rects = [pill.rect for pill in pills]
+            if not pills:
+                return
+
+            base_bg = self.behavior_text_background
+            if base_bg is None:
+                base_bg = QtGui.QColor(18, 22, 28, 205)
+            else:
+                base_bg = QtGui.QColor(base_bg)
+
+            base_fg = (
+                QtGui.QColor(self.behavior_text_color)
+                if self.behavior_text_color is not None
+                else QtGui.QColor(248, 250, 252)
+            )
+
+            for pill in pills:
+                rect = pill.rect
+                radius = min(rect.height() / 2.0, 7.0)
+                kind = pill.item.kind if pill.item is not None else "overflow"
+                accent = (
+                    self._resolve_behavior_accent_color(pill.item)
+                    if pill.item is not None
+                    else QtGui.QColor(148, 163, 184)
+                )
+
+                if base_bg.alpha() > 0:
+                    shadow_color = QtGui.QColor(0, 0, 0, min(90, base_bg.alpha() // 2))
+                    painter.setPen(QtCore.Qt.NoPen)
+                    painter.setBrush(QtGui.QBrush(shadow_color))
+                    painter.drawRoundedRect(rect.translated(0.0, 1.5), radius, radius)
+
+                    pill_bg = QtGui.QColor(base_bg)
+                    if pill.is_overflow:
+                        pill_bg = QtGui.QColor(34, 40, 50, min(220, base_bg.alpha()))
+                        border_pen = QtGui.QPen(QtGui.QColor(255, 255, 255, 75), 1.0)
+                    elif kind == "skipped":
+                        pill_bg.setAlpha(max(60, int(round(base_bg.alpha() * 0.84))))
+                        border_color = QtGui.QColor(accent)
+                        border_color.setAlpha(185)
+                        border_pen = QtGui.QPen(border_color, 1.2, QtCore.Qt.DashLine)
+                    else:
+                        border_color = QtGui.QColor(accent)
+                        border_color.setAlpha(205)
+                        border_pen = QtGui.QPen(border_color, 1.25)
+
+                    painter.setBrush(QtGui.QBrush(pill_bg))
+                    painter.setPen(border_pen)
+                    painter.drawRoundedRect(rect, radius, radius)
+
+                if not pill.is_overflow:
+                    dot_cx = rect.left() + pill.pad_x + pill.dot_diameter / 2.0
+                    dot_cy = rect.center().y()
+                    dot_r = pill.dot_diameter / 2.0
+                    if kind == "point":
+                        diamond_r = dot_r * 1.15
+                        diamond = QtGui.QPolygonF(
+                            [
+                                QtCore.QPointF(dot_cx, dot_cy - diamond_r),
+                                QtCore.QPointF(dot_cx + diamond_r, dot_cy),
+                                QtCore.QPointF(dot_cx, dot_cy + diamond_r),
+                                QtCore.QPointF(dot_cx - diamond_r, dot_cy),
+                            ]
+                        )
+                        painter.setPen(QtCore.Qt.NoPen)
+                        painter.setBrush(QtGui.QBrush(accent))
+                        painter.drawPolygon(diamond)
+                    elif kind == "skipped":
+                        ring_pen = QtGui.QPen(accent, 1.5)
+                        painter.setPen(ring_pen)
+                        painter.setBrush(QtCore.Qt.NoBrush)
+                        painter.drawEllipse(
+                            QtCore.QPointF(dot_cx, dot_cy),
+                            dot_r * 0.9,
+                            dot_r * 0.9,
+                        )
+                    else:
+                        painter.setPen(QtCore.Qt.NoPen)
+                        painter.setBrush(QtGui.QBrush(accent))
+                        painter.drawEllipse(
+                            QtCore.QPointF(dot_cx, dot_cy), dot_r, dot_r
+                        )
+
+                text_left = (
+                    rect.left()
+                    + pill.pad_x
+                    + (0.0 if pill.is_overflow else (pill.dot_diameter + pill.dot_gap))
+                )
+                text_rect = QtCore.QRectF(
+                    text_left,
+                    rect.top(),
+                    max(0.0, rect.right() - pill.pad_x - text_left),
+                    rect.height(),
+                )
+                painter.setPen(QtGui.QPen(QtGui.QColor(0, 0, 0, 175)))
+                painter.drawText(
+                    text_rect.translated(0.0, 1.0),
+                    QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
+                    pill.text,
+                )
+                fg = QtGui.QColor(base_fg)
+                if pill.is_overflow:
+                    fg = QtGui.QColor(215, 224, 236, 240)
+                elif kind == "skipped":
+                    fg.setAlpha(min(fg.alpha(), 225))
+                painter.setPen(QtGui.QPen(fg))
+                painter.drawText(
+                    text_rect,
+                    QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
+                    pill.text,
+                )
+        finally:
+            painter.restore()
+
+
+class CanvasOverlayMixin(BehaviorOverlayMixin):
+    """Pose skeleton, RGBA preview maps, explicit landmark pairs, and behavior banner."""
 
     # ------------------------------------------------------------------
     # Pose skeleton overlay
@@ -295,70 +898,6 @@ class CanvasOverlayMixin:
             pixmap = getattr(self, attr, None)
             if pixmap is not None:
                 painter.drawPixmap(0, 0, pixmap)
-
-    def _draw_behavior_text_banner(self, painter: QtGui.QPainter) -> None:
-        if not self.current_behavior_text:
-            return
-        painter.save()
-        try:
-            painter.resetTransform()
-            if self.pixmap and not self.pixmap.isNull():
-                base_size = min(self.pixmap.width(), self.pixmap.height())
-            else:
-                base_size = min(max(self.width(), 1), max(self.height(), 1))
-            font_size = max(20, base_size // 40)
-
-            font = QtGui.QFont()
-            font.setPointSize(font_size)
-            font.setBold(True)
-            painter.setFont(font)
-
-            metrics = QtGui.QFontMetrics(font)
-            text = self.current_behavior_text
-            text_bounds = metrics.boundingRect(text)
-
-            margin = 12
-            padding_x = 8
-            padding_y = 6
-            background_rect = QtCore.QRect(
-                margin,
-                margin,
-                text_bounds.width() + 2 * padding_x,
-                text_bounds.height() + 2 * padding_y,
-            )
-
-            bg_color = self.behavior_text_background
-            if bg_color is None:
-                bg_color = QtGui.QColor(0, 0, 0, 180)
-            else:
-                bg_color = QtGui.QColor(bg_color)
-
-            if bg_color.alpha() > 0:
-                painter.setPen(QtCore.Qt.NoPen)
-                painter.setBrush(QtGui.QBrush(bg_color))
-                painter.drawRoundedRect(background_rect, 6, 6)
-
-            text_rect = QtCore.QRect(
-                background_rect.left() + padding_x,
-                background_rect.top() + padding_y,
-                text_bounds.width(),
-                text_bounds.height(),
-            )
-            shadow_rect = text_rect.translated(1, 1)
-            painter.setPen(QtGui.QPen(QtGui.QColor(0, 0, 0, 200)))
-            painter.drawText(
-                shadow_rect,
-                QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
-                text,
-            )
-            painter.setPen(QtGui.QPen(QtGui.QColor(self.behavior_text_color)))
-            painter.drawText(
-                text_rect,
-                QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
-                text,
-            )
-        finally:
-            painter.restore()
 
     # ------------------------------------------------------------------
     # Explicit vector-overlay landmark pairs

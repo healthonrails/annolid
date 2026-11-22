@@ -17,6 +17,7 @@ from annolid.gui.large_image_modes import (
     large_image_draw_mode_label,
 )
 from annolid.gui.mixins.shared_polygon_edit_mixin import SharedPolygonEditMixin
+from annolid.gui.widgets.canvas_overlays import BehaviorOverlayMixin
 from annolid.gui.shape import Shape
 from annolid.gui.shape_geometry import (
     circle_from_three_points,
@@ -348,7 +349,9 @@ class _ShapeGraphicsItem(QtWidgets.QGraphicsItem):
                 delattr(self._ann_shape, "_vertex_render_overrides")
 
 
-class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
+class TiledImageView(
+    BehaviorOverlayMixin, SharedPolygonEditMixin, QtWidgets.QGraphicsView
+):
     """Foundation widget for large-image tile rendering."""
 
     overlayLandmarkPairSelected = QtCore.Signal(str)
@@ -457,6 +460,7 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         self.epsilon = 10.0
         self._allow_points_outside_image = False
         self._show_label_names = True
+        self._init_behavior_overlay_state()
         self.setDragMode(QtWidgets.QGraphicsView.ScrollHandDrag)
         self.setRenderHint(QtGui.QPainter.Antialiasing, True)
         self.setRenderHint(QtGui.QPainter.SmoothPixmapTransform, True)
@@ -504,6 +508,48 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
             self.viewport().update()
         except Exception:
             pass
+
+    def _request_behavior_overlay_repaint(self) -> None:
+        try:
+            vp = self.viewport()
+            if vp is not None:
+                vp.update()
+        except Exception:
+            pass
+
+    def _behavior_overlay_anchor_rect(self, painter: QtGui.QPainter) -> QtCore.QRectF:
+        """Anchor behavior pills inside the QGraphicsView viewport, avoiding status HUD overlap."""
+        device = painter.device()
+        vp_rect = painter.viewport()
+        if isinstance(device, (QtGui.QImage, QtGui.QPixmap)) and hasattr(
+            device, "devicePixelRatioF"
+        ):
+            try:
+                dpr = max(1.0, float(device.devicePixelRatioF()))
+            except Exception:
+                dpr = 1.0
+            vp_w = float(vp_rect.width()) / dpr
+            vp_h = float(vp_rect.height()) / dpr
+        else:
+            viewport = self.viewport()
+            if viewport is not None and viewport.width() > 0 and viewport.height() > 0:
+                vp_w = float(viewport.width())
+                vp_h = float(viewport.height())
+            else:
+                vp_w = float(max(vp_rect.width(), self.width(), 1))
+                vp_h = float(max(vp_rect.height(), self.height(), 1))
+
+        anchor = QtCore.QRectF(0.0, 0.0, max(1.0, vp_w), max(1.0, vp_h))
+        if self.behaviorOverlayPosition() == "top_left":
+            status_overlay = getattr(self, "_status_overlay", None)
+            if status_overlay is not None and status_overlay.isVisible():
+                try:
+                    status_bottom = float(status_overlay.geometry().bottom()) + 4.0
+                    if 0.0 < status_bottom < anchor.height() - 40.0:
+                        anchor.setTop(status_bottom)
+                except Exception:
+                    pass
+        return anchor
 
     def _notify_host_large_image_document_changed(self) -> None:
         host = self._host_window
@@ -1139,6 +1185,9 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
         self._last_label_visible_tile_count = 0
         self._current_visible_raster_keys = ()
         self._current_visible_label_keys = ()
+        self.current_behavior_text = None
+        self._behavior_overlay_items = None
+        self._last_behavior_overlay_rects = []
         self._refresh_status_overlay()
         self._notify_host_large_image_document_changed()
 
@@ -3639,6 +3688,8 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
             max(margin, viewport.left() + margin),
             max(margin, viewport.top() + margin),
         )
+        if self.hasBehaviorOverlay():
+            self._request_behavior_overlay_repaint()
 
     def _refresh_status_overlay(self) -> None:
         overlay = getattr(self, "_status_overlay", None)
@@ -3820,14 +3871,17 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
 
     def drawForeground(self, painter, rect):  # pragma: no cover - paint path
         super().drawForeground(painter, rect)
-        if not bool(self._raster_overlay_arrow_mode):
-            return
-        selected = self._selected_raster_overlay_runtime()
-        if selected is None:
-            return
-        _layer_id, runtime = selected
-        if not bool(getattr(runtime, "visible", True)):
-            return
+        if bool(self._raster_overlay_arrow_mode):
+            selected = self._selected_raster_overlay_runtime()
+            if selected is not None:
+                _layer_id, runtime = selected
+                if bool(getattr(runtime, "visible", True)):
+                    self._draw_raster_overlay_arrow_handles(painter, runtime)
+        self._draw_behavior_text_banner(painter)
+
+    def _draw_raster_overlay_arrow_handles(
+        self, painter, runtime
+    ) -> None:  # pragma: no cover - paint path
         corners = self._raster_overlay_scene_corners(runtime)
         nw = corners["nw"]
         ne = corners["ne"]
@@ -3972,11 +4026,15 @@ class TiledImageView(SharedPolygonEditMixin, QtWidgets.QGraphicsView):
             self._queue_visible_tiles_refresh()
             self._notify_host_large_image_document_changed()
         self._position_status_overlay()
+        if self.hasBehaviorOverlay():
+            self._request_behavior_overlay_repaint()
 
     def scrollContentsBy(self, dx: int, dy: int) -> None:
         super().scrollContentsBy(dx, dy)
         self._queue_visible_tiles_refresh()
         self._notify_host_large_image_document_changed()
+        if self.hasBehaviorOverlay():
+            self._request_behavior_overlay_repaint()
 
     def wheelEvent(self, event):
         super().wheelEvent(event)

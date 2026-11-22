@@ -930,6 +930,12 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
             checkable=True,
             checked=bool(canvas_cfg.get("show_label_names", True)),
         )
+        self.actions.toggleShowBehaviorOverlay = self._mk_action(
+            self.tr("Show Behavior Overlay"),
+            getattr(self, "toggleShowBehaviorOverlay", None),
+            checkable=True,
+            checked=bool(canvas_cfg.get("show_behavior_overlay", True)),
+        )
         self.actions.toggleAllowPointsOutsideImage = self._mk_action(
             self.tr("Allow Points Outside Image"),
             getattr(self, "toggleAllowPointsOutsideImage", None),
@@ -3124,6 +3130,7 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
 
         image_path = path
         shapes = []
+        loaded_label_file = None
         deferred_sidecar_label_path: Path | None = None
 
         initial_large_image_page = None
@@ -3134,6 +3141,7 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
                 self.errorMessage(self.tr("Load Error"), str(exc))
                 return
             self.labelFile = label_file
+            loaded_label_file = label_file
             self.otherData = dict(getattr(label_file, "otherData", {}) or {})
             try:
                 initial_large_image_page = int(
@@ -3156,6 +3164,7 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
                     try:
                         label_file = LabelFile(str(candidate))
                         self.labelFile = label_file
+                        loaded_label_file = label_file
                         self.otherData = dict(
                             getattr(label_file, "otherData", {}) or {}
                         )
@@ -3315,6 +3324,7 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
                     label_file = LabelFile(str(deferred_sidecar_label_path))
                     sidecar_json_ms = (perf_counter() - phase_started) * 1000.0
                     self.labelFile = label_file
+                    loaded_label_file = label_file
                     merged_other_data = dict(getattr(self, "otherData", {}) or {})
                     merged_other_data.update(
                         dict(getattr(label_file, "otherData", {}) or {})
@@ -3335,6 +3345,13 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
                 phase_started = perf_counter()
                 self.loadShapes(shapes, replace=True)
                 shape_apply_ms = (perf_counter() - phase_started) * 1000.0
+            if not handled_page_shapes:
+                if loaded_label_file is not None and hasattr(
+                    self, "update_flags_from_file"
+                ):
+                    self.update_flags_from_file(loaded_label_file)
+                elif hasattr(self.canvas, "setBehaviorText"):
+                    self.canvas.setBehaviorText(None)
             self._syncLargeImageDocument()
 
         # Ensure image workflows (Open / Open Dir) activate toolbar actions.

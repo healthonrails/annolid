@@ -292,6 +292,19 @@ def setup_viewers_feature(deps: GuiFeatureDeps) -> ViewersFeatureState:
     scroll_area.setWidget(window._viewer_stack)
     scroll_area.setWidgetResizable(True)
     scroll_area.setAlignment(Qt.AlignCenter)
+
+    def _repaint_behavior_overlay_on_scroll(_value: int) -> None:
+        canvas = getattr(window, "canvas", None)
+        if canvas is not None and callable(getattr(canvas, "hasBehaviorOverlay", None)):
+            if canvas.hasBehaviorOverlay():
+                canvas.update()
+
+    scroll_area.horizontalScrollBar().valueChanged.connect(
+        _repaint_behavior_overlay_on_scroll
+    )
+    scroll_area.verticalScrollBar().valueChanged.connect(
+        _repaint_behavior_overlay_on_scroll
+    )
     window.scrollBars = {
         Qt.Vertical: scroll_area.verticalScrollBar(),
         Qt.Horizontal: scroll_area.horizontalScrollBar(),

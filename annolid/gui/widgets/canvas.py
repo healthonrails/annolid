@@ -117,6 +117,7 @@ class Canvas(
     vertexSelected = QtCore.Signal(bool)
     edgeSelected = QtCore.Signal(bool)
     overlayLandmarkPairSelected = QtCore.Signal(str)
+    behaviorOverlayChanged = QtCore.Signal()
 
     CREATE, EDIT = 0, 1
 
@@ -135,6 +136,10 @@ class Canvas(
             kwargs.pop("allow_points_outside_image", False)
         )
         self._show_label_names = bool(kwargs.pop("show_label_names", True))
+        show_behavior_overlay = bool(kwargs.pop("show_behavior_overlay", True))
+        behavior_overlay_position = str(
+            kwargs.pop("behavior_overlay_position", "top_left") or "top_left"
+        )
         default_crosshair = {
             "polygon": False,
             "rectangle": True,
@@ -249,9 +254,10 @@ class Canvas(
         self._shared_boundary_last_pos = None
 
         # Overlays & behavior banner (used by CanvasOverlayMixin).
-        self.behavior_text_color = QtGui.QColor(255, 255, 255)
-        self.behavior_text_background = QtGui.QColor(0, 0, 0, 180)
-        self.current_behavior_text = None
+        self._init_behavior_overlay_state(
+            show_behavior_overlay=show_behavior_overlay,
+            behavior_overlay_position=behavior_overlay_position,
+        )
         self._patch_similarity_active = False
         self._patch_similarity_callback = None
         self._patch_similarity_pixmap = None
@@ -1939,7 +1945,6 @@ class Canvas(
 
             self.sam_mask.paint(p)
             self._draw_raster_overlays(p)
-            self._draw_behavior_text_banner(p)
 
             # Draw crosshair in image coordinates.
             if (
@@ -2011,6 +2016,7 @@ class Canvas(
             if self.current:
                 self.current.paint(p)
             self._paint_live_preview(p)
+            self._draw_behavior_text_banner(p)
         finally:
             if p.isActive():
                 p.end()

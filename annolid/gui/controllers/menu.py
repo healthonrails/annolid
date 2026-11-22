@@ -1528,6 +1528,7 @@ class MenuController:
                 w.actions.hideAllPolygons,
                 w.actions.toggleAllPolygons,
                 w.actions.toggleShowLabelNames,
+                w.actions.toggleShowBehaviorOverlay,
                 w.actions.toggleAllowPointsOutsideImage,
             ),
             (

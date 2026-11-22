@@ -384,6 +384,43 @@ class BehaviorTimeline:
             if self.is_behavior_active(frame, behavior)
         }
 
+    def active_behavior_subjects(self, frame: int) -> Dict[str, List[str]]:
+        """Return active state behaviors mapped to sorted non-empty active subjects."""
+        by_behavior: Dict[str, Set[str]] = {}
+        for (subj_k, behavior), ranges in self._subject_ranges.items():
+            for start, end in ranges:
+                end_bound = end if end is not None else float("inf")
+                if start <= frame <= end_bound:
+                    subjects = by_behavior.setdefault(behavior, set())
+                    if subj_k:
+                        subjects.add(subj_k)
+                    break
+        return {
+            behavior: sorted(subjects) for behavior, subjects in by_behavior.items()
+        }
+
+    def point_behaviors_at_frame(self, frame: int) -> List[Tuple[str, Optional[str]]]:
+        """Return sorted unique (behavior, subject) pairs for point events at exact frame."""
+        frame_int = int(frame)
+        pairs: Set[Tuple[str, Optional[str]]] = set()
+        for evt in self._events.values():
+            if evt.frame == frame_int and evt.event == "point":
+                behavior = str(evt.behavior or "").strip()
+                if not behavior:
+                    continue
+                subj = (str(evt.subject).strip() or None) if evt.subject else None
+                pairs.add((behavior, subj))
+        return sorted(pairs, key=lambda item: (item[0].lower(), item[1] or ""))
+
+    def distinct_subjects(self) -> Set[str]:
+        """Return all non-empty subject names present across recorded events."""
+        subjects: Set[str] = set()
+        for evt in self._events.values():
+            subj = str(evt.subject).strip() if evt.subject else ""
+            if subj:
+                subjects.add(subj)
+        return subjects
+
     def iter_events(self) -> Iterable[BehaviorEvent]:
         order_rank = {"start": 0, "point": 1, "end": 2}
         vals = list(self._events.values())
@@ -1006,6 +1043,17 @@ class BehaviorController:
     ) -> Set[str]:
         self.timeline.flush_pending()
         return self.timeline.active_behaviors(frame, subject=subject)
+
+    def active_behavior_subjects(self, frame: int) -> Dict[str, List[str]]:
+        self.timeline.flush_pending()
+        return self.timeline.active_behavior_subjects(frame)
+
+    def point_behaviors_at_frame(self, frame: int) -> List[Tuple[str, Optional[str]]]:
+        self.timeline.flush_pending()
+        return self.timeline.point_behaviors_at_frame(frame)
+
+    def distinct_subjects(self) -> Set[str]:
+        return set(self._subjects) | self.timeline.distinct_subjects()
 
     def is_behavior_active(
         self,

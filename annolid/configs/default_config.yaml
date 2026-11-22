@@ -76,6 +76,8 @@ canvas:
   allow_points_outside_image: false
   # Display shape label badges directly on canvas
   show_label_names: true
+  # Display active behavior label pills directly on canvas
+  show_behavior_overlay: true
   # show crosshair
   crosshair:
     polygon: false

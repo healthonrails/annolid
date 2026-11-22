@@ -1759,14 +1759,36 @@ class AnnotationLoadingMixin:
 
         try:
             if isinstance(label_file.flags, dict):
-                new_flags = label_file.flags.copy()
-                flags_in_frame = ",".join(new_flags.keys())
-                self.canvas.setBehaviorText(flags_in_frame)
-                _existing_flags = self.flag_widget._get_existing_flag_names()
-                for _flag in _existing_flags:
-                    if _flag not in new_flags:
-                        new_flags[_flag] = False
-                self.flag_widget.loadFlags(new_flags)
+                new_flags = {
+                    str(key).strip(): bool(val)
+                    for key, val in label_file.flags.items()
+                    if str(key).strip()
+                }
+                active_flags = sorted(
+                    name for name, active in new_flags.items() if active
+                )
+                flags_in_frame = ",".join(active_flags) if active_flags else None
+                flag_widget = getattr(self, "flag_widget", None)
+                if flag_widget is not None and hasattr(
+                    flag_widget, "_get_existing_flag_names"
+                ):
+                    _existing_flags = flag_widget._get_existing_flag_names()
+                    for _flag in _existing_flags:
+                        if _flag not in new_flags:
+                            new_flags[_flag] = False
+                flags_controller = getattr(self, "flags_controller", None)
+                if flags_controller is not None and hasattr(
+                    flags_controller, "load_flags"
+                ):
+                    setattr(self, "_suppress_flags_canvas_sync", True)
+                    try:
+                        flags_controller.load_flags(new_flags)
+                    finally:
+                        setattr(self, "_suppress_flags_canvas_sync", False)
+                elif flag_widget is not None and hasattr(flag_widget, "loadFlags"):
+                    flag_widget.loadFlags(new_flags)
+                if hasattr(self.canvas, "setBehaviorText"):
+                    self.canvas.setBehaviorText(flags_in_frame)
             else:
                 logger.error(f"Invalid flags format: {type(label_file.flags)}")
         except Exception as e:
@@ -2633,12 +2655,14 @@ class AnnotationLoadingMixin:
                 )
 
             try:
+                behavior_text = getattr(self.canvas, "current_behavior_text", None)
                 if (
-                    len(self.canvas.current_behavior_text) > 1
-                    and "other" not in self.canvas.current_behavior_text.lower()
+                    behavior_text
+                    and len(behavior_text) > 1
+                    and "other" not in behavior_text.lower()
                 ):
                     self.add_highlighted_mark(
-                        self.frame_number, mark_type=self.canvas.current_behavior_text
+                        self.frame_number, mark_type=behavior_text
                     )
             except Exception:
                 logger.debug(

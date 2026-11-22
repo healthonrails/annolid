@@ -140,7 +140,6 @@ class FlagsController(QtCore.QObject):
             self._window.record_behavior_event(
                 flag_name, "start", frame_number=self._window.frame_number
             )
-        self._window.canvas.setBehaviorText(flag_name)
         self._window.event_type = flag_name
         self._window._update_modifier_controls_for_behavior(flag_name)
         self.pinned_flags.setdefault(flag_name, False)
@@ -150,6 +149,7 @@ class FlagsController(QtCore.QObject):
             self._widget.loadFlags({flag_name: True})
         else:
             self._widget._update_row_value(flag_name, True)
+        self._update_canvas_text()
         self._emit_flags_changed()
 
     def end_flag(self, flag_name: str, record_event: bool = True) -> None:
@@ -210,8 +210,10 @@ class FlagsController(QtCore.QObject):
             self.end_flag(flag_name, record_event=True)
 
     def _update_canvas_text(self) -> None:
+        if getattr(self._window, "_suppress_flags_canvas_sync", False):
+            return
         text = self.get_current_behavior_text(self.pinned_flags)
-        self._window.canvas.setBehaviorText(text)
+        self._window.canvas.setBehaviorText(text or None)
 
     def _emit_flags_changed(self) -> None:
         self.flagsChanged.emit(dict(self.pinned_flags))

@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from qtpy import QtWidgets
 
+from annolid.gui.widgets.canvas_overlays import BehaviorOverlayItem
 from annolid.gui.widgets.flags import FlagTableWidget
 
 
@@ -118,44 +119,198 @@ class FlagsOverlayMixin:
                 labels.append(label)
         return sorted(set(labels))
 
-    def _refresh_behavior_overlay(self, frame_number: Optional[int] = None) -> None:
-        """Synchronize canvas label and flag widget with timeline behaviors."""
-        target_frame = self.frame_number if frame_number is None else frame_number
-        try:
-            target_frame = int(target_frame)
-        except Exception:
-            target_frame = int(getattr(self, "frame_number", 0) or 0)
-        active_behaviors = set(self.behavior_controller.active_behaviors(target_frame))
-        active_overlay_labels = {
-            str(name).strip() for name in active_behaviors if str(name).strip()
-        }
-        overlay_labels = sorted(
-            active_overlay_labels
-            | set(self._behavior_label_skipped_overlay_labels_for_frame(target_frame))
-        )
-        overlay_text = ",".join(overlay_labels) if overlay_labels else None
-        # Keep canvas text in sync even when active-behavior signature has not changed.
-        self.canvas.setBehaviorText(overlay_text)
-
-        signature = tuple(str(name) for name in overlay_labels)
-        if signature == getattr(self, "_last_behavior_overlay_signature", None):
-            return
-        setattr(self, "_last_behavior_overlay_signature", signature)
-
-        current_flags: Dict[str, bool] = {}
-        table = self.flag_widget._table
-        for row in range(table.rowCount()):
-            name_widget = table.cellWidget(row, FlagTableWidget.COLUMN_NAME)
-            value_widget = table.cellWidget(row, FlagTableWidget.COLUMN_ACTIVE)
-            if isinstance(name_widget, QtWidgets.QLineEdit) and isinstance(
-                value_widget, QtWidgets.QCheckBox
-            ):
-                name = name_widget.text().strip()
+    def _should_display_behavior_subjects(self) -> bool:
+        """Return True when multiple distinct subjects exist in schema or timeline."""
+        subjects: set[str] = set()
+        schema = getattr(self, "project_schema", None)
+        if schema is not None:
+            for subj in getattr(schema, "subjects", None) or ():
+                name = str(
+                    getattr(subj, "name", None) or getattr(subj, "id", None) or ""
+                ).strip()
                 if name:
-                    current_flags[name] = value_widget.isChecked()
+                    subjects.add(name)
+        ctrl = getattr(self, "behavior_controller", None)
+        distinct_fn = getattr(ctrl, "distinct_subjects", None)
+        if callable(distinct_fn):
+            try:
+                for name in distinct_fn():
+                    cleaned = str(name or "").strip()
+                    if cleaned:
+                        subjects.add(cleaned)
+            except Exception:
+                pass
+        return len(subjects) > 1
 
-        for behavior in sorted(self.behavior_controller.behavior_names):
-            current_flags[behavior] = behavior in active_behaviors
+    def _active_frame_label_file_flags(self, managed_behaviors: set[str]) -> set[str]:
+        """Return active frame-level JSON flags not already managed by the timeline."""
+        label_file = getattr(self, "labelFile", None)
+        raw_flags = getattr(label_file, "flags", None)
+        if not isinstance(raw_flags, dict):
+            return set()
+        active: set[str] = set()
+        for key, value in raw_flags.items():
+            if not value:
+                continue
+            name = str(key or "").strip()
+            if name and name not in managed_behaviors:
+                active.add(name)
+        return active
 
-        if current_flags:
-            self.loadFlags(current_flags)
+    def _on_behavior_controller_changed(self) -> None:
+        """Synchronize canvas overlay and ethogram badges after timeline mutations."""
+        if (
+            getattr(self, "canvas", None) is None
+            or getattr(self, "flag_widget", None) is None
+        ):
+            return
+        try:
+            self._refresh_behavior_overlay()
+        except Exception:
+            pass
+        refresh_badges = getattr(self, "_refresh_ethogram_active_badges", None)
+        if callable(refresh_badges):
+            try:
+                refresh_badges()
+            except Exception:
+                pass
+
+    def _refresh_behavior_overlay(self, frame_number: Optional[int] = None) -> None:
+        """Synchronize canvas label badges and flag widget with timeline behaviors."""
+        if getattr(self, "_refreshing_behavior_overlay", False):
+            return
+        setattr(self, "_refreshing_behavior_overlay", True)
+        try:
+            target_frame = self.frame_number if frame_number is None else frame_number
+            try:
+                target_frame = int(target_frame)
+            except Exception:
+                target_frame = int(getattr(self, "frame_number", 0) or 0)
+
+            controller = self.behavior_controller
+            active_behaviors = set(controller.active_behaviors(target_frame))
+            active_overlay_labels = {
+                str(name).strip() for name in active_behaviors if str(name).strip()
+            }
+            managed_names = {
+                str(name).strip()
+                for name in (getattr(controller, "behavior_names", ()) or ())
+                if str(name).strip()
+            }
+
+            show_subjects = self._should_display_behavior_subjects()
+            active_subjects_map: Dict[str, List[str]] = {}
+            active_subjects_fn = getattr(controller, "active_behavior_subjects", None)
+            if show_subjects and callable(active_subjects_fn):
+                try:
+                    raw_map = active_subjects_fn(target_frame) or {}
+                    for beh, subjs in raw_map.items():
+                        key = str(beh or "").strip()
+                        if key:
+                            active_subjects_map[key] = [
+                                str(s).strip() for s in (subjs or ()) if str(s).strip()
+                            ]
+                except Exception:
+                    active_subjects_map = {}
+
+            point_subjects_map: Dict[str, List[str]] = {}
+            point_fn = getattr(controller, "point_behaviors_at_frame", None)
+            if callable(point_fn):
+                try:
+                    for beh, subj in point_fn(target_frame) or ():
+                        key = str(beh or "").strip()
+                        if not key:
+                            continue
+                        bucket = point_subjects_map.setdefault(key, [])
+                        cleaned_subj = str(subj).strip() if subj else ""
+                        if cleaned_subj and cleaned_subj not in bucket:
+                            bucket.append(cleaned_subj)
+                except Exception:
+                    point_subjects_map = {}
+
+            file_only_active = self._active_frame_label_file_flags(managed_names)
+            skipped_labels = self._behavior_label_skipped_overlay_labels_for_frame(
+                target_frame
+            )
+            point_labels = set(point_subjects_map.keys())
+            state_labels = active_overlay_labels | file_only_active
+            overlay_labels = sorted(state_labels | point_labels | set(skipped_labels))
+            overlay_text = ",".join(overlay_labels) if overlay_labels else None
+
+            overlay_items: List[BehaviorOverlayItem] = []
+            seen_overlay_labels: set[str] = set()
+            for label in sorted(state_labels):
+                seen_overlay_labels.add(label)
+                subjs = active_subjects_map.get(label) if show_subjects else None
+                subject_text = ", ".join(subjs) if subjs else None
+                overlay_items.append(
+                    BehaviorOverlayItem(
+                        label=label,
+                        kind="state",
+                        subject=subject_text,
+                    )
+                )
+            for label in sorted(point_labels):
+                if label in seen_overlay_labels:
+                    continue
+                seen_overlay_labels.add(label)
+                subjs = point_subjects_map.get(label) if show_subjects else None
+                subject_text = ", ".join(subjs) if subjs else None
+                overlay_items.append(
+                    BehaviorOverlayItem(
+                        label=label,
+                        kind="point",
+                        subject=subject_text,
+                    )
+                )
+            for label in sorted(set(skipped_labels)):
+                if label in seen_overlay_labels:
+                    continue
+                seen_overlay_labels.add(label)
+                overlay_items.append(BehaviorOverlayItem(label=label, kind="skipped"))
+
+            signature = (
+                tuple(sorted(active_overlay_labels)),
+                tuple(sorted(file_only_active)),
+                tuple(sorted(managed_names)),
+                tuple(str(name) for name in overlay_labels),
+            )
+            if signature != getattr(self, "_last_behavior_overlay_signature", None):
+                setattr(self, "_last_behavior_overlay_signature", signature)
+
+                current_flags: Dict[str, bool] = {}
+                flag_widget = getattr(self, "flag_widget", None)
+                table = getattr(flag_widget, "_table", None)
+                if table is not None:
+                    for row in range(table.rowCount()):
+                        name_widget = table.cellWidget(row, FlagTableWidget.COLUMN_NAME)
+                        value_widget = table.cellWidget(
+                            row, FlagTableWidget.COLUMN_ACTIVE
+                        )
+                        if isinstance(name_widget, QtWidgets.QLineEdit) and isinstance(
+                            value_widget, QtWidgets.QCheckBox
+                        ):
+                            name = name_widget.text().strip()
+                            if name:
+                                current_flags[name] = value_widget.isChecked()
+
+                for behavior in sorted(controller.behavior_names):
+                    current_flags[behavior] = behavior in active_behaviors
+
+                for flag_name in sorted(file_only_active):
+                    current_flags[flag_name] = True
+
+                if current_flags:
+                    setattr(self, "_suppress_flags_canvas_sync", True)
+                    try:
+                        self.loadFlags(current_flags)
+                    finally:
+                        setattr(self, "_suppress_flags_canvas_sync", False)
+
+            # Update canvas text and rich overlay metadata AFTER flag-table sync
+            # so loadFlags() cannot clobber skipped, point, or frame-level labels.
+            self.canvas.setBehaviorText(overlay_text)
+            if hasattr(self.canvas, "setBehaviorOverlayItems"):
+                self.canvas.setBehaviorOverlayItems(overlay_items or None)
+        finally:
+            setattr(self, "_refreshing_behavior_overlay", False)

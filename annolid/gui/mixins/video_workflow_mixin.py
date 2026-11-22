@@ -139,6 +139,11 @@ class VideoWorkflowMixin:
             clear_annot_caches = getattr(self, "_clear_frame_annotation_caches", None)
             if callable(clear_annot_caches):
                 clear_annot_caches()
+            setattr(self, "_last_behavior_overlay_signature", None)
+            if getattr(self, "canvas", None) is not None and hasattr(
+                self.canvas, "setBehaviorText"
+            ):
+                self.canvas.setBehaviorText(None)
             if previous_video_loader is not None:
                 self.frame_number = 0
             _log_step("create_video_loader")

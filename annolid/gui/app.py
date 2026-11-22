@@ -265,8 +265,20 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
                 canvas_cfg.get("allow_points_outside_image", False)
             ),
             show_label_names=bool(canvas_cfg.get("show_label_names", True)),
+            show_behavior_overlay=bool(canvas_cfg.get("show_behavior_overlay", True)),
+            behavior_overlay_position=str(
+                canvas_cfg.get("behavior_overlay_position", "top_left") or "top_left"
+            ),
             sam=self._config["sam"],
         )
+        if hasattr(self.canvas, "setBehaviorColorProvider"):
+            self.canvas.setBehaviorColorProvider(self._get_rgb_by_label)
+        if hasattr(self.behavior_controller, "add_change_listener") and hasattr(
+            self, "_on_behavior_controller_changed"
+        ):
+            self.behavior_controller.add_change_listener(
+                self._on_behavior_controller_changed
+            )
         # Restore persisted Auto Save preference when the user previously toggled it
         # and no explicit override was passed via constructor config.
         if (
@@ -297,6 +309,23 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
             if hasattr(self.large_image_view, "setShowLabelNames"):
                 self.large_image_view.setShowLabelNames(
                     bool(canvas_cfg.get("show_label_names", True))
+                )
+            if hasattr(self.large_image_view, "setShowBehaviorOverlay"):
+                self.large_image_view.setShowBehaviorOverlay(
+                    bool(canvas_cfg.get("show_behavior_overlay", True))
+                )
+            if hasattr(self.large_image_view, "setBehaviorOverlayPosition"):
+                self.large_image_view.setBehaviorOverlayPosition(
+                    str(
+                        canvas_cfg.get("behavior_overlay_position", "top_left")
+                        or "top_left"
+                    )
+                )
+            if hasattr(self.large_image_view, "setBehaviorColorProvider"):
+                self.large_image_view.setBehaviorColorProvider(self._get_rgb_by_label)
+            if hasattr(self.canvas, "behaviorOverlayChanged"):
+                self.canvas.behaviorOverlayChanged.connect(
+                    self._sync_behavior_overlay_to_tiled_view
                 )
         self.canvas.zoomRequest.connect(self.zoomRequest)
 

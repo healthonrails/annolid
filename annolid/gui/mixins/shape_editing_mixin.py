@@ -429,6 +429,38 @@ class ShapeEditingMixin:
         if large_view is not None and hasattr(large_view, "setShowLabelNames"):
             large_view.setShowLabelNames(flag)
 
+    def toggleShowBehaviorOverlay(self, enabled: bool) -> None:
+        flag = bool(enabled)
+        canvas_cfg = self._config.setdefault("canvas", {})
+        if isinstance(canvas_cfg, dict):
+            canvas_cfg["show_behavior_overlay"] = flag
+        canvas = getattr(self, "canvas", None)
+        if canvas is not None and hasattr(canvas, "setShowBehaviorOverlay"):
+            canvas.setShowBehaviorOverlay(flag)
+        large_view = getattr(self, "large_image_view", None)
+        if large_view is not None and hasattr(large_view, "setShowBehaviorOverlay"):
+            large_view.setShowBehaviorOverlay(flag)
+
+    def _sync_behavior_overlay_to_tiled_view(self) -> None:
+        canvas = getattr(self, "canvas", None)
+        large_view = getattr(self, "large_image_view", None)
+        if canvas is None or large_view is None:
+            return
+        if hasattr(large_view, "setShowBehaviorOverlay") and hasattr(
+            canvas, "showBehaviorOverlay"
+        ):
+            large_view.setShowBehaviorOverlay(canvas.showBehaviorOverlay())
+        if hasattr(large_view, "setBehaviorOverlayPosition") and hasattr(
+            canvas, "behaviorOverlayPosition"
+        ):
+            large_view.setBehaviorOverlayPosition(canvas.behaviorOverlayPosition())
+        if hasattr(large_view, "setBehaviorText"):
+            large_view.setBehaviorText(getattr(canvas, "current_behavior_text", None))
+        if hasattr(large_view, "setBehaviorOverlayItems"):
+            large_view.setBehaviorOverlayItems(
+                getattr(canvas, "_behavior_overlay_items", None)
+            )
+
     def toggleAllowPointsOutsideImage(self, enabled: bool) -> None:
         flag = bool(enabled)
         canvas_cfg = self._config.setdefault("canvas", {})

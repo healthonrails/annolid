@@ -163,6 +163,9 @@ class SchemaBehaviorLoaderMixin:
         refresh_badges = getattr(self, "_refresh_ethogram_active_badges", None)
         if callable(refresh_badges):
             refresh_badges()
+        refresh_overlay = getattr(self, "_refresh_behavior_overlay", None)
+        if callable(refresh_overlay):
+            refresh_overlay()
 
     def _clear_deeplabcut_table(self) -> None:
         self._df_deeplabcut = None

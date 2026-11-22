@@ -104,7 +104,13 @@ class BehaviorInteractionMixin:
                 2500,
             )
 
-        self._update_pinned_flag(behavior, self.pinned_flags.get(behavior, False))
+        if event.event == "start":
+            pinned_state = True
+        elif event.event == "end":
+            pinned_state = False
+        else:
+            pinned_state = bool(self.pinned_flags.get(behavior, False))
+        self._update_pinned_flag(behavior, pinned_state)
         fps_for_log = self.fps if self.fps and self.fps > 0 else 29.97
         self.behavior_log_widget.append_event(event, fps=fps_for_log)
         self._refresh_ethogram_active_badges(frame_number)
@@ -646,7 +652,11 @@ class BehaviorInteractionMixin:
         self.behavior_log_widget.remove_event(event.mark_key)
         if self.seekbar is not None:
             self.seekbar.setTickMarks()
-        self.canvas.setBehaviorText(None)
+        refresh_overlay = getattr(self, "_refresh_behavior_overlay", None)
+        if callable(refresh_overlay):
+            refresh_overlay()
+        else:
+            self.canvas.setBehaviorText(None)
 
     def _clear_behavior_events_from_log(self) -> None:
         if not self.behavior_controller.events_count:
@@ -656,9 +666,13 @@ class BehaviorInteractionMixin:
         self.behavior_log_widget.clear()
         if self.seekbar is not None:
             self.seekbar.setTickMarks()
-        self.canvas.setBehaviorText(None)
         if self.pinned_flags:
             self.loadFlags({behavior: False for behavior in self.pinned_flags})
+        refresh_overlay = getattr(self, "_refresh_behavior_overlay", None)
+        if callable(refresh_overlay):
+            refresh_overlay()
+        else:
+            self.canvas.setBehaviorText(None)
 
     def add_highlighted_mark(
         self, val=None, mark_type=None, color=None, init_load=False
@@ -715,7 +729,11 @@ class BehaviorInteractionMixin:
 
         for key in removed_behavior_keys:
             self.behavior_log_widget.remove_event(key)
-        self.canvas.setBehaviorText(None)
+        refresh_overlay = getattr(self, "_refresh_behavior_overlay", None)
+        if callable(refresh_overlay):
+            refresh_overlay()
+        else:
+            self.canvas.setBehaviorText(None)
 
     def keyPressEvent(self, event: QtGui.QKeyEvent):
         if self._handle_boris_coding_keypress(event):
@@ -941,6 +959,9 @@ class BehaviorInteractionMixin:
             if hasattr(self, "_refresh_behavior_log"):
                 self._refresh_behavior_log()
             self._refresh_ethogram_active_badges()
+            refresh_overlay = getattr(self, "_refresh_behavior_overlay", None)
+            if callable(refresh_overlay):
+                refresh_overlay()
             self._apply_boris_observation_sync_assets(chosen_obs, resolved.parent)
 
         self.statusBar().showMessage(
