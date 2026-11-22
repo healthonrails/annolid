@@ -452,11 +452,19 @@ def test_release_workflow_uploads_checksums_and_manifest() -> None:
 def test_release_workflow_does_not_duplicate_macos_bundle_in_archive() -> None:
     workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
 
-    assert 'python -m zipfile -c "${{ matrix.archive-name }}" Annolid.app' in workflow
+    assert (
+        'ditto -c -k --sequesterRsrc --keepParent Annolid.app "${{ matrix.archive-name }}"'
+        in workflow
+    )
+    assert (
+        'python -m zipfile -c "${{ matrix.archive-name }}" Annolid.app' not in workflow
+    )
     assert (
         'python -m zipfile -c "${{ matrix.archive-name }}" annolid Annolid.app'
         not in workflow
     )
+    assert 'codesign --verify --deep --strict "${smoke_dir}/Annolid.app"' in workflow
+    assert 'ANNOLID_SMOKE_TEST_EXIT_MS: "250"' in workflow
 
 
 def test_installers_support_offline_wheelhouse_mode() -> None:

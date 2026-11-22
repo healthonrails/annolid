@@ -773,6 +773,13 @@ def main(argv=None, *, config=None):
 
     win.show()
     win.raise_()
+    smoke_exit_raw = str(os.environ.get("ANNOLID_SMOKE_TEST_EXIT_MS", "") or "").strip()
+    if smoke_exit_raw:
+        try:
+            smoke_exit_ms = max(0, int(smoke_exit_raw))
+        except ValueError:
+            smoke_exit_ms = 0
+        QtCore.QTimer.singleShot(smoke_exit_ms, app.quit)
     return app.exec_()
 
 

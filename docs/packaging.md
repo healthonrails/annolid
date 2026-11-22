@@ -115,7 +115,7 @@ Signing and native installer packaging are staged but not yet treated as complet
   Windows desktop archives are not published by the current release workflow.
 - Linux target: AppImage first, then `.deb`/`.rpm` if demand justifies maintaining native packages.
 
-Until signing identities and native packaging jobs are configured, release manifests mark CI-built desktop archives as `unsigned-ci-build`.
+Until signing identities and native packaging jobs are configured, release manifests mark CI-built desktop archives as `unsigned-ci-build`. On macOS, archives are created with `ditto` so `.framework` symlinks and ad-hoc signatures remain intact; if macOS Gatekeeper blocks a browser-downloaded `Annolid.app`, clear the quarantine attribute (`xattr -dr com.apple.quarantine Annolid.app`) or allow it under **System Settings → Privacy & Security → Open Anyway**.
 
 ## Update and Uninstall
 

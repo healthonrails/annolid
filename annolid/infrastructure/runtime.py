@@ -57,7 +57,7 @@ def _configure_macos_stderr_filter() -> None:
     }:
         return
     current = sys.stderr
-    if isinstance(current, _FilteredStderr):
+    if current is None or isinstance(current, _FilteredStderr):
         return
     sys.stderr = _FilteredStderr(current, _MACOS_SUPPRESSED_STDERR_SUBSTRINGS)
 

@@ -3,12 +3,27 @@
 
 from pathlib import Path
 import sys
+import tomllib
 from PyInstaller.utils.hooks import copy_metadata
 
 
 sys.setrecursionlimit(5000)  # required on Windows
 
 ROOT = Path(SPECPATH)
+
+
+def _read_app_version(root: Path) -> str:
+    try:
+        data = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+        version = str(data.get("project", {}).get("version") or "").strip()
+        if version:
+            return version
+    except Exception:
+        pass
+    return "0.0.0"
+
+
+APP_VERSION = _read_app_version(ROOT)
 
 # Desktop bundle policy:
 # - include the GUI shell, core annotation/video IO, config, icons, and UI assets;
@@ -218,6 +233,59 @@ def _prune_toc(toc):
     return type(toc)(entry for entry in toc if not _is_excluded_artifact(entry[1]))
 
 
+HIDDEN_IMPORT_SKIP_PREFIXES = (
+    "annolid/core/agent/skills",
+    "annolid/depth/video_depth_anything",
+    "annolid/detector/countgd",
+    "annolid/detector/yolov5",
+    "annolid/realtime/models",
+    "annolid/realtime/runs",
+    "annolid/realtime/scripts",
+    "annolid/scripts",
+    "annolid/segmentation/MEDIAR",
+    "annolid/segmentation/SAM",
+    "annolid/segmentation/cutie_vos",
+    "annolid/segmentation/yolact",
+    "annolid/tracker/cowtracker/cowtracker/thirdparty",
+    "annolid/utils/tensorboard_sitecustomize",
+)
+
+CORE_HIDDEN_IMPORTS = [
+    "annolid.gui.app",
+    "annolid.domain.project_schema",
+    "annolid.infrastructure.persistence",
+]
+
+
+def _collect_annolid_hiddenimports(root: Path) -> list[str]:
+    """Collect first-party Annolid modules reachable through lazy __getattr__ loaders."""
+    modules = set(CORE_HIDDEN_IMPORTS)
+    pkg_root = root / "annolid"
+    for py_path in sorted(pkg_root.rglob("*.py")):
+        rel = py_path.relative_to(root).as_posix()
+        parts = py_path.relative_to(root).parts
+        if any(
+            part.startswith(".") or part in {"__pycache__", "tests"}
+            for part in parts
+        ):
+            continue
+        if any(
+            rel == prefix or rel.startswith(prefix + "/")
+            for prefix in HIDDEN_IMPORT_SKIP_PREFIXES
+        ):
+            continue
+        if py_path.name == "__init__.py":
+            mod_parts = parts[:-1]
+        else:
+            mod_parts = (*parts[:-1], py_path.stem)
+        if mod_parts and all(part.isidentifier() for part in mod_parts):
+            modules.add(".".join(mod_parts))
+    return sorted(modules)
+
+
+HIDDEN_IMPORTS = _collect_annolid_hiddenimports(ROOT)
+
+
 a = Analysis(
     ["annolid/gui/launcher.py"],
     pathex=[str(ROOT)],
@@ -234,11 +302,7 @@ a = Analysis(
         *copy_metadata("annolid"),
     ],
     # The launcher and stable namespace packages defer imports with importlib.
-    hiddenimports=[
-        "annolid.gui.app",
-        "annolid.domain.project_schema",
-        "annolid.infrastructure.persistence",
-    ],
+    hiddenimports=HIDDEN_IMPORTS,
     hookspath=[],
     runtime_hooks=[],
     excludes=EXCLUDED_MODULES,
@@ -277,6 +341,10 @@ if sys.platform == "darwin":
         coll,
         name="Annolid.app",
         icon="annolid/icons/icon.icns",
-        bundle_identifier=None,
-        info_plist={"NSHighResolutionCapable": "True"},
+        bundle_identifier="com.healthonrails.annolid",
+        info_plist={
+            "CFBundleShortVersionString": APP_VERSION,
+            "CFBundleVersion": APP_VERSION,
+            "NSHighResolutionCapable": True,
+        },
     )

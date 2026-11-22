@@ -169,12 +169,6 @@ jobs:
           set -euo pipefail
           pyinstaller --noconfirm --clean --log-level WARN annolid.spec
 
-      - name: Smoke test frozen CLI
-        run: |
-          set -euo pipefail
-          "${{ matrix.executable }}" --version
-          "${{ matrix.executable }}" --help
-
       - name: Reject bundled model artifacts and heavy runtimes
         run: |
           set -euo pipefail
@@ -187,9 +181,37 @@ jobs:
           if [ "${RUNNER_OS}" = "Linux" ]; then
             tar -czf "${{ matrix.archive-name }}" annolid
           elif [ "${RUNNER_OS}" = "macOS" ] && [ -d "Annolid.app" ]; then
-            python -m zipfile -c "${{ matrix.archive-name }}" Annolid.app
+            ditto -c -k --sequesterRsrc --keepParent Annolid.app "${{ matrix.archive-name }}"
           else
             python -m zipfile -c "${{ matrix.archive-name }}" annolid
+          fi
+
+      - name: Smoke test unpacked desktop bundle
+        env:
+          QT_QPA_PLATFORM: offscreen
+          ANNOLID_DISABLE_BOT_AUTOSTART: "1"
+          ANNOLID_SMOKE_TEST_EXIT_MS: "250"
+        run: |
+          set -euo pipefail
+          smoke_dir="$(mktemp -d)"
+          trap 'rm -rf "${smoke_dir}"' EXIT
+          if [ "${RUNNER_OS}" = "Linux" ]; then
+            tar -xzf "dist/${{ matrix.archive-name }}" -C "${smoke_dir}"
+            smoke_exe="${smoke_dir}/annolid/annolid"
+          elif [ "${RUNNER_OS}" = "macOS" ]; then
+            ditto -x -k "dist/${{ matrix.archive-name }}" "${smoke_dir}"
+            codesign --verify --deep --strict "${smoke_dir}/Annolid.app"
+            test -L "${smoke_dir}/Annolid.app/Contents/Frameworks/PySide6/Qt/lib/QtGui.framework/Versions/Current"
+            smoke_exe="${smoke_dir}/Annolid.app/Contents/MacOS/annolid"
+          else
+            smoke_exe="${{ matrix.executable }}"
+          fi
+          "${smoke_exe}" --version
+          "${smoke_exe}" --help
+          if [ "${RUNNER_OS}" = "macOS" ]; then
+            "${smoke_exe}" -psn_0_123456
+          else
+            "${smoke_exe}"
           fi
 
       - name: Create release manifest and checksum

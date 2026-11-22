@@ -1,5 +1,6 @@
 import argparse
 import os
+import sys
 from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
@@ -85,16 +86,26 @@ def _normalize_cli_collections(namespace: argparse.Namespace) -> None:
             namespace.labels = [item for item in source.split(",") if item]
 
 
+def _sanitize_argv(argv: Optional[Sequence[str]]) -> Optional[List[str]]:
+    """Strip macOS LaunchServices `-psn_*` process serial arguments."""
+    raw = list(sys.argv[1:]) if argv is None else list(argv)
+    if sys.platform == "darwin":
+        return [arg for arg in raw if not str(arg).startswith("-psn_")]
+    return raw
+
+
 def parse_cli(
     argv: Optional[Sequence[str]] = None,
 ) -> Tuple[dict, argparse.Namespace, bool]:
     """Parse CLI arguments and return `(config, namespace, version_requested)`."""
     parser = build_parser()
-    namespace = parser.parse_args(argv)
+    namespace = parser.parse_args(_sanitize_argv(argv))
     _normalize_cli_collections(namespace)
 
     overrides = vars(namespace).copy()
-    version_requested = overrides.pop("version", False)
+    version_requested = bool(overrides.pop("version", False))
+    if version_requested:
+        return {}, namespace, True
     config_file_or_yaml = overrides.pop("config")
     config = get_config(config_file_or_yaml, overrides)
-    return config, namespace, bool(version_requested)
+    return config, namespace, False
