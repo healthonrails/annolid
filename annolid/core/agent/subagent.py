@@ -437,6 +437,9 @@ async def build_subagent_tools_registry(
     allowed_read_roots: Optional[Sequence[str | Path]] = None,
     mcp_servers: dict | None = None,
     stack: Any | None = None,
+    tools_cfg: Any | None = None,
+    provider: str = "",
+    model: str = "",
 ) -> FunctionToolRegistry:
     """Create a default function-tool registry suitable for subagents."""
 
@@ -450,21 +453,43 @@ async def build_subagent_tools_registry(
         stack=stack,
     )
     allowed_dir = Path(workspace) if workspace is not None else None
-    registry.register(
-        ReadFileTool(allowed_dir=allowed_dir, allowed_read_roots=allowed_read_roots)
-    )
-    registry.register(WriteFileTool(allowed_dir=allowed_dir))
-    registry.register(EditFileTool(allowed_dir=allowed_dir))
-    registry.register(
-        ListDirTool(allowed_dir=allowed_dir, allowed_read_roots=allowed_read_roots)
-    )
-    registry.unregister("spawn")
-    registry.unregister("message")
-    registry.unregister("cron")
-    registry.unregister("coding_session_start")
-    registry.unregister("coding_session_send")
-    registry.unregister("coding_session_poll")
-    registry.unregister("coding_session_list")
-    registry.unregister("coding_session_abort")
-    registry.unregister("coding_session_close")
+    if not registry.has("read_file"):
+        registry.register(
+            ReadFileTool(allowed_dir=allowed_dir, allowed_read_roots=allowed_read_roots)
+        )
+    if not registry.has("write_file"):
+        registry.register(WriteFileTool(allowed_dir=allowed_dir))
+    if not registry.has("edit_file"):
+        registry.register(EditFileTool(allowed_dir=allowed_dir))
+    if not registry.has("list_dir"):
+        registry.register(
+            ListDirTool(allowed_dir=allowed_dir, allowed_read_roots=allowed_read_roots)
+        )
+    for blocked in (
+        "spawn",
+        "spawn_behavior_subagent",
+        "run_swarm",
+        "draft_paper_swarm",
+        "message",
+        "cron",
+        "coding_session_start",
+        "coding_session_send",
+        "coding_session_poll",
+        "coding_session_list",
+        "coding_session_abort",
+        "coding_session_close",
+    ):
+        registry.unregister(blocked)
+    if tools_cfg is not None:
+        from .tools.policy import resolve_allowed_tools
+
+        resolved = resolve_allowed_tools(
+            all_tool_names=registry.tool_names,
+            tools_cfg=tools_cfg,
+            provider=provider,
+            model=model,
+        )
+        for tool_name in list(registry.tool_names):
+            if tool_name not in resolved.allowed_tools:
+                registry.unregister(tool_name)
     return registry

@@ -49,6 +49,8 @@ from .web_intents import (
     has_fast_web_data_intent,
 )
 from .tools import FunctionToolRegistry
+from .tools.policy import classify_destructive_tool_call
+from .observability import emit_governance_event
 from .tools.function_builtin import (
     AutomationSchedulerTool,
     CancelTaskTool,
@@ -267,8 +269,14 @@ class AgentLoop:
         tool_timeout_seconds: Optional[float] = None,
         browser_first_for_web: bool = True,
         strict_runtime_tool_guard: bool = True,
+        tool_permission_context: Optional[Any] = None,
+        tool_approval_callback: Optional[
+            Callable[[str, Dict[str, Any], str], Any]
+        ] = None,
     ) -> None:
         self._tools = tools
+        self._tool_permission_context = tool_permission_context
+        self._tool_approval_callback = tool_approval_callback
         runtime_cfg = resolve_agent_runtime_config(profile=profile)
         resolved_max_iterations = (
             runtime_cfg.max_tool_iterations
@@ -292,6 +300,7 @@ class AgentLoop:
         self._mcp_connected = False
         self._mcp_connecting = False
         self._mcp_ref_count = 0
+        self._mcp_registered_tool_names: set[str] = set()
         self._mcp_lock = asyncio.Lock()
         self._exclusive_mcp_run_lock = asyncio.Lock()
         self._interleave_post_tool_guidance = bool(interleave_post_tool_guidance)
@@ -1049,6 +1058,7 @@ class AgentLoop:
                 messages=messages,
                 iterations=last_iteration or self._max_iterations,
                 tool_runs=tuple(tool_runs),
+                media=tuple(messages_media),
                 stopped_reason=stopped_reason,
             )
             loop_result = result
@@ -1186,6 +1196,25 @@ class AgentLoop:
         async with self._exclusive_mcp_run_lock:
             yield
 
+    def _unregister_mcp_tools(self) -> None:
+        if not self._mcp_registered_tool_names:
+            return
+        for name in list(self._mcp_registered_tool_names):
+            self._tools.unregister(name)
+        self._mcp_registered_tool_names.clear()
+        self._cached_tool_signature = None
+
+    def _finalize_mcp_registration(self, before_names: set[str]) -> None:
+        added = set(self._tools.tool_names) - before_names
+        if self._tool_permission_context is not None:
+            for name in list(added):
+                if self._tool_permission_context.blocks(name):
+                    self._tools.unregister(name)
+                    added.discard(name)
+        self._mcp_registered_tool_names.update(added)
+        if added:
+            self._cached_tool_signature = None
+
     async def _connect_mcp(self) -> None:
         """Acquire a shared MCP connection for the current run."""
         if not self._mcp_servers:
@@ -1193,6 +1222,8 @@ class AgentLoop:
         from .tools.mcp import connect_mcp_servers
 
         if not self._can_share_mcp_session():
+            self._unregister_mcp_tools()
+            before_names = set(self._tools.tool_names)
             self._mcp_stack = AsyncExitStack()
             await self._mcp_stack.__aenter__()
             try:
@@ -1200,6 +1231,9 @@ class AgentLoop:
                     self._mcp_servers, self._tools, self._mcp_stack
                 )
             except Exception:
+                self._unregister_mcp_tools()
+                for name in set(self._tools.tool_names) - before_names:
+                    self._tools.unregister(name)
                 try:
                     await self._mcp_stack.aclose()
                 except Exception as close_exc:
@@ -1209,6 +1243,7 @@ class AgentLoop:
                     )
                 self._mcp_stack = None
                 raise
+            self._finalize_mcp_registration(before_names)
             self._mcp_connected = True
             self._mcp_connecting = False
             self._mcp_ref_count = 1
@@ -1218,6 +1253,8 @@ class AgentLoop:
             self._mcp_ref_count += 1
             if self._mcp_connected:
                 return
+            self._unregister_mcp_tools()
+            before_names = set(self._tools.tool_names)
             self._mcp_connecting = True
             self._mcp_stack = AsyncExitStack()
             await self._mcp_stack.__aenter__()
@@ -1226,6 +1263,9 @@ class AgentLoop:
                     self._mcp_servers, self._tools, self._mcp_stack
                 )
             except Exception:
+                self._unregister_mcp_tools()
+                for name in set(self._tools.tool_names) - before_names:
+                    self._tools.unregister(name)
                 try:
                     await self._mcp_stack.aclose()
                 except Exception as close_exc:
@@ -1238,6 +1278,7 @@ class AgentLoop:
                 raise
             finally:
                 self._mcp_connecting = False
+            self._finalize_mcp_registration(before_names)
             self._mcp_connected = True
 
     async def _execute_llm_cycle(
@@ -1301,11 +1342,54 @@ class AgentLoop:
             )
             tool_started = time.perf_counter()
             try:
-                block_reason = self._high_risk_block_reason(
-                    tool_name=name,
-                    executed_tools=executed_tools,
-                    explicit_high_risk_intent=explicit_high_risk_intent,
-                )
+                block_reason = ""
+                if (
+                    self._tool_permission_context is not None
+                    and self._tool_permission_context.blocks(name)
+                ):
+                    block_reason = (
+                        f"Tool '{name}' is blocked by tool permission policy."
+                    )
+                if not block_reason:
+                    block_reason = self._high_risk_block_reason(
+                        tool_name=name,
+                        executed_tools=executed_tools,
+                        explicit_high_risk_intent=explicit_high_risk_intent,
+                    )
+                if not block_reason and self._tool_approval_callback is not None:
+                    risk_reason = classify_destructive_tool_call(name, args)
+                    if risk_reason:
+                        approved = False
+                        try:
+                            decision = self._tool_approval_callback(
+                                name, dict(args), risk_reason
+                            )
+                            if inspect.isawaitable(decision):
+                                decision = await decision
+                            approved = bool(decision)
+                        except Exception as exc:
+                            self._logger.warning(
+                                "Destructive tool approval callback failed for %s; denying execution: %s",
+                                name,
+                                exc,
+                            )
+                            approved = False
+                        with suppress(Exception):
+                            emit_governance_event(
+                                event_type="tool_approval",
+                                action=name,
+                                outcome="approved" if approved else "denied",
+                                actor="user",
+                                details={
+                                    "session_id": session_id,
+                                    "risk_reason": risk_reason,
+                                },
+                            )
+                        if not approved:
+                            block_reason = (
+                                f"Tool '{name}' was denied by user confirmation "
+                                f"({risk_reason})."
+                            )
                 if block_reason:
                     result = f"Error: {block_reason}"
                 else:
@@ -2009,6 +2093,7 @@ class AgentLoop:
             if callable(close_fn):
                 await close_fn()
         async with self._mcp_lock:
+            self._unregister_mcp_tools()
             self._mcp_ref_count = 0
             stack = self._mcp_stack
             self._mcp_stack = None
@@ -2166,8 +2251,8 @@ class AgentLoop:
             self._set_last_consolidated_cursor(session_id=session_id, value=0)
             outcome = "llm_consolidated"
         except Exception as exc:
-            self._replace_session_history(session_id, keep)
-            self._set_last_consolidated_cursor(session_id=session_id, value=0)
+            # Preserve unconsolidated session history when consolidation fails
+            # so user context is not silently lost.
             outcome = "failed"
             self._logger.warning(
                 "memory consolidation failed for session=%s: %s", session_id, exc
@@ -2190,7 +2275,7 @@ class AgentLoop:
             keep_len=len(keep),
             elapsed_ms=(time.perf_counter() - started) * 1000.0,
         )
-        return keep
+        return history if outcome == "failed" else keep
 
     def _flush_archive_to_daily_log(
         self,
@@ -2756,17 +2841,18 @@ class AgentLoop:
     def _wire_tools(self) -> None:
         self._set_tool_context(channel="cli", chat_id="direct")
         runtime_router = None
-        if self._subagent_manager is None and (
+        has_subagent_tool = (
             isinstance(self._tools.get("spawn"), SpawnTool)
+            or isinstance(
+                self._tools.get("spawn_behavior_subagent"),
+                SpawnBehaviorSubagentTool,
+            )
             or isinstance(self._tools.get("list_tasks"), ListTasksTool)
             or isinstance(self._tools.get("cancel_task"), CancelTaskTool)
-        ):
+        )
+        if self._subagent_manager is None and has_subagent_tool:
             self._subagent_manager = self._create_default_subagent_manager()
-        if self._subagent_manager is not None and (
-            isinstance(self._tools.get("spawn"), SpawnTool)
-            or isinstance(self._tools.get("list_tasks"), ListTasksTool)
-            or isinstance(self._tools.get("cancel_task"), CancelTaskTool)
-        ):
+        if self._subagent_manager is not None and has_subagent_tool:
             runtime_router = self._create_default_runtime_router()
 
         spawn_tool = self._tools.get("spawn")
@@ -2844,6 +2930,10 @@ class AgentLoop:
                     allowed_read_roots=self._allowed_read_roots,
                     mcp_servers=self._mcp_servers,
                 )
+                if self._tool_permission_context is not None:
+                    for tool_name in list(tools.tool_names):
+                        if self._tool_permission_context.blocks(tool_name):
+                            tools.unregister(tool_name)
                 return AgentLoop(
                     tools=tools,
                     llm_callable=self._llm_callable,
@@ -2853,7 +2943,9 @@ class AgentLoop:
                     allowed_read_roots=self._allowed_read_roots,
                     mcp_servers=self._mcp_servers,
                     llm_timeout_seconds=self._llm_timeout_seconds,
+                    tool_timeout_seconds=self._tool_timeout_seconds,
                     strict_runtime_tool_guard=self._strict_runtime_tool_guard,
+                    tool_permission_context=self._tool_permission_context,
                 )
 
             return _create()
@@ -3357,27 +3449,31 @@ class AgentLoop:
             for name in self._VCS_TOOL_NAMES:
                 if name in tool_by_name and name not in preferred_vcs:
                     preferred_vcs.append(name)
+            protected_vcs_names: set[str] = {"read_file"}
             for name in preferred_vcs:
                 schema = tool_by_name.get(name)
                 if schema is None:
                     continue
                 if name in selected_names:
+                    protected_vcs_names.add(name)
                     continue
                 if len(selected) < max_tools:
                     selected.append(schema)
                     selected_names.add(name)
+                    protected_vcs_names.add(name)
                     continue
                 replace_idx = len(selected) - 1
                 while replace_idx >= 0:
                     existing_name = str(
                         (selected[replace_idx].get("function") or {}).get("name") or ""
                     )
-                    if existing_name not in {"read_file"}:
+                    if existing_name not in protected_vcs_names:
                         break
                     replace_idx -= 1
                 if replace_idx < 0:
                     break
                 selected[replace_idx] = schema
+                protected_vcs_names.add(name)
                 selected_names = {
                     str((entry.get("function") or {}).get("name") or "")
                     for entry in selected

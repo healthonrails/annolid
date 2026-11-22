@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
+import tempfile
 from pathlib import Path
 from typing import Any, Dict
 
@@ -12,6 +15,30 @@ from .secrets import (
     load_secret_store,
     resolve_secret_refs,
     scrub_ref_backed_secrets,
+)
+
+logger = logging.getLogger(__name__)
+
+# Dictionary fields whose keys are user-defined literals (env vars, HTTP headers,
+# provider/model selectors, secret paths) and must NOT be case-converted.
+_PRESERVE_KEY_CONTAINERS = frozenset(
+    {
+        "env",
+        "extra_headers",
+        "extraHeaders",
+        "by_provider",
+        "byProvider",
+        "refs",
+    }
+)
+# Dictionary fields whose immediate keys are arbitrary user-chosen names (e.g.
+# MCP server names, provider names) while nested object keys should still convert.
+_PRESERVE_DIRECT_CHILD_KEYS = frozenset(
+    {
+        "mcp_servers",
+        "mcpServers",
+        "providers",
+    }
 )
 
 
@@ -33,19 +60,67 @@ def _snake_to_camel(name: str) -> str:
     return parts[0] + "".join(p.title() for p in parts[1:])
 
 
-def convert_keys_to_snake(data: Any) -> Any:
+def convert_keys_to_snake(
+    data: Any,
+    *,
+    _preserve_keys: bool = False,
+    _preserve_direct_keys: bool = False,
+) -> Any:
     if isinstance(data, dict):
-        return {_camel_to_snake(k): convert_keys_to_snake(v) for k, v in data.items()}
+        out: Dict[str, Any] = {}
+        for k, v in data.items():
+            key_str = str(k)
+            new_key = (
+                key_str
+                if (_preserve_keys or _preserve_direct_keys)
+                else _camel_to_snake(key_str)
+            )
+            child_preserve_all = _preserve_keys or key_str in _PRESERVE_KEY_CONTAINERS
+            child_preserve_direct = (
+                not child_preserve_all and key_str in _PRESERVE_DIRECT_CHILD_KEYS
+            )
+            out[new_key] = convert_keys_to_snake(
+                v,
+                _preserve_keys=child_preserve_all,
+                _preserve_direct_keys=child_preserve_direct,
+            )
+        return out
     if isinstance(data, list):
-        return [convert_keys_to_snake(item) for item in data]
+        return [
+            convert_keys_to_snake(item, _preserve_keys=_preserve_keys) for item in data
+        ]
     return data
 
 
-def convert_keys_to_camel(data: Any) -> Any:
+def convert_keys_to_camel(
+    data: Any,
+    *,
+    _preserve_keys: bool = False,
+    _preserve_direct_keys: bool = False,
+) -> Any:
     if isinstance(data, dict):
-        return {_snake_to_camel(k): convert_keys_to_camel(v) for k, v in data.items()}
+        out: Dict[str, Any] = {}
+        for k, v in data.items():
+            key_str = str(k)
+            new_key = (
+                key_str
+                if (_preserve_keys or _preserve_direct_keys)
+                else _snake_to_camel(key_str)
+            )
+            child_preserve_all = _preserve_keys or key_str in _PRESERVE_KEY_CONTAINERS
+            child_preserve_direct = (
+                not child_preserve_all and key_str in _PRESERVE_DIRECT_CHILD_KEYS
+            )
+            out[new_key] = convert_keys_to_camel(
+                v,
+                _preserve_keys=child_preserve_all,
+                _preserve_direct_keys=child_preserve_direct,
+            )
+        return out
     if isinstance(data, list):
-        return [convert_keys_to_camel(item) for item in data]
+        return [
+            convert_keys_to_camel(item, _preserve_keys=_preserve_keys) for item in data
+        ]
     return data
 
 
@@ -132,19 +207,53 @@ def load_config(config_path: Path | None = None) -> AgentConfig:
             store=load_secret_store(),
         )
         return AgentConfig.from_dict(resolved_payload)
-    except (OSError, json.JSONDecodeError, ValueError, TypeError):
+    except (OSError, json.JSONDecodeError, ValueError, TypeError) as exc:
+        logger.warning(
+            "Failed to load agent config from %s (%s); falling back to defaults.",
+            path,
+            exc,
+        )
         return AgentConfig()
+
+
+def _atomic_write_private_json(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(path.parent, 0o700)
+    except OSError:
+        pass
+    tmp_path: Path | None = None
+    try:
+        fd, raw_tmp = tempfile.mkstemp(
+            dir=str(path.parent),
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+        )
+        tmp_path = Path(raw_tmp)
+        try:
+            os.chmod(tmp_path, 0o600)
+        except OSError:
+            pass
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp_path, path)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    finally:
+        if tmp_path is not None and tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
 
 
 def save_config(config: AgentConfig, config_path: Path | None = None) -> None:
     path = (
         Path(config_path).expanduser() if config_path is not None else get_config_path()
     )
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = config.to_dict()
     refs = getattr(getattr(config, "secrets", None), "refs", {}) or {}
     if refs:
         payload = scrub_ref_backed_secrets(payload, refs)
     payload = convert_keys_to_camel(payload)
     payload["secrets"] = config.secrets.to_dict()
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    _atomic_write_private_json(path, json.dumps(payload, indent=2))

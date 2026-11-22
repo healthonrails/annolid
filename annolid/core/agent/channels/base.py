@@ -1,5 +1,6 @@
 from annolid.utils.logger import logger
 from abc import ABC, abstractmethod
+from email.utils import parseaddr
 import re
 from pathlib import Path
 from typing import Any, Optional
@@ -54,9 +55,35 @@ class BaseChannel(ABC):
             allow_list = getattr(self.config, "allow_from", None)
         if not allow_list:
             return True
-        sender = str(sender_id).lower()
-        for allowed in allow_list:
-            if str(allowed).lower() in sender:
+        entries = [
+            str(item or "").strip().lower()
+            for item in allow_list
+            if str(item or "").strip()
+        ]
+        if not entries:
+            return True
+        sender = str(sender_id or "").strip().lower()
+        if not sender:
+            return False
+        _, parsed_addr = parseaddr(sender)
+        parsed_addr = str(parsed_addr or "").strip().lower()
+        sender_candidates = {sender}
+        if parsed_addr:
+            sender_candidates.add(parsed_addr)
+        sender_local_parts = {
+            cand.split("@", 1)[0] for cand in sender_candidates if "@" in cand
+        }
+        for allowed in entries:
+            if allowed == "*":
+                return True
+            if allowed in sender_candidates:
+                return True
+            if allowed.startswith("@"):
+                if any(cand.endswith(allowed) for cand in sender_candidates):
+                    return True
+            elif "@" not in allowed and allowed in sender_local_parts:
+                # Match bare JID/user handle (e.g. "15551234567" for "15551234567@s.whatsapp.net")
+                # without allowing arbitrary substring matches.
                 return True
         return False
 

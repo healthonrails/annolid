@@ -323,10 +323,20 @@ class BoxTool(FunctionTool):
             info = self._client.get_file_info(
                 file_id=file_id, fields=["id", "name", "size", "sha1"]
             )
-            resolved_name = file_name or str(info.get("name") or "").strip()
-            if not resolved_name:
-                raise ValueError("Unable to resolve file name for download target.")
-            target_path = requested_path / resolved_name
+            raw_name = file_name or str(info.get("name") or "").strip()
+            resolved_name = Path(raw_name).name if raw_name else ""
+            if not resolved_name or resolved_name in {".", ".."}:
+                raise ValueError(
+                    "Unable to resolve safe file name for download target."
+                )
+            target_path = _resolve_write_path(
+                str(requested_path / resolved_name),
+                allowed_dir=requested_path,
+            )
+            if self._allowed_dir is not None:
+                target_path = _resolve_write_path(
+                    str(target_path), allowed_dir=self._allowed_dir
+                )
             file_meta = info
         else:
             target_path = requested_path

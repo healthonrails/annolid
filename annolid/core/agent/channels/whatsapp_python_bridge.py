@@ -644,19 +644,41 @@ class WhatsAppPythonBridge:
                 pass
         self._clients.clear()
 
+    async def _replay_recent_events_to(self, websocket) -> None:
+        if not self._recent_events:
+            return
+        for event in self._recent_events[-5:]:
+            payload = json.dumps(event)
+            try:
+                await websocket.send(payload)
+            except Exception:
+                self._clients.discard(websocket)
+                return
+
     async def _on_client(self, websocket) -> None:
+        import hmac
+
         authed = not self.token
-        self._clients.add(websocket)
+        if authed:
+            self._clients.add(websocket)
         try:
-            await self._ensure_provider_started()
+            if authed:
+                await self._ensure_provider_started()
+                await self._replay_recent_events_to(websocket)
             async for raw in websocket:
                 data = self._parse_json(raw)
                 if data is None:
                     continue
                 msg_type = str(data.get("type", "") or "").strip().lower()
                 if not authed:
-                    if msg_type == "auth" and str(data.get("token", "")) == self.token:
+                    token_value = str(data.get("token", ""))
+                    if msg_type == "auth" and hmac.compare_digest(
+                        token_value, str(self.token)
+                    ):
                         authed = True
+                        self._clients.add(websocket)
+                        await self._ensure_provider_started()
+                        await self._replay_recent_events_to(websocket)
                     else:
                         await websocket.close(code=4003, reason="Invalid bridge token")
                         return
@@ -697,7 +719,7 @@ class WhatsAppPythonBridge:
             return
         payload = json.dumps(event)
         dead = []
-        for client in self._clients:
+        for client in list(self._clients):
             try:
                 await client.send(payload)
             except Exception:
@@ -707,15 +729,6 @@ class WhatsAppPythonBridge:
 
     async def _ensure_provider_started(self) -> None:
         if self._provider_started:
-            # Replay recent state to newly connected client(s).
-            if self._clients and self._recent_events:
-                for event in self._recent_events[-5:]:
-                    payload = json.dumps(event)
-                    for client in list(self._clients):
-                        try:
-                            await client.send(payload)
-                        except Exception:
-                            self._clients.discard(client)
             return
         self._provider_started = True
 

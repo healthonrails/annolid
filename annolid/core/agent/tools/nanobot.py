@@ -390,9 +390,14 @@ async def register_nanobot_style_tools(
         )
     )
     register_tool(AutomationSchedulerTool(scheduler=task_scheduler))
-    register_tool(AdminSkillsRefreshTool())
-    register_tool(AdminMemoryFlushTool())
-    register_tool(AdminEvalRunTool())
+    register_tool(AdminSkillsRefreshTool(allowed_dir=allowed_dir))
+    register_tool(AdminMemoryFlushTool(allowed_dir=allowed_dir))
+    register_tool(
+        AdminEvalRunTool(
+            allowed_dir=allowed_dir,
+            allowed_read_roots=allowed_read_roots,
+        )
+    )
     register_tool(AdminUpdateRunTool())
 
     register_tool(LiteratureSearchTool())
@@ -500,7 +505,8 @@ async def register_nanobot_style_tools(
         else:
             logger.warning(
                 "Calendar tool is enabled but Google dependencies are missing. "
-                'Install optional extras with `pip install "annolid[google_calendar]"`.'
+                'Install optional extras with `pip install "annolid[bot]"` '
+                "(or `pip install google-api-python-client google-auth-oauthlib`)."
             )
 
     if box_cfg and box_cfg.enabled and should_register_tool("box"):
@@ -572,7 +578,8 @@ async def register_nanobot_style_tools(
         else:
             logger.warning(
                 "Google Drive tool is enabled but unavailable. "
-                'Install optional extras with `pip install "annolid[google_calendar]"` '
+                'Install optional extras with `pip install "annolid[bot]"` '
+                "(or `pip install google-api-python-client google-auth-oauthlib`) "
                 "and configure shared Google OAuth files."
             )
 

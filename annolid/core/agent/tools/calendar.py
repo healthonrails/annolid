@@ -123,7 +123,8 @@ class GoogleCalendarTool(FunctionTool):
         except ImportError as exc:
             return (
                 "Error: Google Calendar dependencies are not installed. "
-                'Install optional extras with `pip install "annolid[google_calendar]"`. '
+                'Install optional extras with `pip install "annolid[bot]"` '
+                "(or `pip install google-api-python-client google-auth-oauthlib`). "
                 f"Details: {exc}"
             )
         except FileNotFoundError as exc:

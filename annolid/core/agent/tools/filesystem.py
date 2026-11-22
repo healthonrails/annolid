@@ -290,10 +290,12 @@ class RenameFileTool(FunctionTool):
                     return (
                         "Error: overwrite=true does not replace existing directories."
                     )
-                target.unlink()
 
             target.parent.mkdir(parents=True, exist_ok=True)
-            source.rename(target)
+            if overwrite:
+                source.replace(target)
+            else:
+                source.rename(target)
             return f"Successfully renamed {source} -> {target}"
         except PermissionError as exc:
             return f"Error: {exc}"

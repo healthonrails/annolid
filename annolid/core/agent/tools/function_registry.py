@@ -54,11 +54,23 @@ class FunctionToolRegistry:
 
     def __init__(self) -> None:
         self._tools: dict[str, FunctionTool] = {}
+        self._aliases: dict[str, str] = {}
         self._workspace_violation_counts: dict[str, int] = {}
 
     @staticmethod
     def _normalize_tool_name(name: str) -> str:
         return str(name or "").strip()
+
+    def _resolve_tool_name(self, name: str) -> tuple[str, bool]:
+        normalized = self._normalize_tool_name(name)
+        if not normalized:
+            return "", False
+        if normalized in self._tools:
+            return normalized, False
+        mapped = self._aliases.get(normalized)
+        if mapped and mapped in self._tools:
+            return mapped, True
+        return normalized, False
 
     def register(self, tool: FunctionTool, *, replace: bool = False) -> bool:
         name = self._normalize_tool_name(tool.name)
@@ -80,26 +92,56 @@ class FunctionToolRegistry:
                 type(tool).__name__,
                 type(existing).__name__,
             )
+            for alias, target in list(self._aliases.items()):
+                if target == name:
+                    self._aliases.pop(alias, None)
         self._tools[name] = tool
+        # If a previous alias shared this canonical name, canonical wins.
+        self._aliases.pop(name, None)
+        raw_aliases = getattr(tool, "aliases", ()) or ()
+        for raw_alias in raw_aliases:
+            alias = self._normalize_tool_name(str(raw_alias))
+            if not alias or alias == name:
+                continue
+            if alias in self._tools:
+                continue
+            if alias in self._aliases and not replace:
+                continue
+            self._aliases[alias] = name
         return True
 
     def unregister(self, name: str) -> None:
-        self._tools.pop(self._normalize_tool_name(name), None)
+        canonical, _ = self._resolve_tool_name(name)
+        if not canonical:
+            return
+        self._tools.pop(canonical, None)
+        for alias, target in list(self._aliases.items()):
+            if target == canonical:
+                self._aliases.pop(alias, None)
 
     def get(self, name: str) -> FunctionTool | None:
-        return self._tools.get(self._normalize_tool_name(name))
+        canonical, _ = self._resolve_tool_name(name)
+        return self._tools.get(canonical)
 
     def has(self, name: str) -> bool:
-        return self._normalize_tool_name(name) in self._tools
+        canonical, _ = self._resolve_tool_name(name)
+        return canonical in self._tools
 
     def get_definitions(self) -> list[dict[str, Any]]:
         return [tool.to_schema() for tool in self._tools.values()]
 
     async def execute(self, name: str, params: dict[str, Any]) -> str:
         normalized_name = self._normalize_tool_name(name)
-        tool = self._tools.get(normalized_name)
+        canonical_name, via_alias = self._resolve_tool_name(normalized_name)
+        tool = self._tools.get(canonical_name)
         if tool is None:
             return f"Error: Tool '{name}' not found"
+        if via_alias:
+            logger.warning(
+                "Deprecated tool alias '%s' invoked; use '%s' instead.",
+                normalized_name,
+                canonical_name,
+            )
 
         try:
             errors = tool.validate_params(params)
@@ -108,7 +150,7 @@ class FunctionToolRegistry:
                     errors
                 )
             result = await tool.execute(**params)
-            signature = _workspace_violation_signature(normalized_name, params)
+            signature = _workspace_violation_signature(canonical_name, params)
             if signature and _is_workspace_violation_result(result):
                 count = self._workspace_violation_counts.get(signature, 0) + 1
                 self._workspace_violation_counts[signature] = count
@@ -131,4 +173,5 @@ class FunctionToolRegistry:
         return len(self._tools)
 
     def __contains__(self, name: str) -> bool:
-        return self._normalize_tool_name(name) in self._tools
+        canonical, _ = self._resolve_tool_name(name)
+        return canonical in self._tools

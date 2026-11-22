@@ -139,10 +139,18 @@ class Sam3AgentVideoTrackTool(FunctionTool):
                     allowed_dir=self._allowed_dir,
                 )
 
-            planned_summary_name = str(
+            raw_summary_name = str(
                 summary_filename or f"{resolved_video.stem}_sam3_agent_tracking.json"
+            ).strip()
+            planned_summary_name = (
+                Path(raw_summary_name).name if raw_summary_name else ""
             )
-            summary_path = resolved_output_dir / planned_summary_name
+            if not planned_summary_name or planned_summary_name in {".", ".."}:
+                planned_summary_name = f"{resolved_video.stem}_sam3_agent_tracking.json"
+            summary_path = _resolve_write_path(
+                str(resolved_output_dir / planned_summary_name),
+                allowed_dir=resolved_output_dir,
+            )
 
             if dry_run:
                 return json.dumps(

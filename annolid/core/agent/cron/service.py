@@ -294,8 +294,14 @@ class CronService:
         )
 
     def _arm_timer(self) -> None:
+        current_task: Optional[asyncio.Task[None]] = None
+        try:
+            current_task = asyncio.current_task()
+        except RuntimeError:
+            current_task = None
         if self._timer_task is not None:
-            self._timer_task.cancel()
+            if self._timer_task is not current_task:
+                self._timer_task.cancel()
             self._timer_task = None
         if not self._running:
             return

@@ -339,6 +339,12 @@ class PersistentSessionStore:
             keep = max(1, int(max_messages))
             if len(session.messages) > keep:
                 session.messages = session.messages[-keep:]
+                # Avoid leaving orphaned tool responses at the start of history after truncation.
+                while (
+                    session.messages
+                    and str(session.messages[0].get("role") or "") == "tool"
+                ):
+                    session.messages.pop(0)
             self._manager.save(session)
 
     def clear_history(self, session_id: str) -> None:
@@ -699,15 +705,23 @@ class PersistentSessionStore:
         msg["message_id"] = cls._sanitize_message_id(msg.get("message_id"))
         role = str(msg.get("role") or "")
         content = msg.get("content")
-        if role in {"user", "assistant", "system"}:
-            if not isinstance(content, str) or not content.strip():
-                return None
         if role == "assistant":
             tool_calls = cls._sanitize_assistant_tool_calls(msg.get("tool_calls"))
             if tool_calls:
                 msg["tool_calls"] = tool_calls
             else:
                 msg.pop("tool_calls", None)
+            has_text = isinstance(content, str) and bool(content.strip())
+            has_parts = isinstance(content, list) and bool(content)
+            if not has_text and not has_parts and not tool_calls:
+                return None
+            if content is None and tool_calls:
+                msg["content"] = ""
+        elif role in {"user", "system"}:
+            has_text = isinstance(content, str) and bool(content.strip())
+            has_parts = role == "user" and isinstance(content, list) and bool(content)
+            if not has_text and not has_parts:
+                return None
         elif role == "tool":
             raw_tool_call_id = str(msg.get("tool_call_id") or "").strip()
             if raw_tool_call_id:

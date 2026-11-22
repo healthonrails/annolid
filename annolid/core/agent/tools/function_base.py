@@ -22,6 +22,11 @@ class FunctionTool(ABC):
         raise NotImplementedError
 
     @property
+    def aliases(self) -> tuple[str, ...]:
+        """Optional legacy/compatibility aliases resolved by FunctionToolRegistry."""
+        return ()
+
+    @property
     @abstractmethod
     def description(self) -> str:
         raise NotImplementedError
@@ -44,9 +49,34 @@ class FunctionTool(ABC):
     def _validate(self, val: Any, schema: dict[str, Any], path: str) -> list[str]:
         t = schema.get("type")
         label = path or "parameter"
+        if isinstance(t, list):
+            allowed_types = [str(item) for item in t if isinstance(item, str)]
+            if val is None:
+                if "null" in allowed_types:
+                    return []
+                return [f"{label} should be one of {allowed_types}"]
+            matched_type: str | None = None
+            for candidate in allowed_types:
+                if candidate == "null":
+                    continue
+                if candidate in ("integer", "number") and isinstance(val, bool):
+                    continue
+                expected = self._TYPE_MAP.get(candidate)
+                if expected is not None and isinstance(val, expected):
+                    matched_type = candidate
+                    break
+            if matched_type is None:
+                return [f"{label} should be one of {allowed_types}"]
+            t = matched_type
+        if t == "null":
+            return [] if val is None else [f"{label} should be null"]
         if t in ("integer", "number") and isinstance(val, bool):
             return [f"{label} should be {t}"]
-        if t in self._TYPE_MAP and not isinstance(val, self._TYPE_MAP[t]):
+        if (
+            isinstance(t, str)
+            and t in self._TYPE_MAP
+            and not isinstance(val, self._TYPE_MAP[t])
+        ):
             return [f"{label} should be {t}"]
 
         errors: list[str] = []

@@ -15,7 +15,6 @@ from annolid.core.agent.skill_registry.schema import (
     SkillLoadConfig,
     validate_skill_manifest,
 )
-from annolid.core.agent.utils.helpers import get_agent_data_path
 
 try:  # pragma: no cover - optional dependency
     import yaml  # type: ignore
@@ -23,7 +22,15 @@ except Exception:  # pragma: no cover
     yaml = None
 
 BUILTIN_SKILLS_DIR = Path(__file__).parent / "skills"
-MANAGED_SKILLS_DIR = get_agent_data_path() / "skills"
+_DEFAULT_MANAGED_SKILLS_DIR = Path.home() / ".annolid" / "skills"
+MANAGED_SKILLS_DIR = _DEFAULT_MANAGED_SKILLS_DIR
+
+
+def get_managed_skills_dir() -> Path:
+    """Resolve managed skills directory lazily without import-time filesystem writes."""
+    if MANAGED_SKILLS_DIR != _DEFAULT_MANAGED_SKILLS_DIR:
+        return Path(MANAGED_SKILLS_DIR)
+    return Path.home() / ".annolid" / "skills"
 
 
 class AgentSkillsLoader:
@@ -50,7 +57,7 @@ class AgentSkillsLoader:
         self.managed_skills = (
             Path(managed_skills_dir)
             if managed_skills_dir is not None
-            else MANAGED_SKILLS_DIR
+            else get_managed_skills_dir()
         )
         self.registry = RuntimeSkillRegistry(
             workspace=self.workspace,

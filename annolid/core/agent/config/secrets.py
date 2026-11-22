@@ -127,11 +127,30 @@ def save_secret_store(
         for key, value in sorted(secrets.items())
         if str(key or "").strip() and str(value or "")
     }
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    import tempfile
+
+    tmp_path: Path | None = None
     try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
+        fd, raw_tmp = tempfile.mkstemp(
+            dir=str(path.parent),
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+        )
+        tmp_path = Path(raw_tmp)
+        try:
+            os.chmod(tmp_path, 0o600)
+        except OSError:
+            pass
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, indent=2))
+        os.replace(tmp_path, path)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+    finally:
+        if tmp_path is not None and tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
     return path
 
 

@@ -1,12 +1,12 @@
 # Model Context Protocol (MCP)
 
-Annolid Bot can register tools and resources from Model Context Protocol servers.
+Annolid Bot can register tools from Model Context Protocol servers.
 
 ## Current Config Path
 
 Configure MCP in the Annolid agent config:
 
-`~/.annolid/agent/config.json`
+`~/.annolid/config.json`
 
 The schema currently stores MCP servers under the agent tools block as `mcpServers` / `mcp_servers`.
 
@@ -40,7 +40,7 @@ Each server entry can define:
 
 ## How It Is Used
 
-Once configured, Annolid Bot can connect to those MCP servers during chat sessions and expose their tools/resources to the agent.
+Once configured, Annolid Bot can connect to those MCP servers during chat sessions and expose their tools to the agent.
 
 Typical uses:
 
@@ -50,13 +50,13 @@ Typical uses:
 
 ## Practical Notes
 
-- Install the `annolid_bot` extra if you want the common Annolid Bot integration stack.
+- Install the `bot` (or `annolid_bot`) extra if you want the common Annolid Bot integration stack.
 - Make sure the runtime needed by your MCP server exists locally, for example `node`, `npx`, or `python`.
 - Prefer narrow filesystem/server scopes over broad access.
 
 ## Troubleshooting
 
 - Check Annolid Bot logs and startup output for MCP registration failures.
-- Verify the config path is correct: `~/.annolid/agent/config.json`.
+- Verify the config path is correct: `~/.annolid/config.json`.
 - Confirm required environment variables are present in the server definition.
 - If a server starts but tools do not appear useful, test the server independently outside Annolid first.

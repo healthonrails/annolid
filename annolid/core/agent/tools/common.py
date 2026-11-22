@@ -117,7 +117,8 @@ def _iter_text_files(root: Path, *, include_hidden: bool = False) -> Sequence[Pa
 
 def _is_probably_text_file(path: Path, *, probe_bytes: int = 2048) -> bool:
     try:
-        data = path.read_bytes()[:probe_bytes]
+        with path.open("rb") as fh:
+            data = fh.read(max(0, int(probe_bytes)))
     except Exception:
         return False
     if not data:

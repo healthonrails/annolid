@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import fnmatch
+import logging
 from dataclasses import dataclass
 from typing import Dict, Iterable, Mapping, Sequence, Set
 
 from annolid.core.agent.config.schema import ToolPolicyConfig, ToolsConfig
+
+logger = logging.getLogger(__name__)
 
 
 _CAPABILITY_FILESYSTEM: Set[str] = {
@@ -324,7 +327,53 @@ TOOL_GROUPS: Mapping[str, Set[str]] = {
     "group:pdf": {"extract_pdf_text", "open_pdf", "extract_pdf_images"},
     "group:skills": {"clawhub_search_skills", "clawhub_install_skill"},
     "group:analysis": set(_CAPABILITY_ANALYSIS),
+    "group:admin": {
+        "admin_skills_refresh",
+        "admin_memory_flush",
+        "admin_eval_run",
+        "admin_update_run",
+    },
 }
+
+LEGACY_TOOL_NAME_ALIASES: Dict[str, str] = {
+    "skills.refresh": "admin_skills_refresh",
+    "memory.flush": "admin_memory_flush",
+    "eval.run": "admin_eval_run",
+    "update.run": "admin_update_run",
+}
+
+
+def canonicalize_tool_name(tool_name: str) -> str:
+    lowered = str(tool_name or "").strip().lower()
+    if not lowered:
+        return ""
+    return LEGACY_TOOL_NAME_ALIASES.get(lowered, lowered)
+
+
+def classify_destructive_tool_call(
+    tool_name: str,
+    params: Dict[str, object] | None = None,
+) -> str | None:
+    """Return a human-readable risk summary if the tool call is destructive."""
+    canonical = canonicalize_tool_name(tool_name)
+    args = params if isinstance(params, dict) else {}
+    if canonical in {"exec", "exec_start"}:
+        return "Execute a shell command on this machine"
+    if canonical in {"gui_delete_selected_shapes", "gui_delete_shapes_in_annotation"}:
+        return "Delete annotation shapes"
+    if canonical == "gui_remove_log_folder":
+        return "Delete a log folder from disk"
+    if canonical in {"rename_file", "gui_rename_file"}:
+        return "Rename or overwrite a file on disk"
+    if canonical in {"gui_self_update", "admin_update_run"}:
+        if bool(args.get("execute", False)) or bool(args.get("rollback", False)):
+            return "Modify or update the Annolid installation"
+        return None
+    if canonical == "git_cli":
+        if bool(args.get("allow_mutation", False)):
+            return "Run a mutating Git command"
+        return None
+    return None
 
 
 @dataclass(frozen=True)
@@ -348,12 +397,17 @@ class ToolPermissionContext:
         deny_names: Iterable[str] = (),
         deny_prefixes: Iterable[str] = (),
     ) -> "ToolPermissionContext":
+        deny_set = set()
+        for name in deny_names:
+            lowered = str(name or "").strip().lower()
+            if not lowered:
+                continue
+            deny_set.add(lowered)
+            canonical = canonicalize_tool_name(lowered)
+            if canonical:
+                deny_set.add(canonical)
         return cls(
-            deny_names=frozenset(
-                str(name or "").strip().lower()
-                for name in deny_names
-                if str(name or "").strip()
-            ),
+            deny_names=frozenset(deny_set),
             deny_prefixes=tuple(
                 str(prefix or "").strip().lower()
                 for prefix in deny_prefixes
@@ -365,9 +419,14 @@ class ToolPermissionContext:
         lowered = str(tool_name or "").strip().lower()
         if not lowered:
             return False
-        return lowered in self.deny_names or any(
-            lowered.startswith(prefix) for prefix in self.deny_prefixes
-        )
+        canonical = canonicalize_tool_name(lowered)
+        candidates = (lowered, canonical) if canonical != lowered else (lowered,)
+        for candidate in candidates:
+            if candidate in self.deny_names:
+                return True
+            if any(candidate.startswith(prefix) for prefix in self.deny_prefixes):
+                return True
+        return False
 
     def to_dict(self) -> Dict[str, object]:
         return {
@@ -471,6 +530,20 @@ def _expand_entries(entries: Iterable[str], all_tool_names: Set[str]) -> Set[str
         if item in canonical_names:
             expanded.add(canonical_names[item])
             continue
+        aliased = canonicalize_tool_name(item)
+        if aliased in canonical_names:
+            expanded.add(canonical_names[aliased])
+            continue
+        # Reverse check when all_tool_names contains legacy dotted names
+        # and policy references the canonical underscored name.
+        reverse_matches = [
+            canonical_names[legacy]
+            for legacy, target in LEGACY_TOOL_NAME_ALIASES.items()
+            if target == item and legacy in canonical_names
+        ]
+        if reverse_matches:
+            expanded.update(reverse_matches)
+            continue
         if any(ch in item for ch in ("*", "?", "[")):
             expanded.update(
                 canonical
@@ -531,6 +604,8 @@ def resolve_allowed_tools(
 
     source = "global"
     explicit_markers: list[str] = list(tools_cfg.allow)
+    effective_allow_patterns: list[str] = list(tools_cfg.allow)
+    effective_deny_patterns: list[str] = list(tools_cfg.deny)
     provider_key = str(provider or "").strip().lower()
     model_key = str(model or "").strip().lower()
     overrides: Dict[str, ToolPolicyConfig] = {
@@ -552,6 +627,8 @@ def resolve_allowed_tools(
             all_tool_names=all_names,
         )
         explicit_markers.extend(list(override.allow))
+        effective_allow_patterns.extend(list(override.allow))
+        effective_deny_patterns.extend(list(override.deny))
         source = key
         break
 
@@ -563,8 +640,8 @@ def resolve_allowed_tools(
     return ResolvedToolPolicy(
         allowed_tools=allowed,
         profile=base_profile,
-        allow_patterns=list(tools_cfg.allow),
-        deny_patterns=list(tools_cfg.deny),
+        allow_patterns=effective_allow_patterns,
+        deny_patterns=effective_deny_patterns,
         source=source,
     )
 
@@ -586,7 +663,8 @@ def build_tool_permission_context(
     deny_names = all_names.difference(allowed)
 
     deny_prefixes: list[str] = []
-    for raw in [*list(resolved_policy.deny_patterns), *list(extra_deny_patterns)]:
+    policy_deny_patterns = list(getattr(resolved_policy, "deny_patterns", ()) or ())
+    for raw in [*policy_deny_patterns, *list(extra_deny_patterns)]:
         pattern = str(raw or "").strip().lower()
         if not pattern:
             continue
@@ -614,7 +692,13 @@ def _resolve_profile_base(profile: str) -> Set[str] | None:
     if direct is not None or key in TOOL_PROFILE_BASE:
         return direct
     if not key.startswith("capability:"):
-        return None
+        # Fail closed to minimal profile on unrecognized/typo profile names
+        # instead of silently escalating to full tool access.
+        logger.warning(
+            "Unrecognized tool policy profile %r; failing closed to 'minimal'.",
+            profile,
+        )
+        return set(TOOL_PROFILE_BASE["minimal"] or set())
     raw_caps = key.split(":", 1)[1]
     caps: Set[str] = set()
     for token in raw_caps.replace("+", ",").split(","):

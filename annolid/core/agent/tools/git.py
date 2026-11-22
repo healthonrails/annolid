@@ -162,19 +162,70 @@ class GitCliTool(_RepoCliTool):
             parsed = parsed[1:]
         return parsed
 
+    _READ_ONLY_SUBCOMMANDS: set[str] = {
+        "status",
+        "diff",
+        "log",
+        "show",
+        "rev-parse",
+        "rev-list",
+        "ls-files",
+        "ls-tree",
+        "blame",
+        "describe",
+        "shortlog",
+        "grep",
+        "cat-file",
+        "merge-base",
+        "name-rev",
+        "for-each-ref",
+        "symbolic-ref",
+        "version",
+        "--version",
+    }
+    _BLOCKED_OPTION_PREFIXES: tuple[str, ...] = (
+        "-c",
+        "--config-env",
+        "--exec-path",
+        "--git-dir",
+        "--work-tree",
+        "--upload-pack",
+        "--receive-pack",
+        "--ext-diff",
+        "--output",
+    )
+
+    @classmethod
+    def _has_dangerous_option(cls, args: Sequence[str]) -> bool:
+        for raw in args:
+            token = str(raw or "").strip()
+            if not token:
+                continue
+            lowered = token.lower()
+            for prefix in cls._BLOCKED_OPTION_PREFIXES:
+                if lowered == prefix or lowered.startswith(prefix + "="):
+                    return True
+            # Also catch attached short -c forms like -ccore.pager=...
+            if token.startswith("-c") and len(token) > 2:
+                return True
+        return False
+
     @classmethod
     def _is_read_only(cls, args: Sequence[str]) -> bool:
         norm = tuple(str(a or "").strip() for a in args if str(a or "").strip())
         if not norm:
             return False
+        if cls._has_dangerous_option(norm):
+            return False
         for prefix in cls._READ_ONLY_PREFIXES:
             if len(norm) >= len(prefix) and norm[: len(prefix)] == prefix:
                 return True
         sub = norm[0].lower()
-        if sub not in cls._MUTATING_SUBCOMMANDS:
-            # Unknown commands default to read-only unless explicitly listed as mutating.
-            return True
-        return False
+        if sub in cls._MUTATING_SUBCOMMANDS:
+            return False
+        # Fail closed: only explicitly vetted read-only subcommands are allowed
+        # without allow_mutation=True.
+        return sub in cls._READ_ONLY_SUBCOMMANDS
 
     async def execute(
         self,
@@ -195,6 +246,17 @@ class GitCliTool(_RepoCliTool):
                 {
                     "error": "Provide non-empty git args or command.",
                     "repo_path": str(repo),
+                }
+            )
+        if self._has_dangerous_option(normalized):
+            return json.dumps(
+                {
+                    "error": (
+                        "Blocked unsafe git option (-c/--config-env/--exec-path/"
+                        "--git-dir/--work-tree/--upload-pack/--receive-pack/--ext-diff/--output)."
+                    ),
+                    "repo_path": str(repo),
+                    "command": ["git", *normalized],
                 }
             )
         if not self._is_read_only(normalized) and not bool(allow_mutation):
@@ -413,6 +475,14 @@ class GitDiffTool(_RepoCliTool):
             args.append("--name-only")
         target_text = str(target or "").strip()
         if target_text:
+            if target_text.startswith("-"):
+                return json.dumps(
+                    {
+                        "error": "Invalid git diff target: option-like values starting with '-' are not allowed.",
+                        "repo_path": str(repo),
+                        "target": target_text,
+                    }
+                )
             args.append(target_text)
         return await self._run_command(args, repo_path=repo)
 

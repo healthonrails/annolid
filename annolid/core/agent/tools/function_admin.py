@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime
 import json
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Sequence
 
 from annolid.core.agent.eval.gate import evaluate_report_gate
 from annolid.core.agent.eval.run_agent_eval import run_eval
@@ -12,7 +12,6 @@ from annolid.core.agent.observability import emit_governance_event
 from annolid.core.agent.security_policy import (
     bot_update_requires_operator_consent,
     has_operator_consent,
-    operator_consent_phrase,
     require_signed_updates,
 )
 from annolid.core.agent.skills import AgentSkillsLoader
@@ -23,13 +22,21 @@ from annolid.core.agent.update_manager.rollback import (
 from annolid.core.agent.update_manager.service import UpdateManagerService
 from annolid.core.agent.utils import get_agent_workspace_path
 
+from .common import _resolve_read_path, _resolve_write_path
 from .function_base import FunctionTool
 
 
 class AdminSkillsRefreshTool(FunctionTool):
+    def __init__(self, *, allowed_dir: Optional[Path] = None) -> None:
+        self._allowed_dir = allowed_dir
+
     @property
     def name(self) -> str:
-        return "skills.refresh"
+        return "admin_skills_refresh"
+
+    @property
+    def aliases(self) -> tuple[str, ...]:
+        return ("skills.refresh",)
 
     @property
     def description(self) -> str:
@@ -46,7 +53,15 @@ class AdminSkillsRefreshTool(FunctionTool):
         }
 
     async def execute(self, workspace: str = "") -> str:
-        resolved = get_agent_workspace_path(workspace or None)
+        ws_arg = str(workspace or "").strip()
+        if self._allowed_dir is not None:
+            resolved = (
+                _resolve_read_path(ws_arg, allowed_dir=self._allowed_dir)
+                if ws_arg
+                else Path(self._allowed_dir).expanduser().resolve()
+            )
+        else:
+            resolved = get_agent_workspace_path(ws_arg or None)
         loader = AgentSkillsLoader(workspace=resolved)
         before = loader.list_skills(filter_unavailable=False)
         before_names = sorted(str(s.get("name") or "") for s in before)
@@ -80,9 +95,16 @@ class AdminSkillsRefreshTool(FunctionTool):
 
 
 class AdminMemoryFlushTool(FunctionTool):
+    def __init__(self, *, allowed_dir: Optional[Path] = None) -> None:
+        self._allowed_dir = allowed_dir
+
     @property
     def name(self) -> str:
-        return "memory.flush"
+        return "admin_memory_flush"
+
+    @property
+    def aliases(self) -> tuple[str, ...]:
+        return ("memory.flush",)
 
     @property
     def description(self) -> str:
@@ -106,7 +128,15 @@ class AdminMemoryFlushTool(FunctionTool):
         session_id: str = "",
         note: str = "",
     ) -> str:
-        resolved = get_agent_workspace_path(workspace or None)
+        ws_arg = str(workspace or "").strip()
+        if self._allowed_dir is not None:
+            resolved = (
+                _resolve_write_path(ws_arg, allowed_dir=self._allowed_dir)
+                if ws_arg
+                else Path(self._allowed_dir).expanduser().resolve()
+            )
+        else:
+            resolved = get_agent_workspace_path(ws_arg or None)
         store = AgentMemoryStore(resolved)
         stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         text = str(note or "").strip() or "operator memory flush"
@@ -139,9 +169,22 @@ class AdminMemoryFlushTool(FunctionTool):
 
 
 class AdminEvalRunTool(FunctionTool):
+    def __init__(
+        self,
+        *,
+        allowed_dir: Optional[Path] = None,
+        allowed_read_roots: Optional[Sequence[str | Path]] = None,
+    ) -> None:
+        self._allowed_dir = allowed_dir
+        self._allowed_read_roots = allowed_read_roots
+
     @property
     def name(self) -> str:
-        return "eval.run"
+        return "admin_eval_run"
+
+    @property
+    def aliases(self) -> tuple[str, ...]:
+        return ("eval.run",)
 
     @property
     def description(self) -> str:
@@ -174,16 +217,33 @@ class AdminEvalRunTool(FunctionTool):
         max_regressions: int = 0,
         min_pass_rate: float = 0.0,
     ) -> str:
+        resolved_traces = _resolve_read_path(
+            traces_path,
+            allowed_dir=self._allowed_dir,
+            allowed_read_roots=self._allowed_read_roots,
+        )
+        resolved_candidate = _resolve_read_path(
+            candidate_responses_path,
+            allowed_dir=self._allowed_dir,
+            allowed_read_roots=self._allowed_read_roots,
+        )
+        resolved_baseline = (
+            _resolve_read_path(
+                baseline_responses_path,
+                allowed_dir=self._allowed_dir,
+                allowed_read_roots=self._allowed_read_roots,
+            )
+            if str(baseline_responses_path or "").strip()
+            else None
+        )
+        out = str(output_path or "").strip()
+        resolved_out = (
+            _resolve_write_path(out, allowed_dir=self._allowed_dir) if out else None
+        )
         report = run_eval(
-            traces_path=Path(traces_path).expanduser().resolve(),
-            candidate_responses_path=Path(candidate_responses_path)
-            .expanduser()
-            .resolve(),
-            baseline_responses_path=(
-                Path(baseline_responses_path).expanduser().resolve()
-                if str(baseline_responses_path or "").strip()
-                else None
-            ),
+            traces_path=resolved_traces,
+            candidate_responses_path=resolved_candidate,
+            baseline_responses_path=resolved_baseline,
         )
         gate = evaluate_report_gate(
             report,
@@ -195,12 +255,10 @@ class AdminEvalRunTool(FunctionTool):
             "report": report,
             "gate": gate,
         }
-        out = str(output_path or "").strip()
-        if out:
-            out_path = Path(out).expanduser().resolve()
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-            payload["output_path"] = str(out_path)
+        if resolved_out is not None:
+            resolved_out.parent.mkdir(parents=True, exist_ok=True)
+            resolved_out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            payload["output_path"] = str(resolved_out)
         return json.dumps(payload, ensure_ascii=False)
 
 
@@ -210,7 +268,11 @@ class AdminUpdateRunTool(FunctionTool):
 
     @property
     def name(self) -> str:
-        return "update.run"
+        return "admin_update_run"
+
+    @property
+    def aliases(self) -> tuple[str, ...]:
+        return ("update.run",)
 
     @property
     def description(self) -> str:
@@ -260,7 +322,10 @@ class AdminUpdateRunTool(FunctionTool):
                     "ok": False,
                     "status": "blocked",
                     "reason": "operator_consent_required",
-                    "required_phrase": operator_consent_phrase(),
+                    "message": (
+                        "Operator consent is required before applying an update. "
+                        "Ask the human operator to supply the configured consent phrase."
+                    ),
                 }
                 emit_governance_event(
                     event_type="update",
