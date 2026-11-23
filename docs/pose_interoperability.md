@@ -1,11 +1,11 @@
 # DeepLabCut, SLEAP & External Pose Interoperability
 
-Annolid provides bidirectional import and export for pose and keypoint tracking ecosystems used in behavioral neuroscience:
+Annolid provides bidirectional import and export for pose and keypoint tracking ecosystems used in behavioral neuroscience. For the complete end-to-end pose estimation workflow (k-means frame sampling, evaluation metrics, active-learning outliers, filtering/interpolation, pose kinematics, and labeled skeleton video export), see [Pose Estimation Workflow](pose_estimation_workflow.md).
 
 | Ecosystem / Format | Import to Annolid | Export from Annolid | Notes |
 | --- | --- | --- | --- |
-| **DeepLabCut** analysis (`.csv`, `.h5`) | Single- & multi-animal (3- and 4-row headers), likelihood filtering, `config.yaml` skeleton | 3-row (single-animal) & 4-row (multi-animal) CSV (`x, y, likelihood`) | Auto-discovers `*DLC_*.csv` / `*DLC_*.h5`; reads fixed-format `.h5` with `h5py` (no PyTables required). |
-| **DeepLabCut** training (`labeled-data/CollectedData_*.{csv,h5}`) | Single- & multi-animal CSV/H5, cross-platform paths, `config.yaml` edges, LabelMe-safe flags | Full project (`labeled-data/<video>/CollectedData_<scorer>.csv`, images, `config.yaml`) | Round-trips cleanly with `pose_schema.json`. |
+| **DeepLabCut** analysis (`.csv`, `.h5`) | Single- & multi-animal (3- and 4-row headers), likelihood filtering, `config.yaml` skeleton | 3-row (single-animal) & 4-row (multi-animal) CSV (`--format deeplabcut-csv`) & HDF5 (`--format deeplabcut-h5`) | Auto-discovers `*DLC_*.csv` / `*DLC_*.h5`; reads and writes fixed-format `.h5` via `h5py` (no PyTables required). |
+| **DeepLabCut** training (`labeled-data/CollectedData_*.{csv,h5}`) | Single- & multi-animal CSV/H5, cross-platform paths, `config.yaml` edges, LabelMe-safe flags | Full project (`labeled-data/<video>/CollectedData_<scorer>.{csv,h5}`, images, `config.yaml`) | Round-trips cleanly with `pose_schema.json` and `read_pose_dataset()`. |
 | **Lightning Pose** (`.csv`, training projects) | Uses DLC 3- and 4-row CSV format | Same as DeepLabCut CSV / training project | Use `--format lightning-pose` or `--format auto`. |
 | **SLEAP** projects (`.slp`, `.pkg.slp`) | Multi-video, `/tracks_json` track names, point/instance scores, skeleton edges & symmetry, occluded keypoints | `.slp` or self-contained `.pkg.slp` (`--embed-images`) | Prefers user labels over overlapping predictions on the same frame by default. |
 | **SLEAP** Analysis HDF5 (`.analysis.h5`) | `/tracks`, `/node_names`, `/track_names`, `/edge_names`, `/point_scores`, `/instance_scores` | Standard SLEAP analysis HDF5 (`tracks`, `point_scores`, `instance_scores`, `track_occupancy`, `edge_names`, `edge_inds`) | Requires `h5py` (`pip install 'annolid[sleap]'`). |

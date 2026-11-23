@@ -19,7 +19,9 @@ from annolid.annotation.pose_interop.deeplabcut import (
     read_dlc_analysis,
     read_dlc_project_config,
     read_dlc_raw_dataframe,
+    read_dlc_training_project,
     write_dlc_analysis_csv,
+    write_dlc_analysis_h5,
     write_dlc_training_project,
 )
 from annolid.annotation.pose_interop.labelme import (
@@ -28,6 +30,7 @@ from annolid.annotation.pose_interop.labelme import (
     read_pose_from_coco_json,
     read_pose_from_labelme_dir,
     read_pose_from_tracking_csv,
+    write_pose_to_coco_json,
     write_pose_to_labelme_dir,
 )
 from annolid.annotation.pose_interop.model import (
@@ -90,6 +93,7 @@ __all__ = [
     "read_dlc_analysis",
     "read_dlc_project_config",
     "read_dlc_raw_dataframe",
+    "read_dlc_training_project",
     "read_pose_dataset",
     "read_pose_from_coco_json",
     "read_pose_from_labelme_dir",
@@ -100,7 +104,9 @@ __all__ = [
     "read_sleap_zip",
     "safe_json_loads",
     "write_dlc_analysis_csv",
+    "write_dlc_analysis_h5",
     "write_dlc_training_project",
+    "write_pose_to_coco_json",
     "write_pose_to_labelme_dir",
     "write_sleap_analysis_h5",
     "write_sleap_slp",

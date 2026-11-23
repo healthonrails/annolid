@@ -283,6 +283,92 @@ def build_canvas_context_menu(canvas, main_window) -> QtWidgets.QMenu:
                 )
                 menu.addAction(switch_labels_action)
 
+            has_point_selected = any(
+                str(getattr(s, "shape_type", "")).lower() == "point"
+                for s in selected_shapes
+            )
+            if has_point_selected:
+                menu.addSeparator()
+                first_pt = next(
+                    s
+                    for s in selected_shapes
+                    if str(getattr(s, "shape_type", "")).lower() == "point"
+                )
+                if hasattr(canvas, "selectPoseInstanceShapes"):
+                    select_inst_action = QtWidgets.QAction(
+                        "Select Whole Pose Instance",
+                        menu,
+                    )
+                    canvas._ensure_action_icon(
+                        select_inst_action,
+                        icon_filename="edit_polygons.svg",
+                        fallback_standard=QtWidgets.QStyle.SP_FileDialogContentsView,
+                    )
+                    select_inst_action.triggered.connect(
+                        lambda: canvas.selectPoseInstanceShapes(first_pt)
+                    )
+                    menu.addAction(select_inst_action)
+                if hasattr(canvas, "transformSelectedPoseShapes"):
+                    for label_txt, kwargs, fallback_icon in (
+                        (
+                            "Rotate Pose Left (-15°)",
+                            {"angle_deg": -15.0},
+                            QtWidgets.QStyle.SP_ArrowLeft,
+                        ),
+                        (
+                            "Rotate Pose Right (+15°)",
+                            {"angle_deg": 15.0},
+                            QtWidgets.QStyle.SP_ArrowRight,
+                        ),
+                        (
+                            "Scale Pose Up (+10%)",
+                            {"scale": 1.10},
+                            QtWidgets.QStyle.SP_ArrowUp,
+                        ),
+                        (
+                            "Scale Pose Down (-10%)",
+                            {"scale": 0.90},
+                            QtWidgets.QStyle.SP_ArrowDown,
+                        ),
+                    ):
+                        act = QtWidgets.QAction(label_txt, menu)
+                        canvas._ensure_action_icon(act, fallback_standard=fallback_icon)
+                        act.triggered.connect(
+                            lambda _checked=False, kw=kwargs: (
+                                canvas.selectPoseInstanceShapes(first_pt)
+                                if len(canvas.selectedShapes) <= 1
+                                else None,
+                                canvas.transformSelectedPoseShapes(**kw),
+                            )
+                        )
+                        menu.addAction(act)
+                _add_existing_action(
+                    getattr(main_window, "toggle_keypoint_visibility_action", None),
+                    fallback_standard=QtWidgets.QStyle.SP_DialogApplyButton,
+                )
+                _add_existing_action(
+                    getattr(main_window, "mark_keypoint_visible_action", None),
+                    fallback_standard=QtWidgets.QStyle.SP_DialogYesButton,
+                )
+                _add_existing_action(
+                    getattr(main_window, "mark_keypoint_occluded_action", None),
+                    fallback_standard=QtWidgets.QStyle.SP_DialogNoButton,
+                )
+                if hasattr(main_window, "open_pose_workbench"):
+                    swap_pose_action = QtWidgets.QAction(
+                        "Swap Pose Instances Forward…",
+                        menu,
+                    )
+                    canvas._ensure_action_icon(
+                        swap_pose_action,
+                        icon_filename="next_frame.svg",
+                        fallback_standard=QtWidgets.QStyle.SP_BrowserReload,
+                    )
+                    swap_pose_action.triggered.connect(
+                        lambda: main_window.open_pose_workbench(initial_tab="video")
+                    )
+                    menu.addAction(swap_pose_action)
+
         if actions is not None:
             if selected_shapes:
                 _add_existing_action(

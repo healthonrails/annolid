@@ -1105,11 +1105,32 @@ class AnalysisStudioWidget(QtWidgets.QWidget):
 
         def _job() -> Dict[str, Any]:
             _require_pandas_analytics("Track QC & Gap Audit")
+            from annolid.annotation.pose_schema import find_pose_schema_in_dir
             from annolid.postprocessing.tracking_reports import summarize_tracking_gaps
             from annolid.services.track_analytics import run_track_qc
 
+            pose_schema_candidate: Optional[Path] = None
+            owner = getattr(self, "_owner_window", None)
+            if owner is not None:
+                raw_ps = getattr(owner, "pose_schema_path", None)
+                if raw_ps:
+                    p = Path(str(raw_ps)).expanduser()
+                    if p.is_file():
+                        pose_schema_candidate = p
+                if pose_schema_candidate is None:
+                    seq = getattr(owner, "keypoint_sequencer", None)
+                    if seq is not None and callable(getattr(seq, "schema_path", None)):
+                        sp = seq.schema_path()
+                        if sp and Path(sp).is_file():
+                            pose_schema_candidate = Path(sp)
+            if pose_schema_candidate is None:
+                pose_schema_candidate = find_pose_schema_in_dir(
+                    track_in, search_parent=True
+                )
+
             tqc = run_track_qc(
                 track_in,
+                pose_schema_path=pose_schema_candidate,
                 expected_instances=exp if exp > 0 else None,
                 fps=fps_val,
                 top_k_review=30,

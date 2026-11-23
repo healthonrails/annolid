@@ -946,6 +946,16 @@ class KeypointSegmentor:
         try:
             coco_dt = coco_gt.loadRes(str(results_file))
             coco_eval = COCOeval(coco_gt, coco_dt, "keypoints")
+            num_kpts = len(self.keypoint_names) if self.keypoint_names else 0
+            if (
+                num_kpts > 0
+                and len(getattr(coco_eval.params, "kpt_oks_sigmas", ())) != num_kpts
+            ):
+                import numpy as np
+
+                coco_eval.params.kpt_oks_sigmas = np.full(
+                    (num_kpts,), 0.05, dtype=np.float64
+                )
             coco_eval.evaluate()
             coco_eval.accumulate()
             coco_eval.summarize()

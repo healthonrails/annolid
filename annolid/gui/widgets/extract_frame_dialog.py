@@ -50,10 +50,14 @@ class ExtractFrameDialog(QtWidgets.QDialog):
         self.startSecondsLabel = QtWidgets.QLabel(self)
         self.startSecondsLabel.setText("Start seconds:")
         self.startSecondsLineEdit = QtWidgets.QLineEdit(self)
+        self.startSecondsLineEdit.setPlaceholderText("e.g. 0")
+        self.startSecondsLineEdit.setValidator(QtGui.QIntValidator(0, 864000, self))
         self.startSecondsLineEdit.textChanged.connect(self.onCutClipStartTimeChanged)
         self.endSecondsLabel = QtWidgets.QLabel(self)
         self.endSecondsLabel.setText("End seconds:")
         self.endSecondsLineEdit = QtWidgets.QLineEdit(self)
+        self.endSecondsLineEdit.setPlaceholderText("e.g. 60")
+        self.endSecondsLineEdit.setValidator(QtGui.QIntValidator(0, 864000, self))
         self.endSecondsLineEdit.textChanged.connect(self.onCutClipEndTimeChanged)
 
         hboxLayOutSubClip = QtWidgets.QHBoxLayout()
@@ -104,6 +108,16 @@ class ExtractFrameDialog(QtWidgets.QDialog):
     def raidoButtons(self):
         self.groupBox = QtWidgets.QGroupBox("Please choose an algorithm")
         hboxLayOut = QtWidgets.QHBoxLayout()
+        self.radio_btn_kmeans = QtWidgets.QRadioButton("kmeans")
+        self.radio_btn_kmeans.setToolTip(
+            "K-means visual diversity clustering (recommended for pose training datasets)"
+        )
+        self.radio_btn_kmeans.toggled.connect(self.onRadioButtonChecked)
+        hboxLayOut.addWidget(self.radio_btn_kmeans)
+        self.radio_btn_uniform = QtWidgets.QRadioButton("uniform")
+        self.radio_btn_uniform.setToolTip("Evenly spaced frames across the video")
+        self.radio_btn_uniform.toggled.connect(self.onRadioButtonChecked)
+        hboxLayOut.addWidget(self.radio_btn_uniform)
         self.radio_btn1 = QtWidgets.QRadioButton("random")
         self.radio_btn1.setChecked(True)
         self.radio_btn1.toggled.connect(self.onRadioButtonChecked)
@@ -120,7 +134,7 @@ class ExtractFrameDialog(QtWidgets.QDialog):
         self.slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.slider.setMinimum(-1)
         self.slider.setMaximum(1000)
-        self.slider.setValue(10)
+        self.slider.setValue(100)
         self.slider.setTickPosition(QtWidgets.QSlider.TicksBelow)
         self.slider.setTickInterval(1)
         self.slider.valueChanged.connect(self.onSliderChange)
@@ -154,26 +168,17 @@ class ExtractFrameDialog(QtWidgets.QDialog):
             self.label1.setText(f"You have selected {str(self.num_frames)} frames.")
 
     def onCutClipStartTimeChanged(self):
-        self.start_sconds = self.startSecondsLineEdit.text()
-        if not self.start_sconds.isdigit():
-            QtWidgets.QMessageBox.about(
-                self,
-                "invalid start seconds",
-                "Please enter a valid int number for start seconds",
-            )
-
-        if self.start_sconds.isdigit():
-            self.start_sconds = int(self.start_sconds)
+        raw = self.startSecondsLineEdit.text().strip()
+        if not raw:
+            self.start_sconds = None
+            return
+        if raw.isdigit():
+            self.start_sconds = int(raw)
 
     def onCutClipEndTimeChanged(self):
-        self.end_seconds = self.endSecondsLineEdit.text()
-
-        if not self.end_seconds.isdigit():
-            QtWidgets.QMessageBox.about(
-                self,
-                "invalid end seconds",
-                "Please enter a valid int number for end seconds",
-            )
-
-        if self.end_seconds.isdigit():
-            self.end_seconds = int(self.end_seconds)
+        raw = self.endSecondsLineEdit.text().strip()
+        if not raw:
+            self.end_seconds = None
+            return
+        if raw.isdigit():
+            self.end_seconds = int(raw)

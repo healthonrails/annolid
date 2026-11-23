@@ -544,6 +544,16 @@ class MenuController:
                 "icon_name": "visualization",
             },
             {
+                "name": "pose_workbench",
+                "text": w.tr("&Pose Estimation Workbench…"),
+                "slot": w.open_pose_workbench,
+                "shortcut": "Ctrl+Shift+P",
+                "tip": w.tr(
+                    "Evaluate pose predictions (RMSE/PCK/OKS), filter & interpolate tracks, extract active-learning outliers, compute pose kinematics, render labeled videos, and swap identities"
+                ),
+                "icon_name": "visualization",
+            },
+            {
                 "name": "tracking_stats_dashboard",
                 "text": w.tr("Tracking Stats &Dashboard…"),
                 "slot": w.open_tracking_stats_dashboard,
@@ -1485,6 +1495,7 @@ class MenuController:
         analysis_sections = [
             (
                 actions["analysis_studio"],
+                actions["pose_workbench"],
                 actions["labeling_progress_dashboard"],
                 actions["tracking_stats_dashboard"],
                 actions["tracking_reports"],

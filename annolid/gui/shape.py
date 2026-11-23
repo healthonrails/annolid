@@ -110,6 +110,7 @@ class Shape(object):
     point_size = 10
     scale = 1.0
     show_label_names = True
+    show_pose_labels = False
 
     def __init__(
         self,
@@ -480,11 +481,16 @@ class Shape(object):
             self._render_queued_vertices(painter)
 
         # Draw the label badge near the shape when enabled.
-        if (
-            self.label
-            and bool(getattr(self, "show_label_names", True))
-            and self.shape_type
-            in {"polygon", "rectangle", "oriented_rectangle", "circle", "mask"}
+        show_point_label = self.shape_type == "point" and bool(
+            getattr(self, "show_pose_labels", False)
+        )
+        if self.label and (
+            (
+                bool(getattr(self, "show_label_names", True))
+                and self.shape_type
+                in {"polygon", "rectangle", "oriented_rectangle", "circle", "mask"}
+            )
+            or show_point_label
         ):
             self._draw_label(painter, image_width, image_height)
 
@@ -497,13 +503,19 @@ class Shape(object):
         return text
 
     def _draw_label(self, painter, image_width, image_height):
-        bounding_rect = self.boundingRect()
-        if (
-            bounding_rect is None
-            or not bounding_rect.isValid()
-            or not self.should_draw_label(image_width, image_height)
-        ):
-            return
+        if self.shape_type == "point":
+            if not self.points or not self.should_draw_label(image_width, image_height):
+                return
+            anchor_pt = self.points[0]
+        else:
+            bounding_rect = self.boundingRect()
+            if (
+                bounding_rect is None
+                or not bounding_rect.isValid()
+                or not self.should_draw_label(image_width, image_height)
+            ):
+                return
+            anchor_pt = bounding_rect.topLeft()
 
         label_text = self._format_canvas_label_text()
         if not label_text:
@@ -512,7 +524,7 @@ class Shape(object):
         painter.save()
         try:
             # Draw in constant logical screen pixels regardless of canvas zoom or DPI.
-            anchor_screen = painter.transform().map(bounding_rect.topLeft())
+            anchor_screen = painter.transform().map(anchor_pt)
             painter.resetTransform()
 
             font = QtGui.QFont()
@@ -577,6 +589,8 @@ class Shape(object):
 
     def should_draw_label(self, image_width, image_height):
         """Determine if the shape is large enough to draw its label."""
+        if self.shape_type == "point":
+            return bool(getattr(self, "show_pose_labels", False)) and bool(self.points)
         if not bool(getattr(self, "show_label_names", True)):
             return False
         if image_width is None or image_height is None:

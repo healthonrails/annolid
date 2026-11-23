@@ -8,13 +8,16 @@ from typing import Any, Dict, Optional, Tuple
 from annolid.annotation.pose_interop.deeplabcut import (
     find_dlc_analysis_file_for_video,
     read_dlc_analysis,
+    read_dlc_training_project,
     write_dlc_analysis_csv,
+    write_dlc_analysis_h5,
     write_dlc_training_project,
 )
 from annolid.annotation.pose_interop.labelme import (
     read_pose_from_coco_json,
     read_pose_from_labelme_dir,
     read_pose_from_tracking_csv,
+    write_pose_to_coco_json,
     write_pose_to_labelme_dir,
 )
 from annolid.annotation.pose_interop.model import (
@@ -111,6 +114,13 @@ def read_pose_dataset(
             else "sleap_slp"
         )
 
+    if fmt == "deeplabcut_training":
+        return read_dlc_training_project(
+            src_path,
+            config_path=config_path,
+            default_instance=default_instance,
+            recursive=recursive or True,
+        )
     if fmt in ("deeplabcut_csv", "deeplabcut_h5"):
         return read_dlc_analysis(
             src_path,
@@ -439,6 +449,26 @@ def export_pose_dataset(
             "instances": dataset.resolved_instances(),
         }
 
+    if tgt_fmt == "deeplabcut_h5":
+        if out.is_dir():
+            out = out / f"{Path(source).stem}_dlc.h5"
+        written = write_dlc_analysis_h5(
+            dataset,
+            out,
+            scorer=scorer,
+            multi_animal=multi_animal,
+        )
+        return {
+            "target_format": "deeplabcut_h5",
+            "output_path": str(written),
+            "frames_exported": len(dataset.frames),
+            "multi_animal": bool(
+                multi_animal if multi_animal is not None else dataset.is_multi_animal()
+            ),
+            "keypoints": dataset.resolved_keypoints(),
+            "instances": dataset.resolved_instances(),
+        }
+
     if tgt_fmt == "deeplabcut_project":
         vname = video_name or Path(source).stem or "video"
         res = write_dlc_training_project(
@@ -493,7 +523,12 @@ def export_pose_dataset(
     if tgt_fmt == "labelme_dir":
         return write_pose_to_labelme_dir(dataset, out)
 
+    if tgt_fmt == "coco_json":
+        if out.is_dir():
+            out = out / f"{Path(source).stem}_coco_keypoints.json"
+        return write_pose_to_coco_json(dataset, out)
+
     raise ValueError(
         f"Unsupported export target_format={target_format!r}. "
-        "Choose one of: deeplabcut_csv, deeplabcut_project, sleap_analysis_h5, sleap_slp, labelme_dir."
+        "Choose one of: deeplabcut_csv, deeplabcut_project, sleap_analysis_h5, sleap_slp, labelme_dir, coco_json."
     )

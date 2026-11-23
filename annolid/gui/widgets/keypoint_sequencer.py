@@ -20,9 +20,10 @@ from annolid.gui.qt_compat import configure_compact_combo
 
 
 class _SkeletonPreviewWidget(QtWidgets.QWidget):
-    """Interactive anatomical skeleton preview for edge editing and sequence state."""
+    """Interactive draggable 2D anatomical skeleton preview for edge and layout editing."""
 
     keypointClicked = QtCore.Signal(str)
+    layoutChanged = QtCore.Signal(dict)
 
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
         super().__init__(parent)
@@ -33,8 +34,51 @@ class _SkeletonPreviewWidget(QtWidgets.QWidget):
         self._hovered_keypoint: Optional[str] = None
         self._pixel_points: dict[str, QtCore.QPointF] = {}
         self._normalized_points: dict[str, QtCore.QPointF] = {}
+        self._custom_positions: dict[str, Tuple[float, float]] = {}
+        self._background_pixmap: Optional[QtGui.QPixmap] = None
+        self._drag_keypoint: Optional[str] = None
+        self._press_pos: Optional[QtCore.QPoint] = None
+        self._dragged: bool = False
         self.setMouseTracking(True)
         self.setMinimumHeight(180)
+
+    def set_custom_positions(self, positions: Optional[dict]) -> None:
+        cleaned: dict[str, Tuple[float, float]] = {}
+        if isinstance(positions, dict):
+            for k, v in positions.items():
+                if isinstance(v, (list, tuple)) and len(v) >= 2:
+                    try:
+                        nx = max(0.06, min(0.94, float(v[0])))
+                        ny = max(0.06, min(0.94, float(v[1])))
+                        cleaned[str(k).strip()] = (nx, ny)
+                    except (TypeError, ValueError):
+                        continue
+        self._custom_positions = cleaned
+        self.update()
+
+    def custom_positions(self) -> dict[str, List[float]]:
+        return {
+            k: [round(float(xy[0]), 4), round(float(xy[1]), 4)]
+            for k, xy in self._custom_positions.items()
+        }
+
+    def set_background_image(self, image_path: Optional[str | Path]) -> bool:
+        if not image_path:
+            self._background_pixmap = None
+            self.update()
+            return True
+        pm = QtGui.QPixmap(str(image_path))
+        if pm.isNull():
+            return False
+        self._background_pixmap = pm
+        self.update()
+        return True
+
+    def reset_layout(self) -> None:
+        self._custom_positions.clear()
+        self._background_pixmap = None
+        self.update()
+        self.layoutChanged.emit({})
 
     def set_schema(self, schema: Optional[PoseSchema]) -> None:
         self._schema = schema
@@ -148,7 +192,11 @@ class _SkeletonPreviewWidget(QtWidgets.QWidget):
         for row_idx, row in enumerate(rows):
             y = (row_idx + 1) / (n_rows + 1)
             for kp, x in row:
-                points[kp] = QtCore.QPointF(x, y)
+                if kp in self._custom_positions:
+                    cx, cy = self._custom_positions[kp]
+                    points[kp] = QtCore.QPointF(cx, cy)
+                else:
+                    points[kp] = QtCore.QPointF(x, y)
         return points
 
     def _hit_test(self, pos: QtCore.QPoint) -> Optional[str]:
@@ -192,6 +240,18 @@ class _SkeletonPreviewWidget(QtWidgets.QWidget):
             return
 
         inner = rect.adjusted(10, 10, -10, -10)
+        if self._background_pixmap is not None and not self._background_pixmap.isNull():
+            painter.save()
+            painter.setOpacity(0.45)
+            scaled_pm = self._background_pixmap.scaled(
+                inner.size(),
+                QtCore.Qt.KeepAspectRatio,
+                QtCore.Qt.SmoothTransformation,
+            )
+            bg_x = inner.left() + (inner.width() - scaled_pm.width()) // 2
+            bg_y = inner.top() + (inner.height() - scaled_pm.height()) // 2
+            painter.drawPixmap(bg_x, bg_y, scaled_pm)
+            painter.restore()
         points = self._layout_points(keypoints)
         self._normalized_points = points
         pixel_points: dict[str, QtCore.QPointF] = {}
@@ -307,6 +367,24 @@ class _SkeletonPreviewWidget(QtWidgets.QWidget):
                 )
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if self._drag_keypoint is not None:
+            if self._press_pos is not None:
+                delta = event.pos() - self._press_pos
+                if (delta.x() * delta.x() + delta.y() * delta.y()) ** 0.5 >= 6.0:
+                    self._dragged = True
+            if self._dragged:
+                inner = self.rect().adjusted(16, 16, -16, -16)
+                nx = (event.pos().x() - inner.left()) / float(max(1, inner.width()))
+                ny = (event.pos().y() - inner.top()) / float(max(1, inner.height()))
+                self._custom_positions[self._drag_keypoint] = (
+                    max(0.06, min(0.94, nx)),
+                    max(0.06, min(0.94, ny)),
+                )
+                self.setCursor(QtCore.Qt.ClosedHandCursor)
+                self.update()
+                event.accept()
+                return
+
         hit = self._hit_test(event.pos())
         if hit != self._hovered_keypoint:
             self._hovered_keypoint = hit
@@ -314,10 +392,12 @@ class _SkeletonPreviewWidget(QtWidgets.QWidget):
                 self.setCursor(QtCore.Qt.PointingHandCursor)
                 if self._pending_edge_start and self._pending_edge_start != hit:
                     self.setToolTip(
-                        f"{hit} — click to toggle edge with '{self._pending_edge_start}'"
+                        f"{hit} — click to toggle edge with '{self._pending_edge_start}', or drag to reposition"
                     )
                 else:
-                    self.setToolTip(f"{hit} — click to start/finish a skeleton edge")
+                    self.setToolTip(
+                        f"{hit} — click to start/finish a skeleton edge, or drag to reposition"
+                    )
             else:
                 self.setCursor(QtCore.Qt.ArrowCursor)
                 self.setToolTip("")
@@ -325,7 +405,7 @@ class _SkeletonPreviewWidget(QtWidgets.QWidget):
         super().mouseMoveEvent(event)
 
     def leaveEvent(self, event) -> None:  # noqa: N802
-        if self._hovered_keypoint is not None:
+        if self._hovered_keypoint is not None and self._drag_keypoint is None:
             self._hovered_keypoint = None
             self.setCursor(QtCore.Qt.ArrowCursor)
             self.setToolTip("")
@@ -335,10 +415,28 @@ class _SkeletonPreviewWidget(QtWidgets.QWidget):
     def mousePressEvent(self, event) -> None:  # noqa: N802
         hit_name = self._hit_test(event.pos())
         if hit_name is not None:
-            self.keypointClicked.emit(hit_name)
+            self._drag_keypoint = hit_name
+            self._press_pos = event.pos()
+            self._dragged = False
             event.accept()
             return
         super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if self._drag_keypoint is not None:
+            kp = self._drag_keypoint
+            was_dragged = self._dragged
+            self._drag_keypoint = None
+            self._press_pos = None
+            self._dragged = False
+            self.setCursor(QtCore.Qt.PointingHandCursor)
+            if was_dragged:
+                self.layoutChanged.emit(self.custom_positions())
+            else:
+                self.keypointClicked.emit(kp)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
 
 class _LockableKeypointListWidget(QtWidgets.QListWidget):
@@ -504,6 +602,15 @@ class KeypointSequencerWidget(QtWidgets.QWidget):
         self.autosave_checkbox.setChecked(True)
         layout.addWidget(self.autosave_checkbox)
 
+        self.auto_advance_instance_checkbox = QtWidgets.QCheckBox(
+            "Auto-advance to next instance on wrap"
+        )
+        self.auto_advance_instance_checkbox.setChecked(False)
+        self.auto_advance_instance_checkbox.setToolTip(
+            "When finishing the last locked keypoint, automatically select the next configured instance"
+        )
+        layout.addWidget(self.auto_advance_instance_checkbox)
+
         instance_row = QtWidgets.QHBoxLayout()
         instance_row.setContentsMargins(0, 0, 0, 0)
         instance_row.setSpacing(4)
@@ -514,12 +621,45 @@ class KeypointSequencerWidget(QtWidgets.QWidget):
         instance_row.addWidget(self.instance_combo, 1)
         layout.addLayout(instance_row)
 
+        seq_step_row = QtWidgets.QHBoxLayout()
+        seq_step_row.setContentsMargins(0, 0, 0, 0)
+        seq_step_row.setSpacing(4)
+        self.prev_kp_btn = QtWidgets.QPushButton("Prev KP")
+        self.prev_kp_btn.setToolTip("Step back to the previous keypoint in sequence")
+        self.prev_kp_btn.clicked.connect(self.previous_keypoint)
+        self.skip_kp_btn = QtWidgets.QPushButton("Skip (Absent)")
+        self.skip_kp_btn.setToolTip(
+            "Skip current keypoint when absent/out-of-frame without placing a point"
+        )
+        self.skip_kp_btn.clicked.connect(self.skip_current_keypoint)
+        seq_step_row.addWidget(self.prev_kp_btn, 1)
+        seq_step_row.addWidget(self.skip_kp_btn, 1)
+        layout.addLayout(seq_step_row)
+
         self.preview = _SkeletonPreviewWidget(self)
         self.preview.keypointClicked.connect(self._on_preview_keypoint_clicked)
+        self.preview.layoutChanged.connect(self._on_preview_layout_changed)
         layout.addWidget(self.preview)
 
+        preview_tools_row = QtWidgets.QHBoxLayout()
+        preview_tools_row.setContentsMargins(0, 0, 0, 0)
+        preview_tools_row.setSpacing(4)
+        self.preview_ref_img_btn = QtWidgets.QPushButton("Ref Image…")
+        self.preview_ref_img_btn.setToolTip(
+            "Load a reference animal image behind the 2D skeleton layout editor"
+        )
+        self.preview_ref_img_btn.clicked.connect(self._browse_preview_background_image)
+        self.preview_reset_layout_btn = QtWidgets.QPushButton("Reset Layout")
+        self.preview_reset_layout_btn.setToolTip(
+            "Reset dragged 2D node positions and clear reference image"
+        )
+        self.preview_reset_layout_btn.clicked.connect(self.preview.reset_layout)
+        preview_tools_row.addWidget(self.preview_ref_img_btn, 1)
+        preview_tools_row.addWidget(self.preview_reset_layout_btn, 1)
+        layout.addLayout(preview_tools_row)
+
         self.edge_hint_label = QtWidgets.QLabel(
-            "Edge editor: click two keypoints in preview to add/remove an edge."
+            "Skeleton editor: click two keypoints to toggle an edge; drag a node to adjust 2D layout."
         )
         self.edge_hint_label.setWordWrap(True)
         layout.addWidget(self.edge_hint_label)
@@ -853,6 +993,33 @@ class KeypointSequencerWidget(QtWidgets.QWidget):
     def current_schema(self) -> Optional[PoseSchema]:
         return self._schema
 
+    def _advance_instance_if_enabled(self) -> None:
+        if not bool(self.auto_advance_instance_checkbox.isChecked()):
+            return
+        # Collect indices in instance_combo that represent real named instances (non-None data).
+        inst_indices = [
+            i
+            for i in range(self.instance_combo.count())
+            if self.instance_combo.itemData(i) not in (None, "")
+        ]
+        if len(inst_indices) < 2:
+            return
+        cur = self.instance_combo.currentIndex()
+        if cur in inst_indices:
+            next_pos = (inst_indices.index(cur) + 1) % len(inst_indices)
+            target_idx = inst_indices[next_pos]
+        else:
+            target_idx = inst_indices[0]
+        self.instance_combo.blockSignals(True)
+        self.instance_combo.setCurrentIndex(target_idx)
+        self.instance_combo.blockSignals(False)
+
+    def current_next_keypoint(self) -> Optional[str]:
+        active = self.sequence_active_keypoints()
+        if not active:
+            return None
+        return active[self._next_index % len(active)]
+
     def consume_next_label(self) -> Optional[str]:
         active = self.sequence_active_keypoints()
         if not active:
@@ -860,9 +1027,38 @@ class KeypointSequencerWidget(QtWidgets.QWidget):
             return None
         idx = self._next_index % len(active)
         base_name = active[idx]
+        label = self._compose_label(base_name)
+        wrapped = (idx + 1) >= len(active)
         self._next_index = (idx + 1) % len(active)
+        if wrapped:
+            self._advance_instance_if_enabled()
         self._update_status_text()
-        return self._compose_label(base_name)
+        return label
+
+    def skip_current_keypoint(self) -> Optional[str]:
+        """Skip the upcoming keypoint (e.g. absent/out-of-frame) and advance cursor."""
+        active = self.sequence_active_keypoints()
+        if not active:
+            self._update_status_text()
+            return None
+        idx = self._next_index % len(active)
+        skipped = active[idx]
+        wrapped = (idx + 1) >= len(active)
+        self._next_index = (idx + 1) % len(active)
+        if wrapped:
+            self._advance_instance_if_enabled()
+        self._update_status_text()
+        return skipped
+
+    def previous_keypoint(self) -> Optional[str]:
+        """Step the sequence cursor backward by one keypoint."""
+        active = self.sequence_active_keypoints()
+        if not active:
+            self._update_status_text()
+            return None
+        self._next_index = (self._next_index - 1) % len(active)
+        self._update_status_text()
+        return active[self._next_index]
 
     def reset_sequence(self) -> None:
         self._next_index = 0
@@ -905,6 +1101,14 @@ class KeypointSequencerWidget(QtWidgets.QWidget):
             except Exception:
                 pass
 
+        if "auto_advance_instance" in raw:
+            try:
+                self.auto_advance_instance_checkbox.setChecked(
+                    bool(raw.get("auto_advance_instance"))
+                )
+            except Exception:
+                pass
+
         if "selected_instance" in raw:
             selected_instance = raw.get("selected_instance")
             if selected_instance in (None, ""):
@@ -917,17 +1121,41 @@ class KeypointSequencerWidget(QtWidgets.QWidget):
         if "enabled" in raw and self.enable_checkbox.isEnabled():
             self.enable_checkbox.setChecked(bool(raw.get("enabled")))
 
+        if isinstance(raw.get("preview_layout"), dict):
+            self.preview.set_custom_positions(raw.get("preview_layout"))
+
     def _capture_sequencer_settings(self) -> dict:
         selected_instance = self.instance_combo.currentData()
-        return {
+        payload = {
             "locked_keypoints": list(self._locked_keypoint_order),
             "active_keypoints": self.active_keypoints(),
             "enabled": bool(self.enable_checkbox.isChecked()),
             "auto_save_on_click": bool(self.autosave_checkbox.isChecked()),
+            "auto_advance_instance": bool(
+                self.auto_advance_instance_checkbox.isChecked()
+            ),
             "selected_instance": (
                 str(selected_instance).strip() if selected_instance else None
             ),
         }
+        custom_layout = self.preview.custom_positions()
+        if custom_layout:
+            payload["preview_layout"] = custom_layout
+        return payload
+
+    def _on_preview_layout_changed(self, _positions: dict) -> None:
+        if self._schema is not None:
+            self._emit_schema_changed()
+
+    def _browse_preview_background_image(self) -> None:
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Select Reference Frame for Skeleton Editor",
+            str(Path.home()),
+            "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff);;All Files (*)",
+        )
+        if path:
+            self.preview.set_background_image(path)
 
     def _compose_label(self, keypoint: str) -> str:
         schema = self._schema

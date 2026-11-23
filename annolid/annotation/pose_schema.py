@@ -60,6 +60,33 @@ POSE_SCHEMA_PRESETS: Dict[str, Dict[str, Any]] = {
             ("left_ear", "right_ear"),
         ],
     },
+    "Mouse CalMS21 / MARS (7 keypoints)": {
+        "keypoints": [
+            "nose",
+            "left_ear",
+            "right_ear",
+            "neck",
+            "left_hip",
+            "right_hip",
+            "tail_base",
+        ],
+        "edges": [
+            ("nose", "left_ear"),
+            ("nose", "right_ear"),
+            ("left_ear", "neck"),
+            ("right_ear", "neck"),
+            ("nose", "neck"),
+            ("neck", "left_hip"),
+            ("neck", "right_hip"),
+            ("left_hip", "tail_base"),
+            ("right_hip", "tail_base"),
+            ("neck", "tail_base"),
+        ],
+        "symmetry_pairs": [
+            ("left_ear", "right_ear"),
+            ("left_hip", "right_hip"),
+        ],
+    },
     "Mouse (9 keypoints)": {
         "keypoints": [
             "nose",
@@ -121,6 +148,67 @@ POSE_SCHEMA_PRESETS: Dict[str, Dict[str, Any]] = {
             ("left_hindpaw", "right_hindpaw"),
         ],
     },
+    "Mouse MaBE2022 (12 keypoints)": {
+        "keypoints": [
+            "nose",
+            "left_ear",
+            "right_ear",
+            "neck",
+            "left_forepaw",
+            "right_forepaw",
+            "center_back",
+            "left_hindpaw",
+            "right_hindpaw",
+            "tail_base",
+            "tail_middle",
+            "tail_tip",
+        ],
+        "edges": [
+            ("nose", "left_ear"),
+            ("nose", "right_ear"),
+            ("nose", "neck"),
+            ("neck", "left_forepaw"),
+            ("neck", "right_forepaw"),
+            ("neck", "center_back"),
+            ("center_back", "left_hindpaw"),
+            ("center_back", "right_hindpaw"),
+            ("center_back", "tail_base"),
+            ("tail_base", "tail_middle"),
+            ("tail_middle", "tail_tip"),
+        ],
+        "symmetry_pairs": [
+            ("left_ear", "right_ear"),
+            ("left_forepaw", "right_forepaw"),
+            ("left_hindpaw", "right_hindpaw"),
+        ],
+    },
+    "Rat (8 keypoints)": {
+        "keypoints": [
+            "nose",
+            "left_ear",
+            "right_ear",
+            "neck",
+            "mid_back",
+            "left_hip",
+            "right_hip",
+            "tail_base",
+        ],
+        "edges": [
+            ("nose", "left_ear"),
+            ("nose", "right_ear"),
+            ("nose", "neck"),
+            ("neck", "mid_back"),
+            ("mid_back", "left_hip"),
+            ("mid_back", "right_hip"),
+            ("mid_back", "tail_base"),
+            ("left_hip", "tail_base"),
+            ("right_hip", "tail_base"),
+        ],
+        "symmetry_pairs": [
+            ("left_ear", "right_ear"),
+            ("left_hip", "right_hip"),
+        ],
+    },
     "Fly (5 keypoints)": {
         "keypoints": [
             "head",
@@ -137,6 +225,41 @@ POSE_SCHEMA_PRESETS: Dict[str, Dict[str, Any]] = {
         ],
         "symmetry_pairs": [
             ("left_wing", "right_wing"),
+        ],
+    },
+    "Fly Full-Body (12 keypoints)": {
+        "keypoints": [
+            "head",
+            "left_eye",
+            "right_eye",
+            "thorax",
+            "abdomen",
+            "left_wing",
+            "right_wing",
+            "left_front_leg",
+            "right_front_leg",
+            "left_mid_leg",
+            "right_mid_leg",
+            "tail_tip",
+        ],
+        "edges": [
+            ("head", "left_eye"),
+            ("head", "right_eye"),
+            ("head", "thorax"),
+            ("thorax", "abdomen"),
+            ("abdomen", "tail_tip"),
+            ("thorax", "left_wing"),
+            ("thorax", "right_wing"),
+            ("thorax", "left_front_leg"),
+            ("thorax", "right_front_leg"),
+            ("thorax", "left_mid_leg"),
+            ("thorax", "right_mid_leg"),
+        ],
+        "symmetry_pairs": [
+            ("left_eye", "right_eye"),
+            ("left_wing", "right_wing"),
+            ("left_front_leg", "right_front_leg"),
+            ("left_mid_leg", "right_mid_leg"),
         ],
     },
     "Fish (5 keypoints)": {
@@ -156,6 +279,22 @@ POSE_SCHEMA_PRESETS: Dict[str, Dict[str, Any]] = {
         "symmetry_pairs": [
             ("left_pectoral", "right_pectoral"),
         ],
+    },
+    "Zebrafish Spine (5 keypoints)": {
+        "keypoints": [
+            "head",
+            "spine_1",
+            "spine_2",
+            "spine_3",
+            "tail_tip",
+        ],
+        "edges": [
+            ("head", "spine_1"),
+            ("spine_1", "spine_2"),
+            ("spine_2", "spine_3"),
+            ("spine_3", "tail_tip"),
+        ],
+        "symmetry_pairs": [],
     },
     "Human COCO (17 keypoints)": {
         "keypoints": [
@@ -1019,7 +1158,24 @@ class PoseSchema:
         if not order:
             return None
         if self.flip_idx is not None and len(self.flip_idx) == len(order):
-            return list(self.flip_idx)
+            if keypoint_order is None or order == list(self.keypoints):
+                return list(self.flip_idx)
+            # Remap explicit flip_idx when keypoint_order is a permutation of self.keypoints.
+            if len(self.keypoints) == len(order) and set(order) == set(self.keypoints):
+                self_index = {name: idx for idx, name in enumerate(self.keypoints)}
+                order_index = {name: idx for idx, name in enumerate(order)}
+                remapped: List[int] = []
+                valid = True
+                for name in order:
+                    src_i = self_index[name]
+                    target_i = self.flip_idx[src_i]
+                    if not (0 <= target_i < len(self.keypoints)):
+                        valid = False
+                        break
+                    partner_name = self.keypoints[target_i]
+                    remapped.append(order_index[partner_name])
+                if valid:
+                    return remapped
 
         index_by_name = {name: idx for idx, name in enumerate(order)}
         flip = list(range(len(order)))
@@ -1056,6 +1212,34 @@ class PoseSchema:
         if not self.keypoints:
             return
 
+        anatomical_prefix_tokens = {
+            "left",
+            "right",
+            "l",
+            "r",
+            "lt",
+            "rt",
+            "fore",
+            "hind",
+            "front",
+            "back",
+            "rear",
+            "upper",
+            "lower",
+            "mid",
+            "middle",
+            "top",
+            "bottom",
+            "prox",
+            "dist",
+            "proximal",
+            "distal",
+            "anterior",
+            "posterior",
+            "dorsal",
+            "ventral",
+        }
+
         original_keypoints = list(self.keypoints)
         original_flip = list(self.flip_idx) if isinstance(self.flip_idx, list) else None
         inferred_instances: List[str] = []
@@ -1075,6 +1259,11 @@ class PoseSchema:
                 base_keypoints.append(base)
 
         if not inferred_instances or not base_keypoints:
+            return
+
+        # Guard against splitting unprefixed bilateral anatomical schemas such as
+        # ["left_ear", "right_ear", "left_hip", "right_hip"] into instances=["left", "right"].
+        if all(inst.lower() in anatomical_prefix_tokens for inst in inferred_instances):
             return
 
         # Only normalize when the keypoint list *looks like* a fully-expanded

@@ -325,13 +325,15 @@ def _has_cutie_recovery_note(shape: Mapping[str, Any]) -> bool:
 def _is_temporal_track_shape(shape: Mapping[str, Any]) -> bool:
     if is_zone_shape_payload(shape) or is_body_part_shape_payload(shape):
         return False
+    shape_type = _normalize_text(shape.get("shape_type")).lower()
+    if shape_type == "point":
+        return False
     if _shape_centroid(shape) is None:
         return False
     if not _shape_track_id(shape):
         return False
     if _shape_source(shape):
         return True
-    shape_type = _normalize_text(shape.get("shape_type")).lower()
     return shape_type in {"polygon", "rectangle", "mask"}
 
 
@@ -1184,10 +1186,124 @@ def run_temporal_identity_repair(
             updated_shapes_for_frame.append(shape)
 
         repaired_all_shapes = list(all_shapes)
-        for (original_idx, _shape), updated_shape in zip(
+        id_remap_for_frame: dict[str, _TrackTemplate] = {}
+        label_remap_for_frame: dict[str, _TrackTemplate] = {}
+        for (original_idx, orig_shape), updated_shape in zip(
             temporal_pairs, updated_shapes_for_frame
         ):
             repaired_all_shapes[original_idx] = updated_shape
+            old_tid = _shape_track_id(orig_shape)
+            new_tid = _shape_track_id(updated_shape)
+            if old_tid and new_tid and old_tid != new_tid and new_tid in templates:
+                id_remap_for_frame[old_tid] = templates[new_tid]
+                old_inst = _shape_instance_label(orig_shape) or _normalize_text(
+                    orig_shape.get("label")
+                )
+                if old_inst:
+                    label_remap_for_frame[old_inst] = templates[new_tid]
+
+        # Keep child pose keypoints synchronized when parent animal identities are remapped.
+        if id_remap_for_frame or label_remap_for_frame:
+            for shape_idx, candidate_shape in enumerate(repaired_all_shapes):
+                if not isinstance(candidate_shape, Mapping):
+                    continue
+                if (
+                    _normalize_text(candidate_shape.get("shape_type")).lower()
+                    != "point"
+                ):
+                    continue
+                if is_zone_shape_payload(candidate_shape):
+                    continue
+                pt_copy = dict(candidate_shape)
+                pt_flags = (
+                    dict(pt_copy.get("flags") or {})
+                    if isinstance(pt_copy.get("flags"), Mapping)
+                    else {}
+                )
+                pt_tid = _shape_track_id(pt_copy)
+                pt_inst = _shape_instance_label(pt_copy)
+                pt_lbl = _normalize_text(pt_copy.get("label"))
+                target_tmpl = id_remap_for_frame.get(pt_tid)
+                matched_old_inst = ""
+                if target_tmpl is None and pt_inst and pt_inst in label_remap_for_frame:
+                    target_tmpl = label_remap_for_frame[pt_inst]
+                    matched_old_inst = pt_inst
+                if target_tmpl is None and pt_lbl:
+                    for old_inst_name, tmpl in sorted(
+                        label_remap_for_frame.items(),
+                        key=lambda kv: len(kv[0]),
+                        reverse=True,
+                    ):
+                        if (
+                            ":" in pt_lbl
+                            and pt_lbl.split(":", 1)[0].strip() == old_inst_name
+                        ):
+                            target_tmpl = tmpl
+                            matched_old_inst = old_inst_name
+                            break
+                        if any(
+                            pt_lbl.startswith(f"{old_inst_name}{d}")
+                            and len(pt_lbl) > len(old_inst_name) + 1
+                            for d in ("_", "-", "|", " ")
+                        ):
+                            target_tmpl = tmpl
+                            matched_old_inst = old_inst_name
+                            break
+                if target_tmpl is None:
+                    continue
+                new_inst_name = target_tmpl.instance_label or target_tmpl.label
+                pt_changed = False
+                if (
+                    target_tmpl.group_id not in (None, "")
+                    and pt_copy.get("group_id") != target_tmpl.group_id
+                ):
+                    pt_copy["group_id"] = target_tmpl.group_id
+                    pt_changed = True
+                for key, val in target_tmpl.top_level_ids.items():
+                    if key in pt_copy and pt_copy.get(key) != val:
+                        pt_copy[key] = val
+                        pt_changed = True
+                if new_inst_name:
+                    old_ref = matched_old_inst or pt_inst
+                    for attr_key in (
+                        "instance_label",
+                        "parent_instance",
+                        "instance_name",
+                    ):
+                        if attr_key in pt_copy and (
+                            not old_ref
+                            or _normalize_text(pt_copy.get(attr_key)) == old_ref
+                        ):
+                            pt_copy[attr_key] = new_inst_name
+                            pt_changed = True
+                        if attr_key in pt_flags and (
+                            not old_ref
+                            or _normalize_text(pt_flags.get(attr_key)) == old_ref
+                        ):
+                            pt_flags[attr_key] = new_inst_name
+                            pt_changed = True
+                    if old_ref and pt_lbl:
+                        if ":" in pt_lbl and pt_lbl.split(":", 1)[0].strip() == old_ref:
+                            suffix = pt_lbl.split(":", 1)[1].strip()
+                            pt_copy["label"] = (
+                                f"{new_inst_name}:{suffix}" if suffix else new_inst_name
+                            )
+                            pt_changed = True
+                        else:
+                            for d in ("_", "-", "|", " "):
+                                if (
+                                    pt_lbl.startswith(f"{old_ref}{d}")
+                                    and len(pt_lbl) > len(old_ref) + 1
+                                ):
+                                    pt_copy["label"] = (
+                                        f"{new_inst_name}{d}{pt_lbl[len(old_ref) + 1 :]}"
+                                    )
+                                    pt_changed = True
+                                    break
+                if pt_changed:
+                    if pt_flags:
+                        pt_copy["flags"] = pt_flags
+                    repaired_all_shapes[shape_idx] = pt_copy
 
         for track_id, template in templates.items():
             if track_id in present_tracks:

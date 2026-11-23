@@ -933,8 +933,13 @@ class IdentityGovernor:
         if not label_remap:
             return 0
         updated = 0
+        ordered_old = sorted(label_remap.keys(), key=len, reverse=True)
         for shape in shapes:
-            if not isinstance(shape, dict) or not is_body_part_shape_payload(shape):
+            if not isinstance(shape, dict):
+                continue
+            is_bp = is_body_part_shape_payload(shape)
+            is_pt = _normalize_text(shape.get("shape_type")).lower() == "point"
+            if not is_bp and not is_pt:
                 continue
             flags = shape.get("flags") if isinstance(shape.get("flags"), dict) else None
             label = _normalize_text(shape.get("label"))
@@ -953,6 +958,14 @@ class IdentityGovernor:
                 )
                 or (label.split(":", 1)[0].strip() if ":" in label else "")
             )
+            if not old_parent and is_pt and label:
+                for cand in ordered_old:
+                    if any(
+                        label.startswith(f"{cand}{d}") and len(label) > len(cand) + 1
+                        for d in ("_", "-", "|", " ")
+                    ):
+                        old_parent = cand
+                        break
             if not old_parent or old_parent not in label_remap:
                 continue
             new_parent = label_remap[old_parent]
@@ -961,6 +974,17 @@ class IdentityGovernor:
                 suffix = label.split(":", 1)[1].strip()
                 shape["label"] = f"{new_parent}:{suffix}" if suffix else new_parent
                 shape_changed = True
+            elif is_pt and label:
+                for d in ("_", "-", "|", " "):
+                    if (
+                        label.startswith(f"{old_parent}{d}")
+                        and len(label) > len(old_parent) + 1
+                    ):
+                        shape["label"] = (
+                            f"{new_parent}{d}{label[len(old_parent) + 1 :]}"
+                        )
+                        shape_changed = True
+                        break
             for attr_key in ("parent_instance", "instance_label"):
                 if _normalize_text(shape.get(attr_key)) == old_parent:
                     shape[attr_key] = new_parent

@@ -1120,6 +1120,250 @@ def _cmd_export_pose(args: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_float_csv(
+    raw: Optional[str], default: tuple[float, ...]
+) -> tuple[float, ...]:
+    if not raw:
+        return default
+    vals: list[float] = []
+    for tok in str(raw).split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        vals.append(float(tok))
+    return tuple(vals) if vals else default
+
+
+def _cmd_extract_frames(args: argparse.Namespace) -> int:
+    from annolid.data.frame_sampling import extract_frames_smart
+
+    res = extract_frames_smart(
+        args.video,
+        output_dir=args.output,
+        algo=str(args.algo or "kmeans"),
+        num_frames=int(args.num_frames),
+        start_seconds=args.start_seconds,
+        end_seconds=args.end_seconds,
+        image_format=str(args.image_format or "png"),
+        seed=int(args.seed),
+    )
+    if bool(getattr(args, "json", False)):
+        print(json.dumps(res.to_dict(), indent=2))
+    else:
+        print(
+            f"Extracted {len(res.saved_paths)} frame(s) ({res.algo}) from "
+            f"{res.video_path} -> {res.output_dir}"
+        )
+    return 0
+
+
+def _cmd_extract_outliers(args: argparse.Namespace) -> int:
+    from annolid.data.frame_sampling import extract_pose_outlier_frames
+
+    res = extract_pose_outlier_frames(
+        args.source,
+        args.video,
+        args.output,
+        source_format=str(args.source_format or "auto"),
+        pose_schema=args.pose_schema,
+        num_frames=int(args.num_frames),
+        min_frame_gap=int(args.min_frame_gap),
+        min_confidence=float(args.min_confidence),
+        jump_threshold_px=args.jump_threshold,
+        jump_mad_multiplier=float(args.jump_mad),
+        max_edge_stretch_ratio=float(args.max_edge_stretch),
+        min_edge_shrink_ratio=float(args.min_edge_shrink),
+        expected_instances=args.expected_instances,
+        include_predictions=not bool(args.no_predictions),
+    )
+    if bool(getattr(args, "json", False)):
+        print(json.dumps(res.to_dict(), indent=2))
+    else:
+        print(
+            f"Extracted {res.frames_extracted} outlier frame(s) "
+            f"(out of {res.outliers_found} flagged / {res.frames_evaluated} evaluated) "
+            f"-> {res.output_dir}"
+        )
+        print(f"Manifest: {res.manifest_path}")
+    return 0
+
+
+def _cmd_eval_pose(args: argparse.Namespace) -> int:
+    from annolid.postprocessing.pose_evaluation import (
+        evaluate_pose_predictions,
+        format_pose_eval_table,
+        write_pose_eval_report_bundle,
+    )
+
+    pck_px = _parse_float_csv(args.pck_px, (2.0, 4.0, 8.0, 16.0))
+    pck_norm = _parse_float_csv(args.pck_norm, (0.05, 0.10, 0.20))
+    report = evaluate_pose_predictions(
+        args.gt_source,
+        args.pred_source,
+        gt_format=str(args.gt_format or "auto"),
+        pred_format=str(args.pred_format or "auto"),
+        pose_schema=args.pose_schema,
+        pcutoff=float(args.pcutoff),
+        pck_thresholds_px=pck_px,
+        pck_norm_thresholds=pck_norm,
+        oks_sigma=float(args.oks_sigma),
+        top_k_worst_frames=int(args.top_k_worst),
+    )
+    artifacts: dict[str, str] = {}
+    if args.output_dir:
+        artifacts = write_pose_eval_report_bundle(report, args.output_dir)
+
+    if bool(getattr(args, "json", False)):
+        payload = report.to_dict()
+        if artifacts:
+            payload["artifacts"] = artifacts
+        print(json.dumps(payload, indent=2))
+    else:
+        print(format_pose_eval_table(report))
+        if artifacts:
+            print(f"\nReport written to: {artifacts.get('html') or args.output_dir}")
+    return 0
+
+
+def _cmd_filter_pose(args: argparse.Namespace) -> int:
+    from annolid.postprocessing.pose_filtering import (
+        PoseFilterConfig,
+        filter_pose_source,
+    )
+
+    cfg = PoseFilterConfig(
+        min_confidence=args.min_confidence,
+        max_jump_px=args.max_jump_px,
+        jump_mad_multiplier=args.jump_mad,
+        enforce_bone_bounds=bool(args.enforce_bone_bounds),
+        max_edge_stretch_ratio=float(args.max_edge_stretch),
+        min_edge_shrink_ratio=float(args.min_edge_shrink),
+        interpolate=str(args.interpolate or "linear"),
+        max_gap_frames=int(args.max_gap),
+        method=str(args.method or "savgol"),
+        window_length=int(args.window),
+        polyorder=int(args.polyorder),
+        fps=float(args.fps),
+    )
+    report = filter_pose_source(
+        args.source,
+        output_path=args.output,
+        config=cfg,
+        source_format=str(args.source_format or "auto"),
+        target_format=str(args.format or "auto"),
+        pose_schema=args.pose_schema,
+        video_path=args.video,
+        scorer=str(args.scorer or "annolid"),
+        in_place=bool(args.in_place),
+    )
+    if bool(getattr(args, "json", False)):
+        print(json.dumps(report.to_dict(), indent=2))
+    else:
+        print(
+            f"Filtered {report.frames_processed} frame(s) ({report.method}, interp={report.interpolate}) -> {report.output_path}\n"
+            f"  Masked: low_conf={report.masked_low_confidence}, jumps={report.masked_jump_outliers}, bones={report.masked_bone_outliers}\n"
+            f"  Interpolated gaps: {report.gaps_interpolated} | Smoothed points: {report.points_smoothed} "
+            f"(mean_disp={report.mean_displacement_px:.2f}px, max_disp={report.max_displacement_px:.2f}px)"
+        )
+    return 0
+
+
+def _cmd_swap_pose(args: argparse.Namespace) -> int:
+    from annolid.postprocessing.pose_filtering import swap_pose_instances_from_frame
+
+    res = swap_pose_instances_from_frame(
+        args.source_dir,
+        start_frame=int(args.start_frame),
+        end_frame=args.end_frame,
+        instance_a=str(args.instance_a),
+        instance_b=str(args.instance_b),
+        pose_schema=args.pose_schema,
+        dry_run=bool(args.dry_run),
+    )
+    if bool(getattr(args, "json", False)):
+        print(json.dumps(res.to_dict(), indent=2))
+    else:
+        mode = "DRY-RUN" if res.dry_run else "APPLIED"
+        print(
+            f"[{mode}] Swapped '{res.instance_a}' <-> '{res.instance_b}' from frame {res.start_frame} "
+            f"(modified {res.frames_modified}/{res.frames_scanned} frames, "
+            f"{res.points_swapped} keypoints + {res.polygons_swapped} polygons)."
+        )
+    return 0
+
+
+def _cmd_pose_kinematics(args: argparse.Namespace) -> int:
+    from annolid.postprocessing.pose_kinematics import (
+        analyze_pose_kinematics,
+        format_pose_kinematics_table,
+        write_pose_kinematics_bundle,
+    )
+
+    report = analyze_pose_kinematics(
+        args.source,
+        source_format=str(args.source_format or "auto"),
+        pose_schema=args.pose_schema,
+        fps=float(args.fps),
+        px_per_cm=args.px_per_cm,
+        calibration=args.calibration,
+        min_confidence=args.min_confidence,
+        close_contact_threshold_px=float(args.close_contact_px),
+    )
+    artifacts: dict[str, str] = {}
+    if args.output_dir:
+        artifacts = write_pose_kinematics_bundle(report, args.output_dir)
+
+    if bool(getattr(args, "json", False)):
+        payload = report.to_dict()
+        if artifacts:
+            payload["artifacts"] = artifacts
+        print(json.dumps(payload, indent=2))
+    else:
+        print(format_pose_kinematics_table(report))
+        if artifacts:
+            print(f"\nKinematics bundle written to: {args.output_dir}")
+    return 0
+
+
+def _cmd_render_pose_video(args: argparse.Namespace) -> int:
+    from annolid.postprocessing.pose_video_renderer import (
+        PoseVideoRenderConfig,
+        render_pose_video,
+    )
+
+    cfg = PoseVideoRenderConfig(
+        color_mode=str(args.color_mode or "instance"),
+        min_confidence=args.min_confidence,
+        thickness=int(args.thickness),
+        point_radius=int(args.point_radius),
+        trail_length=int(args.trail_length),
+        draw_labels=bool(args.draw_labels),
+        draw_instance_names=not bool(args.no_instance_names),
+        draw_frame_index=not bool(args.no_frame_index),
+        max_bone_dist=args.max_bone_dist,
+        start_frame=int(args.start_frame),
+        end_frame=args.end_frame,
+        fps=args.fps,
+    )
+    res = render_pose_video(
+        args.video,
+        args.pose_source,
+        args.output,
+        source_format=str(args.source_format or "auto"),
+        pose_schema=args.pose_schema,
+        comparison_source=args.comparison,
+        config=cfg,
+    )
+    if bool(getattr(args, "json", False)):
+        print(json.dumps(res.to_dict(), indent=2))
+    else:
+        print(
+            f"Rendered {res.frames_rendered} frame(s) ({res.frames_with_pose} with pose, "
+            f"mode={res.color_mode}) -> {res.output_video_path}"
+        )
+    return 0
+
+
 def _cmd_dino_kpseg_embeddings(args: argparse.Namespace) -> int:
     from annolid.segmentation.dino_kpseg.tensorboard_embeddings import main as tb_main
 
@@ -4485,12 +4729,15 @@ def _build_root_parser() -> argparse.ArgumentParser:
         required=True,
         choices=(
             "deeplabcut-csv",
+            "deeplabcut-h5",
             "deeplabcut-project",
             "lightning-pose",
             "simba",
             "sleap-h5",
             "sleap-slp",
             "labelme",
+            "coco",
+            "coco-json",
         ),
         help="Target pose format.",
     )
@@ -4546,6 +4793,550 @@ def _build_root_parser() -> argparse.ArgumentParser:
         help="Recursively scan subdirectories for LabelMe JSON files.",
     )
     export_pose_p.set_defaults(_handler=_cmd_export_pose)
+
+    extract_frames_p = sub.add_parser(
+        "extract-frames",
+        help="Extract training frames from a video using k-means visual diversity, uniform, random, optical flow, or keyframes.",
+    )
+    extract_frames_p.add_argument("video", help="Source video path.")
+    extract_frames_p.add_argument(
+        "--output",
+        "-o",
+        default=None,
+        help="Output directory for extracted frames.",
+    )
+    extract_frames_p.add_argument(
+        "--algo",
+        choices=("kmeans", "uniform", "random", "flow", "keyframes"),
+        default="kmeans",
+        help="Frame selection algorithm (default: kmeans).",
+    )
+    extract_frames_p.add_argument(
+        "--num-frames",
+        type=int,
+        default=50,
+        help="Number of frames to extract (-1 for all frames; default: 50).",
+    )
+    extract_frames_p.add_argument(
+        "--start-seconds",
+        type=float,
+        default=None,
+        help="Optional clip start time in seconds.",
+    )
+    extract_frames_p.add_argument(
+        "--end-seconds",
+        type=float,
+        default=None,
+        help="Optional clip end time in seconds.",
+    )
+    extract_frames_p.add_argument(
+        "--image-format",
+        default="png",
+        help="Output image format (default: png).",
+    )
+    extract_frames_p.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Deterministic random seed for kmeans/random sampling.",
+    )
+    extract_frames_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON summary.",
+    )
+    extract_frames_p.set_defaults(_handler=_cmd_extract_frames)
+
+    extract_outliers_p = sub.add_parser(
+        "extract-outliers",
+        help="Extract high-risk pose outlier frames + editable LabelMe JSONs for active-learning refinement.",
+    )
+    extract_outliers_p.add_argument(
+        "source",
+        help="Pose predictions source (LabelMe dir, SLEAP .slp/.h5, DLC CSV/H5, or tracking CSV).",
+    )
+    extract_outliers_p.add_argument(
+        "--video",
+        required=True,
+        help="Source video file to extract outlier frames from.",
+    )
+    extract_outliers_p.add_argument(
+        "--output",
+        "-o",
+        required=True,
+        help="Output directory for outlier PNGs, LabelMe JSONs, and manifest.",
+    )
+    extract_outliers_p.add_argument(
+        "--source-format",
+        default="auto",
+        help="Input pose format hint (default: auto).",
+    )
+    extract_outliers_p.add_argument(
+        "--pose-schema",
+        default=None,
+        help="Optional PoseSchema JSON/YAML for bone-length anomaly checks.",
+    )
+    extract_outliers_p.add_argument(
+        "--num-frames",
+        type=int,
+        default=20,
+        help="Maximum outlier frames to extract (default: 20).",
+    )
+    extract_outliers_p.add_argument(
+        "--min-frame-gap",
+        type=int,
+        default=10,
+        help="Minimum frame spacing between selected outlier frames (default: 10).",
+    )
+    extract_outliers_p.add_argument(
+        "--min-confidence",
+        type=float,
+        default=0.6,
+        help="Keypoint confidence threshold below which points are flagged (default: 0.6).",
+    )
+    extract_outliers_p.add_argument(
+        "--jump-threshold",
+        type=float,
+        default=None,
+        help="Optional explicit per-frame keypoint jump threshold in pixels.",
+    )
+    extract_outliers_p.add_argument(
+        "--jump-mad",
+        type=float,
+        default=5.0,
+        help="Adaptive MAD multiplier when --jump-threshold is omitted (default: 5.0).",
+    )
+    extract_outliers_p.add_argument(
+        "--max-edge-stretch",
+        type=float,
+        default=1.8,
+        help="Bone stretch ratio threshold vs median length (default: 1.8).",
+    )
+    extract_outliers_p.add_argument(
+        "--min-edge-shrink",
+        type=float,
+        default=0.35,
+        help="Bone collapse ratio threshold vs median length (default: 0.35).",
+    )
+    extract_outliers_p.add_argument(
+        "--expected-instances",
+        type=int,
+        default=None,
+        help="Optional expected animal count per frame.",
+    )
+    extract_outliers_p.add_argument(
+        "--no-predictions",
+        action="store_true",
+        help="Write empty LabelMe templates instead of seeding with predicted keypoints.",
+    )
+    extract_outliers_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON summary.",
+    )
+    extract_outliers_p.set_defaults(_handler=_cmd_extract_outliers)
+
+    eval_pose_p = sub.add_parser(
+        "eval-pose",
+        help="Evaluate pose predictions vs ground truth (DLC RMSE/p-cutoff, SLEAP percentiles, PCK, OKS mAP, L/R swaps).",
+    )
+    eval_pose_p.add_argument(
+        "gt_source",
+        help="Ground-truth pose source (LabelMe dir, SLEAP, DLC, COCO JSON).",
+    )
+    eval_pose_p.add_argument(
+        "pred_source",
+        help="Predicted pose source (LabelMe dir, SLEAP, DLC, COCO JSON, Tracking CSV).",
+    )
+    eval_pose_p.add_argument(
+        "--gt-format",
+        default="auto",
+        help="Ground-truth format hint (default: auto).",
+    )
+    eval_pose_p.add_argument(
+        "--pred-format",
+        default="auto",
+        help="Prediction format hint (default: auto).",
+    )
+    eval_pose_p.add_argument(
+        "--pose-schema",
+        default=None,
+        help="Optional PoseSchema JSON/YAML for canonical keypoints and L/R symmetry pairs.",
+    )
+    eval_pose_p.add_argument(
+        "--pcutoff",
+        type=float,
+        default=0.6,
+        help="Confidence cutoff for DLC-style RMSE@pcutoff (default: 0.6).",
+    )
+    eval_pose_p.add_argument(
+        "--pck-px",
+        default="2,4,8,16",
+        help="Comma-separated pixel thresholds for PCK (default: 2,4,8,16).",
+    )
+    eval_pose_p.add_argument(
+        "--pck-norm",
+        default="0.05,0.1,0.2",
+        help="Comma-separated scale-normalized thresholds for PCK (default: 0.05,0.1,0.2).",
+    )
+    eval_pose_p.add_argument(
+        "--oks-sigma",
+        type=float,
+        default=0.05,
+        help="Uniform OKS sigma for arbitrary animal skeletons (default: 0.05).",
+    )
+    eval_pose_p.add_argument(
+        "--top-k-worst",
+        type=int,
+        default=50,
+        help="Number of worst frames to retain in the report (default: 50).",
+    )
+    eval_pose_p.add_argument(
+        "--output-dir",
+        "-o",
+        default=None,
+        help="Optional output directory for JSON, CSV, and HTML+SVG report bundle.",
+    )
+    eval_pose_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON summary.",
+    )
+    eval_pose_p.set_defaults(_handler=_cmd_eval_pose)
+
+    filter_pose_p = sub.add_parser(
+        "filter-pose",
+        help="Filter, clean outliers, and interpolate gaps in pose trajectories (median, Savitzky-Golay, One-Euro).",
+    )
+    filter_pose_p.add_argument(
+        "source",
+        help="Input pose source (LabelMe dir, SLEAP .slp/.h5, DLC CSV/H5, COCO JSON).",
+    )
+    filter_pose_p.add_argument(
+        "--output",
+        "-o",
+        default=None,
+        help="Output path or directory (defaults to <source>_filtered).",
+    )
+    filter_pose_p.add_argument(
+        "--source-format",
+        default="auto",
+        help="Input format hint (default: auto).",
+    )
+    filter_pose_p.add_argument(
+        "--format",
+        default="auto",
+        help="Output format (auto, labelme, deeplabcut-csv, deeplabcut-h5, sleap-h5, sleap-slp, coco).",
+    )
+    filter_pose_p.add_argument(
+        "--pose-schema",
+        default=None,
+        help="Optional PoseSchema JSON/YAML for anatomical bone-length checks.",
+    )
+    filter_pose_p.add_argument(
+        "--video",
+        default=None,
+        help="Optional source video path for SLEAP metadata.",
+    )
+    filter_pose_p.add_argument(
+        "--scorer",
+        default="annolid",
+        help="Scorer name when exporting DLC CSV (default: annolid).",
+    )
+    filter_pose_p.add_argument(
+        "--method",
+        choices=("savgol", "median", "one_euro", "moving_average", "none"),
+        default="savgol",
+        help="Temporal smoothing filter (default: savgol).",
+    )
+    filter_pose_p.add_argument(
+        "--window",
+        type=int,
+        default=5,
+        help="Odd filter window length in frames (default: 5).",
+    )
+    filter_pose_p.add_argument(
+        "--polyorder",
+        type=int,
+        default=2,
+        help="Savitzky-Golay polynomial order (default: 2).",
+    )
+    filter_pose_p.add_argument(
+        "--interpolate",
+        choices=("linear", "cubic", "nearest", "none"),
+        default="linear",
+        help="Gap interpolation strategy (default: linear).",
+    )
+    filter_pose_p.add_argument(
+        "--max-gap",
+        type=int,
+        default=5,
+        help="Maximum gap length in frames to interpolate (default: 5).",
+    )
+    filter_pose_p.add_argument(
+        "--min-confidence",
+        type=float,
+        default=None,
+        help="Mask keypoints below this confidence threshold before interpolation.",
+    )
+    filter_pose_p.add_argument(
+        "--max-jump-px",
+        type=float,
+        default=None,
+        help="Mask single-frame keypoint spikes exceeding this pixel jump.",
+    )
+    filter_pose_p.add_argument(
+        "--jump-mad",
+        type=float,
+        default=None,
+        help="Mask keypoint spikes exceeding median + jump_mad * MAD.",
+    )
+    filter_pose_p.add_argument(
+        "--enforce-bone-bounds",
+        action="store_true",
+        help="Mask keypoints involved in stretched or collapsed skeleton bones.",
+    )
+    filter_pose_p.add_argument(
+        "--max-edge-stretch",
+        type=float,
+        default=1.8,
+        help="Max bone length ratio vs median (default: 1.8).",
+    )
+    filter_pose_p.add_argument(
+        "--min-edge-shrink",
+        type=float,
+        default=0.35,
+        help="Min bone length ratio vs median (default: 0.35).",
+    )
+    filter_pose_p.add_argument(
+        "--fps",
+        type=float,
+        default=30.0,
+        help="Video FPS for One-Euro filter (default: 30).",
+    )
+    filter_pose_p.add_argument(
+        "--in-place",
+        action="store_true",
+        help="Overwrite a LabelMe source directory in place.",
+    )
+    filter_pose_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON summary.",
+    )
+    filter_pose_p.set_defaults(_handler=_cmd_filter_pose)
+
+    swap_pose_p = sub.add_parser(
+        "swap-pose",
+        help="Swap two animal identities (all pose keypoints and polygons) from start_frame forward.",
+    )
+    swap_pose_p.add_argument(
+        "source_dir", help="LabelMe / AnnotationStore frame directory."
+    )
+    swap_pose_p.add_argument(
+        "--start-frame",
+        type=int,
+        required=True,
+        help="First frame index (inclusive) to swap identities.",
+    )
+    swap_pose_p.add_argument(
+        "--end-frame",
+        type=int,
+        default=None,
+        help="Optional last frame index (inclusive) to swap.",
+    )
+    swap_pose_p.add_argument(
+        "--instance-a",
+        required=True,
+        help="First instance label or group_id to swap.",
+    )
+    swap_pose_p.add_argument(
+        "--instance-b",
+        required=True,
+        help="Second instance label or group_id to swap.",
+    )
+    swap_pose_p.add_argument(
+        "--pose-schema",
+        default=None,
+        help="Optional PoseSchema JSON/YAML for instance separator.",
+    )
+    swap_pose_p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview affected frames and shapes without writing changes.",
+    )
+    swap_pose_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON summary.",
+    )
+    swap_pose_p.set_defaults(_handler=_cmd_swap_pose)
+
+    pose_kin_p = sub.add_parser(
+        "pose-kinematics",
+        help="Compute calibrated per-keypoint speeds, bone lengths, joint angles, egocentric pose, and dyadic keypoint metrics.",
+    )
+    pose_kin_p.add_argument(
+        "source",
+        help="Input pose source (LabelMe dir, SLEAP .slp/.h5, DLC CSV/H5, COCO JSON).",
+    )
+    pose_kin_p.add_argument(
+        "--source-format",
+        default="auto",
+        help="Input format hint (default: auto).",
+    )
+    pose_kin_p.add_argument(
+        "--pose-schema",
+        default=None,
+        help="Optional PoseSchema JSON/YAML for skeleton edges and keypoint order.",
+    )
+    pose_kin_p.add_argument(
+        "--fps",
+        type=float,
+        default=30.0,
+        help="Video frames per second (default: 30).",
+    )
+    pose_kin_p.add_argument(
+        "--px-per-cm",
+        type=float,
+        default=None,
+        help="Optional orthographic spatial scale in pixels per centimeter.",
+    )
+    pose_kin_p.add_argument(
+        "--calibration",
+        default=None,
+        help="Optional planar perspective calibration JSON file.",
+    )
+    pose_kin_p.add_argument(
+        "--min-confidence",
+        type=float,
+        default=None,
+        help="Ignore keypoints below this confidence score.",
+    )
+    pose_kin_p.add_argument(
+        "--close-contact-px",
+        type=float,
+        default=35.0,
+        help="Close-contact distance threshold in pixels for dyadic keypoint pairs (default: 35).",
+    )
+    pose_kin_p.add_argument(
+        "--output-dir",
+        "-o",
+        default=None,
+        help="Optional output directory for JSON and CSV tables (including egocentric_pose.csv).",
+    )
+    pose_kin_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON summary.",
+    )
+    pose_kin_p.set_defaults(_handler=_cmd_pose_kinematics)
+
+    render_pose_p = sub.add_parser(
+        "render-pose-video",
+        help="Render an offline labeled skeleton video (with color modes, p-cutoff, motion trails, and comparison overlay).",
+    )
+    render_pose_p.add_argument("video", help="Input video file.")
+    render_pose_p.add_argument(
+        "pose_source",
+        help="Pose annotations or predictions (LabelMe dir, SLEAP, DLC, COCO, Tracking CSV).",
+    )
+    render_pose_p.add_argument(
+        "--output",
+        "-o",
+        required=True,
+        help="Output labeled video path (e.g., labeled_pose.mp4).",
+    )
+    render_pose_p.add_argument(
+        "--source-format",
+        default="auto",
+        help="Pose format hint (default: auto).",
+    )
+    render_pose_p.add_argument(
+        "--pose-schema",
+        default=None,
+        help="Optional PoseSchema JSON/YAML for skeleton bones.",
+    )
+    render_pose_p.add_argument(
+        "--comparison",
+        default=None,
+        help="Optional secondary pose source (e.g., unfiltered raw predictions) drawn as hollow rings.",
+    )
+    render_pose_p.add_argument(
+        "--color-mode",
+        choices=("instance", "bodypart", "confidence"),
+        default="instance",
+        help="Color scheme for skeletons and keypoints (default: instance).",
+    )
+    render_pose_p.add_argument(
+        "--min-confidence",
+        type=float,
+        default=None,
+        help="Hide keypoints/bones below this confidence score (p-cutoff).",
+    )
+    render_pose_p.add_argument(
+        "--trail-length",
+        type=int,
+        default=0,
+        help="Number of recent frames for fading motion trails (default: 0 = disabled).",
+    )
+    render_pose_p.add_argument(
+        "--draw-labels",
+        action="store_true",
+        help="Draw keypoint names next to markers.",
+    )
+    render_pose_p.add_argument(
+        "--no-instance-names",
+        action="store_true",
+        help="Hide animal/instance badges above skeletons.",
+    )
+    render_pose_p.add_argument(
+        "--no-frame-index",
+        action="store_true",
+        help="Hide frame number and timestamp HUD.",
+    )
+    render_pose_p.add_argument(
+        "--thickness",
+        type=int,
+        default=2,
+        help="Skeleton bone line thickness in pixels (default: 2).",
+    )
+    render_pose_p.add_argument(
+        "--point-radius",
+        type=int,
+        default=4,
+        help="Keypoint marker radius in pixels (default: 4).",
+    )
+    render_pose_p.add_argument(
+        "--max-bone-dist",
+        type=float,
+        default=None,
+        help="Optional max pixel length beyond which bones are skipped.",
+    )
+    render_pose_p.add_argument(
+        "--start-frame",
+        type=int,
+        default=0,
+        help="First frame index to render (default: 0).",
+    )
+    render_pose_p.add_argument(
+        "--end-frame",
+        type=int,
+        default=None,
+        help="Optional last frame index (inclusive) to render.",
+    )
+    render_pose_p.add_argument(
+        "--fps",
+        type=float,
+        default=None,
+        help="Optional output video FPS override.",
+    )
+    render_pose_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON summary.",
+    )
+    render_pose_p.set_defaults(_handler=_cmd_render_pose_video)
 
     tb_p = sub.add_parser(
         "dino-kpseg-embeddings",

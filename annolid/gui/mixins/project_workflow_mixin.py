@@ -429,6 +429,9 @@ class ProjectWorkflowMixin:
         self.behavior_controller.configure_from_schema(schema)
         self._populate_behavior_controls_from_schema(schema)
         self._sync_behavior_flags_from_schema(schema)
+        configure_pose = getattr(self, "_configure_pose_schema_from_project", None)
+        if callable(configure_pose):
+            configure_pose(schema, project_dir=project_path)
 
         if videos:
             self.openVideo(from_video_list=True, video_path=videos[0])

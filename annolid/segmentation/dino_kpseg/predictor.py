@@ -393,17 +393,41 @@ class DinoKPSEGPredictor:
         probs: torch.Tensor,
         *,
         patch_size: int,
+        subpixel_refine: bool = True,
     ) -> List[Tuple[float, float]]:
         if probs.ndim != 3:
             raise ValueError("Expected probs in KHW format")
-        _, w_p = int(probs.shape[1]), int(probs.shape[2])
-        flat = probs.view(int(probs.shape[0]), -1)
+        k, h_p, w_p = int(probs.shape[0]), int(probs.shape[1]), int(probs.shape[2])
+        flat = probs.view(k, -1)
         best_idx = torch.argmax(flat, dim=1)
-        y = (best_idx // max(1, int(w_p))).to(dtype=probs.dtype)
-        x = (best_idx % max(1, int(w_p))).to(dtype=probs.dtype)
+        y = (best_idx // max(1, w_p)).to(dtype=probs.dtype)
+        x = (best_idx % max(1, w_p)).to(dtype=probs.dtype)
+        dx = torch.zeros_like(x)
+        dy = torch.zeros_like(y)
+        if subpixel_refine and h_p >= 3 and w_p >= 3:
+            for ki in range(k):
+                xc = int(x[ki].item())
+                yc = int(y[ki].item())
+                p = probs[ki]
+                if 0 < xc < w_p - 1:
+                    left = float(p[yc, xc - 1].item())
+                    center = float(p[yc, xc].item())
+                    right = float(p[yc, xc + 1].item())
+                    if left > 0.0 and right > 0.0 and max(left, right) >= 0.01 * center:
+                        denom_x = 2.0 * (2.0 * center - left - right)
+                        if abs(denom_x) > 1e-6:
+                            dx[ki] = max(-0.5, min(0.5, (right - left) / denom_x))
+                if 0 < yc < h_p - 1:
+                    top = float(p[yc - 1, xc].item())
+                    center = float(p[yc, xc].item())
+                    bottom = float(p[yc + 1, xc].item())
+                    if top > 0.0 and bottom > 0.0 and max(top, bottom) >= 0.01 * center:
+                        denom_y = 2.0 * (2.0 * center - top - bottom)
+                        if abs(denom_y) > 1e-6:
+                            dy[ki] = max(-0.5, min(0.5, (bottom - top) / denom_y))
         scale = float(patch_size)
-        x = (x + 0.5) * scale
-        y = (y + 0.5) * scale
+        x = (x + dx + 0.5) * scale
+        y = (y + dy + 0.5) * scale
         x_values = x.detach().to("cpu").tolist()
         y_values = y.detach().to("cpu").tolist()
         return [(float(x_i), float(y_i)) for x_i, y_i in zip(x_values, y_values)]

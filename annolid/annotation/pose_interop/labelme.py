@@ -911,3 +911,132 @@ def write_pose_to_labelme_dir(
         "pose_schema": schema_written,
         "warnings": list(dataset.warnings),
     }
+
+
+def write_pose_to_coco_json(
+    dataset: PoseDataset,
+    output_path: str | Path,
+    *,
+    category_name: str = "animal",
+    pose_schema_preset: str = "auto",
+) -> Dict[str, Any]:
+    """Export a ``PoseDataset`` to a COCO Keypoints JSON file."""
+    out_path = Path(output_path).expanduser().resolve()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    schema = dataset.to_pose_schema(preset=pose_schema_preset)
+    keypoints = list(schema.keypoints)
+    kp_to_1based = {name: idx + 1 for idx, name in enumerate(keypoints)}
+    skeleton_1based = [
+        [kp_to_1based[a], kp_to_1based[b]]
+        for a, b in schema.base_edges()
+        if a in kp_to_1based and b in kp_to_1based
+    ]
+
+    categories = [
+        {
+            "id": 1,
+            "name": str(category_name or "animal").strip() or "animal",
+            "supercategory": "animal",
+            "keypoints": keypoints,
+            "skeleton": skeleton_1based,
+        }
+    ]
+    images: List[Dict[str, Any]] = []
+    annotations: List[Dict[str, Any]] = []
+    ann_id = 1
+
+    sorted_frames = sorted(
+        dataset.frames, key=lambda f: (int(f.video_index), int(f.frame_index))
+    )
+    for img_idx, frame in enumerate(sorted_frames, start=1):
+        fname = (
+            str(frame.image_path)
+            if frame.image_path
+            else f"{frame.video_name or 'frame'}_{int(frame.frame_index):09d}.png"
+        )
+        width = int(frame.image_width or 0)
+        height = int(frame.image_height or 0)
+        images.append(
+            {
+                "id": img_idx,
+                "file_name": fname,
+                "width": width,
+                "height": height,
+                "frame_index": int(frame.frame_index),
+                "video_index": int(frame.video_index),
+            }
+        )
+        for inst in frame.instances:
+            flat_kps: List[float] = []
+            xs: List[float] = []
+            ys: List[float] = []
+            num_kps = 0
+            for kp_name in keypoints:
+                pt = inst.keypoints.get(kp_name)
+                if pt is not None and pt.is_valid and int(pt.visibility) > 0:
+                    vis = (
+                        int(KeypointVisibility.OCCLUDED)
+                        if int(pt.visibility) == int(KeypointVisibility.OCCLUDED)
+                        else int(KeypointVisibility.VISIBLE)
+                    )
+                    flat_kps.extend([round(float(pt.x), 4), round(float(pt.y), 4), vis])
+                    xs.append(float(pt.x))
+                    ys.append(float(pt.y))
+                    num_kps += 1
+                else:
+                    flat_kps.extend([0.0, 0.0, 0])
+
+            if num_kps == 0:
+                continue
+
+            inst_bbox = getattr(inst, "bbox", None)
+            if inst_bbox is not None and len(inst_bbox) == 4:
+                bx1, by1, bx2, by2 = [float(v) for v in inst_bbox]
+                bw = max(1.0, bx2 - bx1)
+                bh = max(1.0, by2 - by1)
+                bbox = [round(bx1, 4), round(by1, 4), round(bw, 4), round(bh, 4)]
+            else:
+                min_x, max_x = min(xs), max(xs)
+                min_y, max_y = min(ys), max(ys)
+                pad = max(4.0, 0.05 * max(max_x - min_x, max_y - min_y, 1.0))
+                bx1 = max(0.0, min_x - pad)
+                by1 = max(0.0, min_y - pad)
+                bw = max(1.0, (max_x - min_x) + 2.0 * pad)
+                bh = max(1.0, (max_y - min_y) + 2.0 * pad)
+                bbox = [round(bx1, 4), round(by1, 4), round(bw, 4), round(bh, 4)]
+
+            ann_record: Dict[str, Any] = {
+                "id": ann_id,
+                "image_id": img_idx,
+                "category_id": 1,
+                "keypoints": flat_kps,
+                "num_keypoints": int(num_kps),
+                "bbox": bbox,
+                "area": round(float(bbox[2] * bbox[3]), 4),
+                "iscrowd": 0,
+                "instance_name": str(inst.instance_name or ""),
+            }
+            if inst.track_id is not None:
+                ann_record["track_id"] = int(inst.track_id)
+            if inst.score is not None and math.isfinite(float(inst.score)):
+                ann_record["score"] = round(float(inst.score), 6)
+            annotations.append(ann_record)
+            ann_id += 1
+
+    payload = {
+        "info": {"description": "Annolid Pose Keypoints Export", "version": "1.0"},
+        "licenses": [],
+        "categories": categories,
+        "images": images,
+        "annotations": annotations,
+    }
+    atomic_write_json(out_path, payload, indent=2)
+    return {
+        "target_format": "coco_json",
+        "output_path": str(out_path),
+        "frames_exported": len(images),
+        "annotations_exported": len(annotations),
+        "keypoints": keypoints,
+        "instances": dataset.resolved_instances(),
+    }

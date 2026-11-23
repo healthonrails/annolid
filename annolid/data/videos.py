@@ -598,6 +598,51 @@ def extract_frames(
         yield 100, f"Done. Frames located at {out_dir}."
         return
 
+    if algo in ("uniform", "kmeans"):
+        from annolid.data.frame_sampling import (
+            _write_selected_frames,
+            select_kmeans_frame_indices,
+            select_uniform_frame_indices,
+        )
+
+        progress_events: List[tuple[float, str]] = []
+        cap_probe = cv2.VideoCapture(video_file)
+        if not cap_probe.isOpened():
+            raise RuntimeError(f"Unable to open video file: {video_file}")
+        try:
+            total_frames = int(cap_probe.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+        finally:
+            cap_probe.release()
+
+        if total_frames <= 0:
+            yield 100, f"No readable frames found in {video_file}."
+            return
+
+        if algo == "uniform":
+            yield 10, f"Selecting {num_frames} uniformly spaced frames..."
+            indices = select_uniform_frame_indices(total_frames, num_frames)
+        else:
+            yield (
+                10,
+                f"Clustering frames for visual diversity (k-means, k={num_frames})...",
+            )
+            indices = select_kmeans_frame_indices(
+                video_file,
+                num_frames,
+                progress_callback=lambda pct, msg: progress_events.append((pct, msg)),
+            )
+            for pct, msg in progress_events:
+                yield pct, msg
+
+        saved_idx, _saved_paths = _write_selected_frames(
+            Path(video_file),
+            Path(out_dir),
+            indices,
+            filename_prefix=video_name,
+        )
+        yield 100, f"Done. Extracted {len(saved_idx)} frames to {out_dir}"
+        return
+
     cap = cv2.VideoCapture(video_file)
     try:
         n_frames = int(cap.get(7))

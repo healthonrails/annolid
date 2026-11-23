@@ -267,6 +267,9 @@ class Canvas(
         self._pose_schema: PoseSchema | None = None
         self._show_pose_edges: bool = False
         self._show_pose_bboxes: bool = True
+        self._pose_color_mode: str = "instance"
+        self._pose_confidence_threshold: float = 0.0
+        self._show_pose_labels: bool = False
         self._pose_edge_color = QtGui.QColor(0, 255, 255, 190)
         self._pose_edge_shadow = QtGui.QColor(0, 0, 0, 160)
         self._selected_overlay_landmark_pair_id = None
@@ -676,6 +679,18 @@ class Canvas(
     def isVisible(self, shape):
         if not self._show_pose_bboxes and self._is_pose_bbox_shape(shape):
             return False
+        conf_thr = float(getattr(self, "_pose_confidence_threshold", 0.0) or 0.0)
+        if conf_thr > 0.0 and str(getattr(shape, "shape_type", "")).lower() == "point":
+            other = getattr(shape, "other_data", None)
+            if isinstance(other, dict):
+                raw_score = other.get("score")
+                if raw_score is not None:
+                    try:
+                        sc = float(raw_score)
+                        if sc == sc and sc < conf_thr:
+                            return False
+                    except (TypeError, ValueError):
+                        pass
         if not bool(getattr(shape, "visible", True)):
             return False
         return self.visible.get(id(shape), True)

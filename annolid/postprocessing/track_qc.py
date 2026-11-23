@@ -92,6 +92,7 @@ _RECOMMENDED_ACTION_BY_CODE = {
     "body_part_overlap": "resolve_sibling_body_part_overlap",
     "spatial_overlap": "inspect_close_contact_masks",
     "anatomical_edge_outlier": "check_keypoint_outlier",
+    "keypoint_velocity_spike": "check_keypoint_outlier",
     "velocity_spike": "verify_jump_or_id_switch",
     "area_jump": "inspect_merged_or_fragmented_mask",
     "missing_instance_gap": "fill_or_repropagate_occlusion_gap",
@@ -1421,6 +1422,7 @@ def evaluate_track_qc(
     swap_margin_px: float = 10.0,
     max_swap_lookahead_frames: int = 10,
     max_edge_stretch_ratio: float = 2.5,
+    min_edge_shrink_ratio: float = 0.30,
     min_edge_baseline_px: float = 5.0,
     min_score: float = 0.35,
     bout_merge_gap_frames: int = 5,
@@ -1943,6 +1945,7 @@ def evaluate_track_qc(
                         )
 
         stretch_limit = max(1.2, float(max_edge_stretch_ratio))
+        shrink_limit = max(0.0, min(0.95, float(min_edge_shrink_ratio)))
         for (inst_name, src_kp, dst_kp), samples in sorted(edge_samples.items()):
             if len(samples) < 3:
                 continue
@@ -1951,8 +1954,6 @@ def evaluate_track_qc(
                 continue
             display_inst = "" if inst_name == "__single__" else inst_name
             for frame, length in samples:
-                if length <= 0.0:
-                    continue
                 stretch = length / med_len
                 if stretch >= stretch_limit:
                     sev = "error" if stretch >= stretch_limit * 1.5 else "warning"
@@ -1977,6 +1978,86 @@ def evaluate_track_qc(
                                 "edge_length_px": float(length),
                                 "median_edge_length_px": med_len,
                                 "stretch_ratio": float(stretch),
+                            },
+                        )
+                    )
+                elif shrink_limit > 0.0 and stretch <= shrink_limit:
+                    sev = "error" if stretch <= shrink_limit * 0.5 else "warning"
+                    inst_tuple = (display_inst,) if display_inst else ()
+                    prefix = f"'{display_inst}' " if display_inst else ""
+                    issues.append(
+                        TrackQCIssue(
+                            severity=sev,
+                            code="anatomical_edge_outlier",
+                            message=(
+                                f"Anatomical edge {prefix}{src_kp}->{dst_kp} collapsed to "
+                                f"{stretch:.2f}x median ({length:.1f}px vs {med_len:.1f}px) "
+                                f"on frame {frame}."
+                            ),
+                            frame_start=frame,
+                            frame_end=frame,
+                            anchor_frame=frame,
+                            instances=inst_tuple,
+                            score=(6.5 if sev == "error" else 4.0)
+                            + min(4.0, (shrink_limit - stretch) * 5.0),
+                            metrics={
+                                "edge_length_px": float(length),
+                                "median_edge_length_px": med_len,
+                                "stretch_ratio": float(stretch),
+                            },
+                        )
+                    )
+
+    # 5. Per-keypoint velocity / jump spike check across pose tracks.
+    if keypoints_by_frame:
+        kp_trajectories: Dict[Tuple[str, str], List[Tuple[int, float, float]]] = (
+            defaultdict(list)
+        )
+        for frame in sorted(keypoints_by_frame):
+            for inst_name, kp_map in sorted(keypoints_by_frame[frame].items()):
+                for kp_name, (kx, ky) in sorted(kp_map.items()):
+                    kp_trajectories[(inst_name, kp_name)].append(
+                        (frame, float(kx), float(ky))
+                    )
+        for (inst_name, kp_name), pts in sorted(kp_trajectories.items()):
+            if len(pts) < 4:
+                continue
+            steps: List[Tuple[int, int, float]] = []
+            for (f0, x0, y0), (f1, x1, y1) in zip(pts, pts[1:]):
+                dt = max(1, int(f1) - int(f0))
+                spd = math.hypot(x1 - x0, y1 - y0) / float(dt)
+                steps.append((int(f0), int(f1), spd))
+            spd_vals = [s for _, _, s in steps]
+            med_spd = float(median(spd_vals))
+            mad_spd = float(median([abs(v - med_spd) for v in spd_vals]))
+            robust_sigma = max(1.4826 * mad_spd, 2.0)
+            kp_jump_thr = max(
+                float(min_jump_px), med_spd + float(speed_mad_z) * robust_sigma
+            )
+            display_inst = "" if inst_name == "__single__" else inst_name
+            inst_tuple = (display_inst,) if display_inst else ()
+            prefix = f"'{display_inst}' " if display_inst else ""
+            for f0, f1, spd in steps:
+                if spd > kp_jump_thr:
+                    z = (spd - med_spd) / robust_sigma
+                    sev = "error" if spd >= kp_jump_thr * 1.8 else "warning"
+                    issues.append(
+                        TrackQCIssue(
+                            severity=sev,
+                            code="keypoint_velocity_spike",
+                            message=(
+                                f"Keypoint {prefix}{kp_name} jumped {spd:.1f}px/frame "
+                                f"(median={med_spd:.1f}px/frame) across frames {f0}->{f1}."
+                            ),
+                            frame_start=f0,
+                            frame_end=f1,
+                            anchor_frame=f1,
+                            instances=inst_tuple,
+                            score=(6.0 if sev == "error" else 3.8) + min(4.0, z / 5.0),
+                            metrics={
+                                "speed_px_per_frame": float(spd),
+                                "median_speed_px_per_frame": med_spd,
+                                "threshold_px_per_frame": kp_jump_thr,
                             },
                         )
                     )

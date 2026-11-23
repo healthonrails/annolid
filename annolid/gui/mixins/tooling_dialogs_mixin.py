@@ -408,6 +408,42 @@ class ToolingDialogsMixin:
         except Exception as exc:
             logger.debug("Could not open Analysis & Reporting Studio: %s", exc)
 
+    def open_pose_workbench(self, *, initial_tab: str = "eval") -> None:
+        """Open the non-modal Pose Estimation Workbench (Eval, Filter, Outliers, Kinematics, Video/Swap)."""
+        try:
+            from annolid.gui.widgets.pose_workbench_dialog import PoseWorkbenchDialog
+
+            dialog = getattr(self, "_pose_workbench_dialog", None)
+            if dialog is None:
+                dialog = PoseWorkbenchDialog(
+                    owner_window=self,
+                    initial_tab=initial_tab,
+                    parent=self,
+                )
+                jump_fn = getattr(self, "_jump_to_frame_from_log", None)
+                if callable(jump_fn):
+                    dialog.jumpToFrameRequested.connect(jump_fn)
+                open_dir_fn = getattr(self, "importDirImages", None)
+                if callable(open_dir_fn):
+                    dialog.openDirectoryRequested.connect(open_dir_fn)
+                dialog.finished.connect(
+                    lambda *_: setattr(self, "_pose_workbench_dialog", None)
+                )
+                dialog.destroyed.connect(
+                    lambda *_: setattr(self, "_pose_workbench_dialog", None)
+                )
+                self._pose_workbench_dialog = dialog
+            else:
+                dialog.workbench.apply_owner_context()
+                dialog.workbench.select_tab(initial_tab)
+
+            dialog.show()
+            dialog.setWindowState(dialog.windowState() & ~QtCore.Qt.WindowMinimized)
+            dialog.raise_()
+            dialog.activateWindow()
+        except Exception as exc:
+            logger.debug("Could not open Pose Estimation Workbench: %s", exc)
+
     def _add_real_time_stamps(self):
         folder = QtWidgets.QFileDialog.getExistingDirectory(
             self, self.tr("Select folder to annotate"), str(Path.home())

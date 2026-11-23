@@ -9,8 +9,9 @@ import json
 import math
 from pathlib import Path
 import pickletools
+import re
 import shutil
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -1068,6 +1069,217 @@ def write_dlc_analysis_csv(
     return out_path
 
 
+def _encode_h5_string_array(values: Sequence[Any]) -> np.ndarray:
+    """Encode strings as fixed-length UTF-8 byte array compatible with h5py & PyTables."""
+    encoded = [str(v).encode("utf-8") for v in values]
+    max_len = max((len(b) for b in encoded), default=1)
+    return np.asarray(encoded, dtype=f"S{max(1, max_len)}")
+
+
+def _write_h5_axis_index(group: Any, axis_prefix: str, index: pd.Index) -> None:
+    """Write a Pandas Index or MultiIndex in standard HDFStore fixed format."""
+    if isinstance(index, pd.MultiIndex):
+        group.attrs[f"{axis_prefix}_variety"] = np.bytes_(b"multi")
+        group.attrs[f"{axis_prefix}_nlevels"] = int(index.nlevels)
+        for lvl in range(index.nlevels):
+            lvl_vals = list(index.levels[lvl])
+            codes = np.asarray(index.codes[lvl], dtype=np.int64)
+            if lvl_vals and all(
+                isinstance(v, (int, np.integer)) and not isinstance(v, bool)
+                for v in lvl_vals
+            ):
+                lvl_arr = np.asarray(lvl_vals, dtype=np.int64)
+                kind = b"integer"
+            else:
+                lvl_arr = _encode_h5_string_array(lvl_vals)
+                kind = b"string"
+            lvl_ds = group.create_dataset(f"{axis_prefix}_level{lvl}", data=lvl_arr)
+            lvl_ds.attrs["kind"] = np.bytes_(kind)
+            lvl_ds.attrs["name"] = np.bytes_(
+                str(index.names[lvl] or "N.").encode("utf-8")
+            )
+            lbl_ds = group.create_dataset(f"{axis_prefix}_label{lvl}", data=codes)
+            lbl_ds.attrs["name"] = np.bytes_(b"N.")
+        return
+
+    group.attrs[f"{axis_prefix}_variety"] = np.bytes_(b"regular")
+    vals = list(index)
+    if vals and all(
+        isinstance(v, (int, np.integer)) and not isinstance(v, bool) for v in vals
+    ):
+        arr = np.asarray(vals, dtype=np.int64)
+        kind = b"integer"
+    else:
+        arr = _encode_h5_string_array(vals)
+        kind = b"string"
+    ds = group.create_dataset(axis_prefix, data=arr)
+    ds.attrs["kind"] = np.bytes_(kind)
+    ds.attrs["name"] = np.bytes_(str(index.name or "N.").encode("utf-8"))
+
+
+def _write_pandas_fixed_hdf5(
+    df: pd.DataFrame,
+    output_path: str | Path,
+    *,
+    key: str = "df_with_missing",
+) -> Path:
+    """Write a DeepLabCut-compatible Pandas fixed-format HDF5 file atomically.
+
+    Uses PyTables via ``DataFrame.to_hdf`` when ``tables`` is installed, and
+    otherwise writes the standard Pandas HDFStore fixed-format schema directly
+    with ``h5py`` (no PyTables dependency required).
+    """
+    out = Path(output_path).expanduser().resolve()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = out.with_name(f".{out.name}.tmp")
+
+    try:
+        try:
+            import tables as _tables  # noqa: F401
+
+            df.to_hdf(str(tmp_path), key=key, mode="w", format="fixed")
+            tmp_path.replace(out)
+            return out
+        except ImportError:
+            pass
+
+        try:
+            import h5py
+        except ImportError as exc:
+            raise ImportError(
+                "Writing DeepLabCut .h5 files requires 'h5py' (or 'tables'). "
+                "Install with: pip install 'annolid[sleap]'."
+            ) from exc
+
+        with h5py.File(tmp_path, "w") as h5:
+            h5.attrs["TITLE"] = np.bytes_(b"")
+            h5.attrs["CLASS"] = np.bytes_(b"GROUP")
+            h5.attrs["VERSION"] = np.bytes_(b"1.0")
+            h5.attrs["PYTABLES_FORMAT_VERSION"] = np.bytes_(b"2.1")
+
+            grp = h5.create_group(key)
+            grp.attrs["CLASS"] = np.bytes_(b"GROUP")
+            grp.attrs["TITLE"] = np.bytes_(b"")
+            grp.attrs["VERSION"] = np.bytes_(b"1.0")
+            grp.attrs["pandas_type"] = np.bytes_(b"frame")
+            grp.attrs["pandas_version"] = np.bytes_(b"0.15.2")
+            grp.attrs["ndim"] = 2
+            grp.attrs["nblocks"] = 1
+            grp.attrs["encoding"] = np.bytes_(b"UTF-8")
+
+            _write_h5_axis_index(grp, "axis0", df.columns)
+            _write_h5_axis_index(grp, "axis1", df.index)
+
+            matrix = np.asarray(df.to_numpy(dtype=np.float64), dtype=np.float64)
+            vals_ds = grp.create_dataset("block0_values", data=matrix)
+            vals_ds.attrs["transposed"] = 1
+            grp.create_dataset(
+                "block0_items", data=np.arange(df.shape[1], dtype=np.int64)
+            )
+            _write_h5_axis_index(grp, "block0_items_axis", df.columns)
+
+        tmp_path.replace(out)
+        return out
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+
+def _build_dlc_analysis_dataframe(
+    dataset: PoseDataset,
+    *,
+    scorer: Optional[str] = None,
+    multi_animal: Optional[bool] = None,
+    default_likelihood: float = 1.0,
+) -> pd.DataFrame:
+    """Build a 3- or 4-level DeepLabCut analysis MultiIndex DataFrame."""
+    keypoints = dataset.resolved_keypoints()
+    if not keypoints:
+        raise ValueError(
+            "Cannot export DeepLabCut table: dataset contains no keypoints."
+        )
+
+    use_multi = (
+        bool(multi_animal) if multi_animal is not None else dataset.is_multi_animal()
+    )
+    instances = dataset.resolved_instances()
+    if not instances:
+        instances = ["individual1"]
+    scorer_name = str(scorer or dataset.scorer or "annolid").strip() or "annolid"
+
+    tuples: List[Tuple[str, ...]] = []
+    if use_multi:
+        for ind in instances:
+            for bp in keypoints:
+                for coord in ("x", "y", "likelihood"):
+                    tuples.append((scorer_name, ind, bp, coord))
+        columns = pd.MultiIndex.from_tuples(
+            tuples, names=["scorer", "individuals", "bodyparts", "coords"]
+        )
+    else:
+        for bp in keypoints:
+            for coord in ("x", "y", "likelihood"):
+                tuples.append((scorer_name, bp, coord))
+        columns = pd.MultiIndex.from_tuples(
+            tuples, names=["scorer", "bodyparts", "coords"]
+        )
+
+    sorted_frames = sorted(dataset.frames, key=lambda f: (f.video_index, f.frame_index))
+    frame_indices = [int(f.frame_index) for f in sorted_frames]
+    matrix = np.full((len(sorted_frames), len(tuples)), np.nan, dtype=np.float64)
+
+    target_instances = instances if use_multi else [instances[0]]
+    for row_idx, frame in enumerate(sorted_frames):
+        by_inst: Dict[str, PoseInstance] = {}
+        for inst in frame.instances:
+            name = str(inst.instance_name or "").strip() or instances[0]
+            if name not in by_inst:
+                by_inst[name] = inst
+
+        col_idx = 0
+        for ind in target_instances:
+            inst_obj = by_inst.get(ind)
+            if inst_obj is None and not use_multi and frame.instances:
+                inst_obj = frame.instances[0]
+            for bp in keypoints:
+                pt = inst_obj.keypoints.get(bp) if inst_obj is not None else None
+                if pt is not None and pt.is_valid:
+                    like = (
+                        float(pt.score)
+                        if pt.score is not None and math.isfinite(float(pt.score))
+                        else float(default_likelihood)
+                    )
+                    matrix[row_idx, col_idx] = float(pt.x)
+                    matrix[row_idx, col_idx + 1] = float(pt.y)
+                    matrix[row_idx, col_idx + 2] = like
+                col_idx += 3
+
+    return pd.DataFrame(
+        matrix, index=pd.Index(frame_indices, dtype=np.int64), columns=columns
+    )
+
+
+def write_dlc_analysis_h5(
+    dataset: PoseDataset,
+    output_path: str | Path,
+    *,
+    scorer: Optional[str] = None,
+    multi_animal: Optional[bool] = None,
+    default_likelihood: float = 1.0,
+) -> Path:
+    """Export a ``PoseDataset`` to a DeepLabCut / Lightning Pose analysis ``.h5`` file."""
+    df = _build_dlc_analysis_dataframe(
+        dataset,
+        scorer=scorer,
+        multi_animal=multi_animal,
+        default_likelihood=default_likelihood,
+    )
+    return _write_pandas_fixed_hdf5(df, output_path, key="df_with_missing")
+
+
 def write_dlc_training_project(
     dataset: PoseDataset,
     output_dir: str | Path,
@@ -1076,6 +1288,7 @@ def write_dlc_training_project(
     video_name: str = "video",
     copy_images: bool = True,
     write_config_yaml: bool = True,
+    write_h5: bool = True,
     multi_animal: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Export a ``PoseDataset`` to a DeepLabCut / Lightning Pose training project.
@@ -1177,6 +1390,72 @@ def write_dlc_training_project(
     csv_out = labeled_dir / f"CollectedData_{scorer_name}.csv"
     atomic_write_text(csv_out, buf.getvalue(), encoding="utf-8")
 
+    h5_out: Optional[Path] = None
+    if write_h5:
+        try:
+            train_tuples: List[Tuple[str, ...]] = []
+            if use_multi:
+                for ind in instances:
+                    for bp in keypoints:
+                        for coord in ("x", "y"):
+                            train_tuples.append((scorer_name, ind, bp, coord))
+                train_cols = pd.MultiIndex.from_tuples(
+                    train_tuples,
+                    names=["scorer", "individuals", "bodyparts", "coords"],
+                )
+            else:
+                for bp in keypoints:
+                    for coord in ("x", "y"):
+                        train_tuples.append((scorer_name, bp, coord))
+                train_cols = pd.MultiIndex.from_tuples(
+                    train_tuples,
+                    names=["scorer", "bodyparts", "coords"],
+                )
+
+            row_index_tuples: List[Tuple[str, str, str]] = []
+            train_mat = np.full(
+                (len(sorted_frames), len(train_tuples)), np.nan, dtype=np.float64
+            )
+            target_instances = instances if use_multi else [instances[0]]
+            for r_i, frame in enumerate(sorted_frames):
+                img_name = (
+                    Path(frame.image_path).name
+                    if frame.image_path
+                    else f"img{int(frame.frame_index):06d}.png"
+                )
+                row_index_tuples.append(("labeled-data", video_folder_name, img_name))
+                by_inst_h5: Dict[str, PoseInstance] = {}
+                for inst in frame.instances:
+                    nm = str(inst.instance_name or "").strip() or instances[0]
+                    if nm not in by_inst_h5:
+                        by_inst_h5[nm] = inst
+                c_i = 0
+                for ind in target_instances:
+                    inst_obj = by_inst_h5.get(ind)
+                    if inst_obj is None and not use_multi and frame.instances:
+                        inst_obj = frame.instances[0]
+                    for bp in keypoints:
+                        pt = (
+                            inst_obj.keypoints.get(bp) if inst_obj is not None else None
+                        )
+                        if pt is not None and pt.is_valid:
+                            train_mat[r_i, c_i] = float(pt.x)
+                            train_mat[r_i, c_i + 1] = float(pt.y)
+                        c_i += 2
+
+            train_df = pd.DataFrame(
+                train_mat,
+                index=pd.MultiIndex.from_tuples(row_index_tuples),
+                columns=train_cols,
+            )
+            h5_out = _write_pandas_fixed_hdf5(
+                train_df,
+                labeled_dir / f"CollectedData_{scorer_name}.h5",
+                key="df_with_missing",
+            )
+        except ImportError:
+            h5_out = None
+
     config_out: Optional[Path] = None
     if write_config_yaml:
         schema = dataset.to_pose_schema(preset="auto")
@@ -1185,6 +1464,14 @@ def write_dlc_training_project(
             "scorer": scorer_name,
             "multianimalproject": bool(use_multi),
             "project_path": str(out_root),
+            "TrainingFraction": [0.95],
+            "iteration": 0,
+            "default_net_type": "dlcrnet_ms5" if use_multi else "resnet_50",
+            "default_augmenter": "multi-animal-imgaug" if use_multi else "default",
+            "snapshotindex": -1,
+            "batch_size": 8,
+            "cropping": False,
+            "numframes2pick": max(20, rows_written),
             "skeleton": [[a, b] for a, b in schema.edges],
             "skeleton_color": "black",
             "pcutoff": 0.6,
@@ -1209,6 +1496,7 @@ def write_dlc_training_project(
     return {
         "output_dir": str(out_root),
         "collected_data_csv": str(csv_out),
+        "collected_data_h5": str(h5_out) if h5_out else None,
         "config_yaml": str(config_out) if config_out else None,
         "frames_exported": rows_written,
         "images_copied": copied_images,
@@ -1216,3 +1504,188 @@ def write_dlc_training_project(
         "keypoints": list(keypoints),
         "instances": list(instances),
     }
+
+
+def _extract_training_row_image_parts(row_index: Any) -> Tuple[str, Optional[int]]:
+    """Extract normalized relative image path and optional parsed frame index."""
+    if isinstance(row_index, tuple):
+        parts = [str(p).strip() for p in row_index if str(p).strip()]
+        rel = "/".join(parts)
+    else:
+        rel = str(row_index or "").strip().replace("\\", "/")
+    fname = Path(rel).name if rel else ""
+    m = re.search(r"(\d+)(?=\.[^.]+$)", fname)
+    frame_idx = int(m.group(1)) if m else None
+    return rel, frame_idx
+
+
+def read_dlc_training_project(
+    source_path: str | Path,
+    *,
+    config_path: Optional[str | Path] = None,
+    default_instance: str = "mouse",
+    recursive: bool = True,
+) -> PoseDataset:
+    """Read DeepLabCut ``CollectedData_*.{csv,h5}`` training labels into a ``PoseDataset``."""
+    root = Path(source_path).expanduser().resolve()
+    table_files: List[Path] = []
+    if root.is_file():
+        table_files = [root]
+        search_root = root.parent
+    else:
+        labeled_dir = (
+            root / "labeled-data" if (root / "labeled-data").is_dir() else root
+        )
+        search_root = labeled_dir
+        iterator = labeled_dir.rglob("*") if recursive else labeled_dir.glob("*")
+        by_dir_stem: Dict[Tuple[Path, str], Path] = {}
+        for p in sorted(iterator):
+            if not p.is_file():
+                continue
+            low = p.name.lower()
+            if not low.startswith("collecteddata_"):
+                continue
+            if p.suffix.lower() not in (".csv", ".h5", ".hdf", ".hdf5"):
+                continue
+            key = (p.parent, p.stem.lower())
+            # Prefer CSV over H5 when both exist for the same stem to avoid duplicate frames.
+            if key not in by_dir_stem or p.suffix.lower() == ".csv":
+                by_dir_stem[key] = p
+        table_files = sorted(by_dir_stem.values())
+
+    if not table_files:
+        raise FileNotFoundError(
+            f"No DeepLabCut CollectedData_*.csv or .h5 files found under {root}."
+        )
+
+    cfg = (
+        read_dlc_project_config(config_path)
+        if config_path
+        else discover_dlc_config_near(root)
+    )
+    if cfg is None and table_files:
+        cfg = discover_dlc_config_near(table_files[0])
+
+    frames: List[PoseFrame] = []
+    all_keypoints: List[str] = list(cfg.bodyparts) if cfg and cfg.bodyparts else []
+    all_instances: List[str] = []
+    any_multi = False
+    scorer_name: Optional[str] = cfg.scorer if cfg else None
+    warnings: List[str] = []
+
+    for vid_idx, table_path in enumerate(table_files):
+        table = parse_dlc_table(table_path, for_training=True)
+        if table.multi_animal:
+            any_multi = True
+        if not scorer_name and table.scorer:
+            scorer_name = table.scorer
+        all_keypoints = dedup_preserve_order(all_keypoints + list(table.bodyparts))
+
+        if table.multi_animal:
+            instance_order = list(table.individuals)
+        else:
+            inst_default = str(default_instance or "mouse").strip() or "mouse"
+            instance_order = [inst_default]
+        all_instances = dedup_preserve_order(all_instances + instance_order)
+
+        col_lookup: Dict[Tuple[str, str], Dict[str, Tuple[Any, ...]]] = {}
+        for col in table.keypoint_columns:
+            coord = str(col[-1]).strip().lower()
+            if table.multi_animal:
+                ind = str(col[1]).strip()
+                bp = str(col[2]).strip()
+            else:
+                ind = instance_order[0]
+                bp = str(col[1]).strip()
+            col_lookup.setdefault((ind, bp), {})[coord] = col
+
+        df = table.df
+        col_arrays: Dict[Tuple[Any, ...], np.ndarray] = {}
+        for col in table.keypoint_columns:
+            series = df[col]
+            if isinstance(series, pd.DataFrame):
+                series = series.iloc[:, 0]
+            col_arrays[col] = pd.to_numeric(series, errors="coerce").to_numpy(
+                dtype=np.float64, copy=False
+            )
+
+        video_folder_name = table_path.parent.name
+        for row_idx in range(len(df)):
+            rel_img, parsed_idx = _extract_training_row_image_parts(df.index[row_idx])
+            frame_idx = parsed_idx if parsed_idx is not None else row_idx
+            img_name = Path(rel_img).name if rel_img else f"img{frame_idx:06d}.png"
+            candidate_img = table_path.parent / img_name
+            if not candidate_img.is_file() and rel_img:
+                alt = search_root.parent / rel_img
+                if alt.is_file():
+                    candidate_img = alt
+
+            img_w: Optional[int] = None
+            img_h: Optional[int] = None
+            src_img_str: Optional[str] = None
+            if candidate_img.is_file():
+                src_img_str = str(candidate_img)
+                try:
+                    from PIL import Image
+
+                    with Image.open(candidate_img) as im:
+                        img_w, img_h = int(im.width), int(im.height)
+                except Exception:
+                    pass
+
+            frame_instances: List[PoseInstance] = []
+            for track_idx, ind in enumerate(instance_order):
+                kps: Dict[str, PosePoint] = {}
+                for bp in table.bodyparts:
+                    coord_cols = col_lookup.get((ind, bp))
+                    if not coord_cols or "x" not in coord_cols or "y" not in coord_cols:
+                        continue
+                    x_val = float(col_arrays[coord_cols["x"]][row_idx])
+                    y_val = float(col_arrays[coord_cols["y"]][row_idx])
+                    if not (math.isfinite(x_val) and math.isfinite(y_val)):
+                        continue
+                    kps[bp] = PosePoint(
+                        x=x_val,
+                        y=y_val,
+                        score=None,
+                        visibility=int(KeypointVisibility.VISIBLE),
+                    )
+                if kps:
+                    frame_instances.append(
+                        PoseInstance(
+                            instance_name=ind,
+                            keypoints=kps,
+                            track_id=track_idx if table.multi_animal else None,
+                            score=None,
+                            is_predicted=False,
+                        )
+                    )
+            frames.append(
+                PoseFrame(
+                    frame_index=int(frame_idx),
+                    instances=frame_instances,
+                    image_path=img_name,
+                    source_image_path=src_img_str,
+                    image_width=img_w,
+                    image_height=img_h,
+                    video_index=vid_idx,
+                    video_name=video_folder_name,
+                )
+            )
+
+    edges = list(cfg.skeleton) if cfg and cfg.skeleton else []
+    return PoseDataset(
+        frames=frames,
+        keypoints=all_keypoints,
+        edges=edges,
+        instances=all_instances,
+        scorer=scorer_name,
+        multi_animal=any_multi,
+        source_format="deeplabcut_training",
+        metadata={
+            "source_root": str(root),
+            "table_files": [str(p) for p in table_files],
+            "config_path": str(cfg.config_path) if cfg and cfg.config_path else None,
+        },
+        warnings=warnings,
+    )

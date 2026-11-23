@@ -661,6 +661,140 @@ class CanvasOverlayMixin(BehaviorOverlayMixin):
     def showPoseBBoxes(self) -> bool:
         return bool(self._show_pose_bboxes)
 
+    def setPoseColorMode(self, mode: str) -> None:
+        norm = str(mode or "instance").strip().lower()
+        if norm not in {"instance", "bodypart", "confidence"}:
+            norm = "instance"
+        self._pose_color_mode = norm
+        self.update()
+
+    def poseColorMode(self) -> str:
+        return str(getattr(self, "_pose_color_mode", "instance") or "instance")
+
+    def setPoseConfidenceThreshold(self, threshold: float) -> None:
+        self._pose_confidence_threshold = max(0.0, min(1.0, float(threshold)))
+        self.update()
+
+    def poseConfidenceThreshold(self) -> float:
+        return float(getattr(self, "_pose_confidence_threshold", 0.0) or 0.0)
+
+    def setShowPoseLabels(self, enabled: bool) -> None:
+        self._show_pose_labels = bool(enabled)
+        try:
+            from annolid.gui.shape import Shape
+
+            Shape.show_pose_labels = self._show_pose_labels
+        except Exception:
+            pass
+        self.update()
+
+    def showPoseLabels(self) -> bool:
+        return bool(getattr(self, "_show_pose_labels", False))
+
+    def poseInstanceShapesFor(self, seed_shape) -> list:
+        """Return all visible point shapes belonging to the same pose instance as ``seed_shape``."""
+        if str(getattr(seed_shape, "shape_type", "") or "").lower() != "point":
+            return []
+        candidate_labels = {
+            str(getattr(s, "label", "") or "").strip()
+            for s in self.shapes
+            if str(getattr(s, "shape_type", "") or "").lower() != "point"
+        }
+        candidate_labels.discard("")
+        known_kps_lower = self._known_pose_keypoints_lower()
+        resolved_seed = self._resolve_pose_point_shape(
+            seed_shape, candidate_labels, known_kps_lower
+        )
+        if resolved_seed is None:
+            return [seed_shape]
+        target_bucket = resolved_seed[0]
+        matched = []
+        for s in self.shapes:
+            res = self._resolve_pose_point_shape(s, candidate_labels, known_kps_lower)
+            if res is not None and res[0] == target_bucket:
+                matched.append(s)
+        return matched or [seed_shape]
+
+    def selectPoseInstanceShapes(self, seed_shape=None) -> list:
+        """Select all keypoints belonging to the pose instance of ``seed_shape``."""
+        target = seed_shape
+        if target is None:
+            selected = list(getattr(self, "selectedShapes", []) or [])
+            for s in selected:
+                if str(getattr(s, "shape_type", "") or "").lower() == "point":
+                    target = s
+                    break
+        if target is None:
+            return []
+        inst_shapes = self.poseInstanceShapesFor(target)
+        if inst_shapes and hasattr(self, "selectShapes"):
+            self.selectShapes(inst_shapes)
+        return inst_shapes
+
+    def transformSelectedPoseShapes(
+        self,
+        *,
+        dx: float = 0.0,
+        dy: float = 0.0,
+        angle_deg: float = 0.0,
+        scale: float = 1.0,
+    ) -> int:
+        """Apply rigid/similarity transform (translate, rotate, scale) around centroid of selected keypoints."""
+        import math
+
+        selected = [
+            s
+            for s in (getattr(self, "selectedShapes", []) or [])
+            if str(getattr(s, "shape_type", "") or "").lower() == "point"
+            and getattr(s, "points", None)
+            and not (callable(getattr(s, "is_locked", None)) and s.is_locked())
+        ]
+        if not selected:
+            return 0
+
+        cx = sum(float(s.points[0].x()) for s in selected) / float(len(selected))
+        cy = sum(float(s.points[0].y()) for s in selected) / float(len(selected))
+        rad = math.radians(float(angle_deg))
+        cos_a = math.cos(rad) * float(scale)
+        sin_a = math.sin(rad) * float(scale)
+
+        clamp_bounds = not bool(getattr(self, "_allow_points_outside_image", False))
+        pixmap = getattr(self, "pixmap", None)
+        max_w = (
+            float(pixmap.width() - 1)
+            if (pixmap is not None and not pixmap.isNull())
+            else None
+        )
+        max_h = (
+            float(pixmap.height() - 1)
+            if (pixmap is not None and not pixmap.isNull())
+            else None
+        )
+
+        if hasattr(self, "storeShapes"):
+            try:
+                self.storeShapes()
+            except Exception:
+                pass
+
+        for s in selected:
+            px = float(s.points[0].x()) - cx
+            py = float(s.points[0].y()) - cy
+            nx = cx + cos_a * px - sin_a * py + float(dx)
+            ny = cy + sin_a * px + cos_a * py + float(dy)
+            if clamp_bounds and max_w is not None and max_h is not None:
+                nx = max(0.0, min(max_w, nx))
+                ny = max(0.0, min(max_h, ny))
+            s.points[0] = QtCore.QPointF(nx, ny)
+
+        if hasattr(self, "shapeMoved"):
+            try:
+                self.shapeMoved.emit()
+            except Exception:
+                pass
+        self.update()
+        return len(selected)
+
     @staticmethod
     def _is_pose_bbox_shape(shape) -> bool:
         if str(getattr(shape, "shape_type", "")).lower() != "rectangle":
@@ -917,7 +1051,7 @@ class CanvasOverlayMixin(BehaviorOverlayMixin):
 
         buckets: dict[
             tuple[str, str | None],
-            dict[str, tuple[QtCore.QPointF, int, bool]],
+            dict[str, tuple[QtCore.QPointF, int, bool, float | None]],
         ] = {}
         buckets_by_inst_name: dict[str, list[tuple[str, str | None]]] = {}
 
@@ -929,6 +1063,15 @@ class CanvasOverlayMixin(BehaviorOverlayMixin):
                 continue
             bucket_key, inst_label, kp_label, vis, highlighted = resolved
             point = shape.points[0]
+            pt_score: float | None = None
+            other = getattr(shape, "other_data", None)
+            if isinstance(other, dict) and other.get("score") is not None:
+                try:
+                    sf = float(other.get("score"))
+                    if sf == sf:
+                        pt_score = sf
+                except (TypeError, ValueError):
+                    pt_score = None
             if bucket_key not in buckets:
                 buckets[bucket_key] = {}
                 buckets_by_inst_name.setdefault(inst_label, []).append(bucket_key)
@@ -936,11 +1079,12 @@ class CanvasOverlayMixin(BehaviorOverlayMixin):
             # Prefer visible over occluded if duplicate keypoint labels exist in same bucket.
             existing = kp_map.get(kp_label)
             if existing is None or (existing[1] < vis):
-                kp_map[kp_label] = (point, vis, highlighted)
+                kp_map[kp_label] = (point, vis, highlighted, pt_score)
             elif highlighted and not existing[2]:
-                kp_map[kp_label] = (existing[0], existing[1], True)
+                kp_map[kp_label] = (existing[0], existing[1], True, existing[3])
 
         if not buckets:
+            self._last_pose_edge_meta = []
             return []
 
         schema_instances = [inst for inst in (schema.instances or []) if inst]
@@ -957,6 +1101,8 @@ class CanvasOverlayMixin(BehaviorOverlayMixin):
                 ordered_buckets.append(bkey)
 
         bucket_to_index = {bkey: idx for idx, bkey in enumerate(ordered_buckets)}
+        kp_order = list(getattr(schema, "keypoints", ()) or ())
+        kp_to_idx = {name: i for i, name in enumerate(kp_order)}
         segments: list[
             tuple[
                 QtCore.QPointF,
@@ -967,6 +1113,7 @@ class CanvasOverlayMixin(BehaviorOverlayMixin):
                 bool,
             ]
         ] = []
+        edge_meta: list[tuple[int, float | None]] = []
         drawn_per_bucket: set[tuple[tuple[str, str | None], str, str]] = set()
 
         def _append_edge(bkey: tuple[str, str | None], kp_a: str, kp_b: str) -> None:
@@ -989,9 +1136,12 @@ class CanvasOverlayMixin(BehaviorOverlayMixin):
                 KeypointVisibility.OCCLUDED
             )
             highlighted = bool(rec_a[2] or rec_b[2])
+            scores = [s for s in (rec_a[3], rec_b[3]) if s is not None]
+            min_score = min(scores) if scores else None
             segments.append(
                 (rec_a[0], rec_b[0], bkey, bucket_to_index[bkey], occluded, highlighted)
             )
+            edge_meta.append((kp_to_idx.get(ca, len(edge_meta)), min_score))
 
         sep = getattr(schema, "instance_separator", "_") or "_"
         for a, b in schema.edges:
@@ -1022,6 +1172,7 @@ class CanvasOverlayMixin(BehaviorOverlayMixin):
             for bkey in ordered_buckets:
                 _append_edge(bkey, kp_a, kp_b)
 
+        self._last_pose_edge_meta = edge_meta
         return segments
 
     def _draw_pose_edges(self, painter: QtGui.QPainter) -> None:
@@ -1029,6 +1180,8 @@ class CanvasOverlayMixin(BehaviorOverlayMixin):
         if not segments:
             return
 
+        edge_meta = list(getattr(self, "_last_pose_edge_meta", ()) or ())
+        color_mode = str(getattr(self, "_pose_color_mode", "instance") or "instance")
         total_instances = len({seg[2] for seg in segments})
         scale = max(float(getattr(self, "scale", 1.0) or 1.0), 1e-3)
         base_edge_width = max(0.75, 2.5 / scale)
@@ -1036,7 +1189,9 @@ class CanvasOverlayMixin(BehaviorOverlayMixin):
 
         painter.save()
         try:
-            for p1, p2, _bkey, inst_idx, occluded, highlighted in segments:
+            for seg_i, (p1, p2, _bkey, inst_idx, occluded, highlighted) in enumerate(
+                segments
+            ):
                 edge_width = base_edge_width + (0.9 / scale if highlighted else 0.0)
                 shadow_width = edge_width + base_shadow_pad
 
@@ -1048,12 +1203,43 @@ class CanvasOverlayMixin(BehaviorOverlayMixin):
                 shadow_pen.setCapStyle(QtCore.Qt.RoundCap)
                 shadow_pen.setJoinStyle(QtCore.Qt.RoundJoin)
 
-                edge_color = self._pose_instance_color(
-                    inst_idx,
-                    total_instances,
-                    occluded=occluded,
-                    highlighted=highlighted,
-                )
+                if color_mode == "bodypart" and seg_i < len(edge_meta):
+                    kp_idx, _sc = edge_meta[seg_i]
+                    edge_color = self._pose_instance_color(
+                        kp_idx,
+                        max(2, len(segments)),
+                        occluded=occluded,
+                        highlighted=highlighted,
+                    )
+                elif color_mode == "confidence" and seg_i < len(edge_meta):
+                    _kp_idx, sc = edge_meta[seg_i]
+                    if sc is None:
+                        edge_color = QtGui.QColor(
+                            56, 189, 248, 170 if occluded else 230
+                        )
+                    elif sc < 0.5:
+                        t = max(0.0, min(1.0, sc / 0.5))
+                        edge_color = QtGui.QColor(
+                            int(round(239 + (245 - 239) * t)),
+                            int(round(68 + (158 - 68) * t)),
+                            int(round(68 + (11 - 68) * t)),
+                            170 if occluded else 235,
+                        )
+                    else:
+                        t = max(0.0, min(1.0, (sc - 0.5) / 0.5))
+                        edge_color = QtGui.QColor(
+                            int(round(245 + (34 - 245) * t)),
+                            int(round(158 + (197 - 158) * t)),
+                            int(round(11 + (94 - 11) * t)),
+                            170 if occluded else 235,
+                        )
+                else:
+                    edge_color = self._pose_instance_color(
+                        inst_idx,
+                        total_instances,
+                        occluded=occluded,
+                        highlighted=highlighted,
+                    )
                 edge_pen = QtGui.QPen(edge_color)
                 edge_pen.setWidthF(edge_width)
                 edge_pen.setCapStyle(QtCore.Qt.RoundCap)

@@ -101,6 +101,7 @@ class DinoKPSEGEvalAccumulator:
         self.instances_total = 0
         self.keypoints_visible_total = 0
         self.error_sum = 0.0
+        self.errors_px: List[float] = []
         self.pck_counts = {thr: 0 for thr in self.thresholds_px}
 
         self.swap_pairs_total = 0
@@ -160,6 +161,7 @@ class DinoKPSEGEvalAccumulator:
 
             self.keypoints_visible_total += 1
             self.error_sum += float(err)
+            self.errors_px.append(float(err))
             for thr in self.thresholds_px:
                 if err <= thr:
                     self.pck_counts[thr] += 1
@@ -173,10 +175,111 @@ class DinoKPSEGEvalAccumulator:
                 if err <= thr:
                     kp_stats.pck_counts[thr] += 1
 
+    def update_multi_instance(
+        self,
+        *,
+        pred_instances_xy: Sequence[Sequence[Tuple[float, float]]],
+        gt_instances: Sequence[np.ndarray],
+        image_hw: Tuple[int, int],
+        lr_pairs: Sequence[Tuple[int, int]],
+    ) -> None:
+        """Evaluate multiple predicted instances against GT instances via Hungarian assignment."""
+        self.images_total += 1
+        if not gt_instances:
+            return
+        self.images_used += 1
+        self.instances_total += int(len(gt_instances))
+
+        height, width = int(image_hw[0]), int(image_hw[1])
+        if width <= 0 or height <= 0 or not pred_instances_xy:
+            return
+
+        n_gt = len(gt_instances)
+        n_pred = len(pred_instances_xy)
+        cost = np.full((n_gt, n_pred), 1e6, dtype=np.float64)
+        for gi, gt in enumerate(gt_instances):
+            for pi, pred_xy in enumerate(pred_instances_xy):
+                dists: List[float] = []
+                for kpt_idx in range(
+                    min(self.kpt_count, len(pred_xy), int(gt.shape[0]))
+                ):
+                    cands = _collect_gt_candidates(
+                        [gt], kpt_idx=kpt_idx, image_hw=(height, width)
+                    )
+                    if not cands:
+                        continue
+                    err = _min_error_px(pred_xy[kpt_idx], cands)
+                    if err is not None:
+                        dists.append(float(err))
+                if dists:
+                    cost[gi, pi] = float(np.mean(dists))
+
+        try:
+            from scipy.optimize import linear_sum_assignment
+
+            row_ind, col_ind = linear_sum_assignment(cost)
+            pairs = list(zip(row_ind.tolist(), col_ind.tolist()))
+        except Exception:
+            used_p: set[int] = set()
+            pairs = []
+            for gi in range(n_gt):
+                best_pi = int(np.argmin(cost[gi]))
+                if best_pi not in used_p and cost[gi, best_pi] < 1e5:
+                    used_p.add(best_pi)
+                    pairs.append((gi, best_pi))
+
+        for gi, pi in pairs:
+            if cost[gi, pi] >= 1e5:
+                continue
+            gt = gt_instances[gi]
+            pred_xy = pred_instances_xy[pi]
+            if lr_pairs:
+                swaps, total = _count_swaps(
+                    pred_xy=pred_xy,
+                    gt_xy=gt,
+                    image_hw=(height, width),
+                    lr_pairs=lr_pairs,
+                )
+                self.swap_pairs_total += total
+                self.swap_pairs_swapped += swaps
+
+            for kpt_idx in range(min(self.kpt_count, len(pred_xy))):
+                cands = _collect_gt_candidates(
+                    [gt], kpt_idx=kpt_idx, image_hw=(height, width)
+                )
+                if not cands:
+                    continue
+                err = _min_error_px(pred_xy[kpt_idx], cands)
+                if err is None:
+                    continue
+                self.keypoints_visible_total += 1
+                self.error_sum += float(err)
+                self.errors_px.append(float(err))
+                for thr in self.thresholds_px:
+                    if err <= thr:
+                        self.pck_counts[thr] += 1
+                kp_stats = self.keypoint_stats.get(kpt_idx)
+                if kp_stats is not None:
+                    kp_stats.count += 1
+                    kp_stats.error_sum += float(err)
+                    for thr in self.thresholds_px:
+                        if err <= thr:
+                            kp_stats.pck_counts[thr] += 1
+
     def summary(self, *, include_per_keypoint: bool = False) -> Dict[str, object]:
         mean_error = None
+        rmse_error = None
+        median_error = None
+        p90_error = None
+        p95_error = None
         if self.keypoints_visible_total > 0:
             mean_error = self.error_sum / float(self.keypoints_visible_total)
+        if self.errors_px:
+            arr = np.asarray(self.errors_px, dtype=np.float64)
+            rmse_error = float(np.sqrt(np.mean(arr * arr)))
+            median_error = float(np.percentile(arr, 50))
+            p90_error = float(np.percentile(arr, 90))
+            p95_error = float(np.percentile(arr, 95))
 
         pck = {
             str(thr): (
@@ -198,6 +301,10 @@ class DinoKPSEGEvalAccumulator:
             "keypoints_visible_total": self.keypoints_visible_total,
             "thresholds_px": [float(v) for v in self.thresholds_px],
             "mean_error_px": mean_error,
+            "rmse_px": rmse_error,
+            "median_error_px": median_error,
+            "p90_error_px": p90_error,
+            "p95_error_px": p95_error,
             "pck": pck,
             "pck_counts": {
                 str(thr): int(self.pck_counts[thr]) for thr in self.thresholds_px
@@ -661,17 +768,41 @@ def _predict_keypoints(
     probs: torch.Tensor,
     *,
     patch_size: int,
+    subpixel_refine: bool = True,
 ) -> List[Tuple[float, float]]:
     if probs.ndim != 3:
         raise ValueError("Expected probs in KHW format")
-    _, w_p = int(probs.shape[1]), int(probs.shape[2])
-    flat = probs.view(int(probs.shape[0]), -1)
+    k, h_p, w_p = int(probs.shape[0]), int(probs.shape[1]), int(probs.shape[2])
+    flat = probs.view(k, -1)
     best_idx = torch.argmax(flat, dim=1)
-    y = (best_idx // max(1, int(w_p))).to(dtype=probs.dtype)
-    x = (best_idx % max(1, int(w_p))).to(dtype=probs.dtype)
+    y = (best_idx // max(1, w_p)).to(dtype=probs.dtype)
+    x = (best_idx % max(1, w_p)).to(dtype=probs.dtype)
+    dx = torch.zeros_like(x)
+    dy = torch.zeros_like(y)
+    if subpixel_refine and h_p >= 3 and w_p >= 3:
+        for ki in range(k):
+            xc = int(x[ki].item())
+            yc = int(y[ki].item())
+            p = probs[ki]
+            if 0 < xc < w_p - 1:
+                left = float(p[yc, xc - 1].item())
+                center = float(p[yc, xc].item())
+                right = float(p[yc, xc + 1].item())
+                if left > 0.0 and right > 0.0 and max(left, right) >= 0.01 * center:
+                    denom_x = 2.0 * (2.0 * center - left - right)
+                    if abs(denom_x) > 1e-6:
+                        dx[ki] = max(-0.5, min(0.5, (right - left) / denom_x))
+            if 0 < yc < h_p - 1:
+                top = float(p[yc - 1, xc].item())
+                center = float(p[yc, xc].item())
+                bottom = float(p[yc + 1, xc].item())
+                if top > 0.0 and bottom > 0.0 and max(top, bottom) >= 0.01 * center:
+                    denom_y = 2.0 * (2.0 * center - top - bottom)
+                    if abs(denom_y) > 1e-6:
+                        dy[ki] = max(-0.5, min(0.5, (bottom - top) / denom_y))
     scale = float(patch_size)
-    x = (x + 0.5) * scale
-    y = (y + 0.5) * scale
+    x = (x + dx + 0.5) * scale
+    y = (y + dy + 0.5) * scale
     return [(float(x_i), float(y_i)) for x_i, y_i in zip(x.tolist(), y.tolist())]
 
 
