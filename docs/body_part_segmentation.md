@@ -209,3 +209,20 @@ To protect LabelMe compatibility, Qt flag editors, and whole-animal post-process
      - `body_part_missing_parent` (warning when a body-part polygon references a `parent_instance` that is absent on that frame).
    - **Identity Repair & Governor (`temporal_identity_repair`, `identity_governor`)**: Ignores child body-part shapes when computing whole-animal trajectories and swap repairs, while `detect_centroid_assignment_ambiguity` partitions whole-animal vs. body-part roles so intra-animal posture turns never trigger false swap pauses.
    - **Zone & Social Postprocessing (`GenericZoneEngine`, `TrackingResultsAnalyzer`, `compute_pairwise_centroid_summary`)**: Excludes `<instance>:<part>` rows from conspecific animal counts, honors `anchor_part` (e.g. `anchor_part="head"`) across assay profiles with per-frame fallback to whole-body or aggregated `<instance>:*` body-part centroids on body-part-only multi-animal CSVs, and reports both per-frame minimum-distance nearest-neighbor metrics (`mean_nearest_neighbor_distance_px`) and all-conspecifics group dispersion metrics (`mean_pairwise_distance_px`).
+
+---
+
+## Body-Part Segmentation Datasets, Geometric Part-to-Pose Decoding, and Compact Temporal Heads
+
+Annolid also provides modular Python building blocks for training chirality-free body-part segmentation models and decoding anatomical keypoints deterministically:
+
+- **Multi-Format Dataset Builder (`annolid.data.body_part_dataset`)**:
+  - Converts pixel-exact `(track_id, fine_part_id, coarse_part_id)` maps into synchronized **YOLO-Seg** (7-class hierarchical polygons with `overlap_mask=False`), **COCO-Seg**, and packed **6-class semantic part masks** (`0=bg, 1=head, 2=snout, 3=ear, 4=torso, 5=tail`).
+  - Includes `expand_snout_muzzle_mask(...)` to expand tiny top-down rhinarium tips (2–4 px) into a scale-adaptive anterior muzzle cap with an occluded-tip fallback.
+- **Scale-Invariant Geometric Part-to-Pose Solver (`annolid.postprocessing.body_part_to_pose`)**:
+  - `extract_pose_from_part_masks(...)` and `group_part_detections_to_pose_frame(...)` derive CalMS21/MARS 7-keypoint mouse skeletons with analytic spine-axis chirality (`chirality="calms21"` or `"anatomical"`), headstage-split fragment merging, and scale-relative boundary thresholds ($s_p = \max(24, \sqrt{|M_p|})$).
+  - Setting `dedup_parents=False` supports arbitrary $N \ge 3$ same-class multi-animal scenes with automatic unique instance naming (`mouse_1`, `mouse_2`, …) and fragment merging.
+  - `extract_insect_pose_from_part_masks(...)` decodes chirality-free 3-tagma insect masks (`head`, `thorax`, `abdomen`) into 5 ordered anatomical landmarks (`head_tip`, `neck_joint`, `thorax_center`, `thorax_abdomen_joint`, `abdomen_tip`).
+- **Compact Temporal VOS Decoders (`annolid.segmentation.cutie_vos.model`)**:
+  - `CutieBodyPartSegHead` (`cutie_body_part_seg.py`, ~284K params / 580 KB fp16) decodes dense per-object 6-class semantic body-part masks from frozen compressed Cutie decoder features (`CutieDecoderFeatureTap`) with warped previous-frame priors and weighted CE + Soft Dice loss.
+  - `CutiePoseHead` (`cutie_pose.py`, ~285K params / 582 KB fp16) provides a matched-capacity temporal DSNT keypoint head on the same frozen Cutie backbone.
