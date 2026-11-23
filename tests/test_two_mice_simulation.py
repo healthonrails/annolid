@@ -400,10 +400,20 @@ def test_mouse_model_fur_options_and_in_place_anatomy_rebuild():
         const defaultCounts = defaultCoat.children.map(layer => layer.count);
         const explicitCounts = explicitDefaultCoat.children.map(layer => layer.count);
         const underOnlyCounts = underOnly.children.map(layer => layer.count);
+        const hairlessCoat = model.generateMultiLayerFur(
+          model.deformBody,
+          0.0,
+          '#f0c4bc',
+          false
+        );
+        const hairlessMat = model.createCoatMaterial('#f0c4bc', '#efc0b8', 0.0, {});
+        const hasAlbinoEyeMap = Boolean(model.albinoEyeIrisMap?.isTexture);
 
         model.disposeSubject(defaultCoat);
         model.disposeSubject(explicitDefaultCoat);
         model.disposeSubject(underOnly);
+        model.disposeSubject(hairlessCoat);
+        hairlessMat.dispose();
         model.disposeSharedResources();
 
         console.log(JSON.stringify({
@@ -413,6 +423,9 @@ def test_mouse_model_fur_options_and_in_place_anatomy_rebuild():
           defaultCounts,
           explicitCounts,
           underOnlyCounts,
+          hairlessLayerCount: hairlessCoat.children.length,
+          hairlessHasRoughnessMap: Boolean(hairlessMat.roughnessMap),
+          hasAlbinoEyeMap,
         }));
         """,
         include_simulation=False,
@@ -422,6 +435,15 @@ def test_mouse_model_fur_options_and_in_place_anatomy_rebuild():
     assert result["sameBufferRef"] is True
     assert result["defaultCounts"] == result["explicitCounts"] == [3800, 2200]
     assert result["underOnlyCounts"] == [7600]
+    assert result["hairlessLayerCount"] == 0
+    assert result["hairlessHasRoughnessMap"] is False
+    assert result["hasAlbinoEyeMap"] is True
+
+    scene_js = (
+        REPO_ROOT / "annolid" / "gui" / "assets" / "threejs" / "two_mice_scene.js"
+    ).read_text(encoding="utf-8")
+    assert "params.furDensity ?? 0.85" in scene_js
+    assert "params.furDensity || 0.85" not in scene_js
 
 
 @pytest.mark.parametrize(

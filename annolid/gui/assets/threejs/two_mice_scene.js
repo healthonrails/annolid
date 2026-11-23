@@ -49,6 +49,29 @@ const DATASET_LIGHTING = datasetQuery.get('lighting') || '';
 const DATASET_OCCLUDER = datasetQuery.get('occluder') || '';
 const DATASET_ARENA = datasetQuery.get('arena') || '';
 const DATASET_HEADSTAGE = datasetQuery.get('headstage') || '';
+const DATASET_HEADSTAGE_STYLE = datasetQuery.get('headstage_style') || '';
+const DATASET_HEADSTAGE_SCALE = THREE.MathUtils.clamp(
+  Number.parseFloat(datasetQuery.get('headstage_scale') || '1') || 1.0,
+  0.5,
+  2.4
+);
+const DATASET_BODY_SCALE = THREE.MathUtils.clamp(
+  Number.parseFloat(datasetQuery.get('body_scale') || '1') || 1.0,
+  0.75,
+  1.35
+);
+const DATASET_EAR_SPLAY = THREE.MathUtils.clamp(
+  Number.parseFloat(datasetQuery.get('ear_splay') || '1') || 1.0,
+  0.75,
+  1.65
+);
+const DATASET_TETHER_ANCHOR = datasetQuery.get('tether_anchor') || '';
+const DATASET_POSE_SCHEMA = datasetQuery.get('pose_schema') || '';
+const DATASET_SUBJECT_COUNT = THREE.MathUtils.clamp(
+  Number.parseInt(datasetQuery.get('subjects') || '2', 10) || 2,
+  2,
+  6
+);
 const ANATOMY_QA_VIEWS = new Set([
   'ears', 'ears-front', 'torso-side', 'torso-front',
   'head-side', 'head-three-quarter', 'head-top', 'mouth-front',
@@ -121,6 +144,7 @@ const {
   tailAlbedoMap,
   tailRoughnessMap,
   tailNormalMap,
+  albinoEyeIrisMap,
   earNormalMap,
   earRoughnessMap,
   earAlbedoMap,
@@ -345,13 +369,14 @@ function getMinimumMouseClearance(subjects) {
 
 function tailSurfaceRadiusAt(p, thickness = 1.0) {
   const fraction = THREE.MathUtils.clamp(p, 0, 1);
-  // Organic murine caudal profile: muscular sacral root, gradual supple shaft
-  // taper, and a softly rounded fleshy distal tip instead of a needle spike.
+  // Organic murine caudal profile calibrated to top-down C57BL/6 & BALB/c recordings:
+  // fuller fleshy sacral root emerging cleanly from the pear-shaped rump, gradual
+  // supple shaft taper, and a softly rounded distal tip instead of a needle spike.
   const taperAmount = THREE.MathUtils.clamp(PROP.tailTaper * 0.84, 0.25, 0.82);
-  const shaftTaper = Math.max(0.18, 1.0 - Math.pow(fraction, 0.88) * taperAmount);
-  const rootBlend = 1.0 - THREE.MathUtils.smoothstep(fraction, 0.0, 0.24);
-  const tipRound = 1.0 - THREE.MathUtils.smoothstep(fraction, 0.92, 1.0) * 0.34;
-  return Math.max(0.012, 0.084 * shaftTaper * (1.0 + rootBlend * 0.44) * tipRound * thickness);
+  const shaftTaper = Math.max(0.20, 1.0 - Math.pow(fraction, 0.84) * taperAmount);
+  const rootBlend = 1.0 - THREE.MathUtils.smoothstep(fraction, 0.0, 0.26);
+  const tipRound = 1.0 - THREE.MathUtils.smoothstep(fraction, 0.92, 1.0) * 0.30;
+  return Math.max(0.017, 0.106 * shaftTaper * (1.0 + rootBlend * 0.56) * tipRound * thickness);
 }
 
 function createDynamicTailTubeGeometry(segmentCount, radialSegments = 14) {
@@ -876,7 +901,7 @@ class ExpertMouse {
     const skinColor = params.skinColor;
     const interactiveDensityScale = (!DATASET_CAPTURE && IS_SOFTWARE_WEBGL) ? 0.35 : 1.0;
     const density = FUR_DETAIL[params.furDetailLevel || 'Med']
-      * (params.furDensity || 0.85)
+      * (params.furDensity ?? 0.85)
       * interactiveDensityScale;
     const chonk = params.chonkiness;
     const earScaleByHead = THREE.MathUtils.clamp(0.9 + (params.headSize - 1.0) * 0.18, 0.82, 1.08);
@@ -1040,16 +1065,18 @@ class ExpertMouse {
     const cervicalCore = new THREE.Mesh(cervicalCoreGeo, this.surfaceMat);
     cervicalCore.name = 'cervical-solid-core';
     cervicalCore.castShadow = false;
-    cervicalCore.receiveShadow = true;
+    // Prevent bodyMesh self-shadowing from drawing a sharp dark seam line across the
+    // shoulder-to-neck intersection on pale and hairless coats.
+    cervicalCore.receiveShadow = false;
     neckMesh.add(cervicalCore);
     // Neck coat: dense two-layer pelage bridging head occiput and shoulders
-    // cleanly so no smooth collar stripe appears in side or oblique views.
+    // seamlessly so no bare shading seam appears between skull and withers.
     const cervicalCoat = generateMultiLayerFur(
       deformCervicalCore,
-      density * 0.24,
+      density * 0.42,
       furColor,
       false,
-      { ...params, furLength: (params.furLength ?? 1.0) * 0.96 }
+      { ...params, furLength: (params.furLength ?? 1.0) * 1.04 }
     );
     const [cervicalUndercoat = null, cervicalGuardHairs = null] = cervicalCoat.children;
     if (cervicalUndercoat) cervicalUndercoat.name = 'cervical-undercoat';
@@ -1114,10 +1141,10 @@ class ExpertMouse {
     this.head.name = 'cranium-and-muzzle';
     this.head.position.set(0, 0.14 * chonk, PROP.bodyLength * 0.20);
     this.headCenterOffset = this.head.position.clone();
-    // The head overlaps the cervical volume; casting into that overlap
-    // creates an artificial dark collar around the posterior skull.
+    // The head overlaps the cervical volume; casting or receiving self-shadows
+    // across that intersection creates an artificial dark crescent behind the ear.
     this.head.castShadow = false;
-    this.head.receiveShadow = true;
+    this.head.receiveShadow = false;
     this.headGroup.add(this.head);
     this.headFur = generateMultiLayerFur(deformHead, density, furColor, true, params);
     this.headFur.name = 'head-fur-coat';
@@ -1209,15 +1236,15 @@ class ExpertMouse {
     this.head.add(this.mouthGroup);
 
     const oralCavityMat = new THREE.MeshStandardMaterial({
-      color: skinHSL.l > 0.5 ? 0x642b33 : 0x261216,
+      color: skinHSL.l > 0.5 ? 0x9c626a : 0x261216,
       roughness: 0.88,
       metalness: 0.0,
     });
     const oralCavityGeo = new THREE.SphereGeometry(0.032, 12, 10);
     this.mouth = new THREE.Mesh(oralCavityGeo, oralCavityMat);
     this.mouth.name = 'oral-cleft-recess';
-    this.mouth.scale.set(1.06, 0.46, 0.34);
-    this.mouth.position.set(0, -0.004, -0.007);
+    this.mouth.scale.set(1.00, 0.42, 0.30);
+    this.mouth.position.set(0, -0.005, -0.013);
     this.mouth.castShadow = false;
     this.mouthGroup.add(this.mouth);
 
@@ -1294,24 +1321,26 @@ class ExpertMouse {
       });
       return geo;
     };
-    const upperIncisorGeo = buildIncisorGeo(0.0112, 0.027, 0.010, 1);
+    const upperIncisorGeo = buildIncisorGeo(0.0094, 0.022, 0.0085, 1);
     this.upperIncisors = [1, -1].map(s => {
       const tooth = new THREE.Mesh(upperIncisorGeo, enamelMat);
       tooth.name = s > 0 ? 'left-upper-incisor' : 'right-upper-incisor';
-      tooth.position.set(s * 0.0068, 0.004, 0.0005);
+      // Tucked organically behind the closed split upper lip (sub-terminal murine mouth)
+      // so resting front views stay photorealistic without exposed cartoon buck-teeth.
+      tooth.position.set(s * 0.0058, 0.002, -0.0095);
       tooth.rotation.z = -s * 0.04;
-      tooth.rotation.x = 0.10;
+      tooth.rotation.x = 0.14;
       tooth.castShadow = false;
       this.mouthGroup.add(tooth);
       return tooth;
     });
-    const lowerIncisorGeo = buildIncisorGeo(0.0086, 0.019, 0.0075, -1);
+    const lowerIncisorGeo = buildIncisorGeo(0.0076, 0.017, 0.0068, -1);
     this.lowerIncisors = [1, -1].map(s => {
       const tooth = new THREE.Mesh(lowerIncisorGeo, enamelMat);
       tooth.name = s > 0 ? 'left-lower-incisor' : 'right-lower-incisor';
-      tooth.position.set(s * 0.0054, -0.010, -0.0032);
+      tooth.position.set(s * 0.0048, -0.011, -0.0125);
       tooth.rotation.z = s * 0.04;
-      tooth.rotation.x = -0.14;
+      tooth.rotation.x = -0.16;
       tooth.castShadow = false;
       this.mouthGroup.add(tooth);
       return tooth;
@@ -1425,6 +1454,18 @@ class ExpertMouse {
 
     // Store ear refs for micro-motion and live GUI scaling
     this.earL = earL; this.earR = earR;
+    if (Math.abs(DATASET_EAR_SPLAY - 1.0) > 1e-3) {
+      const latShift = (DATASET_EAR_SPLAY - 1.0) * 0.42;
+      earL.position.x += latShift;
+      earR.position.x -= latShift;
+      earL.position.z -= (DATASET_EAR_SPLAY - 1.0) * 0.14;
+      earR.position.z -= (DATASET_EAR_SPLAY - 1.0) * 0.14;
+      earL.rotation.z -= (DATASET_EAR_SPLAY - 1.0) * 0.28;
+      earR.rotation.z += (DATASET_EAR_SPLAY - 1.0) * 0.28;
+      const earBoost = 1.0 + (DATASET_EAR_SPLAY - 1.0) * 0.45;
+      earL.scale.multiplyScalar(earBoost);
+      earR.scale.multiplyScalar(earBoost);
+    }
     this.earMicro.baseRotL = earL.rotation.clone();
     this.earMicro.baseRotR = earR.rotation.clone();
     this.spawnEarSize = params.earSize || 0.69;
@@ -1437,36 +1478,49 @@ class ExpertMouse {
     subjectEyeMat.attenuationColor = subjectEyeMat.color.clone();
     const eyeHsl = {};
     subjectEyeMat.color.getHSL(eyeHsl);
-    if (eyeHsl.l > 0.14) {
-      // Albino ruby-garnet eye: soft internal retinal vascular luminosity
-      subjectEyeMat.emissive = subjectEyeMat.color.clone().multiplyScalar(0.36);
-      subjectEyeMat.emissiveIntensity = 0.42;
-      subjectEyeMat.transmission = 0.14;
-      subjectEyeMat.thickness = 0.18;
+    if (strain.isAlbinoEye || eyeHsl.l > 0.14) {
+      // Authentic BALB/c & Nude albino eye: translucent rose-ruby retinal pupil core
+      // framed by deeper vascular garnet-claret limbus + clean wet corneal gloss.
+      subjectEyeMat.color.setHex(0xffffff);
+      subjectEyeMat.map = albinoEyeIrisMap;
+      subjectEyeMat.roughness = 0.05;
+      subjectEyeMat.envMapIntensity = 0.88;
+      subjectEyeMat.emissive = new THREE.Color(0x882436);
+      subjectEyeMat.emissiveIntensity = 0.16;
+      subjectEyeMat.transmission = 0.12;
+      subjectEyeMat.thickness = 0.20;
+    } else {
+      subjectEyeMat.envMapIntensity = 0.95;
     }
     const subjectCorneaMat = corneaMat.clone();
     subjectCorneaMat.attenuationColor = subjectEyeMat.color.clone().offsetHSL(0, 0, 0.08);
+    subjectCorneaMat.envMapIntensity = (strain.isAlbinoEye || eyeHsl.l > 0.14) ? 1.15 : 1.45;
     const lidMat = new THREE.MeshPhysicalMaterial({
-      color: new THREE.Color(strain.eyeRimColor ?? 0x221717).lerp(new THREE.Color(skinColor), 0.28),
-      roughness: 0.58,
+      color: new THREE.Color(strain.eyeRimColor ?? 0x221717).lerp(
+        new THREE.Color(skinColor),
+        (strain.isAlbinoEye || eyeHsl.l > 0.14) ? 0.46 : 0.24
+      ),
+      roughness: 0.62,
       metalness: 0.0,
-      clearcoat: 0.14,
-      clearcoatRoughness: 0.40,
+      sheen: 0.24,
+      sheenColor: new THREE.Color(skinColor),
+      clearcoat: 0.12,
+      clearcoatRoughness: 0.42,
     });
     const tearMeniscusMat = new THREE.MeshPhysicalMaterial({
-      color: new THREE.Color(strain.eyeRimColor ?? 0x2a1b1b).lerp(new THREE.Color(0xf6e6e4), 0.10),
+      color: new THREE.Color(strain.eyeRimColor ?? 0x2a1b1b).lerp(new THREE.Color(0xf6e6e4), 0.14),
       roughness: 0.06,
       metalness: 0.0,
       clearcoat: 0.90,
       clearcoatRoughness: 0.06,
       transparent: true,
-      opacity: 0.16,
+      opacity: 0.18,
       depthWrite: false,
     });
-    // Almond palpebral rim seated cleanly around the orbital aperture so the
-    // glossy globe emerges from a living eyelid margin without crossing the pupil.
-    const lidArcGeo = new THREE.TorusGeometry(PROP.eyeSize * 0.96, 0.0105, 8, 22, Math.PI * 0.92);
-    const tearArcGeo = new THREE.TorusGeometry(PROP.eyeSize * 0.92, 0.0030, 6, 18, Math.PI * 0.54);
+    // Fuller tapered almond palpebral rims hugging the orbital aperture so the
+    // glossy globe nestles naturally inside living murine eyelids.
+    const lidArcGeo = new THREE.TorusGeometry(PROP.eyeSize * 0.94, 0.0155, 10, 24, Math.PI * 0.96);
+    const tearArcGeo = new THREE.TorusGeometry(PROP.eyeSize * 0.90, 0.0032, 6, 18, Math.PI * 0.56);
     const localForwardZ = new THREE.Vector3(0, 0, 1);
     // SphereGeometry centers the iris texture on local +X; rotate it onto +Z so
     // the pupil looks along the eye's outward axis and the UV seam stays hidden.
@@ -1476,43 +1530,43 @@ class ExpertMouse {
 
     const buildEyeAssembly = (sideSign, offsetAsym) => {
       // Murine eyes are lateral (~60 deg from the midline) and sit half-buried
-      // in the orbital fossa, bulging out of an almond palpebral aperture.
+      // in the orbital fossa, emerging cleanly from fleshy almond palpebral rims.
       const anchor = sideSign > 0 ? headAnchors.eyeL : headAnchors.eyeR;
       const designDir = new THREE.Vector3(sideSign * 0.86, 0.14, 0.48).normalize();
       const outDir = anchor.normal.clone().lerp(designDir, 0.6).normalize();
       const eyeCenter = anchor.position.clone()
-        .addScaledVector(outDir, -PROP.eyeSize * 0.26);
+        .addScaledVector(outDir, -PROP.eyeSize * 0.34);
       eyeCenter.x += offsetAsym;
       const eyeQuat = new THREE.Quaternion().setFromUnitVectors(localForwardZ, outDir);
 
       const eye = new THREE.Mesh(eyeGeo, subjectEyeMat);
-      eye.scale.set(0.98, 0.94, PROP.eyeProtrusion);
+      eye.scale.set(0.98, 0.92, PROP.eyeProtrusion * 0.93);
       eye.position.copy(eyeCenter);
       eye.quaternion.copy(eyeQuat);
       eye.castShadow = false;
       this.head.add(eye);
 
       const cornea = new THREE.Mesh(corneaGeo, subjectCorneaMat);
-      cornea.scale.set(0.98, 0.94, PROP.eyeProtrusion + 0.04);
+      cornea.scale.set(0.98, 0.92, PROP.eyeProtrusion * 0.93 + 0.035);
       cornea.position.copy(eyeCenter);
       cornea.quaternion.copy(eyeQuat);
       cornea.castShadow = false;
       this.head.add(cornea);
 
-      // Almond palpebral rim seated right where the globe emerges from the orbit
+      // Almond palpebral rim seated tightly where the globe emerges from the orbit
       const lidFrame = new THREE.Group();
-      lidFrame.position.copy(eyeCenter).addScaledVector(outDir, PROP.eyeSize * 0.21);
+      lidFrame.position.copy(eyeCenter).addScaledVector(outDir, PROP.eyeSize * 0.28);
       lidFrame.quaternion.copy(eyeQuat);
       this.head.add(lidFrame);
 
       const upperLid = new THREE.Mesh(lidArcGeo, lidMat);
-      upperLid.rotation.z = Math.PI * 0.04;
-      upperLid.scale.set(1.06, 0.90, 0.72);
+      upperLid.rotation.z = Math.PI * 0.02;
+      upperLid.scale.set(1.08, 0.88, 0.78);
       lidFrame.add(upperLid);
 
       const lowerLid = new THREE.Mesh(lidArcGeo, lidMat);
-      lowerLid.rotation.z = Math.PI * 1.04;
-      lowerLid.scale.set(1.04, 0.86, 0.70);
+      lowerLid.rotation.z = Math.PI * 1.02;
+      lowerLid.scale.set(1.06, 0.84, 0.76);
       lidFrame.add(lowerLid);
 
       const tear = new THREE.Mesh(tearArcGeo, tearMeniscusMat);
@@ -1676,10 +1730,10 @@ class ExpertMouse {
     this.tailMesh.receiveShadow = true;
     this.tailMesh.frustumCulled = false;
     this.mesh.add(this.tailMesh);
-    // Fur-to-skin sacral root anchor tucked cleanly inside the proximal tail tube
+    // Fur-to-skin sacral root anchor tucked cleanly inside the fuller proximal tail tube
     // so the feathered sacral collar bridges smoothly from rump pelage onto the shaft.
-    const tailRootGeo = new THREE.CylinderGeometry(0.064, 0.098, 0.24, 12);
-    tailRootGeo.translate(0, 0.12, 0);
+    const tailRootGeo = new THREE.CylinderGeometry(0.082, 0.132, 0.30, 14);
+    tailRootGeo.translate(0, 0.15, 0);
     tailRootGeo.rotateX(Math.PI / 2);
     const rootColorCount = tailRootGeo.attributes.position.count;
     const rootColors = new Float32Array(rootColorCount * 3);
@@ -1740,6 +1794,30 @@ class ExpertMouse {
     this.headstageConnector = new THREE.Object3D();
     this.headstageConnector.position.set(0, 0.34, -0.03);
     this.headstageGroup.add(this.headstageConnector);
+    if (DATASET_HEADSTAGE_STYLE === 'winged_wide') {
+      // Prominent CalMS21/miniscope winged metal headbar + bright dental cement dome
+      cementCap.scale.set(1.48, 0.56, 1.52);
+      cementMat.color.setHex(0xf3f2ec);
+      cementMat.emissiveIntensity = 0.09;
+      wingBar.scale.set(1.42, 1.35, 1.48);
+      headbarMat.color.setHex(0xfdfcf8);
+      headbarMat.emissiveIntensity = 0.12;
+      this.headstageGroup.position.set(0, 0.52, -0.04);
+      scopeBody.scale.set(1.25, 1.18, 1.25);
+    } else if (DATASET_HEADSTAGE_STYLE === 'miniscope_tall') {
+      // Compact bright-collared cranial baseplate + wider cylindrical miniscope housing
+      cementCap.scale.set(1.38, 0.62, 1.40);
+      cementMat.color.setHex(0xf0efe9);
+      cementMat.emissiveIntensity = 0.08;
+      wingBar.scale.set(1.12, 1.25, 1.65);
+      headbarMat.color.setHex(0xfaf9f5);
+      headbarMat.emissiveIntensity = 0.10;
+      scopeBody.scale.set(1.85, 1.55, 1.85);
+      this.headstageGroup.position.set(0, 0.52, -0.02);
+    }
+    if (Math.abs(DATASET_HEADSTAGE_SCALE - 1.0) > 1e-3) {
+      this.headstageGroup.scale.multiplyScalar(DATASET_HEADSTAGE_SCALE);
+    }
     this.head.add(this.headstageGroup);
 
     this.tetherSegments = 26;
@@ -1811,6 +1889,33 @@ class ExpertMouse {
 
     createTrackingNode('tailmid', null, new THREE.Vector3());
     createTrackingNode('tailend', null, new THREE.Vector3());
+
+    // Native 3D CalMS21/MARS 7-keypoint rig anchors (hidden zero-cost Object3D nodes)
+    // calibrated to top-down dorsal scapular neck, lateral pinnae, outer pelvic flanks,
+    // and sacro-caudal tail root so 3D spinal flexion projects directly without 2D mask heuristics.
+    const createCalmsAnchor = (parent, localPos) => {
+      const obj = new THREE.Object3D();
+      obj.position.copy(localPos);
+      parent.add(obj);
+      return obj;
+    };
+    const calmsEarPos = (ear, sideSign) => {
+      ear.updateMatrix();
+      const base = ear._pinna.position.clone().applyMatrix4(ear.matrix);
+      // CalMS21 ear markers sit slightly toward the outer posterior dorsal pinna contour
+      base.x += sideSign * 0.24;
+      base.z -= 0.16;
+      return base;
+    };
+    this.calmsNodes = {
+      nose: this.poseNodes.snout,
+      left_ear: createCalmsAnchor(this.head, calmsEarPos(this.earL, 1)),
+      right_ear: createCalmsAnchor(this.head, calmsEarPos(this.earR, -1)),
+      neck: createCalmsAnchor(this.rig, new THREE.Vector3(0, 0.72, PROP.bodyLength * 0.44)),
+      left_hip: createCalmsAnchor(this.rig, new THREE.Vector3(1.08, 0.35, -PROP.bodyLength * 0.54)),
+      right_hip: createCalmsAnchor(this.rig, new THREE.Vector3(-1.08, 0.35, -PROP.bodyLength * 0.54)),
+      tail_base: createCalmsAnchor(this.rig, new THREE.Vector3(0, 0.22, -PROP.bodyLength * 1.04)),
+    };
 
     // Skeleton edges
     const lineMat = new THREE.LineBasicMaterial({ color: 0x00ffcc, depthTest: false, transparent: true, opacity: 0.7, linewidth: 2 });
@@ -2036,7 +2141,15 @@ class ExpertMouse {
     this.headstageConnector.getWorldPosition(startWorld);
     // Overhead commutator swivel offset slightly toward the front-left of the cage
     // so the cable sweeps naturally across the frame just like mouse083_task1_annotator1.mp4.
-    const endWorld = new THREE.Vector3(-15.4, 23.5, 11.6);
+    const tetherAnchors = {
+      bottom_left: [-15.4, 23.5, 11.6],
+      bottom_right: [15.4, 23.5, 11.6],
+      top_left: [-15.4, 23.5, -11.6],
+      top_right: [15.4, 23.5, -11.6],
+      overhead: [0.0, 26.0, 0.5],
+    };
+    const anchorCoords = tetherAnchors[DATASET_TETHER_ANCHOR] || tetherAnchors.bottom_left;
+    const endWorld = new THREE.Vector3(anchorCoords[0], anchorCoords[1], anchorCoords[2]);
     const dx = endWorld.x - startWorld.x;
     const dz = endWorld.z - startWorld.z;
     const horizLen = Math.hypot(dx, dz) || 1.0;
@@ -2152,6 +2265,16 @@ class ExpertMouse {
     if (this.poseNodes.tailbase) {
       const spTb = evaluateSpinePoint(0, 0.3, -PROP.bodyLength * 0.93, flex, PROP.bodyLength);
       this.poseNodes.tailbase.position.set(spTb.x * chonk, spTb.y * chonk, spTb.z * bodyLenScale);
+    }
+    if (this.calmsNodes) {
+      const spCN = evaluateSpinePoint(0, 0.72, PROP.bodyLength * 0.44, flex, PROP.bodyLength);
+      this.calmsNodes.neck.position.set(spCN.x * chonk, spCN.y * chonk, spCN.z * bodyLenScale);
+      const spLH = evaluateSpinePoint(1.08, 0.35, -PROP.bodyLength * 0.54, flex, PROP.bodyLength);
+      this.calmsNodes.left_hip.position.set(spLH.x * chonk, spLH.y * chonk, spLH.z * bodyLenScale);
+      const spRH = evaluateSpinePoint(-1.08, 0.35, -PROP.bodyLength * 0.54, flex, PROP.bodyLength);
+      this.calmsNodes.right_hip.position.set(spRH.x * chonk, spRH.y * chonk, spRH.z * bodyLenScale);
+      const spCT = evaluateSpinePoint(0, 0.22, -PROP.bodyLength * 1.04, flex, PROP.bodyLength);
+      this.calmsNodes.tail_base.position.set(spCT.x * chonk, spCT.y * chonk, spCT.z * bodyLenScale);
     }
   }
 
@@ -6602,10 +6725,11 @@ if (DATASET_LIGHTING === 'ir_night') {
 }
 
 const isHomeCageDefault = DATASET_ARENA === 'home_cage';
+const bodyScaleMul = DATASET_BODY_SCALE;
 const guiParams = {
   furColor: '#ffffff', skinColor: '#f0c8b8',
-  chonkiness: isHomeCageDefault ? 1.20 : 0.96,
-  earSize: isHomeCageDefault ? 0.94 : 0.82,
+  chonkiness: (isHomeCageDefault ? 1.20 : 0.96) * bodyScaleMul,
+  earSize: (isHomeCageDefault ? 0.94 : 0.82) * bodyScaleMul,
   furDensity: 1.0,
   showTrackingKeypoints: false, wireframeMode: false, isPaused: false,
   implantHeadstage: false,
@@ -6617,9 +6741,9 @@ const guiParams = {
   // so adult mice span ~23% of home-cage width just like mouse083_task1_annotator1.mp4)
   tailLength: isHomeCageDefault ? 1.14 : 0.94,
   tailThickness: isHomeCageDefault ? 1.32 : 1.15,
-  headSize: isHomeCageDefault ? PROP.headSize * 1.18 : PROP.headSize,
+  headSize: (isHomeCageDefault ? PROP.headSize * 1.18 : PROP.headSize) * bodyScaleMul,
   snoutLength: isHomeCageDefault ? 1.08 : 1.0,
-  bodyLength: isHomeCageDefault ? 1.22 : 1.0,
+  bodyLength: (isHomeCageDefault ? 1.22 : 1.0) * bodyScaleMul,
   legLength: isHomeCageDefault ? 1.16 : 1.06,
   legThickness: isHomeCageDefault ? 1.18 : 1.10,
   // Physics
@@ -6690,16 +6814,16 @@ if (DATASET_ARENA === 'home_cage') {
 function getStrainProfile(presetName) {
   if (presetName === 'C57BL/6 (Black)') {
     return {
-      eyeColor: '#060505', eyeRimColor: '#241a1b',
-      earOuterTransmission: 0.16, earInnerTransmission: 0.26,
-      earInnerSatOffset: 0.030, earInnerLightOffset: 0.02, earOuterRoughness: 0.62,
-      earOuterColor: '#625456', earInnerColor: '#967c7a',
-      earSkinBlend: 0.22, earInnerSkinBlend: 0.16, earScaleMul: 0.96,
-      earSheenColor: 0xb29a90, earAttenuationColor: 0x8a5148, earAttenuationDistance: 0.12,
+      eyeColor: '#060505', eyeRimColor: '#221819',
+      earOuterTransmission: 0.14, earInnerTransmission: 0.24,
+      earInnerSatOffset: 0.032, earInnerLightOffset: 0.015, earOuterRoughness: 0.68,
+      earOuterColor: '#4e4244', earInnerColor: '#8d7270',
+      earSkinBlend: 0.20, earInnerSkinBlend: 0.16, earScaleMul: 0.96,
+      earSheenColor: 0x9c8680, earAttenuationColor: 0x8a5148, earAttenuationDistance: 0.12,
       earYaw: 0.72, earHeightOffset: -0.02, padDarken: 0.92, clawColor: 0xd0c6be,
       pawColor: '#8c6d6b', pawPadColor: '#6e5250',
       noseColor: '#8e6e6e', tailColor: '#4c3e3e', tailTransmission: 0.10,
-      whiskerColor: 0x3a3533, whiskerOpacity: 0.80, pawSpreadMul: 1.0, toeLenMul: 0.98,
+      whiskerColor: 0x3a3533, whiskerOpacity: 0.78, pawSpreadMul: 1.0, toeLenMul: 0.98,
       gaitAmpMul: 0.92, headIdleYawMul: 0.82, headIdlePitchMul: 0.88,
       sniffAmpMul: 0.75, breathIdleAmp: 0.010, breathMoveAmp: 0.012,
       breathIdleFreq: 10.0, breathMoveFreq: 18.0, tailWaveAmpMul: 0.85, tailWaveFreqMul: 0.90
@@ -6724,31 +6848,31 @@ function getStrainProfile(presetName) {
   }
   if (presetName === 'Nude/Hairless') {
     return {
-      eyeColor: '#7a1922', eyeRimColor: '#be7c80',
-      earOuterTransmission: 0.36, earInnerTransmission: 0.46,
-      earInnerSatOffset: 0.10, earInnerLightOffset: 0.08, earOuterRoughness: 0.44,
-      earOuterColor: '#d9b2ad', earInnerColor: '#e8b9b5',
-      earSkinBlend: 0.28, earInnerSkinBlend: 0.18, earScaleMul: 1.02,
+      eyeColor: '#b43044', eyeRimColor: '#d99e9e', isAlbinoEye: true,
+      earOuterTransmission: 0.38, earInnerTransmission: 0.48,
+      earInnerSatOffset: 0.08, earInnerLightOffset: 0.04, earOuterRoughness: 0.46,
+      earOuterColor: '#dfb5af', earInnerColor: '#eabcb7',
+      earSkinBlend: 0.26, earInnerSkinBlend: 0.18, earScaleMul: 1.00,
       earSheenColor: 0xffd6c8, earAttenuationColor: 0xea9d8f, earAttenuationDistance: 0.18,
       earYaw: 0.48, earHeightOffset: 0.00, padDarken: 0.94, clawColor: 0xe2d6cd,
       pawColor: '#e8bab4', pawPadColor: '#d29692',
-      noseColor: '#e4ada8', tailColor: '#e2aca6', tailTransmission: 0.28,
+      noseColor: '#e4ada8', tailColor: '#dfa9a3', tailTransmission: 0.28,
       whiskerColor: 0xe6dcd5, pawSpreadMul: 1.04, toeLenMul: 1.05,
       gaitAmpMul: 1.08, headIdleYawMul: 1.15, headIdlePitchMul: 1.12,
       sniffAmpMul: 1.25, breathIdleAmp: 0.018, breathMoveAmp: 0.024,
       breathIdleFreq: 13.0, breathMoveFreq: 24.0, tailWaveAmpMul: 1.18, tailWaveFreqMul: 1.12
     };
   }
-  return { // BALB/c default — luminous ruby-garnet albino iris + pale rose pinnae
-    eyeColor: '#a82234', eyeRimColor: '#d9a4a4',
+  return { // BALB/c default — translucent ruby-rose albino eye + delicate rose pinnae
+    eyeColor: '#ba3044', eyeRimColor: '#e4b2b0', isAlbinoEye: true,
     earOuterTransmission: 0.36, earInnerTransmission: 0.48,
-    earInnerSatOffset: 0.040, earInnerLightOffset: 0.030, earOuterRoughness: 0.52,
-    earOuterColor: '#dcd0cd', earInnerColor: '#e8c6c4',
+    earInnerSatOffset: 0.045, earInnerLightOffset: 0.025, earOuterRoughness: 0.54,
+    earOuterColor: '#dcd0cd', earInnerColor: '#e7c1be',
     earSkinBlend: 0.24, earInnerSkinBlend: 0.20, earScaleMul: 0.96,
     earSheenColor: 0xf4dada, earAttenuationColor: 0xde9ca0, earAttenuationDistance: 0.17,
     earYaw: 0.52, earHeightOffset: -0.01, padDarken: 0.94, clawColor: 0xe6dcd5,
     pawColor: '#e8c4c0', pawPadColor: '#d6a6a4',
-    noseColor: '#efc2c0', tailColor: '#e4b8b5', tailTransmission: 0.28,
+    noseColor: '#efc2c0', tailColor: '#dfb0ab', tailTransmission: 0.26,
     whiskerColor: 0xddd6ce, pawSpreadMul: 1.00, toeLenMul: 1.02,
     gaitAmpMul: 1.0, headIdleYawMul: 1.0, headIdlePitchMul: 1.0,
     sniffAmpMul: 1.0, breathIdleAmp: 0.013, breathMoveAmp: 0.016,
@@ -6762,7 +6886,7 @@ function applyStrainPreset(name) {
   if (name === 'BALB/c (White)') { guiParams.furColor = '#eae3d7'; guiParams.skinColor = '#e7aea8'; guiParams.furDensity = 0.92; guiParams.earSize = 0.70 * earScale; }
   if (name === 'C57BL/6 (Black)') { guiParams.furColor = '#151416'; guiParams.skinColor = '#4c3e40'; guiParams.furDensity = 0.96; guiParams.earSize = 0.68 * earScale; }
   if (name === 'CBA (Brown)') { guiParams.furColor = '#684834'; guiParams.skinColor = '#cca090'; guiParams.furDensity = 0.90; guiParams.earSize = 0.68 * earScale; }
-  if (name === 'Nude/Hairless') { guiParams.furColor = '#ffd0c8'; guiParams.skinColor = '#ffc0b8'; guiParams.furDensity = 0.0; guiParams.earSize = 0.75 * earScale; }
+  if (name === 'Nude/Hairless') { guiParams.furColor = '#f0c4bc'; guiParams.skinColor = '#efc0b8'; guiParams.furDensity = 0.0; guiParams.earSize = 0.72 * earScale; }
 }
 
 const gui = new GUI({ title: 'OPEN FIELD CONTROLS' });
@@ -7209,12 +7333,32 @@ if (DATASET_COAT_PAIR === 'c57_pair' || DATASET_COAT_PAIR === 'black_pair') {
   applyStrainPreset('CBA (Brown)');
   gui.controllersRecursive().forEach(c => c.updateDisplay());
   spawnMouse({ position: [3.3, 2.6], heading: [-1.0, -0.12], speed: 0.85 });
+} else if (DATASET_COAT_PAIR === 'nude_pair' || DATASET_COAT_PAIR === 'hairless_pair') {
+  applyStrainPreset('Nude/Hairless');
+  spawnMouse({ position: [-3.6, -2.6], heading: [1.0, 0.12], speed: 0.9 });
+  applyStrainPreset('Nude/Hairless');
+  gui.controllersRecursive().forEach(c => c.updateDisplay());
+  spawnMouse({ position: [3.3, 2.6], heading: [-1.0, -0.12], speed: 0.85 });
 } else {
   applyStrainPreset('C57BL/6 (Black)');
   spawnMouse({ position: [-3.6, -2.6], heading: [1.0, 0.12], speed: 0.9 });
   applyStrainPreset('BALB/c (White)');
   gui.controllersRecursive().forEach(c => c.updateDisplay());
   spawnMouse({ position: [3.3, 2.6], heading: [-1.0, -0.12], speed: 0.85 });
+}
+if (DATASET_SUBJECT_COUNT > 2) {
+  const extraSpawns = [
+    { strain: 'C57BL/6 (Black)', position: [-3.4, 2.5], heading: [0.85, -0.52], speed: 0.88 },
+    { strain: 'BALB/c (White)', position: [3.5, -2.5], heading: [-0.85, 0.52], speed: 0.86 },
+    { strain: 'C57BL/6 (Black)', position: [0.0, -3.2], heading: [0.15, 0.98], speed: 0.84 },
+    { strain: 'BALB/c (White)', position: [0.0, 3.2], heading: [-0.15, -0.98], speed: 0.84 },
+  ];
+  for (let ei = 0; ei < DATASET_SUBJECT_COUNT - 2 && ei < extraSpawns.length; ei++) {
+    const spec = extraSpawns[ei];
+    applyStrainPreset(spec.strain);
+    spawnMouse({ position: spec.position, heading: spec.heading, speed: spec.speed });
+  }
+  gui.controllersRecursive().forEach(c => c.updateDisplay());
 }
 if (DATASET_CAPTURE && DATASET_CAMERA_VIEW === 'bottom-up') {
   mice.forEach(m => {
@@ -8005,6 +8149,23 @@ if (DATASET_CAPTURE && DATASET_SCENARIO && mice.length >= 2) {
     mouseB.groomCooldown = 999;
     mouseA.rearCooldown = 999;
     mouseB.rearCooldown = 999;
+  } else if (DATASET_SCENARIO === 'calms_corner_huddle') {
+    // Dark-corner wall-hugging & corner-rearing coverage (resident tucked into bottom-left dark corner,
+    // intruder investigating along wall and top-left nestlet).
+    placeMouse(mouseA, -12.4, 7.2, 0.75, -0.66, 2.20);
+    placeMouse(mouseB, -8.8, -5.8, -0.45, 0.89, 3.40);
+    mouseA.boutState.mode = 'pause';
+    mouseA.boutState.timer = 0.85;
+    mouseB.boutState.mode = 'dart-trot';
+    mouseB.boutState.timer = 1.20;
+  } else if (DATASET_SCENARIO === 'calms_corner_right') {
+    // Right-side water-port & dark bottom-right corner interaction.
+    placeMouse(mouseA, 11.8, 6.8, -0.70, -0.71, 2.80);
+    placeMouse(mouseB, 7.2, -5.4, 0.55, 0.83, 4.20);
+    mouseA.boutState.mode = 'dart-trot';
+    mouseA.boutState.timer = 1.05;
+    mouseB.boutState.mode = 'dart-trot';
+    mouseB.boutState.timer = 1.30;
   }
 }
 
@@ -8038,7 +8199,7 @@ function buildPoseAnnotation(mouse, imageId, width, height) {
     bbox = [minX, minY, Math.max(0, maxX - minX), Math.max(0, maxY - minY)]
       .map(value => Number(value.toFixed(3)));
   }
-  return {
+  const annotation = {
     id: (imageId - 1) * mice.length + mouse.trackId,
     image_id: imageId,
     category_id: POSE_CATEGORY.id,
@@ -8077,6 +8238,12 @@ function buildPoseAnnotation(mouse, imageId, width, height) {
     area: Number((bbox[2] * bbox[3]).toFixed(3)),
     iscrowd: 0,
   };
+  if (DATASET_POSE_SCHEMA === 'calms7' && mouse.calmsNodes) {
+    const calmsOrder = ['nose', 'left_ear', 'right_ear', 'neck', 'left_hip', 'right_hip', 'tail_base'];
+    const calmsProjected = calmsOrder.map(key => projectPoseNode(mouse.calmsNodes[key], width, height));
+    annotation.calms_keypoints = calmsProjected.flatMap(pt => [pt.x, pt.y, pt.visibility]);
+  }
+  return annotation;
 }
 
 function buildDatasetFramePayload() {
