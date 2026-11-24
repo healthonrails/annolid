@@ -5,7 +5,44 @@ from copy import deepcopy
 from typing import Sequence
 
 import numpy as np
-from qtpy import QtCore
+
+try:
+    from qtpy import QtCore
+except Exception:
+    # Headless fallback when qtpy has no Qt bindings installed (e.g. Colab).
+    class QtCore:  # type: ignore[no-redef]
+        class QPointF:
+            def __init__(self, *args):
+                if len(args) == 1 and hasattr(args[0], "x") and hasattr(args[0], "y"):
+                    self._x = float(args[0].x())
+                    self._y = float(args[0].y())
+                elif (
+                    len(args) == 1
+                    and isinstance(args[0], (tuple, list))
+                    and len(args[0]) >= 2
+                ):
+                    self._x = float(args[0][0])
+                    self._y = float(args[0][1])
+                elif len(args) >= 2:
+                    self._x = float(args[0])
+                    self._y = float(args[1])
+                else:
+                    self._x = 0.0
+                    self._y = 0.0
+
+            def x(self) -> float:
+                return self._x
+
+            def y(self) -> float:
+                return self._y
+
+            def __eq__(self, other) -> bool:
+                if hasattr(other, "x") and hasattr(other, "y"):
+                    return self._x == float(other.x()) and self._y == float(other.y())
+                return False
+
+            def __repr__(self) -> str:
+                return f"QPointF({self._x}, {self._y})"
 
 
 def _shape_point_list(shape) -> list[QtCore.QPointF]:

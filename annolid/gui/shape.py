@@ -10,7 +10,9 @@ try:
     from qtpy import QtGui
 
     _QT_AVAILABLE = True
-except ImportError:
+except Exception:
+    # Covers both ImportError and qtpy.QtBindingsNotFoundError (RuntimeError)
+    # on headless servers / Google Colab where PySide6/PyQt is not installed.
     _QT_AVAILABLE = False
 
     class QtCore:
@@ -23,11 +25,113 @@ except ImportError:
 
         class QPointF:
             def __init__(self, *args):
-                pass
+                if len(args) == 1 and hasattr(args[0], "x") and hasattr(args[0], "y"):
+                    self._x = float(args[0].x())
+                    self._y = float(args[0].y())
+                elif (
+                    len(args) == 1
+                    and isinstance(args[0], (tuple, list))
+                    and len(args[0]) >= 2
+                ):
+                    self._x = float(args[0][0])
+                    self._y = float(args[0][1])
+                elif len(args) >= 2:
+                    self._x = float(args[0])
+                    self._y = float(args[1])
+                else:
+                    self._x = 0.0
+                    self._y = 0.0
+
+            def x(self) -> float:
+                return self._x
+
+            def y(self) -> float:
+                return self._y
+
+            def setX(self, x: float) -> None:
+                self._x = float(x)
+
+            def setY(self, y: float) -> None:
+                self._y = float(y)
+
+            def __add__(self, other):
+                return QtCore.QPointF(self._x + other.x(), self._y + other.y())
+
+            def __sub__(self, other):
+                return QtCore.QPointF(self._x - other.x(), self._y - other.y())
+
+            def __eq__(self, other) -> bool:
+                if hasattr(other, "x") and hasattr(other, "y"):
+                    return self._x == float(other.x()) and self._y == float(other.y())
+                return False
+
+            def __repr__(self) -> str:
+                return f"QPointF({self._x}, {self._y})"
 
         class QRectF:
+            def __init__(self, x=0.0, y=0.0, w=0.0, h=0.0):
+                self._x = float(x)
+                self._y = float(y)
+                self._w = float(w)
+                self._h = float(h)
+
+            def x(self) -> float:
+                return self._x
+
+            def y(self) -> float:
+                return self._y
+
+            def width(self) -> float:
+                return self._w
+
+            def height(self) -> float:
+                return self._h
+
+            def left(self) -> float:
+                return self._x
+
+            def top(self) -> float:
+                return self._y
+
+            def right(self) -> float:
+                return self._x + self._w
+
+            def bottom(self) -> float:
+                return self._y + self._h
+
+            def contains(self, point) -> bool:
+                px = float(point.x())
+                py = float(point.y())
+                return self._x <= px <= self.right() and self._y <= py <= self.bottom()
+
+    class QtGui:
+        class QColor:
             def __init__(self, *args):
-                pass
+                if len(args) == 1 and isinstance(args[0], QtGui.QColor):
+                    self._rgba = args[0]._rgba
+                elif len(args) >= 3:
+                    a = int(args[3]) if len(args) >= 4 else 255
+                    self._rgba = (int(args[0]), int(args[1]), int(args[2]), a)
+                else:
+                    self._rgba = (0, 0, 0, 255)
+
+            def getRgb(self):
+                return self._rgba
+
+            def red(self) -> int:
+                return self._rgba[0]
+
+            def green(self) -> int:
+                return self._rgba[1]
+
+            def blue(self) -> int:
+                return self._rgba[2]
+
+            def alpha(self) -> int:
+                return self._rgba[3]
+
+            def isValid(self) -> bool:
+                return True
 
     Qt = QtCore.Qt
 from annolid.utils.logger import logger
