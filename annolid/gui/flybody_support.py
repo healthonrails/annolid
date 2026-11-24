@@ -23,8 +23,13 @@ def resolve_local_flybody_repo() -> Path | None:
         candidates.append(Path(env_value).expanduser())
     candidates.append(Path.home() / "Downloads" / "flybody")
     for candidate in candidates:
-        if (candidate / "flybody" / "fruitfly" / "assets" / "fruitfly.xml").exists():
-            return candidate
+        try:
+            if (
+                candidate / "flybody" / "fruitfly" / "assets" / "fruitfly.xml"
+            ).exists():
+                return candidate
+        except OSError:
+            continue
     return None
 
 

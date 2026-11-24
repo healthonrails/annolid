@@ -34,6 +34,7 @@ def _two_mice_source():
             "two_mice.html",
             "two_mice_scene.js",
             "two_mice_model.js",
+            "two_mice_arenas.js",
             "two_mice_simulation.js",
             "two_mice_control.js",
         )
@@ -199,7 +200,7 @@ def test_two_mice_example_preserves_subject_appearance_and_render_readiness():
     assert "tragus.name = 'auricular-tragus-fold'" in source
     assert "canal.name = 'ear-canal-shadow'" in source
     assert "baseFur.name = 'pinna-root-fur-collar'" in source
-    assert "One continuous dorsal skull slope" in source
+    assert "Dorsal skull silhouette: smooth cranial vault" in source
     assert "canvas.dataset.earAttachmentBySubject" in source
     assert "canvas.dataset.anatomySubject" in source
     assert "datasetQuery.get('anatomy_subject') === 'white'" in source
@@ -215,6 +216,8 @@ def test_two_mice_example_preserves_subject_appearance_and_render_readiness():
     assert "createTrackingNode('lforepaw', this.armL._paw" in source
     assert "createTrackingNode('lhindpaw', this.hindL._paw" in source
     assert "window.annolidTwoMice = Object.freeze" in source
+    assert "getArenas: () =>" in source
+    assert "setArena: (idOrLabel" in source
     assert "setCommand: (trackId, command)" in source
     assert "const DATASET_CAPTURE" in source
     assert "const POSE_KEYPOINTS = Object.freeze" in source
@@ -243,8 +246,8 @@ def test_two_mice_head_neck_body_transition_is_articulated_and_testable():
     assert "this.guiParams.headSize * 0.94" in source
     assert "this.guiParams.headSize * 1.03" in source
     assert "const occipitalBlend = THREE.MathUtils.smoothstep" in source
-    assert "THREE.MathUtils.smoothstep(zNorm, 0.58, 0.99)" in source
-    assert "neckT * (v.y >= 0 ? 0.22 : 0.10)" in source
+    assert "THREE.MathUtils.smoothstep(zNorm, 0.60, 0.99)" in source
+    assert "neckT * (v.y >= 0 ? 0.14 : 0.12)" in source
 
     assert "this.head.localToWorld" in source
     assert "this.head.worldToLocal" in source
