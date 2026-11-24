@@ -27,6 +27,30 @@ import {
   FLY_OPTOGENETIC_PRESETS,
   FlyBrainMouseController,
 } from './two_mice_fly_brain.js';
+import {
+  ARENA_CATALOG,
+  ARENA_LABELS,
+  DEFAULT_ARENA_ID,
+  getArenaSpec,
+  summarizeArenaSpec,
+  queryArenaWalls,
+  resolveArenaPosition,
+  clampTailPointToArena,
+  computeTailArenaLookahead,
+  isTailSegmentClearOfArena,
+  collectArenaTailCandidateAngles,
+  getArenaObstacleDiscs,
+  getArenaWallSupportPoint,
+  computeArenaWhiskerClearance,
+  computeArenaNavigationRoute,
+  computeArenaWallEscapeTarget,
+  classifyArenaZone,
+  formatArenaZoneLabel,
+  getArenaFlyZones,
+  pickArenaNavigationTarget,
+  sampleArenaSpawnPose,
+  createArenaVisual,
+} from './two_mice_arenas.js';
 
 const datasetQuery = new URLSearchParams(window.location.search);
 const DATASET_CAPTURE = datasetQuery.get('dataset') === '1';
@@ -84,6 +108,9 @@ const simulationSeed = DATASET_CAPTURE || datasetQuery.has('seed')
   ? DATASET_SEED : (Date.now() >>> 0);
 const random = createSeededRandom(simulationSeed);
 const appearanceRandom = createSeededRandom(simulationSeed ^ 0xA53C91E7);
+const arenaNavRandom = createSeededRandom((simulationSeed ^ 0x9E3779B9) >>> 0);
+const INITIAL_ARENA_SPEC = getArenaSpec(DATASET_ARENA || DEFAULT_ARENA_ID, { allowDefault: true });
+let activeArena = INITIAL_ARENA_SPEC;
 if (DATASET_CAPTURE) document.body.classList.add('dataset-capture');
 
 // ═══════════════════════════════════════════════════════════════
@@ -124,7 +151,7 @@ controls.maxPolarAngle = (DATASET_CAPTURE && DATASET_CAMERA_VIEW === 'bottom-up'
   ? Math.PI
   : (Math.PI / 2 - 0.02);
 controls.minDistance = 3.5;
-controls.maxDistance = 70;
+controls.maxDistance = 88;
 
 // IBL environment (True HDR Studio Lighting)
 const pmremGenerator = new THREE.PMREMGenerator(renderer);
@@ -351,6 +378,32 @@ function resolveAllMouseBodyOverlaps(subjects) {
     for (let i = 0; i < subjects.length; i++) {
       for (let j = i + 1; j < subjects.length; j++) {
         corrected = resolveMouseBodyOverlap(subjects[i], subjects[j]).touched || corrected;
+      }
+    }
+    if (corrected && !activeArena.legacyRect) {
+      for (const mouse of subjects) {
+        const chonk = mouse.guiParams.chonkiness || 1.0;
+        const bodyLen = mouse.guiParams.bodyLength || 1.0;
+        const snoutLen = mouse.guiParams.snoutLength || 1.0;
+        const uprightRed = mouse.rearing.mode === 'wall-supported' ? mouse.rearAmount * 1.45 : 0;
+        const clamped = resolveArenaPosition(
+          activeArena,
+          mouse.mesh.position.x,
+          mouse.mesh.position.z,
+          mouse.velocity.x,
+          mouse.velocity.y,
+          mouse.heading.x,
+          mouse.heading.y,
+          bodyLen,
+          snoutLen,
+          chonk,
+          mouse.spineFlex.stretch,
+          uprightRed,
+          mouse.guiParams.maxSpeed,
+          mouse.wallFollowDir
+        );
+        mouse.mesh.position.x = clamped.x;
+        mouse.mesh.position.z = clamped.z;
       }
     }
     if (!corrected) break;
@@ -2065,6 +2118,8 @@ class ExpertMouse {
     return {
       trackId: this.trackId,
       strain: this.appearance.strain,
+      arena: activeArena.id,
+      zone: classifyArenaZone(activeArena, this.mesh.position.x, this.mesh.position.z),
       position: [this.mesh.position.x, this.mesh.position.z],
       heading: this.yawAngle,
       yawRate: this.yawVel,
@@ -3496,21 +3551,35 @@ class ExpertMouse {
         changed = true;
       }
       if (index > 0) {
-        const clampedX = THREE.MathUtils.clamp(
-          worldPoint.x,
-          -ENCLOSURE_HALF_X + horizontalMargin,
-          ENCLOSURE_HALF_X - horizontalMargin
-        );
-        const clampedZ = THREE.MathUtils.clamp(
-          worldPoint.z,
-          -ENCLOSURE_HALF_Z + horizontalMargin,
-          ENCLOSURE_HALF_Z - horizontalMargin
-        );
-        wallShiftX = clampedX - worldPoint.x;
-        wallShiftZ = clampedZ - worldPoint.z;
-        changed = changed || wallShiftX !== 0 || wallShiftZ !== 0;
-        worldPoint.x = clampedX;
-        worldPoint.z = clampedZ;
+        if (activeArena.legacyRect) {
+          const clampedX = THREE.MathUtils.clamp(
+            worldPoint.x,
+            -ENCLOSURE_HALF_X + horizontalMargin,
+            ENCLOSURE_HALF_X - horizontalMargin
+          );
+          const clampedZ = THREE.MathUtils.clamp(
+            worldPoint.z,
+            -ENCLOSURE_HALF_Z + horizontalMargin,
+            ENCLOSURE_HALF_Z - horizontalMargin
+          );
+          wallShiftX = clampedX - worldPoint.x;
+          wallShiftZ = clampedZ - worldPoint.z;
+          changed = changed || wallShiftX !== 0 || wallShiftZ !== 0;
+          worldPoint.x = clampedX;
+          worldPoint.z = clampedZ;
+        } else {
+          const clamped = clampTailPointToArena(
+            activeArena,
+            worldPoint.x,
+            worldPoint.z,
+            horizontalMargin
+          );
+          wallShiftX = clamped.shiftX;
+          wallShiftZ = clamped.shiftZ;
+          changed = changed || clamped.hitWall;
+          worldPoint.x = clamped.x;
+          worldPoint.z = clamped.z;
+        }
       }
       if (!changed) return 0;
       localPoint.copy(worldPoint);
@@ -3691,7 +3760,7 @@ class ExpertMouse {
     const segPrevWorld = new THREE.Vector3();
     const segCurrWorld = new THREE.Vector3();
     const prevDirWorld = new THREE.Vector3();
-    const candidateAngles = new Float64Array(64);
+    const candidateAngles = new Float64Array(96);
 
     const wrapAngleDelta = angle => {
       let a = angle;
@@ -3917,7 +3986,7 @@ class ExpertMouse {
         //     Computes exact turning-arc wall clearance (accounting for long-way corner turns)
         //     and turns only until parallel to the approached wall so the tail glides cleanly
         //     along the perimeter without curling into hooks.
-        if (steerWallLookahead) {
+        if (steerWallLookahead && activeArena.legacyRect) {
           const distX = maxX - Math.abs(segPrevWorld.x);
           const distZ = maxZ - Math.abs(segPrevWorld.z);
           const wallSignX = Math.sign(segPrevWorld.x || 1);
@@ -3989,6 +4058,48 @@ class ExpertMouse {
               hdz = Math.sin(newTheta);
             }
           }
+        } else if (steerWallLookahead) {
+          const prevHx = i >= 2 ? prevDirWorld.x : hdx;
+          const prevHz = i >= 2 ? prevDirWorld.z : hdz;
+          const look = computeTailArenaLookahead(
+            activeArena,
+            segPrevWorld.x,
+            segPrevWorld.z,
+            hdx,
+            hdz,
+            horizontalMargin,
+            turnRadius,
+            prevHx,
+            prevHz,
+            naturalSide
+          );
+          if (look.triggered) {
+            wallTouched = true;
+            const targetTheta = Math.atan2(look.safeZ, look.safeX);
+            if (i === 1) {
+              const rootMaxStep = look.minClearance < 1.15 ? Math.PI : maxRad * 2.5;
+              const curTheta = Math.atan2(hdz, hdx);
+              const newTheta = curTheta + THREE.MathUtils.clamp(
+                wrapAngleDelta(targetTheta - curTheta),
+                -rootMaxStep,
+                rootMaxStep
+              );
+              hdx = Math.cos(newTheta);
+              hdz = Math.sin(newTheta);
+            } else {
+              const prevHorizLen = Math.hypot(prevDirWorld.x, prevDirWorld.z);
+              const baseTheta = prevHorizLen > 1e-5
+                ? Math.atan2(prevDirWorld.z, prevDirWorld.x)
+                : Math.atan2(hdz, hdx);
+              const newTheta = baseTheta + THREE.MathUtils.clamp(
+                wrapAngleDelta(targetTheta - baseTheta),
+                -horizMaxRad,
+                horizMaxRad
+              );
+              hdx = Math.cos(newTheta);
+              hdz = Math.sin(newTheta);
+            }
+          }
         }
 
         // 5. Hard exact circle-box & circle-disc containment fallback (preserves exact segLen).
@@ -3996,8 +4107,16 @@ class ExpertMouse {
         let stepZ = hdz * horizR;
         const safeMaxX = maxX - 1e-4;
         const safeMaxZ = maxZ - 1e-4;
-        const hitsWall = Math.abs(segPrevWorld.x + stepX) > maxX
-          || Math.abs(segPrevWorld.z + stepZ) > maxZ;
+        const hitsWall = activeArena.legacyRect
+          ? (Math.abs(segPrevWorld.x + stepX) > maxX || Math.abs(segPrevWorld.z + stepZ) > maxZ)
+          : !isTailSegmentClearOfArena(
+            activeArena,
+            segPrevWorld.x,
+            segPrevWorld.z,
+            segPrevWorld.x + stepX,
+            segPrevWorld.z + stepZ,
+            horizontalMargin
+          );
         const hitsBody = obstacles.length > 0 && !segmentClearsObstacles(
           segPrevWorld.x,
           segPrevWorld.z,
@@ -4018,22 +4137,35 @@ class ExpertMouse {
             -Math.sign(segPrevWorld.z || 1),
             -Math.sign(segPrevWorld.x || 1)
           );
-          pushCand(openAngle);
-          for (const bx of [safeMaxX, -safeMaxX]) {
-            const ratio = (bx - segPrevWorld.x) / horizR;
-            if (Math.abs(ratio) <= 1.0) {
-              const a = Math.acos(THREE.MathUtils.clamp(ratio, -1, 1));
-              pushCand(a);
-              pushCand(-a);
+          if (activeArena.legacyRect) {
+            pushCand(openAngle);
+            for (const bx of [safeMaxX, -safeMaxX]) {
+              const ratio = (bx - segPrevWorld.x) / horizR;
+              if (Math.abs(ratio) <= 1.0) {
+                const a = Math.acos(THREE.MathUtils.clamp(ratio, -1, 1));
+                pushCand(a);
+                pushCand(-a);
+              }
             }
-          }
-          for (const bz of [safeMaxZ, -safeMaxZ]) {
-            const ratio = (bz - segPrevWorld.z) / horizR;
-            if (Math.abs(ratio) <= 1.0) {
-              const a = Math.asin(THREE.MathUtils.clamp(ratio, -1, 1));
-              pushCand(a);
-              pushCand(Math.PI - a);
+            for (const bz of [safeMaxZ, -safeMaxZ]) {
+              const ratio = (bz - segPrevWorld.z) / horizR;
+              if (Math.abs(ratio) <= 1.0) {
+                const a = Math.asin(THREE.MathUtils.clamp(ratio, -1, 1));
+                pushCand(a);
+                pushCand(Math.PI - a);
+              }
             }
+          } else {
+            const arenaAngles = collectArenaTailCandidateAngles(
+              activeArena,
+              segPrevWorld.x,
+              segPrevWorld.z,
+              horizR,
+              horizontalMargin,
+              theta0,
+              horizMaxRad
+            );
+            for (let ai = 0; ai < arenaAngles.length; ai++) pushCand(arenaAngles[ai]);
           }
           if (hitsBody) {
             for (let oi = 0; oi < obstacles.length; oi++) {
@@ -4069,12 +4201,25 @@ class ExpertMouse {
             const ang = candidateAngles[c];
             const cx = segPrevWorld.x + Math.cos(ang) * horizR;
             const cz = segPrevWorld.z + Math.sin(ang) * horizR;
-            if (Math.abs(cx) > maxX + 1e-5 || Math.abs(cz) > maxZ + 1e-5) continue;
+            if (activeArena.legacyRect) {
+              if (Math.abs(cx) > maxX + 1e-5 || Math.abs(cz) > maxZ + 1e-5) continue;
+            } else if (!isTailSegmentClearOfArena(
+              activeArena,
+              segPrevWorld.x,
+              segPrevWorld.z,
+              cx,
+              cz,
+              horizontalMargin
+            )) {
+              continue;
+            }
             const angDist = Math.abs(wrapAngleDelta(ang - theta0));
-            const cornerPenalty = (
-              Math.max(0, Math.abs(cx) - (maxX - 1.2))
-              + Math.max(0, Math.abs(cz) - (maxZ - 1.2))
-            ) * 0.08;
+            const cornerPenalty = activeArena.legacyRect
+              ? (
+                Math.max(0, Math.abs(cx) - (maxX - 1.2))
+                + Math.max(0, Math.abs(cz) - (maxZ - 1.2))
+              ) * 0.08
+              : 0;
             const score = angDist + cornerPenalty;
             if (score < bestFallbackScore) {
               bestFallbackScore = score;
@@ -4482,16 +4627,32 @@ class ExpertMouse {
       } else {
         state.supportDirection.copy(this.heading).normalize();
       }
-      if (Math.abs(state.supportDirection.x) >= Math.abs(state.supportDirection.y)) {
-        state.supportPoint.set(
-          Math.sign(state.supportDirection.x || 1) * (ENCLOSURE_HALF_X - 0.08),
-          this.mesh.position.z
-        );
+      if (activeArena.legacyRect) {
+        if (Math.abs(state.supportDirection.x) >= Math.abs(state.supportDirection.y)) {
+          state.supportPoint.set(
+            Math.sign(state.supportDirection.x || 1) * (ENCLOSURE_HALF_X - 0.08),
+            this.mesh.position.z
+          );
+        } else {
+          state.supportPoint.set(
+            this.mesh.position.x,
+            Math.sign(state.supportDirection.y || 1) * (ENCLOSURE_HALF_Z - 0.08)
+          );
+        }
       } else {
-        state.supportPoint.set(
+        const wallSupport = getArenaWallSupportPoint(
+          activeArena,
           this.mesh.position.x,
-          Math.sign(state.supportDirection.y || 1) * (ENCLOSURE_HALF_Z - 0.08)
+          this.mesh.position.z,
+          state.supportDirection.x,
+          state.supportDirection.y
         );
+        if (!wallSupport) {
+          // Open cliff / unwalled edge (e.g. EPM open arm or Barnes Maze rim): do not lean on empty air.
+          return this.startRearing('unsupported', null, cooldownOverride);
+        }
+        state.supportDirection.set(-wallSupport.normalX, -wallSupport.normalZ).normalize();
+        state.supportPoint.set(wallSupport.x, wallSupport.z);
       }
       const wallDistance = (
         (state.supportPoint.x - this.mesh.position.x) * state.supportDirection.x
@@ -4535,8 +4696,9 @@ class ExpertMouse {
         -context.nearestWall.normalX,
         -context.nearestWall.normalZ
       );
-      const impactRear = context.hitWall && context.impactNorm > 0.14;
-      const nearWall = context.wallDist < context.bodyMargin + 0.55;
+      const nearestIsWalled = context.nearestWall.walled !== false;
+      const impactRear = nearestIsWalled && context.hitWall && context.impactNorm > 0.14;
+      const nearWall = nearestIsWalled && context.wallDist < context.bodyMargin + 0.55;
       const wallScanOpportunity = Math.sin(
         time * 0.86 + this.timeOffset * 0.031
       ) > 0.992;
@@ -4884,18 +5046,22 @@ class ExpertMouse {
 
     // Thigmotaxis & anticipatory corner steering
     const px = this.mesh.position.x, pz = this.mesh.position.z;
-    const wallDists = [
-      { dist: ENCLOSURE_HALF_X - px, normalX: -1, normalZ: 0, tangentX: 0, tangentZ: 1 },
-      { dist: ENCLOSURE_HALF_X + px, normalX: 1, normalZ: 0, tangentX: 0, tangentZ: -1 },
-      { dist: ENCLOSURE_HALF_Z - pz, normalX: 0, normalZ: -1, tangentX: -1, tangentZ: 0 },
-      { dist: ENCLOSURE_HALF_Z + pz, normalX: 0, normalZ: 1, tangentX: 1, tangentZ: 0 },
-    ];
+    const wallDists = activeArena.legacyRect
+      ? [
+        { dist: ENCLOSURE_HALF_X - px, normalX: -1, normalZ: 0, tangentX: 0, tangentZ: 1, walled: true },
+        { dist: ENCLOSURE_HALF_X + px, normalX: 1, normalZ: 0, tangentX: 0, tangentZ: -1, walled: true },
+        { dist: ENCLOSURE_HALF_Z - pz, normalX: 0, normalZ: -1, tangentX: -1, tangentZ: 0, walled: true },
+        { dist: ENCLOSURE_HALF_Z + pz, normalX: 0, normalZ: 1, tangentX: 1, tangentZ: 0, walled: true },
+      ]
+      : queryArenaWalls(activeArena, px, pz);
     wallDists.sort((a, b) => a.dist - b.dist);
-    const nearest = wallDists[0];
+    const nearest = wallDists[0] || { dist: 12, normalX: 0, normalZ: 1, tangentX: 1, tangentZ: 0, walled: false };
     const wallDist = nearest.dist;
     const wallAttr = this.guiParams.wallAttraction;
     for (const w of wallDists) {
-      const wallForce = wallNormalForce(w.dist, driveStrength, wallAttr, w === nearest);
+      // Unwalled drop-offs (EPM open arms, Barnes Maze rim) repel softly without pulling mice over the cliff.
+      const effectiveAttr = w.walled === false ? 0 : wallAttr;
+      const wallForce = wallNormalForce(w.dist, driveStrength, effectiveAttr, w === nearest);
       this.force.x += w.normalX * wallForce;
       this.force.y += w.normalZ * wallForce;
       // Smooth anticipatory turn along wall tangent when approaching head-on
@@ -4913,6 +5079,40 @@ class ExpertMouse {
     const nwF = Math.max(0, 1.0 - wallDist / 4.8);
     this.force.x += tX * driveStrength * (0.52 + nwF * 1.65);
     this.force.y += tZ * driveStrength * (0.52 + nwF * 1.65);
+
+    // Multi-arm / multi-chamber exploratory guidance (non-legacy arenas only; zero effect on Open Field / Home Cage).
+    if (
+      !activeArena.legacyRect
+      && !guiParams.isPaused
+      && !isPausing
+      && !commandActive
+      && activeArena.navigationWaypoints.length > 0
+    ) {
+      this.arenaTargetTimer = Math.max(0, (this.arenaTargetTimer || 0) - dt);
+      const distToTarget = this.arenaTarget
+        ? Math.hypot(this.arenaTarget.x - px, this.arenaTarget.z - pz)
+        : 0;
+      if (!this.arenaTarget || distToTarget < 2.8 || this.arenaTargetTimer <= 0) {
+        this.arenaTarget = pickArenaNavigationTarget(activeArena, px, pz, arenaNavRandom);
+        this.arenaTargetTimer = 5.5 + arenaNavRandom() * 4.5;
+      }
+      if (this.arenaTarget) {
+        const navStep = computeArenaNavigationRoute(
+          activeArena,
+          px,
+          pz,
+          this.arenaTarget.x,
+          this.arenaTarget.z
+        );
+        const gdx = navStep.x - px;
+        const gdz = navStep.z - pz;
+        const gLen = Math.hypot(gdx, gdz);
+        if (gLen > 0.5) {
+          this.force.x += (gdx / gLen) * driveStrength * 1.15;
+          this.force.y += (gdz / gLen) * driveStrength * 1.15;
+        }
+      }
+    }
 
     if (!guiParams.isPaused && !groomingActive) {
       this.force.x += (Math.sin(t * 2.3) * 0.34 + (random() - 0.5) * 0.24) * driveStrength * 0.34;
@@ -5161,53 +5361,79 @@ class ExpertMouse {
     const uprightReduction = this.rearing.mode === 'wall-supported'
       ? this.rearAmount * 1.45
       : 0;
-    const marginPosX = Math.max(1.25, computeOrientedWallMargin(
-      this.heading.x, this.heading.y, -1, 0, bodyLenScale, snoutLenScale, chonk, this.spineFlex.stretch
-    ) - uprightReduction);
-    const marginNegX = Math.max(1.25, computeOrientedWallMargin(
-      this.heading.x, this.heading.y, 1, 0, bodyLenScale, snoutLenScale, chonk, this.spineFlex.stretch
-    ) - uprightReduction);
-    const marginPosZ = Math.max(1.25, computeOrientedWallMargin(
-      this.heading.x, this.heading.y, 0, -1, bodyLenScale, snoutLenScale, chonk, this.spineFlex.stretch
-    ) - uprightReduction);
-    const marginNegZ = Math.max(1.25, computeOrientedWallMargin(
-      this.heading.x, this.heading.y, 0, 1, bodyLenScale, snoutLenScale, chonk, this.spineFlex.stretch
-    ) - uprightReduction);
     const baseBodyMargin = computeOrientedWallMargin(
       this.heading.x, this.heading.y, nearest.normalX, nearest.normalZ,
       bodyLenScale, snoutLenScale, chonk, this.spineFlex.stretch
     );
 
-    if (this.mesh.position.x > ENCLOSURE_HALF_X - marginPosX) { this.mesh.position.x = ENCLOSURE_HALF_X - marginPosX; this.velocity.x = -Math.abs(this.velocity.x) * 0.22; hitWall = true; hitXWall = true; }
-    if (this.mesh.position.x < -ENCLOSURE_HALF_X + marginNegX) { this.mesh.position.x = -ENCLOSURE_HALF_X + marginNegX; this.velocity.x = Math.abs(this.velocity.x) * 0.22; hitWall = true; hitXWall = true; }
-    if (this.mesh.position.z > ENCLOSURE_HALF_Z - marginPosZ) { this.mesh.position.z = ENCLOSURE_HALF_Z - marginPosZ; this.velocity.y = -Math.abs(this.velocity.y) * 0.22; hitWall = true; hitZWall = true; }
-    if (this.mesh.position.z < -ENCLOSURE_HALF_Z + marginNegZ) { this.mesh.position.z = -ENCLOSURE_HALF_Z + marginNegZ; this.velocity.y = Math.abs(this.velocity.y) * 0.22; hitWall = true; hitZWall = true; }
-    if (hitWall) {
-      const minTurnSpeed = Math.max(this.guiParams.maxSpeed * 0.42, 2.0);
-      const clearPosX = ENCLOSURE_HALF_X - this.mesh.position.x;
-      const clearNegX = ENCLOSURE_HALF_X + this.mesh.position.x;
-      const clearPosZ = ENCLOSURE_HALF_Z - this.mesh.position.z;
-      const clearNegZ = ENCLOSURE_HALF_Z + this.mesh.position.z;
-      if (hitXWall && !hitZWall) {
-        const turnSignZ = clearPosZ >= clearNegZ ? 1 : -1;
-        this.velocity.y = turnSignZ * Math.max(Math.abs(this.velocity.y), minTurnSpeed);
-        this.wallFollowDir = turnSignZ;
-      } else if (hitZWall && !hitXWall) {
-        const turnSignX = clearPosX >= clearNegX ? 1 : -1;
-        this.velocity.x = turnSignX * Math.max(Math.abs(this.velocity.x), minTurnSpeed);
-        this.wallFollowDir = turnSignX;
-      } else {
-        // Corner: choose axis with more free space.
-        if (Math.max(clearPosX, clearNegX) >= Math.max(clearPosZ, clearNegZ)) {
-          const turnSignX = clearPosX >= clearNegX ? 1 : -1;
-          this.velocity.x = turnSignX * minTurnSpeed;
-        } else {
+    if (activeArena.legacyRect) {
+      const marginPosX = Math.max(1.25, computeOrientedWallMargin(
+        this.heading.x, this.heading.y, -1, 0, bodyLenScale, snoutLenScale, chonk, this.spineFlex.stretch
+      ) - uprightReduction);
+      const marginNegX = Math.max(1.25, computeOrientedWallMargin(
+        this.heading.x, this.heading.y, 1, 0, bodyLenScale, snoutLenScale, chonk, this.spineFlex.stretch
+      ) - uprightReduction);
+      const marginPosZ = Math.max(1.25, computeOrientedWallMargin(
+        this.heading.x, this.heading.y, 0, -1, bodyLenScale, snoutLenScale, chonk, this.spineFlex.stretch
+      ) - uprightReduction);
+      const marginNegZ = Math.max(1.25, computeOrientedWallMargin(
+        this.heading.x, this.heading.y, 0, 1, bodyLenScale, snoutLenScale, chonk, this.spineFlex.stretch
+      ) - uprightReduction);
+
+      if (this.mesh.position.x > ENCLOSURE_HALF_X - marginPosX) { this.mesh.position.x = ENCLOSURE_HALF_X - marginPosX; this.velocity.x = -Math.abs(this.velocity.x) * 0.22; hitWall = true; hitXWall = true; }
+      if (this.mesh.position.x < -ENCLOSURE_HALF_X + marginNegX) { this.mesh.position.x = -ENCLOSURE_HALF_X + marginNegX; this.velocity.x = Math.abs(this.velocity.x) * 0.22; hitWall = true; hitXWall = true; }
+      if (this.mesh.position.z > ENCLOSURE_HALF_Z - marginPosZ) { this.mesh.position.z = ENCLOSURE_HALF_Z - marginPosZ; this.velocity.y = -Math.abs(this.velocity.y) * 0.22; hitWall = true; hitZWall = true; }
+      if (this.mesh.position.z < -ENCLOSURE_HALF_Z + marginNegZ) { this.mesh.position.z = -ENCLOSURE_HALF_Z + marginNegZ; this.velocity.y = Math.abs(this.velocity.y) * 0.22; hitWall = true; hitZWall = true; }
+      if (hitWall) {
+        const minTurnSpeed = Math.max(this.guiParams.maxSpeed * 0.42, 2.0);
+        const clearPosX = ENCLOSURE_HALF_X - this.mesh.position.x;
+        const clearNegX = ENCLOSURE_HALF_X + this.mesh.position.x;
+        const clearPosZ = ENCLOSURE_HALF_Z - this.mesh.position.z;
+        const clearNegZ = ENCLOSURE_HALF_Z + this.mesh.position.z;
+        if (hitXWall && !hitZWall) {
           const turnSignZ = clearPosZ >= clearNegZ ? 1 : -1;
-          this.velocity.y = turnSignZ * minTurnSpeed;
+          this.velocity.y = turnSignZ * Math.max(Math.abs(this.velocity.y), minTurnSpeed);
+          this.wallFollowDir = turnSignZ;
+        } else if (hitZWall && !hitXWall) {
+          const turnSignX = clearPosX >= clearNegX ? 1 : -1;
+          this.velocity.x = turnSignX * Math.max(Math.abs(this.velocity.x), minTurnSpeed);
+          this.wallFollowDir = turnSignX;
+        } else {
+          // Corner: choose axis with more free space.
+          if (Math.max(clearPosX, clearNegX) >= Math.max(clearPosZ, clearNegZ)) {
+            const turnSignX = clearPosX >= clearNegX ? 1 : -1;
+            this.velocity.x = turnSignX * minTurnSpeed;
+          } else {
+            const turnSignZ = clearPosZ >= clearNegZ ? 1 : -1;
+            this.velocity.y = turnSignZ * minTurnSpeed;
+          }
+          this.wallFollowDir *= -1;
         }
-        this.wallFollowDir *= -1;
+        // Heading will reorient through angular inertia below.
       }
-      // Heading will reorient through angular inertia below.
+    } else {
+      const resolved = resolveArenaPosition(
+        activeArena,
+        this.mesh.position.x,
+        this.mesh.position.z,
+        this.velocity.x,
+        this.velocity.y,
+        this.heading.x,
+        this.heading.y,
+        bodyLenScale,
+        snoutLenScale,
+        chonk,
+        this.spineFlex.stretch,
+        uprightReduction,
+        this.guiParams.maxSpeed,
+        this.wallFollowDir
+      );
+      this.mesh.position.x = resolved.x;
+      this.mesh.position.z = resolved.z;
+      this.velocity.x = resolved.vx;
+      this.velocity.y = resolved.vz;
+      hitWall = resolved.hitWall;
+      this.wallFollowDir = resolved.wallFollowDir;
     }
     const impactNorm = Math.min(
       this.velocity.length() / Math.max(this.guiParams.maxSpeed, 1e-3),
@@ -5343,6 +5569,11 @@ class ExpertMouse {
       // Display estimates must not consume the behavioral random stream.
       hudRef.resp.innerText = isMoving && !isPausing ? "215 BPM" : (162 + Math.round(Math.sin(time * 0.7) * 7)) + " BPM";
       hudRef.coord.innerText = `${this.mesh.position.x.toFixed(2)}, ${this.mesh.position.z.toFixed(2)}`;
+      if (hudRef.zone) {
+        hudRef.zone.innerText = formatArenaZoneLabel(
+          classifyArenaZone(activeArena, this.mesh.position.x, this.mesh.position.z)
+        );
+      }
       if (hudRef.gait) {
         hudRef.gait.innerText = this.motor.isStepping()
           ? `${this.motor.cpg.gait.toUpperCase()} · ${this.motor.cpg.frequencyHz.toFixed(1)} HZ`
@@ -6596,13 +6827,17 @@ const mice = [];
 let nextTrackId = 1;
 let flyBrainRuntimeReady = false;
 const hudElements = {
+  title: document.getElementById('hud-title'),
   count: document.getElementById('hud-count'),
+  zone: document.getElementById('hud-zone'),
   state: document.getElementById('hud-state'),
   hr: document.getElementById('hud-hr'),
   resp: document.getElementById('hud-resp'),
   coord: document.getElementById('hud-coord'),
   gait: document.getElementById('hud-gait'),
 };
+const customArenaGroups = new Map();
+let syncFlyArenaZonePositions = () => {};
 
 // Shared shader engine is initialized with the model factory above.
 const postFX = annolidShaders.createPostProcessing(renderer, {
@@ -6645,16 +6880,97 @@ if (DATASET_CAPTURE && DATASET_CAMERA_VIEW === 'bottom-up') {
   scene.add(ventralLight);
 }
 
-function applyArenaStyle(styleName) {
-  const isHomeCage = styleName === 'Home Cage (Bedding)';
+function repositionMiceForArena(arenaSpec) {
+  if (mice.length === 0) return;
+  const placed = [];
+  mice.forEach((m, index) => {
+    const pose = sampleArenaSpawnPose(
+      arenaSpec,
+      arenaNavRandom,
+      placed,
+      index < arenaSpec.spawnSlots.length ? index : null
+    );
+    const dir = new THREE.Vector2(pose.heading[0], pose.heading[1]);
+    if (dir.lengthSq() < 1e-6) dir.set(1, 0);
+    dir.normalize();
+    m.mesh.position.set(pose.position[0], 0, pose.position[1]);
+    m.heading.copy(dir);
+    m.yawAngle = Math.atan2(dir.x, dir.y);
+    m.prevHeadingAngle = m.yawAngle;
+    m.mesh.rotation.y = m.yawAngle;
+    const launchSpeed = Math.min(Math.max(m.velocity.length(), 1.2), guiParams.maxSpeed * 0.45);
+    m.velocity.set(dir.x * launchSpeed, dir.y * launchSpeed);
+    m.prevVelocity.copy(m.velocity);
+    m.lastPos.set(pose.position[0], pose.position[1]);
+    m.stuckTimer = 0;
+    m.lowSpeedTimer = 0;
+    m.arenaTarget = null;
+    m.arenaTargetTimer = 0;
+    if (m.rearing.mode === 'wall-supported') {
+      m.rearing.mode = 'none';
+      m.rearing.phase = 'idle';
+      m.rearAmount = 0;
+      m.rearVel = 0;
+      m.rearing.angle = 0;
+      m.rearing.angularVelocity = 0;
+    }
+    for (const foot of m.footPlants) {
+      foot.planted = false;
+      foot.exhausted = false;
+      foot.slip = 0;
+    }
+    m.tailWorldPoints = null;
+    m.tailWorldVel = null;
+    m.mesh.updateMatrixWorld(true);
+    placed.push(pose.position);
+  });
+  resolveAllMouseContacts(mice, 1 / DATASET_SIMULATION_HZ);
+  if (hudElements.zone && mice[0]) {
+    hudElements.zone.innerText = formatArenaZoneLabel(
+      classifyArenaZone(arenaSpec, mice[0].mesh.position.x, mice[0].mesh.position.z)
+    );
+  }
+}
+
+function applyArenaStyle(styleName, options = {}) {
+  const prevArena = activeArena;
+  const nextArena = getArenaSpec(styleName);
+  activeArena = nextArena;
+  const isHomeCage = nextArena.id === 'home_cage';
+  const isOpenField = nextArena.id === 'open_field';
+  const isLegacy = nextArena.legacyRect;
   const isVentral = DATASET_CAPTURE && DATASET_CAMERA_VIEW === 'bottom-up';
+
+  for (const [arenaId, grp] of customArenaGroups.entries()) {
+    grp.visible = arenaId === nextArena.id && !isVentral;
+  }
+
+  if (!isLegacy && !isVentral) {
+    let customGroup = customArenaGroups.get(nextArena.id);
+    if (!customGroup) {
+      customGroup = createArenaVisual(THREE, nextArena, {
+        simulationSeed,
+        labFloorAlbedoMap,
+        labFloorRoughnessMap,
+        labFloorNormalMap,
+      });
+      if (customGroup) {
+        customArenaGroups.set(nextArena.id, customGroup);
+        scene.add(customGroup);
+      }
+    }
+    if (customGroup) customGroup.visible = true;
+  }
+
+  floor.visible = isLegacy && !isVentral;
   homeCageGroup.visible = isHomeCage && !isVentral;
-  enclosureBox.visible = !isHomeCage;
-  enclosureEdges.visible = !isHomeCage;
-  arenaHardwareGroup.visible = !isHomeCage;
-  floorMarksLayer.visible = !isHomeCage && !isVentral;
-  beddingLayer.visible = !isVentral;
-  grid.visible = !isHomeCage && !isVentral;
+  enclosureBox.visible = isOpenField;
+  enclosureEdges.visible = isOpenField;
+  arenaHardwareGroup.visible = isOpenField;
+  floorMarksLayer.visible = isOpenField && !isVentral;
+  beddingLayer.visible = isLegacy && !isVentral;
+  grid.visible = isOpenField && !isVentral;
+
   if (isHomeCage) {
     // Fit the textured bedding plane cleanly inside the rounded polycarbonate shoebox base
     floor.scale.set(0.732, 0.688, 1.0);
@@ -6666,7 +6982,8 @@ function applyArenaStyle(styleName) {
     floorMat.roughness = 0.94;
     floorMat.emissiveIntensity = 0.0;
     floorMat.clearcoat = 0.0;
-  } else {
+    floorMat.needsUpdate = true;
+  } else if (isOpenField) {
     floor.scale.set(1.0, 1.0, 1.0);
     floorMat.color.setHex(0xf5f6f4);
     floorMat.map = labFloorAlbedoMap;
@@ -6676,8 +6993,52 @@ function applyArenaStyle(styleName) {
     floorMat.roughness = 0.82;
     floorMat.emissiveIntensity = 0.010;
     floorMat.clearcoat = 0.05;
+    floorMat.needsUpdate = true;
   }
-  floorMat.needsUpdate = true;
+
+  // Keep Open Field / Home Cage shadow frustum exact; widen for elevated and large maze arenas.
+  if (isLegacy) {
+    keyLight.shadow.camera.left = -20;
+    keyLight.shadow.camera.right = 20;
+    keyLight.shadow.camera.top = 15;
+    keyLight.shadow.camera.bottom = -15;
+    keyLight.shadow.camera.far = 30;
+  } else {
+    keyLight.shadow.camera.left = -27;
+    keyLight.shadow.camera.right = 27;
+    keyLight.shadow.camera.top = 25;
+    keyLight.shadow.camera.bottom = -25;
+    keyLight.shadow.camera.far = 46;
+  }
+  keyLight.shadow.camera.updateProjectionMatrix();
+
+  if (hudElements.title) {
+    hudElements.title.textContent = nextArena.hudTitle;
+  }
+  cameraBasePosition.set(...nextArena.defaultCamera.position);
+  cameraTarget.set(...nextArena.defaultCamera.target);
+
+  syncFlyArenaZonePositions();
+
+  const geometryChanged = prevArena.id !== nextArena.id
+    && !(prevArena.legacyRect && nextArena.legacyRect);
+  if (options.repositionMice !== false && mice.length > 0 && geometryChanged) {
+    repositionMiceForArena(nextArena);
+  } else if (hudElements.zone && mice[0]) {
+    hudElements.zone.innerText = formatArenaZoneLabel(
+      classifyArenaZone(nextArena, mice[0].mesh.position.x, mice[0].mesh.position.z)
+    );
+  }
+  if (options.reframeCamera !== false && typeof guiParams !== 'undefined') {
+    if (!DATASET_CAPTURE) {
+      frameCameraView();
+    } else if (!DATASET_CAMERA_VIEW && !ANATOMY_QA && !REARING_QA && !CONTACT_QA) {
+      camera.up.set(0, 1, 0);
+      camera.position.copy(cameraBasePosition);
+      controls.target.copy(cameraTarget);
+      controls.update();
+    }
+  }
 }
 
 if (DATASET_LIGHTING === 'ir_night') {
@@ -6724,7 +7085,7 @@ if (DATASET_LIGHTING === 'ir_night') {
   softbox.intensity = 0.68;
 }
 
-const isHomeCageDefault = DATASET_ARENA === 'home_cage';
+const isHomeCageDefault = INITIAL_ARENA_SPEC.id === 'home_cage';
 const bodyScaleMul = DATASET_BODY_SCALE;
 const guiParams = {
   furColor: '#ffffff', skinColor: '#f0c8b8',
@@ -6733,7 +7094,7 @@ const guiParams = {
   furDensity: 1.0,
   showTrackingKeypoints: false, wireframeMode: false, isPaused: false,
   implantHeadstage: false,
-  arenaStyle: isHomeCageDefault ? 'Home Cage (Bedding)' : 'Open Field',
+  arenaStyle: INITIAL_ARENA_SPEC.label,
   playbackSpeed: 1.0, cameraView: 'Both mice',
   addSubject: () => spawnMouse(), clearSubjects: () => clearMice(),
   presets: 'BALB/c (White)',
@@ -6807,8 +7168,8 @@ postFX.enabled = guiParams.enablePostFX;
 postFX.uniforms.uVigIntensity.value = guiParams.postVignette;
 postFX.uniforms.uGrainStrength.value = guiParams.postGrain;
 postFX.uniforms.uSaturation.value = guiParams.postSaturation;
-if (DATASET_ARENA === 'home_cage') {
-  applyArenaStyle('Home Cage (Bedding)');
+if (INITIAL_ARENA_SPEC.id !== 'open_field') {
+  applyArenaStyle(INITIAL_ARENA_SPEC.id, { repositionMice: false, reframeCamera: false });
 }
 
 function getStrainProfile(presetName) {
@@ -7024,8 +7385,8 @@ traitFolder.add(guiParams, 'furDensity', 0.0, 1.0).name('Fur Density').onFinishC
 
 // Simulation Controls
 const controlFolder = gui.addFolder('Simulation Controls');
-controlFolder.add(guiParams, 'arenaStyle', ['Open Field', 'Home Cage (Bedding)'])
-  .name('Arena').onChange(applyArenaStyle);
+controlFolder.add(guiParams, 'arenaStyle', ARENA_LABELS)
+  .name('Arena').onChange(v => applyArenaStyle(v, { repositionMice: true, reframeCamera: true }));
 controlFolder.add(guiParams, 'isPaused').name('Pause Simulation');
 controlFolder.add(guiParams, 'playbackSpeed', 0.25, 1.5, 0.25).name('Playback Speed');
 controlFolder.add(guiParams, 'cameraView', ['Both mice', 'Follow black', 'Follow white', 'Top down', 'Home cage top'])
@@ -7258,7 +7619,7 @@ function spawnMouse(options = {}) {
     const heading = Array.isArray(options.heading) ? options.heading : [0, 1];
     inX = Number(heading[0] || 0);
     inZ = Number(heading[1] || 0);
-  } else {
+  } else if (activeArena.legacyRect) {
     const wall = Math.floor(random() * 4);
     const wo = 4.6;
     switch (wall) {
@@ -7267,9 +7628,15 @@ function spawnMouse(options = {}) {
       case 2: m.mesh.position.x = (random() - 0.5) * ENCLOSURE_HALF_X * 1.5; m.mesh.position.z = ENCLOSURE_HALF_Z - wo; inZ = -1; break;
       case 3: m.mesh.position.x = (random() - 0.5) * ENCLOSURE_HALF_X * 1.5; m.mesh.position.z = -ENCLOSURE_HALF_Z + wo; inZ = 1; break;
     }
+  } else {
+    const existingPositions = mice.map(other => [other.mesh.position.x, other.mesh.position.z]);
+    const pose = sampleArenaSpawnPose(activeArena, arenaNavRandom, existingPositions);
+    m.mesh.position.set(pose.position[0], 0, pose.position[1]);
+    inX = pose.heading[0];
+    inZ = pose.heading[1];
   }
   const dir = new THREE.Vector2(inX, inZ);
-  if (!options.position) {
+  if (!options.position && activeArena.legacyRect) {
     const tangentialKick = (random() - 0.5) * 0.9;
     if (Math.abs(inX) > 0) dir.y += tangentialKick;
     else dir.x += tangentialKick;
@@ -7304,6 +7671,7 @@ function clearMice() {
   });
   mice.length = 0;
   hudElements.count.innerText = 0;
+  if (hudElements.zone) hudElements.zone.innerText = '--';
   hudElements.state.innerText = "NO SUBJECTS";
   hudElements.hr.innerText = "-- BPM";
   hudElements.resp.innerText = "-- BPM";
@@ -7314,45 +7682,59 @@ function clearMice() {
   }
 }
 
-// Spawn initial subjects
+// Spawn initial subjects (preserve exact legacy coordinates for Open Field / Home Cage;
+// use arena-specific spawn slots for mazes and multi-chamber arenas).
+const initialSlot0 = activeArena.legacyRect
+  ? { position: [-3.6, -2.6], heading: [1.0, 0.12] }
+  : activeArena.spawnSlots[0];
+const initialSlot1 = activeArena.legacyRect
+  ? { position: [3.3, 2.6], heading: [-1.0, -0.12] }
+  : activeArena.spawnSlots[1];
 if (DATASET_COAT_PAIR === 'c57_pair' || DATASET_COAT_PAIR === 'black_pair') {
   applyStrainPreset('C57BL/6 (Black)');
-  spawnMouse({ position: [-3.6, -2.6], heading: [1.0, 0.12], speed: 0.9 });
+  spawnMouse({ position: initialSlot0.position, heading: initialSlot0.heading, speed: 0.9 });
   applyStrainPreset('C57BL/6 (Black)');
   gui.controllersRecursive().forEach(c => c.updateDisplay());
-  spawnMouse({ position: [3.3, 2.6], heading: [-1.0, -0.12], speed: 0.85 });
+  spawnMouse({ position: initialSlot1.position, heading: initialSlot1.heading, speed: 0.85 });
 } else if (DATASET_COAT_PAIR === 'balbc_pair' || DATASET_COAT_PAIR === 'white_pair') {
   applyStrainPreset('BALB/c (White)');
-  spawnMouse({ position: [-3.6, -2.6], heading: [1.0, 0.12], speed: 0.9 });
+  spawnMouse({ position: initialSlot0.position, heading: initialSlot0.heading, speed: 0.9 });
   applyStrainPreset('BALB/c (White)');
   gui.controllersRecursive().forEach(c => c.updateDisplay());
-  spawnMouse({ position: [3.3, 2.6], heading: [-1.0, -0.12], speed: 0.85 });
+  spawnMouse({ position: initialSlot1.position, heading: initialSlot1.heading, speed: 0.85 });
 } else if (DATASET_COAT_PAIR === 'cba_pair' || DATASET_COAT_PAIR === 'brown_pair') {
   applyStrainPreset('CBA (Brown)');
-  spawnMouse({ position: [-3.6, -2.6], heading: [1.0, 0.12], speed: 0.9 });
+  spawnMouse({ position: initialSlot0.position, heading: initialSlot0.heading, speed: 0.9 });
   applyStrainPreset('CBA (Brown)');
   gui.controllersRecursive().forEach(c => c.updateDisplay());
-  spawnMouse({ position: [3.3, 2.6], heading: [-1.0, -0.12], speed: 0.85 });
+  spawnMouse({ position: initialSlot1.position, heading: initialSlot1.heading, speed: 0.85 });
 } else if (DATASET_COAT_PAIR === 'nude_pair' || DATASET_COAT_PAIR === 'hairless_pair') {
   applyStrainPreset('Nude/Hairless');
-  spawnMouse({ position: [-3.6, -2.6], heading: [1.0, 0.12], speed: 0.9 });
+  spawnMouse({ position: initialSlot0.position, heading: initialSlot0.heading, speed: 0.9 });
   applyStrainPreset('Nude/Hairless');
   gui.controllersRecursive().forEach(c => c.updateDisplay());
-  spawnMouse({ position: [3.3, 2.6], heading: [-1.0, -0.12], speed: 0.85 });
+  spawnMouse({ position: initialSlot1.position, heading: initialSlot1.heading, speed: 0.85 });
 } else {
   applyStrainPreset('C57BL/6 (Black)');
-  spawnMouse({ position: [-3.6, -2.6], heading: [1.0, 0.12], speed: 0.9 });
+  spawnMouse({ position: initialSlot0.position, heading: initialSlot0.heading, speed: 0.9 });
   applyStrainPreset('BALB/c (White)');
   gui.controllersRecursive().forEach(c => c.updateDisplay());
-  spawnMouse({ position: [3.3, 2.6], heading: [-1.0, -0.12], speed: 0.85 });
+  spawnMouse({ position: initialSlot1.position, heading: initialSlot1.heading, speed: 0.85 });
 }
 if (DATASET_SUBJECT_COUNT > 2) {
-  const extraSpawns = [
-    { strain: 'C57BL/6 (Black)', position: [-3.4, 2.5], heading: [0.85, -0.52], speed: 0.88 },
-    { strain: 'BALB/c (White)', position: [3.5, -2.5], heading: [-0.85, 0.52], speed: 0.86 },
-    { strain: 'C57BL/6 (Black)', position: [0.0, -3.2], heading: [0.15, 0.98], speed: 0.84 },
-    { strain: 'BALB/c (White)', position: [0.0, 3.2], heading: [-0.15, -0.98], speed: 0.84 },
-  ];
+  const extraSpawns = activeArena.legacyRect
+    ? [
+      { strain: 'C57BL/6 (Black)', position: [-3.4, 2.5], heading: [0.85, -0.52], speed: 0.88 },
+      { strain: 'BALB/c (White)', position: [3.5, -2.5], heading: [-0.85, 0.52], speed: 0.86 },
+      { strain: 'C57BL/6 (Black)', position: [0.0, -3.2], heading: [0.15, 0.98], speed: 0.84 },
+      { strain: 'BALB/c (White)', position: [0.0, 3.2], heading: [-0.15, -0.98], speed: 0.84 },
+    ]
+    : activeArena.spawnSlots.slice(2).map((slot, idx) => ({
+      strain: idx % 2 === 0 ? 'C57BL/6 (Black)' : 'BALB/c (White)',
+      position: slot.position,
+      heading: slot.heading,
+      speed: 0.86,
+    }));
   for (let ei = 0; ei < DATASET_SUBJECT_COUNT - 2 && ei < extraSpawns.length; ei++) {
     const spec = extraSpawns[ei];
     applyStrainPreset(spec.strain);
@@ -7406,6 +7788,8 @@ const FLY_REGION_COLORS = Object.freeze({
 });
 
 let flyZonesGroup = null;
+let flyRewardZoneGroup = null;
+let flyHazardZoneGroup = null;
 let flyRewardPulseMesh = null;
 let flyHazardPulseMesh = null;
 let lastFlyHudUpdate = -1;
@@ -7476,15 +7860,37 @@ function ensureFlyArenaZones() {
     sub.add(innerMesh);
 
     flyZonesGroup.add(sub);
-    return innerMesh;
+    return { group: sub, pulseMesh: innerMesh, baseRadius: zone.radius };
   };
 
-  flyRewardPulseMesh = makeZoneVisual(FLY_ARENA_ZONES.reward);
-  flyHazardPulseMesh = makeZoneVisual(FLY_ARENA_ZONES.hazard);
+  const zones = getArenaFlyZones(activeArena);
+  const rewardVisual = makeZoneVisual(zones.reward);
+  const hazardVisual = makeZoneVisual(zones.hazard);
+  flyRewardZoneGroup = rewardVisual.group;
+  flyRewardZoneGroup.userData.baseRadius = rewardVisual.baseRadius;
+  flyRewardPulseMesh = rewardVisual.pulseMesh;
+  flyHazardZoneGroup = hazardVisual.group;
+  flyHazardZoneGroup.userData.baseRadius = hazardVisual.baseRadius;
+  flyHazardPulseMesh = hazardVisual.pulseMesh;
   flyZonesGroup.visible = false;
   scene.add(flyZonesGroup);
   return flyZonesGroup;
 }
+
+syncFlyArenaZonePositions = () => {
+  if (!flyZonesGroup) return;
+  const zones = getArenaFlyZones(activeArena);
+  if (flyRewardZoneGroup) {
+    flyRewardZoneGroup.position.set(zones.reward.x, 0.036, zones.reward.z);
+    const scale = zones.reward.radius / (flyRewardZoneGroup.userData.baseRadius || zones.reward.radius);
+    flyRewardZoneGroup.scale.set(scale, 1, scale);
+  }
+  if (flyHazardZoneGroup) {
+    flyHazardZoneGroup.position.set(zones.hazard.x, 0.036, zones.hazard.z);
+    const scale = zones.hazard.radius / (flyHazardZoneGroup.userData.baseRadius || zones.hazard.radius);
+    flyHazardZoneGroup.scale.set(scale, 1, scale);
+  }
+};
 
 function syncFlyArenaZonesVisibility() {
   const anyFlyActive = mice.some(m => m.flyBrainEnabled && m.flyBrain);
@@ -7594,11 +8000,21 @@ function encodeMouseSensoryForFlyBrain(mouse, allMice) {
   let looming = 0;
   let wallAhead = 0;
 
+  const activeFlyZones = getArenaFlyZones(activeArena);
+
   // 1. Reward Zone sucrose odor plume + PAM reward dopamine
-  const reward = FLY_ARENA_ZONES.reward;
-  const rProj = project(reward.x, reward.z);
-  const inReward = rProj.dist < reward.radius;
-  const rewardProximity = Math.exp(-Math.max(0, rProj.dist - reward.radius * 0.65) / 8.5);
+  //    In multi-arm / multi-chamber mazes, diffuse the olfactory gradient through
+  //    corridor hubs and doorways rather than cutting through solid interior walls.
+  const reward = activeFlyZones.reward;
+  const directRewardDist = Math.hypot(reward.x - mx, reward.z - mz);
+  const inReward = directRewardDist < reward.radius;
+  const rewardRoute = activeArena.legacyRect
+    ? { x: reward.x, z: reward.z, effectiveDist: directRewardDist, routed: false }
+    : computeArenaNavigationRoute(activeArena, mx, mz, reward.x, reward.z);
+  const rProj = project(rewardRoute.x, rewardRoute.z);
+  const effectiveRewardDist = activeArena.legacyRect ? rProj.dist : rewardRoute.effectiveDist;
+  const rewardDecayLength = rewardRoute.routed ? 18.0 : 8.5;
+  const rewardProximity = Math.exp(-Math.max(0, effectiveRewardDist - reward.radius * 0.65) / rewardDecayLength);
   const appScale = brain.plasticPathways.get('reward_approach')?.scale ?? 1.0;
   const avScale = brain.plasticPathways.get('reward_avoid')?.scale ?? 1.0;
   const rewardGain = THREE.MathUtils.clamp(0.48 + (appScale - avScale) * 0.36, 0.15, 1.35);
@@ -7619,7 +8035,7 @@ function encodeMouseSensoryForFlyBrain(mouse, allMice) {
   const rewardDopamine = inReward ? 1.35 : 0.0;
 
   // 2. Hazard Zone aversive cue + PPL1 punishment dopamine
-  const hazard = FLY_ARENA_ZONES.hazard;
+  const hazard = activeFlyZones.hazard;
   const hProj = project(hazard.x, hazard.z);
   const inHazard = hProj.dist < hazard.radius;
   const hazardOuter = hazard.radius * 2.15;
@@ -7668,13 +8084,16 @@ function encodeMouseSensoryForFlyBrain(mouse, allMice) {
   // 4. Anterior whiskers -> Tactile_Ant (MDN moonwalk + turn back toward open field)
   const probeX = mx + fx * 2.15;
   const probeZ = mz + fz * 2.15;
-  const clearX = ENCLOSURE_HALF_X - Math.abs(probeX);
-  const clearZ = ENCLOSURE_HALF_Z - Math.abs(probeZ);
-  const minClear = Math.min(clearX, clearZ);
+  const minClear = activeArena.legacyRect
+    ? Math.min(ENCLOSURE_HALF_X - Math.abs(probeX), ENCLOSURE_HALF_Z - Math.abs(probeZ))
+    : computeArenaWhiskerClearance(activeArena, probeX, probeZ);
   if (minClear < 1.35) {
     wallAhead = THREE.MathUtils.clamp((1.35 - minClear) / 1.15, 0, 1.55);
-    const centerProj = project(0, 0);
-    if (centerProj.left >= 0) odorLeft += 0.55;
+    const escapeTarget = activeArena.legacyRect
+      ? { x: 0, z: 0 }
+      : computeArenaWallEscapeTarget(activeArena, mx, mz);
+    const escapeProj = project(escapeTarget.x, escapeTarget.z);
+    if (escapeProj.left >= 0) odorLeft += 0.55;
     else odorRight += 0.55;
   }
 
@@ -8304,8 +8723,9 @@ function frameCameraView() {
     controls.target.copy(subject.mesh.position).y = 1.0;
     camera.position.copy(controls.target).add(new THREE.Vector3(8.5, 3.8, 8.5));
   } else if (guiParams.cameraView === 'Top down') {
-    controls.target.set(0, 0, 0);
-    camera.position.set(0, 44, 0.01);
+    const topY = activeArena.defaultCamera?.topDownHeight || 44;
+    controls.target.set(0, 0, activeArena.defaultCamera?.target?.[2] || 0);
+    camera.position.set(0, topY, (activeArena.defaultCamera?.target?.[2] || 0) + 0.01);
   } else if (guiParams.cameraView === 'Home cage top') {
     camera.up.set(0, 0, -1);
     camera.fov = 25.5;
@@ -8398,9 +8818,11 @@ window.addEventListener('resize', () => {
     camera.up.set(0, 0, -1);
     controls.target.set(0, 0.35, 0);
   } else if (DATASET_CAPTURE && DATASET_CAMERA_VIEW === 'top') {
-    camera.position.set(0, 29.0, 0.02);
+    const topY = activeArena.legacyRect ? 29.0 : (activeArena.defaultCamera?.topDownHeight || 52.0);
+    const topZ = activeArena.legacyRect ? 0 : (activeArena.defaultCamera?.target?.[2] || 0);
+    camera.position.set(0, topY, topZ + 0.02);
     camera.up.set(0, 0, -1);
-    controls.target.set(0, 0.35, 0);
+    controls.target.set(0, 0.35, topZ);
   } else if (DATASET_CAPTURE && DATASET_CAMERA_VIEW === 'home-cage-top') {
     camera.fov = 25.5;
     camera.position.set(0, 56.5, 0.02);
@@ -8464,11 +8886,14 @@ window.annolidTwoMice = Object.freeze({
     time: accumulatedTime,
     paused: guiParams.isPaused,
     simulationHz: DATASET_SIMULATION_HZ,
+    arena: activeArena.id,
+    arenaLabel: activeArena.label,
     subjects: mice.map(mouse => ({
       trackId: mouse.trackId,
       strain: mouse.appearance.strain,
       position: mouse.mesh.position.toArray(),
       heading: mouse.yawAngle,
+      zone: classifyArenaZone(activeArena, mouse.mesh.position.x, mouse.mesh.position.z),
       gait: mouse.motor.cpg.gait,
       stepping: mouse.motor.isStepping(),
       commanded: Boolean(mouse.externalCommand),
@@ -8482,6 +8907,18 @@ window.annolidTwoMice = Object.freeze({
       textures: renderer.info.memory.textures,
     },
   }),
+  getArenas: () => ARENA_CATALOG.map(summarizeArenaSpec),
+  getArena: () => summarizeArenaSpec(activeArena),
+  setArena: (idOrLabel, options = {}) => {
+    const spec = getArenaSpec(idOrLabel);
+    guiParams.arenaStyle = spec.label;
+    applyArenaStyle(spec.id, {
+      repositionMice: options.repositionMice !== false,
+      reframeCamera: options.reframeCamera !== false,
+    });
+    gui.controllersRecursive().forEach(c => c.updateDisplay());
+    return summarizeArenaSpec(activeArena);
+  },
   getActionSpec: () => getMouseActionSpec(),
   getObservation: trackId => findSubjectByTrackId(trackId).getObservation(),
   getObservations: () => mice.map(mouse => mouse.getObservation()),
@@ -8495,7 +8932,7 @@ window.annolidTwoMice = Object.freeze({
     ...FLY_BRAIN_METADATA,
     groups: FLY_NEURON_GROUPS.map(g => ({ id: g.id, region: g.region, nt: g.nt, count: g.count, label: g.label })),
     presets: FLY_OPTOGENETIC_PRESETS.map(p => ({ id: p.id, label: p.label, durationSec: p.durationSec })),
-    zones: FLY_ARENA_ZONES,
+    zones: getArenaFlyZones(activeArena),
   }),
   enableFlyBrain: (trackId, options = {}) => {
     const subject = findSubjectByTrackId(trackId);
@@ -9336,6 +9773,7 @@ function disposeSceneResources() {
     resource?.dispose?.();
   }
   disposeSharedResources();
+  customArenaGroups.clear();
   controls.dispose();
   gui.destroy();
 }

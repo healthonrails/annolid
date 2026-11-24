@@ -510,3 +510,104 @@ def test_fly_brain_controls_mouse_behaviors_and_plasticity(scene_page):
     page.evaluate("window.annolidTwoMice.disableFlyBrain(1)")
     assert not page.locator("#fly-brain-panel").is_visible()
     assert page.evaluate("window.annolidTwoMice.getObservation(1).command") is None
+
+
+def test_neuroscience_arenas_switch_simulate_and_render(scene_page):
+    new_arenas = (
+        "circular_open_field",
+        "elevated_plus_maze",
+        "y_maze",
+        "t_maze",
+        "three_chamber",
+        "light_dark_box",
+        "barnes_maze",
+        "novel_object",
+    )
+    page = scene_page("dataset=1&seed=20260719&arena=elevated_plus_maze")
+    catalog = page.evaluate("window.annolidTwoMice.getArenas()")
+    assert len(catalog) == 10
+    assert page.evaluate("window.annolidTwoMice.getArena().id") == "elevated_plus_maze"
+
+    invalid_error = page.evaluate(
+        """() => {
+          try { window.annolidTwoMice.setArena('does_not_exist'); return null; }
+          catch (err) { return err.name; }
+        }"""
+    )
+    assert invalid_error == "RangeError"
+
+    output = os.environ.get("ANNOLID_THREEJS_SCREENSHOT_DIR")
+    if output:
+        Path(output).mkdir(parents=True, exist_ok=True)
+
+    frame_cursor = 0
+    for arena_id in new_arenas:
+        switched = page.evaluate("id => window.annolidTwoMice.setArena(id)", arena_id)
+        assert switched["id"] == arena_id
+        for _ in range(4):
+            frame_cursor += 1
+            payload = page.evaluate(
+                "f => window.annolidPoseDataset.setFrame(f)", frame_cursor
+            )
+        diag = page.evaluate("window.annolidTwoMice.getDiagnostics()")
+        obs = page.evaluate("window.annolidTwoMice.getObservations()")
+        assert diag["arena"] == arena_id
+        assert len(diag["subjects"]) == 2
+        assert all(s["zone"] in switched["zones"] for s in diag["subjects"])
+        assert all(
+            o["arena"] == arena_id and o["zone"] in switched["zones"] for o in obs
+        )
+        assert not payload["image"]["subject_overlap"], f"Subject overlap in {arena_id}"
+        assert not payload["image"]["tail_overlap"], f"Tail overlap in {arena_id}"
+        assert payload["image"]["maximum_tail_segment_length_error"] <= 0.05, (
+            f"Tail stretch error in {arena_id}: {payload['image']}"
+        )
+        assert payload["image"]["maximum_tail_bend_angle_degrees"] <= 16.5, (
+            f"Tail bend error in {arena_id}: {payload['image']}"
+        )
+        assert payload["image"]["maximum_paw_ground_error"] <= 0.1, (
+            f"Paw ground error in {arena_id}: {payload['image']}"
+        )
+        if output:
+            # Frame oblique view cleanly for visual inspection
+            page.evaluate(
+                """() => {
+                  const a = window.annolidTwoMice.getArena();
+                  return a.id;
+                }"""
+            )
+            page.screenshot(path=str(Path(output) / f"arena_{arena_id}.png"))
+
+    # Also verify live GUI dropdown arena switching works without errors
+    live = scene_page("seed=42")
+    live.locator(".lil-gui.root > .title").click()
+    arena_select = (
+        live.locator(".controller").filter(has_text="Arena").first.locator("select")
+    )
+    arena_select.select_option(label="Y-Maze")
+    assert live.evaluate("window.annolidTwoMice.getArena().id") == "y_maze"
+    assert "y-maze" in live.locator("#hud-title").inner_text().lower()
+    arena_select.select_option(label="Three-Chamber Social")
+    assert live.evaluate("window.annolidTwoMice.getArena().id") == "three_chamber"
+    assert "three-chamber" in live.locator("#hud-title").inner_text().lower()
+
+    # Verify Fly-Brain connectome runs cleanly inside a non-convex multi-arm maze (T-Maze)
+    live.evaluate("window.annolidTwoMice.setArena('t_maze')")
+    live.evaluate("window.annolidTwoMice.enableFlyBrain(1)")
+    fb_meta = live.evaluate("window.annolidTwoMice.getFlyBrainMetadata()")
+    assert fb_meta["zones"]["reward"]["x"] == pytest.approx(12.6, abs=0.1)
+    assert fb_meta["zones"]["reward"]["z"] == pytest.approx(-8.6, abs=0.1)
+    live.wait_for_function(
+        "() => (window.annolidTwoMice.getFlyBrainState(1)?.totalSpikes || 0) > 20"
+    )
+    t_diag = live.evaluate("window.annolidTwoMice.getDiagnostics()")
+    assert t_diag["arena"] == "t_maze"
+    assert t_diag["subjects"][0]["zone"] in {
+        "start_box",
+        "start_stem",
+        "choice_point",
+        "left_arm",
+        "right_arm",
+    }
+    live.evaluate("window.annolidTwoMice.disableFlyBrain(1)")
+    live.goto("about:blank")

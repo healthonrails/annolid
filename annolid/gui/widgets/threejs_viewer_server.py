@@ -40,6 +40,7 @@ _THREEJS_ALLOWED_ASSETS = {
     "fly_brain_mouse.html",
     "two_mice_scene.js",
     "two_mice_model.js",
+    "two_mice_arenas.js",
     "two_mice_simulation.js",
     "two_mice_control.js",
     "two_mice_fly_brain.js",

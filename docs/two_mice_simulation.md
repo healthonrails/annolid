@@ -20,6 +20,31 @@ are illustrative estimates.
 
 ![Two-Mouse Three.js 3D simulation showing procedural C57BL/6 and BALB/c mice on an aspen-bedded open-field floor](imgs/showcase/sim_two_mice_arena.png)
 
+## Neuroscience behavioral arenas
+
+Switch arenas live from **Simulation Controls → Arena**, launch directly via URL
+query parameter (`two_mice.html?arena=<id>`), or control them programmatically via
+`window.annolidTwoMice.setArena(idOrLabel)`. Each arena configures its own 3D
+apparatus, exact wall/cliff/obstacle containment, tail collision wrapping,
+wall-supported rearing eligibility (disabled on exposed cliffs such as Elevated
+Plus Maze open arms and Barnes Maze edges), corridor- and doorway-aware routing
+for both autonomous exploration and Fly-Brain olfactory plume chemotaxis,
+arena-specific Fly-Brain sensory zone locations, camera framing, and live HUD
+**ZONE** readout.
+
+| Arena (`?arena=`) | GUI Label | Behavioral Domain | Key Apparatus Features |
+| :--- | :--- | :--- | :--- |
+| `open_field` | `Open Field` | Locomotion & anxiety | Rectangular acrylic open field with matte anti-glare floor and aspen shavings (default) |
+| `home_cage` | `Home Cage (Bedding)` | Social & ethology | Molded polycarbonate shoebox cage with corncob bedding, shredded nestlet, and stainless water port |
+| `circular_open_field` | `Circular Open Field` | Locomotion & anxiety | Cylindrical drum eliminating corner bias, with concentric center/middle/periphery scoring rings |
+| `elevated_plus_maze` | `Elevated Plus Maze` | Unconditioned anxiety | Elevated `+` apparatus on steel pedestal legs with two tall-walled closed arms (±X) and two open cliff arms (±Z) |
+| `y_maze` | `Y-Maze` | Spatial working memory | Symmetrical 120° three-arm spontaneous alternation maze with intra-maze visual cue cards and floor labels (`A`/`B`/`C`) |
+| `t_maze` | `T-Maze` | Working memory & choice | Start stem with raised guillotine start-box gate frame, central choice point, and left/right goal-arm reward wells |
+| `three_chamber` | `Three-Chamber Social` | Social preference | Crawley three-chamber polycarbonate box with framed central doorways and two cylindrical wire holding cups |
+| `light_dark_box` | `Light-Dark Box` | Anxiety & photophobia | Bright white light compartment (2/3) and charcoal dark compartment (1/3) with smoked canopy and transition doorway |
+| `barnes_maze` | `Barnes Maze` | Spatial reference memory | Elevated circular white table with 18 perimeter escape holes, under-table target escape box, and 4 distal cue stands |
+| `novel_object` | `Novel Object (NOR)` | Recognition memory | Square chamber with a familiar cylindrical lab bottle and a contrasting novel stepped geometric block tower |
+
 ## Viewing and playback
 
 Drag to orbit, scroll to zoom, and use **Simulation Controls → Camera** for an
@@ -106,8 +131,11 @@ flowchart LR
 
 ```js
 const api = window.annolidTwoMice;
+api.getArenas();                // list all 10 neuroscience arena specs and semantic zones
+api.getArena();                 // active arena metadata
+api.setArena('elevated_plus_maze'); // switch arena by id, alias, or GUI label (throws RangeError if invalid)
 api.getActionSpec();            // joint names, ranges, neutral pose, gaits, command spec
-api.getObservation(1);          // egocentric velocity, yaw rate, joint positions/targets,
+api.getObservation(1);          // arena, semantic zone, egocentric velocity, yaw rate, joint positions/targets,
                                 // foot contacts and slip, CPG phases, behavior state
 api.getObservations();          // all subjects
 api.setCommand(1, { forwardSpeed: 4, turnRate: 0.8, gait: 'auto', durationSec: 3 });
@@ -168,7 +196,9 @@ illustrative NeuroAI visualization, not a validated mouse brain model.
 
 The HTML is the presentation shell. `two_mice_scene.js` owns scene assembly,
 articulation, behavior, and pose export; `two_mice_model.js` owns procedural model
-construction and GPU resource ownership; `two_mice_control.js` owns the joint/action
+construction and GPU resource ownership; `two_mice_arenas.js` owns the neuroscience
+arena catalog, 2D wall/obstacle/tail containment physics, zone classification, and
+lazy 3D apparatus builders; `two_mice_control.js` owns the joint/action
 spec, gait library, limb CPG, and motor decoder; `two_mice_fly_brain.js` owns the
 dependency-free *Drosophila* LIF connectome and dopamine plasticity controller;
 `two_mice_simulation.js` supplies the independent timing, random-stream, and
@@ -180,7 +210,7 @@ bundled Node runtime when installed in `.venv`):
 
 ```bash
 source .venv/bin/activate
-pytest tests/test_two_mice_fly_brain.py tests/test_two_mice_control.py tests/test_two_mice_simulation.py tests/test_threejs_examples.py
+pytest tests/test_two_mice_arenas.py tests/test_two_mice_fly_brain.py tests/test_two_mice_control.py tests/test_two_mice_simulation.py tests/test_threejs_examples.py
 ```
 
 Run the optional offline browser checks with Playwright Chromium installed:
