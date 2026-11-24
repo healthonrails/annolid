@@ -101,6 +101,7 @@ nav:
       - DeepLabCut, SLEAP & Pose Interoperability: pose_interoperability.md
       - YOLO & YOLOE Fine-Tuning and Inference: yolo_workflow.md
       - Google Colab Training and Inference: google_colab.md
+      - Sim-to-Real Studio (3D Simulation → Colab): sim2real_colab_workflow.md
       - Tutorials Overview: tutorials.md
       - Merge Canvas Shapes (GUI): tutorials/merge_canvas_shapes.md
       - Reorder Annotation Lists (GUI): tutorials/reorder_annotation_lists.md

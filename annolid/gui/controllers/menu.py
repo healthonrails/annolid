@@ -970,6 +970,15 @@ class MenuController:
                 "icon_path": here / "icons/colab.png",
             },
             {
+                "name": "sim2real_studio",
+                "text": w.tr("Sim-to-Real &Studio (3D Sim → Colab)…"),
+                "slot": w.open_sim2real_studio,
+                "tip": w.tr(
+                    "Match example videos to Mouse/Fly 3D simulations, generate synthetic datasets, iterate on Colab, and write reports"
+                ),
+                "icon_path": here / "icons/colab.png",
+            },
+            {
                 "name": "add_stamps_action",
                 "text": w.tr("Add Real-Time Stamps…"),
                 "slot": w._add_real_time_stamps,
@@ -1480,6 +1489,7 @@ class MenuController:
             (
                 actions["models"],
                 actions["colab"],
+                actions["sim2real_studio"],
             ),
             # AI-assisted annotation tools
             (

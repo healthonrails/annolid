@@ -1,0 +1,69 @@
+"""Annolid Sim-to-Real package: example-video environment matching, 3D Mouse/Fly simulation datasets, Colab iterative fine-tuning, evaluation, and reporting."""
+
+from .analyzer import analyze_example_videos, build_default_sim_config
+from .evaluator import evaluate_iteration_outputs, suggest_next_iteration
+from .generators import (
+    generate_fly_sim_dataset,
+    generate_mouse_3d_dataset,
+    generate_sim_dataset,
+)
+from .models import (
+    FLY_BEHAVIORS,
+    FLY_CAMERA_VIEWS,
+    FLY_KEYPOINT_NAMES,
+    MOUSE_ARENAS,
+    MOUSE_CAMERA_VIEWS,
+    MOUSE_COAT_PAIRS,
+    MOUSE_HEADSTAGES,
+    MOUSE_KEYPOINT_NAMES,
+    MOUSE_LIGHTING_PRESETS,
+    MOUSE_OCCLUDERS,
+    MOUSE_SCENARIOS,
+    Sim2RealIterationRecord,
+    Sim2RealProjectState,
+    Sim2RealProjectStore,
+    SimDatasetArtifact,
+    SimDatasetConfig,
+    SimIterationAdjustment,
+    SimIterationEvaluation,
+    VideoEnvironmentProfile,
+)
+from .photometry import (
+    apply_environment_photometry,
+    composite_foreground_onto_background,
+)
+from .reporting import generate_sim2real_reports
+from .service import Sim2RealWorkflowService
+
+__all__ = [
+    "FLY_BEHAVIORS",
+    "FLY_CAMERA_VIEWS",
+    "FLY_KEYPOINT_NAMES",
+    "MOUSE_ARENAS",
+    "MOUSE_CAMERA_VIEWS",
+    "MOUSE_COAT_PAIRS",
+    "MOUSE_HEADSTAGES",
+    "MOUSE_KEYPOINT_NAMES",
+    "MOUSE_LIGHTING_PRESETS",
+    "MOUSE_OCCLUDERS",
+    "MOUSE_SCENARIOS",
+    "Sim2RealIterationRecord",
+    "Sim2RealProjectState",
+    "Sim2RealProjectStore",
+    "Sim2RealWorkflowService",
+    "SimDatasetArtifact",
+    "SimDatasetConfig",
+    "SimIterationAdjustment",
+    "SimIterationEvaluation",
+    "VideoEnvironmentProfile",
+    "analyze_example_videos",
+    "apply_environment_photometry",
+    "build_default_sim_config",
+    "composite_foreground_onto_background",
+    "evaluate_iteration_outputs",
+    "generate_fly_sim_dataset",
+    "generate_mouse_3d_dataset",
+    "generate_sim2real_reports",
+    "generate_sim_dataset",
+    "suggest_next_iteration",
+]

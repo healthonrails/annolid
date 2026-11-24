@@ -65,6 +65,7 @@ from .shell_sessions import ExecProcessTool, ExecStartTool
 from .email import EmailTool, ListEmailsTool, ReadEmailTool
 from .calendar import GoogleCalendarTool
 from .colab import GoogleColabTool
+from .sim2real import Sim2RealTool
 from .google_drive import GoogleDriveTool
 from .box import BoxTool
 from .camera import CameraSnapshotTool
@@ -617,6 +618,20 @@ async def register_nanobot_style_tools(
                 ),
                 allowed_dir=allowed_dir,
                 allowed_read_roots=allowed_read_roots,
+            )
+        )
+
+    if should_register_tool("sim2real_workflow"):
+        register_tool(
+            Sim2RealTool(
+                allowed_dir=allowed_dir,
+                allowed_read_roots=allowed_read_roots,
+                default_accelerator=str(
+                    getattr(google_colab_cfg, "default_accelerator", "T4") or "T4"
+                ),
+                default_colab_backend=str(
+                    getattr(google_colab_cfg, "backend", "auto") or "auto"
+                ),
             )
         )
 

@@ -274,6 +274,38 @@ class WorkflowActionsMixin:
         """Open Google Colab Studio (backward-compatible entry point for menu/toolbar)."""
         return self.open_colab_studio(initial_tab="train")
 
+    def open_sim2real_studio(self, *, project_dir: str | None = None):
+        """Open Sim-to-Real Studio for example-video matching, 3D Mouse/Fly simulation, and Colab iteration."""
+        from annolid.gui.widgets.sim2real_dialog import Sim2RealStudioDialog
+
+        dialog = getattr(self, "_sim2real_studio_dialog", None)
+        if dialog is None:
+            video_file = str(getattr(self, "video_file", "") or "").strip() or None
+            initial_videos = [video_file] if video_file else None
+            colab_dlg = getattr(self, "_colab_studio_dialog", None)
+            colab_svc = (
+                getattr(colab_dlg, "_service", None) if colab_dlg is not None else None
+            )
+            dialog = Sim2RealStudioDialog(
+                project_dir=project_dir,
+                initial_video_paths=initial_videos,
+                colab_service=colab_svc,
+                parent=self,
+            )
+            dialog.finished.connect(
+                lambda *_: setattr(self, "_sim2real_studio_dialog", None)
+            )
+            dialog.destroyed.connect(
+                lambda *_: setattr(self, "_sim2real_studio_dialog", None)
+            )
+            self._sim2real_studio_dialog = dialog
+
+        dialog.show()
+        dialog.setWindowState(dialog.windowState() & ~QtCore.Qt.WindowMinimized)
+        dialog.raise_()
+        dialog.activateWindow()
+        return dialog
+
     def quality_control(self):
         from annolid.gui.widgets.quality_control_dialog import QualityControlDialog
         from annolid.postprocessing.quality_control import TracksResults

@@ -15,7 +15,10 @@ class _AnnolidHelpFormatter(
 
 
 _ROOT_COMMAND_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("Models", ("list-models", "dinov3-models", "train", "predict", "colab")),
+    (
+        "Models",
+        ("list-models", "dinov3-models", "train", "predict", "colab", "sim2real"),
+    ),
     (
         "Tracking",
         (
@@ -349,6 +352,10 @@ def _collect_root_command_help(
     command_help.setdefault(
         "colab",
         "Authenticate with Google Colab and run remote GPU/TPU training or inference.",
+    )
+    command_help.setdefault(
+        "sim2real",
+        "Match example videos to Mouse/Fly 3D simulations, generate datasets, iterate on Colab, and write reports.",
     )
     command_help.setdefault("memory", "Memory inspection and maintenance commands.")
     return command_help
@@ -2677,6 +2684,12 @@ def _dispatch_operator_commands(argv: list[str]) -> Optional[int]:
         from annolid.colab.cli import main as colab_cli_main
 
         return int(colab_cli_main(argv[1:]))
+
+    # annolid-run sim2real ...
+    if argv[0] == "sim2real":
+        from annolid.sim2real.cli import main as sim2real_cli_main
+
+        return int(sim2real_cli_main(argv[1:]))
 
     # annolid-run memory ...
     if argv[0] == "memory":
