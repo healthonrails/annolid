@@ -344,6 +344,31 @@ def test_threejs_runtime_and_two_mice_assets_have_no_external_cdn_imports():
     }
 
 
+_CANVAS_DOCUMENT_STUB_JS = """
+globalThis.document = {
+  createElement() {
+    return {
+      width: 0,
+      height: 0,
+      getContext() {
+        return new Proxy({}, {
+          get(_t, key) {
+            if (key === 'createRadialGradient' || key === 'createLinearGradient') {
+              return () => ({ addColorStop() {} });
+            }
+            if (key === 'getImageData') {
+              return (_x, _y, w, h) => ({ data: new Uint8ClampedArray(w * h * 4) });
+            }
+            return () => {};
+          },
+        });
+      },
+    };
+  },
+};
+"""
+
+
 def test_mouse_model_fur_options_and_in_place_anatomy_rebuild():
     result = run_javascript(
         """
@@ -351,29 +376,9 @@ def test_mouse_model_fur_options_and_in_place_anatomy_rebuild():
         import { AnnolidShaders } from './annolid/gui/assets/threejs/annolid_shaders.js';
         import { createMouseModel } from './annolid/gui/assets/threejs/two_mice_model.js';
         import { createSeededRandom } from './annolid/gui/assets/threejs/two_mice_simulation.js';
-
-        globalThis.document = {
-          createElement() {
-            return {
-              width: 0,
-              height: 0,
-              getContext() {
-                return new Proxy({}, {
-                  get(_t, key) {
-                    if (key === 'createRadialGradient' || key === 'createLinearGradient') {
-                      return () => ({ addColorStop() {} });
-                    }
-                    if (key === 'getImageData') {
-                      return (_x, _y, w, h) => ({ data: new Uint8ClampedArray(w * h * 4) });
-                    }
-                    return () => {};
-                  },
-                });
-              },
-            };
-          },
-        };
-
+        """
+        + _CANVAS_DOCUMENT_STUB_JS
+        + """
         const model = createMouseModel(THREE, new AnnolidShaders(THREE), createSeededRandom(77));
         const posAttrRef = model.bodyGeo.attributes.position;
         model.bodyGeo.computeBoundingBox();
@@ -445,6 +450,198 @@ def test_mouse_model_fur_options_and_in_place_anatomy_rebuild():
     ).read_text(encoding="utf-8")
     assert "params.furDensity ?? 0.85" in scene_js
     assert "params.furDensity || 0.85" not in scene_js
+
+
+def test_mouse_model_dorsal_skull_and_anterior_neck_geometry():
+    result = run_javascript(
+        """
+        import { THREE } from './annolid/gui/assets/threejs/annolid_threejs_runtime.js';
+        import { AnnolidShaders } from './annolid/gui/assets/threejs/annolid_shaders.js';
+        import { createMouseModel } from './annolid/gui/assets/threejs/two_mice_model.js';
+        import { createSeededRandom } from './annolid/gui/assets/threejs/two_mice_simulation.js';
+        """
+        + _CANVAS_DOCUMENT_STUB_JS
+        + """
+        const model = createMouseModel(THREE, new AnnolidShaders(THREE), createSeededRandom(77));
+
+        const isFiniteVec = (v) =>
+          Number.isFinite(v.x) && Number.isFinite(v.y) && Number.isFinite(v.z);
+        const symmetricDeform = (fn, x, y, z) => {
+          const left = new THREE.Vector3(x, y, z);
+          const right = new THREE.Vector3(-x, y, z);
+          fn(left);
+          fn(right);
+          return (
+            isFiniteVec(left)
+            && isFiniteVec(right)
+            && Math.abs(left.x + right.x) < 1e-9
+            && Math.abs(left.y - right.y) < 1e-9
+            && Math.abs(left.z - right.z) < 1e-9
+          );
+        };
+
+        // Dorsal skull midline contour from occiput (zNorm=0.05) to muzzle tip (zNorm=0.98).
+        const dorsal = [];
+        for (let i = 0; i <= 40; i++) {
+          const zNorm = 0.05 + (0.98 - 0.05) * (i / 40);
+          const z = zNorm * 2 - 1;
+          const y = Math.sqrt(Math.max(0, 1 - z * z));
+          const v = new THREE.Vector3(0, y, z);
+          model.deformHead(v);
+          dorsal.push({ zNorm, x: v.x, y: v.y, z: v.z, finite: isFiniteVec(v) });
+        }
+        let dorsalMaxSecondDiff = 0;
+        let dorsalZMonotonic = true;
+        for (let i = 1; i < dorsal.length; i++) {
+          if (dorsal[i].z <= dorsal[i - 1].z) dorsalZMonotonic = false;
+        }
+        for (let i = 1; i < dorsal.length - 1; i++) {
+          const d2 = Math.abs(dorsal[i + 1].y - 2 * dorsal[i].y + dorsal[i - 1].y);
+          dorsalMaxSecondDiff = Math.max(dorsalMaxSecondDiff, d2);
+        }
+        const dorsalPeak = dorsal.reduce((a, b) => (b.y > a.y ? b : a));
+        const dorsalEnd = dorsal[dorsal.length - 1];
+
+        // Lateral head taper along equator (cranio-rostral wedge).
+        const headWidths = [0.30, 0.50, 0.70, 0.90, 0.96].map((zNorm) => {
+          const z = zNorm * 2 - 1;
+          const x = Math.sqrt(Math.max(0, 1 - z * z));
+          const v = new THREE.Vector3(x, 0, z);
+          model.deformHead(v);
+          return v.x;
+        });
+
+        // Anterior torso-to-neck transition across dense zNorm samples (0.50..0.96).
+        const anterior = [];
+        for (let i = 0; i <= 30; i++) {
+          const zNorm = 0.50 + (0.96 - 0.50) * (i / 30);
+          const z = zNorm * 2 - 1;
+          const r = Math.sqrt(Math.max(0, 1 - z * z));
+          const lat = new THREE.Vector3(r, 0, z);
+          const dor = new THREE.Vector3(0, r, z);
+          const ven = new THREE.Vector3(0, -r, z);
+          model.deformBody(lat);
+          model.deformBody(dor);
+          model.deformBody(ven);
+          anterior.push({
+            zNorm,
+            x: lat.x,
+            dorY: dor.y,
+            venY: ven.y,
+            height: dor.y - ven.y,
+            z: lat.z,
+            finite: isFiniteVec(lat) && isFiniteVec(dor) && isFiniteVec(ven),
+          });
+        }
+        let bodyZMonotonic = true;
+        let maxD2X = 0;
+        let maxD2Dor = 0;
+        let maxD2Ven = 0;
+        for (let i = 1; i < anterior.length; i++) {
+          if (anterior[i].z <= anterior[i - 1].z) bodyZMonotonic = false;
+        }
+        for (let i = 1; i < anterior.length - 1; i++) {
+          maxD2X = Math.max(maxD2X, Math.abs(anterior[i + 1].x - 2 * anterior[i].x + anterior[i - 1].x));
+          maxD2Dor = Math.max(maxD2Dor, Math.abs(anterior[i + 1].dorY - 2 * anterior[i].dorY + anterior[i - 1].dorY));
+          maxD2Ven = Math.max(maxD2Ven, Math.abs(anterior[i + 1].venY - 2 * anterior[i].venY + anterior[i - 1].venY));
+        }
+        const sampleBodySection = (zNorm) => {
+          const z = zNorm * 2 - 1;
+          const r = Math.sqrt(Math.max(0, 1 - z * z));
+          const lat = new THREE.Vector3(r, 0, z);
+          const dor = new THREE.Vector3(0, r, z);
+          const ven = new THREE.Vector3(0, -r, z);
+          model.deformBody(lat);
+          model.deformBody(dor);
+          model.deformBody(ven);
+          return { halfWidth: lat.x, height: dor.y - ven.y };
+        };
+        const bodySections = [0.50, 0.65, 0.75, 0.85, 0.92, 0.96].map(sampleBodySection);
+
+        // Cervical mantle and core inset continuity.
+        const neckProfiles = [0, 0.25, 0.5, 0.75, 1.0].map((t) => model.getCervicalMantleProfile(t));
+        const coreInsetRatios = [-0.9, -0.5, 0.0, 0.5, 0.9].map((z) => {
+          const rawT = (z + 1) * 0.5;
+          const mantle = model.getCervicalMantleProfile(rawT * 0.96);
+          const r = Math.sqrt(Math.max(0, 1 - z * z));
+          const v = new THREE.Vector3(r, 0, z);
+          model.deformCervicalCore(v);
+          return v.x / mantle.radiusX;
+        });
+
+        const headSymmetric = [0.25, 0.60, 0.85].every((zNorm) => {
+          const z = zNorm * 2 - 1;
+          const r = Math.sqrt(Math.max(0, 1 - z * z));
+          return symmetricDeform(model.deformHead, r * 0.7, r * 0.7, z);
+        });
+        const bodySymmetric = [0.30, 0.65, 0.88].every((zNorm) => {
+          const z = zNorm * 2 - 1;
+          const r = Math.sqrt(Math.max(0, 1 - z * z));
+          return symmetricDeform(model.deformBody, r * 0.7, r * 0.7, z);
+        });
+
+        model.disposeSharedResources();
+
+        console.log(JSON.stringify({
+          dorsalFiniteAndMidline: dorsal.every((p) => p.finite && Math.abs(p.x) < 1e-9),
+          headSymmetric,
+          bodySymmetric,
+          dorsalZMonotonic,
+          dorsalMaxSecondDiff,
+          dorsalPeakZNorm: dorsalPeak.zNorm,
+          dorsalCrownToTipDrop: dorsalPeak.y - dorsalEnd.y,
+          headWidths,
+          anteriorFinite: anterior.every((p) => p.finite),
+          bodyZMonotonic,
+          maxD2X,
+          maxD2Dor,
+          maxD2Ven,
+          bodySections,
+          neckProfiles,
+          coreInsetRatios,
+        }));
+        """,
+        include_simulation=False,
+    )
+
+    assert result["dorsalFiniteAndMidline"] is True
+    assert result["headSymmetric"] is True
+    assert result["bodySymmetric"] is True
+    assert result["dorsalZMonotonic"] is True
+    assert result["dorsalMaxSecondDiff"] < 0.08
+    assert 0.18 <= result["dorsalPeakZNorm"] <= 0.55
+    assert result["dorsalCrownToTipDrop"] > 0.35
+
+    head_widths = result["headWidths"]
+    assert head_widths[1] > head_widths[2] > head_widths[3] > head_widths[4] > 0
+    assert head_widths[3] < head_widths[0] * 0.5
+
+    assert result["anteriorFinite"] is True
+    assert result["bodyZMonotonic"] is True
+    assert result["maxD2X"] < 0.05
+    assert result["maxD2Dor"] < 0.05
+    assert result["maxD2Ven"] < 0.05
+
+    sections = result["bodySections"]
+    half_widths = [s["halfWidth"] for s in sections]
+    heights = [s["height"] for s in sections]
+    assert all(a > b > 0 for a, b in zip(half_widths, half_widths[1:]))
+    assert all(a > b > 0 for a, b in zip(heights, heights[1:]))
+    assert half_widths[4] < half_widths[1] * 0.65
+    assert heights[4] < heights[1] * 0.75
+
+    neck_profiles = result["neckProfiles"]
+    assert all(
+        a["z"] < b["z"]
+        and a["centerY"] < b["centerY"]
+        and a["radiusX"] > b["radiusX"] > 0
+        and a["radiusY"] > b["radiusY"] > 0
+        for a, b in zip(neck_profiles, neck_profiles[1:])
+    )
+
+    core_ratios = result["coreInsetRatios"]
+    assert all(0.0 < ratio < 1.0 for ratio in core_ratios)
+    assert core_ratios[-1] < core_ratios[2]
 
 
 @pytest.mark.parametrize(
