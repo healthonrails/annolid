@@ -603,6 +603,15 @@ class MenuController:
                 "tip": w.tr("Step-by-step training configuration wizard"),
             },
             {
+                "name": "training_dashboard",
+                "text": w.tr("Training &Monitor && Visualization…"),
+                "slot": w.open_training_dashboard,
+                "tip": w.tr(
+                    "Open unified Training Monitor & Visualization Dashboard (live curves, run comparison, plots, and TensorBoard)"
+                ),
+                "icon_path": here / "icons/visualization.png",
+            },
+            {
                 "name": "inference_wizard",
                 "text": w.tr("&Inference Wizard…"),
                 "slot": w.open_inference_wizard,
@@ -803,7 +812,9 @@ class MenuController:
                 "text": w.tr("&Visualization"),
                 "slot": w.visualization,
                 "shortcut": "Ctrl+Shift+V",
-                "tip": w.tr("Visualization results"),
+                "tip": w.tr(
+                    "Open Training Monitor & Visualization Dashboard (metrics curves, plots, and TensorBoard)"
+                ),
                 "icon_path": here / "icons/visualization.png",
             },
             {
@@ -1459,6 +1470,7 @@ class MenuController:
             # Streamlined wizards first
             (
                 actions["training_wizard"],
+                actions["training_dashboard"],
                 actions["inference_wizard"],
                 actions["polygon_classifier_workbench"],
             ),

@@ -488,16 +488,12 @@ class ProjectWorkflowMixin:
         else:
             self._start_maskrcnn_training_from_wizard(config)
 
-        if config.get("open_dashboard") or config.get("open_tensorboard"):
-            self._open_training_dashboard()
-        if config.get("open_tensorboard"):
-            dialog = getattr(self, "_training_dashboard_dialog", None)
-            dashboard = getattr(dialog, "dashboard", None)
-            if dashboard is not None and hasattr(dashboard, "_start_tensorboard"):
-                try:
-                    dashboard._start_tensorboard()
-                except Exception as exc:
-                    logger.debug("Could not launch TensorBoard from wizard: %s", exc)
+        open_tb = bool(config.get("open_tensorboard"))
+        if config.get("open_dashboard") or open_tb:
+            self._open_training_dashboard(
+                initial_tab="tensorboard" if open_tb else "monitor",
+                start_tensorboard=open_tb,
+            )
 
     def _start_yolo_training_from_wizard(self, config: dict) -> None:
         """Start YOLO training with wizard configuration."""
@@ -631,9 +627,24 @@ class ProjectWorkflowMixin:
             self.tr("MaskRCNN training: use the legacy Train Models dialog"), 5000
         )
 
-    def _open_training_dashboard(self) -> None:
-        """Open the training dashboard for monitoring."""
+    def _open_training_dashboard(
+        self,
+        *,
+        initial_tab: Optional[str] = None,
+        run_dir: Optional[str | Path] = None,
+        start_tensorboard: bool = False,
+    ) -> None:
+        """Open the unified Training Monitor & Visualization Dashboard."""
         try:
+            open_fn = getattr(self, "open_training_dashboard", None)
+            if callable(open_fn):
+                open_fn(
+                    initial_tab=initial_tab,
+                    run_dir=run_dir,
+                    start_tensorboard=start_tensorboard,
+                )
+                return
+
             from annolid.gui.widgets.training_dashboard import TrainingDashboardDialog
 
             dialog = getattr(self, "_training_dashboard_dialog", None)
@@ -666,6 +677,12 @@ class ProjectWorkflowMixin:
             dialog.raise_()
             dialog.activateWindow()
             QtWidgets.QApplication.processEvents()
+            if run_dir is not None:
+                dialog.dashboard.select_run_dir(run_dir)
+            if initial_tab:
+                dialog.dashboard.select_tab(initial_tab)
+            if start_tensorboard:
+                dialog.dashboard.start_tensorboard_for_current_scope(switch_to_tab=True)
         except Exception as e:
             logger.debug(f"Could not open training dashboard: {e}")
 

@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import contextlib
+import shlex
 import subprocess
+import threading
 from pathlib import Path
 
 from qtpy import QtWidgets
 
 from annolid.data import videos
 
-from annolid.utils.runs import shared_runs_root
+from annolid.utils.runs import allocate_run_dir, shared_runs_root
 
 
 class TrainingWorkflowMixin:
@@ -439,9 +442,18 @@ class TrainingWorkflowMixin:
 
         elif algo == "MaskRCNN":
             # Build the CLI command so MaskRCNN training runs in a subprocess,
-            # consistent with YOLO and YOLACT.  This keeps the Qt event loop
-            # responsive.  Uses torchvision Mask R-CNN (no detectron2 needed).
+            # consistent with YOLO and YOLACT. Uses torchvision Mask R-CNN.
             dataset_dir = str(Path(config_file).parent)
+            if out_dir is None:
+                run_dir = allocate_run_dir(
+                    task="maskrcnn",
+                    model="train",
+                    runs_root=shared_runs_root(),
+                )
+            else:
+                run_dir = Path(out_dir).expanduser().resolve()
+                run_dir.mkdir(exist_ok=True, parents=True)
+
             cmd = [
                 "annolid-run",
                 "train",
@@ -449,77 +461,43 @@ class TrainingWorkflowMixin:
                 f"--dataset-dir={dataset_dir}",
                 f"--max-iterations={max_iterations}",
                 f"--batch-size={batch_size}",
+                f"--output-dir={run_dir}",
                 "--num-workers=0",
             ]
             if model_path:
                 cmd.append(f"--weights={model_path}")
-            if out_dir:
-                cmd.append(f"--output-dir={out_dir}")
 
-            if out_dir is None:
-                # Default: allocate_run_dir writes runs under
-                # shared_runs_root()/maskrcnn/train/<run_N>/.
-                # Point TensorBoard at the maskrcnn task root so it discovers
-                # all run sub-directories automatically — same pattern as DINO.
-                out_runs_dir = shared_runs_root() / "maskrcnn"
-                tb_log_dir = out_runs_dir  # TB will recurse into run dirs
-            else:
-                out_runs_dir = Path(out_dir)
-                # When the user specifies an explicit dir the logger writes
-                # events to {out_dir}/tensorboard/.
-                tb_log_dir = out_runs_dir / "tensorboard"
-
-            out_runs_dir.mkdir(exist_ok=True, parents=True)
-            tb_log_dir.mkdir(exist_ok=True, parents=True)
-
-            try:
-                proc = subprocess.Popen(cmd)
-                if not hasattr(self, "_active_training_subprocesses"):
-                    self._active_training_subprocesses = []
-                self._active_training_subprocesses.append(proc)
-            except FileNotFoundError:
-                QtWidgets.QMessageBox.critical(
-                    self,
-                    "annolid-run CLI not found",
-                    "Could not launch 'annolid-run train maskrcnn_detectron2'.\n"
-                    "Please ensure the annolid-run CLI is on your PATH.\n\n"
-                    "Try: pip install -e .",
-                )
+            proc = self._launch_monitored_cli_training(
+                cmd=cmd,
+                task="maskrcnn",
+                model="maskrcnn_resnet50_fpn",
+                run_dir=run_dir,
+                total_steps=int(max_iterations),
+                step_unit="iteration",
+                missing_cli_title="annolid-run CLI not found",
+                missing_cli_hint="annolid-run train maskrcnn_detectron2",
+            )
+            if proc is None:
                 return
-
-            msg_box = QtWidgets.QMessageBox(self)
-            msg_box.setWindowTitle("MaskRCNN Training Started")
-            msg_box.setText(
-                "Training in background...\n"
-                f"Results will be saved under: {str(out_runs_dir)}\n\n"
-                "Click 'View TensorBoard' to open the live metrics dashboard.\n"
-                "(Metrics will appear once the first iteration completes.)"
+            self.statusBar().showMessage(
+                self.tr(
+                    "Mask R-CNN training started — monitoring in Training Dashboard."
+                )
             )
-            tb_button = msg_box.addButton(
-                "View TensorBoard", QtWidgets.QMessageBox.ActionRole
-            )
-            msg_box.addButton(QtWidgets.QMessageBox.Ok)
-            msg_box.exec_()
-
-            if msg_box.clickedButton() is tb_button:
-                try:
-                    import webbrowser
-                    from annolid.gui.tensorboard import ensure_tensorboard
-
-                    _, url = ensure_tensorboard(log_dir=tb_log_dir)
-                    webbrowser.open_new_tab(url)
-                except Exception as exc:
-                    QtWidgets.QMessageBox.warning(
-                        self,
-                        "TensorBoard unavailable",
-                        f"Could not open TensorBoard viewer:\n{exc}",
-                    )
-            self.statusBar().showMessage(self.tr("Training..."))
 
         elif algo == "Keypoint RCNN":
             # Keypoint R-CNN training: torchvision keypointrcnn_resnet50_fpn.
-            # config_file here is the dataset folder (COCO keypoints format).
             dataset_dir = str(Path(config_file).parent)
+            if out_dir is None:
+                run_dir = allocate_run_dir(
+                    task="keypoint_rcnn",
+                    model="train",
+                    runs_root=shared_runs_root(),
+                )
+            else:
+                run_dir = Path(out_dir).expanduser().resolve()
+                run_dir.mkdir(exist_ok=True, parents=True)
+
             cmd = [
                 "annolid-run",
                 "train",
@@ -527,63 +505,116 @@ class TrainingWorkflowMixin:
                 f"--dataset-dir={dataset_dir}",
                 f"--max-iterations={max_iterations}",
                 f"--batch-size={batch_size}",
+                f"--output-dir={run_dir}",
                 "--num-workers=0",
             ]
             if model_path:
                 cmd.append(f"--weights={model_path}")
-            if out_dir:
-                cmd.append(f"--output-dir={out_dir}")
 
-            if out_dir is None:
-                out_runs_dir = shared_runs_root() / "keypoint_rcnn"
-                tb_log_dir = out_runs_dir
-            else:
-                out_runs_dir = Path(out_dir)
-                tb_log_dir = out_runs_dir / "tensorboard"
-
-            out_runs_dir.mkdir(exist_ok=True, parents=True)
-            tb_log_dir.mkdir(exist_ok=True, parents=True)
-
-            try:
-                proc = subprocess.Popen(cmd)
-                if not hasattr(self, "_active_training_subprocesses"):
-                    self._active_training_subprocesses = []
-                self._active_training_subprocesses.append(proc)
-            except FileNotFoundError:
-                QtWidgets.QMessageBox.critical(
-                    self,
-                    "annolid-run CLI not found",
-                    "Could not launch 'annolid-run train keypoint_rcnn'.\n"
-                    "Please ensure the annolid-run CLI is on your PATH.\n\n"
-                    "Try: pip install -e .",
-                )
+            proc = self._launch_monitored_cli_training(
+                cmd=cmd,
+                task="keypoint_rcnn",
+                model="keypointrcnn_resnet50_fpn",
+                run_dir=run_dir,
+                total_steps=int(max_iterations),
+                step_unit="iteration",
+                missing_cli_title="annolid-run CLI not found",
+                missing_cli_hint="annolid-run train keypoint_rcnn",
+            )
+            if proc is None:
                 return
-
-            msg_box = QtWidgets.QMessageBox(self)
-            msg_box.setWindowTitle("Keypoint RCNN Training Started")
-            msg_box.setText(
-                "Keypoint R-CNN training started in background...\n"
-                f"Results will be saved under: {str(out_runs_dir)}\n\n"
-                "Click 'View TensorBoard' to monitor training metrics.\n"
-                "(Metrics appear after the first checkpoint.)"
+            self.statusBar().showMessage(
+                self.tr(
+                    "Keypoint R-CNN training started — monitoring in Training Dashboard."
+                )
             )
-            tb_button = msg_box.addButton(
-                "View TensorBoard", QtWidgets.QMessageBox.ActionRole
+
+    def _launch_monitored_cli_training(
+        self,
+        *,
+        cmd: list[str],
+        task: str,
+        model: str,
+        run_dir: Path,
+        total_steps: int | None = None,
+        step_unit: str = "iteration",
+        missing_cli_title: str = "annolid-run CLI not found",
+        missing_cli_hint: str = "annolid-run train",
+    ) -> subprocess.Popen | None:
+        """Spawn a CLI training subprocess, log to ``train.log``, and register in the Training Dashboard."""
+        run_dir = Path(run_dir).expanduser().resolve()
+        run_dir.mkdir(parents=True, exist_ok=True)
+        cmd_line = shlex.join(str(tok) for tok in cmd)
+        with contextlib.suppress(OSError):
+            (run_dir / "command.txt").write_text(cmd_line + "\n", encoding="utf-8")
+
+        log_path = run_dir / "train.log"
+        log_fh = None
+        try:
+            log_fh = log_path.open("a", encoding="utf-8")
+            log_fh.write("Command:\n" + cmd_line + "\n\n")
+            log_fh.flush()
+        except OSError:
+            log_fh = None
+
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=log_fh if log_fh is not None else None,
+                stderr=subprocess.STDOUT if log_fh is not None else None,
             )
-            msg_box.addButton(QtWidgets.QMessageBox.Ok)
-            msg_box.exec_()
+        except FileNotFoundError:
+            if log_fh is not None:
+                with contextlib.suppress(Exception):
+                    log_fh.close()
+            QtWidgets.QMessageBox.critical(
+                self,
+                missing_cli_title,
+                f"Could not launch '{missing_cli_hint}'.\n"
+                "Please ensure the annolid-run CLI is on your PATH.\n\n"
+                "Try: pip install -e .",
+            )
+            return None
 
-            if msg_box.clickedButton() is tb_button:
-                try:
-                    import webbrowser
-                    from annolid.gui.tensorboard import ensure_tensorboard
+        if log_fh is not None:
 
-                    _, url = ensure_tensorboard(log_dir=tb_log_dir)
-                    webbrowser.open_new_tab(url)
-                except Exception as exc:
-                    QtWidgets.QMessageBox.warning(
-                        self,
-                        "TensorBoard unavailable",
-                        f"Could not open TensorBoard viewer:\n{exc}",
+            def _close_log_when_done(p: subprocess.Popen, fh) -> None:
+                with contextlib.suppress(Exception):
+                    p.wait()
+                with contextlib.suppress(Exception):
+                    fh.flush()
+                    fh.close()
+
+            threading.Thread(
+                target=_close_log_when_done,
+                args=(proc, log_fh),
+                name=f"annolid-{task}-log-close",
+                daemon=True,
+            ).start()
+
+        if not hasattr(self, "_active_training_subprocesses"):
+            self._active_training_subprocesses = []
+        self._active_training_subprocesses = [
+            p for p in self._active_training_subprocesses if p.poll() is None
+        ]
+        self._active_training_subprocesses.append(proc)
+
+        open_dashboard = getattr(self, "open_training_dashboard", None)
+        if callable(open_dashboard):
+            try:
+                dialog = open_dashboard(initial_tab="monitor")
+                dashboard = getattr(dialog, "dashboard", None)
+                if dashboard is not None and hasattr(
+                    dashboard, "register_subprocess_run"
+                ):
+                    dashboard.register_subprocess_run(
+                        task=task,
+                        model=model,
+                        run_dir=run_dir,
+                        process=proc,
+                        total_steps=total_steps,
+                        step_unit=step_unit,
                     )
-            self.statusBar().showMessage(self.tr("Training..."))
+            except Exception:
+                pass
+        return proc

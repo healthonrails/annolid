@@ -7,13 +7,11 @@ from pathlib import Path
 from qtpy import QtCore, QtWidgets
 
 from annolid.annotation import coco2labelme, labelme2coco
-from annolid.gui.tensorboard import VisualizationWindow, ensure_tensorboard
 from annolid.gui.widgets.progressing_dialog import ProgressingWindow
 from annolid.gui.widgets.training_dashboard import TrainingDashboardDialog
 from annolid.gui.widgets.convert_coco_dialog import ConvertCOODialog
 from annolid.gui.widgets.convert_coco2labelme_dialog import ConvertCOCO2LabelMeDialog
 from annolid.gui.widgets.glitter2_dialog import Glitter2Dialog
-from annolid.utils.runs import shared_runs_root
 
 
 class WorkflowActionsMixin:
@@ -126,21 +124,15 @@ class WorkflowActionsMixin:
             ),
         )
 
-    def visualization(self):
-        try:
-            process, url = ensure_tensorboard(
-                log_dir=shared_runs_root(), preferred_port=6006, host="127.0.0.1"
-            )
-            self._tensorboard_process = process
-            webbrowser.open(url)
-        except Exception:
-            vdlg = VisualizationWindow()
-            if vdlg.exec_():
-                pass
-
-    @QtCore.Slot(object)
-    def _show_training_dashboard_for_training(self, payload: object) -> None:
-        """Auto-open the training dashboard window when training starts."""
+    def open_training_dashboard(
+        self,
+        *,
+        initial_tab: str | None = None,
+        run_dir: str | Path | None = None,
+        start_tensorboard: bool = False,
+        open_projector: bool = False,
+    ) -> TrainingDashboardDialog:
+        """Open (or raise) the unified Training Monitor & Visualization Dashboard."""
         dialog = getattr(self, "_training_dashboard_dialog", None)
         if dialog is None:
             yolo_manager = (
@@ -175,6 +167,42 @@ class WorkflowActionsMixin:
         except Exception:
             pass
 
+        if run_dir is not None:
+            try:
+                dialog.dashboard.select_run_dir(run_dir)
+            except Exception:
+                pass
+        else:
+            try:
+                dialog.dashboard._refresh_runs_list()
+            except Exception:
+                pass
+
+        if initial_tab:
+            try:
+                dialog.dashboard.select_tab(initial_tab)
+            except Exception:
+                pass
+
+        if start_tensorboard or open_projector:
+            try:
+                dialog.dashboard.start_tensorboard_for_current_scope(
+                    open_projector=bool(open_projector),
+                    switch_to_tab=True,
+                )
+            except Exception:
+                pass
+
+        return dialog
+
+    def visualization(self):
+        """Open the unified Training Monitor & Visualization Dashboard."""
+        return self.open_training_dashboard(initial_tab="monitor")
+
+    @QtCore.Slot(object)
+    def _show_training_dashboard_for_training(self, payload: object) -> None:
+        """Auto-open the training dashboard window when training starts."""
+        dialog = self.open_training_dashboard(initial_tab="monitor")
         try:
             dialog.dashboard._on_training_started(payload)
         except Exception:

@@ -76,7 +76,45 @@ fewer images.
      and optional advanced knobs (`lr0`, `patience`, `freeze`, `optimizer`,
      `cos_lr`, `cache`, `plots`).
 5. **Review & Launch**: Confirm the summary and optionally open the **Training
-   Dashboard** and **TensorBoard**.
+   Monitor & Visualization Dashboard** (and auto-start embedded **TensorBoard**
+   if desired).
+
+### Monitoring & Visualization (`Ctrl+Shift+V`)
+
+Open **AI & Models -> Training Monitor & Visualization…** (or click
+**Visualization** / press `Ctrl+Shift+V` at any time) to inspect live and
+historical runs across YOLO, DINO KPSEG, Mask R-CNN, Keypoint R-CNN, and
+downloaded Colab runs:
+
+- **Monitor & Curves**: Inspect live progress, KPI cards, native interactive
+  loss/mAP/PCK/learning-rate curves (with TensorBoard-style EMA smoothing, log
+  Y-scale, hover readout, and PNG export), and check multiple runs to overlay
+  them side by side without launching an external server.
+- **Compare & Diff**: View a multi-run summary matrix (latest & min losses,
+  best validation metric and step, tags, and health status) alongside a
+  highlighted hyperparameter diff table merging `args.yaml` and CLI flags from
+  `command.txt`.
+- **Notes, Tags & Starred Runs**: Bookmark favorite runs (`★ Star`), assign
+  short aliases, add searchable tags, and record lab notes stored
+  non-destructively in `annolid_run_meta.json` inside each run folder; filter
+  the runs list by `Starred only`, tag, alias, or notes.
+- **Automated Health Diagnostics**: Automatically surfaces actionable alerts
+  for `NaN`/`Inf` metrics, sudden loss spikes, overfitting trends, metric
+  plateaus, finished runs missing checkpoints, and low free disk space.
+- **Live System Telemetry**: Displays non-blocking CPU, RAM, disk free space,
+  and GPU/VRAM utilization (NVIDIA via `nvidia-smi` or Apple Silicon MPS hint)
+  in the header and **System** sub-tab.
+- **Offline Reports & Optional Tracker Export**: Click **Export / Trackers** to
+  export a self-contained offline **HTML5 + inline SVG + Markdown + JSON + CSV**
+  experiment report, or push runs to optional external backends (**MLflow**,
+  **Weights & Biases** offline/online, and **Rerun** `.rrd` recordings) when
+  installed.
+- **Plots & Images**: Preview generated `results.png`, confusion matrices,
+  PR/F1 curves, and validation batch overlays directly in the dashboard.
+- **TensorBoard & Projector**: Launch a non-blocking embedded (or browser)
+  TensorBoard server scoped to the **Selected Run**, **Compare Checked Runs**
+  (`--logdir_spec`), or **All Runs (Root)**, including one-click access to the
+  **Embedding Projector** when `projector_config.pbtxt` is present.
 
 When training completes:
 
@@ -85,7 +123,7 @@ When training completes:
 - The completion dialog provides one-click actions to **Use Model Now**,
   **Run Inference...**, or **Open Run Folder**.
 - You can also stop an active run or launch inference on any completed run from
-  the **Training Dashboard**.
+  the **Training Monitor & Visualization Dashboard**.
 
 ### Train Models Dialog (Advanced Single-Window Form)
 
