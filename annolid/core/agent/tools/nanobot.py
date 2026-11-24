@@ -64,6 +64,7 @@ from .sandboxed_shell import SandboxedExecTool
 from .shell_sessions import ExecProcessTool, ExecStartTool
 from .email import EmailTool, ListEmailsTool, ReadEmailTool
 from .calendar import GoogleCalendarTool
+from .colab import GoogleColabTool
 from .google_drive import GoogleDriveTool
 from .box import BoxTool
 from .camera import CameraSnapshotTool
@@ -113,6 +114,7 @@ if TYPE_CHECKING:
         BoxToolConfig,
         EmailChannelConfig,
         GoogleAuthConfig,
+        GoogleColabConfig,
     )
     from annolid.core.agent.scheduler import TaskScheduler
 
@@ -150,6 +152,7 @@ async def register_nanobot_style_tools(
     calendar_cfg: CalendarToolConfig | None = None,
     google_auth_cfg: "GoogleAuthConfig | None" = None,
     google_drive_enabled: bool = False,
+    google_colab_cfg: "GoogleColabConfig | None" = None,
     box_cfg: BoxToolConfig | None = None,
     task_scheduler: "TaskScheduler | None" = None,
     ignored_tools: Sequence[str] = (),
@@ -582,6 +585,40 @@ async def register_nanobot_style_tools(
                 "(or `pip install google-api-python-client google-auth-oauthlib`) "
                 "and configure shared Google OAuth files."
             )
+
+    if getattr(google_colab_cfg, "enabled", False) and should_register_tool(
+        "google_colab"
+    ):
+        colab_credentials = str(
+            getattr(google_auth_cfg, "credentials_file", "")
+            or "~/.annolid/agent/google_oauth_credentials.json"
+        ).strip()
+        colab_token = str(
+            getattr(google_auth_cfg, "token_file", "")
+            or "~/.annolid/agent/google_oauth_token.json"
+        ).strip()
+        colab_interactive = bool(
+            getattr(google_auth_cfg, "allow_interactive_auth", False)
+        )
+        register_tool(
+            GoogleColabTool(
+                credentials_file=colab_credentials,
+                token_file=colab_token,
+                allow_interactive_auth=colab_interactive,
+                default_backend=str(
+                    getattr(google_colab_cfg, "backend", "auto") or "auto"
+                ),
+                default_accelerator=str(
+                    getattr(google_colab_cfg, "default_accelerator", "T4") or "T4"
+                ),
+                default_drive_folder=str(
+                    getattr(google_colab_cfg, "drive_folder", "Annolid/colab")
+                    or "Annolid/colab"
+                ),
+                allowed_dir=allowed_dir,
+                allowed_read_roots=allowed_read_roots,
+            )
+        )
 
     if mcp_servers and stack:
         before_mcp_tool_names = set(registry.tool_names)

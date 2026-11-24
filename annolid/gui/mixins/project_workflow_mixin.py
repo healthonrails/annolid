@@ -475,6 +475,12 @@ class ProjectWorkflowMixin:
 
         wizard = TrainingWizard(dataset_path=dataset_path, parent=self)
         wizard.training_requested.connect(self._on_training_requested)
+        if hasattr(self, "open_colab_studio"):
+            wizard.colab_requested.connect(
+                lambda cfg: self.open_colab_studio(
+                    initial_tab="train", training_config=cfg
+                )
+            )
         wizard.exec_()
 
     def _on_training_requested(self, config: dict) -> None:
@@ -786,6 +792,12 @@ class ProjectWorkflowMixin:
             recent_models=recent_models,
             parent=self,
         )
+        if hasattr(self, "open_colab_studio"):
+            wizard.colab_requested.connect(
+                lambda cfg: self.open_colab_studio(
+                    initial_tab="predict", inference_config=cfg
+                )
+            )
         wizard.exec_()
 
     def open_polygon_classifier_workbench(self) -> None:

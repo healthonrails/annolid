@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import os
 import shutil
-import webbrowser
 from pathlib import Path
 
 from qtpy import QtCore, QtWidgets
@@ -208,9 +208,71 @@ class WorkflowActionsMixin:
         except Exception:
             pass
 
+    def open_colab_studio(
+        self,
+        *,
+        initial_tab: str = "auth",
+        training_config: dict | None = None,
+        inference_config: dict | None = None,
+    ):
+        """Open the Google Colab Studio dialog for auth, training, and inference."""
+        from annolid.gui.widgets.colab_dialog import ColabStudioDialog
+
+        dialog = getattr(self, "_colab_studio_dialog", None)
+        if dialog is None:
+            dataset_path = None
+            video_file = str(getattr(self, "video_file", "") or "").strip() or None
+            if video_file:
+                candidate = Path(video_file).with_suffix("") / "data.yaml"
+                if candidate.is_file():
+                    dataset_path = str(candidate)
+            if dataset_path is None and getattr(self, "annotation_dir", None):
+                ann_dir = Path(str(self.annotation_dir))
+                if (ann_dir / "data.yaml").is_file():
+                    dataset_path = str(ann_dir / "data.yaml")
+                elif ann_dir.is_dir():
+                    dataset_path = str(ann_dir)
+
+            dialog = ColabStudioDialog(
+                initial_dataset_path=dataset_path,
+                initial_video_path=video_file,
+                initial_tab=initial_tab,
+                auto_refresh_account=not bool(os.environ.get("PYTEST_CURRENT_TEST")),
+                parent=self,
+            )
+            open_dir_fn = getattr(self, "importDirImages", None)
+            if callable(open_dir_fn):
+                dialog.openPredictionsRequested.connect(open_dir_fn)
+            if hasattr(dialog, "openTrainingDashboardRequested"):
+                dialog.openTrainingDashboardRequested.connect(
+                    lambda run_dir: self.open_training_dashboard(
+                        initial_tab="monitor", run_dir=run_dir
+                    )
+                )
+            dialog.finished.connect(
+                lambda *_: setattr(self, "_colab_studio_dialog", None)
+            )
+            dialog.destroyed.connect(
+                lambda *_: setattr(self, "_colab_studio_dialog", None)
+            )
+            self._colab_studio_dialog = dialog
+        else:
+            dialog.select_tab(initial_tab)
+
+        if training_config:
+            dialog.prefill_training_config(dict(training_config))
+        if inference_config:
+            dialog.prefill_inference_config(dict(inference_config))
+
+        dialog.show()
+        dialog.setWindowState(dialog.windowState() & ~QtCore.Qt.WindowMinimized)
+        dialog.raise_()
+        dialog.activateWindow()
+        return dialog
+
     def train_on_colab(self):
-        url = "https://colab.research.google.com/github/healthonrails/annolid/blob/main/docs/tutorials/Annolid_on_Detectron2_Tutorial.ipynb"
-        webbrowser.open(url)
+        """Open Google Colab Studio (backward-compatible entry point for menu/toolbar)."""
+        return self.open_colab_studio(initial_tab="train")
 
     def quality_control(self):
         from annolid.gui.widgets.quality_control_dialog import QualityControlDialog

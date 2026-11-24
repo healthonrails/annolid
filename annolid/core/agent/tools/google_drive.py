@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import io
 import json
+import mimetypes
 import os
 import time
 from datetime import datetime, timezone
@@ -23,10 +25,29 @@ class GoogleDriveTool(FunctionTool):
         "create_folder",
         "delete_file",
         "upload_file",
+        "download_file",
         "upload_saved_videos",
         "upload_realtime_videos",
     }
     _VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".m4v", ".webm"}
+    _EXPLICIT_MIMETYPES = {
+        ".ipynb": "application/x-ipynb+json",
+        ".zip": "application/zip",
+        ".gz": "application/gzip",
+        ".tgz": "application/gzip",
+        ".json": "application/json",
+        ".yaml": "text/yaml",
+        ".yml": "text/yaml",
+        ".csv": "text/csv",
+        ".mp4": "video/mp4",
+        ".mov": "video/quicktime",
+        ".avi": "video/x-msvideo",
+        ".mkv": "video/x-matroska",
+        ".webm": "video/webm",
+        ".pt": "application/octet-stream",
+        ".pth": "application/octet-stream",
+        ".onnx": "application/octet-stream",
+    }
 
     def __init__(
         self,
@@ -54,7 +75,7 @@ class GoogleDriveTool(FunctionTool):
     @property
     def description(self) -> str:
         return (
-            "Manage Google Drive files and folders (list/get/create/delete/upload) "
+            "Manage Google Drive files and folders (list/get/create/delete/upload/download) "
             "using Google API OAuth credentials."
         )
 
@@ -121,11 +142,11 @@ class GoogleDriveTool(FunctionTool):
             return (
                 "Error: Unsupported action. Use one of: "
                 "list_files, get_file, create_folder, delete_file, "
-                "upload_file, upload_saved_videos, upload_realtime_videos."
+                "upload_file, download_file, upload_saved_videos, upload_realtime_videos."
             )
 
         if (
-            action_name in {"get_file", "delete_file"}
+            action_name in {"get_file", "delete_file", "download_file"}
             and not str(kwargs.get("file_id", "") or "").strip()
         ):
             return f"Error: {action_name} requires `file_id`."
@@ -135,10 +156,10 @@ class GoogleDriveTool(FunctionTool):
         ):
             return "Error: create_folder requires `folder_name`."
         if (
-            action_name == "upload_file"
+            action_name in {"upload_file", "download_file"}
             and not str(kwargs.get("local_path", "") or "").strip()
         ):
-            return "Error: upload_file requires `local_path`."
+            return f"Error: {action_name} requires `local_path`."
 
         try:
             service = await asyncio.to_thread(self._get_service)
@@ -202,6 +223,15 @@ class GoogleDriveTool(FunctionTool):
                     supports_all_drives=bool(kwargs.get("supports_all_drives", True)),
                     chunk_size_mb=int(kwargs.get("chunk_size_mb", 8) or 8),
                     skip_if_exists=bool(kwargs.get("skip_if_exists", True)),
+                )
+            if action_name == "download_file":
+                return await asyncio.to_thread(
+                    self._download_file_action,
+                    service,
+                    file_id=str(kwargs.get("file_id", "") or "").strip(),
+                    local_path=str(kwargs.get("local_path", "") or "").strip(),
+                    supports_all_drives=bool(kwargs.get("supports_all_drives", True)),
+                    chunk_size_mb=int(kwargs.get("chunk_size_mb", 8) or 8),
                 )
             if action_name in {"upload_saved_videos", "upload_realtime_videos"}:
                 default_dir = (
@@ -416,6 +446,14 @@ class GoogleDriveTool(FunctionTool):
                 continue
         return None
 
+    @classmethod
+    def _guess_upload_mimetype(cls, local_path: Path) -> str:
+        suffix = local_path.suffix.lower()
+        if suffix in cls._EXPLICIT_MIMETYPES:
+            return cls._EXPLICIT_MIMETYPES[suffix]
+        guessed, _encoding = mimetypes.guess_type(str(local_path))
+        return guessed or "application/octet-stream"
+
     def _upload_file_resumable(
         self,
         service: Any,
@@ -424,14 +462,18 @@ class GoogleDriveTool(FunctionTool):
         folder_id: str,
         supports_all_drives: bool,
         chunk_size_mb: int,
+        mimetype: str | None = None,
     ) -> dict[str, Any]:
         from googleapiclient.errors import HttpError
         from googleapiclient.http import MediaFileUpload
 
         chunk_size = max(1, min(64, int(chunk_size_mb))) * 1024 * 1024
+        resolved_mimetype = str(mimetype or "").strip() or self._guess_upload_mimetype(
+            local_path
+        )
         media = MediaFileUpload(
             str(local_path),
-            mimetype="video/mp4",
+            mimetype=resolved_mimetype,
             resumable=True,
             chunksize=chunk_size,
         )
@@ -457,6 +499,174 @@ class GoogleDriveTool(FunctionTool):
                     continue
                 raise
         return dict(result or {})
+
+    def _download_file_resumable(
+        self,
+        service: Any,
+        *,
+        file_id: str,
+        local_path: Path,
+        supports_all_drives: bool,
+        chunk_size_mb: int,
+    ) -> dict[str, Any]:
+        from googleapiclient.errors import HttpError
+        from googleapiclient.http import MediaIoBaseDownload
+
+        chunk_size = max(1, min(64, int(chunk_size_mb))) * 1024 * 1024
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = local_path.with_name(f".{local_path.name}.part")
+        request = service.files().get_media(
+            fileId=file_id,
+            supportsAllDrives=bool(supports_all_drives),
+        )
+        retries = 0
+        done = False
+        try:
+            with io.FileIO(str(tmp_path), "wb") as fh:
+                downloader = MediaIoBaseDownload(fh, request, chunksize=chunk_size)
+                while not done:
+                    try:
+                        _status, done = downloader.next_chunk()
+                    except HttpError as exc:
+                        status = int(
+                            getattr(getattr(exc, "resp", None), "status", 0) or 0
+                        )
+                        if status in {429, 500, 502, 503, 504} and retries < 5:
+                            retries += 1
+                            time.sleep(min(30, 2**retries))
+                            continue
+                        raise
+            tmp_path.replace(local_path)
+        except Exception:
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except OSError:
+                pass
+            raise
+        size_bytes = int(local_path.stat().st_size) if local_path.exists() else 0
+        return {
+            "file_id": file_id,
+            "local_path": str(local_path),
+            "size_bytes": size_bytes,
+        }
+
+    def _download_file_action(
+        self,
+        service: Any,
+        *,
+        file_id: str,
+        local_path: str,
+        supports_all_drives: bool,
+        chunk_size_mb: int,
+    ) -> str:
+        dest_path = self._resolve_local_path(local_path)
+        payload = self._download_file_resumable(
+            service,
+            file_id=file_id,
+            local_path=dest_path,
+            supports_all_drives=supports_all_drives,
+            chunk_size_mb=chunk_size_mb,
+        )
+        return json.dumps(
+            {
+                "status": "downloaded",
+                **payload,
+            },
+            ensure_ascii=True,
+        )
+
+    def ensure_folder_path_sync(
+        self, folder_path: str, *, supports_all_drives: bool = True
+    ) -> str:
+        service = self._get_service()
+        return self._ensure_drive_folder_path(
+            service,
+            folder_path,
+            supports_all_drives=supports_all_drives,
+        )
+
+    def upload_local_file_sync(
+        self,
+        local_path: str | Path,
+        *,
+        remote_folder_id: str = "",
+        remote_folder_path: str = "",
+        supports_all_drives: bool = True,
+        chunk_size_mb: int = 8,
+        skip_if_exists: bool = False,
+        mimetype: str | None = None,
+    ) -> dict[str, Any]:
+        service = self._get_service()
+        file_path = self._resolve_local_path(str(local_path))
+        if not file_path.exists() or not file_path.is_file():
+            raise FileNotFoundError(f"Local file not found: {file_path}")
+        folder_id = str(remote_folder_id or "").strip()
+        if remote_folder_path and not folder_id:
+            folder_id = self._ensure_drive_folder_path(
+                service,
+                remote_folder_path,
+                supports_all_drives=supports_all_drives,
+            )
+        if skip_if_exists:
+            existing = self._find_existing_file_by_name_and_size(
+                service,
+                file_name=file_path.name,
+                size_bytes=int(file_path.stat().st_size),
+                folder_id=folder_id,
+                supports_all_drives=supports_all_drives,
+            )
+            if existing is not None:
+                return {"status": "skipped_existing", "file": existing}
+        uploaded = self._upload_file_resumable(
+            service,
+            local_path=file_path,
+            folder_id=folder_id,
+            supports_all_drives=supports_all_drives,
+            chunk_size_mb=chunk_size_mb,
+            mimetype=mimetype,
+        )
+        return {"status": "uploaded", "file": uploaded}
+
+    def download_remote_file_sync(
+        self,
+        file_id: str,
+        local_path: str | Path,
+        *,
+        supports_all_drives: bool = True,
+        chunk_size_mb: int = 8,
+    ) -> dict[str, Any]:
+        service = self._get_service()
+        dest = self._resolve_local_path(str(local_path))
+        return self._download_file_resumable(
+            service,
+            file_id=file_id,
+            local_path=dest,
+            supports_all_drives=supports_all_drives,
+            chunk_size_mb=chunk_size_mb,
+        )
+
+    def list_folder_files_sync(
+        self,
+        folder_id: str,
+        *,
+        max_results: int = 100,
+        supports_all_drives: bool = True,
+    ) -> list[dict[str, Any]]:
+        service = self._get_service()
+        q = f"'{folder_id}' in parents and trashed=false"
+        payload = (
+            service.files()
+            .list(
+                q=q,
+                pageSize=max(1, min(100, int(max_results))),
+                fields="files(id,name,mimeType,size,modifiedTime,webViewLink)",
+                includeItemsFromAllDrives=True,
+                supportsAllDrives=bool(supports_all_drives),
+            )
+            .execute()
+        )
+        return list(payload.get("files") or [])
 
     def _is_realtime_detect_video(self, path: Path) -> bool:
         parts = [p.lower() for p in path.parts]

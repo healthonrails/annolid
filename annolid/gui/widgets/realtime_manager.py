@@ -1403,18 +1403,12 @@ class RealtimeManager(QtCore.QObject):
                     cfg.tools.google_auth.credentials_file or ""
                 ).strip()
                 token_file = str(cfg.tools.google_auth.token_file or "").strip()
-                scopes = ["https://www.googleapis.com/auth/drive"]
-                from google_auth_oauthlib.flow import InstalledAppFlow
-
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    str(Path(credentials_file).expanduser()),
-                    scopes,
+                GoogleOAuthHelper.login_interactive(
+                    credentials_file=credentials_file,
+                    token_file=token_file,
+                    scopes=[GoogleOAuthHelper.DRIVE_SCOPE],
+                    merge_existing_scopes=True,
                 )
-                creds = flow.run_local_server(port=0)
-                token_path = Path(token_file).expanduser()
-                GoogleOAuthHelper.ensure_private_parent(token_path)
-                token_path.write_text(creds.to_json(), encoding="utf-8")
-                GoogleOAuthHelper.ensure_private_file(token_path)
                 logger.info("Google auth login completed for realtime upload.")
             except Exception as exc:
                 logger.error("Google auth login failed: %s", exc, exc_info=True)

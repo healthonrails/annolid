@@ -221,6 +221,7 @@ def describe_agent_tool_pool(
             calendar_cfg=cfg.tools.calendar,
             google_auth_cfg=cfg.tools.google_auth,
             google_drive_enabled=bool(cfg.tools.google_drive_enabled),
+            google_colab_cfg=getattr(cfg.tools, "google_colab", None),
             box_cfg=cfg.tools.box,
             mcp_servers=cfg.tools.mcp_servers,
             stack=None,

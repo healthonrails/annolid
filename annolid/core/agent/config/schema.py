@@ -790,6 +790,46 @@ class GoogleAuthConfig:
 
 
 @dataclass
+class GoogleColabConfig:
+    enabled: bool = False
+    backend: str = "auto"
+    default_accelerator: str = "T4"
+    drive_folder: str = "Annolid/colab"
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "GoogleColabConfig":
+        if isinstance(data, bool):
+            return cls(enabled=data)
+        payload = data or {}
+        return cls(
+            enabled=bool(payload.get("enabled", False)),
+            backend=str(payload.get("backend") or "auto").strip().lower() or "auto",
+            default_accelerator=str(
+                payload.get("default_accelerator")
+                or payload.get("defaultAccelerator")
+                or "T4"
+            )
+            .strip()
+            .upper()
+            or "T4",
+            drive_folder=str(
+                payload.get("drive_folder")
+                or payload.get("driveFolder")
+                or "Annolid/colab"
+            ).strip()
+            or "Annolid/colab",
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "backend": self.backend,
+            "default_accelerator": self.default_accelerator,
+            "drive_folder": self.drive_folder,
+        }
+
+
+@dataclass
 class ToolsConfig:
     exec: ExecToolConfig = field(default_factory=ExecToolConfig)
     restrict_to_workspace: bool = True
@@ -804,6 +844,7 @@ class ToolsConfig:
     calendar: CalendarToolConfig = field(default_factory=CalendarToolConfig)
     google_auth: GoogleAuthConfig = field(default_factory=GoogleAuthConfig)
     google_drive_enabled: bool = False
+    google_colab: GoogleColabConfig = field(default_factory=GoogleColabConfig)
     box: BoxToolConfig = field(default_factory=BoxToolConfig)
     by_provider: Dict[str, ToolPolicyConfig] = field(default_factory=dict)
 
@@ -862,6 +903,9 @@ class ToolsConfig:
             drive_enabled = bool(drive_raw.get("enabled", False))
         elif isinstance(drive_raw, bool):
             drive_enabled = drive_raw
+        google_colab_cfg = GoogleColabConfig.from_dict(
+            payload.get("google_colab", payload.get("googleColab"))
+        )
         return cls(
             exec=exec_cfg,
             restrict_to_workspace=bool(restrict_value),
@@ -876,6 +920,7 @@ class ToolsConfig:
             calendar=calendar_cfg,
             google_auth=google_auth_cfg,
             google_drive_enabled=drive_enabled,
+            google_colab=google_colab_cfg,
             box=box_cfg,
             by_provider=by_provider,
         )
@@ -894,6 +939,7 @@ class ToolsConfig:
             "calendar": self.calendar.to_dict(),
             "google_auth": self.google_auth.to_dict(),
             "google_drive": {"enabled": self.google_drive_enabled},
+            "google_colab": self.google_colab.to_dict(),
             "box": self.box.to_dict(),
             "mcp_servers": {
                 name: cfg.to_dict() for name, cfg in self.mcp_servers.items()

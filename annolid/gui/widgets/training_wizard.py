@@ -1616,6 +1616,13 @@ class TrainingSummaryPage(QtWidgets.QWizardPage):
         self.copy_btn.clicked.connect(self._copy_summary_text)
         quick.addWidget(self.copy_btn)
 
+        self.colab_btn = QtWidgets.QPushButton("Run on Google Colab…")
+        self.colab_btn.setToolTip(
+            "Open Google Colab Studio prefilled with this training configuration"
+        )
+        self.colab_btn.clicked.connect(self._open_in_colab)
+        quick.addWidget(self.colab_btn)
+
         quick.addStretch()
         layout.addLayout(quick)
 
@@ -1645,6 +1652,11 @@ class TrainingSummaryPage(QtWidgets.QWizardPage):
 
     def _copy_summary_text(self) -> None:
         QtWidgets.QApplication.clipboard().setText(self.summary_text.toPlainText())
+
+    def _open_in_colab(self) -> None:
+        wizard = self.wizard()
+        if isinstance(wizard, TrainingWizard):
+            wizard.request_colab_launch()
 
     def initializePage(self) -> None:
         wizard = self.wizard()
@@ -1796,6 +1808,7 @@ class TrainingWizard(QtWidgets.QWizard):
     """Main training wizard combining all pages."""
 
     training_requested = Signal(dict)  # config dict
+    colab_requested = Signal(dict)  # config dict for Google Colab Studio
 
     def __init__(
         self,
@@ -1858,3 +1871,8 @@ class TrainingWizard(QtWidgets.QWizard):
         config["dataset_path"] = self.select_dataset_page.get_dataset_path()
         config["dataset_type"] = self.select_dataset_page.get_dataset_type()
         return config
+
+    def request_colab_launch(self) -> None:
+        config = self.get_training_config()
+        self.colab_requested.emit(config)
+        self.reject()

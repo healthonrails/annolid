@@ -15,7 +15,7 @@ class _AnnolidHelpFormatter(
 
 
 _ROOT_COMMAND_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("Models", ("list-models", "dinov3-models", "train", "predict")),
+    ("Models", ("list-models", "dinov3-models", "train", "predict", "colab")),
     (
         "Tracking",
         (
@@ -345,6 +345,10 @@ def _collect_root_command_help(
     command_help.setdefault(
         "runtime",
         "Inspect and install optional on-demand runtime packages and profiles.",
+    )
+    command_help.setdefault(
+        "colab",
+        "Authenticate with Google Colab and run remote GPU/TPU training or inference.",
     )
     command_help.setdefault("memory", "Memory inspection and maintenance commands.")
     return command_help
@@ -2667,6 +2671,12 @@ def _dispatch_operator_commands(argv: list[str]) -> Optional[int]:
     # annolid-run runtime ...
     if argv[0] == "runtime":
         return _cmd_runtime_cli(argv[1:])
+
+    # annolid-run colab ...
+    if argv[0] == "colab":
+        from annolid.colab.cli import main as colab_cli_main
+
+        return int(colab_cli_main(argv[1:]))
 
     # annolid-run memory ...
     if argv[0] == "memory":

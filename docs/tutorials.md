@@ -14,7 +14,7 @@ This page points to practical tutorial material that exists in the repository to
 | Score behavior events | [Behavior labeling with Timeline, Flags, and Annolid Bot](tutorials/behavior_timeline_flags_bot.md) |
 | Define zones and export zone metrics | [Draw zones quickstart](tutorials/draw_zones_quickstart.md) and [Zone analysis workflow](tutorials/zone_analysis_workflow.md) |
 | Correct CUTIE ID switches, drift, or missing frames | [Segment-based batch tracking](tutorials/segment-based-batch-tracking.md#10-repair-id-switches-with-manual-seed-frames) and [Tracking correction with SAM3 Agent and Annolid Bot](tutorials/tracking_correction_with_sam3_bot.md) |
-| Train or evaluate models | Notebook tutorials in `docs/tutorials/` and model-specific `annolid-run help` output |
+| Train or evaluate models | [Google Colab Training and Inference](google_colab.md), notebook tutorials in `docs/tutorials/`, and model-specific `annolid-run help` output |
 | Run realtime camera workflows | [Realtime Wireless Camera Detection](tutorials/realtime_wireless_camera_detection.md) and [Multi-Camera Realtime Detection](tutorials/multi_camera_realtime.md) |
 
 ## Video Walkthroughs
@@ -50,6 +50,7 @@ This page points to practical tutorial material that exists in the repository to
 
 Representative notebooks currently tracked in the repo:
 
+- `docs/tutorials/Annolid_Colab_Train_and_Inference.ipynb`
 - `docs/tutorials/Extract_frames_from_a_video.ipynb`
 - `docs/tutorials/yolov8_tracking_tutorial.ipynb`
 - `docs/tutorials/Annolid_video_batch_inference.ipynb`

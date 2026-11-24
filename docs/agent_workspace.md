@@ -6,8 +6,9 @@ Current tools:
 
 - `google_drive` (optional, enabled by config)
 - `google_calendar` (optional, enabled by config)
+- `google_colab` (optional, enabled by config — see [Google Colab Training and Inference](google_colab.md))
 
-The Google OAuth token/credentials are shared so Drive and Calendar use one local auth setup. This also prepares a single auth surface for future Gmail tooling.
+The Google OAuth token/credentials are shared so Drive, Calendar, and Colab use one local auth setup, and re-authorizing preserves previously granted scopes.
 
 ## What Changed
 
@@ -229,6 +230,7 @@ Verify configured paths in `~/.annolid/config.json` and ensure files are readabl
 
 ## Related Docs
 
+- [Google Colab Training and Inference](google_colab.md)
 - [Agent Calendar](agent_calendar.md)
 - [MCP](mcp.md)
 - [Agent Secrets](agent_secrets.md)

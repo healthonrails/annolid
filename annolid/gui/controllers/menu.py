@@ -962,9 +962,11 @@ class MenuController:
             settings_profile_specs["sam3d"]["save"],
             {
                 "name": "colab",
-                "text": w.tr("&Open in Colab"),
+                "text": w.tr("Google &Colab…"),
                 "slot": w.train_on_colab,
-                "tip": w.tr("Open in Colab"),
+                "tip": w.tr(
+                    "Authenticate with Google Colab and run GPU training or inference remotely"
+                ),
                 "icon_path": here / "icons/colab.png",
             },
             {

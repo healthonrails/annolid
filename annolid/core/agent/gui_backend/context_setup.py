@@ -106,6 +106,7 @@ async def prepare_context_tools(
         google_drive_enabled = bool(
             getattr(agent_cfg.tools, "google_drive_enabled", False)
         )
+        google_colab_cfg = getattr(agent_cfg.tools, "google_colab", None)
         await register_nanobot_style_tools(
             tools,
             allowed_dir=workspace,
@@ -119,6 +120,7 @@ async def prepare_context_tools(
             calendar_cfg=calendar_cfg,
             google_auth_cfg=google_auth_cfg,
             google_drive_enabled=google_drive_enabled,
+            google_colab_cfg=google_colab_cfg,
             box_cfg=box_cfg,
         )
         register_gui_tools(tools)

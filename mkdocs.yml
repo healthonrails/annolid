@@ -100,6 +100,7 @@ nav:
       - Pose Estimation Workflow: pose_estimation_workflow.md
       - DeepLabCut, SLEAP & Pose Interoperability: pose_interoperability.md
       - YOLO & YOLOE Fine-Tuning and Inference: yolo_workflow.md
+      - Google Colab Training and Inference: google_colab.md
       - Tutorials Overview: tutorials.md
       - Merge Canvas Shapes (GUI): tutorials/merge_canvas_shapes.md
       - Reorder Annotation Lists (GUI): tutorials/reorder_annotation_lists.md

@@ -52,6 +52,7 @@ from .training import (
 )
 from .camera import CameraSnapshotTool
 from .box import BoxTool
+from .colab import GoogleColabTool
 from .function_sam3 import Sam3AgentVideoTrackTool
 from .coding_harness import (
     CodingSessionAbortTool,
@@ -183,6 +184,7 @@ __all__ = [
     "AnnolidTrainStartTool",
     "CameraSnapshotTool",
     "BoxTool",
+    "GoogleColabTool",
     "Sam3AgentVideoTrackTool",
     "CodingSessionStartTool",
     "CodingSessionSendTool",

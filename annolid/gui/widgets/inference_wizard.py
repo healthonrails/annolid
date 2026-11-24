@@ -690,7 +690,23 @@ class ConfigureInferencePage(QtWidgets.QWizardPage):
         dino_layout.addRow("Min keypoint score:", self.dino_min_score_spin)
 
         layout.addWidget(dino_group)
+
+        colab_row = QtWidgets.QHBoxLayout()
+        self.colab_btn = QtWidgets.QPushButton("Run on Google Colab…")
+        self.colab_btn.setToolTip(
+            "Open Google Colab Studio prefilled with this model, video, and inference settings"
+        )
+        self.colab_btn.clicked.connect(self._open_in_colab)
+        colab_row.addWidget(self.colab_btn)
+        colab_row.addStretch()
+        layout.addLayout(colab_row)
+
         layout.addStretch()
+
+    def _open_in_colab(self) -> None:
+        wizard = self.wizard()
+        if isinstance(wizard, InferenceWizard):
+            wizard.request_colab_launch()
 
     def _browse_output(self) -> None:
         folder = QtWidgets.QFileDialog.getExistingDirectory(
@@ -1422,6 +1438,7 @@ class InferenceWizard(QtWidgets.QWizard):
 
     # Signal emitted when inference is requested
     inference_requested = Signal(dict)  # config dict
+    colab_requested = Signal(dict)  # config dict for Google Colab Studio
 
     def __init__(
         self,
@@ -1480,6 +1497,11 @@ class InferenceWizard(QtWidgets.QWizard):
         config["full_video"] = self.select_videos_page.is_full_video()
         config["segment"] = self.select_videos_page.get_segment()
         return config
+
+    def request_colab_launch(self) -> None:
+        config = self.get_inference_config()
+        self.colab_requested.emit(config)
+        self.reject()
 
     def reject(self) -> None:
         if self.progress_page.is_running():
