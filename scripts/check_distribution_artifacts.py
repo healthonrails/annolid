@@ -40,6 +40,7 @@ FORBIDDEN_NAMES = {
     "checkpoints",
     "graphify-out",
     "mlpackage",
+    "project.annolid.json",
     "sam3_agent_out",
     "weights",
 }
@@ -134,6 +135,8 @@ def is_forbidden_member(
     if suffix in FORBIDDEN_SUFFIXES:
         return True
     if parts.intersection(FORBIDDEN_NAMES):
+        return True
+    if any(part.lower().endswith(".mlpackage") for part in ordered_parts):
         return True
     if artifact_kind == "bundle" and "runs" in parts:
         return True

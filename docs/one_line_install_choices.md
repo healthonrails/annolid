@@ -209,10 +209,10 @@ The one-line installers no longer install SAM-HQ during the default GUI setup. S
 ### Cutie runtime note
 
 The `cutie` extra installs the Python runtime packages used by Cutie tracking.
-The default `gui` profile installs this extra up front. If a minimal install
+The `tracking`, `workstation`, and `full` profiles (or `--extras cutie`) install this extra up front, while the lean `gui` profile keeps initial install small. If a lean install
 tries to run Cutie tracking and one of those packages is missing, Annolid
 attempts to install the missing packages into the active environment before
-loading the tracker. Set `ANNOLID_AUTO_INSTALL_CUTIE_DEPS=0` to disable that
+loading the tracker. Set `ANNOLID_AUTO_INSTALL_OPTIONAL_DEPS=0` (or legacy `ANNOLID_AUTO_INSTALL_CUTIE_DEPS=0`) to disable that
 automatic repair and show the exact install command instead.
 
 ## Recommended patterns

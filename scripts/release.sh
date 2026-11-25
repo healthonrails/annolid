@@ -95,15 +95,27 @@ sed -i.bak -E "s/^version = \"[0-9]+\.[0-9]+\.[0-9]+\"/version = \"${NEXT}\"/" p
 sed -i.bak -E "s/^__version__ = \"[0-9]+\.[0-9]+\.[0-9]+\"/__version__ = \"${NEXT}\"/" annolid/version.py
 rm -f pyproject.toml.bak annolid/version.py.bak
 
+if [[ -d ".venv/bin" ]]; then
+  export PATH="$(pwd)/.venv/bin:${PATH}"
+fi
+
+STAGE_FILES=(pyproject.toml annolid/version.py)
+if command -v uv >/dev/null 2>&1 && [[ -f "uv.lock" ]]; then
+  echo "Updating uv.lock..."
+  uv lock
+  STAGE_FILES+=(uv.lock)
+fi
+
 if [[ "$SKIP_CHECKS" -eq 0 ]]; then
   echo "Running release checks..."
-  python -m pytest
+  rm -rf dist
+  QT_QPA_PLATFORM=offscreen ANNOLID_DISABLE_BOT_AUTOSTART=1 python -m pytest
   python -m build
-  python scripts/check_distribution_artifacts.py dist/*
+  python scripts/check_distribution_artifacts.py dist/*.whl dist/*.tar.gz
   python -m twine check dist/*.whl dist/*.tar.gz
 fi
 
-git add pyproject.toml annolid/version.py
+git add "${STAGE_FILES[@]}"
 git commit -m "chore(release): v${NEXT}"
 git tag -a "v${NEXT}" -m "Release v${NEXT}"
 

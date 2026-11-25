@@ -393,7 +393,7 @@ function Install-OnnxRuntime {
     if ($script:HasNvidiaGpu -and $script:HasCuda12 -and -not $NoGpu) {
         Write-Host "  Installing onnxruntime-gpu..."
         try {
-            Uninstall-PythonPackages @("onnxruntime-gpu", "onnxruntime-directml")
+            Uninstall-PythonPackages @("onnxruntime", "onnxruntime-gpu", "onnxruntime-directml")
             if ($script:OfflineActive) {
                 if ($script:UseUv) {
                     & $script:UvCmd pip install @pipIndexArgs --upgrade --force-reinstall onnxruntime-gpu
@@ -407,6 +407,7 @@ function Install-OnnxRuntime {
                     & pip install @pipIndexArgs --upgrade --force-reinstall onnxruntime-gpu --extra-index-url $script:OnnxRuntimeCuda12ExtraIndexUrl
                 }
             }
+            if ($LASTEXITCODE -ne 0) { throw "onnxruntime-gpu install exited with code $LASTEXITCODE" }
             Write-Success "onnxruntime-gpu (CUDA 12.x) installed"
             return
         } catch {
@@ -737,6 +738,7 @@ function Install-Annolid {
                     } else {
                         & pip install @pipIndexArgs segment-anything
                     }
+                    if ($LASTEXITCODE -ne 0) { throw "SAM-HQ offline install exited with code $LASTEXITCODE" }
                     $script:SamHqStatus = "installed"
                 } catch {
                     $script:SamHqStatus = "failed"
@@ -755,6 +757,7 @@ function Install-Annolid {
                 } else {
                     & pip install @pipIndexArgs "segment-anything @ git+https://github.com/SysCV/sam-hq.git"
                 }
+                if ($LASTEXITCODE -ne 0) { throw "SAM-HQ install exited with code $LASTEXITCODE" }
                 $script:SamHqStatus = "installed"
             } catch {
                 $script:SamHqStatus = "failed"
@@ -818,6 +821,7 @@ function Repair-OnnxRuntime {
     $ortImportOk = $true
     try {
         & python -c "import os; os.environ.setdefault('KMP_DUPLICATE_LIB_OK','TRUE'); import onnxruntime as ort; print(f'  ONNX Runtime: {ort.__version__}')"
+        if ($LASTEXITCODE -ne 0) { $ortImportOk = $false }
     } catch {
         $ortImportOk = $false
     }
@@ -865,6 +869,7 @@ function Repair-OnnxRuntime {
 
     try {
         & python -c "import os; os.environ.setdefault('KMP_DUPLICATE_LIB_OK','TRUE'); import onnxruntime as ort; providers = ort.get_available_providers(); print(f'  ONNX Runtime repaired: {ort.__version__}'); print(f'  Providers: {providers}')"
+        if ($LASTEXITCODE -ne 0) { throw "ONNX Runtime import exited with code $LASTEXITCODE" }
         Write-Success "ONNX Runtime repaired successfully"
     } catch {
         Write-Error-Msg "ONNX Runtime still fails to import."
@@ -892,10 +897,15 @@ function Test-Installation {
 
     Write-Host "  Checking imports..."
     & python -c "import annolid; print(f'  Annolid imported successfully')"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error-Msg "Failed to import annolid."
+        exit 1
+    }
 
     Write-Host "  Checking Qt bindings..."
     try {
         & python -c "from qtpy import QtCore; print('  Qt binding import OK')"
+        if ($LASTEXITCODE -ne 0) { throw "Qt import exited with code $LASTEXITCODE" }
     } catch {
         Write-Error-Msg "Qt bindings are missing. Reinstall with GUI extras:"
         Write-Host "  pip install -e "".[gui]"""
@@ -906,6 +916,7 @@ function Test-Installation {
     $torchOk = $true
     try {
         & python -c "import torch; print(f'  PyTorch version: {torch.__version__}')"
+        if ($LASTEXITCODE -ne 0) { $torchOk = $false }
     } catch {
         $torchOk = $false
     }
@@ -924,6 +935,7 @@ function Test-Installation {
             Write-Host "  Verifying CUDAExecutionProvider..."
             try {
                 & python -c "import os; os.environ.setdefault('KMP_DUPLICATE_LIB_OK','TRUE'); import onnxruntime as ort; providers = set(ort.get_available_providers()); assert 'CUDAExecutionProvider' in providers, f'Missing CUDAExecutionProvider. Providers={providers}'"
+                if ($LASTEXITCODE -ne 0) { throw "CUDAExecutionProvider verification exited with code $LASTEXITCODE" }
                 Write-Success "CUDAExecutionProvider available"
             } catch {
                 Write-Error-Msg "CUDAExecutionProvider is missing despite CUDA 12.x detection."

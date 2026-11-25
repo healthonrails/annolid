@@ -196,6 +196,7 @@ EXCLUDED_PATH_PARTS = {
     "annolid/segmentation/cutie_vos/weights",
     "annolid/segmentation/sam2.1_b.pt",
     "annolid/tracker/features/checkpoint",
+    "project.annolid.json",
 }
 
 EXCLUDED_SUFFIXES = {
@@ -223,8 +224,11 @@ def _normalized_path(value):
 
 def _is_excluded_artifact(value):
     path = _normalized_path(value)
-    suffix = Path(path).suffix.lower()
+    p = Path(path)
+    suffix = p.suffix.lower()
     if suffix in EXCLUDED_SUFFIXES:
+        return True
+    if any(part.lower().endswith(".mlpackage") for part in p.parts):
         return True
     return any(part in path for part in EXCLUDED_PATH_PARTS)
 
@@ -286,6 +290,21 @@ def _collect_annolid_hiddenimports(root: Path) -> list[str]:
 HIDDEN_IMPORTS = _collect_annolid_hiddenimports(ROOT)
 
 
+def _collect_tree_datas(
+    root: Path, rel_dir: str, suffixes: set[str]
+) -> list[tuple[str, str]]:
+    base = root / rel_dir
+    if not base.is_dir():
+        return []
+    entries: list[tuple[str, str]] = []
+    for path in sorted(base.rglob("*")):
+        if not path.is_file() or path.suffix.lower() not in suffixes:
+            continue
+        rel_parent = path.parent.relative_to(root).as_posix()
+        entries.append((path.relative_to(root).as_posix(), rel_parent))
+    return entries
+
+
 a = Analysis(
     ["annolid/gui/launcher.py"],
     pathex=[str(ROOT)],
@@ -293,9 +312,13 @@ a = Analysis(
     datas=[
         ("annolid/configs/*.yaml", "annolid/configs"),
         ("annolid/configs/*.json", "annolid/configs"),
+        ("annolid/detector/configs/*", "annolid/detector/configs"),
+        ("annolid/tracker/configs/*.yaml", "annolid/tracker/configs"),
         ("annolid/annotation/labels.txt", "annolid/annotation"),
         ("annolid/annotation/labels_interaction", "annolid/annotation"),
         ("annolid/core/output/schema/*.json", "annolid/core/output/schema"),
+        *_collect_tree_datas(ROOT, "annolid/core/agent/skills", {".md", ".sh"}),
+        *_collect_tree_datas(ROOT, "annolid/core/agent/workspace", {".md", ".sh"}),
         ("annolid/icons/*", "annolid/icons"),
         ("annolid/gui/icons/*", "annolid/gui/icons"),
         ("annolid/gui/assets/*", "annolid/gui/assets"),

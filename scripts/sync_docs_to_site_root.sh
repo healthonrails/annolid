@@ -30,6 +30,8 @@ if [[ "$TARGET_PATH" == "/" || "$TARGET_PATH" == "." || "$TARGET_PATH" == "root"
     --exclude 'index.html' \
     --exclude 'website-assets/' \
     --exclude 'book/' \
+    --exclude 'portal/' \
+    --exclude '.nojekyll' \
     --exclude 'CNAME' \
     "$SRC_DIR/" "$DEST_DIR/"
 else

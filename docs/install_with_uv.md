@@ -54,9 +54,10 @@ annolid-run list-models
 
 ## ONNX Runtime GPU Provider
 
-The editable install brings in CPU `onnxruntime` by default. On Linux or Windows machines with an NVIDIA driver reporting CUDA 12.x or newer, add the GPU provider after installing Annolid:
+The lean `.[gui]` install omits ONNX Runtime by default; extras such as `.[gui,onnx]`, `.[gui,ml]`, or `.[gui,tracking]` bring in CPU `onnxruntime`. On Linux or Windows machines with an NVIDIA driver reporting CUDA 12.x or newer, replace CPU `onnxruntime` with `onnxruntime-gpu`:
 
 ```bash
+uv pip uninstall onnxruntime onnxruntime-gpu
 uv pip install --upgrade --force-reinstall onnxruntime-gpu --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/
 python -c "import onnxruntime as ort; print(ort.get_available_providers())"
 ```

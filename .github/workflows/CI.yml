@@ -13,14 +13,19 @@ concurrency:
   group: annolid-ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   build:
 
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
     - uses: actions/checkout@v6
       with:
+        fetch-depth: 0
         submodules: recursive
     - name: Free disk space
       run: |
@@ -45,7 +50,7 @@ jobs:
       uses: actions/cache@v5
       with:
         path: ~/.cache/uv
-        key: ${{ runner.os }}-uv-${{ hashFiles('pyproject.toml') }}
+        key: ${{ runner.os }}-uv-${{ hashFiles('pyproject.toml', 'uv.lock') }}
         restore-keys: |
           ${{ runner.os }}-uv-
 
@@ -70,6 +75,7 @@ jobs:
       run: |
         source .venv/bin/activate
         ruff check --config pyproject.toml annolid tests scripts
+        ruff format --check --config pyproject.toml annolid tests scripts
         FLK_EXCLUDES="annolid/segmentation/SAM,annolid/segmentation/cutie_vos,annolid/segmentation/yolact,annolid/detector/countgd,annolid/detector/yolov5,annolid/depth/video_depth_anything"
         # stop the build if there are Python syntax errors or undefined names
         flake8 annolid tests --count --select=E9,F63,F7,F82 --exclude="$FLK_EXCLUDES" --show-source --statistics

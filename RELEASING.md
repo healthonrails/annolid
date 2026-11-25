@@ -5,7 +5,7 @@ Packaging tiers, artifact policy, signing status, and desktop binary expectation
 This repository publishes:
 - **PyPI distributions** from GitHub Releases (`.github/workflows/annolid-publish.yml`).
 - **Platform executables** from `v*` tag pushes (`.github/workflows/release.yml`).
-- **Docs to `gh-pages`** on pushes to `main` (`.github/workflows/CI.yml`).
+- **Docs and website sync to `healthonrails.github.io`** on pushes to `main` (`.github/workflows/healthonrails-site-sync.yml`).
 
 ## Recommended release flow
 - `make release-patch` (or `make release-minor`, `make release-major`)
@@ -15,7 +15,7 @@ This repository publishes:
 
 Under the hood this runs `scripts/release.sh`, which will:
 - verify a clean git worktree
-- bump both `pyproject.toml` and `annolid/version.py`
+- bump both `pyproject.toml` and `annolid/version.py` (and sync `uv.lock` when `uv` is available)
 - run `pytest`, `python -m build`, and
   `python -m twine check dist/*.whl dist/*.tar.gz`
 - create commit `chore(release): vX.Y.Z`

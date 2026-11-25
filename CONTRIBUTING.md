@@ -29,7 +29,7 @@ In short, when you submit code changes, your submissions are understood to be un
  Feel free to contact the maintainers if that's a concern.
 
 ## Report bugs using Github's [issues](https://github.com/healthonrails/annolid/issues)
-We use GitHub issues to track public bugs. Report a bug by [opening a new issue]()
+We use GitHub issues to track public bugs. Report a bug by [opening a new issue](https://github.com/healthonrails/annolid/issues/new).
 
 ## Write bug reports with detail, background, and sample code
 **Great Bug Reports** tend to have:

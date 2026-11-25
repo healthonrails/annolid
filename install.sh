@@ -124,8 +124,9 @@ EOF
 }
 
 show_help() {
+    local code="${1:-0}"
     print_usage
-    exit 0
+    exit "$code"
 }
 
 require_arg_value() {
@@ -249,7 +250,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             print_error "Unknown option: $1"
-            show_help
+            show_help 1
             ;;
     esac
 done
@@ -582,7 +583,7 @@ install_onnx_runtime() {
 
     if [[ "$HAS_NVIDIA_GPU" == true && "$HAS_CUDA12" == true && "$NO_GPU" == false ]]; then
         echo "  Installing onnxruntime-gpu for CUDA 12.x..."
-        uninstall_packages onnxruntime-gpu
+        uninstall_packages onnxruntime onnxruntime-gpu
         if [[ "$OFFLINE" == true ]]; then
             if $PIP_CMD install "${PIP_INDEX_ARGS[@]}" --upgrade --force-reinstall onnxruntime-gpu; then
                 print_success "onnxruntime-gpu installed (offline wheelhouse)"
@@ -926,7 +927,7 @@ install_annolid() {
     PROFILE_EXTRAS="$(profile_extras)"
     NORMALIZED_EXTRAS="$(merge_extras "$PROFILE_EXTRAS" "$EXTRAS")"
     INSTALL_EXTRAS="$(merge_extras "gui" "$NORMALIZED_EXTRAS")"
-    INSTALL_TARGET="-e .[${INSTALL_EXTRAS}]"
+    INSTALL_ARGS=(-e ".[${INSTALL_EXTRAS}]")
     echo "  Profile: $PROFILE"
     echo "  Including extras: $INSTALL_EXTRAS"
     if [[ -n "$WHEELHOUSE" ]]; then
@@ -957,11 +958,11 @@ install_annolid() {
 
     echo "  Installing annolid (this may take a few minutes)..."
     if [[ "$OFFLINE" == true ]]; then
-        if ! $PIP_CMD install "${PIP_INDEX_ARGS[@]}" $INSTALL_TARGET; then
-            $PIP_CMD install "${PIP_INDEX_ARGS[@]}" --no-build-isolation $INSTALL_TARGET
+        if ! $PIP_CMD install "${PIP_INDEX_ARGS[@]}" "${INSTALL_ARGS[@]}"; then
+            $PIP_CMD install "${PIP_INDEX_ARGS[@]}" --no-build-isolation "${INSTALL_ARGS[@]}"
         fi
     else
-        $PIP_CMD install "${PIP_INDEX_ARGS[@]}" $INSTALL_TARGET
+        $PIP_CMD install "${PIP_INDEX_ARGS[@]}" "${INSTALL_ARGS[@]}"
     fi
 
     if extra_selected "sam3" || extra_selected "sam" || extra_selected "segment_anything" || extra_selected "all"; then

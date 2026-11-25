@@ -199,6 +199,7 @@ CAPABILITIES: dict[str, RuntimeCapability] = {
             RuntimeDependency("torchvision", "torchvision>=0.20.0"),
             RuntimeDependency("omegaconf", "omegaconf>=2.3.0"),
             RuntimeDependency("hydra", "hydra-core>=1.3.2"),
+            RuntimeDependency("einops", "einops>=0.6.0"),
             RuntimeDependency("onnxruntime", "onnxruntime>=1.23.2"),
             RuntimeDependency("ultralytics", "ultralytics>=8.4.0"),
             RuntimeDependency("lap", "lap"),

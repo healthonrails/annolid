@@ -150,6 +150,5 @@ nav:
   - Reference:
       - Reference: reference.md
       - Zone Analysis: zone_analysis.md
-      - Identity Repair and Governor: identity_governor.md
   - Developer Notes:
       - Model Plugin Help: model_plugin_help.md

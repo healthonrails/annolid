@@ -49,7 +49,7 @@ Treat any model/tool execution path as privileged automation. Run with least pri
 - Rotate compromised keys immediately.
 - Use separate credentials for development and production.
 
-See `docs/source/llm_key_security.md` for setup instructions and platform-specific examples.
+See `docs/agent_secrets.md` and `docs/agent_security.md` for credential storage and hardening guidance.
 
 ### 2) Agent Tooling Risk (`exec`, file tools, web tools)
 

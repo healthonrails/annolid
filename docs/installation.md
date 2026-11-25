@@ -256,7 +256,7 @@ On Python 3.14 and 3.15, `ffpyplayer` may build from source and require native F
 
 ### Note on Python 3.15+ Wheel Coverage
 
-On Python 3.10 through 3.14, `h5py` and `scikit-image` are installed automatically in the base dependency set. On Python 3.15+, both packages are gated out of the base install (`python_version < "3.15"`) so `pip install "annolid[gui]"` does not fail attempting native `libhdf5` or Meson/C++ source builds before upstream `cp315` wheels are available:
+On Python 3.10 through 3.14, `h5py` and `scikit-image` are included in the optional `scientific`, `sleap`, `test`, and `all` extras (and gated with `python_version < "3.15"` where applicable) so `pip install "annolid[gui]"` stays lean and never attempts native `libhdf5` or Meson/C++ source builds before upstream `cp315` wheels are available:
 
 - Mask rendering, binary polygon rasterization, and shape skeletonization fall back automatically to OpenCV/SciPy when `scikit-image` is absent.
 - SLEAP `.slp` / `.h5` import raises an explicit install hint when `h5py` is absent; install `pip install "annolid[sleap]"` (or `pip install h5py` with HDF5 headers/wheels) if you need SLEAP HDF5 conversion on Python 3.15+.

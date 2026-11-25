@@ -29,16 +29,16 @@ release-major:
 	./scripts/release.sh major $$args
 
 book-build:
-	@source .venv/bin/activate && jupyter-book build book
+	@.venv/bin/jupyter-book build book
 
 book-preview: book-build
 	@open book/_build/html/index.html
 
 portal-build:
-	@source .venv/bin/activate && mkdocs build --clean --config-file mkdocs.yml
+	@.venv/bin/mkdocs build --strict --clean --config-file mkdocs.yml
 
 portal-preview:
-	@source .venv/bin/activate && mkdocs serve --config-file mkdocs.yml
+	@.venv/bin/mkdocs serve --config-file mkdocs.yml
 
 site-build:
 	@.venv/bin/python scripts/site_workflow.py stage
