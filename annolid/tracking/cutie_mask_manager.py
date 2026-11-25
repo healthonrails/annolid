@@ -382,7 +382,14 @@ class CutieMaskManager:
             return False
         self._core = None
         self._processor = None
-        if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
+        mps_backend = getattr(getattr(torch, "backends", None), "mps", None)
+        if (
+            mps_backend is not None
+            and hasattr(mps_backend, "is_available")
+            and mps_backend.is_available()
+            and hasattr(torch, "mps")
+            and hasattr(torch.mps, "empty_cache")
+        ):
             try:
                 torch.mps.empty_cache()
             except Exception:
