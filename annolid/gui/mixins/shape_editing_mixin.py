@@ -319,8 +319,15 @@ class ShapeEditingMixin:
         target = bool(locked)
         changed = []
         for shape in selected:
-            if bool(getattr(shape, "locked", False)) != target:
+            was_locked = (
+                bool(shape.is_locked())
+                if hasattr(shape, "is_locked")
+                else bool(getattr(shape, "locked", False))
+            )
+            if was_locked != target:
                 shape.locked = target
+                if not target and isinstance(getattr(shape, "other_data", None), dict):
+                    shape.other_data.pop("overlay_locked", None)
                 changed.append(shape)
         if not changed:
             return 0

@@ -71,10 +71,7 @@ class WindowLifecycleMixin:
             logger.info(
                 "Lifecycle close aborted by mayContinue() in %.1fms.", elapsed_ms
             )
-            return
-        self._closefile_reset_view_and_core_state()
-        self._closefile_reset_audio_and_slider_state()
-        self._closefile_reset_tracking_prediction_state()
+            return False
         if not self._closefile_handle_tracking_stop_prompt(
             suppress_tracking_prompt=suppress_tracking_prompt
         ):
@@ -82,7 +79,10 @@ class WindowLifecycleMixin:
             logger.info(
                 "Lifecycle close aborted by tracking prompt in %.1fms.", elapsed_ms
             )
-            return
+            return False
+        self._closefile_reset_view_and_core_state()
+        self._closefile_reset_audio_and_slider_state()
+        self._closefile_reset_tracking_prediction_state()
 
         super().closeFile(_value)
 
@@ -90,6 +90,7 @@ class WindowLifecycleMixin:
         self._current_video_defined_segments = []
         elapsed_ms = (time.perf_counter() - start_ts) * 1000.0
         logger.info("File closed in AnnolidWindow (%.1fms).", elapsed_ms)
+        return True
 
     def _closefile_reset_view_and_core_state(self) -> None:
         self._set_active_view("canvas")

@@ -173,6 +173,8 @@ class Canvas(
         self.mode = self.EDIT
         self.shapes: list[Shape] = []
         self.shapesBackups: list[list[Shape]] = [[]]
+        self.shapesRedoBackups: list[list[Shape]] = []
+        self._restoring_history: bool = False
         self.current: Shape | None = None
         self.selectedShapes: list[Shape] = []
         self.selectedShapesCopy: list[Shape] = []
@@ -600,7 +602,7 @@ class Canvas(
         return True
 
     # ------------------------------------------------------------------
-    # Undo / backup stack
+    # Undo / Redo backup stacks
     # ------------------------------------------------------------------
     def storeShapes(self):
         shapesBackup = [shape.copy() for shape in self.shapes]
@@ -608,6 +610,8 @@ class Canvas(
         if len(self.shapesBackups) > self.num_backups:
             self.shapesBackups = self.shapesBackups[-self.num_backups :]
         self.shapesBackups.append(shapesBackup)
+        if not getattr(self, "_restoring_history", False):
+            self.shapesRedoBackups = []
 
     @property
     def isShapeRestorable(self):
@@ -615,13 +619,12 @@ class Canvas(
         # so an edit is undoable whenever >= 2 snapshots exist.
         return len(self.shapesBackups) >= 2
 
-    def restoreShape(self):
-        if not self.isShapeRestorable:
-            return
-        self.shapesBackups.pop()  # discard current state
-        # Caller (undoShapeEdit -> loadShapes) will push the restored state back.
-        shapesBackup = self.shapesBackups.pop()
-        self.shapes = shapesBackup
+    @property
+    def isShapeRedoable(self):
+        return bool(getattr(self, "shapesRedoBackups", None))
+
+    def _apply_history_snapshot(self, shapes_snapshot: list[Shape]) -> None:
+        self.shapes = shapes_snapshot
         self._shared_finalize_topology_edit()
         self.selectedShapes = []
         self.selectedShapesCopy = []
@@ -637,6 +640,28 @@ class Canvas(
         except Exception:
             pass
         self.update()
+
+    def restoreShape(self):
+        if not self.isShapeRestorable:
+            return
+        current_state = self.shapesBackups.pop()
+        redo_stack = getattr(self, "shapesRedoBackups", None)
+        if redo_stack is None:
+            redo_stack = []
+            self.shapesRedoBackups = redo_stack
+        if len(redo_stack) >= self.num_backups:
+            redo_stack[:] = redo_stack[-(self.num_backups - 1) :]
+        redo_stack.append(current_state)
+        # Caller (undoShapeEdit -> loadShapes) will push the restored state back.
+        shapesBackup = self.shapesBackups.pop()
+        self._apply_history_snapshot(shapesBackup)
+
+    def redoShape(self):
+        if not self.isShapeRedoable:
+            return
+        next_shapes = self.shapesRedoBackups.pop()
+        # Caller (redoShapeEdit -> loadShapes) will push the restored state onto shapesBackups.
+        self._apply_history_snapshot([shape.copy() for shape in next_shapes])
 
     def _shape_index_by_identity(self, target) -> int | None:
         for idx, shape in enumerate(self.shapes):
@@ -2519,6 +2544,7 @@ class Canvas(
             self.shapes = []
             # Seed empty baseline so the very first created shape is immediately undoable.
             self.shapesBackups = [[]]
+            self.shapesRedoBackups = []
             self.selectedShapes = []
             self.selectedShapesCopy = []
             self.visible = {}
@@ -2636,6 +2662,7 @@ class Canvas(
         self.restoreCursor()
         self.pixmap = QtGui.QPixmap()
         self.shapesBackups = [[]]
+        self.shapesRedoBackups = []
         self.shapes = []
         self.selectedShapes = []
         self.selectedShapesCopy = []

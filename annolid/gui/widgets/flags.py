@@ -61,11 +61,17 @@ class FlagTable(QTableWidget):
         """)
 
     def _setup_shortcuts(self):
-        # Set up keyboard shortcuts
-        QShortcut(QKeySequence("Ctrl+Z"), self, self.undo_stack.undo)
-        QShortcut(QKeySequence("Ctrl+Y"), self, self.undo_stack.redo)
-        QShortcut(QKeySequence("Delete"), self, self.delete_selected)
-        QShortcut(QKeySequence("Ctrl+N"), self, self.add_flag)
+        # Scope shortcuts to this widget subtree so they never collide with
+        # main-window Ctrl+Z / Delete / Ctrl+S bindings.
+        for seq, slot in (
+            ("Ctrl+Z", self.undo_stack.undo),
+            ("Ctrl+Y", self.undo_stack.redo),
+            ("Delete", self.delete_selected),
+            ("Ctrl+N", self.add_flag),
+        ):
+            sc = QShortcut(QKeySequence(seq), self)
+            sc.setContext(Qt.WidgetWithChildrenShortcut)
+            sc.activated.connect(slot)
 
     def _setup_sorting(self):
         # Enable sorting and set initial sort state
@@ -99,14 +105,16 @@ class FlagTable(QTableWidget):
 
     def _update_row_order(self):
         self.blockSignals(True)
-        for new_idx, old_idx in enumerate(self._row_order):
-            if new_idx != old_idx:
-                for col in range(self.columnCount()):
-                    widget = self.cellWidget(old_idx, col)
-                    if widget:
-                        self.removeCellWidget(old_idx, col)
-                        self.setCellWidget(new_idx, col, widget)
-        self.blockSignals(False)
+        try:
+            for new_idx, old_idx in enumerate(self._row_order):
+                if new_idx != old_idx:
+                    for col in range(self.columnCount()):
+                        widget = self.cellWidget(old_idx, col)
+                        if widget:
+                            self.removeCellWidget(old_idx, col)
+                            self.setCellWidget(new_idx, col, widget)
+        finally:
+            self.blockSignals(False)
 
     def _sort_by_active_state(self):
         """Sort table to move active flags to top"""
@@ -308,6 +316,7 @@ class FlagTableWidget(QtWidgets.QWidget):
         ]
         for seq, handler in shortcuts:
             sc = QShortcut(QKeySequence(seq), self)
+            sc.setContext(Qt.WidgetWithChildrenShortcut)
             sc.activated.connect(handler)
 
     def _trigger_start_on_current_row(self):
@@ -369,26 +378,44 @@ class FlagTableWidget(QtWidgets.QWidget):
         flag_checkbox = QCheckBox()
         flag_checkbox.setChecked(value)
         self._update_checkbox_icon(flag_checkbox, value)  # Set initial icon
-        # Change icon when the checkbox toggles
+        # Change icon when the checkbox toggles (use isChecked() for PySide6 int/enum safety)
         flag_checkbox.stateChanged.connect(
-            lambda state: self._update_checkbox_icon(flag_checkbox, state == Qt.Checked)
+            lambda _state, cb=flag_checkbox: self._update_checkbox_icon(
+                cb, cb.isChecked()
+            )
         )
+
+        def _row_for_widget(target_widget) -> int:
+            for r in range(self._table.rowCount()):
+                for c in range(self._table.columnCount()):
+                    if self._table.cellWidget(r, c) is target_widget:
+                        return r
+            return -1
+
         flag_checkbox.stateChanged.connect(
-            lambda state, row=row: self.flagToggled.emit(
-                self._table.cellWidget(row, self.COLUMN_NAME).text().strip(),
-                state == Qt.Checked,
+            lambda _state, editor=name_editor, cb=flag_checkbox: self.flagToggled.emit(
+                editor.text().strip(),
+                cb.isChecked(),
             )
         )
         self._table.setCellWidget(row, self.COLUMN_ACTIVE, flag_checkbox)
         flag_checkbox.setAccessibleDescription(f"Toggle state for {name}")
         # Start Button
         start_button = QtWidgets.QPushButton("Start")
-        start_button.clicked.connect(lambda: self.handle_start_button(row))
+        start_button.clicked.connect(
+            lambda _checked=False, btn=start_button: (
+                (r := _row_for_widget(btn)) >= 0 and self.handle_start_button(r)
+            )
+        )
         self._table.setCellWidget(row, 2, start_button)
         start_button.setAccessibleDescription(f"Start behavior {name}")
         # End Button
         end_button = QtWidgets.QPushButton("End")
-        end_button.clicked.connect(lambda: self.handle_end_button(row))
+        end_button.clicked.connect(
+            lambda _checked=False, btn=end_button: (
+                (r := _row_for_widget(btn)) >= 0 and self.handle_end_button(r)
+            )
+        )
         self._table.setCellWidget(row, 3, end_button)
         end_button.setAccessibleDescription(f"End behavior {name}")
         self._table._row_order = list(range(self._table.rowCount()))

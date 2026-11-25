@@ -459,8 +459,12 @@ class AnnotationLoadingMixin:
                 visible=visible,
                 locked=bool(shape_data.get("locked", False)),
             )
-            for x, y in points:
-                shape.addPoint(QtCore.QPointF(x, y))
+            raw_point_labels = list(shape_data.get("point_labels") or [])
+            for idx, (x, y) in enumerate(points):
+                pt_label = raw_point_labels[idx] if idx < len(raw_point_labels) else 1
+                shape.addPoint(QtCore.QPointF(x, y), label=pt_label)
+            if raw_point_labels:
+                shape._has_explicit_point_labels = True
             shared_ids = list(shape_data.get("shared_vertex_ids") or [])
             if shared_ids:
                 normalized_ids = [str(value or "") for value in shared_ids]
@@ -1508,10 +1512,11 @@ class AnnotationLoadingMixin:
                 self._brain3d_shape_to_labelme(shape) for shape in list(shapes or [])
             ]
             if write_pages:
-                label_path = Path(
-                    str(resolver(page_index=int(plane.plane_index)) or "")
-                )
-                if label_path:
+                raw_label_path = str(
+                    resolver(page_index=int(plane.plane_index)) or ""
+                ).strip()
+                if raw_label_path:
+                    label_path = Path(raw_label_path)
                     label_path.parent.mkdir(parents=True, exist_ok=True)
                     page_other_data = dict(getattr(self, "otherData", {}) or {})
                     page_other_data = store_brain_model_in_other_data(
@@ -1724,7 +1729,7 @@ class AnnotationLoadingMixin:
         if replace:
             self.labelList.clear()
         for shape in shapes:
-            if not isinstance(shape.points[0], QtCore.QPointF):
+            if shape.points and not isinstance(shape.points[0], QtCore.QPointF):
                 shape.points = [QtCore.QPointF(x, y) for x, y in shape.points]
             self.addLabel(shape, rebuild_unique=False)
         self.labelList.clearSelection()

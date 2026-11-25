@@ -93,19 +93,24 @@ class PersistenceLifecycleMixin:
             timer.stop()
 
     def _get_pil_image_from_state(self) -> Image.Image | None:
-        if self.imageData is None:
-            return None
+        source_image = self.imageData
+        if source_image is None:
+            candidate = getattr(self, "image", None)
+            if isinstance(candidate, QtGui.QImage) and not candidate.isNull():
+                source_image = candidate
+            else:
+                return None
 
-        if isinstance(self.imageData, bytes):
+        if isinstance(source_image, bytes):
             try:
-                pil_image = Image.open(io.BytesIO(self.imageData))
+                pil_image = Image.open(io.BytesIO(source_image))
             except Exception as e:
                 logger.error(f"Failed to load PIL Image from bytes: {e}")
                 return None
-        elif isinstance(self.imageData, Image.Image):
-            pil_image = self.imageData
-        elif isinstance(self.imageData, QtGui.QImage):
-            qimage = QtGui.QImage(self.imageData)
+        elif isinstance(source_image, Image.Image):
+            pil_image = source_image
+        elif isinstance(source_image, QtGui.QImage):
+            qimage = QtGui.QImage(source_image)
             image_bytes = self._qimage_to_bytes(qimage)
             if image_bytes is None:
                 logger.error("Failed to serialize QImage to bytes for saving.")
@@ -121,7 +126,7 @@ class PersistenceLifecycleMixin:
             # Some callers may store QImage-like wrappers. Try Qt conversion
             # without importing additional Qt binding helper modules.
             try:
-                qimage = QtGui.QImage(self.imageData)
+                qimage = QtGui.QImage(source_image)
             except Exception:
                 qimage = QtGui.QImage()
             if not qimage.isNull():
@@ -142,7 +147,7 @@ class PersistenceLifecycleMixin:
                     return pil_image.convert("RGB")
                 return pil_image
             logger.warning(
-                f"self.imageData is of an unexpected type ({type(self.imageData)}). "
+                f"self.imageData is of an unexpected type ({type(source_image)}). "
                 "Cannot convert to PIL.Image for saving."
             )
             return None
@@ -164,7 +169,7 @@ class PersistenceLifecycleMixin:
             enabled = False
         return enabled
 
-    def saveLabels(self, filename, save_image_data=True):
+    def saveLabels(self, filename, save_image_data=True, *, _is_backup_copy=False):
         dirty_hook = getattr(self, "_onAnnotationDirty", None)
         if callable(dirty_hook):
             try:
@@ -188,11 +193,16 @@ class PersistenceLifecycleMixin:
 
         def format_shape(s):
             nonlocal has_zone_shapes
+            point_labels = getattr(s, "point_labels", None) or []
+            has_non_default_point_labels = any(
+                val != 1 for val in point_labels
+            ) or bool(getattr(s, "_has_explicit_point_labels", False))
             data = serialize_shape(
                 s,
                 include_manual_tag=True,
                 sanitize_flags=False,
                 include_null_mask=True,
+                include_point_labels=has_non_default_point_labels,
             )
             if is_zone_shape_payload(data):
                 has_zone_shapes = True
@@ -207,13 +217,54 @@ class PersistenceLifecycleMixin:
                 if self.is_behavior_active(self.frame_number, _flag)
             }
 
+        skipped_overlay_labels: set[str] = set()
+        skipped_resolver = getattr(
+            self, "_behavior_label_skipped_overlay_labels_for_frame", None
+        )
+        if callable(skipped_resolver):
+            try:
+                skipped_overlay_labels = {
+                    str(lbl).strip()
+                    for lbl in (skipped_resolver(self.frame_number) or ())
+                    if str(lbl).strip()
+                }
+            except Exception:
+                skipped_overlay_labels = set()
+        overlay_items = getattr(self.canvas, "_behavior_overlay_items", None) or ()
+        for item in overlay_items:
+            if str(getattr(item, "kind", "") or "").strip().lower() == "skipped":
+                lbl = str(getattr(item, "label", "") or "").strip()
+                if lbl:
+                    skipped_overlay_labels.add(lbl)
+
         if self.canvas.current_behavior_text is not None:
             behaviors = self.canvas.current_behavior_text.split(",")
             for behavior in behaviors:
-                if len(behavior) > 0:
-                    flags[behavior] = True
+                cleaned_behavior = behavior.strip()
+                if cleaned_behavior and cleaned_behavior not in skipped_overlay_labels:
+                    flags[cleaned_behavior] = True
         try:
-            imagePath = osp.relpath(self.imagePath, osp.dirname(filename))
+            raw_image_source = str(
+                getattr(self, "imagePath", "") or getattr(self, "filename", "") or ""
+            )
+            if raw_image_source and osp.isdir(raw_image_source) and self.filename:
+                raw_image_source = str(self.filename)
+            label_dir = osp.dirname(osp.abspath(str(filename)))
+            serialized_image_path = ""
+            if raw_image_source:
+                abs_image_source = osp.abspath(raw_image_source)
+                if osp.dirname(abs_image_source) == label_dir:
+                    serialized_image_path = Path(abs_image_source).name
+                else:
+                    try:
+                        rel_path = osp.relpath(abs_image_source, label_dir)
+                        serialized_image_path = (
+                            Path(rel_path).as_posix()
+                            if rel_path not in {"", "."}
+                            else Path(abs_image_source).name
+                        )
+                    except ValueError:
+                        serialized_image_path = Path(abs_image_source).name
             imageData = None
             save_embedded_image_data = self._should_embed_image_data(
                 save_image_data=bool(save_image_data)
@@ -236,7 +287,6 @@ class PersistenceLifecycleMixin:
             if hasattr(self, "_has_large_image_page_navigation") and bool(
                 self._has_large_image_page_navigation()
             ):
-                label_dir = osp.dirname(osp.abspath(str(filename)))
                 raw_source = str(getattr(self, "imagePath", "") or "")
                 rel_source = ""
                 if raw_source:
@@ -270,7 +320,7 @@ class PersistenceLifecycleMixin:
             lf.save(
                 filename=filename,
                 shapes=shapes,
-                imagePath=Path(imagePath).name,
+                imagePath=serialized_image_path,
                 imageData=imageData,
                 imageHeight=image_height,
                 imageWidth=image_width,
@@ -278,6 +328,8 @@ class PersistenceLifecycleMixin:
                 flags=flags,
                 caption=self.canvas.getCaption(),
             )
+            if _is_backup_copy:
+                return True
             if has_zone_shapes:
                 self.zone_path = filename
 
@@ -299,7 +351,7 @@ class PersistenceLifecycleMixin:
                     f"Emitted VideoManagerWidget.json_saved for video: {self.video_file}, JSON: {filename}"
                 )
             return True
-        except LabelFileError as e:
+        except (LabelFileError, OSError, ValueError) as e:
             self.errorMessage(
                 self.tr("Error saving label data"), self.tr("<b>%s</b>") % e
             )
@@ -328,8 +380,8 @@ class PersistenceLifecycleMixin:
                 if not changed_folder.exists():
                     changed_folder.mkdir(exist_ok=True, parents=True)
                 changed_filename = changed_folder / Path(filename).name
-                _ = self.saveLabels(str(changed_filename))
-                _ = self._saveImageFile(str(changed_filename).replace(".json", ".png"))
+                _ = self.saveLabels(str(changed_filename), _is_backup_copy=True)
+                _ = self._saveImageFile(str(changed_filename.with_suffix(".png")))
             stage_times["edited_copy"] = time.perf_counter() - stage_started
 
             stage_started = time.perf_counter()
@@ -613,6 +665,9 @@ class PersistenceLifecycleMixin:
 
     def setDirty(self):
         self.actions.undo.setEnabled(self.canvas.isShapeRestorable)
+        redo_act = getattr(self.actions, "redo", None)
+        if redo_act is not None:
+            redo_act.setEnabled(bool(getattr(self.canvas, "isShapeRedoable", False)))
         self.dirty = True
         self.actions.save.setEnabled(True)
         title = "Annolid"
@@ -633,9 +688,9 @@ class PersistenceLifecycleMixin:
                     )
                 except Exception:
                     pass
-        _filename = os.path.basename(self.filename)
+        _filename = os.path.basename(self.filename) if self.filename else ""
         if self.video_loader:
-            if self.frame_number:
+            if self.frame_number is not None:
                 self._time_stamp = convert_frame_number_to_time(
                     self.frame_number, self.fps
                 )
@@ -645,11 +700,11 @@ class PersistenceLifecycleMixin:
                 else:
                     title = f"{title}|Video Timestamp:{self._time_stamp}"
                     title = f"{title}|Frame_number:{self.frame_number}*"
+        elif _filename:
+            if clean:
+                title = "{} - {}".format(title, _filename)
             else:
-                if clean:
-                    title = "{} - {}".format(title, _filename)
-                else:
-                    title = "{} - {}*".format(title, _filename)
+                title = "{} - {}*".format(title, _filename)
         return title
 
     def deleteAllFuturePredictions(self):
@@ -1202,14 +1257,59 @@ class PersistenceLifecycleMixin:
             self.deleteAllFuturePredictions()
         else:
             label_file = self.getLabelFile()
-            if osp.exists(label_file):
+            removed_any = False
+            if label_file and osp.exists(label_file):
                 os.remove(label_file)
-                img_file = label_file.replace(".json", ".png")
-                if osp.exists(img_file):
-                    os.remove(img_file)
+                removed_any = True
+                # Only remove extracted sidecar PNG frames inside a video
+                # results folder; never delete a standalone user source PNG.
+                results_folder = getattr(self, "video_results_folder", None)
+                if getattr(self, "video_file", None) and results_folder:
+                    try:
+                        label_path = Path(label_file).resolve()
+                        results_root = Path(results_folder).resolve()
+                        if label_path.parent == results_root:
+                            img_path = label_path.with_suffix(".png")
+                            if img_path.is_file():
+                                img_path.unlink()
+                    except OSError:
+                        logger.debug(
+                            "Failed removing video seed frame sidecar for %s",
+                            label_file,
+                            exc_info=True,
+                        )
                 logger.info("Label file is removed: {}".format(label_file))
 
-                item = self.fileListWidget.currentItem()
+            if getattr(self, "video_file", None) and getattr(
+                self, "video_results_folder", None
+            ):
+                frame_num = getattr(self, "frame_number", None)
+                if frame_num is not None and label_file:
+                    try:
+                        store = AnnotationStore.for_frame_path(Path(label_file))
+                        if store is not None and hasattr(
+                            store, "remove_frames_in_range"
+                        ):
+                            pruned = store.remove_frames_in_range(
+                                int(frame_num), int(frame_num)
+                            )
+                            removed_any = removed_any or bool(pruned)
+                    except Exception:
+                        logger.debug(
+                            "Failed pruning AnnotationStore frame %s during deleteFile",
+                            frame_num,
+                            exc_info=True,
+                        )
+
+            if removed_any:
+                clear_caches = getattr(self, "_clear_frame_annotation_caches", None)
+                if callable(clear_caches):
+                    clear_caches()
+                item = (
+                    self.fileListWidget.currentItem()
+                    if getattr(self, "fileListWidget", None) is not None
+                    else None
+                )
                 if item:
                     item.setData(Qt.UserRole, False)
                     item.setForeground(QtGui.QBrush(QtGui.QColor(160, 160, 160)))
@@ -1239,6 +1339,9 @@ class PersistenceLifecycleMixin:
         undo_act = getattr(self.actions, "undo", None)
         if undo_act is not None and canvas is not None:
             undo_act.setEnabled(bool(getattr(canvas, "isShapeRestorable", False)))
+        redo_act = getattr(self.actions, "redo", None)
+        if redo_act is not None and canvas is not None:
+            redo_act.setEnabled(bool(getattr(canvas, "isShapeRedoable", False)))
         title = "Annolid"
         if self.filename is not None:
             title = self.getTitle()

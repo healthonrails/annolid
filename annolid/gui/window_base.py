@@ -903,6 +903,12 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
             shortcut=self._shortcut("undo"),
         )
         self.actions.undo.setIcon(self._icon("undo.svg"))
+        self.actions.redo = self._mk_action(
+            self.tr("Redo"),
+            self.redoShapeEdit,
+            shortcut=self._shortcut("redo"),
+            enabled=False,
+        )
         self.actions.undoLastPoint = self._mk_action(
             self.tr("Undo Last Point"),
             getattr(self, "undoLastPointAction", None),
@@ -1061,6 +1067,7 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
             self.actions.selectAllShapes,
             None,
             self.actions.undo,
+            self.actions.redo,
             self.actions.undoLastPoint,
             self.actions.addPointToEdge,
             self.actions.removePoint,
@@ -1106,6 +1113,7 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
             "lock_shape": "Ctrl+Shift+L",
             "fit_selection": "Ctrl+Shift+G",
             "undo": "Ctrl+Z",
+            "redo": QtGui.QKeySequence.Redo,
             "add_point_to_edge": "Ctrl+Shift+P",
             "toggle_all_polygons": "T",
         }
@@ -1520,13 +1528,42 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         if duplicated and hasattr(self, "setDirty"):
             self.setDirty()
 
+    def _sync_undo_redo_actions(self) -> None:
+        canvas = getattr(self, "canvas", None)
+        undo_act = getattr(self.actions, "undo", None)
+        if undo_act is not None:
+            undo_act.setEnabled(bool(getattr(canvas, "isShapeRestorable", False)))
+        redo_act = getattr(self.actions, "redo", None)
+        if redo_act is not None:
+            redo_act.setEnabled(bool(getattr(canvas, "isShapeRedoable", False)))
+
     def undoShapeEdit(self, _value=False) -> None:
         canvas = getattr(self, "canvas", None)
         if canvas is None or not getattr(canvas, "isShapeRestorable", False):
             return
-        canvas.restoreShape()
-        if hasattr(self, "loadShapes"):
-            self.loadShapes(canvas.shapes, replace=True)
+        canvas._restoring_history = True
+        try:
+            canvas.restoreShape()
+            if hasattr(self, "loadShapes"):
+                self.loadShapes(canvas.shapes, replace=True)
+        finally:
+            canvas._restoring_history = False
+        self._sync_undo_redo_actions()
+        if hasattr(self, "setDirty"):
+            self.setDirty()
+
+    def redoShapeEdit(self, _value=False) -> None:
+        canvas = getattr(self, "canvas", None)
+        if canvas is None or not getattr(canvas, "isShapeRedoable", False):
+            return
+        canvas._restoring_history = True
+        try:
+            canvas.redoShape()
+            if hasattr(self, "loadShapes"):
+                self.loadShapes(canvas.shapes, replace=True)
+        finally:
+            canvas._restoring_history = False
+        self._sync_undo_redo_actions()
         if hasattr(self, "setDirty"):
             self.setDirty()
 
@@ -1595,9 +1632,7 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
                 action.setEnabled(enabled)
         if enabled:
             canvas = getattr(self, "canvas", None)
-            undo_act = getattr(self.actions, "undo", None)
-            if undo_act is not None:
-                undo_act.setEnabled(bool(getattr(canvas, "isShapeRestorable", False)))
+            self._sync_undo_redo_actions()
             paste_act = getattr(self.actions, "pasteShapes", None)
             if paste_act is not None:
                 paste_act.setEnabled(bool(getattr(self, "_copied_shapes", None)))
@@ -1625,6 +1660,7 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
                 "addPointToEdge",
                 "removePoint",
                 "undo",
+                "redo",
                 "undoLastPoint",
             )
             for name in contextual_actions:
@@ -3140,6 +3176,8 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         shapes = []
         loaded_label_file = None
         deferred_sidecar_label_path: Path | None = None
+        self.labelFile = None
+        self.otherData = {}
 
         initial_large_image_page = None
         if path.suffix.lower() == ".json":
@@ -3165,6 +3203,13 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
                 image_path = (path.parent / image_rel).resolve()
         else:
             candidate = path.with_suffix(".json")
+            if hasattr(self, "_getLabelFile"):
+                try:
+                    resolved = self._getLabelFile(str(path))
+                    if resolved:
+                        candidate = Path(str(resolved))
+                except Exception:
+                    candidate = path.with_suffix(".json")
             if candidate.exists():
                 if bool(is_large_tiff_path(path)):
                     deferred_sidecar_label_path = candidate
@@ -3219,6 +3264,18 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
                 image_result = None
 
         image = image_result.qimage if image_result is not None else QtGui.QImage()
+        embedded_image_data = (
+            getattr(loaded_label_file, "imageData", None)
+            if loaded_label_file is not None
+            else None
+        )
+        if image.isNull() and embedded_image_data:
+            try:
+                decoded = QtGui.QImage.fromData(embedded_image_data)
+                if not decoded.isNull():
+                    image = decoded
+            except Exception:
+                image = QtGui.QImage()
         if image.isNull():
             self.errorMessage(
                 self.tr("Load Error"),
@@ -3229,7 +3286,7 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         self.image = image
         self.filename = str(path)
         self.imagePath = str(image_path)
-        self.imageData = None
+        self.imageData = embedded_image_data if embedded_image_data else image
         if probed_large_image is None:
             probed_large_image = probe_large_image(backend_image_path)
         if image_result is not None and image_result.metadata is not None:
@@ -3358,8 +3415,24 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
                     self, "update_flags_from_file"
                 ):
                     self.update_flags_from_file(loaded_label_file)
-                elif hasattr(self.canvas, "setBehaviorText"):
-                    self.canvas.setBehaviorText(None)
+                else:
+                    if hasattr(self.canvas, "setBehaviorText"):
+                        self.canvas.setBehaviorText(None)
+                    if hasattr(self.canvas, "setCaption"):
+                        self.canvas.setCaption(None)
+                    flags_ctrl = getattr(self, "flags_controller", None)
+                    if (
+                        flags_ctrl is not None
+                        and not getattr(self, "video_loader", None)
+                        and hasattr(flags_ctrl, "pinned_flags")
+                    ):
+                        flags_widget = getattr(self, "flag_widget", None)
+                        for flag_name in list(flags_ctrl.pinned_flags.keys()):
+                            flags_ctrl.pinned_flags[flag_name] = False
+                            if flags_widget is not None and hasattr(
+                                flags_widget, "_update_row_value"
+                            ):
+                                flags_widget._update_row_value(flag_name, False)
             self._syncLargeImageDocument()
 
         # Ensure image workflows (Open / Open Dir) activate toolbar actions.

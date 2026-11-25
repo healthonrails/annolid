@@ -1669,6 +1669,7 @@ class TimelinePanel(QtWidgets.QWidget):
     def _install_behavior_shortcuts(self) -> None:
         for i in range(1, 10):
             sc = QtWidgets.QShortcut(QtGui.QKeySequence(str(i)), self)
+            sc.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
             sc.activated.connect(lambda idx=i: self._select_behavior_by_index(idx))
 
     def _select_behavior_by_index(self, one_based_index: int) -> None:

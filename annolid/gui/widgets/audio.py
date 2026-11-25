@@ -4,10 +4,21 @@ from typing import Optional, Tuple
 
 import numpy as np
 from qtpy import QtWidgets
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
-from matplotlib.widgets import SpanSelector
 from qtpy.QtCore import Qt
+
+try:
+    from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+    from matplotlib.figure import Figure
+    from matplotlib.widgets import SpanSelector
+except ImportError:
+    try:
+        from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+        from matplotlib.figure import Figure
+        from matplotlib.widgets import SpanSelector
+    except ImportError:  # pragma: no cover - optional dependency
+        FigureCanvas = None  # type: ignore[assignment]
+        Figure = None  # type: ignore[assignment]
+        SpanSelector = None  # type: ignore[assignment]
 
 from annolid.utils.audio_playback import play_audio_buffer
 

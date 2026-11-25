@@ -905,6 +905,11 @@ class CanvasAiPromptMixin:
             )
             if undo_action is not None and hasattr(undo_action, "setEnabled"):
                 undo_action.setEnabled(self.isShapeRestorable)
+            redo_action = (
+                getattr(actions, "redo", None) if actions is not None else None
+            )
+            if redo_action is not None and hasattr(redo_action, "setEnabled"):
+                redo_action.setEnabled(bool(getattr(self, "isShapeRedoable", False)))
             set_dirty = getattr(win, "setDirty", None)
             if callable(set_dirty):
                 set_dirty()

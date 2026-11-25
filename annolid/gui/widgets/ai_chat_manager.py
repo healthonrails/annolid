@@ -606,8 +606,9 @@ class AIChatManager(QtCore.QObject):
                     except Exception as exc:
                         logger.exception("Failed to start background services: %s", exc)
 
-                # Schedule the start coroutine
-                loop.create_task(_async_start())
+                # Keep a strong reference to the startup task so Python 3.10+ GC
+                # cannot prematurely collect it before completion.
+                self._background_start_task = loop.create_task(_async_start())
 
                 # Run the loop forever until stopped
                 try:

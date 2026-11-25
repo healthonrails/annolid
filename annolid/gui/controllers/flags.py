@@ -151,6 +151,13 @@ class FlagsController(QtCore.QObject):
             self._widget._update_row_value(flag_name, True)
         self._update_canvas_text()
         self._emit_flags_changed()
+        if (
+            record_event
+            and getattr(self._window, "filename", None)
+            and not getattr(self._window, "video_loader", None)
+            and hasattr(self._window, "setDirty")
+        ):
+            self._window.setDirty()
 
     def end_flag(self, flag_name: str, record_event: bool = True) -> None:
         """Mark a flag as inactive and optionally record an end event."""
@@ -172,6 +179,13 @@ class FlagsController(QtCore.QObject):
             self._widget._update_row_value(flag_name, False)
         self._update_canvas_text()
         self._emit_flags_changed()
+        if (
+            record_event
+            and getattr(self._window, "filename", None)
+            and not getattr(self._window, "video_loader", None)
+            and hasattr(self._window, "setDirty")
+        ):
+            self._window.setDirty()
 
     def apply_prompt_flags(self, flags: Dict[str, bool]) -> None:
         """Apply flags provided via prompt without persisting them."""

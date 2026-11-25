@@ -723,6 +723,10 @@ class LabelPanelMixin:
 
         if item.checkState() == Qt.Unchecked:
             if self.filename == path:
+                if not self.mayContinue():
+                    with QtCore.QSignalBlocker(self.fileListWidget):
+                        item.setCheckState(Qt.Checked)
+                    return
                 fallback_path = self._nearest_checked_file_path(
                     self.fileListWidget.row(item)
                 )
@@ -828,8 +832,16 @@ class LabelPanelMixin:
             return
 
         selected_shape = self.canvas.selectedShapes[0]
-        current_frame = self.frame_number
-        max_frame = self.num_frames - 1
+        total_frames = getattr(self, "num_frames", None)
+        if total_frames is None or int(total_frames) <= 0:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Video Required",
+                "Shape propagation requires an open video or multi-frame sequence.",
+            )
+            return
+        current_frame = int(getattr(self, "frame_number", 0) or 0)
+        max_frame = int(total_frames) - 1
 
         dialog = ShapePropagationDialog(
             self.canvas, self, current_frame, max_frame, parent=self
@@ -866,8 +878,16 @@ class LabelPanelMixin:
 
         selected_shape = selected_shapes[0]
         target_shape = selected_shapes[1]
-        current_frame = self.frame_number
-        max_frame = self.num_frames - 1
+        total_frames = getattr(self, "num_frames", None)
+        if total_frames is None or int(total_frames) <= 0:
+            QtWidgets.QMessageBox.information(
+                self,
+                "Video Required",
+                "Switching labels across frames requires an open video or multi-frame sequence.",
+            )
+            return
+        current_frame = int(getattr(self, "frame_number", 0) or 0)
+        max_frame = int(total_frames) - 1
 
         dialog = ShapePropagationDialog(
             self.canvas, self, current_frame, max_frame, parent=self

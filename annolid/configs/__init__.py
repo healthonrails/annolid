@@ -213,7 +213,7 @@ def get_default_config():
         try:
             shutil.copy(config_file, user_config_file)
         except Exception:
-            logger.warn("Failed to save config: {}".format(user_config_file))
+            logger.warning("Failed to save config: {}".format(user_config_file))
 
     return config
 

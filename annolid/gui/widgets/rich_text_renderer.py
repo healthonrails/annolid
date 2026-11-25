@@ -4,7 +4,6 @@ import io
 import re
 from typing import Any, Dict, List, Match, Optional, Tuple
 
-import matplotlib.pyplot as plt
 from qtpy import QtGui
 
 try:
@@ -190,6 +189,10 @@ class RichTextRenderer:
     def _latex_to_image_base64(
         self, latex_string: str, *, fontsize: int, dpi: int, inline: bool
     ) -> Optional[str]:
+        try:
+            import matplotlib.pyplot as plt
+        except ImportError:
+            return None
         try:
             plt.clf()
             if inline:

@@ -1,17 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Any, Optional
 
-import pandas as pd
 from qtpy import QtCore, QtGui, QtWidgets
 
-from annolid.postprocessing.tracking_stats_dashboard import (
-    TrackingStatsArtifacts,
-    analyze_and_visualize_tracking_stats,
-)
-from annolid.services.unified_reporting import build_unified_analysis_report
 from annolid.utils.logger import logger
+
+if TYPE_CHECKING:
+    from annolid.postprocessing.tracking_stats_dashboard import TrackingStatsArtifacts
 
 
 class _TrackingStatsWorker(QtCore.QObject):
@@ -25,6 +22,10 @@ class _TrackingStatsWorker(QtCore.QObject):
     @QtCore.Slot()
     def run(self) -> None:
         try:
+            from annolid.postprocessing.tracking_stats_dashboard import (
+                analyze_and_visualize_tracking_stats,
+            )
+
             artifacts = analyze_and_visualize_tracking_stats(
                 root_dir=self._root_dir,
                 output_dir=self._output_dir,
@@ -247,7 +248,9 @@ class TrackingStatsDashboardWidget(QtWidgets.QWidget):
         )
 
     @staticmethod
-    def _populate_table(table: QtWidgets.QTableWidget, dataframe: pd.DataFrame) -> None:
+    def _populate_table(table: QtWidgets.QTableWidget, dataframe: Any) -> None:
+        import pandas as pd
+
         if dataframe is None:
             dataframe = pd.DataFrame()
         was_sorting = table.isSortingEnabled()
@@ -307,6 +310,8 @@ class TrackingStatsDashboardWidget(QtWidgets.QWidget):
         self.plot_layout.addWidget(container)
 
     def _refresh_from_artifacts(self, artifacts: TrackingStatsArtifacts) -> None:
+        import pandas as pd
+
         overview_df = pd.read_csv(artifacts.overview_csv)
         abnormal_df = pd.read_csv(artifacts.abnormal_segments_csv)
         bad_shape_df = pd.read_csv(artifacts.bad_shape_events_csv)
@@ -422,6 +427,10 @@ class TrackingStatsDashboardWidget(QtWidgets.QWidget):
         self.run_btn.setEnabled(False)
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
         try:
+            from annolid.postprocessing.tracking_stats_dashboard import (
+                analyze_and_visualize_tracking_stats,
+            )
+
             artifacts = analyze_and_visualize_tracking_stats(
                 root_dir=root_dir, output_dir=output_dir
             )
@@ -454,6 +463,10 @@ class TrackingStatsDashboardWidget(QtWidgets.QWidget):
             else root_dir / "unified_report"
         )
         try:
+            from annolid.services.unified_reporting import (
+                build_unified_analysis_report,
+            )
+
             artifacts = build_unified_analysis_report(
                 root_dir,
                 output_dir=report_dir,

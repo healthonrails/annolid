@@ -74,7 +74,7 @@ class CanvasWorkflowMixin:
         self._deactivate_pca_map()
         if isinstance(filename, str):
             filename = Path(filename)
-        self.imagePath = str(filename.parent)
+        self.imagePath = str(filename)
         self.filename = str(filename)
         self.image = qimage
         self.imageData = qimage
@@ -477,8 +477,9 @@ class CanvasWorkflowMixin:
             )
             if adjusted is None or adjusted.isNull():
                 return
-            self.image = adjusted
-            self.imageData = adjusted
+            # Keep self.image and self.imageData intact so brightness/contrast
+            # remains a non-destructive display adjustment and never corrupts
+            # saved training frames or compounds on subsequent dialog opens.
             self.canvas.loadPixmap(QtGui.QPixmap.fromImage(adjusted))
             self.paintCanvas()
 

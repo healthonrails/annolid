@@ -483,8 +483,8 @@ class VideoWorkflowMixin:
         )
         choice = message_box.exec()
         if choice == QtWidgets.QMessageBox.Ok:
-            self.closeFile()
-            return True
+            closed = self.closeFile()
+            return True if closed is None else bool(closed)
         return False
 
     def _resolve_video_filename(

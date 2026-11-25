@@ -3,7 +3,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import pandas as pd
 from qtpy.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -20,9 +19,6 @@ from qtpy.QtWidgets import (
 )
 
 from annolid.annotation.labelme2csv import convert_json_to_csv
-from annolid.postprocessing.zone_occupancy_policy import (
-    apply_zone_occupancy_policy_file,
-)
 from annolid.postprocessing.zone_schema import load_zone_shapes
 from annolid.utils.annotation_store import load_labelme_json
 
@@ -260,6 +256,12 @@ class LabelmeJsonToCsvDialog(QDialog):
 
         zone_file_raw = self.zone_file_path_edit.text().strip() or None
         zone_specs, resolved_zone_path = self._load_zone_specs(zone_file_raw)
+
+        import pandas as pd
+
+        from annolid.postprocessing.zone_occupancy_policy import (
+            apply_zone_occupancy_policy_file,
+        )
 
         tracked_df = pd.read_csv(tracked_csv_path)
         result = apply_zone_occupancy_policy_file(

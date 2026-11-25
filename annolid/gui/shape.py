@@ -735,7 +735,7 @@ class Shape(object):
         elif shape == self.P_ROUND:
             path.addEllipse(point, d / 2.0, d / 2.0)
         else:
-            assert False, "unsupported vertex shape"
+            raise ValueError(f"unsupported vertex shape: {shape!r}")
         if not hasattr(self, "_queued_vertices"):
             self._queued_vertices = []
         base_negative_color = getattr(

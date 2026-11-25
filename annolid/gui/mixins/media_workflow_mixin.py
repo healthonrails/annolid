@@ -402,10 +402,11 @@ class MediaWorkflowMixin:
         self.openCaption()
 
     def open_research_paper_dock(self) -> None:
-        """Open or raise the Research Paper panel dock."""
-        from annolid.gui.widgets.research_paper_widget import open_research_paper_dock
-
-        open_research_paper_dock(self)  # type: ignore[arg-type]
+        """Open or raise the PDF/Research Paper dock when available."""
+        if hasattr(self, "open_pdf_dock"):
+            self.open_pdf_dock()
+            return
+        self.open_ai_chat_dock()
 
     def open_research_paper_swarm(self) -> None:
         """Seed Annolid Bot with a paper-drafting swarm prompt."""

@@ -174,12 +174,34 @@ class FramePlaybackMixin:
                 pass
         return Path()
 
+    def _confirm_unsaved_before_frame_change(self, target_frame: int) -> bool:
+        if not bool(getattr(self, "dirty", False)):
+            return True
+        current_frame = getattr(self, "frame_number", None)
+        if current_frame is not None and int(current_frame) == int(target_frame):
+            return True
+        auto_save_check = getattr(self, "_is_auto_save_enabled", None)
+        run_auto_save = getattr(self, "_run_auto_save", None)
+        if callable(auto_save_check) and auto_save_check() and callable(run_auto_save):
+            run_auto_save()
+            if not bool(getattr(self, "dirty", False)):
+                return True
+        may_continue = getattr(self, "mayContinue", None)
+        if callable(may_continue) and not may_continue():
+            if current_frame is not None:
+                self._sync_frame_jump_input(int(current_frame))
+                self._sync_seekbar_value(int(current_frame))
+            return False
+        return True
+
     def set_frame_number(self, frame_number):
         total_frames = getattr(self, "num_frames", None)
         if total_frames is None:
             return
         frame_number = int(frame_number)
         if frame_number >= int(total_frames) or frame_number < 0:
+            return
+        if not self._confirm_unsaved_before_frame_change(frame_number):
             return
         self.frame_number = frame_number
         self._sync_frame_jump_input(frame_number)
