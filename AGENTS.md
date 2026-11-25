@@ -1,515 +1,147 @@
-# AGENTS.md — Annolid Engineering Standard
+# AGENTS.md — Annolid Engineering & Coding-Agent Standard
 
-This document defines the required engineering standard for coding agents and contributors working in the Annolid repository.
+Required standard for coding agents and contributors working in the Annolid repository.
+Annolid supports real research and lab workflows: every change must protect **correctness, reproducibility, user data integrity, and workflow continuity** across GUI, CLI, annotation, tracking, behavior, and agent pipelines.
 
-Annolid supports real research and lab workflows. Every change must protect correctness, reproducibility, data integrity, and user trust across GUI, CLI, annotation, tracking, and model pipelines.
-
----
-
-## 1. Mission
-
-Build and maintain Annolid as a dependable system for:
-
-- annotation,
-- segmentation,
-- tracking,
-- behavior analysis,
-- practical model workflows under real research conditions.
-
-Engineering priority order:
-
-1. Correctness
-2. Reproducibility
-3. Data integrity
-4. Reliability
-5. Usability
-6. Maintainability
-7. Performance
-
-Performance matters, but never ahead of correctness, stable behavior, or user data safety.
+Priority order (never trade higher items for lower ones):
+**1. Correctness → 2. Reproducibility → 3. Data Integrity → 4. Reliability → 5. Usability → 6. Maintainability → 7. Performance**
 
 ---
 
-## 2. Engineering Doctrine
+## 1. Hard Rules (Non-Negotiable)
 
-The goal is not merely to make code pass.
-The goal is to make the system correct, stable, diagnosable, and evolvable.
-
-Contributors must optimize for:
-
-- preserving user trust,
-- protecting workflow continuity,
-- keeping contracts stable,
-- enabling future change without unnecessary rewrite,
-- and reducing the long-term cost of ownership.
-
-A good change is not the smallest patch.
-A good change is the **minimum necessary change set that correctly resolves the problem at the right boundary**.
+1. **Fix at the true boundary, not the symptom.** Choose the *minimum necessary change set* that removes the root cause cleanly — neither a fragile local patch nor unrelated cleanup.
+2. **Protect external contracts by default.** CLI flags, config keys/defaults, LabelMe/COCO/BORIS/CSV schemas, public Python APIs, saved project behavior, and GUI workflows are compatibility-sensitive. Prefer: *additive support → compatibility shim → deprecation warning → removal (only when justified and documented)*.
+3. **Never touch vendored third-party trees** for cleanup, formatting, or speculative edits (see §3).
+4. **Never commit secrets, tokens, credentials, model weights, or machine-local absolute paths** (e.g., `/Users/<name>/...`).
+5. **Never claim checks passed unless actually run after the final edit.** Always state exactly what was run, what was skipped, and why.
+6. **Use `.venv` for local validation** unless the task explicitly requires another environment.
+7. **Do not swallow critical failures.** No bare `except:`, no silent fallbacks that mask data loss or corruption, no hidden retries.
+8. **Keep changes and commits scoped.** One logical change per commit; do not mix unrelated refactors, repo-wide formatting churn, and feature work.
 
 ---
 
-## 3. Non-Negotiable Rules
+## 2. Repository Map & Layering
 
-1. Fix the problem at its true boundary, not just at its symptom.
-2. Keep change scope proportional to the task and justified by the root cause.
-3. Preserve established user and developer contracts unless an intentional contract change is required.
-4. Treat saved data, annotations, configs, exported artifacts, and user workflows as compatibility-sensitive surfaces.
-5. Never commit secrets, credentials, tokens, or machine-local absolute paths.
-6. Never claim tests, checks, or builds passed unless they were actually run.
-7. Use `.venv` for local validation unless the task explicitly requires another environment.
-8. Do not mix unrelated fixes, refactors, formatting churn, and workflow edits in the same change.
-9. Do not conceal skipped validation, uncertainty, or residual risk.
-10. Leave the touched code clearer, safer, and easier to evolve.
+**Entrypoints**
+- `annolid` → `annolid/gui/launcher.py` → `annolid/gui/app.py` (`annolid/gui/window_base.py`)
+- `annolid-run` → `annolid/engine/cli.py` (delegates `colab`, `sim2real`, `runs`, `runtime`, `memory`, `train`, `predict`)
+- Legacy CLI helper → `annolid/main.py`
 
----
+**4-Layer Architecture** (canonical reference: `docs/architecture_layers.md`)
+- `annolid/domain/` — framework-agnostic schemas, data types, invariants.
+- `annolid/services/` — orchestration use-cases shared by GUI, CLI, and workers (e.g., `tracking`, `training_monitor`, `training_monitor_cli`, `behavior_analytics`, `zone_analytics`, `time_budget`, `embedding_search`, `chat_*`).
+- `annolid/interfaces/` — user/transport adapters (GUI, CLI, bots, background jobs).
+- `annolid/infrastructure/` — filesystem, persistence, capabilities (`capabilities.py`), sandbox execution, LanceDB memory, external API adapters.
+- **Layer rules:** Interfaces call `services`/`infrastructure` facades, not each other and not `annolid.core.agent` directly from GUI widgets/dialogs; `domain` stays framework-agnostic; `infrastructure` never imports GUI code.
 
-## 4. Scope and Change Control
-
-### 4.1 Scope discipline
-
-Prefer the **minimum necessary scope**, not reflexively the smallest diff.
-
-That means:
-
-- do not broaden a patch without reason,
-- do not preserve bad structure merely to keep the diff small,
-- do not use a local workaround where a slightly broader but cleaner fix is the correct one.
-
-A larger change is justified when it materially improves one or more of:
-
-- correctness,
-- contract clarity,
-- data safety,
-- debuggability,
-- testability,
-- maintainability of the touched path.
-
-### 4.2 Allowed scope expansion
-
-It is acceptable to widen a change when needed to:
-
-- remove the root cause rather than patch symptoms,
-- add focused regression coverage,
-- clarify or harden a contract,
-- eliminate fragile duplication on the directly affected path,
-- improve observability for a critical failure mode,
-- update required user-facing documentation.
-
-### 4.3 Disallowed scope expansion
-
-Do not widen scope for:
-
-- opportunistic cleanup,
-- aesthetic refactors unrelated to the task,
-- speculative abstractions,
-- repo-wide formatting,
-- dependency churn without direct need,
-- “while here” edits with no acceptance target.
+**Key Subsystems**
+- `annolid/gui/` — `window_base.py`, `mixins/` (lifecycle, persistence, canvas, playback, label panel, shape editing), `widgets/` (`canvas.py`, `flags.py`, `timeline_panel.py`, dialogs), `controllers/`, `features/`.
+- `annolid/annotation/` & `annolid/io/` — LabelMe/COCO/YOLO/CSV/pose converters, `shape_io.py`, `svg_import.py`, `large_image/`.
+- `annolid/utils/` — `annotation_store.py` (`*_annotations.ndjson`), `atomic_io.py`, `safe_torch_load.py`, `llm_settings.py`, `devices.py`.
+- `annolid/tracker/`, `annolid/tracking/`, `annolid/segmentation/`, `annolid/postprocessing/` — point/VOS/SAM/YOLO trackers, pose filtering/evaluation, tracking reports.
+- `annolid/behavior/`, `annolid/colab/`, `annolid/sim2real/`, `annolid/core/agent/` — BORIS/IRR/TCN/cohort analytics, remote Colab execution, Sim-to-Real studio, Annolid Bot & tools.
 
 ---
 
-## 5. Compatibility and Contract Management
+## 3. Vendored / Do-Not-Refactor Trees
 
-Backward compatibility is not a vague preference. It is a deliberate contract discipline.
-
-### 5.1 Protect by default
-
-The following are compatibility-sensitive unless explicitly designated otherwise:
-
-- CLI flags and command behavior,
-- config keys and defaults,
-- file formats and serialization behavior,
-- annotation semantics,
-- exported schemas and metadata,
-- public Python APIs,
-- saved project behavior,
-- GUI workflows users rely on,
-- documented operational commands.
-
-### 5.2 Internal freedom vs external stability
-
-Staff-level engineering requires distinguishing between:
-
-- **external contracts**, which should remain stable by default,
-- **internal implementations**, which may change freely if contracts are preserved.
-
-Do not freeze internals unnecessarily.
-Do not destabilize external behavior casually.
-
-### 5.3 If a contract must change
-
-A contract change is allowed only when it is:
-
-- intentional,
-- necessary,
-- explicitly described,
-- validated against affected workflows,
-- documented with migration guidance when applicable.
-
-A breaking change must include, as appropriate:
-
-- rationale,
-- affected surfaces,
-- migration path,
-- warning or deprecation strategy,
-- documentation updates,
-- release-note visibility.
-
-### 5.4 Preferred order of change
-
-When evolving a contract, prefer this order:
-
-1. additive support,
-2. compatibility shim,
-3. deprecation with warning,
-4. removal only when justified and documented.
-
-Do not silently reinterpret existing user data or prior inputs.
+Unless a task explicitly targets a bug in an Annolid wrapper inside one of these directories, **do not refactor, reformat, or run broad edits inside**:
+- `annolid/detector/countgd/`
+- `annolid/detector/yolov5/`
+- `annolid/segmentation/SAM/` (upstream SAM/SAM2/SAM3 internals)
+- `annolid/segmentation/cutie_vos/` (upstream Cutie internals)
+- `annolid/segmentation/yolact/`
+- `annolid/segmentation/MEDIAR/`
+- `annolid/depth/video_depth_anything/`
+- `annolid/tracker/cowtracker/cowtracker/thirdparty/`
+- `annolid/gui/assets/pdfjs/`
 
 ---
 
-## 6. Required Design Questions Before Coding
+## 4. Annolid-Specific Invariants & Footguns
 
-For any non-trivial change, establish these first:
+### 4.1 Lean `annolid[gui]` & Frozen Bundle Boundaries
+- Core entrypoints (`annolid.main`, `annolid.engine.cli`, `annolid.gui.launcher`, `annolid.gui.app`, `annolid.gui.window_base`, `annolid.core.agent.tools`, `annolid.colab.service`, `annolid.sim2real`, `annolid.services.training_monitor_cli`) **must import cleanly without optional extras** (`torch`, `torchvision`, `ultralytics`, `matplotlib`, `scipy`, `sklearn`, `skimage`, `h5py`, `onnxruntime`, `transformers`, `diffusers`, `lancedb`, `fitz`, `gdown`, `tensorboard`, `openai`, `anthropic`, `sounddevice`, `librosa`, `pyvips`, `openslide`, `ffpyplayer`).
+- Keep `annolid/core/agent/tools/__init__.py` PEP 562 lazy (`__getattr__`).
+- Frozen desktop bundles (`annolid.spec` + `scripts/check_distribution_artifacts.py`) intentionally exclude ML stacks and `pandas`. Do not add eager top-level `pandas` or `matplotlib` imports to `annolid/gui/` modules; import lazily inside methods.
+- Whenever modifying dependencies/extras in `pyproject.toml`, keep `annolid/infrastructure/capabilities.py`, `annolid.spec` (if runtime assets change), and `uv.lock` synchronized.
 
-### 6.1 User-visible goal
-State the intended outcome in one sentence.
+### 4.2 Data Integrity & Dual Annotation Storage
+- Video projects can store frames in **both** per-frame disk `.json` files (manual seeds) and `AnnotationStore` (`*_annotations.ndjson`, when `persist_json=False`). Any code reading, filtering, reporting, or deleting video annotations must handle both sources consistently.
+- Preserve LabelMe round-trip fidelity (`imagePath`, optional `imageData`, `point_labels`, `flags`, `otherData`, non-destructive display previews). Never delete standalone user source images when deleting a label file.
+- Use atomic writes (`atomic_write_json`, `atomic_write_text`, or `tempfile` + `os.replace`) for state files, caches, credentials, and JSON/NDJSON exports.
 
-### 6.2 Root cause
-Identify the actual code path and failure boundary.
+### 4.3 GUI & Qt (`qtpy` / PySide6) Rules
+- Annolid defaults to `PySide6-Essentials` via `qtpy`.
+- Validate: dirty state, selection/visibility/checkbox state, file/frame switches, unsaved-change prompts, load/save transitions, Undo/Redo sync, and UI responsiveness.
+- **PySide6 checkbox gotcha:** `QCheckBox.stateChanged` emits an `int`, which does not reliably equal `Qt.CheckState.Checked` in PySide6 — use `checkbox.isChecked()` instead of `state == Qt.Checked`.
+- **Shortcuts:** Scope dock/panel `QShortcut`s with `Qt.WidgetWithChildrenShortcut` so they never hijack main-window `Ctrl+Z` / `Ctrl+S` / `Delete` shortcuts.
+- **Threading:** Never block the UI thread with network calls, package installs, or heavy loops; never mutate Qt widgets from worker threads; ensure worker `finally:` cleanup and `finished` signals fire even on cancel/error.
 
-### 6.3 Invariants
-Define what must remain true, including:
+### 4.4 ML, Tracking & Scientific Correctness
+- **Frame ranges:** `CV2Video.get_frames_between(start, end)` is half-open `[start, end)`, whereas tracker/UI `end_frame` is often inclusive or `-1` (meaning `total_frames - 1`). Normalize `end_frame` explicitly at entry boundaries.
+- **PyTorch hygiene:** Never call global `torch.set_grad_enabled(False)` (breaks training in the same session); scope inference with `with torch.inference_mode():`. Always load checkpoints via `annolid.utils.safe_torch_load.safe_torch_load(path, map_location=...)` (never raw `torch.load`, and do not pass `weights_only=`). Honor explicit `device="cpu"` requests.
+- **No data leakage / silent distortion:** Split train/val by `source_group` before oversampling; mask padded sequence steps (`-100`) in TCN training; split temporal smoothing across non-contiguous frame gaps; use word-boundary regexes (not bare substrings) for behavior/event classification.
 
-- persisted data expectations,
-- UI state guarantees,
-- CLI/config behavior,
-- serialization behavior,
-- error handling guarantees,
-- determinism requirements.
-
-### 6.4 Blast radius
-Identify affected surfaces:
-
-- GUI
-- CLI
-- IO / serialization
-- training / inference / tracking runtime
-- docs
-- packaging
-- CI / release
-
-### 6.5 Acceptance target
-Define a testable success condition before implementing.
-
-No patch should ship on intent alone.
+### 4.5 Security & Agent Sandboxing
+- Enforce `allowed_dir` / `allowed_read_roots` on `Path(...).expanduser().resolve()` for **all** agent-accessible inputs — including paths referenced inside YAML configs, `.txt` manifests, symlinks, inline `--flag=/path` CLI arguments, and `~`-prefixed weight paths.
+- Sanitize archive members, Drive output names, and COCO `file_name` paths against `..` traversal and absolute paths before writing.
+- Never run untrusted or LLM-generated code via in-process `exec()`; keep generated analysis inside the AST-checked subprocess sandbox (`annolid/infrastructure/sandbox/execution.py`).
+- Enforce URL scheme checks, response/frame byte caps, subprocess/socket timeouts, and restrictive file permissions (`0o600` via atomic temp file) on credentials and tokens.
 
 ---
 
-## 7. Required Execution Loop
+## 5. Efficient Agent Execution Workflow
 
-For every task:
+For every non-trivial task, work in tight, batched phases:
 
-1. Restate the user-visible goal.
-2. Trace the real code path.
-3. Identify the root cause.
-4. Choose the minimum necessary change set at the correct boundary.
-5. Add or update focused validation.
-6. Update documentation when behavior, expectations, or workflows changed.
-7. Confirm no unrelated files were edited.
-8. Summarize:
-   - changed files,
-   - behavioral impact,
-   - validation performed,
-   - unresolved risks.
+1. **Frame before editing:** State (internally or briefly) the user-visible goal, true root cause & code path, invariants to preserve, blast radius, and testable acceptance target. Ask the user for clarification **only** when genuinely blocking; otherwise proceed with stated assumptions.
+2. **Explore in parallel:** Batch independent searches and full/targeted file reads in the same turn. Avoid re-reading unchanged files or probing vendored trees unnecessarily.
+3. **Edit cleanly at the right boundary:** Batch independent edits in parallel. Keep internal implementations clean while preserving external contracts. Update user-facing docs (`README.md`, `docs/`, `RELEASING.md`) in the same change set whenever behavior or CLI/install workflows change.
+4. **Add focused regression coverage:** Write deterministic unit tests targeting the exact failure mode. Isolate `HOME`, settings, and cache directories with `tmp_path` + `monkeypatch` so tests never touch `~/.annolid` or `~/.config/colab-cli`, and avoid live network or unguarded loopback dependencies.
+5. **Validate proportionally (smallest meaningful check first, then expand):** See §6. Fix all reported errors before re-running; do not re-run already-passing suites when no relevant code changed.
 
 ---
 
-## 8. Architecture Standard
+## 6. Validation Matrix
 
-Choose the simplest design that preserves extension points and keeps contracts clear.
+Always activate `.venv` (or invoke `.venv/bin/...` directly) and run GUI tests headless:
 
-Required practices:
+```bash
+export QT_QPA_PLATFORM=offscreen
+export ANNOLID_DISABLE_BOT_AUTOSTART=1
+```
 
-- single clear responsibility per module/function,
-- explicit boundaries between UI, domain logic, and IO,
-- explicit state ownership,
-- deterministic behavior for CI-critical paths,
-- typed and validated data flow where type hints already exist,
-- composition preferred over deep inheritance,
-- adapters preferred over scattered special cases.
+| Surface Touched | Required Validation Commands |
+| --- | --- |
+| **Any Python change** | `.venv/bin/ruff format --check --config pyproject.toml annolid tests scripts`<br>`.venv/bin/ruff check --config pyproject.toml annolid tests scripts`<br>`.venv/bin/pytest -q <targeted_test_files>` |
+| **Core / GUI / CLI / agent tools imports** | `.venv/bin/pytest -q tests/test_repo_review_fixes.py -k lean_install` (verifies zero optional-extra leakage) |
+| **GUI widgets / dialogs / mixins** | Targeted GUI tests + check no eager `pandas`/`matplotlib` top-level imports |
+| **Dependencies / `pyproject.toml` / `annolid.spec` / release** | `uv lock --check`<br>`.venv/bin/python -m build --no-isolation --outdir /tmp/annolid_dist_check`<br>`.venv/bin/python scripts/check_distribution_artifacts.py /tmp/annolid_dist_check/*.whl /tmp/annolid_dist_check/*.tar.gz`<br>`.venv/bin/python -m twine check /tmp/annolid_dist_check/*.whl /tmp/annolid_dist_check/*.tar.gz`<br>*(clean `/tmp/annolid_dist_check` afterward)* |
+| **Shell scripts / installers** | `bash -n install.sh scripts/release.sh scripts/sync_docs_to_site_root.sh` |
+| **Docs / `mkdocs.yml` / `website/`** | `.venv/bin/python scripts/site_workflow.py check`<br>`NO_MKDOCS_2_WARNING=1 .venv/bin/mkdocs build --strict --clean --config-file mkdocs.yml -d /tmp/annolid_mkdocs_check && rm -rf /tmp/annolid_mkdocs_check` |
+| **High-risk / multi-subsystem / pre-release** | `source .venv/bin/activate && pytest --ignore=tests/test_sam3_prompt_transaction_contract.py` + `pytest tests/test_sam3_prompt_transaction_contract.py` + `pre-commit run --all-files` |
 
-Avoid:
-
-- hidden mutation,
-- cross-layer leakage,
-- speculative abstraction,
-- deep implicit coupling,
-- uncontrolled global state.
-
-If selecting one design over another non-obvious alternative, document the tradeoff.
+Notes for pre-commit: hooks enforce `ruff check`, `ruff format`, trailing whitespace, EOF newline, YAML/TOML/JSON validity, large-file limits (`<=6 MB`), `codespell` (avoid typo-like short identifiers), and `gitleaks`.
 
 ---
 
-## 9. Data Integrity Standard
+## 7. Commit & Handoff Contract
 
-User data is a contract.
-
-Must preserve:
-
-- LabelMe-compatible semantics where promised,
-- annotation meaning,
-- round-trip safety for serialization changes,
-- safe defaults for missing optional fields,
-- stable interpretation of saved data.
-
-Must avoid:
-
-- destructive rewrites,
-- silent field loss,
-- backward-incompatible schema drift without documentation,
-- lossy conversions without explicit user intent.
-
-For serialization changes, think in terms of:
-
-- forward compatibility,
-- backward compatibility,
-- downgrade behavior,
-- recovery behavior after partial failure.
-
----
-
-## 10. GUI Engineering Standard
-
-GUI behavior is correctness-critical.
-
-When touching GUI code, validate:
-
-- dirty state,
-- selection state,
-- visibility state,
-- checkbox state,
-- file-switch behavior,
-- unsaved-change prompts,
-- load/save transitions,
-- long-running task responsiveness.
-
-Rules:
-
-- keep signal/slot behavior explicit,
-- avoid feedback loops and re-entrant corruption,
-- avoid blocking the UI thread,
-- preserve coherent state on partial failure,
-- surface actionable errors.
-
-Do not accept a CLI-clean solution that destabilizes GUI workflows.
-
----
-
-## 11. Reliability and Observability Standard
-
-Failures must be diagnosable by a user, maintainer, or CI log reader.
-
-Required:
-
-- actionable error messages,
-- root-cause context,
-- bounded retry behavior,
-- logs around critical state transitions,
-- debuggable failure output.
-
-Forbidden:
-
-- swallowed exceptions,
-- broad exception handling without reason,
-- vague error text,
-- hidden retries,
-- silent fallback that masks corruption or data loss.
-
-Prefer explicit failure over misleading success.
-
----
-
-## 12. Performance Standard
-
-Performance changes must be evidence-driven.
-
-Rules:
-
-- baseline before optimizing,
-- optimize verified hot paths,
-- preserve correctness and determinism,
-- document meaningful tradeoffs,
-- avoid hidden cache invalidation or concurrency complexity unless justified.
-
-Do not trade observability or reproducibility for speed without explicit justification.
-
----
-
-## 13. Validation Standard
-
-Run the smallest meaningful validation first, then expand according to risk.
-
-Core commands:
-
-- `source .venv/bin/activate && pytest`
-- `source .venv/bin/activate && pre-commit run --all-files`
-
-When relevant:
-
-- `source .venv/bin/activate && uv lock --check`
-- `source .venv/bin/activate && python -m build`
-- `source .venv/bin/activate && python -m twine check dist/*`
-- `source .venv/bin/activate && mkdocs build --strict --clean --config-file mkdocs.yml`
-
-Validation expectations:
-
-- add regression coverage for bug fixes where practical,
-- prefer focused tests over broad incidental coverage,
-- keep tests deterministic,
-- avoid flaky timing or network dependence in default CI paths.
-
-If validation was not run, state exactly what was skipped and why.
-
----
-
-## 14. Documentation Standard
-
-If behavior changes, documentation changes in the same change set.
-
-Canonical locations:
-
-- `README.md` for quick-start user guidance,
-- `docs/` for canonical operational documentation,
-- `RELEASING.md` for release-process changes.
-
-Documentation must be:
-
-- concrete,
-- command-driven where appropriate,
-- platform-aware when needed,
-- free of duplicate or conflicting guidance.
-
-Document behavior, not implementation trivia.
-
----
-
-## 15. CI and Release Discipline
-
-CI and release integrity are product-quality concerns.
-
-Rules:
-
-- keep workflow intent explicit,
-- prefer deterministic path filters and changed-file detection,
-- keep version/tag semantics coherent,
-- avoid manual metadata drift where scripted release flow exists,
-- make failures diagnosable from logs.
-
-Do not make CI “pass” by bypassing the real issue.
-
----
-
-## 16. Definition of Done
-
-A task is done only when all are true:
-
-- behavior matches the request,
-- the root cause is addressed at the right boundary,
-- affected contracts are preserved or explicitly changed,
-- relevant validation was run, or skipped with explicit reason,
-- user-facing changes are documented,
-- unrelated regressions were not introduced,
-- final handoff identifies impact, changed files, and residual risks.
-
----
-
-## 17. Review Standard
-
-Review priorities:
-
-1. Correctness and regression risk
-2. Data integrity and compatibility risk
-3. Missing or weak validation
-4. Reliability and diagnosability
-5. Maintainability and clarity
-
-Review checklist:
-
-- Is the root cause actually addressed?
-- Is the chosen scope justified?
-- Are contracts preserved or explicitly evolved?
-- Are failure modes visible and explicit?
-- Are tests meaningful?
-- Are docs updated?
-- Are unrelated edits absent?
-
----
-
-## 18. Commit Standard
-
-Use scoped, intent-clear commit messages.
-
-Examples:
-
+### Commits
+Use scoped Conventional Commits — one logical change per commit, intent-clear subject, and concise body explaining *why* for non-trivial changes:
 - `fix(gui): restore shape visibility defaults on reload`
 - `fix(io): preserve optional label fields during round-trip serialization`
-- `docs(install): clarify installer choices and expected outcomes`
-- `ci(docs): tighten path filters and add changed-file logging`
+- `fix(security): enforce allowed_read_roots in Colab dataset packaging`
+- `feat(cli): add headless training monitor runs subcommand`
+- `docs(install): clarify lean GUI profile and ONNX GPU setup`
+- `ci(docs): gate site sync jobs on changed surfaces`
 
-Commit hygiene:
+Never commit unless asked, and never push to a remote without explicit user instruction.
 
-- one logical change per commit,
-- subject explains scope and intent,
-- body explains why for non-trivial changes.
-
----
-
-## 19. Communication Contract
-
-Be concise, direct, and technically precise.
-
-Always:
-
-- state assumptions,
-- separate facts from inference,
-- report actual validation,
-- identify residual risk,
-- avoid overstating certainty.
-
-Ask for clarification only when truly blocking.
-Otherwise proceed with clearly stated assumptions.
-
----
-
-## 20. What to Avoid
-
-Do not:
-
-- optimize for tiny diffs at the expense of correct design,
-- preserve broken structure merely for backward appearance,
-- silently break workflows or contracts,
-- mass-format unrelated files,
-- add speculative dependencies,
-- suppress important failures,
-- mix refactor + feature + docs + workflow churn in one opaque patch,
-- claim validation not actually performed,
-- trade data safety for convenience.
-
----
-
-## 21. Final Standard
-
-Annolid engineering work must be:
-
-- correct,
-- reproducible,
-- compatibility-aware,
-- data-safe,
-- diagnosable,
-- maintainable,
-- narrowly scoped but not artificially constrained,
-- validated,
-- documented.
-
-When forced to choose, protect correctness, user data, and workflow continuity over implementation speed or patch smallness.
+### Final Handoff
+Be concise, direct, and technically precise. Separate verified facts from inference, and include:
+1. **Changed files** and **behavioral impact** (what changed for users/developers and why).
+2. **Exact validation performed** (commands and actual pass/fail/skip counts).
+3. **Skipped checks, assumptions, and residual risks** (never conceal uncertainty or environment blocks).
