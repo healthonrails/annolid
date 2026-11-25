@@ -93,6 +93,10 @@ class ExecTool(FunctionTool):
                 )
             except asyncio.TimeoutError:
                 proc.kill()
+                try:
+                    await proc.wait()
+                except Exception:
+                    pass
                 return f"Error: Command timed out after {self.timeout} seconds"
 
             parts: list[str] = []
@@ -131,7 +135,11 @@ class ExecTool(FunctionTool):
         ):
             return "Error: Command blocked by safety guard (not in allowlist)"
         if self.restrict_to_workspace:
-            if "..\\" in cmd or "../" in cmd:
+            if (
+                "..\\" in cmd
+                or "../" in cmd
+                or re.search(r"(?:^|[\s'\"/\\;=])\.\.(?:$|[\s'\"/\\;|&])", cmd)
+            ):
                 return (
                     "Error: Command blocked by safety guard (path traversal detected)"
                 )

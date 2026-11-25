@@ -1289,12 +1289,31 @@ class ColabDriveNotebookBackend:
             downloaded.append(bundle_local)
         else:
             # Download any model weights / CSV / JSON artifacts found directly in folder
+            dest_resolved = dest_dir.resolve()
             for name, meta in by_name.items():
                 if name.endswith(
                     (".pt", ".pth", ".onnx", ".csv", ".json")
                 ) and not name.endswith(".ipynb"):
-                    local_target = dest_dir / name
-                    _emit_log(log_callback, f"Downloading {name} from Google Drive...")
+                    raw_name = str(name or "")
+                    if (
+                        not raw_name
+                        or "\x00" in raw_name
+                        or "/" in raw_name
+                        or "\\" in raw_name
+                        or raw_name in {".", ".."}
+                        or ".." in Path(raw_name).parts
+                    ):
+                        raise ValueError(
+                            f"Refusing unsafe Google Drive filename during download: {raw_name!r}"
+                        )
+                    local_target = (dest_dir / raw_name).resolve()
+                    if not local_target.is_relative_to(dest_resolved):
+                        raise ValueError(
+                            f"Refusing Google Drive path outside destination directory: {raw_name!r}"
+                        )
+                    _emit_log(
+                        log_callback, f"Downloading {raw_name} from Google Drive..."
+                    )
                     drive_tool.download_remote_file_sync(
                         str(meta["id"]),
                         local_target,

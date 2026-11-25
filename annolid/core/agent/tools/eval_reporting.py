@@ -8,10 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Optional, Sequence
 
 import numpy as np
-from sklearn import metrics
 import yaml
-
-from annolid.segmentation.dino_kpseg.eval import build_paper_report
 
 from .common import (
     _normalize_allowed_read_roots,
@@ -431,6 +428,8 @@ def _behavior_macro_map_from_probs(
     *,
     num_classes: int,
 ) -> float:
+    from sklearn import metrics
+
     ap_scores: list[float] = []
     for idx in range(int(num_classes)):
         binary_true = (y_true == idx).astype(int)
@@ -465,6 +464,8 @@ def _bootstrap_behavior_metric_intervals(
         prob_arr = np.asarray(list(probs), dtype=float)
         if prob_arr.ndim != 2 or prob_arr.shape[0] != true_arr.size:
             prob_arr = None
+
+    from sklearn import metrics
 
     rng = np.random.default_rng(int(seed))
     acc_samples: list[float] = []
@@ -513,6 +514,8 @@ def _bootstrap_behavior_per_class_intervals(
         prob_arr = np.asarray(list(probs), dtype=float)
         if prob_arr.ndim != 2 or prob_arr.shape[0] != true_arr.size:
             prob_arr = None
+
+    from sklearn import metrics
 
     rng = np.random.default_rng(int(seed))
     label_indices = list(range(len(labels)))
@@ -944,6 +947,8 @@ def _build_dino_report(
     if "paper_table" in payload and "summary" in payload:
         report = dict(payload)
     else:
+        from annolid.segmentation.dino_kpseg.eval import build_paper_report
+
         report = build_paper_report(
             summary=payload,
             dataset_name=dataset_name,

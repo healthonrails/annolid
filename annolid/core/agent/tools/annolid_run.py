@@ -58,6 +58,7 @@ class AnnolidRunTool(FunctionTool):
             "repair-tracks",
             "report",
             "segment-body-parts",
+            "sim2real",
             "tracking-stats",
             "train",
             "zone-analysis",
@@ -66,11 +67,16 @@ class AnnolidRunTool(FunctionTool):
     _MUTATING_OPERATOR_VERBS = frozenset(
         {
             "add",
+            "analyze",
             "build-regression",
             "bundle",
+            "eval",
+            "evaluate",
             "flush",
             "gate",
+            "generate",
             "install",
+            "iterate",
             "login",
             "logout",
             "migrate",
@@ -121,16 +127,19 @@ class AnnolidRunTool(FunctionTool):
     _WRITE_PATH_FLAGS = frozenset(
         {
             "-o",
+            "--colab-home",
             "--comparisons-csv",
             "--csv-out",
             "--disagreements-csv",
             "--issues-csv",
             "--json-out",
             "--out",
+            "--out-dir",
             "--out-json",
             "--output",
             "--output-dir",
             "--output-prefix",
+            "--project",
             "--report-out",
             "--review-csv",
             "--subjects-csv",
@@ -144,15 +153,22 @@ class AnnolidRunTool(FunctionTool):
             "--calibration",
             "--checkpoint",
             "--config",
+            "--connectome",
+            "--credentials",
             "--data",
+            "--dataset-dir",
             "--events-csv",
+            "--gt-labelme-dir",
             "--input",
             "--manifest",
             "--metadata-csv",
             "--ndjson",
             "--pose-schema",
+            "--real-labeled-dir",
             "--run-config",
             "--schema",
+            "--source",
+            "--token",
             "--video",
             "--weights",
             "--workspace",
@@ -337,6 +353,12 @@ class AnnolidRunTool(FunctionTool):
                     elif idx + 1 < len(tokens) and not tokens[idx + 1].startswith("-"):
                         _check_candidate(tokens[idx + 1], write_target=write_ws)
                         idx += 1
+                elif has_eq and (
+                    inline_val.startswith(("/", "~", "./", "../"))
+                    or "/" in inline_val
+                    or "\\" in inline_val
+                ):
+                    _check_candidate(inline_val, write_target=False)
                 idx += 1
                 continue
 

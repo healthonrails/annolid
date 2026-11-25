@@ -193,6 +193,7 @@ class GitCliTool(_RepoCliTool):
         "--receive-pack",
         "--ext-diff",
         "--output",
+        "--no-index",
     )
 
     @classmethod
@@ -205,8 +206,8 @@ class GitCliTool(_RepoCliTool):
             for prefix in cls._BLOCKED_OPTION_PREFIXES:
                 if lowered == prefix or lowered.startswith(prefix + "="):
                     return True
-            # Also catch attached short -c forms like -ccore.pager=...
-            if token.startswith("-c") and len(token) > 2:
+            # Also catch attached short -c / -C forms like -ccore.pager=... or -C/outside/repo
+            if lowered.startswith("-c") and len(token) > 2:
                 return True
         return False
 

@@ -575,12 +575,16 @@ class WhatsAppPythonBridge:
         token: str = "",
         session_dir: str = "~/.annolid/whatsapp-web-session",
         headless: bool = False,
+        allowed_media_roots: Optional[list[str | Path]] = None,
     ) -> None:
         self.host = str(host or "127.0.0.1")
         self.port = int(port or 3001)
         self.token = str(token or "")
         self.session_dir = str(session_dir or "~/.annolid/whatsapp-web-session")
         self.headless = bool(headless)
+        self._allowed_media_roots: tuple[Path, ...] = tuple(
+            Path(r).expanduser().resolve() for r in (allowed_media_roots or [])
+        )
         self._clients: set[Any] = set()
         self._server = None
         self._provider_task: Optional[asyncio.Task[None]] = None
@@ -611,13 +615,50 @@ class WhatsAppPythonBridge:
     def bridge_url(self) -> str:
         return f"ws://{self.host}:{self.port}"
 
+    def _validate_media_paths(self, media_paths: list[str]) -> list[str]:
+        roots = self._allowed_media_roots
+        validated: list[str] = []
+        for raw in media_paths:
+            resolved = Path(str(raw)).expanduser().resolve()
+            if roots and not any(
+                resolved == root or resolved.is_relative_to(root) for root in roots
+            ):
+                raise PermissionError(
+                    f"WhatsApp bridge refused media path outside allowed roots: {resolved}"
+                )
+            validated.append(str(resolved))
+        return validated
+
+    @staticmethod
+    def _reject_browser_origin(connection, request):  # type: ignore[no-untyped-def]
+        """Reject cross-site browser WebSocket connections carrying an Origin header."""
+        headers = getattr(request, "headers", None)
+        origin = ""
+        if headers is not None and hasattr(headers, "get"):
+            origin = str(headers.get("Origin") or "").strip()
+        if origin:
+            from http import HTTPStatus
+
+            return connection.respond(
+                HTTPStatus.FORBIDDEN, "Browser Origin not permitted on local bridge.\n"
+            )
+        return None
+
     async def start(self) -> str:
         try:
             import websockets
         except Exception as exc:
             raise RuntimeError(f"websockets package is required for bridge mode: {exc}")
         self._validate_websockets_compat(websockets)
-        self._server = await websockets.serve(self._on_client, self.host, self.port)
+        try:
+            self._server = await websockets.serve(
+                self._on_client,
+                self.host,
+                self.port,
+                process_request=self._reject_browser_origin,
+            )
+        except TypeError:
+            self._server = await websockets.serve(self._on_client, self.host, self.port)
         logger.info("Embedded WhatsApp Python bridge started on %s", self.bridge_url)
         return self.bridge_url
 
@@ -700,7 +741,10 @@ class WhatsAppPythonBridge:
                     if isinstance(media, str):
                         media = [media]
                     try:
-                        await self._provider.send_media(to, media, caption)
+                        safe_media = self._validate_media_paths(
+                            [str(item) for item in media]
+                        )
+                        await self._provider.send_media(to, safe_media, caption)
                         await websocket.send(
                             json.dumps({"type": "sent_media", "to": to})
                         )

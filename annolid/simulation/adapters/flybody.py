@@ -31,12 +31,27 @@ from annolid.simulation.types import (
 )
 
 
+_ALLOWED_DOTTED_MODULE_PREFIXES = (
+    "flybody.",
+    "annolid.simulation.",
+)
+
+
 def _resolve_dotted_callable(path: str) -> Callable[..., Any]:
     module_name, sep, attr_name = str(path or "").partition(":")
     if not module_name or not sep or not attr_name:
         raise ValueError(
             "Expected dotted callable in the form 'module.submodule:attribute'"
         )
+    if not any(
+        module_name == prefix.rstrip(".") or module_name.startswith(prefix)
+        for prefix in _ALLOWED_DOTTED_MODULE_PREFIXES
+    ):
+        raise ValueError(
+            f"Refusing to dynamically import callable outside allowed simulation modules: {module_name!r}"
+        )
+    if attr_name.startswith("_"):
+        raise ValueError(f"Refusing to resolve private attribute: {attr_name!r}")
     module = importlib.import_module(module_name)
     value = getattr(module, attr_name, None)
     if not callable(value):

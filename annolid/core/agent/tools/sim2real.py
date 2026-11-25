@@ -211,8 +211,16 @@ class Sim2RealTool(FunctionTool):
             if kwargs.get("allow_fallback"):
                 cfg.allow_fallback = True
             weights = kwargs.get("weights")
-            if weights and Path(str(weights)).exists():
-                weights = self._check_read(str(weights))
+            if weights:
+                weights_str = str(weights).strip()
+                expanded_weights = Path(weights_str).expanduser()
+                if (
+                    weights_str.startswith(("~", "/", "\\", "."))
+                    or "/" in weights_str
+                    or "\\" in weights_str
+                    or expanded_weights.exists()
+                ):
+                    weights = self._check_read(str(expanded_weights))
             records = svc.run_loop(
                 iterations=int(kwargs.get("iterations") or 2),
                 sim_config=cfg,

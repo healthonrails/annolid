@@ -86,6 +86,8 @@ class ColabMetricPoint:
     map50_95: Optional[float] = None
     mask_map50: Optional[float] = None
     mask_map50_95: Optional[float] = None
+    pose_map50: Optional[float] = None
+    pose_map50_95: Optional[float] = None
     gpu_mem: str = ""
     label: str = ""
 
@@ -458,6 +460,8 @@ def load_metrics_from_results_csv(csv_path: str | Path) -> list[ColabMetricPoint
                 map50_95=_safe_float(row.get("metrics/mAP50-95(B)")),
                 mask_map50=_safe_float(row.get("metrics/mAP50(M)")),
                 mask_map50_95=_safe_float(row.get("metrics/mAP50-95(M)")),
+                pose_map50=_safe_float(row.get("metrics/mAP50(P)")),
+                pose_map50_95=_safe_float(row.get("metrics/mAP50-95(P)")),
                 label=f"Epoch {ep}/{total or '?'}",
             )
         )

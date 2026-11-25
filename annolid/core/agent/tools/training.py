@@ -170,13 +170,9 @@ def _stage_inferred_coco_spec(
 
 
 def _resolve_training_python(working_dir: Path) -> str:
-    candidates = [
-        working_dir / ".venv" / "bin" / "python",
-        Path.cwd() / ".venv" / "bin" / "python",
-    ]
-    for candidate in candidates:
-        if candidate.exists() and candidate.is_file():
-            return str(candidate.resolve())
+    # Always use the active Annolid interpreter rather than an untrusted
+    # workspace-local .venv/bin/python that an agent could overwrite.
+    _ = working_dir
     executable = str(sys.executable or "").strip()
     return executable or "python3"
 

@@ -193,12 +193,28 @@ class GoogleOAuthHelper:
 
     @classmethod
     def _save_token(cls, token_path: Path, creds: Any) -> None:
+        import tempfile
+
         cls.ensure_private_parent(token_path)
-        tmp_path = token_path.with_name(f".{token_path.name}.tmp")
-        tmp_path.write_text(creds.to_json(), encoding="utf-8")
-        cls.ensure_private_file(tmp_path)
-        tmp_path.replace(token_path)
-        cls.ensure_private_file(token_path)
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{token_path.name}.",
+            suffix=".tmp",
+            dir=str(token_path.parent),
+        )
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(creds.to_json())
+            cls.ensure_private_file(tmp_path)
+            os.replace(str(tmp_path), str(token_path))
+            cls.ensure_private_file(token_path)
+        except Exception:
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except OSError:
+                pass
+            raise
 
     @classmethod
     def _run_installed_app_flow(

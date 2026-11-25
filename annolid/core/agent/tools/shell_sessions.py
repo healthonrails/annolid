@@ -308,6 +308,14 @@ class ShellSessionManager:
                 "error": private_url_error,
                 "session_id": session_id,
             }
+        lower_payload = payload.lower()
+        for pattern in self._deny_patterns:
+            if re.search(pattern, lower_payload):
+                return {
+                    "ok": False,
+                    "error": "Command input blocked by safety guard (dangerous pattern detected)",
+                    "session_id": session_id,
+                }
         if submit:
             payload += "\n"
         try:

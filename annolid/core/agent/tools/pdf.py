@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hashlib
 import json
@@ -445,14 +446,19 @@ class DownloadPdfTool(FunctionTool):
         }
 
     @staticmethod
-    def _solve_pmc_pow_nonce(challenge: str, difficulty: int) -> int:
-        target = "0" * max(1, int(difficulty))
-        nonce = 0
-        while True:
+    def _solve_pmc_pow_nonce(
+        challenge: str, difficulty: int, *, max_iterations: int = 10_000_000
+    ) -> int:
+        capped_difficulty = max(1, min(6, int(difficulty)))
+        target = "0" * capped_difficulty
+        for nonce in range(max_iterations):
             digest = hashlib.sha256(f"{challenge}{nonce}".encode("utf-8")).hexdigest()
             if digest.startswith(target):
                 return nonce
-            nonce += 1
+        raise RuntimeError(
+            f"PMC proof-of-work challenge exceeded {max_iterations} iterations "
+            f"(difficulty={capped_difficulty})"
+        )
 
     async def _download_pmc_pow_pdf(
         self,
@@ -509,9 +515,11 @@ class DownloadPdfTool(FunctionTool):
                 difficulty = int(params.get("difficulty") or 4)
                 cookie_name = str(params.get("cookie_name") or "").strip()
                 cookie_path = str(params.get("cookie_path") or "/").strip() or "/"
-                if not challenge or not cookie_name:
+                if not challenge or not cookie_name or difficulty > 6:
                     return None
-                nonce = self._solve_pmc_pow_nonce(challenge, difficulty)
+                nonce = await asyncio.to_thread(
+                    self._solve_pmc_pow_nonce, challenge, difficulty
+                )
                 client.cookies.set(
                     cookie_name,
                     f"{challenge},{nonce}",

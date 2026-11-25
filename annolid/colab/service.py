@@ -7,7 +7,7 @@ import stat
 import threading
 import webbrowser
 from pathlib import Path
-from typing import Any, Callable, Optional, Union
+from typing import Any, Callable, Optional, Sequence, Union
 
 from .auth import ColabAuthManager, ColabAuthRequiredError
 from .backends import (
@@ -88,6 +88,7 @@ class ColabWorkflowService:
         cli_backend: Optional[ColabCliBackend] = None,
         api_backend: Optional[ColabApiBackend] = None,
         notebook_backend: Optional[ColabDriveNotebookBackend] = None,
+        allowed_read_roots: Optional[Sequence[Path | str]] = None,
     ) -> None:
         self.home_dir = Path(home_dir) if home_dir is not None else colab_home_dir()
         self.auth = auth_manager or ColabAuthManager()
@@ -95,6 +96,11 @@ class ColabWorkflowService:
         self.cli_backend = cli_backend or ColabCliBackend(self.auth)
         self.api_backend = api_backend or ColabApiBackend(self.auth)
         self.notebook_backend = notebook_backend or ColabDriveNotebookBackend(self.auth)
+        self._allowed_read_roots = (
+            tuple(Path(p).expanduser().resolve() for p in allowed_read_roots)
+            if allowed_read_roots
+            else None
+        )
 
     # ------------------------------------------------------------------ #
     # Auth & runtime discovery
@@ -499,6 +505,7 @@ class ColabWorkflowService:
                 model=request.model,
                 staging_dir=staging_dir,
                 weights=request.weights,
+                allowed_read_roots=self._allowed_read_roots,
             )
             remote_cmd = build_remote_train_command(
                 request,
@@ -523,6 +530,7 @@ class ColabWorkflowService:
                 staging_dir=staging_dir,
                 weights=request.weights,
                 dataset_dir=request.dataset_dir,
+                allowed_read_roots=self._allowed_read_roots,
             )
             remote_cmd = build_remote_predict_command(
                 request,

@@ -235,9 +235,9 @@ class CronService:
                     for j in self._store.jobs
                 ],
             }
-            self.store_path.write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
+            from annolid.utils.atomic_io import atomic_write_json
+
+            atomic_write_json(self.store_path, payload, indent=2)
             try:
                 self._last_store_mtime = self.store_path.stat().st_mtime
             except OSError:

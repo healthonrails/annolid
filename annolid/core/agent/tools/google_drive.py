@@ -512,9 +512,17 @@ class GoogleDriveTool(FunctionTool):
         from googleapiclient.errors import HttpError
         from googleapiclient.http import MediaIoBaseDownload
 
+        import tempfile
+
         chunk_size = max(1, min(64, int(chunk_size_mb))) * 1024 * 1024
         local_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = local_path.with_name(f".{local_path.name}.part")
+        tmp_fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{local_path.name}.",
+            suffix=".part",
+            dir=str(local_path.parent),
+        )
+        os.close(tmp_fd)
+        tmp_path = Path(tmp_name)
         request = service.files().get_media(
             fileId=file_id,
             supportsAllDrives=bool(supports_all_drives),

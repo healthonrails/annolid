@@ -1,200 +1,212 @@
 """Pluggable agent tools.
 
-This package defines the core tool contracts (context + IO containers) that
-Phase 4 orchestration will compose into pipelines.
+Uses PEP 562 lazy exports so importing lightweight submodules (such as
+``google_auth`` or ``policy``) does not eagerly pull in optional ML stacks.
 """
 
-from .base import (
-    ArtifactStore,
-    CancellationToken,
-    FrameBatch,
-    FrameData,
-    Instance,
-    Instances,
-    Tool,
-    ToolContext,
-    ToolError,
-)
-from .artifacts import FileArtifactStore, content_hash
-from .detection import DetectionResult, DetectionTool
-from .embedding import EmbeddingResult, EmbeddingTool
-from .email import EmailTool
-from .function_base import FunctionTool
-from .function_admin import (
-    AdminEvalRunTool,
-    AdminMemoryFlushTool,
-    AdminSkillsRefreshTool,
-    AdminUpdateRunTool,
-)
-from .citation import (
-    BibtexListEntriesTool,
-    BibtexRemoveEntryTool,
-    BibtexUpsertEntryTool,
-)
-from .cron import CronTool
-from .automation_scheduler import AutomationSchedulerTool
-from .annolid_run import AnnolidRunTool
-from .dataset import AnnolidDatasetInspectTool, AnnolidDatasetPrepareTool
-from .eval_reporting import (
-    AnnolidEvalReportTool,
-    build_model_eval_report,
-    write_model_eval_report_files,
-)
-from .eval_start import AnnolidEvalStartTool
-from .novelty import AnnolidNoveltyCheckTool
-from .paper_reporting import AnnolidPaperRunReportTool
-from .research import (
-    DraftPaperSwarmTool,
-    LiteratureSearchTool,
-    PaperDraftQualityTool,
-    ResearchPacketTool,
-)
-from .training import (
-    AnnolidTrainHelpTool,
-    AnnolidTrainModelsTool,
-    AnnolidTrainStartTool,
-)
-from .camera import CameraSnapshotTool
-from .box import BoxTool
-from .coding_harness import (
-    CodingSessionAbortTool,
-    CodingSessionCloseTool,
-    CodingSessionListTool,
-    CodingSessionPollTool,
-    CodingSessionSendTool,
-    CodingSessionStartTool,
-)
-from .calendar import GoogleCalendarTool
-from .clawhub import (
-    ClawHubInstallSkillTool,
-    ClawHubSearchSkillsTool,
-    clawhub_install_skill,
-    clawhub_search_skills,
-    run_clawhub_command,
-)
-from .filesystem import (
-    EditFileTool,
-    ListDirTool,
-    ReadFileTool,
-    RenameFileTool,
-    WriteFileTool,
-)
-from .memory import MemoryGetTool, MemorySetTool, MemorySearchTool
-from .messaging import (
-    CancelTaskTool,
-    ListTasksTool,
-    MessageTool,
-    SpawnBehaviorSubagentTool,
-    SpawnTool,
-)
-from .swarm_tool import SwarmTool
-from .nanobot import register_nanobot_style_tools
-from .pdf import DownloadPdfTool, ExtractPdfImagesTool, ExtractPdfTextTool, OpenPdfTool
-from .shell import ExecTool
-from .sandboxed_shell import SandboxedExecTool
-from .shell_sessions import ExecProcessTool, ExecStartTool
-from .web import DownloadUrlTool, WebFetchTool, WebSearchTool
-from .function_gui_core import (
-    GuiContextTool,
-    GuiSelfUpdateTool,
-    GuiSaveCitationTool,
-    GuiVerifyCitationsTool,
-    GuiSelectAnnotationModelTool,
-    GuiSendPromptTool,
-    GuiSetChatModelTool,
-    GuiSetPromptTool,
-    GuiSharedImagePathTool,
-)
-from .function_gui_web import (
-    GuiOpenInBrowserTool,
-    GuiOpenUrlTool,
-    GuiWebCaptureScreenshotTool,
-    GuiWebClickTool,
-    GuiWebDescribeViewTool,
-    GuiWebExtractStructuredTool,
-    GuiWebFindFormsTool,
-    GuiWebGetDomTextTool,
-    GuiWebRunStepsTool,
-    GuiWebSaveCurrentTool,
-    GuiWebScrollTool,
-    GuiWebTypeTool,
-)
-from .function_gui_threejs import (
-    GuiOpenThreeJsExampleTool,
-    GuiOpenThreeJsTool,
-)
-from .function_gui_video import (
-    GuiAnalyzeTrackingStatsTool,
-    GuiCheckStreamSourceTool,
-    GuiGetRealtimeStatusTool,
-    GuiLabelBehaviorSegmentsTool,
-    GuiBehaviorCatalogTool,
-    GuiListRealtimeLogsTool,
-    GuiListRealtimeModelsTool,
-    GuiOpenVideoTool,
-    GuiProcessVideoBehaviorsTool,
-    GuiScoreAggressionBoutsTool,
-    GuiRunAiTextSegmentationTool,
-    GuiSegmentTrackVideoTool,
-    GuiSetAiTextPromptTool,
-    GuiSetFrameTool,
-    GuiStartRealtimeStreamTool,
-    GuiStopRealtimeStreamTool,
-    GuiTrackNextFramesTool,
-)
-from .function_gui_pdf import GuiOpenPdfTool
-from .function_gui_pdf import (
-    GuiArxivSearchTool,
-    GuiListPdfsTool,
-    GuiPdfFindSectionsTool,
-    GuiPdfGetStateTool,
-    GuiPdfGetTextTool,
-    GuiPdfSummarizeTool,
-)
-from .function_gui_registry import register_annolid_gui_tools
-from .function_video import (
-    VideoInfoTool,
-    VideoListInferenceModelsTool,
-    VideoProcessSegmentsTool,
-    VideoRunModelInferenceTool,
-    VideoSampleFramesTool,
-    VideoSegmentTool,
-    VideoSegmentFrameGridTool,
-)
-from .function_sam3 import Sam3AgentVideoTrackTool
-from .policy import (
-    ResolvedToolPolicy,
-    ToolPermissionContext,
-    build_tool_permission_context,
-    resolve_allowed_tools,
-)
-from .function_registry import FunctionToolRegistry
-from .llm import CaptionResult, CaptionTool
-from .sampling import FPSampler, MotionSampler, RandomSampler, UniformSampler
-from .registry import ToolRegistry, build_pipeline
-from .tracking import SimpleTrackTool, TrackingResult
-from .utility import (
-    CalculatorResult,
-    CalculatorTool,
-    DateTimeResult,
-    DateTimeTool,
-    TextStatsResult,
-    TextStatsTool,
-    register_builtin_utility_tools,
-)
-from .vector_index import NumpyEmbeddingIndex, SearchResult
-from .mcp_browser import (
-    McpBrowserTool,
-    McpBrowserClickTool,
-    McpBrowserCloseTool,
-    McpBrowserNavigateTool,
-    McpBrowserScreenshotTool,
-    McpBrowserScrollTool,
-    McpBrowserSnapshotTool,
-    McpBrowserTypeTool,
-    McpBrowserWaitTool,
-    register_mcp_browser_tools,
-)
+from __future__ import annotations
+
+from importlib import import_module
+from typing import Any
+
+_LAZY_EXPORTS: dict[str, tuple[str, str]] = {
+    "AdminEvalRunTool": (".function_admin", "AdminEvalRunTool"),
+    "AdminMemoryFlushTool": (".function_admin", "AdminMemoryFlushTool"),
+    "AdminSkillsRefreshTool": (".function_admin", "AdminSkillsRefreshTool"),
+    "AdminUpdateRunTool": (".function_admin", "AdminUpdateRunTool"),
+    "AnnolidDatasetInspectTool": (".dataset", "AnnolidDatasetInspectTool"),
+    "AnnolidDatasetPrepareTool": (".dataset", "AnnolidDatasetPrepareTool"),
+    "AnnolidEvalReportTool": (".eval_reporting", "AnnolidEvalReportTool"),
+    "AnnolidEvalStartTool": (".eval_start", "AnnolidEvalStartTool"),
+    "AnnolidNoveltyCheckTool": (".novelty", "AnnolidNoveltyCheckTool"),
+    "AnnolidPaperRunReportTool": (".paper_reporting", "AnnolidPaperRunReportTool"),
+    "AnnolidRunTool": (".annolid_run", "AnnolidRunTool"),
+    "AnnolidTrainHelpTool": (".training", "AnnolidTrainHelpTool"),
+    "AnnolidTrainModelsTool": (".training", "AnnolidTrainModelsTool"),
+    "AnnolidTrainStartTool": (".training", "AnnolidTrainStartTool"),
+    "ArtifactStore": (".base", "ArtifactStore"),
+    "AutomationSchedulerTool": (".automation_scheduler", "AutomationSchedulerTool"),
+    "BibtexListEntriesTool": (".citation", "BibtexListEntriesTool"),
+    "BibtexRemoveEntryTool": (".citation", "BibtexRemoveEntryTool"),
+    "BibtexUpsertEntryTool": (".citation", "BibtexUpsertEntryTool"),
+    "BoxTool": (".box", "BoxTool"),
+    "CalculatorResult": (".utility", "CalculatorResult"),
+    "CalculatorTool": (".utility", "CalculatorTool"),
+    "CameraSnapshotTool": (".camera", "CameraSnapshotTool"),
+    "CancelTaskTool": (".messaging", "CancelTaskTool"),
+    "CancellationToken": (".base", "CancellationToken"),
+    "CaptionResult": (".llm", "CaptionResult"),
+    "CaptionTool": (".llm", "CaptionTool"),
+    "ClawHubInstallSkillTool": (".clawhub", "ClawHubInstallSkillTool"),
+    "ClawHubSearchSkillsTool": (".clawhub", "ClawHubSearchSkillsTool"),
+    "CodingSessionAbortTool": (".coding_harness", "CodingSessionAbortTool"),
+    "CodingSessionCloseTool": (".coding_harness", "CodingSessionCloseTool"),
+    "CodingSessionListTool": (".coding_harness", "CodingSessionListTool"),
+    "CodingSessionPollTool": (".coding_harness", "CodingSessionPollTool"),
+    "CodingSessionSendTool": (".coding_harness", "CodingSessionSendTool"),
+    "CodingSessionStartTool": (".coding_harness", "CodingSessionStartTool"),
+    "CronTool": (".cron", "CronTool"),
+    "DateTimeResult": (".utility", "DateTimeResult"),
+    "DateTimeTool": (".utility", "DateTimeTool"),
+    "DetectionResult": (".detection", "DetectionResult"),
+    "DetectionTool": (".detection", "DetectionTool"),
+    "DownloadPdfTool": (".pdf", "DownloadPdfTool"),
+    "DownloadUrlTool": (".web", "DownloadUrlTool"),
+    "DraftPaperSwarmTool": (".research", "DraftPaperSwarmTool"),
+    "EditFileTool": (".filesystem", "EditFileTool"),
+    "EmailTool": (".email", "EmailTool"),
+    "EmbeddingResult": (".embedding", "EmbeddingResult"),
+    "EmbeddingTool": (".embedding", "EmbeddingTool"),
+    "ExecProcessTool": (".shell_sessions", "ExecProcessTool"),
+    "ExecStartTool": (".shell_sessions", "ExecStartTool"),
+    "ExecTool": (".shell", "ExecTool"),
+    "ExtractPdfImagesTool": (".pdf", "ExtractPdfImagesTool"),
+    "ExtractPdfTextTool": (".pdf", "ExtractPdfTextTool"),
+    "FPSampler": (".sampling", "FPSampler"),
+    "FileArtifactStore": (".artifacts", "FileArtifactStore"),
+    "FrameBatch": (".base", "FrameBatch"),
+    "FrameData": (".base", "FrameData"),
+    "FunctionTool": (".function_base", "FunctionTool"),
+    "FunctionToolRegistry": (".function_registry", "FunctionToolRegistry"),
+    "GoogleCalendarTool": (".calendar", "GoogleCalendarTool"),
+    "GuiAnalyzeTrackingStatsTool": (
+        ".function_gui_video",
+        "GuiAnalyzeTrackingStatsTool",
+    ),
+    "GuiArxivSearchTool": (".function_gui_pdf", "GuiArxivSearchTool"),
+    "GuiBehaviorCatalogTool": (".function_gui_video", "GuiBehaviorCatalogTool"),
+    "GuiCheckStreamSourceTool": (".function_gui_video", "GuiCheckStreamSourceTool"),
+    "GuiContextTool": (".function_gui_core", "GuiContextTool"),
+    "GuiGetRealtimeStatusTool": (".function_gui_video", "GuiGetRealtimeStatusTool"),
+    "GuiLabelBehaviorSegmentsTool": (
+        ".function_gui_video",
+        "GuiLabelBehaviorSegmentsTool",
+    ),
+    "GuiListPdfsTool": (".function_gui_pdf", "GuiListPdfsTool"),
+    "GuiListRealtimeLogsTool": (".function_gui_video", "GuiListRealtimeLogsTool"),
+    "GuiListRealtimeModelsTool": (".function_gui_video", "GuiListRealtimeModelsTool"),
+    "GuiOpenInBrowserTool": (".function_gui_web", "GuiOpenInBrowserTool"),
+    "GuiOpenPdfTool": (".function_gui_pdf", "GuiOpenPdfTool"),
+    "GuiOpenThreeJsExampleTool": (".function_gui_threejs", "GuiOpenThreeJsExampleTool"),
+    "GuiOpenThreeJsTool": (".function_gui_threejs", "GuiOpenThreeJsTool"),
+    "GuiOpenUrlTool": (".function_gui_web", "GuiOpenUrlTool"),
+    "GuiOpenVideoTool": (".function_gui_video", "GuiOpenVideoTool"),
+    "GuiPdfFindSectionsTool": (".function_gui_pdf", "GuiPdfFindSectionsTool"),
+    "GuiPdfGetStateTool": (".function_gui_pdf", "GuiPdfGetStateTool"),
+    "GuiPdfGetTextTool": (".function_gui_pdf", "GuiPdfGetTextTool"),
+    "GuiPdfSummarizeTool": (".function_gui_pdf", "GuiPdfSummarizeTool"),
+    "GuiProcessVideoBehaviorsTool": (
+        ".function_gui_video",
+        "GuiProcessVideoBehaviorsTool",
+    ),
+    "GuiRunAiTextSegmentationTool": (
+        ".function_gui_video",
+        "GuiRunAiTextSegmentationTool",
+    ),
+    "GuiSaveCitationTool": (".function_gui_core", "GuiSaveCitationTool"),
+    "GuiScoreAggressionBoutsTool": (
+        ".function_gui_video",
+        "GuiScoreAggressionBoutsTool",
+    ),
+    "GuiSegmentTrackVideoTool": (".function_gui_video", "GuiSegmentTrackVideoTool"),
+    "GuiSelectAnnotationModelTool": (
+        ".function_gui_core",
+        "GuiSelectAnnotationModelTool",
+    ),
+    "GuiSelfUpdateTool": (".function_gui_core", "GuiSelfUpdateTool"),
+    "GuiSendPromptTool": (".function_gui_core", "GuiSendPromptTool"),
+    "GuiSetAiTextPromptTool": (".function_gui_video", "GuiSetAiTextPromptTool"),
+    "GuiSetChatModelTool": (".function_gui_core", "GuiSetChatModelTool"),
+    "GuiSetFrameTool": (".function_gui_video", "GuiSetFrameTool"),
+    "GuiSetPromptTool": (".function_gui_core", "GuiSetPromptTool"),
+    "GuiSharedImagePathTool": (".function_gui_core", "GuiSharedImagePathTool"),
+    "GuiStartRealtimeStreamTool": (".function_gui_video", "GuiStartRealtimeStreamTool"),
+    "GuiStopRealtimeStreamTool": (".function_gui_video", "GuiStopRealtimeStreamTool"),
+    "GuiTrackNextFramesTool": (".function_gui_video", "GuiTrackNextFramesTool"),
+    "GuiVerifyCitationsTool": (".function_gui_core", "GuiVerifyCitationsTool"),
+    "GuiWebCaptureScreenshotTool": (".function_gui_web", "GuiWebCaptureScreenshotTool"),
+    "GuiWebClickTool": (".function_gui_web", "GuiWebClickTool"),
+    "GuiWebDescribeViewTool": (".function_gui_web", "GuiWebDescribeViewTool"),
+    "GuiWebExtractStructuredTool": (".function_gui_web", "GuiWebExtractStructuredTool"),
+    "GuiWebFindFormsTool": (".function_gui_web", "GuiWebFindFormsTool"),
+    "GuiWebGetDomTextTool": (".function_gui_web", "GuiWebGetDomTextTool"),
+    "GuiWebRunStepsTool": (".function_gui_web", "GuiWebRunStepsTool"),
+    "GuiWebSaveCurrentTool": (".function_gui_web", "GuiWebSaveCurrentTool"),
+    "GuiWebScrollTool": (".function_gui_web", "GuiWebScrollTool"),
+    "GuiWebTypeTool": (".function_gui_web", "GuiWebTypeTool"),
+    "Instance": (".base", "Instance"),
+    "Instances": (".base", "Instances"),
+    "ListDirTool": (".filesystem", "ListDirTool"),
+    "ListTasksTool": (".messaging", "ListTasksTool"),
+    "LiteratureSearchTool": (".research", "LiteratureSearchTool"),
+    "McpBrowserClickTool": (".mcp_browser", "McpBrowserClickTool"),
+    "McpBrowserCloseTool": (".mcp_browser", "McpBrowserCloseTool"),
+    "McpBrowserNavigateTool": (".mcp_browser", "McpBrowserNavigateTool"),
+    "McpBrowserScreenshotTool": (".mcp_browser", "McpBrowserScreenshotTool"),
+    "McpBrowserScrollTool": (".mcp_browser", "McpBrowserScrollTool"),
+    "McpBrowserSnapshotTool": (".mcp_browser", "McpBrowserSnapshotTool"),
+    "McpBrowserTool": (".mcp_browser", "McpBrowserTool"),
+    "McpBrowserTypeTool": (".mcp_browser", "McpBrowserTypeTool"),
+    "McpBrowserWaitTool": (".mcp_browser", "McpBrowserWaitTool"),
+    "MemoryGetTool": (".memory", "MemoryGetTool"),
+    "MemorySearchTool": (".memory", "MemorySearchTool"),
+    "MemorySetTool": (".memory", "MemorySetTool"),
+    "MessageTool": (".messaging", "MessageTool"),
+    "MotionSampler": (".sampling", "MotionSampler"),
+    "NumpyEmbeddingIndex": (".vector_index", "NumpyEmbeddingIndex"),
+    "OpenPdfTool": (".pdf", "OpenPdfTool"),
+    "PaperDraftQualityTool": (".research", "PaperDraftQualityTool"),
+    "RandomSampler": (".sampling", "RandomSampler"),
+    "ReadFileTool": (".filesystem", "ReadFileTool"),
+    "RenameFileTool": (".filesystem", "RenameFileTool"),
+    "ResearchPacketTool": (".research", "ResearchPacketTool"),
+    "ResolvedToolPolicy": (".policy", "ResolvedToolPolicy"),
+    "Sam3AgentVideoTrackTool": (".function_sam3", "Sam3AgentVideoTrackTool"),
+    "SandboxedExecTool": (".sandboxed_shell", "SandboxedExecTool"),
+    "SearchResult": (".vector_index", "SearchResult"),
+    "SimpleTrackTool": (".tracking", "SimpleTrackTool"),
+    "SpawnBehaviorSubagentTool": (".messaging", "SpawnBehaviorSubagentTool"),
+    "SpawnTool": (".messaging", "SpawnTool"),
+    "SwarmTool": (".swarm_tool", "SwarmTool"),
+    "TextStatsResult": (".utility", "TextStatsResult"),
+    "TextStatsTool": (".utility", "TextStatsTool"),
+    "Tool": (".base", "Tool"),
+    "ToolContext": (".base", "ToolContext"),
+    "ToolError": (".base", "ToolError"),
+    "ToolPermissionContext": (".policy", "ToolPermissionContext"),
+    "ToolRegistry": (".registry", "ToolRegistry"),
+    "TrackingResult": (".tracking", "TrackingResult"),
+    "UniformSampler": (".sampling", "UniformSampler"),
+    "VideoInfoTool": (".function_video", "VideoInfoTool"),
+    "VideoListInferenceModelsTool": (".function_video", "VideoListInferenceModelsTool"),
+    "VideoProcessSegmentsTool": (".function_video", "VideoProcessSegmentsTool"),
+    "VideoRunModelInferenceTool": (".function_video", "VideoRunModelInferenceTool"),
+    "VideoSampleFramesTool": (".function_video", "VideoSampleFramesTool"),
+    "VideoSegmentFrameGridTool": (".function_video", "VideoSegmentFrameGridTool"),
+    "VideoSegmentTool": (".function_video", "VideoSegmentTool"),
+    "WebFetchTool": (".web", "WebFetchTool"),
+    "WebSearchTool": (".web", "WebSearchTool"),
+    "WriteFileTool": (".filesystem", "WriteFileTool"),
+    "build_model_eval_report": (".eval_reporting", "build_model_eval_report"),
+    "build_pipeline": (".registry", "build_pipeline"),
+    "build_tool_permission_context": (".policy", "build_tool_permission_context"),
+    "clawhub_install_skill": (".clawhub", "clawhub_install_skill"),
+    "clawhub_search_skills": (".clawhub", "clawhub_search_skills"),
+    "content_hash": (".artifacts", "content_hash"),
+    "register_annolid_gui_tools": (
+        ".function_gui_registry",
+        "register_annolid_gui_tools",
+    ),
+    "register_builtin_utility_tools": (".utility", "register_builtin_utility_tools"),
+    "register_mcp_browser_tools": (".mcp_browser", "register_mcp_browser_tools"),
+    "register_nanobot_style_tools": (".nanobot", "register_nanobot_style_tools"),
+    "resolve_allowed_tools": (".policy", "resolve_allowed_tools"),
+    "run_clawhub_command": (".clawhub", "run_clawhub_command"),
+    "write_model_eval_report_files": (
+        ".eval_reporting",
+        "write_model_eval_report_files",
+    ),
+}
 
 __all__ = [
     "ArtifactStore",
@@ -370,3 +382,18 @@ __all__ = [
     "McpBrowserWaitTool",
     "register_mcp_browser_tools",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    target = _LAZY_EXPORTS.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    mod_name, attr_name = target
+    module = import_module(mod_name, __name__)
+    value = getattr(module, attr_name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))

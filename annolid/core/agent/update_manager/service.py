@@ -89,16 +89,33 @@ class UpdateManagerService:
             payload["dry_run"] = True
             return payload
         try:
-            with urlopen(
-                plan.manifest.artifact_url, timeout=max(1.0, float(timeout_s))
-            ) as resp:  # noqa: S310
-                data = resp.read()
+            url = str(plan.manifest.artifact_url or "").strip()
+            if not url.lower().startswith(("https://", "file://")):
+                raise ValueError(
+                    f"Refusing update artifact URL with unsupported scheme: {url!r}"
+                )
+            max_artifact_bytes = 512 * 1024 * 1024
+            with urlopen(url, timeout=max(1.0, float(timeout_s))) as resp:  # noqa: S310
+                chunks: list[bytes] = []
+                total = 0
+                while True:
+                    chunk = resp.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > max_artifact_bytes:
+                        raise ValueError("Update artifact exceeds maximum allowed size")
+                    chunks.append(chunk)
+                data = b"".join(chunks)
             out_path.write_bytes(data)
             digest = self._sha256(out_path)
             expected = str(plan.manifest.artifact_sha256 or "").strip().lower()
             payload["sha256"] = digest
             payload["bytes_downloaded"] = len(data)
-            if expected and digest.lower() != expected:
+            if not expected:
+                payload["ok"] = False
+                payload["reason"] = "artifact_checksum_missing"
+            elif digest.lower() != expected:
                 payload["ok"] = False
                 payload["reason"] = "artifact_checksum_mismatch"
         except Exception as exc:

@@ -79,17 +79,43 @@ class StagedInputBundle:
     notes: tuple[str, ...] = ()
 
 
-def _write_dir_to_zip(zf: zipfile.ZipFile, src_dir: Path, arc_prefix: str) -> int:
+def _validate_allowed_read(
+    path: Path, allowed_read_roots: Optional[Sequence[Path]] = None
+) -> Path:
+    resolved = path.expanduser().resolve()
+    if not allowed_read_roots:
+        return resolved
+    for root in allowed_read_roots:
+        root_resolved = Path(root).expanduser().resolve()
+        if resolved == root_resolved or resolved.is_relative_to(root_resolved):
+            return resolved
+    raise PermissionError(f"Refusing to package path outside allowed roots: {resolved}")
+
+
+def _write_dir_to_zip(
+    zf: zipfile.ZipFile,
+    src_dir: Path,
+    arc_prefix: str,
+    *,
+    allowed_read_roots: Optional[Sequence[Path]] = None,
+) -> int:
     count = 0
-    src_resolved = src_dir.resolve()
+    src_resolved = _validate_allowed_read(src_dir, allowed_read_roots)
     for path in sorted(src_resolved.rglob("*")):
         if not path.is_file():
             continue
-        if any(part.startswith(".") or part == "__pycache__" for part in path.parts):
-            continue
         rel = path.relative_to(src_resolved)
+        if any(part.startswith(".") or part == "__pycache__" for part in rel.parts):
+            continue
+        # Reject symlinks escaping src_dir or allowed_read_roots.
+        resolved_target = path.resolve()
+        if path.is_symlink() and not resolved_target.is_relative_to(src_resolved):
+            raise PermissionError(
+                f"Refusing to package symlink escaping dataset root: {path} -> {resolved_target}"
+            )
+        _validate_allowed_read(resolved_target, allowed_read_roots)
         arcname = f"{arc_prefix}/{rel.as_posix()}" if arc_prefix else rel.as_posix()
-        zf.write(path, arcname)
+        zf.write(resolved_target, arcname)
         count += 1
     return count
 
@@ -119,10 +145,13 @@ def _find_corresponding_yolo_labels_dir(images_dir: Path) -> Optional[Path]:
 
 
 def _package_yolo_yaml_dataset(
-    yaml_path: Path, archive_path: Path
+    yaml_path: Path,
+    archive_path: Path,
+    *,
+    allowed_read_roots: Optional[Sequence[Path]] = None,
 ) -> StagedInputBundle:
     """Create a portable zip archive from a YOLO data.yaml without mutating the source."""
-    yaml_resolved = yaml_path.resolve()
+    yaml_resolved = _validate_allowed_read(yaml_path, allowed_read_roots)
     raw_cfg = yaml.safe_load(yaml_resolved.read_text(encoding="utf-8")) or {}
     if not isinstance(raw_cfg, dict):
         raise ValueError(f"Expected a YAML mapping in {yaml_resolved}")
@@ -140,6 +169,7 @@ def _package_yolo_yaml_dataset(
             base_root = yaml_dir
     else:
         base_root = yaml_dir
+    _validate_allowed_read(base_root, allowed_read_roots)
 
     portable_cfg: dict[str, Any] = dict(raw_cfg)
     portable_cfg["path"] = "."
@@ -158,14 +188,25 @@ def _package_yolo_yaml_dataset(
                 if resolved is None:
                     notes.append(f"Skipped missing split entry {split_key}={entry}")
                     continue
+                resolved = _validate_allowed_read(resolved, allowed_read_roots)
                 suffix = f"_{idx}" if len(entries) > 1 else ""
                 if resolved.is_dir():
                     img_arc = f"images/{split_key}{suffix}"
-                    file_count += _write_dir_to_zip(zf, resolved, img_arc)
+                    file_count += _write_dir_to_zip(
+                        zf,
+                        resolved,
+                        img_arc,
+                        allowed_read_roots=allowed_read_roots,
+                    )
                     labels_dir = _find_corresponding_yolo_labels_dir(resolved)
                     if labels_dir is not None and labels_dir != resolved:
                         lbl_arc = f"labels/{split_key}{suffix}"
-                        file_count += _write_dir_to_zip(zf, labels_dir, lbl_arc)
+                        file_count += _write_dir_to_zip(
+                            zf,
+                            labels_dir,
+                            lbl_arc,
+                            allowed_read_roots=allowed_read_roots,
+                        )
                     portable_entries.append(img_arc)
                 elif resolved.is_file():
                     # Handle .txt image list file by bundling listed images + matching labels.
@@ -180,6 +221,11 @@ def _package_yolo_yaml_dataset(
                             img_path = Path(item).expanduser()
                             if not img_path.is_absolute():
                                 img_path = (resolved.parent / img_path).resolve()
+                            else:
+                                img_path = img_path.resolve()
+                            img_path = _validate_allowed_read(
+                                img_path, allowed_read_roots
+                            )
                             if not img_path.is_file():
                                 continue
                             arc_img = f"{img_arc}/{img_path.name}"
@@ -201,6 +247,9 @@ def _package_yolo_yaml_dataset(
                                             lbl_cand = alt
                                             break
                             if lbl_cand.is_file():
+                                lbl_cand = _validate_allowed_read(
+                                    lbl_cand, allowed_read_roots
+                                )
                                 zf.write(lbl_cand, f"{lbl_arc}/{lbl_cand.name}")
                                 file_count += 1
                         manifest_name = f"{split_key}{suffix}.txt"
@@ -242,10 +291,13 @@ def _package_yolo_yaml_dataset(
 
 
 def _package_generic_yaml_spec(
-    yaml_path: Path, archive_path: Path
+    yaml_path: Path,
+    archive_path: Path,
+    *,
+    allowed_read_roots: Optional[Sequence[Path]] = None,
 ) -> StagedInputBundle:
     """Package a LabelMe/COCO/DINO spec.yaml + referenced dataset dirs portably."""
-    yaml_resolved = yaml_path.resolve()
+    yaml_resolved = _validate_allowed_read(yaml_path, allowed_read_roots)
     raw_cfg = yaml.safe_load(yaml_resolved.read_text(encoding="utf-8")) or {}
     if not isinstance(raw_cfg, dict):
         raise ValueError(f"Expected a YAML mapping in {yaml_resolved}")
@@ -280,12 +332,18 @@ def _package_generic_yaml_spec(
             resolved = (
                 cand.resolve() if cand.is_absolute() else (yaml_dir / cand).resolve()
             )
+            resolved = _validate_allowed_read(resolved, allowed_read_roots)
             if not resolved.exists():
                 notes.append(f"Skipped missing spec path {key}={val}")
                 continue
             if resolved.is_dir():
                 arc_dir = f"data/{key}"
-                file_count += _write_dir_to_zip(zf, resolved, arc_dir)
+                file_count += _write_dir_to_zip(
+                    zf,
+                    resolved,
+                    arc_dir,
+                    allowed_read_roots=allowed_read_roots,
+                )
                 portable_cfg[key] = arc_dir
             elif resolved.is_file():
                 arc_file = f"data/{key}/{resolved.name}"
@@ -330,9 +388,11 @@ def package_training_dataset(
     model: str,
     staging_dir: Path,
     weights: Optional[str] = None,
+    allowed_read_roots: Optional[Sequence[Path]] = None,
 ) -> StagedInputBundle:
     """Package a local dataset (and optional local weights) into a portable Colab zip."""
     src = Path(str(dataset_path).strip()).expanduser().resolve()
+    src = _validate_allowed_read(src, allowed_read_roots)
     if not src.exists():
         raise FileNotFoundError(f"Dataset path not found: {src}")
 
@@ -340,6 +400,8 @@ def package_training_dataset(
     archive_path = staging_dir / "input_dataset.zip"
     model_key = str(model or "").strip().lower()
     local_weights = _is_local_weight_file(weights)
+    if local_weights is not None:
+        local_weights = _validate_allowed_read(local_weights, allowed_read_roots)
     weights_entry: Optional[str] = None
 
     if src.is_file() and src.suffix.lower() == ".zip":
@@ -369,18 +431,26 @@ def package_training_dataset(
 
     if src.is_file() and src.suffix.lower() in {".yaml", ".yml"}:
         if model_key == "yolo" or src.name.lower() == "data.yaml":
-            bundle = _package_yolo_yaml_dataset(src, archive_path)
+            bundle = _package_yolo_yaml_dataset(
+                src, archive_path, allowed_read_roots=allowed_read_roots
+            )
         else:
-            bundle = _package_generic_yaml_spec(src, archive_path)
+            bundle = _package_generic_yaml_spec(
+                src, archive_path, allowed_read_roots=allowed_read_roots
+            )
     elif src.is_dir():
         data_yaml = src / "data.yaml"
         if model_key == "yolo" and data_yaml.is_file():
-            bundle = _package_yolo_yaml_dataset(data_yaml, archive_path)
+            bundle = _package_yolo_yaml_dataset(
+                data_yaml, archive_path, allowed_read_roots=allowed_read_roots
+            )
         else:
             with zipfile.ZipFile(
                 archive_path, "w", compression=zipfile.ZIP_DEFLATED
             ) as zf:
-                count = _write_dir_to_zip(zf, src, "dataset")
+                count = _write_dir_to_zip(
+                    zf, src, "dataset", allowed_read_roots=allowed_read_roots
+                )
             entry = "dataset"
             if (src / "data.yaml").is_file():
                 entry = "dataset/data.yaml"
@@ -421,15 +491,19 @@ def package_inference_inputs(
     staging_dir: Path,
     weights: Optional[str] = None,
     dataset_dir: Optional[str | Path] = None,
+    allowed_read_roots: Optional[Sequence[Path]] = None,
 ) -> StagedInputBundle:
     """Package inference media (video/image/folder) and optional local weights into a zip."""
     src = Path(str(source_path).strip()).expanduser().resolve()
+    src = _validate_allowed_read(src, allowed_read_roots)
     if not src.exists():
         raise FileNotFoundError(f"Inference source not found: {src}")
 
     staging_dir.mkdir(parents=True, exist_ok=True)
     archive_path = staging_dir / "input_inference.zip"
     local_weights = _is_local_weight_file(weights)
+    if local_weights is not None:
+        local_weights = _validate_allowed_read(local_weights, allowed_read_roots)
     weights_entry: Optional[str] = None
     extra_dataset_entry: Optional[str] = None
     file_count = 0
@@ -441,7 +515,9 @@ def package_inference_inputs(
             file_count += 1
         else:
             source_entry = "source"
-            file_count += _write_dir_to_zip(zf, src, source_entry)
+            file_count += _write_dir_to_zip(
+                zf, src, source_entry, allowed_read_roots=allowed_read_roots
+            )
 
         if local_weights is not None:
             weights_entry = f"weights/{local_weights.name}"
@@ -450,11 +526,17 @@ def package_inference_inputs(
 
         if dataset_dir:
             ds_path = Path(str(dataset_dir).strip()).expanduser().resolve()
+            ds_path = _validate_allowed_read(ds_path, allowed_read_roots)
             if not ds_path.exists():
                 raise FileNotFoundError(f"Dataset directory not found: {ds_path}")
             if ds_path.is_dir():
                 extra_dataset_entry = "dataset_meta"
-                file_count += _write_dir_to_zip(zf, ds_path, extra_dataset_entry)
+                file_count += _write_dir_to_zip(
+                    zf,
+                    ds_path,
+                    extra_dataset_entry,
+                    allowed_read_roots=allowed_read_roots,
+                )
             else:
                 extra_dataset_entry = f"dataset_meta/{ds_path.name}"
                 zf.write(ds_path, extra_dataset_entry)

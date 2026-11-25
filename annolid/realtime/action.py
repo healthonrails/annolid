@@ -142,8 +142,8 @@ def main():
         format="%(asctime)s - %(levelname)s - [%(name)s] - %(message)s",
     )
 
-    # This address must match the one the DecisionProcess pushes to.
-    COMMAND_ADDRESS = "tcp://*:5556"
+    # Default to loopback so hardware triggers are never exposed to LAN peers.
+    COMMAND_ADDRESS = "tcp://127.0.0.1:5556"
 
     # This must be the correct serial port for the Bpod device.
     # On macOS: /dev/tty.usbmodem...

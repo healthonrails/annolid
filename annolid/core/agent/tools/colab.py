@@ -135,7 +135,10 @@ class GoogleColabTool(FunctionTool):
             token_file=self._token_file,
             allow_interactive_auth=self._allow_interactive_auth,
         )
-        return ColabWorkflowService(auth_manager=auth)
+        return ColabWorkflowService(
+            auth_manager=auth,
+            allowed_read_roots=self._allowed_read_roots,
+        )
 
     def _check_read_path(self, raw_path: str) -> str:
         resolved = _resolve_read_path(

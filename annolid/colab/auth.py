@@ -215,13 +215,17 @@ class ColabAuthManager:
                 version_text = ""
         sessions_file = Path.home() / ".config" / "colab-cli" / "sessions.json"
         token_file = Path.home() / ".config" / "colab-cli" / "token.json"
+        try:
+            has_local_state = bool(sessions_file.exists() or token_file.exists())
+        except OSError:
+            has_local_state = False
         return {
             "installed": bool(cli_path),
             "binary": cli_path or "",
             "version": version_text,
             "native_os_supported": native_os_supported,
             "auth_mode": self.resolve_colab_cli_auth_mode(),
-            "has_local_state": bool(sessions_file.exists() or token_file.exists()),
+            "has_local_state": has_local_state,
             "install_command": "uv tool install google-colab-cli",
             "pip_install_command": "pip install google-colab-cli",
         }
@@ -672,17 +676,17 @@ class ColabAuthManager:
                 except Exception:
                     pass
             legacy_tok = Path.home() / ".config" / "colab-cli" / "token.json"
-            if legacy_tok.is_file():
-                try:
+            try:
+                if legacy_tok.is_file():
                     legacy_tok.unlink()
                     cleared_cli_keyring = True
-                except OSError:
-                    pass
-            if self._prefs_file.is_file():
-                try:
+            except OSError:
+                pass
+            try:
+                if self._prefs_file.is_file():
                     self._prefs_file.unlink()
-                except OSError:
-                    pass
+            except OSError:
+                pass
         if clear_adc:
             gcloud_bin = self.find_gcloud_cli()
             if gcloud_bin:
@@ -703,17 +707,21 @@ class ColabAuthManager:
                 except Exception:
                     cleared_adc = False
             adc_path = (
-                Path.home()
-                / ".config"
-                / "gcloud"
-                / "application_default_credentials.json"
+                GoogleOAuthHelper.default_adc_path()
+                if hasattr(GoogleOAuthHelper, "default_adc_path")
+                else (
+                    Path.home()
+                    / ".config"
+                    / "gcloud"
+                    / "application_default_credentials.json"
+                )
             )
-            if not cleared_adc and adc_path.is_file():
-                try:
+            try:
+                if not cleared_adc and adc_path.is_file():
                     adc_path.unlink()
                     cleared_adc = True
-                except OSError:
-                    pass
+            except OSError:
+                pass
         return {
             "ok": True,
             "removed_token": removed,

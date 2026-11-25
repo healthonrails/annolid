@@ -85,6 +85,7 @@ def _run_step(
         check=False,
         capture_output=True,
         text=True,
+        timeout=300,
     )
     row["returncode"] = int(proc.returncode)
     row["ok"] = proc.returncode == 0

@@ -422,8 +422,16 @@ class AsyncRemoteVideoPlayer(NetworkProtocolHandler):
                     )
                     msg_len = struct.unpack(">II", header_data)
 
-                    # Read message body
+                    # Read message body (bounded to prevent OOM on malformed headers)
                     total_size = sum(msg_len)
+                    max_message_bytes = 64 * 1024 * 1024
+                    if total_size > max_message_bytes:
+                        logger.error(
+                            "Rejecting oversized realtime frame payload (%d bytes > %d limit)",
+                            total_size,
+                            max_message_bytes,
+                        )
+                        break
                     if total_size > 0:
                         msg_buff = await asyncio.wait_for(
                             self.reader.readexactly(total_size), timeout=10.0

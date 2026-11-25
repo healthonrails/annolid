@@ -521,7 +521,10 @@ def _inject_env_defaults(
 
 
 def _parse_dotenv_file(path: Path) -> Dict[str, str]:
-    if not path.exists():
+    try:
+        if not path.exists():
+            return {}
+    except OSError:
         return {}
     out: Dict[str, str] = {}
     try:
@@ -631,8 +634,14 @@ def load_llm_settings() -> Dict[str, Any]:
     """Load saved LLM settings, falling back to defaults when unavailable."""
     _apply_env_files()
     settings = deepcopy(_build_default_settings())
-    _ensure_secure_storage_permissions()
-    if not _SETTINGS_FILE.exists():
+    try:
+        _ensure_secure_storage_permissions()
+        settings_exists = _SETTINGS_FILE.exists()
+    except OSError:
+        normalized = _normalise_settings(settings)
+        _apply_inline_env(normalized)
+        return deepcopy(normalized)
+    if not settings_exists:
         normalized = _normalise_settings(settings)
         _apply_inline_env(normalized)
         return deepcopy(normalized)
