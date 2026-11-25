@@ -35,6 +35,15 @@ from annolid.core.agent.tools.colab import GoogleColabTool
 from annolid.engine.cli import main as annolid_run_main
 
 
+@pytest.fixture(autouse=True)
+def _isolate_home_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent Colab service/CLI tests from touching the real user's HOME config."""
+    fake_home = tmp_path / "isolated_home"
+    fake_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(fake_home / ".config"))
+
+
 def _make_tiny_dataset(root: Path) -> Path:
     (root / "images" / "train").mkdir(parents=True)
     (root / "labels" / "train").mkdir(parents=True)

@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
 from qtpy import QtWidgets
 
 from annolid.core.agent.bus import MessageBus
@@ -77,6 +78,28 @@ from annolid.gui.widgets.ai_chat_manager import _sync_dream_cron_job
 from annolid.gui.widgets.ai_chat_widget import AIChatWidget
 from annolid.services.chat_session import get_chat_session_store
 from annolid.services.chat_tracking_stats import run_chat_stats_slash_tool
+
+
+@pytest.fixture(autouse=True)
+def _isolate_bot_hardening_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep bot hardening tests isolated from the developer's real ~/.annolid."""
+    import annolid.services.chat_session as chat_session_mod
+    import annolid.utils.llm_settings as llm_settings_mod
+
+    fake_home = tmp_path / "home"
+    fake_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+    settings_dir = fake_home / ".annolid"
+    monkeypatch.setattr(llm_settings_mod, "_SETTINGS_DIR", settings_dir)
+    monkeypatch.setattr(
+        llm_settings_mod, "_SETTINGS_FILE", settings_dir / "llm_settings.json"
+    )
+    monkeypatch.setattr(llm_settings_mod, "_GLOBAL_DOTENV_FILE", settings_dir / ".env")
+    monkeypatch.setattr(chat_session_mod, "_SESSION_STORE", None)
 
 
 def _ensure_qapp() -> QtWidgets.QApplication:

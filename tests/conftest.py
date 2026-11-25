@@ -11,6 +11,8 @@ os.environ.setdefault("QT_API", "pyside6")
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 # Keep headless tests from implicitly selecting QtAgg once Qt modules are loaded.
 os.environ.setdefault("MPLBACKEND", "Agg")
+# Prevent background Annolid Bot auto-start during test runs.
+os.environ.setdefault("ANNOLID_DISABLE_BOT_AUTOSTART", "1")
 
 import importlib.util  # noqa: E402
 

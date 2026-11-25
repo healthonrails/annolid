@@ -14,6 +14,15 @@ from annolid.core.agent.tools.google_auth import GoogleOAuthHelper
 from annolid.core.agent.tools.google_drive import GoogleDriveTool
 
 
+@pytest.fixture(autouse=True)
+def _isolate_home_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent auth/logout tests from inspecting or modifying the real user's HOME."""
+    fake_home = tmp_path / "isolated_home"
+    fake_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(fake_home / ".config"))
+
+
 def test_google_oauth_merge_scopes_preserves_order_and_deduplicates():
     merged = GoogleOAuthHelper.merge_scopes(
         required_scopes=[
