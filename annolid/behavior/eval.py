@@ -147,6 +147,7 @@ def evaluate_behavior_classifier(
         metrics.classification_report(
             true_array,
             pred_array,
+            labels=list(range(len(label_names))),
             target_names=label_names,
             zero_division=0,
             output_dict=True,

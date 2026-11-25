@@ -274,7 +274,7 @@ class TCNSequenceDataset(Dataset):
         features = self.features_by_session[session_id]
         labels = self.labels_by_session[session_id]
         x = np.zeros((self.sequence_length, features.shape[1]), dtype=np.float32)
-        y = np.zeros((self.sequence_length,), dtype=np.int64)
+        y = np.full((self.sequence_length,), -100, dtype=np.int64)
         valid_len = min(self.sequence_length, max(0, len(features) - start))
         x[:valid_len] = features[start : start + valid_len]
         if labels is not None:
@@ -304,9 +304,10 @@ def fit_normalization(
             values = add_velocity_features(values)
         chunks.append(values)
     data = np.concatenate(chunks, axis=0).astype(np.float32)
-    mean = data.mean(axis=0, keepdims=True)
-    std = data.std(axis=0, keepdims=True)
-    std[std < 1e-6] = 1.0
+    mean = np.nanmean(data, axis=0, keepdims=True)
+    mean = np.where(np.isfinite(mean), mean, 0.0)
+    std = np.nanstd(data, axis=0, keepdims=True)
+    std = np.where(np.isfinite(std) & (std >= 1e-6), std, 1.0)
     return TCNNormalization(mean=mean.astype(np.float32), std=std.astype(np.float32))
 
 
@@ -456,7 +457,12 @@ def train_tcn(
         amsgrad=True,
     )
     history: list[dict[str, float]] = []
+    import random
+
+    random.seed(int(config.seed))
     torch.manual_seed(int(config.seed))
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(int(config.seed))
     np.random.seed(int(config.seed))
     with torch.enable_grad():
         for epoch in range(1, int(config.epochs) + 1):
@@ -465,7 +471,15 @@ def train_tcn(
             skipped = 0
             for batch in loader:
                 x = batch["features"].to(device)
-                y = batch["labels"].to(device)
+                y = batch["labels"].to(device).clone()
+                valid_lengths = batch.get("valid_length")
+                if valid_lengths is not None:
+                    seq_len = y.shape[1]
+                    positions = torch.arange(seq_len, device=device).unsqueeze(0)
+                    pad_mask = positions >= valid_lengths.to(device).unsqueeze(1)
+                    y[pad_mask] = int(ignore_index)
+                else:
+                    y[y == -100] = int(ignore_index)
                 if not torch.any(y != int(ignore_index)):
                     skipped += 1
                     continue

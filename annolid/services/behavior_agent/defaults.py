@@ -7,6 +7,7 @@ Phase 2 orchestration incrementally without contract breakage.
 from __future__ import annotations
 
 import json
+import re
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,7 +54,7 @@ class KeywordTaskInferencer(TaskInferencer):
             assay = "open_field"
             confidence = 0.8
             features = ["centroid", "speed", "center_occupancy"]
-        elif "novel object" in text or "nor" in text:
+        elif "novel object" in text or re.search(r"\bnor\b", text):
             assay = "novel_object_recognition"
             confidence = 0.8
             features = ["nose_tip", "object_centers", "investigation_bouts"]

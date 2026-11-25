@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -78,7 +78,7 @@ class SpecializedBehaviorAgentPipeline:
         generated_episode_id = str(
             episode_id or f"episode_{resolved_video.stem or uuid4().hex[:8]}"
         )
-        now_iso = datetime.now(UTC).isoformat()
+        now_iso = datetime.now(timezone.utc).isoformat()
 
         policy = resolve_behavior_model_policy(model_policy_name)
 

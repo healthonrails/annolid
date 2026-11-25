@@ -137,12 +137,38 @@ class TCNBehaviorPlugin(ModelPluginBase):
         )
         if not config.labels:
             config.labels = list(train_dataset.label_names)
+
+        def _resolve_background_index(bg_label: Any, names: list[str]) -> int:
+            if bg_label is None:
+                return 0
+            if isinstance(bg_label, int):
+                return int(bg_label) if int(bg_label) >= 0 else -100
+            token = str(bg_label).strip()
+            if not token:
+                return -100
+            if token in names:
+                return names.index(token)
+            try:
+                parsed = int(token)
+                return parsed if parsed >= 0 else -100
+            except ValueError:
+                return 0
+
+        bg_idx = _resolve_background_index(
+            getattr(config.feature, "background_label", 0),
+            list(train_dataset.label_names),
+        )
         model = BehaviorTCN(
             input_dim=train_dataset.input_dim,
             num_classes=len(train_dataset.label_names),
             config=config.model,
         )
-        history = train_tcn(model, train_dataset, config=config.training)
+        history = train_tcn(
+            model,
+            train_dataset,
+            config=config.training,
+            ignore_index=bg_idx,
+        )
 
         output_dir = Path(args.output_dir).expanduser().resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -173,6 +199,7 @@ class TCNBehaviorPlugin(ModelPluginBase):
                 model,
                 test_dataset,
                 device=config.training.device,
+                background_index=bg_idx,
             )
         metrics_path = output_dir / "metrics.json"
         metrics_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")

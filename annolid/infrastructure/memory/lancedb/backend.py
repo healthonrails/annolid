@@ -209,6 +209,10 @@ class LanceDBMemoryBackend(MemoryBackend):
 
         try:
             update_values = dict(patch)
+            if "text" in update_values and "vector" not in update_values:
+                new_text = str(update_values["text"] or "")
+                if new_text and getattr(self, "embedder", None) is not None:
+                    update_values["vector"] = self.embedder.embed(new_text)
             if "metadata" in update_values:
                 update_values["metadata_json"] = json.dumps(
                     update_values.pop("metadata")

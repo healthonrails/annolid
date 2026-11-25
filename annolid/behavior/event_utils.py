@@ -48,21 +48,30 @@ class ParsedEventRow:
     comment: str = ""
 
 
+_START_BOUNDARY_RE = re.compile(
+    r"(?:^|[^a-z0-9]|_)(?:start|begin|onset)(?:$|[^a-z0-9]|_)"
+)
+_END_BOUNDARY_RE = re.compile(r"(?:^|[^a-z0-9]|_)(?:end|stop|offset)(?:$|[^a-z0-9]|_)")
+
+
 def normalize_event_label(event_label: Optional[str]) -> Optional[str]:
     """Map arbitrary event labels onto canonical ``"start"``/``"end"`` tokens.
 
-    Labels that contain "start", "begin", or "onset" (case insensitive) are
-    treated as start markers. Labels that contain "end", "stop", or "offset"
-    are treated as end markers. Unknown labels return ``None`` so callers can
-    decide how to handle them.
+    Uses word/delimiter boundaries so unrelated words such as ``"defending"``,
+    ``"extended"``, or ``"nonstop"`` are not misclassified. Unknown or ambiguous
+    labels return ``None`` so callers can decide how to handle them.
     """
     if not event_label:
         return None
 
-    label = event_label.lower()
-    if "start" in label or "begin" in label or "onset" in label:
+    label = str(event_label).strip().lower()
+    has_start = bool(_START_BOUNDARY_RE.search(label))
+    has_end = bool(_END_BOUNDARY_RE.search(label))
+    if has_start and has_end:
+        return None
+    if has_start:
         return "start"
-    if "end" in label or "stop" in label or "offset" in label:
+    if has_end:
         return "end"
     return None
 

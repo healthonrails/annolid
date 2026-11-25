@@ -112,6 +112,8 @@ def export_zone_visits_to_behavior_events_csv(
 
 
 def _clean_nan_records(df: pd.DataFrame) -> List[Dict[str, Any]]:
+    import math
+
     if df is None or df.empty:
         return []
     reset = df.reset_index() if df.index.name else df.copy()
@@ -119,14 +121,28 @@ def _clean_nan_records(df: pd.DataFrame) -> List[Dict[str, Any]]:
     for raw in reset.to_dict(orient="records"):
         cleaned: Dict[str, Any] = {}
         for k, v in raw.items():
-            if isinstance(v, float) and (pd.isna(v) or not pd.notna(v)):
-                cleaned[str(k)] = None
-            elif pd.isna(v):
-                cleaned[str(k)] = None
-            else:
+            if isinstance(v, (list, tuple, dict)):
                 cleaned[str(k)] = v
+            elif hasattr(v, "tolist") and not isinstance(v, (str, bytes)):
+                cleaned[str(k)] = v.tolist()
+            elif isinstance(v, float):
+                cleaned[str(k)] = None if not math.isfinite(v) else v
+            else:
+                try:
+                    is_na = bool(pd.isna(v))
+                except (TypeError, ValueError):
+                    is_na = False
+                cleaned[str(k)] = None if is_na else v
         records.append(cleaned)
     return records
+
+
+def _resolve_video_candidate(parent: Path, stem: str) -> Path:
+    for ext in (".mp4", ".avi", ".mov", ".mkv", ".m4v", ".mpg", ".mpeg"):
+        cand = parent / f"{stem}{ext}"
+        if cand.is_file():
+            return cand
+    return parent / f"{stem}.mp4"
 
 
 def run_zone_analysis(
@@ -150,9 +166,11 @@ def run_zone_analysis(
             if stem.endswith(suffix) and len(stem) > len(suffix):
                 stem = stem[: -len(suffix)]
                 break
-        resolved_video = resolved_video.parent / f"{stem}.mp4"
+        resolved_video = _resolve_video_candidate(resolved_video.parent, stem)
     elif resolved_video.is_dir():
-        resolved_video = resolved_video.parent / f"{resolved_video.name}.mp4"
+        resolved_video = _resolve_video_candidate(
+            resolved_video.parent, resolved_video.name
+        )
     analyzer = TrackingResultsAnalyzer(
         resolved_video,
         zone_file=Path(zone_file).expanduser().resolve() if zone_file else None,

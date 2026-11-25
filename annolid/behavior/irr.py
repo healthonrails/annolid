@@ -513,12 +513,16 @@ def _rasterize_series(
     grid = np.zeros(n_bins, dtype=np.int8)
 
     for interval in intervals:
+        is_point_like = (interval.end - interval.start) <= 1e-9
         s = max(window_start, interval.start)
         e = min(window_end, interval.end)
         if e < s - 1e-9:
             continue
         if e - s <= 1e-9:
-            # Zero-duration interval: treat like a point at s.
+            # Only true zero-duration/point events should mark a bin; positive-width
+            # intervals merely touching a window edge have zero overlap with the window.
+            if not is_point_like:
+                continue
             idx = min(
                 n_bins - 1, max(0, int(math.floor((s - window_start) / bin_seconds)))
             )
@@ -683,11 +687,12 @@ def compute_irr(
             else:
                 observed_subjects.add(default_subject)
 
-    win_start = (
-        float(session_start)
-        if session_start is not None
-        else (min(all_timestamps) if all_timestamps else 0.0)
-    )
+    if session_start is not None:
+        win_start = float(session_start)
+    elif session_duration is not None:
+        win_start = 0.0
+    else:
+        win_start = min(all_timestamps) if all_timestamps else 0.0
     if session_end is not None:
         win_end = float(session_end)
     elif session_duration is not None:

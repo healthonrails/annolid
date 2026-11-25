@@ -267,13 +267,21 @@ def run_behavior_irr_cli(
     else:
         print(format_irr_report_table(report))
 
-    if min_kappa is not None and report.macro_cohens_kappa < float(min_kappa):
-        print(
-            f"[annolid-run] Macro Cohen's kappa {report.macro_cohens_kappa:.4f} "
-            f"is below --min-kappa {float(min_kappa):.4f}.",
-            file=sys.stderr,
-        )
-        return 2
+    if min_kappa is not None:
+        if not report.rows:
+            print(
+                f"[annolid-run] No comparable behavior rows found to satisfy "
+                f"--min-kappa {float(min_kappa):.4f}.",
+                file=sys.stderr,
+            )
+            return 2
+        if report.macro_cohens_kappa < float(min_kappa):
+            print(
+                f"[annolid-run] Macro Cohen's kappa {report.macro_cohens_kappa:.4f} "
+                f"is below --min-kappa {float(min_kappa):.4f}.",
+                file=sys.stderr,
+            )
+            return 2
     return 0
 
 

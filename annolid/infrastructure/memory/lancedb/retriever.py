@@ -83,45 +83,47 @@ class LanceDBRetriever:
             # Apply MMR (Maximal Marginal Relevance) for diversity
             # We don't have the raw vectors here easily without merging back, so we do a fast Jaccard text overlap MMR
             diversity_penalty = 0.25  # How much to penalize overlapping vocabulary
-            mmr_results = []
-
-            for candidate in scored:
+            mmr_results: List[Dict[str, Any]] = []
+            remaining = list(scored)
+            while remaining and len(mmr_results) < top_k:
                 if not mmr_results:
-                    mmr_results.append(candidate)
+                    first = remaining.pop(0)
+                    first["_mmr_score"] = float(first["_final_score"])
+                    mmr_results.append(first)
                     continue
 
-                if len(mmr_results) >= top_k:
-                    break
+                best_idx = 0
+                best_mmr = float("-inf")
+                for idx, candidate in enumerate(remaining):
+                    cand_words = set(str(candidate.get("text") or "").lower().split())
+                    max_overlap = 0.0
+                    if cand_words:
+                        for selected in mmr_results:
+                            sel_words = set(
+                                str(selected.get("text") or "").lower().split()
+                            )
+                            overlap = len(cand_words.intersection(sel_words)) / len(
+                                cand_words
+                            )
+                            if overlap > max_overlap:
+                                max_overlap = overlap
+                    mmr_score = float(candidate["_final_score"]) - (
+                        max_overlap * diversity_penalty
+                    )
+                    if mmr_score > best_mmr:
+                        best_mmr = mmr_score
+                        best_idx = idx
 
-                # Calculate simple word overlap penalty against currently selected results
-                cand_words = set(candidate["text"].lower().split())
-                max_overlap = 0.0
-                if cand_words:
-                    for selected in mmr_results:
-                        sel_words = set(selected["text"].lower().split())
-                        overlap = len(cand_words.intersection(sel_words)) / len(
-                            cand_words
-                        )
-                        if overlap > max_overlap:
-                            max_overlap = overlap
+                chosen = remaining.pop(best_idx)
+                chosen["_mmr_score"] = best_mmr
+                mmr_results.append(chosen)
 
-                # Adjust final score based on highest overlap (penalty)
-                candidate["_mmr_score"] = candidate["_final_score"] - (
-                    max_overlap * diversity_penalty
-                )
-
-                # Re-sort candidates list conceptually to pick next best (greedy MMR)
-                # Since candidates are already sorted by base score, subtracting penalty is a good approx.
-                mmr_results.append(candidate)
-
-            # Final re-sort by MMR score
-            mmr_results.sort(
-                key=lambda x: x.get("_mmr_score", x["_final_score"]), reverse=True
-            )
             top_results = mmr_results[:top_k]
 
             hits = [
-                self._row_to_hit(row, score=float(row["_final_score"]))
+                self._row_to_hit(
+                    row, score=float(row.get("_mmr_score", row["_final_score"]))
+                )
                 for row in top_results
             ]
 
@@ -129,7 +131,7 @@ class LanceDBRetriever:
             if self.config.rerank_provider != "none":
                 hits = self.reranker.rerank(query, hits, top_k)
 
-            return list(sorted(hits, key=lambda x: x.score, reverse=True))
+            return hits
         except Exception as e:
             logger.error(f"Memory retrieval failed: {e}")
             return []
@@ -146,7 +148,11 @@ class LanceDBRetriever:
             query = self._table.search()
             if filter_str:
                 query = query.where(filter_str, prefilter=True)
-            results_df = query.limit(top_k).to_pandas()
+            # Fetch a wider pool when post-filters or importance/recency ordering apply.
+            fetch_limit = (
+                max(int(top_k) * 5, 100) if filters else max(int(top_k) * 5, 50)
+            )
+            results_df = query.limit(fetch_limit).to_pandas()
             rows = results_df.to_dict("records") if not results_df.empty else []
             filtered = self._apply_post_filters(rows, filters=filters)
             filtered.sort(
@@ -164,23 +170,44 @@ class LanceDBRetriever:
             logger.error(f"Memory listing failed: {e}")
             return []
 
+    _ALLOWED_SQL_FILTER_COLUMNS = frozenset(
+        {
+            "id",
+            "scope",
+            "category",
+            "source",
+            "session_id",
+            "importance",
+            "timestamp_ms",
+            "text",
+        }
+    )
+
     def _build_filter_str(
         self, *, scope: Optional[str], filters: Optional[Dict[str, Any]]
     ) -> Optional[str]:
         filter_parts = []
         if scope:
-            safe_scope = scope.replace("'", "''")
+            safe_scope = str(scope).replace("'", "''")
             filter_parts.append(f"scope = '{safe_scope}'")
         if filters:
             for key, value in filters.items():
-                # metadata_json cannot be reliably filtered in SQL string form here.
-                if key.startswith("metadata.") or key == "metadata":
+                # metadata_json and non-allowlisted columns are handled in post-filters.
+                if (
+                    key.startswith("metadata.")
+                    or key == "metadata"
+                    or key not in self._ALLOWED_SQL_FILTER_COLUMNS
+                ):
                     continue
-                if isinstance(value, str):
+                if value is None or isinstance(value, (list, tuple, set, dict)):
+                    continue
+                if isinstance(value, bool):
+                    filter_parts.append(f"{key} = {'true' if value else 'false'}")
+                elif isinstance(value, (int, float)):
+                    filter_parts.append(f"{key} = {value}")
+                elif isinstance(value, str):
                     safe_value = value.replace("'", "''")
                     filter_parts.append(f"{key} = '{safe_value}'")
-                else:
-                    filter_parts.append(f"{key} = {value}")
         return " AND ".join(filter_parts) if filter_parts else None
 
     def _apply_post_filters(

@@ -251,7 +251,8 @@ class YOLORunTensorBoardLogger:
         w.flush()
 
     def close(self) -> None:
-        w = self.writer
+        # Use internal _writer directly so close() never lazily creates a new SummaryWriter.
+        w = getattr(self, "_writer", None)
         if w is None:
             return
         try:

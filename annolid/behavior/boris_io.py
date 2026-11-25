@@ -694,8 +694,27 @@ def import_boris_project(
 
             active_states: Dict[Tuple[str, str], bool] = {}
             parsed_events: List[ParsedEventRow] = []
-            raw_events = obs_val.get("events") or []
-            for ev_idx, ev in enumerate(raw_events, start=1):
+            raw_events = list(obs_val.get("events") or [])
+
+            def _boris_raw_event_sort_key(
+                item: Tuple[int, Any],
+            ) -> Tuple[int, float, int]:
+                idx, rec = item
+                raw_t = None
+                if isinstance(rec, (list, tuple)) and len(rec) >= 1:
+                    raw_t = rec[0]
+                elif isinstance(rec, Mapping):
+                    raw_t = rec.get("timestamp", rec.get("time"))
+                ts_parsed = parse_recording_seconds(raw_t)
+                return (0 if ts_parsed is not None else 1, float(ts_parsed or 0.0), idx)
+
+            ordered_raw_events = [
+                ev
+                for _orig_idx, ev in sorted(
+                    enumerate(raw_events, start=1), key=_boris_raw_event_sort_key
+                )
+            ]
+            for ev_idx, ev in enumerate(ordered_raw_events, start=1):
                 if isinstance(ev, (list, tuple)) and len(ev) >= 3:
                     raw_ts = ev[0]
                     raw_subj = str(ev[1] or "").strip()
@@ -962,7 +981,7 @@ def export_boris_project(
             subj_out = (
                 row.subject
                 if row.has_explicit_subject and row.subject
-                else (row.subject or "No focal subject")
+                else "No focal subject"
             )
             mod_str = "|".join(row.modifiers) if row.modifiers else ""
             boris_events.append(
@@ -1195,11 +1214,13 @@ def write_boris_aggregated_csv(
     agg_records: List[Tuple[float, List[str]]] = []
     open_queues: Dict[Tuple[str, str], Deque[ParsedEventRow]] = defaultdict(deque)
 
+    # Group same-timestamp state events per (subject, behavior) so a prior open
+    # bout closes first, while a standalone zero-duration (start, end) pair at
+    # the same timestamp pairs cleanly instead of dropping the end marker.
     ordered = sorted(
         parsed,
         key=lambda r: (
             float(r.recording_time or 0.0),
-            0 if r.event_kind == "end" else 1,
             r.line_number,
         ),
     )
@@ -1211,61 +1232,113 @@ def write_boris_aggregated_csv(
             return (cobj.name or cobj.id) if cobj else bdef.category_id
         return ""
 
-    for row in ordered:
-        if row.recording_time is None or not row.behavior:
-            continue
-        t_val = float(row.recording_time)
-        bdef = beh_map.get(row.behavior)
-        is_pt = row.event_kind == "point" or (bdef is not None and not bdef.is_state)
-        if is_pt:
-            agg_records.append(
-                (
-                    t_val,
-                    [
-                        observation_id,
-                        media_file,
-                        row.subject,
-                        row.behavior,
-                        _cat_for(row.behavior),
-                        "|".join(row.modifiers) if row.modifiers else "",
-                        "POINT",
-                        f"{t_val:.6f}",
-                        f"{t_val:.6f}",
-                        "0.000000",
-                        row.comment or "",
-                        "",
-                    ],
-                )
-            )
-            continue
+    idx_pos = 0
+    n_rows = len(ordered)
+    while idx_pos < n_rows:
+        t_cur = ordered[idx_pos].recording_time
+        bucket: List[ParsedEventRow] = []
+        while idx_pos < n_rows and ordered[idx_pos].recording_time == t_cur:
+            bucket.append(ordered[idx_pos])
+            idx_pos += 1
 
-        series_key = (row.subject, row.behavior)
-        if row.event_kind == "start":
-            open_queues[series_key].append(row)
-        elif row.event_kind == "end" and open_queues[series_key]:
-            start_row = open_queues[series_key].popleft()
-            s_t = float(start_row.recording_time or 0.0)
-            dur = max(0.0, t_val - s_t)
-            mods = start_row.modifiers or row.modifiers
-            agg_records.append(
-                (
-                    s_t,
-                    [
-                        observation_id,
-                        media_file,
-                        start_row.subject,
-                        start_row.behavior,
-                        _cat_for(start_row.behavior),
-                        "|".join(mods) if mods else "",
-                        "STATE",
-                        f"{s_t:.6f}",
-                        f"{t_val:.6f}",
-                        f"{dur:.6f}",
-                        start_row.comment or "",
-                        row.comment or "",
-                    ],
-                )
+        # Emit point events and partition state events by series within this timestamp.
+        state_by_series: Dict[
+            Tuple[str, str], Tuple[List[ParsedEventRow], List[ParsedEventRow]]
+        ] = defaultdict(lambda: ([], []))
+        for row in bucket:
+            if row.recording_time is None or not row.behavior:
+                continue
+            t_val = float(row.recording_time)
+            bdef = beh_map.get(row.behavior)
+            is_pt = row.event_kind == "point" or (
+                bdef is not None and not bdef.is_state
             )
+            if is_pt:
+                agg_records.append(
+                    (
+                        t_val,
+                        [
+                            observation_id,
+                            media_file,
+                            row.subject,
+                            row.behavior,
+                            _cat_for(row.behavior),
+                            "|".join(row.modifiers) if row.modifiers else "",
+                            "POINT",
+                            f"{t_val:.6f}",
+                            f"{t_val:.6f}",
+                            "0.000000",
+                            row.comment or "",
+                            "",
+                        ],
+                    )
+                )
+                continue
+            series_key = (row.subject, row.behavior)
+            if row.event_kind == "start":
+                state_by_series[series_key][0].append(row)
+            elif row.event_kind == "end":
+                state_by_series[series_key][1].append(row)
+
+        for series_key, (starts, ends) in state_by_series.items():
+            # Close any already-open bouts from earlier timestamps first.
+            rem_ends: Deque[ParsedEventRow] = deque(ends)
+            while rem_ends and open_queues[series_key]:
+                end_row = rem_ends.popleft()
+                start_row = open_queues[series_key].popleft()
+                s_t = float(start_row.recording_time or 0.0)
+                e_t = float(end_row.recording_time or 0.0)
+                dur = max(0.0, e_t - s_t)
+                mods = start_row.modifiers or end_row.modifiers
+                agg_records.append(
+                    (
+                        s_t,
+                        [
+                            observation_id,
+                            media_file,
+                            start_row.subject,
+                            start_row.behavior,
+                            _cat_for(start_row.behavior),
+                            "|".join(mods) if mods else "",
+                            "STATE",
+                            f"{s_t:.6f}",
+                            f"{e_t:.6f}",
+                            f"{dur:.6f}",
+                            start_row.comment or "",
+                            end_row.comment or "",
+                        ],
+                    )
+                )
+            # Pair any remaining same-timestamp (start, end) zero-duration bouts,
+            # then leave excess starts open.
+            for start_row in starts:
+                if rem_ends:
+                    end_row = rem_ends.popleft()
+                    s_t = float(start_row.recording_time or 0.0)
+                    e_t = float(end_row.recording_time or 0.0)
+                    dur = max(0.0, e_t - s_t)
+                    mods = start_row.modifiers or end_row.modifiers
+                    agg_records.append(
+                        (
+                            s_t,
+                            [
+                                observation_id,
+                                media_file,
+                                start_row.subject,
+                                start_row.behavior,
+                                _cat_for(start_row.behavior),
+                                "|".join(mods) if mods else "",
+                                "STATE",
+                                f"{s_t:.6f}",
+                                f"{e_t:.6f}",
+                                f"{dur:.6f}",
+                                start_row.comment or "",
+                                end_row.comment or "",
+                            ],
+                        )
+                    )
+                else:
+                    open_queues[series_key].append(start_row)
 
     agg_records.sort(key=lambda item: item[0])
     buf = io.StringIO()

@@ -8,7 +8,7 @@ flows until integrated explicitly.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -97,7 +97,7 @@ class BehaviorAgentPipeline:
         bout_counts = aggregate_aggression_bout_counts(segments)
         validation_errors = validate_aggression_bout_counts(bout_counts)
 
-        now_iso = datetime.now(UTC).isoformat()
+        now_iso = datetime.now(timezone.utc).isoformat()
         episode = Episode(
             episode_id=generated_episode_id,
             video_path=str(resolved_video),

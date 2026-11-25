@@ -242,8 +242,16 @@ def _schema_to_dict(schema: ProjectSchema) -> Dict[str, object]:
 
 
 def _instantiate_dataclass(cls, raw_item: Mapping[str, Any]):
-    allowed = {f.name for f in dataclasses.fields(cls)}
-    filtered = {k: v for k, v in raw_item.items() if k in allowed}
+    field_map = {f.name: f for f in dataclasses.fields(cls)}
+    filtered = {}
+    for k, v in raw_item.items():
+        if k not in field_map:
+            continue
+        f = field_map[k]
+        # Avoid overriding default_factory collections (list/dict/set) with JSON null.
+        if v is None and f.default_factory is not dataclasses.MISSING:
+            continue
+        filtered[k] = v
     return cls(**filtered)
 
 
