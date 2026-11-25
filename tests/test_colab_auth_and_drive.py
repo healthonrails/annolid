@@ -32,9 +32,15 @@ def test_google_oauth_merge_scopes_preserves_order_and_deduplicates():
     ]
 
 
-def test_google_oauth_inspect_status_missing_and_ready(tmp_path: Path):
+def test_google_oauth_inspect_status_missing_and_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     creds_file = tmp_path / "client.json"
     token_file = tmp_path / "token.json"
+
+    monkeypatch.setattr(
+        GoogleOAuthHelper, "is_oauth_available", staticmethod(lambda: True)
+    )
 
     status_missing = GoogleOAuthHelper.inspect_auth_status(
         credentials_file=str(creds_file),
@@ -68,7 +74,22 @@ def test_google_oauth_inspect_status_missing_and_ready(tmp_path: Path):
     assert status_ready["token_expired"] is False
     assert status_ready["missing_scopes"] == []
 
+    # Missing optional google-auth dependencies must mark status not ready clearly
+    monkeypatch.setattr(
+        GoogleOAuthHelper, "is_oauth_available", staticmethod(lambda: False)
+    )
+    status_no_deps = GoogleOAuthHelper.inspect_auth_status(
+        credentials_file=str(creds_file),
+        token_file=str(token_file),
+        required_scopes=GoogleOAuthHelper.COLAB_SCOPES,
+    )
+    assert status_no_deps["ready"] is False
+    assert "not installed" in status_no_deps["reason"].lower()
+
     # Expired token without refresh_token is flagged as not ready
+    monkeypatch.setattr(
+        GoogleOAuthHelper, "is_oauth_available", staticmethod(lambda: True)
+    )
     token_file.write_text(
         json.dumps(
             {
@@ -256,6 +277,9 @@ def test_colab_auth_manager_recommendations_and_env_token(
     token = tmp_path / "token.json"
     adc_file = tmp_path / "adc.json"
     monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", str(adc_file))
+    monkeypatch.setattr(
+        GoogleOAuthHelper, "is_oauth_available", staticmethod(lambda: True)
+    )
 
     mgr = ColabAuthManager(credentials_file=str(creds), token_file=str(token))
     monkeypatch.setattr(mgr, "find_colab_cli", lambda: None)

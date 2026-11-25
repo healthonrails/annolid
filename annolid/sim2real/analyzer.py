@@ -160,9 +160,12 @@ def _detect_circular_arena(bg_gray: np.ndarray) -> bool:
         minRadius=int(min_dim * 0.28),
         maxRadius=int(min_dim * 0.52),
     )
-    if circles is None or len(circles) == 0:
+    if circles is None:
         return False
-    cx, cy, r = circles[0][0]
+    circles_arr = np.asarray(circles, dtype=np.float32)
+    if circles_arr.size < 3 or circles_arr.shape[-1] != 3:
+        return False
+    cx, cy, r = [float(v) for v in circles_arr.reshape(-1, 3)[0]]
     near_center = abs(cx - w * 0.5) < w * 0.18 and abs(cy - h * 0.5) < h * 0.18
     return bool(near_center and r >= min_dim * 0.28)
 
@@ -204,9 +207,12 @@ def _detect_wire_bars(bg_gray: np.ndarray) -> bool:
     )
     if lines is None:
         return False
+    lines_arr = np.asarray(lines, dtype=np.float32)
+    if lines_arr.size < 4 or lines_arr.shape[-1] != 4:
+        return False
     horiz_ys: list[float] = []
     vert_xs: list[float] = []
-    for line in lines[:, 0, :]:
+    for line in lines_arr.reshape(-1, 4):
         x1, y1, x2, y2 = [float(v) for v in line]
         dx, dy = abs(x2 - x1), abs(y2 - y1)
         if dx > dy * 6.0:

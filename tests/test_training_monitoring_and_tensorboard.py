@@ -1635,8 +1635,15 @@ def test_residual_fixes_real_subprocess_nvidia_smi_and_timeout(
     assert sample.gpu_util_percent == pytest.approx(88.0)
     assert "GPU 88%" in format_telemetry_summary(sample)
 
-    # Hanging nvidia-smi must time out cleanly without leaving _gpu_probe_in_flight stuck
-    fake_smi.write_text("#!/bin/sh\nsleep 5\n", encoding="utf-8")
+    # Hanging nvidia-smi must time out cleanly without leaving _gpu_probe_in_flight stuck.
+    # Write to a separate directory so Linux never raises ETXTBSY while a background
+    # sampler probe may still be executing the previous fake_smi binary.
+    hang_dir = tmp_path / "hang_bin"
+    hang_dir.mkdir()
+    hang_smi = hang_dir / "nvidia-smi"
+    hang_smi.write_text("#!/bin/sh\nsleep 5\n", encoding="utf-8")
+    hang_smi.chmod(hang_smi.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", f"{hang_dir}{os.pathsep}{os.environ.get('PATH', '')}")
     t0 = time.monotonic()
     res = tel_mod._probe_nvidia_gpu(timeout_s=0.15)
     assert time.monotonic() - t0 < 2.0

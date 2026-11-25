@@ -208,7 +208,13 @@ class GoogleOAuthHelper:
         *,
         open_browser: bool = True,
     ) -> Any:
-        from google_auth_oauthlib.flow import InstalledAppFlow
+        try:
+            from google_auth_oauthlib.flow import InstalledAppFlow
+        except ImportError as exc:
+            raise RuntimeError(
+                "Google OAuth dependencies are not installed "
+                '(install `pip install "annolid[annolid_bot]"`).'
+            ) from exc
 
         if not credentials_path.exists():
             raise FileNotFoundError(
@@ -456,9 +462,6 @@ class GoogleOAuthHelper:
         allow_browser_auth: bool = False,
         merge_existing_scopes: bool = True,
     ) -> Any:
-        from google.auth.transport.requests import Request
-        from google.oauth2.credentials import Credentials
-
         token_path = Path(str(token_file).strip()).expanduser()
         credentials_path = Path(str(credentials_file).strip()).expanduser()
         can_prompt = bool(allow_browser_auth or cls.interactive_auth_possible())
@@ -470,6 +473,13 @@ class GoogleOAuthHelper:
         creds = None
         existing_scopes: set[str] = set()
         if token_path.exists():
+            try:
+                from google.oauth2.credentials import Credentials
+            except ImportError as exc:
+                raise RuntimeError(
+                    "Google OAuth dependencies are not installed "
+                    '(install `pip install "annolid[annolid_bot]"`).'
+                ) from exc
             existing_scopes = cls._read_token_scopes(token_path)
             try:
                 creds = Credentials.from_authorized_user_file(str(token_path), scopes)
@@ -503,6 +513,13 @@ class GoogleOAuthHelper:
                 else list(scopes)
             )
             if creds and creds.expired and creds.refresh_token:
+                try:
+                    from google.auth.transport.requests import Request
+                except ImportError as exc:
+                    raise RuntimeError(
+                        "Google OAuth dependencies are not installed "
+                        '(install `pip install "annolid[annolid_bot]"`).'
+                    ) from exc
                 try:
                     creds.refresh(Request())
                 except Exception as exc:

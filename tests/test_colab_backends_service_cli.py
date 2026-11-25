@@ -606,9 +606,14 @@ def test_colab_api_proxy_token_refresh_streaming_download_and_kernel_interrupt(
 def test_colab_doctor_offline_validation_and_live_probes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ):
+    from annolid.core.agent.tools.google_auth import GoogleOAuthHelper
+
     creds = tmp_path / "client.json"
     token = tmp_path / "token.json"
     creds.write_text(json.dumps({"type": "service_account"}), encoding="utf-8")
+    monkeypatch.setattr(
+        GoogleOAuthHelper, "is_oauth_available", staticmethod(lambda: True)
+    )
 
     auth = ColabAuthManager(credentials_file=str(creds), token_file=str(token))
     monkeypatch.setattr(auth, "find_colab_cli", lambda: None)

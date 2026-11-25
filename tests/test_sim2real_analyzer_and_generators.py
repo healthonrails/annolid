@@ -259,3 +259,46 @@ def test_generate_mouse_and_fly_datasets_all_tasks_and_real_merge(
     first_line = train_lbls[0].read_text(encoding="utf-8").strip().splitlines()[0]
     # class + 4 bbox + 11*3 keypoints = 38 tokens
     assert len(first_line.split()) == 38
+
+
+def test_analyzer_hough_helpers_handle_2d_and_3d_opencv_arrays(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from annolid.sim2real import analyzer as an_mod
+
+    bg = np.full((128, 128), 120, dtype=np.uint8)
+    bars_2d = np.array(
+        [
+            [5, 20, 120, 20],
+            [5, 40, 120, 40],
+            [5, 60, 120, 60],
+            [5, 80, 120, 80],
+            [5, 100, 120, 100],
+        ],
+        dtype=np.int32,
+    )
+    bars_3d = bars_2d[:, None, :]
+
+    monkeypatch.setattr(an_mod.cv2, "HoughLinesP", lambda *_a, **_k: bars_2d)
+    assert an_mod._detect_wire_bars(bg) is True
+
+    monkeypatch.setattr(an_mod.cv2, "HoughLinesP", lambda *_a, **_k: bars_3d)
+    assert an_mod._detect_wire_bars(bg) is True
+
+    monkeypatch.setattr(
+        an_mod.cv2, "HoughLinesP", lambda *_a, **_k: np.empty((0, 4), dtype=np.int32)
+    )
+    assert an_mod._detect_wire_bars(bg) is False
+
+    circ_2d = np.array([[64.0, 64.0, 48.0]], dtype=np.float32)
+    circ_3d = circ_2d[None, :, :]
+    monkeypatch.setattr(an_mod.cv2, "HoughCircles", lambda *_a, **_k: circ_2d)
+    assert an_mod._detect_circular_arena(bg) is True
+
+    monkeypatch.setattr(an_mod.cv2, "HoughCircles", lambda *_a, **_k: circ_3d)
+    assert an_mod._detect_circular_arena(bg) is True
+
+    monkeypatch.setattr(
+        an_mod.cv2, "HoughCircles", lambda *_a, **_k: np.empty((0, 3), dtype=np.float32)
+    )
+    assert an_mod._detect_circular_arena(bg) is False
