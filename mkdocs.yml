@@ -119,6 +119,7 @@ nav:
       - TAPNext ONNX Point Tracking: tapnext.md
       - CoWTracker Point Tracking: cowtracker.md
       - Behavior Agent User Guide: behavior_agent_user_guide.md
+      - Frame & Behavior Search (ONNX EmbeddingGemma 2): behavior_embedding_search.md
       - Draw Zones Quickstart (GUI): tutorials/draw_zones_quickstart.md
       - Zone Analysis Workflow: tutorials/zone_analysis_workflow.md
       - Reporting and Statistics: reporting_and_statistics.md

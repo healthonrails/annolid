@@ -1,7 +1,10 @@
+"""Embedding Search dock widget supporting ONNX EmbeddingGemma 2 text & frame search."""
+
 from __future__ import annotations
 
+import time
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from qtpy import QtCore, QtGui, QtWidgets
 
@@ -10,7 +13,7 @@ from annolid.infrastructure import AnnotationStore
 
 
 class EmbeddingSearchWidget(QtWidgets.QWidget):
-    """Embedding search UI for finding similar frames."""
+    """Multimodal embedding search UI for finding similar frames and behaviors."""
 
     jumpToFrame = QtCore.Signal(int)
     statusMessage = QtCore.Signal(str)
@@ -25,6 +28,13 @@ class EmbeddingSearchWidget(QtWidgets.QWidget):
         self._settings = getattr(parent, "settings", None)
         self._current_image_path: Optional[Path] = None
         self._results: List[dict] = []
+        self._last_bouts: List[dict] = []
+        self._last_score_summary: dict[str, Any] = {}
+        self._last_query_text: str = ""
+        self._threshold_user_edited: bool = False
+        self._updating_threshold_programmatically: bool = False
+        self._is_running: bool = False
+        self._search_started_monotonic: Optional[float] = None
         self._all_files: List[Path] = []
         self._video_path: Optional[Path] = None
         self._annotation_dir: Optional[Path] = None
@@ -43,11 +53,16 @@ class EmbeddingSearchWidget(QtWidgets.QWidget):
         query_layout.setSpacing(4)
         self._query_input = QtWidgets.QLineEdit()
         self._query_input.setMinimumWidth(60)
-        self._query_input.setPlaceholderText("Search text (optional)")
+        self._query_input.setPlaceholderText(
+            "Search behavior (e.g. grooming, rearing)…"
+        )
+        self._query_input.returnPressed.connect(self._run_text_search)
         query_layout.addWidget(self._query_input, 1)
 
         self._text_button = QtWidgets.QPushButton("Text")
-        self._text_button.setToolTip("Run open-vocabulary text similarity search")
+        self._text_button.setToolTip(
+            "Run multimodal text-to-frame behavior search (ONNX EmbeddingGemma 2 / Qwen3-VL)"
+        )
         self._text_button.clicked.connect(self._run_text_search)
         query_layout.addWidget(self._text_button)
         layout.addLayout(query_layout)
@@ -63,9 +78,11 @@ class EmbeddingSearchWidget(QtWidgets.QWidget):
         self._image_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
 
         self._backend_combo = QtWidgets.QComboBox()
-        self._backend_combo.addItem("DINOv3 (default)", "dinov3")
+        self._backend_combo.addItem("EmbeddingGemma 2 (ONNX)", "embeddinggemma2_onnx")
+        self._backend_combo.addItem("DINOv3 (visual)", "dinov3")
         self._backend_combo.addItem("Qwen3-VL Embedding", "qwen3vl")
-        configure_compact_combo(self._backend_combo, min_chars=8, popup_min_width=210)
+        configure_compact_combo(self._backend_combo, min_chars=8, popup_min_width=220)
+        self._backend_combo.currentIndexChanged.connect(self._on_backend_changed)
         image_layout.addWidget(self._backend_combo, 1)
 
         self._image_button = QtWidgets.QPushButton("Search")
@@ -81,6 +98,35 @@ class EmbeddingSearchWidget(QtWidgets.QWidget):
         layout.addWidget(self._image_label)
         layout.addLayout(image_layout)
 
+        # Compact ONNX EmbeddingGemma 2 precision / soft-token / Matryoshka & clip-window controls.
+        onnx_layout = QtWidgets.QHBoxLayout()
+        onnx_layout.setContentsMargins(0, 0, 0, 0)
+        onnx_layout.setSpacing(4)
+        self._onnx_preset_combo = QtWidgets.QComboBox()
+        self._onnx_preset_combo.addItem("Q4 · 140t · 768d", ("q4", 768, 140))
+        self._onnx_preset_combo.addItem("Q4 · 70t · 256d (fast)", ("q4", 256, 70))
+        self._onnx_preset_combo.addItem("Q4 · 280t · 768d (high)", ("q4", 768, 280))
+        self._onnx_preset_combo.addItem("INT8 · 140t · 768d", ("quantized", 768, 140))
+        self._onnx_preset_combo.addItem("FP32 · 140t · 768d", ("fp32", 768, 140))
+        self._onnx_preset_combo.setToolTip(
+            "ONNX EmbeddingGemma 2 quantization, visual soft-token budget (70=fastest, 140=balanced, 280=high detail), and Matryoshka dimension"
+        )
+        configure_compact_combo(
+            self._onnx_preset_combo, min_chars=7, popup_min_width=190
+        )
+        onnx_layout.addWidget(self._onnx_preset_combo, 1)
+
+        self._clip_combo = QtWidgets.QComboBox()
+        self._clip_combo.addItem("1f (frame)", 1)
+        self._clip_combo.addItem("4f (clip)", 4)
+        self._clip_combo.addItem("8f (clip)", 8)
+        self._clip_combo.setToolTip(
+            "Temporal window per search sample (1f = single frame; 4f/8f = multi-frame behavior clip)"
+        )
+        configure_compact_combo(self._clip_combo, min_chars=6, popup_min_width=130)
+        onnx_layout.addWidget(self._clip_combo, 1)
+        layout.addLayout(onnx_layout)
+
         params_layout = QtWidgets.QHBoxLayout()
         params_layout.setContentsMargins(0, 0, 0, 0)
         params_layout.setSpacing(4)
@@ -91,13 +137,24 @@ class EmbeddingSearchWidget(QtWidgets.QWidget):
         self._stride_spin.setToolTip("Check every Nth frame for faster search")
         params_layout.addWidget(self._stride_spin, 1)
 
+        self._auto_threshold_chk = QtWidgets.QCheckBox("Auto")
+        self._auto_threshold_chk.setChecked(True)
+        self._auto_threshold_chk.setToolTip(
+            "Automatically adapt similarity threshold to each video's score distribution (uncheck to set a fixed ≥ threshold)"
+        )
+        self._auto_threshold_chk.toggled.connect(self._on_auto_threshold_toggled)
+        params_layout.addWidget(self._auto_threshold_chk)
+
         self._threshold_spin = QtWidgets.QDoubleSpinBox()
         self._threshold_spin.setRange(-1.0, 1.0)
         self._threshold_spin.setDecimals(2)
         self._threshold_spin.setSingleStep(0.05)
-        self._threshold_spin.setValue(0.35)
+        self._threshold_spin.setValue(0.66)
         self._threshold_spin.setPrefix("≥")
-        self._threshold_spin.setToolTip("Only mark frames with similarity >= threshold")
+        self._threshold_spin.setToolTip(
+            "Fixed minimum cosine similarity when Auto is unchecked (EmbeddingGemma 2: ~0.66 text, ~0.82 frame)"
+        )
+        self._threshold_spin.valueChanged.connect(self._on_threshold_edited)
         params_layout.addWidget(self._threshold_spin, 1)
 
         self._topk_spin = QtWidgets.QSpinBox()
@@ -107,7 +164,7 @@ class EmbeddingSearchWidget(QtWidgets.QWidget):
         self._topk_spin.setToolTip("Maximum number of matches to keep")
         params_layout.addWidget(self._topk_spin, 1)
         for spin in (self._stride_spin, self._threshold_spin, self._topk_spin):
-            spin.setMinimumWidth(54)
+            spin.setMinimumWidth(48)
         layout.addLayout(params_layout)
 
         splitter = QtWidgets.QSplitter()
@@ -137,6 +194,9 @@ class EmbeddingSearchWidget(QtWidgets.QWidget):
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(3)
         self._results_list = QtWidgets.QListWidget()
+        self._results_list.setSelectionMode(
+            QtWidgets.QAbstractItemView.ExtendedSelection
+        )
         self._results_list.itemDoubleClicked.connect(self._handle_result_double_click)
         right_layout.addWidget(self._results_list, 1)
 
@@ -154,7 +214,7 @@ class EmbeddingSearchWidget(QtWidgets.QWidget):
         self._mark_chk.setChecked(True)
         toggles_layout.addWidget(self._mark_chk)
         self._overlay_chk = QtWidgets.QCheckBox("Overlay shapes")
-        self._overlay_chk.setChecked(True)
+        self._overlay_chk.setChecked(False)
         self._overlay_chk.setToolTip(
             "If per-frame shapes exist, draw them on the frame before embedding."
         )
@@ -173,6 +233,20 @@ class EmbeddingSearchWidget(QtWidgets.QWidget):
         self._label_button.clicked.connect(self._label_selected_frames)
         action_layout.addWidget(self._label_button, 1)
         layout.addLayout(action_layout)
+
+        self._on_backend_changed()
+
+    def last_query_text(self) -> str:
+        """Return the most recent non-empty behavior text query."""
+        return self._last_query_text
+
+    def last_bouts(self) -> List[dict]:
+        """Return grouped behavior bouts from the most recent search."""
+        return list(self._last_bouts)
+
+    def last_score_summary(self) -> dict[str, Any]:
+        """Return similarity score distribution summary from the most recent search."""
+        return dict(self._last_score_summary)
 
     def set_files(self, files: List[Path]) -> None:
         """Populate the file list with available frame image paths."""
@@ -209,7 +283,163 @@ class EmbeddingSearchWidget(QtWidgets.QWidget):
                 self._query_frame_index = int(idx)
         self._update_image_label()
 
+    def _on_backend_changed(self) -> None:
+        backend = str(self._backend_combo.currentData() or "embeddinggemma2_onnx")
+        is_onnx = backend == "embeddinggemma2_onnx"
+        supports_text = backend in {"embeddinggemma2_onnx", "qwen3vl"}
+        self._onnx_preset_combo.setEnabled(is_onnx and not self._is_running)
+        self._clip_combo.setEnabled(supports_text and not self._is_running)
+        if not supports_text:
+            self._clip_combo.setCurrentIndex(0)
+        if not self._threshold_user_edited:
+            self._updating_threshold_programmatically = True
+            try:
+                self._threshold_spin.setValue(0.66 if is_onnx else 0.35)
+            finally:
+                self._updating_threshold_programmatically = False
+        self._sync_threshold_spin_enabled()
+
+    def _on_auto_threshold_toggled(self, _checked: bool) -> None:
+        self._sync_threshold_spin_enabled()
+
+    def _on_threshold_edited(self, _value: float) -> None:
+        if not self._updating_threshold_programmatically:
+            self._threshold_user_edited = True
+
+    def _sync_threshold_spin_enabled(self) -> None:
+        self._threshold_spin.setEnabled(
+            (not self._is_running) and (not self._auto_threshold_chk.isChecked())
+        )
+
+    def _ensure_service(self) -> bool:
+        if self._service is not None and self._req_cls is not None:
+            return True
+        try:
+            from annolid.gui.frame_similarity_service import (
+                FrameSimilaritySearchRequest,
+                FrameSimilarityService,
+            )
+        except Exception as exc:
+            self.statusMessage.emit(f"Frame search unavailable: {exc}")
+            return False
+        self._req_cls = FrameSimilaritySearchRequest
+        self._service = FrameSimilarityService(self)
+        self._service.started.connect(self._on_search_started)
+        self._service.progress.connect(self._on_search_progress)
+        self._service.matchFound.connect(self._on_match_found)
+        self._service.scoreSummary.connect(self._on_score_summary)
+        self._service.boutsFound.connect(self._on_bouts_found)
+        self._service.finished.connect(self._on_search_finished)
+        self._service.error.connect(self._on_search_error)
+        return True
+
+    def _collect_backend_params(self, backend: str) -> dict[str, Any]:
+        if backend == "embeddinggemma2_onnx":
+            preset = self._onnx_preset_combo.currentData()
+            if isinstance(preset, tuple) and len(preset) >= 3:
+                quant, dim, soft_tokens = preset[0], preset[1], preset[2]
+            elif isinstance(preset, tuple) and len(preset) == 2:
+                quant, dim, soft_tokens = preset[0], preset[1], 140
+            else:
+                quant, dim, soft_tokens = "q4", 768, 140
+            params: dict[str, Any] = {
+                "quantization": str(quant),
+                "matryoshka_dim": int(dim),
+                "image_max_soft_tokens": int(soft_tokens),
+            }
+            if self._settings is not None:
+                try:
+                    custom_repo = self._settings.value(
+                        "embedding_search/onnx_model_id", ""
+                    )
+                    if str(custom_repo or "").strip():
+                        params["model_id"] = str(custom_repo).strip()
+                except Exception:
+                    pass
+            return params
+
+        if backend == "dinov3":
+            settings = self._settings
+            if settings is not None:
+                try:
+                    model_name = settings.value(
+                        "patch_similarity/model",
+                        "facebook/dinov3-vits16-pretrain-lvd1689m",
+                    )
+                    return {
+                        "model_name": str(model_name),
+                        # Match patch-similarity defaults (higher resolution embedding).
+                        "short_side": 768,
+                    }
+                except Exception:
+                    return {}
+        return {}
+
+    def _cancel_flush_timer(self) -> None:
+        if self._flush_timer is not None and self._flush_timer.isActive():
+            self._flush_timer.stop()
+        self._pending_marks.clear()
+
+    def _submit_video_request(
+        self,
+        *,
+        query_mode: str,
+        query_text: Optional[str] = None,
+        query_frame_index: Optional[int] = None,
+    ) -> None:
+        if self._video_path is None:
+            self.statusMessage.emit("Open a video before searching.")
+            return
+        if not self._ensure_service():
+            return
+
+        backend = str(self._backend_combo.currentData() or "embeddinggemma2_onnx")
+        if query_mode in {"text", "hybrid"} and backend == "dinov3":
+            self.statusMessage.emit(
+                "DINOv3 is visual-only. Switch backend to EmbeddingGemma 2 (ONNX) or Qwen3-VL for text behavior search."
+            )
+            return
+
+        backend_params = self._collect_backend_params(backend)
+        clip_frames = int(self._clip_combo.currentData() or 1)
+        if backend == "dinov3":
+            clip_frames = 1
+
+        self._last_bouts = []
+        self._last_score_summary = {}
+        self._last_query_text = str(query_text or "").strip()
+        req_threshold = (
+            None
+            if self._auto_threshold_chk.isChecked()
+            else float(self._threshold_spin.value())
+        )
+
+        req = self._req_cls(
+            video_path=Path(self._video_path),
+            query_frame_index=query_frame_index,
+            annotation_dir=Path(self._annotation_dir) if self._annotation_dir else None,
+            overlay_shapes=bool(self._overlay_chk.isChecked()),
+            stride=int(self._stride_spin.value()),
+            top_k=int(self._topk_spin.value()),
+            threshold=req_threshold,
+            backend=backend,
+            backend_params=backend_params,
+            query_text=query_text,
+            query_mode=query_mode,
+            clip_frames=clip_frames,
+            group_bouts=True,
+        )
+        self._cancel_flush_timer()
+        if self._mark_chk.isChecked():
+            self.clearMarkedFramesRequested.emit()
+        if not self._service.request(req):
+            self.statusMessage.emit("Search is already running…")
+            self._set_running_state(False)
+            return
+        self._set_running_state(True)
+
     def _run_image_search(self) -> None:
+        """Backward-compatible helper for querying a pre-built frame folder index."""
         if self._current_image_path is None:
             selected = self._file_list.selectedItems()
             if selected:
@@ -239,76 +469,27 @@ class EmbeddingSearchWidget(QtWidgets.QWidget):
     def _run_text_search(self) -> None:
         query = self._query_input.text().strip()
         if not query:
-            self.statusMessage.emit("Enter text to search.")
+            self.statusMessage.emit("Enter behavior text to search.")
             return
-        self.statusMessage.emit("Text search is not available in this build.")
+        self._submit_video_request(
+            query_mode="text",
+            query_text=query,
+            query_frame_index=None,
+        )
 
     def _run_video_search(self) -> None:
-        if self._video_path is None:
-            self.statusMessage.emit("Open a video before searching.")
-            return
         if self._query_frame_index is None:
-            self.statusMessage.emit("Select a frame before searching.")
-            return
-
-        if self._service is None:
-            try:
-                from annolid.gui.frame_similarity_service import (
-                    FrameSimilaritySearchRequest,
-                    FrameSimilarityService,
-                )
-            except Exception as exc:
-                self.statusMessage.emit(f"Frame search unavailable: {exc}")
+            # Convenience: if no frame is selected yet but user typed text, run text search.
+            if self._query_input.text().strip():
+                self._run_text_search()
                 return
-            self._req_cls = FrameSimilaritySearchRequest
-            self._service = FrameSimilarityService(self)
-            self._service.started.connect(self._on_search_started)
-            self._service.progress.connect(
-                lambda done, total: self.statusMessage.emit(
-                    f"Searching… {done}/{total}"
-                )
-            )
-            self._service.matchFound.connect(self._on_match_found)
-            self._service.finished.connect(self._on_search_finished)
-            self._service.error.connect(self._on_search_error)
-
-        backend = self._backend_combo.currentData()
-        backend_params: dict = {}
-        if str(backend) == "dinov3":
-            settings = self._settings
-            if settings is not None:
-                try:
-                    model_name = settings.value(
-                        "patch_similarity/model",
-                        "facebook/dinov3-vits16-pretrain-lvd1689m",
-                    )
-                    backend_params = {
-                        "model_name": str(model_name),
-                        # Match patch-similarity defaults (higher resolution embedding).
-                        "short_side": 768,
-                    }
-                except Exception:
-                    backend_params = {}
-
-        req = self._req_cls(
-            video_path=Path(self._video_path),
-            query_frame_index=int(self._query_frame_index),
-            annotation_dir=Path(self._annotation_dir) if self._annotation_dir else None,
-            overlay_shapes=bool(self._overlay_chk.isChecked()),
-            stride=int(self._stride_spin.value()),
-            top_k=int(self._topk_spin.value()),
-            threshold=float(self._threshold_spin.value()),
-            backend=str(backend),
-            backend_params=backend_params,
-        )
-        if self._mark_chk.isChecked():
-            self._pending_marks = set()
-            self.clearMarkedFramesRequested.emit()
-        if not self._service.request(req):
-            self.statusMessage.emit("Search is already running…")
-            self._set_running_state(False)
+            self.statusMessage.emit("Select a frame or enter behavior text to search.")
             return
-        self._set_running_state(True)
+        self._submit_video_request(
+            query_mode="frame",
+            query_text=None,
+            query_frame_index=int(self._query_frame_index),
+        )
 
     def _stop_search(self) -> None:
         if self._service is None:
@@ -317,15 +498,23 @@ class EmbeddingSearchWidget(QtWidgets.QWidget):
             self._service.stop()
         except Exception:
             pass
+        self._cancel_flush_timer()
         self.statusMessage.emit("Stopping search…")
         self._stop_button.setEnabled(False)
 
     def _set_running_state(self, running: bool) -> None:
+        self._is_running = bool(running)
         self._image_button.setEnabled(not running)
         self._stop_button.setEnabled(running)
         self._backend_combo.setEnabled(not running)
+        if running:
+            self._onnx_preset_combo.setEnabled(False)
+            self._clip_combo.setEnabled(False)
+        else:
+            self._on_backend_changed()
         self._stride_spin.setEnabled(not running)
-        self._threshold_spin.setEnabled(not running)
+        self._auto_threshold_chk.setEnabled(not running)
+        self._sync_threshold_spin_enabled()
         self._topk_spin.setEnabled(not running)
         self._file_list.setEnabled(not running)
         self._file_filter.setEnabled(not running)
@@ -337,7 +526,23 @@ class EmbeddingSearchWidget(QtWidgets.QWidget):
         self._overlay_chk.setEnabled(not running)
 
     def _on_search_started(self) -> None:
-        self.statusMessage.emit("Embedding search started…")
+        self._search_started_monotonic = time.monotonic()
+        if self._last_query_text:
+            self.statusMessage.emit(f"Searching behavior '{self._last_query_text}'…")
+        else:
+            self.statusMessage.emit("Embedding search started…")
+
+    def _on_search_progress(self, done: int, total: int) -> None:
+        if total <= 0:
+            self.statusMessage.emit(f"Searching… {done}")
+            return
+        eta_note = ""
+        if self._search_started_monotonic is not None and 0 < done < total:
+            elapsed = time.monotonic() - self._search_started_monotonic
+            if elapsed >= 0.4:
+                rem = (elapsed / float(done)) * float(total - done)
+                eta_note = f" (~{_format_eta_seconds(rem)} left)"
+        self.statusMessage.emit(f"Searching… {done}/{total}{eta_note}")
 
     def _on_match_found(self, frame_index: int, similarity: float) -> None:
         _ = similarity
@@ -352,6 +557,12 @@ class EmbeddingSearchWidget(QtWidgets.QWidget):
         if not self._flush_timer.isActive():
             self._flush_timer.start(250)
 
+    def _on_score_summary(self, summary: dict) -> None:
+        self._last_score_summary = dict(summary or {})
+
+    def _on_bouts_found(self, bouts: list) -> None:
+        self._last_bouts = list(bouts or [])
+
     def _flush_marks(self) -> None:
         if not self._pending_marks:
             return
@@ -360,6 +571,7 @@ class EmbeddingSearchWidget(QtWidgets.QWidget):
         self.markFramesRequested.emit(frames)
 
     def _on_search_finished(self, results: list) -> None:
+        self._cancel_flush_timer()
         self._set_running_state(False)
         self._populate_results(list(results or []))
         if self._mark_chk.isChecked():
@@ -372,14 +584,28 @@ class EmbeddingSearchWidget(QtWidgets.QWidget):
                 self.markFramesRequested.emit(sorted(set(frames)))
 
     def _on_search_error(self, message: str) -> None:
+        self._cancel_flush_timer()
         self._set_running_state(False)
         self.statusMessage.emit(f"Search failed: {message}")
 
     def _populate_results(self, results: List[dict]) -> None:
         self._results = list(results or [])
         self._results_list.clear()
+        summary = self._last_score_summary or {}
         if not self._results:
-            self.statusMessage.emit("No results found.")
+            if summary and int(summary.get("count", 0)) > 0:
+                eff_thr = float(summary.get("effective_threshold", 0.0))
+                max_sim = float(summary.get("max_similarity", 0.0))
+                min_sim = float(summary.get("min_similarity", 0.0))
+                best_idx = summary.get("best_frame_index")
+                best_str = (
+                    f"Frame {int(best_idx):09d}" if best_idx is not None else "n/a"
+                )
+                self.statusMessage.emit(
+                    f"No matches ≥ {eff_thr:.2f} (best {best_str} • sim={max_sim:.3f}; range {min_sim:.2f}–{max_sim:.2f})."
+                )
+            else:
+                self.statusMessage.emit("No results found.")
             return
         for item in self._results:
             uri = str(item.get("image_uri") or "")
@@ -395,10 +621,15 @@ class EmbeddingSearchWidget(QtWidgets.QWidget):
             frame_idx = item.get("frame_index")
             if frame_idx is None:
                 frame_idx = AnnotationStore.frame_number_from_path(uri)
+            start_f = item.get("start_frame")
+            end_f = item.get("end_frame")
+            span_str = ""
+            if start_f is not None and end_f is not None and int(end_f) > int(start_f):
+                span_str = f" [{int(start_f)}-{int(end_f)}]"
             if frame_idx is not None and sim_str is not None:
-                label = f"Frame {int(frame_idx):09} • sim={sim_str}"
+                label = f"Frame {int(frame_idx):09}{span_str} • sim={sim_str}"
             elif frame_idx is not None:
-                label = f"Frame {int(frame_idx):09}"
+                label = f"Frame {int(frame_idx):09}{span_str}"
             else:
                 label = caption if caption else uri
             widget_item = QtWidgets.QListWidgetItem(label)
@@ -406,7 +637,19 @@ class EmbeddingSearchWidget(QtWidgets.QWidget):
             if frame_idx is not None:
                 widget_item.setData(QtCore.Qt.UserRole + 1, int(frame_idx))
             self._results_list.addItem(widget_item)
-        self.statusMessage.emit(f"Found {len(self._results)} results.")
+
+        thr_suffix = ""
+        if summary and str(summary.get("threshold_mode") or "") == "auto":
+            thr_suffix = (
+                f" (auto ≥ {float(summary.get('effective_threshold', 0.0)):.2f})"
+            )
+
+        if self._last_bouts:
+            self.statusMessage.emit(
+                f"Found {len(self._results)} matches across {len(self._last_bouts)} bouts{thr_suffix}."
+            )
+        else:
+            self.statusMessage.emit(f"Found {len(self._results)} results{thr_suffix}.")
 
     def _handle_result_double_click(self, item: QtWidgets.QListWidgetItem) -> None:
         idx = item.data(QtCore.Qt.UserRole + 1)
@@ -449,6 +692,7 @@ class EmbeddingSearchWidget(QtWidgets.QWidget):
 
     # type: ignore[override]
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        self._cancel_flush_timer()
         try:
             if self._service is not None:
                 self._service.close()
@@ -511,6 +755,17 @@ class EmbeddingSearchWidget(QtWidgets.QWidget):
             self.jumpToFrame.emit(int(frame_idx))
         else:
             self.set_query_image(resolved)
+
+
+def _format_eta_seconds(seconds: float) -> str:
+    sec = max(1, int(round(float(seconds))))
+    mins, rem = divmod(sec, 60)
+    if mins >= 60:
+        hours, mins = divmod(mins, 60)
+        return f"{hours}h {mins}m"
+    if mins > 0:
+        return f"{mins}m {rem:02d}s"
+    return f"{rem}s"
 
 
 def _resolve_uri_to_path(uri: str) -> Optional[Path]:

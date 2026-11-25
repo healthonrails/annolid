@@ -1,180 +1,379 @@
-import lancedb
-from annolid.agents.frame_embedder import LanceDBFrame, Config
+"""Frame and video behavior search using ONNX EmbeddingGemma 2.
+
+Supports:
+- Multimodal text-to-frame and image-to-frame queries over a portable ``.npz``
+  ``FolderFrameIndex`` or an optional LanceDB table.
+- Direct video behavior search (by text description or reference frame index)
+  delegating to ``annolid.services.embedding_search.search_video_behavior``.
+"""
+
+from __future__ import annotations
+
 import logging
-from typing import List, Union
-from PIL import Image
-from annolid.core.media.video import CV2Video
+from pathlib import Path
+from typing import Any, Dict, List, Mapping, Optional, Union
+
 import cv2
 import numpy as np
+from PIL import Image
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+from annolid.agents.frame_embedder import Config
+from annolid.core.media.video import CV2Video
+from annolid.services.embedding_search import (
+    DEFAULT_SEARCH_BACKEND,
+    FolderFrameIndex,
+    FrameEmbeddingBackend,
+    build_embedding_backend,
+    resolve_query_vector,
+    search_video_behavior,
 )
+
 logger = logging.getLogger(__name__)
 
-# Global indexer instance
-indexer = None
+# Lazy default search engine instance (created on first use, never at import time).
+indexer: Optional["FrameSearchEngine"] = None
 
 
 def cv2_to_pil(frame: np.ndarray, *, input_color: str = "rgb") -> Image.Image:
-    """
-    Converts an OpenCV frame (NumPy array) to a PIL Image.
-
-    Args:
-        frame (np.ndarray): The image array.
-        input_color (str): "rgb" (default) or "bgr".
-
-    Returns:
-        Image.Image: The converted PIL Image in RGB format.
-    """
+    """Convert a NumPy frame array (RGB or BGR) to a PIL Image in RGB mode."""
     if frame is None:
         raise ValueError("The input frame is None.")
 
-    input_color = str(input_color or "").strip().lower()
+    color_mode = str(input_color or "").strip().lower()
     rgb_frame = frame
-    if input_color == "bgr":
+    if color_mode == "bgr":
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-    # Create and return a PIL Image
     return Image.fromarray(rgb_frame)
 
 
-class LanceDBFrameIndexer:
+def _is_image_path(value: str) -> bool:
+    try:
+        p = Path(value).expanduser()
+        return p.is_file()
+    except OSError:
+        return False
+
+
+class FrameSearchEngine:
+    """Unified frame index searcher supporting ONNX ``.npz`` indices and LanceDB."""
+
     def __init__(
-        self, db_path: str = Config.DB_PATH, table_name: str = Config.TABLE_NAME
-    ):
-        self.db = lancedb.connect(db_path)
+        self,
+        db_path: Union[str, Path] = Config.INDEX_PATH,
+        table_name: str = Config.TABLE_NAME,
+        *,
+        backend: Union[str, FrameEmbeddingBackend] = DEFAULT_SEARCH_BACKEND,
+        backend_params: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        self.db_path = Path(db_path).expanduser()
         self.table_name = table_name
+        self._owns_backend = not isinstance(backend, FrameEmbeddingBackend)
+        self._backend_spec = backend
+        self._backend_params = dict(backend_params or {})
+        self._backend: Optional[FrameEmbeddingBackend] = (
+            backend if isinstance(backend, FrameEmbeddingBackend) else None
+        )
+        self._npz_index: Optional[FolderFrameIndex] = None
+        self.db = None
         self.table = None
         self.setup_table()
 
-    def setup_table(self):
-        """Sets up the table by connecting to it if it exists in the database."""
-        if self.table_name in self.db:
-            self.table = self.db[self.table_name]
-            logger.info(f"Connected to table '{self.table_name}' in LanceDB.")
-        else:
-            logger.error(f"Table '{self.table_name}' does not exist in LanceDB.")
+    def _get_backend(self) -> FrameEmbeddingBackend:
+        if self._backend is None:
+            self._backend = build_embedding_backend(
+                str(self._backend_spec), self._backend_params
+            )
+        return self._backend
 
-    def search_similar_images(self, query_image, limit: int = 3) -> List[LanceDBFrame]:
-        """
-        Searches for similar images in the database.
+    def setup_table(self) -> None:
+        """Attach to an existing ``.npz`` index or optional LanceDB table."""
+        if self.db_path.is_file() and self.db_path.suffix.lower() == ".npz":
+            self._npz_index = FolderFrameIndex.load_npz(self.db_path)
+            logger.info(
+                "Loaded ONNX frame index '%s' (%d frames).",
+                self.db_path,
+                len(self._npz_index),
+            )
+            return
 
-        Args:
-            query_image: The query image as a string or PIL Image.
-            limit (int): The number of top results to retrieve.
+        if self.db_path.exists():
+            try:
+                import lancedb  # type: ignore
 
-        Returns:
-            List[LanceDBFrame]: List of matched results.
-        """
-        if not self.table:
-            logger.error("No table connected. Cannot perform search.")
+                self.db = lancedb.connect(str(self.db_path))
+                if self.table_name in self.db:
+                    self.table = self.db[self.table_name]
+                    logger.info(
+                        "Connected to table '%s' in LanceDB (%s).",
+                        self.table_name,
+                        self.db_path,
+                    )
+                    return
+            except Exception as exc:
+                logger.warning("Unable to open LanceDB at %s: %s", self.db_path, exc)
+
+        logger.warning(
+            "No frame embedding index found at '%s' (table=%s).",
+            self.db_path,
+            self.table_name,
+        )
+
+    def _query_to_vector(
+        self, query: Union[str, Path, Image.Image, np.ndarray]
+    ) -> np.ndarray:
+        backend = self._get_backend()
+        if isinstance(query, Path) or (
+            isinstance(query, str) and _is_image_path(query)
+        ):
+            qvec, _ = resolve_query_vector(
+                backend, query_image=Path(query), query_mode="frame"
+            )
+            return qvec
+        if isinstance(query, str):
+            qvec, _ = resolve_query_vector(backend, query_text=query, query_mode="text")
+            return qvec
+        qvec, _ = resolve_query_vector(backend, query_image=query, query_mode="frame")
+        return qvec
+
+    def search_similar_images(
+        self,
+        query: Union[str, Path, Image.Image, np.ndarray],
+        limit: int = 3,
+        *,
+        threshold: float = -1.0,
+    ) -> List[Dict[str, Any]]:
+        """Search indexed frames by image, image path, or natural-language text."""
+        if self._npz_index is not None:
+            qvec = self._query_to_vector(query)
+            matches = self._npz_index.search(qvec, top_k=limit, threshold=threshold)
+            return [
+                {
+                    "image_uri": m.image_uri or "",
+                    "flags": list(m.flags or ()),
+                    "caption": m.caption or "",
+                    "similarity": float(m.similarity),
+                    "frame_index": int(m.frame_index),
+                }
+                for m in matches
+            ]
+
+        if self.table is None:
+            logger.error("No frame index or LanceDB table connected.")
             return []
 
         try:
-            results = (
-                self.table.search(query_image).limit(limit).to_pydantic(LanceDBFrame)
-            )
-            return results
-        except Exception as e:
-            logger.error(f"Error searching images: {e}")
+            qvec = self._query_to_vector(query)
+            rows = self.table.search(qvec.tolist()).limit(int(limit)).to_list()
+            return [
+                {
+                    "image_uri": str(r.get("image_uri") or ""),
+                    "flags": list(r.get("flags") or []),
+                    "caption": str(r.get("caption") or ""),
+                    "similarity": float(1.0 - float(r["_distance"]))
+                    if "_distance" in r
+                    else None,
+                }
+                for r in rows
+            ]
+        except Exception as exc:
+            logger.error("Error searching indexed frames: %s", exc)
             return []
 
+    def close(self) -> None:
+        if self._owns_backend and self._backend is not None:
+            self._backend.close()
+            self._backend = None
 
-def get_embedder() -> LanceDBFrameIndexer:
-    """Ensures a single instance of the LanceDBFrameIndexer is initialized."""
+
+# Backward-compatible class name alias.
+LanceDBFrameIndexer = FrameSearchEngine
+
+
+def get_embedder(
+    *,
+    index_path: Optional[Union[str, Path]] = None,
+    db_path: Optional[Union[str, Path]] = None,
+    table_name: str = Config.TABLE_NAME,
+    backend: Union[str, FrameEmbeddingBackend] = DEFAULT_SEARCH_BACKEND,
+    backend_params: Optional[Mapping[str, Any]] = None,
+) -> FrameSearchEngine:
+    """Return a cached default ``FrameSearchEngine`` or a configured instance."""
     global indexer
+    if (
+        index_path is not None
+        or db_path is not None
+        or isinstance(backend, FrameEmbeddingBackend)
+        or backend != DEFAULT_SEARCH_BACKEND
+        or backend_params
+    ):
+        target = (
+            index_path if index_path is not None else (db_path or Config.INDEX_PATH)
+        )
+        return FrameSearchEngine(
+            db_path=target,
+            table_name=table_name,
+            backend=backend,
+            backend_params=backend_params,
+        )
+
     if indexer is None:
-        indexer = LanceDBFrameIndexer()
+        default_target: Union[str, Path] = (
+            Config.INDEX_PATH if Path(Config.INDEX_PATH).is_file() else Config.DB_PATH
+        )
+        indexer = FrameSearchEngine(db_path=default_target, table_name=table_name)
     return indexer
 
 
 def search_frames(
-    query_image: Union[str, Image.Image],
+    query_image: Union[str, Path, Image.Image, np.ndarray],
     limit: int = 3,
-) -> List[dict]:
-    """
-    Searches for frames similar to the query image.
-
-    Args:
-        query_image (Union[str, Image.Image]): File path to an image or a PIL Image object.
-        limit (int): Number of results to return.
-
-    Returns:
-        List[dict]: List of dictionaries containing `image_uri`, `flags`, and `caption` for each matched result.
-    """
-    # Perform the search
-    embedder = get_embedder()
-    results = embedder.search_similar_images(query_image, limit=limit)
-
-    # Format the results
-    formatted_results = [
-        {
-            "image_uri": result.image_uri,
-            "flags": result.flags,
-            "caption": result.caption,
-        }
-        for result in results
-    ]
-
-    return formatted_results
-
-
-def search_video(video_path, frame_skip=1, search_limit=1):
-    """
-    Searches for objects in video frames and prints the results.
-
-    Args:
-        video_path (str): Path to the video file.
-        frame_skip (int): Number of frames to skip for faster processing (default is 1, meaning no skipping).
-        search_limit (int): Number of results to return from `search_frames` (default is 1).
-    """
+    *,
+    index_path: Optional[Union[str, Path]] = None,
+    db_path: Optional[Union[str, Path]] = None,
+    table_name: str = Config.TABLE_NAME,
+    backend: Union[str, FrameEmbeddingBackend] = DEFAULT_SEARCH_BACKEND,
+    backend_params: Optional[Mapping[str, Any]] = None,
+    threshold: float = -1.0,
+) -> List[Dict[str, Any]]:
+    """Search indexed frames by image, image path, or natural-language behavior text."""
+    owns_engine = (
+        index_path is not None
+        or db_path is not None
+        or isinstance(backend, FrameEmbeddingBackend)
+        or backend != DEFAULT_SEARCH_BACKEND
+        or bool(backend_params)
+    )
+    engine = get_embedder(
+        index_path=index_path,
+        db_path=db_path,
+        table_name=table_name,
+        backend=backend,
+        backend_params=backend_params,
+    )
     try:
-        video_loader = CV2Video(video_path)
-        num_frames = video_loader.total_frames()
+        results = engine.search_similar_images(
+            query_image, limit=limit, threshold=threshold
+        )
+    finally:
+        if owns_engine:
+            engine.close()
 
-        print(f"Processing video: {video_path}")
-        print(f"Total frames: {num_frames}, Skipping every {frame_skip} frames.")
+    formatted: List[Dict[str, Any]] = []
+    for res in results:
+        if isinstance(res, dict):
+            entry = {
+                "image_uri": res.get("image_uri", ""),
+                "flags": res.get("flags") or [],
+                "caption": res.get("caption") or "",
+            }
+            if res.get("similarity") is not None:
+                entry["similarity"] = float(res["similarity"])
+            if res.get("frame_index") is not None:
+                entry["frame_index"] = int(res["frame_index"])
+            formatted.append(entry)
+        else:
+            formatted.append(
+                {
+                    "image_uri": getattr(res, "image_uri", ""),
+                    "flags": getattr(res, "flags", None) or [],
+                    "caption": getattr(res, "caption", None) or "",
+                }
+            )
+    return formatted
 
-        for i in range(0, num_frames, frame_skip):  # Skip frames if needed
+
+def search_video(
+    video_path: Union[str, Path],
+    frame_skip: int = 1,
+    search_limit: int = 1,
+    *,
+    query_text: Optional[str] = None,
+    query_frame_index: Optional[int] = None,
+    index_path: Optional[Union[str, Path]] = None,
+    backend: Union[str, FrameEmbeddingBackend] = DEFAULT_SEARCH_BACKEND,
+    backend_params: Optional[Mapping[str, Any]] = None,
+    threshold: float = 0.25,
+    clip_frames: int = 1,
+) -> List[Dict[str, Any]]:
+    """Search a video by behavior text, reference frame, or an indexed frame store."""
+    if query_text or query_frame_index is not None:
+        result = search_video_behavior(
+            video_path,
+            query_text=query_text,
+            query_frame_index=query_frame_index,
+            backend=backend,
+            backend_params=backend_params,
+            stride=max(1, int(frame_skip)),
+            top_k=max(1, int(search_limit)),
+            threshold=float(threshold),
+            clip_frames=max(1, int(clip_frames)),
+        )
+        return [m.to_dict() for m in result.matches]
+
+    video_loader = CV2Video(video_path)
+    matches_out: List[Dict[str, Any]] = []
+    try:
+        num_frames = int(video_loader.total_frames())
+        step = max(1, int(frame_skip))
+        for i in range(0, num_frames, step):
             frame = video_loader.load_frame(i)
-            if frame is None:  # Handle missing frames
-                print(f"Warning: Failed to load frame {i}")
+            if frame is None:
                 continue
-
             pil_img = cv2_to_pil(frame)
-            results = search_frames(pil_img, limit=search_limit)
-
-            if results:
-                for res in results:
-                    print(f"Frame {i}: {res['image_uri']}")
-            else:
-                print(f"Frame {i}: No results found.")
-
-    except FileNotFoundError:
-        print(f"Error: Video file '{video_path}' not found.")
-    except Exception as e:
-        print(f"An error occurred: {e}")
+            results = search_frames(
+                pil_img,
+                limit=search_limit,
+                index_path=index_path,
+                backend=backend,
+                backend_params=backend_params,
+            )
+            matches_out.append({"frame_index": i, "results": results})
+    finally:
+        video_loader.release()
+    return matches_out
 
 
 if __name__ == "__main__":
     import argparse
+    import json
 
-    parser = argparse.ArgumentParser(
-        description="Search for similar images in a LanceDB database."
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
     )
-    # parser.add_argument("query_frame", help="Path to the query image.")
-    parser.add_argument("video_path", help="Video path")
+    parser = argparse.ArgumentParser(
+        description="Search video frames or a frame index using ONNX EmbeddingGemma 2."
+    )
+    parser.add_argument("video_path", help="Path to the video file.")
+    parser.add_argument(
+        "--query",
+        default=None,
+        help="Behavior text query (e.g. 'mouse grooming').",
+    )
+    parser.add_argument(
+        "--query-frame",
+        type=int,
+        default=None,
+        help="Reference frame index for visual similarity search.",
+    )
+    parser.add_argument("--stride", type=int, default=5)
+    parser.add_argument("--top-k", type=int, default=10)
+    parser.add_argument("--threshold", type=float, default=0.25)
+    parser.add_argument("--clip-frames", type=int, default=1)
+    parser.add_argument(
+        "--quantization",
+        default="q4",
+        choices=("q4", "quantized", "q4f16", "fp32", "fp16"),
+    )
     args = parser.parse_args()
-    search_video(args.video_path)
 
-    # results = search_frames(args.query_frame, limit=5)
-    # if results:
-    #     for i, res in enumerate(results, start=1):
-    #         print(f"Result {i}:")
-    #         print(f"  Image URI: {res['image_uri']}")
-    #         print(f"  Flags: {res['flags']}")
-    #         print(f"  Caption: {res['caption']}")
-    # else:
-    #     logger.info("No results found.")
+    out = search_video(
+        args.video_path,
+        frame_skip=args.stride,
+        search_limit=args.top_k,
+        query_text=args.query,
+        query_frame_index=args.query_frame,
+        threshold=args.threshold,
+        clip_frames=args.clip_frames,
+        backend_params={"quantization": args.quantization},
+    )
+    print(json.dumps(out, indent=2))

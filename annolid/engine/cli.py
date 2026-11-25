@@ -39,6 +39,7 @@ _ROOT_COMMAND_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "behavior-qc",
             "behavior-irr",
             "behavior-cohort",
+            "behavior-search",
             "boris-import",
             "boris-export",
             "report",
@@ -123,7 +124,7 @@ def _root_help_epilog() -> str:
         "Common areas:\n"
         "  Models: train, predict, list-models, dinov3-models\n"
         "  Tracking: track-qc, repair-tracks, gap-report, tracking-stats, kinematics, zone-analysis, segment-body-parts, body-part-ethogram\n"
-        "  Behavior: time-budget, behavior-qc, behavior-irr, behavior-cohort, boris-import, boris-export, report\n"
+        "  Behavior: time-budget, behavior-qc, behavior-irr, behavior-cohort, behavior-search, boris-import, boris-export, report\n"
         "  Agent: agent, agent-behavior, agent-status, agent-capabilities, agent-security-*, agent-cron-*\n"
         "  Data: collect-labels, index-to-yolo, import-deeplabcut-training-data, import-pose, export-pose\n"
         "  Utilities: citations-*, validate-agent-output, validate-agent-tools"
@@ -599,6 +600,84 @@ def _cmd_behavior_cohort(args: argparse.Namespace) -> int:
             transitions_svg=getattr(args, "transitions_svg", None),
         )
     )
+
+
+def _cmd_behavior_search(args: argparse.Namespace) -> int:
+    from annolid.services.search import run_behavior_search_cli
+
+    raw_behaviors = getattr(args, "behaviors", None)
+    behaviors = (
+        [item.strip() for item in str(raw_behaviors).split(",") if item.strip()]
+        if raw_behaviors
+        else None
+    )
+    raw_threshold = getattr(args, "threshold", None)
+    payload, rc = run_behavior_search_cli(
+        video_path=str(args.video),
+        query=getattr(args, "query", None),
+        query_frame=getattr(args, "query_frame", None),
+        query_image=getattr(args, "query_image", None),
+        behaviors=behaviors,
+        backend=str(getattr(args, "backend", "embeddinggemma2_onnx")),
+        model_id=getattr(args, "model_id", None),
+        quantization=str(getattr(args, "quantization", "q4")),
+        matryoshka_dim=getattr(args, "matryoshka_dim", None),
+        soft_tokens=getattr(args, "soft_tokens", None),
+        stride=int(getattr(args, "stride", 5)),
+        max_frames=getattr(args, "max_frames", None),
+        clip_frames=int(getattr(args, "clip_frames", 1)),
+        batch_size=int(getattr(args, "batch_size", 4)),
+        threshold=float(raw_threshold) if raw_threshold is not None else None,
+        top_k=int(getattr(args, "top_k", 50)),
+        overlay_shapes=bool(getattr(args, "overlay_shapes", False)),
+        annotation_dir=getattr(args, "annotation_dir", None),
+        index_cache=getattr(args, "index_cache", None),
+        auto_disk_cache=bool(getattr(args, "auto_cache", False)),
+        out_path=getattr(args, "out", None),
+        emit_json=bool(getattr(args, "json", False)),
+    )
+    if bool(getattr(args, "json", False)):
+        print(json.dumps(payload, indent=2))
+    elif behaviors:
+        frames = payload.get("frames") or []
+        print(
+            f"Scored {len(frames)} sampled frame(s) against {len(behaviors)} behavior(s) "
+            f"(backend={payload.get('backend')})."
+        )
+        for row in frames[:10]:
+            top_list = row.get("behaviors") or []
+            summary = ", ".join(
+                f"{b['label']}={float(b['similarity']):.3f}" for b in top_list
+            )
+            print(f"  Frame {int(row['frame_index']):09d}: {summary or '(none)'}")
+    else:
+        matches = payload.get("matches") or []
+        bouts = payload.get("bouts") or []
+        score_summary = payload.get("score_summary") or {}
+        thr_note = ""
+        if score_summary:
+            eff_thr = float(score_summary.get("effective_threshold", 0.0))
+            thr_mode = str(score_summary.get("threshold_mode") or "fixed")
+            thr_note = f", {thr_mode}≥{eff_thr:.3f}"
+        print(
+            f"Found {len(matches)} match(es) across {len(bouts)} bout(s) "
+            f"(mode={payload.get('query_mode')}, backend={payload.get('backend')}{thr_note})."
+        )
+        if not matches and score_summary and int(score_summary.get("count", 0)) > 0:
+            best_f = score_summary.get("best_frame_index")
+            max_sim = float(score_summary.get("max_similarity", 0.0))
+            min_sim = float(score_summary.get("min_similarity", 0.0))
+            med_sim = float(score_summary.get("median_similarity", 0.0))
+            best_desc = f"Frame {int(best_f):09d}" if best_f is not None else "n/a"
+            print(
+                f"  Observed similarity range: {min_sim:.3f}–{max_sim:.3f} "
+                f"(median={med_sim:.3f}; best {best_desc} sim={max_sim:.3f})."
+            )
+        for m in matches[:10]:
+            print(
+                f"  Frame {int(m['frame_index']):09d} • sim={float(m['similarity']):.3f}"
+            )
+    return int(rc)
 
 
 def _cmd_boris_import(args: argparse.Namespace) -> int:
@@ -3622,6 +3701,131 @@ def _build_root_parser() -> argparse.ArgumentParser:
         help="Optional standalone SVG path to render behavioral transition pathways.",
     )
     cohort_p.set_defaults(_handler=_cmd_behavior_cohort)
+
+    bsearch_p = sub.add_parser(
+        "behavior-search",
+        help="Search video frames or clips for behaviors by text or exemplar frame using ONNX EmbeddingGemma 2.",
+    )
+    bsearch_p.add_argument("video", help="Path to the source video file.")
+    bsearch_p.add_argument(
+        "--query",
+        default=None,
+        help="Natural-language behavior description (e.g. 'mouse grooming').",
+    )
+    bsearch_p.add_argument(
+        "--query-frame",
+        type=int,
+        default=None,
+        help="Reference frame index for visual or hybrid frame similarity search.",
+    )
+    bsearch_p.add_argument(
+        "--query-image",
+        default=None,
+        help="Optional external exemplar image path for visual similarity search.",
+    )
+    bsearch_p.add_argument(
+        "--behaviors",
+        default=None,
+        help="Comma-separated behavior labels for zero-shot multi-behavior scoring.",
+    )
+    bsearch_p.add_argument(
+        "--backend",
+        choices=("embeddinggemma2_onnx", "dinov3", "qwen3vl"),
+        default="embeddinggemma2_onnx",
+        help="Embedding backend (default: embeddinggemma2_onnx).",
+    )
+    bsearch_p.add_argument(
+        "--model-id",
+        default=None,
+        help="Optional Hugging Face repo id or local ONNX directory override.",
+    )
+    bsearch_p.add_argument(
+        "--quantization",
+        choices=("q4", "quantized", "q4f16", "fp32", "fp16"),
+        default="q4",
+        help="ONNX EmbeddingGemma 2 quantization preset (default: q4).",
+    )
+    bsearch_p.add_argument(
+        "--matryoshka-dim",
+        type=int,
+        choices=(128, 256, 512, 768),
+        default=None,
+        help="Optional Matryoshka truncated embedding dimension (128, 256, 512, or 768).",
+    )
+    bsearch_p.add_argument(
+        "--soft-tokens",
+        type=int,
+        choices=(70, 140, 280, 560),
+        default=None,
+        help="ONNX EmbeddingGemma 2 visual soft-token budget per frame (default: 140; 70 is fastest on CPU).",
+    )
+    bsearch_p.add_argument(
+        "--stride",
+        type=int,
+        default=5,
+        help="Sample every Nth frame across the video (default: 5).",
+    )
+    bsearch_p.add_argument(
+        "--max-frames",
+        type=int,
+        default=None,
+        help="Optional cap on the number of sampled frames/windows.",
+    )
+    bsearch_p.add_argument(
+        "--clip-frames",
+        type=int,
+        default=1,
+        help="Frames per temporal clip window (1 = single frame, 4/8 = short behavior clip).",
+    )
+    bsearch_p.add_argument(
+        "--batch-size",
+        type=int,
+        default=4,
+        help="Batch size for single-frame ONNX embedding extraction (default: 4).",
+    )
+    bsearch_p.add_argument(
+        "--threshold",
+        type=float,
+        default=None,
+        help="Minimum cosine similarity to keep a match; omit for adaptive auto-threshold.",
+    )
+    bsearch_p.add_argument(
+        "--top-k",
+        type=int,
+        default=50,
+        help="Maximum number of top matches to return (default: 50).",
+    )
+    bsearch_p.add_argument(
+        "--overlay-shapes",
+        action="store_true",
+        help="Overlay existing LabelMe/AnnotationStore shapes before embedding.",
+    )
+    bsearch_p.add_argument(
+        "--annotation-dir",
+        default=None,
+        help="Optional annotation directory for --overlay-shapes.",
+    )
+    bsearch_p.add_argument(
+        "--index-cache",
+        default=None,
+        help="Optional .npz file path to save/reuse video frame embeddings across queries.",
+    )
+    bsearch_p.add_argument(
+        "--auto-cache",
+        action="store_true",
+        help="Automatically save/reuse bounded .npz frame embedding caches under ~/.cache/annolid/embedding_search.",
+    )
+    bsearch_p.add_argument(
+        "--out",
+        default=None,
+        help="Optional JSON file path to write full search results and bouts.",
+    )
+    bsearch_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Print structured JSON search results to stdout.",
+    )
+    bsearch_p.set_defaults(_handler=_cmd_behavior_search)
 
     boris_import_p = sub.add_parser(
         "boris-import",

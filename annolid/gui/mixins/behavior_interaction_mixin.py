@@ -575,10 +575,18 @@ class BehaviorInteractionMixin:
             return
         behavior = self.event_type or ""
         if not behavior:
+            default_label = ""
+            search_widget = getattr(self, "embedding_search_widget", None)
+            if search_widget is not None and hasattr(search_widget, "last_query_text"):
+                try:
+                    default_label = str(search_widget.last_query_text() or "").strip()
+                except Exception:
+                    default_label = ""
             behavior, ok = QtWidgets.QInputDialog.getText(
                 self,
                 self.tr("Label Frames"),
                 self.tr("Behavior label for selected frames:"),
+                text=default_label,
             )
             if not ok or not behavior.strip():
                 return

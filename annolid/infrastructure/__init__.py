@@ -11,6 +11,8 @@ _EXPORTS = {
     "AnnotationStoreError": "annolid.infrastructure.persistence",
     "atomic_write_json": "annolid.infrastructure.persistence",
     "atomic_write_text": "annolid.infrastructure.persistence",
+    "EmbeddingGemma2OnnxAdapter": "annolid.infrastructure.external_apis",
+    "EmbeddingGemma2OnnxConfig": "annolid.infrastructure.external_apis",
     "LLMChatAdapter": "annolid.infrastructure.external_apis",
     "Qwen3EmbeddingAdapter": "annolid.infrastructure.external_apis",
     "configure_ultralytics_cache": "annolid.infrastructure.model_downloads",

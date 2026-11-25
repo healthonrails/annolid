@@ -283,6 +283,23 @@ CAPABILITIES: dict[str, RuntimeCapability] = {
         docs_url=INSTALL_DOCS_URL,
         description="Diffusers image generation and inpainting runtime.",
     ),
+    "embeddinggemma2_onnx": RuntimeCapability(
+        name="embeddinggemma2_onnx",
+        title="EmbeddingGemma 2 ONNX Search",
+        category="models",
+        approx_download_mb=270,
+        dependencies=(
+            RuntimeDependency("onnxruntime", "onnxruntime>=1.23.2"),
+            RuntimeDependency("tokenizers", "tokenizers"),
+            RuntimeDependency("huggingface_hub", "huggingface-hub>=0.22.0"),
+        ),
+        package_specs=("onnxruntime>=1.23.2", "tokenizers", "huggingface-hub>=0.22.0"),
+        docs_url=INSTALL_DOCS_URL,
+        description=(
+            "Lightweight pure-ONNX multimodal EmbeddingGemma 2 runtime for "
+            "text-to-frame, frame-to-frame, and clip behavior search."
+        ),
+    ),
     "qwen3_embedding": RuntimeCapability(
         name="qwen3_embedding",
         title="Qwen3 Multimodal Embeddings",
