@@ -17,7 +17,15 @@ class _AnnolidHelpFormatter(
 _ROOT_COMMAND_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "Models",
-        ("list-models", "dinov3-models", "train", "predict", "colab", "sim2real"),
+        (
+            "list-models",
+            "dinov3-models",
+            "train",
+            "predict",
+            "runs",
+            "colab",
+            "sim2real",
+        ),
     ),
     (
         "Tracking",
@@ -349,6 +357,10 @@ def _collect_root_command_help(
     command_help.setdefault(
         "runtime",
         "Inspect and install optional on-demand runtime packages and profiles.",
+    )
+    command_help.setdefault(
+        "runs",
+        "Discover, inspect, diff hyperparameters, and check health of training runs.",
     )
     command_help.setdefault(
         "colab",
@@ -2758,6 +2770,12 @@ def _dispatch_operator_commands(argv: list[str]) -> Optional[int]:
     if argv[0] == "runtime":
         return _cmd_runtime_cli(argv[1:])
 
+    # annolid-run runs ...
+    if argv[0] == "runs":
+        from annolid.services.training_monitor_cli import main as runs_cli_main
+
+        return int(runs_cli_main(argv[1:]))
+
     # annolid-run colab ...
     if argv[0] == "colab":
         from annolid.colab.cli import main as colab_cli_main
@@ -3085,6 +3103,18 @@ def _dispatch_operator_commands(argv: list[str]) -> Optional[int]:
     # annolid-run update check|run|rollback
     if len(argv) >= 2 and argv[0] == "update":
         action = argv[1]
+        if action in {"-h", "--help"}:
+            p = argparse.ArgumentParser(
+                prog="annolid-run update",
+                description="Check, run, or roll back Annolid updates.",
+            )
+            p.add_argument(
+                "action",
+                choices=("check", "run", "rollback"),
+                help="Update action to perform.",
+            )
+            p.print_help()
+            return 0
         if action == "check":
             p = argparse.ArgumentParser(prog="annolid-run update check")
             p.add_argument("--project", default="annolid")
@@ -3381,7 +3411,7 @@ def _build_root_parser() -> argparse.ArgumentParser:
         "--session-duration",
         type=float,
         default=None,
-        help="Optional explicit session duration (seconds) for % of session denominator.",
+        help="Optional explicit session duration (seconds) for %% of session denominator.",
     )
     time_budget_p.add_argument(
         "--schema",
@@ -6378,6 +6408,15 @@ def _dispatch_model_subcommand(
             formatter_class=_AnnolidHelpFormatter,
         )
         plugin.add_train_args(p)
+        if not any(
+            "--run-config" in (getattr(a, "option_strings", ()) or ())
+            for a in getattr(p, "_actions", ())
+        ):
+            p.add_argument(
+                "--run-config",
+                default=None,
+                help="Optional YAML run config file; explicit CLI flags override config values.",
+            )
         p.description = _plugin_help_description(
             mode="train",
             model_name=model_name,
@@ -6417,6 +6456,15 @@ def _dispatch_model_subcommand(
             formatter_class=_AnnolidHelpFormatter,
         )
         plugin.add_predict_args(p)
+        if not any(
+            "--run-config" in (getattr(a, "option_strings", ()) or ())
+            for a in getattr(p, "_actions", ())
+        ):
+            p.add_argument(
+                "--run-config",
+                default=None,
+                help="Optional YAML run config file; explicit CLI flags override config values.",
+            )
         p.description = _plugin_help_description(
             mode="predict",
             model_name=model_name,
@@ -6482,7 +6530,14 @@ def _normalize_help_argv(argv: list[str]) -> list[str]:
 def main(argv: Optional[list[str]] = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     argv = _normalize_help_argv(argv)
-    if not argv or argv == ["--help"]:
+    if (
+        len(argv) >= 3
+        and argv[0] in {"train", "predict"}
+        and not str(argv[1]).startswith("-")
+        and any(tok in {"-h", "--help"} for tok in argv[2:])
+    ):
+        argv = [argv[0], argv[1], "--help-model"]
+    if not argv or argv in (["--help"], ["-h"]):
         p = _build_root_parser()
         print(_format_root_help(p), end="")
         return 0
@@ -6495,6 +6550,8 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     handler = getattr(args, "_handler", None)
     if callable(handler):
+        if rest:
+            p.error(f"unrecognized arguments: {' '.join(rest)}")
         return int(handler(args))
 
     return _dispatch_model_subcommand(base_args=args, argv=rest)

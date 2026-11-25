@@ -1,10 +1,6 @@
 import argparse
 import os
-
-from annolid.segmentation.threshold import InRange
-from annolid.annotation import coco2yolo
-from annolid.data.videos import extract_frames, track
-from annolid.postprocessing.glitter import tracks2nix
+from pathlib import Path
 
 
 def _str2bool(value):
@@ -185,6 +181,8 @@ def main():
     args = parse_args()
 
     if args["extract_frames"] != 0:
+        from annolid.data.videos import extract_frames
+
         print("Start extracting video frames...")
         extract_frames(
             args["video"],
@@ -194,12 +192,18 @@ def main():
             out_dir=args["to"],
         )
     if args["segmentation"] == "threshold":
+        from annolid.segmentation.threshold import InRange
+
         ir = InRange()
         ir.run(args["video"], args["min_area"], args["max_area"])
 
     if args["track"] is not None:
+        from annolid.data.videos import track
+
         track(args["video"], args["track"], args["weights"])
     if args["coco2yolo"] is not None:
+        from annolid.annotation import coco2yolo
+
         names = coco2yolo.create_dataset(
             args["coco2yolo"],
             results_dir=args["to"],
@@ -231,21 +235,27 @@ def main():
             print(f"Converting {content} as {pct_val:.2f} % of the labeled images.")
 
     if args["tracks2glitter"] is not None:
-        assert os.path.isfile(args["tracks2glitter"]), (
-            "Please provide the correct tracking results csv file"
-        )
+        from annolid.postprocessing.glitter import tracks2nix
 
-        if args["to"] is not None:
-            dest_file = os.path.join(
-                args["to"],
-                os.path.basename(args["tracks2glitter"]).replace(".csv", "_nix.csv"),
+        tracks_csv = Path(args["tracks2glitter"])
+        if not tracks_csv.is_file():
+            raise FileNotFoundError(
+                f"Tracking results CSV file not found: {tracks_csv}"
             )
+
+        out_name = f"{tracks_csv.stem}_nix.csv"
+        if args["to"] is not None:
+            dest_file = str(Path(args["to"]) / out_name)
         else:
-            dest_file = args["tracks2glitter"].replace(".csv", "_nix.csv")
+            dest_file = str(tracks_csv.with_name(out_name))
 
-        tracks2nix(args["video"], args["tracks2glitter"], dest_file)
+        tracks2nix(args["video"], str(tracks_csv), dest_file)
 
-    if (args["keypoints2labelme"] is not None) and (args["keypoints"] is not None):
+    if args["keypoints2labelme"] is not None:
+        if args["keypoints"] is None:
+            raise ValueError(
+                "--keypoints2labelme requires --keypoints <path/to/annotations.h5>."
+            )
         from annolid.annotation import keypoints
 
         keypoints.to_labelme(

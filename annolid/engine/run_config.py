@@ -65,13 +65,15 @@ def select_model_mode_config(
     return {}
 
 
-def _iter_cli_options(parser: argparse.ArgumentParser) -> Dict[str, str]:
-    out: Dict[str, str] = {}
+def _iter_cli_actions(
+    parser: argparse.ArgumentParser,
+) -> Dict[str, Tuple[str, argparse.Action]]:
+    out: Dict[str, Tuple[str, argparse.Action]] = {}
     for action in getattr(parser, "_actions", []):
         for opt in list(getattr(action, "option_strings", []) or []):
             if not str(opt).startswith("--"):
                 continue
-            out[str(opt)[2:]] = str(opt)
+            out[str(opt)[2:]] = (str(opt), action)
     return out
 
 
@@ -84,7 +86,7 @@ def _as_cli_value(value: Any) -> str:
 def build_cli_args_from_config(
     parser: argparse.ArgumentParser, config: Dict[str, Any]
 ) -> Tuple[List[str], List[str]]:
-    option_map = _iter_cli_options(parser)
+    option_actions = _iter_cli_actions(parser)
     args: List[str] = []
     unknown: List[str] = []
     for key, value in config.items():
@@ -93,24 +95,59 @@ def build_cli_args_from_config(
         normalized = str(key).strip().replace("_", "-")
         if normalized.startswith("--"):
             normalized = normalized[2:]
-        opt = option_map.get(normalized)
-        if opt is None:
+        entry = option_actions.get(normalized)
+        if entry is None:
             unknown.append(str(key))
             continue
+        opt, action = entry
 
         if isinstance(value, bool):
             if bool(value):
                 args.append(opt)
                 continue
-            neg_opt = f"--no-{normalized}"
-            if f"no-{normalized}" in option_map:
-                args.append(neg_opt)
+            neg_entry = option_actions.get(f"no-{normalized}")
+            if neg_entry is not None:
+                args.append(neg_entry[0])
                 continue
             # Skip false booleans if parser has no dedicated --no-* flag.
             continue
 
+        if isinstance(value, (list, tuple)):
+            is_append = isinstance(action, argparse._AppendAction)
+            nargs = getattr(action, "nargs", None)
+            multi_token = nargs in ("+", "*") or (isinstance(nargs, int) and nargs > 1)
+            if is_append:
+                for item in value:
+                    if multi_token and isinstance(item, (list, tuple)):
+                        args.append(opt)
+                        args.extend(str(v) for v in item)
+                    else:
+                        args.extend([opt, str(item)])
+                continue
+            if multi_token:
+                args.append(opt)
+                args.extend(str(v) for v in value)
+                continue
+
         args.extend([opt, _as_cli_value(value)])
     return args, unknown
+
+
+def _strip_run_config_args(argv: Sequence[str]) -> List[str]:
+    stripped: List[str] = []
+    i = 0
+    tokens = list(argv)
+    while i < len(tokens):
+        tok = str(tokens[i])
+        if tok == "--run-config":
+            i += 2
+            continue
+        if tok.startswith("--run-config="):
+            i += 1
+            continue
+        stripped.append(tokens[i])
+        i += 1
+    return stripped
 
 
 def expand_argv_with_run_config(
@@ -126,5 +163,10 @@ def expand_argv_with_run_config(
     payload = load_run_config(cfg_path)
     selected = select_model_mode_config(payload, model_name=model_name, mode=mode)
     cfg_argv, _unknown = build_cli_args_from_config(parser, selected)
+    # Strip --run-config if the target parser did not register it.
+    option_actions = _iter_cli_actions(parser)
+    tail_argv = (
+        list(argv) if "run-config" in option_actions else _strip_run_config_args(argv)
+    )
     # Keep raw argv last so explicit CLI arguments override config values.
-    return [*cfg_argv, *list(argv)]
+    return [*cfg_argv, *tail_argv]
