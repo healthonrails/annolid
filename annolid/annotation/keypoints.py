@@ -135,12 +135,56 @@ def merge_shapes(new_shapes_list, existing_shapes_list):
                 return (*base_identity, str(query_index))
         return base_identity
 
-    merged_shapes_dict = {
-        _shape_identity(shape_data): shape_data for shape_data in existing_shapes_list
-    }
+    def _has_stable_instance_id(shape_data) -> bool:
+        if not isinstance(shape_data, dict):
+            return False
+        if shape_data.get("group_id") is not None:
+            return True
+        if shape_data.get("track_id") is not None:
+            return True
+        if (
+            shape_data.get("instance_label")
+            or shape_data.get("query_index") is not None
+        ):
+            return True
+        flags = shape_data.get("flags")
+        if isinstance(flags, dict) and (
+            flags.get("instance_label") or flags.get("query_index") is not None
+        ):
+            return True
+        other_data = shape_data.get("other_data") or shape_data.get("otherData")
+        if isinstance(other_data, dict) and other_data.get("query_index") is not None:
+            return True
+        return False
 
+    def _shape_points_fingerprint(shape_data) -> tuple:
+        pts = shape_data.get("points") or []
+        try:
+            return tuple(
+                (round(float(p[0]), 2), round(float(p[1]), 2))
+                for p in pts
+                if isinstance(p, (list, tuple)) and len(p) >= 2
+            )
+        except (TypeError, ValueError):
+            return ()
+
+    merged_shapes_dict = {}
+    ungrouped_counts: dict[tuple, int] = {}
+    for shape_data in existing_shapes_list:
+        key = _shape_identity(shape_data)
+        if not _has_stable_instance_id(shape_data):
+            fp = _shape_points_fingerprint(shape_data)
+            ungrouped_counts[key] = ungrouped_counts.get(key, 0) + 1
+            key = (*key, "__ungrouped__", fp, ungrouped_counts[key])
+        merged_shapes_dict[key] = shape_data
+
+    new_ungrouped_counts: dict[tuple, int] = {}
     for new_shape_data in new_shapes_list:
         key = _shape_identity(new_shape_data)
+        if not _has_stable_instance_id(new_shape_data):
+            fp = _shape_points_fingerprint(new_shape_data)
+            new_ungrouped_counts[key] = new_ungrouped_counts.get(key, 0) + 1
+            key = (*key, "__ungrouped__", fp, new_ungrouped_counts[key])
         merged_shapes_dict[key] = new_shape_data
 
     # Convert the dictionary back to a list
@@ -373,9 +417,10 @@ def to_labelme(img_folder, anno_file, multiple_animals=True):
         for ind, imname in enumerate(df.index):
             img_path = os.path.join(img_folder, imname)
             image = cv2.imread(img_path)
-            ny, nx, nc = np.shape(image)
-            image_height = ny
-            image_width = nx
+            if image is None:
+                logger.warning("Failed to read image: %s", img_path)
+                continue
+            image_height, image_width = image.shape[:2]
             label_list = []
             for idv in set(individuals):
                 for b in set(bodyparts):
@@ -386,7 +431,7 @@ def to_labelme(img_folder, anno_file, multiple_animals=True):
                         s.addPoint((x, y))
                         label_list.append(s)
             save_labels(
-                img_path.replace(".png", ".json"),
+                str(Path(img_path).with_suffix(".json")),
                 img_path,
                 label_list,
                 image_height,

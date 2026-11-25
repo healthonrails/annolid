@@ -133,7 +133,7 @@ def parse_svg_transform(value: str | None) -> np.ndarray:
         elif name == "matrix" and len(args) == 6:
             a, b, c, d, e, f = args
             current = np.array([[a, c, e], [b, d, f], [0.0, 0.0, 1.0]], dtype=float)
-        matrix = current @ matrix
+        matrix = matrix @ current
     return matrix
 
 
@@ -398,6 +398,7 @@ def _iter_paths(
     tag = _strip_ns(element.tag)
     if tag in {
         "defs",
+        "clipPath",
         "clippath",
         "mask",
         "pattern",
@@ -408,7 +409,7 @@ def _iter_paths(
         "foreignObject",
     }:
         return
-    transform = parse_svg_transform(element.get("transform")) @ parent_transform
+    transform = parent_transform @ parse_svg_transform(element.get("transform"))
     layer_name = parent_layer
     if tag == "g":
         layer_name = (

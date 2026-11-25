@@ -37,9 +37,8 @@ class LabelProcessor:
             shape
             for shape in shapes
             if not any(
-                shape["description"]
-                and keyword in shape["description"].lower()
-                or keyword in shape["label"].lower()
+                (shape.get("description") or "").lower().find(keyword) != -1
+                or (shape.get("label") or "").lower().find(keyword) != -1
                 for keyword in LabelProcessor.EXCLUDED_LABEL_KEYWORDS
             )
         ]
@@ -102,10 +101,19 @@ class LabelProcessor:
             if shape_type == "rectangle":
                 points = self.convert_rectangle_to_points(points)
                 shape_type = "box"
-            elif shape_type in ("polygon", "mask"):
+            elif shape_type == "polygon":
                 if len(points) < 3:
                     logger.warning(
-                        "Skipping polygon/mask with <3 points for label '%s'", label
+                        "Skipping polygon with <3 points for label '%s'", label
+                    )
+                    continue
+                _mask = self.get_mask(shape)
+                shape_type = "mask"
+            elif shape_type == "mask":
+                if shape.get("mask") is None and len(points) < 2:
+                    logger.warning(
+                        "Skipping mask without mask data or bounding points for label '%s'",
+                        label,
                     )
                     continue
                 _mask = self.get_mask(shape)
@@ -136,8 +144,9 @@ class LabelProcessor:
         Returns:
             list: List of points as [x_min, y_min, x_max, y_max]
         """
-        x_min, y_min, x_max, y_max = [*rectangle[0], *rectangle[1]]
-        return [x_min, y_min, x_max, y_max]
+        x1, y1 = rectangle[0][0], rectangle[0][1]
+        x2, y2 = rectangle[1][0], rectangle[1][1]
+        return [min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)]
 
 
 if __name__ == "__main__":

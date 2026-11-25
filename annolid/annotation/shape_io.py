@@ -163,6 +163,7 @@ def serialize_shape(
         data["locked"] = True
     else:
         data.pop("locked", None)
+        data.pop("overlay_locked", None)
 
     shared_vertex_ids = list(getattr(shape, "shared_vertex_ids", None) or [])
     if any(shared_vertex_ids):

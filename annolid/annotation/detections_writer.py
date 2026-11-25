@@ -68,7 +68,7 @@ class DetectionsWriter:
         shapes = list(shapes)
         if not shapes:
             return
-        height, width, _ = frame_shape
+        height, width = int(frame_shape[0]), int(frame_shape[1])
         json_filename = f"{frame_index:09d}.json"
         json_path = self.output_dir / json_filename
 

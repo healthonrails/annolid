@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 from typing import Optional
-import warnings
 
 from annolid.core.media.audio import AudioBuffer
 from annolid.utils.audio_playback import play_audio_buffer, stop_audio_playback
 from annolid.utils.logger import logger
-
-warnings.filterwarnings("ignore")
 
 
 class AudioLoader:

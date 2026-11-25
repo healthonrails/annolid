@@ -90,10 +90,8 @@ def mask_to_polygons(
         res = simplified_contours
 
     if use_convex_hull:
-        hull = []
-        for i in range(len(res)):
-            hull.append(cv2.convexHull(res[i], False))
-            res = [x.flatten() for x in hull]
+        hull = [cv2.convexHull(contour, False) for contour in res]
+        res = [x.flatten() for x in hull]
     else:
         res = [x.flatten() for x in res]
 
@@ -115,7 +113,9 @@ def mask_perimeter(mask):
     contours, hierarchy = cv2.findContours(
         mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE
     )
-    cnt = contours[0]
+    if not contours:
+        return 0.0
+    cnt = max(contours, key=cv2.contourArea)
     perimeter = cv2.arcLength(cnt, True)
     return perimeter
 
@@ -160,10 +160,14 @@ def calculate_mask_centroid(mask):
         rle = [mask_array]
         mask_array = mask_util.decode(rle)
     # Calculate the center of mass of the binary mask
+    if not np.any(mask_array):
+        return 0, 0
     try:
         from scipy import ndimage
 
         center_of_mass = ndimage.center_of_mass(mask_array)
+        if not (np.isfinite(center_of_mass[0]) and np.isfinite(center_of_mass[1])):
+            return 0, 0
         x = int(center_of_mass[1])
         y = int(center_of_mass[0])
     except ImportError:

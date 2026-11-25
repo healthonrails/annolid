@@ -686,11 +686,42 @@ def convert_json_to_csv(
                                     class_score,
                                     segmentation,
                                     tracking_id,
-                                    motion_index,
-                                    timestamp_value,
-                                    *_zone_occupancy_flags(zone_specs, cx, cy),
                                 ]
                             )
+                        if should_track_frame and instance_name and not is_zone_shape:
+                            motion_index = shape.get("motion_index")
+                            if motion_index is None:
+                                description = shape.get("description") or ""
+                                match = re.search(
+                                    r"motion_index\s*[:=]\s*([-0-9.eE]+)", description
+                                )
+                                if match:
+                                    try:
+                                        motion_index = float(match.group(1))
+                                    except ValueError:
+                                        motion_index = None
+                            try:
+                                motion_index = (
+                                    float(motion_index)
+                                    if motion_index is not None
+                                    else -1
+                                )
+                            except (TypeError, ValueError):
+                                motion_index = -1
+                            key = (frame_number, instance_name)
+                            if key not in tracked_seen:
+                                tracked_seen.add(key)
+                                tracked_rows_to_append.append(
+                                    [
+                                        frame_number,
+                                        instance_name,
+                                        cx,
+                                        cy,
+                                        motion_index,
+                                        timestamp_value,
+                                        *_zone_occupancy_flags(zone_specs, cx, cy),
+                                    ]
+                                )
 
                 elif (shape_type == "circle" and len(points) >= 2) or len(points) > 2:
                     if shape_type == "circle" and (

@@ -1508,6 +1508,33 @@ class Labelme2YOLO:
             if shape_type == "circle":
                 yolo_obj = self.circle_shape_to_yolo(shape, image_height, image_width)
                 yolo_objects.append(yolo_obj)
+            elif shape_type == "mask" and shape.get("mask") is not None:
+                from annolid.annotation.masks import mask_to_polygons
+                from annolid.utils.annotation_compat import shape_to_mask
+
+                mask_arr = shape_to_mask(
+                    (image_height, image_width),
+                    shape.get("points") or [],
+                    shape_type="mask",
+                    mask=shape.get("mask"),
+                )
+                polys, _ = mask_to_polygons(mask_arr)
+                if polys:
+                    largest = max(polys, key=len)
+                    poly_pts = [
+                        [float(largest[i]), float(largest[i + 1])]
+                        for i in range(0, len(largest) - 1, 2)
+                    ]
+                    poly_shape = dict(shape)
+                    poly_shape["shape_type"] = "polygon"
+                    poly_shape["points"] = poly_pts
+                    yolo_objects.append(
+                        self.scale_points(poly_shape, image_height, image_width)
+                    )
+                else:
+                    yolo_objects.append(
+                        self.scale_points(shape, image_height, image_width)
+                    )
             else:
                 yolo_obj = self.scale_points(shape, image_height, image_width)
                 yolo_objects.append(yolo_obj)
@@ -1580,7 +1607,7 @@ class Labelme2YOLO:
             x = float(point[0]) / image_width
             y = float(point[1]) / image_height
             if include_visibility:
-                visibility = labelme_shape.get("description", 1)
+                visibility = int(visibility_from_labelme_shape(labelme_shape))
                 scaled_points.extend([x, y, visibility])
             else:
                 scaled_points.extend([x, y])
@@ -1647,10 +1674,10 @@ class Labelme2YOLO:
         yolo_h = round(float(h / image_height), 6)
 
         # Get the label ID.
-        label_id = self.label_to_id_dict[labelme_shape["label"]]
+        label_id = self.label_to_id_dict.get(labelme_shape["label"], 0)
 
-        # Return the YOLO object as a tuple.
-        return label_id, yolo_cx, yolo_cy, yolo_w, yolo_h
+        # Return (label_id, coords) matching save_yolo_txt_label_file contract.
+        return label_id, [yolo_cx, yolo_cy, yolo_w, yolo_h]
 
     @staticmethod
     def save_or_copy_image(

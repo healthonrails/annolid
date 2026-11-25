@@ -88,10 +88,9 @@ class Augmentation(LabelStats):
                         imageio.imsave(aug_img_path, aug_img, ".jpg")
                         label_file["imageData"] = None
                         label_file["imagePath"] = aug_img_path.name
+                        label_file["shapes"][i]["points"] = aug_points.tolist()
                         with open(aug_json_path, "w") as f:
                             json.dump(label_file, f, ensure_ascii=False, indent=2)
-
-                        label_file["shapes"][i]["points"] = aug_points.tolist()
 
                     self.augment_list.append(lf)
         return set(self.augment_list)

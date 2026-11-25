@@ -412,6 +412,7 @@ def _smooth_contiguous_runs(
     ys: np.ndarray,
     valid: np.ndarray,
     cfg: PoseFilterConfig,
+    frame_indices: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, np.ndarray, int]:
     """Apply configured zero-phase smoother independently to each contiguous valid run."""
     if cfg.method == "none":
@@ -426,8 +427,13 @@ def _smooth_contiguous_runs(
         if not valid[i]:
             i += 1
             continue
-        j = i
+        j = i + 1
         while j < n and valid[j]:
+            if (
+                frame_indices is not None
+                and int(frame_indices[j]) - int(frame_indices[j - 1]) > 1
+            ):
+                break
             j += 1
         run_len = j - i
         if run_len >= 3:
@@ -755,7 +761,9 @@ def filter_pose_dataset(
                     max_gap_frames=cfg.max_gap_frames,
                 )
                 gaps_interpolated += int(np.sum(interp_mask))
-                sx, sy, sm_n = _smooth_contiguous_runs(ix, iy, iv, cfg)
+                sx, sy, sm_n = _smooth_contiguous_runs(
+                    ix, iy, iv, cfg, frame_indices=frame_indices
+                )
                 points_smoothed += sm_n
 
                 for t_idx in range(n_frames):
@@ -895,25 +903,50 @@ def _write_filtered_labelme_preserving_non_points(
         if m is not None:
             json_files[int(m.group(1))] = source_dir / name
 
+    # Discover AnnotationStore frames so tracked folders (persist_json=False)
+    # do not drop or leave AnnotationStore-only frames unfiltered.
+    store_files = sorted(source_dir.glob("*_annotations.ndjson"))
+    store_frame_records: Dict[int, Tuple[AnnotationStore, Dict[str, Any]]] = {}
+    for store_path in store_files:
+        store = AnnotationStore(store_path)
+        for fidx in sorted(store.iter_frames()):
+            rec = store.get_frame(fidx)
+            if isinstance(rec, Mapping):
+                store_frame_records[int(fidx)] = (store, dict(rec))
+
     # Copy pose_schema file if writing into a new output directory.
-    if output_dir.resolve() != source_dir.resolve():
+    in_place = output_dir.resolve() == source_dir.resolve()
+    if not in_place:
         for fname in ("pose_schema.json", "pose_schema.yaml", "pose_schema.yml"):
             src_schema = source_dir / fname
             if src_schema.is_file():
                 shutil.copy2(src_schema, output_dir / fname)
 
-    if not json_files:
-        # Fallback when source_dir only had AnnotationStore NDJSON.
+    all_frame_indices = sorted(set(json_files.keys()) | set(store_frame_records.keys()))
+    if not all_frame_indices:
+        # Fallback when source_dir had neither numeric JSONs nor AnnotationStore records.
         write_pose_to_labelme_dir(filtered_ds, output_dir, overwrite=True)
         return
 
-    for fidx, src_json in sorted(json_files.items()):
-        try:
-            payload = load_labelme_json(src_json)
-        except Exception:
-            continue
+    store_updates_by_store: Dict[
+        Path, Tuple[AnnotationStore, Dict[int, Dict[str, Any]]]
+    ] = {}
+    sep = getattr(pose_schema, "instance_separator", "_") if pose_schema else "_"
+
+    for fidx in all_frame_indices:
+        src_json = json_files.get(fidx)
+        store_entry = store_frame_records.get(fidx)
+        payload: Any = None
+        if src_json is not None:
+            try:
+                payload = load_labelme_json(src_json)
+            except Exception:
+                payload = None
+        if not isinstance(payload, dict) and store_entry is not None:
+            payload = dict(store_entry[1])
         if not isinstance(payload, dict):
             continue
+
         updated_payload = copy.deepcopy(payload)
         existing_shapes = list(updated_payload.get("shapes") or [])
         kept_non_points = [
@@ -934,7 +967,6 @@ def _write_filtered_labelme_preserving_non_points(
             and str(s.get("shape_type") or "").strip().lower() == "point"
         ]
         use_prefix = False
-        sep = getattr(pose_schema, "instance_separator", "_") if pose_schema else "_"
         if is_multi and orig_points:
             for pt_s in orig_points:
                 lbl = str(pt_s.get("label") or "")
@@ -970,8 +1002,24 @@ def _write_filtered_labelme_preserving_non_points(
                     new_point_shapes.append(shape_dict)
 
         updated_payload["shapes"] = kept_non_points + new_point_shapes
-        dst_json = output_dir / src_json.name
-        atomic_write_json(dst_json, updated_payload, indent=2)
+        if src_json is not None:
+            dst_json = output_dir / src_json.name
+            atomic_write_json(dst_json, updated_payload, indent=2)
+        elif in_place and store_entry is not None:
+            store_obj = store_entry[0]
+            bucket = store_updates_by_store.setdefault(
+                store_obj.store_path, (store_obj, {})
+            )
+            bucket[1][int(fidx)] = updated_payload
+        else:
+            img_name = str(updated_payload.get("imagePath") or "").strip()
+            stem = Path(img_name).stem if img_name else f"{output_dir.name}_{fidx:09d}"
+            dst_json = output_dir / f"{stem}.json"
+            atomic_write_json(dst_json, updated_payload, indent=2)
+
+    for _spath, (store_obj, updates) in store_updates_by_store.items():
+        if updates:
+            store_obj.update_frames(updates)
 
 
 def filter_pose_source(

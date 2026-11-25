@@ -9,10 +9,9 @@ def convert_time_to_frame_number(time_stamp, fps=29.97):
     Returns:
         int: frame number
     """
-    h, m, s = time_stamp.split(":")
-    seconds, milliseconds = s.split(".")
-    total_seconds = int(h) * 3600 + int(m) * 60 + int(seconds)
-    total_frames = int(total_seconds * fps) + int(milliseconds) * fps // 1000
+    h, m, s = str(time_stamp).strip().split(":")
+    total_seconds = int(h) * 3600 + int(m) * 60 + float(s)
+    total_frames = int(total_seconds * float(fps))
     return int(total_frames)
 
 
@@ -27,7 +26,10 @@ def convert_frame_number_to_time(frame_number, fps=29.97):
     Returns:
         str: timestamp
     """
-    total_seconds = frame_number / fps
+    fps_val = float(fps) if fps else 0.0
+    if fps_val <= 0:
+        return "00:00:00.000"
+    total_seconds = max(0.0, float(frame_number) / fps_val)
     hours = int(total_seconds // 3600)
     minutes = int((total_seconds % 3600) // 60)
     seconds = int(total_seconds % 60)

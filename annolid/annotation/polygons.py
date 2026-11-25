@@ -1,7 +1,6 @@
 from shapely.geometry import Polygon
 import cv2
 import numpy as np
-import torch
 import math
 
 
@@ -12,8 +11,14 @@ def simplify_polygons(masks_xy):
 
     simplified_polygons = []
     for mask_xy in masks_xy:
-        # Convert torch.Tensor to numpy.ndarray if necessary.
-        if isinstance(mask_xy, torch.Tensor):
+        # Duck-type torch.Tensor without requiring torch at module import time.
+        if (
+            hasattr(mask_xy, "detach")
+            and hasattr(mask_xy, "cpu")
+            and hasattr(mask_xy, "numpy")
+        ):
+            mask_np = mask_xy.detach().cpu().numpy().astype(np.int32)
+        elif hasattr(mask_xy, "cpu") and hasattr(mask_xy, "numpy"):
             mask_np = mask_xy.cpu().numpy().astype(np.int32)
         elif isinstance(mask_xy, np.ndarray):
             mask_np = mask_xy.astype(np.int32)
@@ -42,10 +47,16 @@ def polygon_iou(this_polygon_points, other_polygon_points):
     """
     polygon1 = Polygon(this_polygon_points)
     polygon2 = Polygon(other_polygon_points)
+    if not polygon1.is_valid:
+        polygon1 = polygon1.buffer(0)
+    if not polygon2.is_valid:
+        polygon2 = polygon2.buffer(0)
     intersect_area = polygon2.intersection(polygon1).area
     union_area = polygon1.area + polygon2.area - intersect_area
+    if union_area <= 0.0:
+        return 0.0
     iou = intersect_area / union_area
-    return iou
+    return float(iou)
 
 
 def polygon_features(polygon_points):

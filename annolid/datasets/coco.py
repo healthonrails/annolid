@@ -10,11 +10,6 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import yaml
 from PIL import Image
 
-from annolid.segmentation.dino_kpseg.data import (
-    load_coco_pose_spec,
-    materialize_coco_pose_as_yolo,
-)
-
 
 _COCO_SPLIT_FILENAMES = {
     # Prefer keypoint annotations when multiple COCO variants are present.
@@ -320,6 +315,11 @@ def materialize_coco_spec_as_yolo(
     )
 
     if target_task == "pose":
+        from annolid.segmentation.dino_kpseg.data import (
+            load_coco_pose_spec,
+            materialize_coco_pose_as_yolo,
+        )
+
         spec = load_coco_pose_spec(config_path)
         return materialize_coco_pose_as_yolo(
             spec=spec,

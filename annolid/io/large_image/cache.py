@@ -162,19 +162,38 @@ def optimize_large_tiff_for_viewing(
     )
     target.parent.mkdir(parents=True, exist_ok=True)
 
+    import os
+    import tempfile
+
     image = pyvips.Image.new_from_file(str(source), access="sequential")
-    image.tiffsave(
-        str(target),
-        tile=True,
-        pyramid=True,
-        subifd=True,
-        bigtiff=True,
-        tile_width=max(128, int(tile_size)),
-        tile_height=max(128, int(tile_size)),
-        compression="jpeg",
-        Q=max(1, min(100, int(jpeg_quality))),
-        properties=True,
+    tmp_fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{target.name}.",
+        suffix=".tmp.tif",
+        dir=str(target.parent),
     )
+    os.close(tmp_fd)
+    tmp_path = Path(tmp_name)
+    try:
+        image.tiffsave(
+            str(tmp_path),
+            tile=True,
+            pyramid=True,
+            subifd=True,
+            bigtiff=True,
+            tile_width=max(128, int(tile_size)),
+            tile_height=max(128, int(tile_size)),
+            compression="jpeg",
+            Q=max(1, min(100, int(jpeg_quality))),
+            properties=True,
+        )
+        os.replace(str(tmp_path), str(target))
+    except Exception:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
+        raise
     prune_large_image_caches(
         max_entries=max_cache_entries,
         max_size_bytes=max_cache_size_bytes,

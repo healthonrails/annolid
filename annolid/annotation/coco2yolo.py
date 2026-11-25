@@ -93,6 +93,14 @@ def create_dataset(
 
         img_id = img["id"]
 
+        cat_id_to_idx: dict[int, int] = {}
+        for c in data.get("categories") or []:
+            cid = int(c["id"])
+            if cid == 0:
+                continue
+            if cid not in cat_id_to_idx:
+                cat_id_to_idx[cid] = len(cat_id_to_idx)
+
         file_name = file_name.replace("\\", "/")
         shutil.copy(img_file_path / file_name, images_path)
         anno_txt_name = os.path.splitext(os.path.basename(file_name))[0] + ".txt"
@@ -100,50 +108,57 @@ def create_dataset(
         with open(anno_txt_flie, "w") as atf:
             for ann in data["annotations"]:
                 if ann["image_id"] == img_id:
-                    if ann["bbox"]:
-                        box = xywh2cxcywh(ann["bbox"], (img_width, img_height))
-                    if ann["segmentation"] and is_segmentation == "seg":
-                        points = []
+                    target_cls = (
+                        class_id
+                        if class_id is not None
+                        else cat_id_to_idx.get(
+                            int(ann["category_id"]), max(0, int(ann["category_id"]) - 1)
+                        )
+                    )
+                    box = (
+                        xywh2cxcywh(ann["bbox"], (img_width, img_height))
+                        if ann.get("bbox")
+                        else None
+                    )
+                    seg = ann.get("segmentation")
+                    if seg and is_segmentation in ("seg", True):
+                        polygons = []
+                        if isinstance(seg, list):
+                            polygons = [
+                                poly
+                                for poly in seg
+                                if isinstance(poly, (list, tuple)) and len(poly) >= 6
+                            ]
+                        elif isinstance(seg, dict):
+                            try:
+                                from pycocotools import mask as mask_util
+                                from annolid.annotation.masks import mask_to_polygons
 
-                        i = 0
-                        while i < len(ann["segmentation"][0]) - 1:
-                            points.append(str(ann["segmentation"][0][i] / img_width))
-                            points.append(
-                                str(ann["segmentation"][0][i + 1] / img_height)
+                                decoded = mask_util.decode(seg)
+                                polys, _ = mask_to_polygons(decoded)
+                                polygons = [p.tolist() for p in polys if len(p) >= 6]
+                            except Exception:
+                                polygons = []
+                        for poly in polygons:
+                            points = []
+                            i = 0
+                            while i < len(poly) - 1:
+                                points.append(str(poly[i] / img_width))
+                                points.append(str(poly[i + 1] / img_height))
+                                i += 2
+                            if points:
+                                atf.write(f"{target_cls} {' '.join(points)}\n")
+                    elif is_segmentation in ("detect", False) and box is not None:
+                        atf.write(
+                            "%s %s %s %s %s\n"
+                            % (
+                                target_cls,
+                                box[0],
+                                box[1],
+                                box[2],
+                                box[3],
                             )
-                            i += 2
-                        if class_id is not None:
-                            atf.write(
-                                f"{class_id} {ann['category_id'] - 1} {box[0]} {box[1]} {box[2]} {box[3]} {' '.join(points)}\n"
-                            )
-                        else:
-                            atf.write(
-                                f"{ann['category_id'] - 1} {box[0]} {box[1]} {box[2]} {box[3]} {' '.join(points)}\n"
-                            )
-                    elif is_segmentation == "detect":
-                        if class_id is not None:
-                            atf.write(
-                                "%s %s %s %s %s %s\n"
-                                % (
-                                    class_id,
-                                    ann["category_id"] - 1,
-                                    box[0],
-                                    box[1],
-                                    box[2],
-                                    box[3],
-                                )
-                            )
-                        else:
-                            atf.write(
-                                "%s %s %s %s %s\n"
-                                % (
-                                    ann["category_id"] - 1,
-                                    box[0],
-                                    box[1],
-                                    box[2],
-                                    box[3],
-                                )
-                            )
+                        )
 
     for c in data["categories"]:
         # exclude background with id 0

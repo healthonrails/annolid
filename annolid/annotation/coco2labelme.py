@@ -159,11 +159,14 @@ def _resolve_image_path(
 
 
 def _image_target_relative(file_name: str, *, image_id: int) -> Path:
-    rel = Path(str(file_name))
-    # Keep relative structure when provided by COCO. For absolute paths,
-    # place under a stable local images/ folder.
+    raw = str(file_name or "").replace("\\", "/")
+    rel = Path(raw)
+    # Keep relative structure when provided by COCO, but strip absolute roots
+    # and any parent traversal ('..') segments so writes stay under output_dir.
     if rel.is_absolute():
         rel = Path("images") / rel.name
+    safe_parts = [p for p in rel.parts if p not in ("", ".", "..", "/", "\\")]
+    rel = Path(*safe_parts) if safe_parts else Path("images") / f"image_{int(image_id)}"
     if not rel.suffix:
         rel = rel.with_suffix(".png")
     # Avoid collisions in flat or duplicated names.
