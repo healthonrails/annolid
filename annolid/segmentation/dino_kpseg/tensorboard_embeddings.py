@@ -555,7 +555,9 @@ def write_dino_kpseg_tensorboard_embeddings(
     short_side = int(cfg.short_side)
     layers = tuple(int(x) for x in cfg.layers)
     if cfg.weights is not None:
-        payload = torch.load(
+        from annolid.utils.safe_torch_load import safe_torch_load
+
+        payload = safe_torch_load(
             Path(cfg.weights).expanduser().resolve(),
             map_location="cpu",
         )

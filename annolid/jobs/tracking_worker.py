@@ -43,10 +43,10 @@ class TrackingWorker(QThread):
         parent: Optional[QObject] = None,
     ):
         super().__init__(parent)
-        self.processing_jobs = self._validate_jobs(processing_jobs)
-        self.global_config = global_config
-        self._is_running = True
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
+        self.global_config = dict(global_config or {})
+        self._is_running = True
+        self.processing_jobs = self._validate_jobs(processing_jobs)
         self.current_video_path_being_processed_for_ui: Optional[str] = None
         self.device = self._select_device()  # Select device once for the worker
 
@@ -192,8 +192,8 @@ class TrackingWorker(QThread):
 
             # Effective config for this job (global overridden by job-specific)
             effective_job_config = {
-                **self.global_config,
-                **current_job.video_specific_config,
+                **(self.global_config or {}),
+                **(current_job.video_specific_config or {}),
             }
             model_name_for_job = effective_job_config.get(
                 "model_name", "Cutie"
@@ -248,11 +248,10 @@ class TrackingWorker(QThread):
             self.finished.emit(
                 f"All {jobs_completed_count}/{total_jobs} tracking jobs completed."
             )
-        else:  # If stopped mid-way through all jobs
-            if jobs_completed_count < total_jobs:
-                self.finished.emit(
-                    f"Tracking stopped by user. {jobs_completed_count}/{total_jobs} jobs attempted."
-                )
+        else:  # Always emit finished when stopped so GUI listeners never hang
+            self.finished.emit(
+                f"Tracking stopped by user. {jobs_completed_count}/{total_jobs} jobs completed."
+            )
 
         self._is_running = False  # Ensure state is final
         self.logger.info("TrackingWorker finished run method.")
@@ -301,94 +300,103 @@ class TrackingWorker(QThread):
                 )
                 return False
 
-        for seg_idx, segment_obj in enumerate(tracking_segments):
-            if not self._is_running:
-                self.logger.info(
-                    f"Segment processing for {video_name} interrupted by stop signal."
-                )
-                return False
-
-            progress_overall = int(
-                ((job_idx + (seg_idx / num_segments_in_job)) / total_jobs) * 100
-            )
-            self.progress.emit(
-                progress_overall,
-                f"Video {video_name}: Segment {seg_idx + 1}/{num_segments_in_job}...",
-            )
-            # Segment __str__ is informative
-            self.logger.info(f"Starting: {segment_obj}")
-            self._log_gpu_memory(f"Seg {video_name}-{seg_idx + 1}", "Before")
-
-            segment_executor = None  # Scoped here
-            try:
-                if not segment_obj.is_annotation_valid():
-                    msg = f"Skipping segment (ann:{segment_obj.annotated_frame}) for {video_name} due to missing annotation: {segment_obj.annotation_json_path}"
-                    self.logger.warning(msg)
-                    self.error.emit(msg)
-                    continue
-
-                # Handle "Cutie" or "cutie-base" etc.
-                if is_cutie_model_name(model_name):
-                    # Create executor with combined config for this segment
-                    # Allow video config to override job_config for this segment
-                    segment_config = {**job_config, **job.video_specific_config}
-
-                    segment_executor = create_segmented_cutie_executor(
-                        video_path_str=str(job.video_path),
-                        segment_annotated_frame=segment_obj.annotated_frame,
-                        segment_start_frame=segment_obj.segment_start_frame,
-                        segment_end_frame=segment_obj.segment_end_frame,
-                        processing_config=segment_config,  # Pass effective config
-                        pred_worker=self,  # TrackingWorker itself
-                        device=device,
-                        cutie_engine=shared_cutie_engine,
+        try:
+            for seg_idx, segment_obj in enumerate(tracking_segments):
+                if not self._is_running:
+                    self.logger.info(
+                        f"Segment processing for {video_name} interrupted by stop signal."
                     )
-                    status_message = segment_executor.process_segment()
+                    return False
 
-                    if (
-                        "Error" in status_message
-                        or "not found" in status_message
-                        or "Failed" in status_message
-                    ):
-                        self.error.emit(
-                            f"Segment failed ({video_name}, ann:{segment_obj.annotated_frame}): {status_message}"
+                progress_overall = int(
+                    ((job_idx + (seg_idx / num_segments_in_job)) / total_jobs) * 100
+                )
+                self.progress.emit(
+                    progress_overall,
+                    f"Video {video_name}: Segment {seg_idx + 1}/{num_segments_in_job}...",
+                )
+                # Segment __str__ is informative
+                self.logger.info(f"Starting: {segment_obj}")
+                self._log_gpu_memory(f"Seg {video_name}-{seg_idx + 1}", "Before")
+
+                segment_executor = None  # Scoped here
+                try:
+                    if not segment_obj.is_annotation_valid():
+                        msg = f"Skipping segment (ann:{segment_obj.annotated_frame}) for {video_name} due to missing annotation: {segment_obj.annotation_json_path}"
+                        self.logger.warning(msg)
+                        self.error.emit(msg)
+                        continue
+
+                    # Handle "Cutie" or "cutie-base" etc.
+                    if is_cutie_model_name(model_name):
+                        # Create executor with combined config for this segment
+                        # Allow video config to override job_config for this segment
+                        segment_config = {
+                            **(job_config or {}),
+                            **(job.video_specific_config or {}),
+                        }
+
+                        segment_executor = create_segmented_cutie_executor(
+                            video_path_str=str(job.video_path),
+                            segment_annotated_frame=segment_obj.annotated_frame,
+                            segment_start_frame=segment_obj.segment_start_frame,
+                            segment_end_frame=segment_obj.segment_end_frame,
+                            processing_config=segment_config,  # Pass effective config
+                            pred_worker=self,  # TrackingWorker itself
+                            device=device,
+                            cutie_engine=shared_cutie_engine,
                         )
+                        status_message = segment_executor.process_segment()
+
+                        if (
+                            not self._is_running
+                            or "stopped by user" in str(status_message or "").lower()
+                        ):
+                            self.logger.info(
+                                f"Segment ({video_name}, ann:{segment_obj.annotated_frame}) stopped by user."
+                            )
+                            return False
+
+                        if (
+                            "Error" in status_message
+                            or "not found" in status_message
+                            or "Failed" in status_message
+                        ):
+                            self.error.emit(
+                                f"Segment failed ({video_name}, ann:{segment_obj.annotated_frame}): {status_message}"
+                            )
+                        else:
+                            segments_processed_successfully_count += 1
+                            self.logger.info(
+                                f"Segment ({video_name}, ann:{segment_obj.annotated_frame}) processed: {status_message}"
+                            )
                     else:
-                        segments_processed_successfully_count += 1
-                        self.logger.info(
-                            f"Segment ({video_name}, ann:{segment_obj.annotated_frame}) processed: {status_message}"
+                        self.logger.error(
+                            f"Segmented tracking for model '{model_name}' not implemented. Only Cutie is supported via SegmentedCutieExecutor."
                         )
-                else:
-                    # Here you would dispatch to a different Segment Executor or use VideoProcessor for other models
-                    # For now, this path is an error if not Cutie for segments.
-                    self.logger.error(
-                        f"Segmented tracking for model '{model_name}' not implemented. Only Cutie is supported via SegmentedCutieExecutor."
-                    )
+                        self.error.emit(
+                            f"Unsupported model '{model_name}' for segmented tracking of {video_name}."
+                        )
+
+                except Exception as e:
                     self.error.emit(
-                        f"Unsupported model '{model_name}' for segmented tracking of {video_name}."
+                        f"Critical error in segment ({video_name}, ann:{segment_obj.annotated_frame}): {str(e)}"
                     )
-                    # To attempt with VideoProcessor (less efficient, needs VP to be segment-aware):
-                    # success = self._run_segment_with_general_vp(job, segment_obj, device, segment_config, model_name)
-                    # if success: segments_processed_successfully_count +=1
-
-            except Exception as e:  # Catch errors from SegmentedCutieExecutor instantiation or process_segment
-                self.error.emit(
-                    f"Critical error in segment ({video_name}, ann:{segment_obj.annotated_frame}): {str(e)}"
-                )
-                self.logger.error(
-                    f"Segment execution critical error for {segment_obj}", exc_info=True
-                )
-            finally:
-                if segment_executor:
-                    segment_executor.cleanup()
-                self._log_gpu_memory(f"Seg {video_name}-{seg_idx + 1}", "After")
-
-        if shared_cutie_engine is not None:
-            try:
-                shared_cutie_engine.cleanup()
-            except Exception:
-                # Best-effort cleanup; avoid failing the run due to teardown.
-                pass
+                    self.logger.error(
+                        f"Segment execution critical error for {segment_obj}",
+                        exc_info=True,
+                    )
+                finally:
+                    if segment_executor:
+                        segment_executor.cleanup()
+                    self._log_gpu_memory(f"Seg {video_name}-{seg_idx + 1}", "After")
+        finally:
+            if shared_cutie_engine is not None:
+                try:
+                    shared_cutie_engine.cleanup()
+                except Exception:
+                    # Best-effort cleanup; avoid failing the run due to teardown.
+                    pass
 
         if (
             segments_processed_successfully_count > 0
@@ -474,14 +482,26 @@ class TrackingWorker(QThread):
                     f"Using annotation from frame {annotated_frame_for_vp} (JSON: {Path(highest_frame_json).name}) for whole video {video_name}."
                 )
 
-            # Create VideoProcessor instance
+            # Filter keys already passed explicitly so job_config cannot trigger
+            # TypeError("got multiple values for keyword argument ...").
+            vp_extra_config = {
+                k: v
+                for k, v in (job_config or {}).items()
+                if k
+                not in {
+                    "video_path",
+                    "model_name",
+                    "save_image_to_disk",
+                    "device",
+                }
+            }
             vp_instance = _VideoProcessorClass(
                 video_path=str(job.video_path),
                 # This tells VP which internal logic to use (Cutie, EdgeSAM, etc.)
                 model_name=model_name,
                 save_image_to_disk=False,
                 device=device,
-                **job_config,  # Pass all effective configs
+                **vp_extra_config,
             )
             vp_instance.set_pred_worker(self)
             total_video_frames = vp_instance.get_total_frames()
@@ -507,6 +527,12 @@ class TrackingWorker(QThread):
                 is_new_segment=True,  # Treat as a new processing task for VP's internal state mgt
                 extra_kwargs=job_config,  # Pass other relevant parameters from job_config
             )
+
+            if not self._is_running or "stopped by user" in str(message or "").lower():
+                self.logger.info(
+                    f"WHOLE video processing for {video_name} stopped by user."
+                )
+                return False
 
             if (
                 "Error" in message

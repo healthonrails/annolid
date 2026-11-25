@@ -312,23 +312,58 @@ def search_video(
 
     video_loader = CV2Video(video_path)
     matches_out: List[Dict[str, Any]] = []
+    # Reuse a single FrameSearchEngine across all sampled frames instead of
+    # reloading the .npz index and recreating ONNX Runtime sessions per frame.
+    owns_engine = (
+        index_path is not None
+        or isinstance(backend, FrameEmbeddingBackend)
+        or backend != DEFAULT_SEARCH_BACKEND
+        or bool(backend_params)
+    )
+    engine = get_embedder(
+        index_path=index_path,
+        backend=backend,
+        backend_params=backend_params,
+    )
     try:
         num_frames = int(video_loader.total_frames())
         step = max(1, int(frame_skip))
         for i in range(0, num_frames, step):
-            frame = video_loader.load_frame(i)
+            try:
+                frame = video_loader.load_frame(i)
+            except KeyError:
+                break
             if frame is None:
                 continue
             pil_img = cv2_to_pil(frame)
-            results = search_frames(
-                pil_img,
-                limit=search_limit,
-                index_path=index_path,
-                backend=backend,
-                backend_params=backend_params,
+            raw_results = engine.search_similar_images(
+                pil_img, limit=search_limit, threshold=float(threshold)
             )
+            results: List[Dict[str, Any]] = []
+            for res in raw_results:
+                if isinstance(res, dict):
+                    entry: Dict[str, Any] = {
+                        "image_uri": res.get("image_uri", ""),
+                        "flags": res.get("flags") or [],
+                        "caption": res.get("caption") or "",
+                    }
+                    if res.get("similarity") is not None:
+                        entry["similarity"] = float(res["similarity"])
+                    if res.get("frame_index") is not None:
+                        entry["frame_index"] = int(res["frame_index"])
+                    results.append(entry)
+                else:
+                    results.append(
+                        {
+                            "image_uri": getattr(res, "image_uri", ""),
+                            "flags": getattr(res, "flags", None) or [],
+                            "caption": getattr(res, "caption", None) or "",
+                        }
+                    )
             matches_out.append({"frame_index": i, "results": results})
     finally:
+        if owns_engine:
+            engine.close()
         video_loader.release()
     return matches_out
 

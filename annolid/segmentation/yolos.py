@@ -1484,6 +1484,20 @@ class InferenceProcessor:
                 for kpt_id, kpt in enumerate(xy_row):
                     if not isinstance(kpt, (list, tuple)) or len(kpt) < 2:
                         continue
+                    kx, ky = float(kpt[0]), float(kpt[1])
+                    conf_val = (
+                        float(conf_row[kpt_id])
+                        if conf_row is not None and kpt_id < len(conf_row)
+                        else None
+                    )
+                    # Ultralytics encodes undetected keypoints as (0.0, 0.0) with conf == 0.0.
+                    # Do not emit them as visible keypoints at the image origin.
+                    if (
+                        kx == 0.0
+                        and ky == 0.0
+                        and (conf_val is None or conf_val <= 0.0)
+                    ):
+                        continue
                     if self.keypoint_names and kpt_id < len(self.keypoint_names):
                         kpt_label = str(self.keypoint_names[kpt_id])
                     else:
@@ -1495,9 +1509,9 @@ class InferenceProcessor:
                         flags={},
                         group_id=group_id,
                     )
-                    keypoint_shape.points = [[float(kpt[0]), float(kpt[1])]]
-                    if conf_row is not None and kpt_id < len(conf_row):
-                        keypoint_shape.other_data["score"] = float(conf_row[kpt_id])
+                    keypoint_shape.points = [[kx, ky]]
+                    if conf_val is not None:
+                        keypoint_shape.other_data["score"] = conf_val
                     keypoint_shape.other_data["instance_id"] = int(group_id)
                     keypoint_shape.other_data["instance_label"] = instance_label
                     if class_name:

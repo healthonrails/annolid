@@ -598,8 +598,6 @@ def compress_and_rescale_video(
                         cmd, returncode=returncode, stdout=stdout, stderr=stderr
                     )
 
-                stdout_stream = stdout_stream
-                stderr_stream = stderr_stream
                 streams = [
                     stream for stream in (stdout_stream, stderr_stream) if stream
                 ]

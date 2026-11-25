@@ -34,10 +34,20 @@ class ONNXBaseModel:
         except Exception:
             available_providers = set()
 
-        if "CUDAExecutionProvider" in available_providers and has_gpu():
-            device_type = "gpu"
+        requested_device = str(device_type or "auto").strip().lower()
+        if requested_device == "auto":
+            if "CUDAExecutionProvider" in available_providers and has_gpu():
+                requested_device = "gpu"
+            else:
+                requested_device = "cpu"
         self.sess_opts = ort.SessionOptions()
-        self.sess_opts.inter_op_num_threads = int(os.environ.get("OMP_NUM_THREADS", 1))
+        try:
+            omp_threads = max(
+                1, int(str(os.environ.get("OMP_NUM_THREADS", "1")).strip() or "1")
+            )
+        except ValueError:
+            omp_threads = 1
+        self.sess_opts.inter_op_num_threads = omp_threads
 
         # Select the execution provider based on device_type and build capabilities
         gpu_providers = (
@@ -49,9 +59,7 @@ class ONNXBaseModel:
             "cpu": ["CPUExecutionProvider"],
             "gpu": gpu_providers,
         }
-        self.providers = providers_dict.get(
-            device_type.lower(), ["CPUExecutionProvider"]
-        )
+        self.providers = providers_dict.get(requested_device, ["CPUExecutionProvider"])
 
         self.ort_session = ort.InferenceSession(
             model_path,

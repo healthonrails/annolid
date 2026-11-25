@@ -151,8 +151,17 @@ class CrfMaskRefiner:
         return module
 
     def _select_device(self) -> torch.device:
-        if self.device and str(self.device).startswith("cuda"):
+        req = str(self.device or "").strip().lower()
+        if req == "cpu":
+            return torch.device("cpu")
+        if req.startswith("cuda"):
             return torch.device(str(self.device))
+        if (
+            req == "mps"
+            and hasattr(torch.backends, "mps")
+            and torch.backends.mps.is_available()
+        ):
+            return torch.device("mps")
         if torch.cuda.is_available():
             return torch.device("cuda")
         return torch.device("cpu")

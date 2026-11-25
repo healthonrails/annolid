@@ -413,6 +413,12 @@ class Segmentor:
         boxes = boxes[_keep]
         scores = scores[_keep]
         classes = classes[_keep]
+        if tracking_ids is not None:
+            keep_indices = _keep.tolist() if hasattr(_keep, "tolist") else list(_keep)
+            try:
+                tracking_ids = tracking_ids[_keep]
+            except Exception:
+                tracking_ids = [tracking_ids[idx] for idx in keep_indices]
 
         boxes = boxes.numpy().tolist()
         scores = scores.tolist()
@@ -432,10 +438,7 @@ class Segmentor:
         else:
             rles = []
 
-        assert len(rles) == len(boxes)
-
-        if num_instance != len(rles):
-            num_instance = len(rles)
+        num_instance = len(boxes)
 
         for k in range(num_instance):
             box = boxes[k]
@@ -490,7 +493,7 @@ class Segmentor:
                         continue
                 elif out_dict["instance_name"] == self.right_interact_name:
                     self._save_pred_history(
-                        out_dict, self.right_interact_name, self.left_interact_queue
+                        out_dict, self.right_interact_name, self.right_interact_queue
                     )
                     if not self._overlap_with_subject_instance(out_dict):
                         out_dict = {}

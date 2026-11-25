@@ -331,6 +331,21 @@ def summarize_tracking_gaps(
             total_frames = max_f + 1
     elif json_dir.is_dir():
         max_f = -1
+        for store_path in sorted(json_dir.glob("*_annotations.ndjson")):
+            try:
+                from annolid.utils.annotation_store import AnnotationStore
+
+                store = AnnotationStore(store_path)
+                for fno in store.iter_frames():
+                    frame_idx = int(fno)
+                    max_f = max(max_f, frame_idx)
+                    payload = store.get_frame(frame_idx)
+                    if isinstance(payload, dict):
+                        for sh in payload.get("shapes", []) or []:
+                            if isinstance(sh, dict) and sh.get("label"):
+                                all_labels.add(str(sh["label"]))
+            except Exception:
+                pass
         for p in json_dir.glob("*.json"):
             if p.name.endswith("_tracking_stats.json") or p.name.endswith(
                 "_zones.json"

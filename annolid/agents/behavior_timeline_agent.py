@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 
 import numpy as np
 
-from annolid.agents.frame_search import cv2_to_pil, search_frames
+from annolid.agents.frame_search import cv2_to_pil
 from annolid.core.media.video import CV2Video
 from annolid.services.embedding_search import (
     DEFAULT_SEARCH_BACKEND,
@@ -171,29 +171,61 @@ def build_timeline(
     raw_per_sample: List[List[Tuple[str, float]]] = []
     neighbor_cache: List[List[dict]] = []
 
+    from annolid.agents.frame_search import get_embedder
+
     video = CV2Video(video_path)
+    search_engine = get_embedder(
+        index_path=cfg.index_path,
+        backend=resolved_backend,
+        backend_params=resolved_params
+        if not isinstance(resolved_backend, FrameEmbeddingBackend)
+        else None,
+    )
+    owns_search_engine = (
+        cfg.index_path is not None
+        or isinstance(resolved_backend, FrameEmbeddingBackend)
+        or bool(resolved_params)
+    )
     try:
         for frame_idx in sample_indices:
-            frame = video.load_frame(frame_idx)
+            try:
+                frame = video.load_frame(frame_idx)
+            except KeyError:
+                frame = None
             if frame is None:
                 logger.warning(f"Failed to load frame index={frame_idx}")
                 raw_per_sample.append([])
                 neighbor_cache.append([])
                 continue
             pil_img = cv2_to_pil(frame)
-            results = search_frames(
-                pil_img,
-                limit=cfg.neighbors,
-                index_path=cfg.index_path,
-                backend=resolved_backend,
-                backend_params=resolved_params
-                if not isinstance(resolved_backend, FrameEmbeddingBackend)
-                else None,
+            raw_results = search_engine.search_similar_images(
+                pil_img, limit=cfg.neighbors
             )
+            results = [
+                {
+                    "image_uri": r.get("image_uri", ""),
+                    "flags": r.get("flags") or [],
+                    "caption": r.get("caption") or "",
+                    **(
+                        {"similarity": float(r["similarity"])}
+                        if r.get("similarity") is not None
+                        else {}
+                    ),
+                }
+                if isinstance(r, dict)
+                else {
+                    "image_uri": getattr(r, "image_uri", ""),
+                    "flags": getattr(r, "flags", None) or [],
+                    "caption": getattr(r, "caption", None) or "",
+                }
+                for r in raw_results
+            ]
             neighbor_cache.append(results)
             agg = aggregate_behaviors(results, cfg.max_behaviors_per_second)
             raw_per_sample.append(agg)
     finally:
+        if owns_search_engine:
+            search_engine.close()
         video.release()
 
     smoothed = smooth_timeline(raw_per_sample, cfg.smooth_window, cfg.min_confidence)

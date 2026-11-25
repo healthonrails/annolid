@@ -314,7 +314,11 @@ def evaluate_iteration_outputs(
                 key=lambda p: (
                     p.mask_map50
                     if p.mask_map50 is not None
-                    else (p.map50 if p.map50 is not None else -1.0)
+                    else (
+                        p.pose_map50
+                        if p.pose_map50 is not None
+                        else (p.map50 if p.map50 is not None else -1.0)
+                    )
                 ),
             )
             ev.best_train_epoch = int(best_pt.step)
@@ -324,6 +328,11 @@ def evaluate_iteration_outputs(
             ev.val_mask_map50 = (
                 round(float(best_pt.mask_map50), 4)
                 if best_pt.mask_map50 is not None
+                else None
+            )
+            ev.val_pose_map50 = (
+                round(float(best_pt.pose_map50), 4)
+                if best_pt.pose_map50 is not None
                 else None
             )
             last_pt = pts[-1]
@@ -496,7 +505,11 @@ def evaluate_iteration_outputs(
     val_metric = (
         ev.val_mask_map50
         if ev.val_mask_map50 is not None
-        else (ev.val_box_map50 if ev.val_box_map50 is not None else 0.0)
+        else (
+            ev.val_pose_map50
+            if ev.val_pose_map50 is not None
+            else (ev.val_box_map50 if ev.val_box_map50 is not None else 0.0)
+        )
     )
     if ev.supervised_f1 is not None and ev.supervised_miou is not None:
         score = (
@@ -674,7 +687,11 @@ def suggest_next_iteration(
     val_map = (
         evaluation.val_mask_map50
         if evaluation.val_mask_map50 is not None
-        else evaluation.val_box_map50
+        else (
+            evaluation.val_pose_map50
+            if evaluation.val_pose_map50 is not None
+            else evaluation.val_box_map50
+        )
     )
     if val_map is not None and val_map < 0.65:
         diagnosis.append(

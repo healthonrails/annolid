@@ -105,7 +105,10 @@ class CutieVideoProcessor:
         if end_frame is None:
             return target_end
         try:
-            return min(int(end_frame), target_end)
+            parsed = int(end_frame)
+            if parsed < 0:
+                return target_end
+            return min(parsed, target_end)
         except (TypeError, ValueError):
             return target_end
 

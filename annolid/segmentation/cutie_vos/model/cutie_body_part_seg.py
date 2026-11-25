@@ -210,7 +210,9 @@ def load_cutie_body_part_seg_checkpoint(
     device: str | torch.device = "cpu",
 ) -> Tuple[CutieBodyPartSegHead, Dict[str, Any]]:
     """Load a saved :class:`CutieBodyPartSegHead` checkpoint."""
-    raw = torch.load(str(path), map_location="cpu", weights_only=False)
+    from annolid.utils.safe_torch_load import safe_torch_load
+
+    raw = safe_torch_load(str(path), map_location="cpu")
     cfg_dict = dict(raw.get("config") or {})
     if "class_names" in cfg_dict:
         cfg_dict["class_names"] = tuple(cfg_dict["class_names"])

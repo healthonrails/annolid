@@ -185,7 +185,7 @@ class CoTrackerProcessor(BasePointTrackingProcessor):
     ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
         stop_event = self._resolve_stop_event()
         try:
-            with torch_cancellable_forward(model, stop_event):
+            with torch.inference_mode(), torch_cancellable_forward(model, stop_event):
                 output = model(video, **kwargs)
         except InferenceCancelledError:
             raise
@@ -197,7 +197,10 @@ class CoTrackerProcessor(BasePointTrackingProcessor):
                     "CoTracker backward tracking failed because the upstream "
                     "model returned extra outputs; retrying forward-only tracking."
                 )
-                with torch_cancellable_forward(model, stop_event):
+                with (
+                    torch.inference_mode(),
+                    torch_cancellable_forward(model, stop_event),
+                ):
                     output = model(video, **retry_kwargs)
             else:
                 raise
@@ -431,7 +434,12 @@ class CoTrackerProcessor(BasePointTrackingProcessor):
         Uses offline bidirectional model to ensure ALL frames in the window
         get valid tracks, including the earliest frames.
         """
-        video = self.video_loader.get_frames_between(start_frame, end_frame)
+        video = self.video_loader.get_frames_between(
+            int(start_frame), int(end_frame) + 1
+        )
+        expected_frames = max(1, int(end_frame) - int(start_frame) + 1)
+        if len(video) > expected_frames:
+            video = video[:expected_frames]
         video_tensor = (
             torch.from_numpy(video).permute(0, 3, 1, 2)[None].float().to(self.device)
         )
@@ -492,7 +500,12 @@ class CoTrackerProcessor(BasePointTrackingProcessor):
             self.mask_label,
         )
 
-        video = self.video_loader.get_frames_between(start_frame, end_frame)
+        resolved_end = (
+            self.video_loader.total_frames()
+            if end_frame is None or int(end_frame) < 0
+            else int(end_frame)
+        )
+        video = self.video_loader.get_frames_between(int(start_frame), resolved_end)
         video = (
             torch.from_numpy(video).permute(0, 3, 1, 2)[None].float().to(self.device)
         )

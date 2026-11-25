@@ -132,7 +132,7 @@ class ONNXInferenceWrapper:
             cv_image = cv2.imread(image_path)
             embedding = self.model.encode(cv_image)
             masks = self.model.predict_masks(embedding, prompt)
-            masks = masks.astype(np.uint8)
+            masks = (masks > 0.0).astype(np.uint8)
             return masks
         except Exception as e:
             print(f"Error during inference: {e}")
@@ -157,11 +157,17 @@ def show_points(coords, labels, ax, marker_size=375):
 
 
 if __name__ == "__main__":
-    encoder_model_path = "/Users/chenyang/Desktop/annolid/annolid/segmentation/SAM/sam_hq_vit_l_encoder_quant.onnx"
-    decoder_model_path = "/Users/chenyang/Desktop/annolid/annolid/segmentation/SAM/sam_hq_vit_l_decoder.onnx"
-    onnx_wrapper = ONNXInferenceWrapper(encoder_model_path, decoder_model_path)
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Run HQ-SAM ONNX inference demo.")
+    parser.add_argument("--encoder", required=True, help="Path to HQ-SAM ONNX encoder.")
+    parser.add_argument("--decoder", required=True, help="Path to HQ-SAM ONNX decoder.")
+    parser.add_argument("--image", required=True, help="Path to input image.")
+    cli_args = parser.parse_args()
+
+    onnx_wrapper = ONNXInferenceWrapper(cli_args.encoder, cli_args.decoder)
     prompt = [{"type": "point", "data": [965, 351], "label": 1}]
-    image_path = "/Users/chenyang/Downloads/bird1/bird1_000000002.png"
+    image_path = cli_args.image
     result_masks = onnx_wrapper.infer(image_path, prompt)
     image = cv2.imread(image_path)
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)

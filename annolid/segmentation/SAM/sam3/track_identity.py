@@ -155,7 +155,7 @@ def map_outputs_to_global_ids_at_frame(
                 last_seen = getattr(manager, "_global_track_last_seen_frame", {}).get(int(gid))
                 age = 0
                 if frame_idx is not None and last_seen is not None:
-                    age = max(0, int(frame_idx) - int(last_seen))
+                    age = abs(int(frame_idx) - int(last_seen))
                     if age > max_gap:
                         continue
                 appearance_score = obj_ptr_similarity(

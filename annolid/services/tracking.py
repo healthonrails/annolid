@@ -113,7 +113,11 @@ def run_video_processor_frames(
     is_new_segment: bool = False,
     extra_kwargs: Optional[Mapping[str, Any]] = None,
 ) -> str:
-    kwargs = dict(extra_kwargs or {})
+    kwargs = {
+        k: v
+        for k, v in dict(extra_kwargs or {}).items()
+        if k not in {"start_frame", "end_frame", "is_cutie", "is_new_segment"}
+    }
     return processor.process_video_frames(
         start_frame=int(start_frame),
         end_frame=int(end_frame),

@@ -278,20 +278,41 @@ def _export_yolo_dataset(
     else:
         _register_class("fly" if species == "fly" else "mouse")
 
-    # Deterministic stratified-like train/val split.
-    n = len(records)
+    # Deterministic group-aware train/val split so oversampled copies of the
+    # same source frame can never leak across both train and val splits.
+    group_order: list[str] = []
+    group_to_indices: dict[str, list[int]] = {}
+    for idx, rec in enumerate(records):
+        gkey = str(rec.get("source_group") or rec.get("image_path") or f"idx_{idx}")
+        if gkey not in group_to_indices:
+            group_order.append(gkey)
+            group_to_indices[gkey] = []
+        group_to_indices[gkey].append(idx)
+
+    n_groups = len(group_order)
     rng = np.random.default_rng(int(seed))
-    indices = np.arange(n)
-    rng.shuffle(indices)
-    n_val = (
-        max(1, int(round(n * float(np.clip(val_fraction, 0.05, 0.5))))) if n >= 2 else 0
+    perm = np.arange(n_groups)
+    rng.shuffle(perm)
+    n_val_groups = (
+        max(1, int(round(n_groups * float(np.clip(val_fraction, 0.05, 0.5)))))
+        if n_groups >= 2
+        else 0
     )
-    val_set = set(indices[:n_val].tolist())
+    val_groups = {group_order[i] for i in perm[:n_val_groups].tolist()}
+    val_set: set[int] = set()
+    # Keep only a single canonical copy of each validation group (never oversample val).
+    skipped_val_duplicates: set[int] = set()
+    for gkey in val_groups:
+        g_indices = group_to_indices[gkey]
+        val_set.add(g_indices[0])
+        skipped_val_duplicates.update(g_indices[1:])
 
     train_count = 0
     val_count = 0
 
     for idx, rec in enumerate(records):
+        if idx in skipped_val_duplicates:
+            continue
         split = "val" if idx in val_set else "train"
         if split == "val":
             val_count += 1
@@ -1738,6 +1759,7 @@ def _load_real_labelme_records(
             loaded.append(
                 {
                     "stem": f"real_{jf.stem}_c{copy_i}",
+                    "source_group": f"real::{jf.resolve()}",
                     "scenario": "real_labeled",
                     "image_path": str(img_path),
                     "width": w,

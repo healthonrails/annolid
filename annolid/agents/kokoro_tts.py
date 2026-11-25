@@ -1,10 +1,9 @@
 import os
 from functools import lru_cache
 from pathlib import Path
+import tempfile
 from typing import Iterable, List, Optional, Tuple
 import warnings
-
-import gdown
 
 from annolid.utils.audio_playback import play_audio_buffer
 from annolid.utils.logger import logger
@@ -219,13 +218,34 @@ def _silence_jieba_logs() -> None:
 
 
 def download_file(url: str, filepath: Path) -> None:
-    """Downloads a file from a URL to a specified filepath using gdown."""
+    """Downloads a file from a URL to a specified filepath atomically using gdown."""
+    try:
+        import gdown
+    except ImportError as exc:
+        raise ImportError(
+            "Downloading Kokoro TTS models requires 'gdown'. "
+            "Install it via: pip install 'annolid[model_downloads]'"
+        ) from exc
+
     filepath.parent.mkdir(parents=True, exist_ok=True)
+    tmp_fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{filepath.name}.", suffix=".part", dir=str(filepath.parent)
+    )
+    os.close(tmp_fd)
+    tmp_path = Path(tmp_name)
     try:
         # quiet=False shows progress bar, fuzzy=True handles redirects
-        gdown.download(url, str(filepath), quiet=False, fuzzy=True)
+        result = gdown.download(url, str(tmp_path), quiet=False, fuzzy=True)
+        if not result or not tmp_path.is_file() or tmp_path.stat().st_size == 0:
+            raise RuntimeError(f"Failed to download non-empty file from {url}")
+        os.replace(str(tmp_path), str(filepath))
         logger.info("Downloaded to '%s'", filepath)
     except Exception as e:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
         logger.warning("Error downloading from %s: %s", url, e)
         raise  # Re-raise the exception to be caught in text_to_speech
 

@@ -453,7 +453,9 @@ def load_cutie_pose_checkpoint(
     device: str | torch.device = "cpu",
 ) -> Tuple[CutiePoseKeypointHead, Dict[str, Any]]:
     """Load a saved :class:`CutiePoseKeypointHead` checkpoint."""
-    raw = torch.load(str(path), map_location="cpu", weights_only=False)
+    from annolid.utils.safe_torch_load import safe_torch_load
+
+    raw = safe_torch_load(str(path), map_location="cpu")
     cfg_dict = dict(raw.get("config") or {})
     if "keypoint_names" in cfg_dict:
         cfg_dict["keypoint_names"] = tuple(cfg_dict["keypoint_names"])

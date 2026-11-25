@@ -36,19 +36,25 @@ def _synthesize_kokoro(
     )
 
 
+_DEFAULT_POCKET_TTS_INSTALL_HINT = "pip install 'annolid[text_to_speech]'"
+
+
 def _synthesize_pocket(
     text: str, settings: Dict[str, object]
 ) -> Optional[Tuple[np.ndarray, int]]:
+    install_hint = _DEFAULT_POCKET_TTS_INSTALL_HINT
     try:
         from annolid.agents.pocket_tts import (
             DEFAULT_VOICE as POCKET_DEFAULT_VOICE,
             POCKET_TTS_INSTALL_HINT,
             text_to_speech,
         )
+
+        install_hint = POCKET_TTS_INSTALL_HINT
     except Exception as exc:
         logger.warning(
             "Pocket TTS playback dependencies missing; install via '%s' (%s)",
-            POCKET_TTS_INSTALL_HINT,
+            install_hint,
             exc,
         )
         return None

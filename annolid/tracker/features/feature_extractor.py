@@ -26,6 +26,7 @@ class Extractor(object):
         logger = logging.getLogger("root.tracker")
         logger.info("Loading weights from {}... Done!".format(model_path))
         self.net.to(self.device)
+        self.net.eval()
         self.size = (64, 128)
         self.norm = transforms.Compose(
             [

@@ -304,8 +304,10 @@ class Sim2RealWorkflowService:
             str(int(epochs)),
             "--imgsz",
             str(int(imgsz)),
-            "--output",
-            str(output_dir),
+            "--project",
+            str(output_dir.parent),
+            "--name",
+            str(output_dir.name),
         ]
         if weights:
             cmd.extend(["--weights", str(weights)])
@@ -349,7 +351,7 @@ class Sim2RealWorkflowService:
             str(weights_path),
             "--conf",
             str(float(conf)),
-            "--output",
+            "--output-dir",
             str(output_dir),
         ]
         _emit_log(log_callback, f"Running local evaluation inference: {' '.join(cmd)}")
@@ -484,6 +486,7 @@ class Sim2RealWorkflowService:
                 35,
                 f"Iter {iter_num}: Training/fine-tuning on {train_backend} ({accelerator})...",
             )
+            owned_session_name: Optional[str] = None
             train_out_dir = iter_dir / "train_output"
             if train_backend == "colab":
                 train_req = ColabTrainRequest(
@@ -515,9 +518,12 @@ class Sim2RealWorkflowService:
                 )
                 record.colab_train_job_id = job.job_id
                 record.train_output_dir = job.local_output_dir or str(train_out_dir)
-                # Keep active session name for immediate evaluation reuse!
+                # Keep active session name for immediate evaluation reuse and
+                # track ownership so we always tear it down on failure/cancel.
                 if job.session_name and not session_name:
                     session_name = job.session_name
+                    if train_req.keep_runtime and not keep_runtime:
+                        owned_session_name = job.session_name
                 if job.status == "notebook_ready":
                     record.status = "notebook_ready"
                     record.notes.append(
@@ -599,6 +605,8 @@ class Sim2RealWorkflowService:
                         )
                         record.colab_predict_job_ids.append(pjob.job_id)
                         pred_dirs.append(pjob.local_output_dir or str(pred_out))
+                        if is_last_eval and not keep_runtime:
+                            owned_session_name = None
                     else:
                         pred_dirs.append(
                             self._run_local_predict(
@@ -688,6 +696,24 @@ class Sim2RealWorkflowService:
             record.error = str(exc)
             _persist()
             raise
+        finally:
+            if (
+                train_backend == "colab"
+                and not keep_runtime
+                and locals().get("owned_session_name")
+                and record.status != "notebook_ready"
+            ):
+                try:
+                    self.colab.stop_session(
+                        str(locals()["owned_session_name"]),
+                        backend=colab_backend,
+                    )
+                except Exception as stop_exc:
+                    _emit_log(
+                        log_callback,
+                        f"[Iter {iter_num}] Warning: failed to stop Colab session "
+                        f"'{locals()['owned_session_name']}': {stop_exc}",
+                    )
 
     def apply_latest_recommendation(self) -> tuple[SimDatasetConfig, dict[str, Any]]:
         """Persist the latest iteration's recommended SimDatasetConfig as current config."""
@@ -870,42 +896,53 @@ class Sim2RealWorkflowService:
         eval_dir = self.project_dir / "standalone_eval"
         eval_clips_dir = self.project_dir / "eval_clips"
         pred_dirs: list[str] = []
-        for v_idx, raw_vid in enumerate(example_videos):
-            src_vid = Path(raw_vid)
-            clip_path = _prepare_eval_clip(
-                src_vid, eval_clips_dir, max_frames=int(eval_max_frames)
-            )
-            pred_out = eval_dir / f"video_{v_idx + 1:02d}_{src_vid.stem}"
-            if train_backend == "colab":
-                pjob = self.colab.run_predict(
-                    ColabPredictRequest(
-                        model="yolo_labelme",
-                        source_path=str(clip_path),
-                        weights=w_path,
-                        conf=float(conf),
-                        save_csv=True,
-                        save_video=False,
-                        accelerator=accelerator,
-                        backend=colab_backend,
-                        session_name=session_name,
-                        keep_runtime=keep_runtime
-                        if v_idx == len(example_videos) - 1
-                        else True,
-                        output_dir=str(pred_out),
-                    ),
-                    log_callback=log_callback,
+        created_session_name: Optional[str] = None
+        try:
+            for v_idx, raw_vid in enumerate(example_videos):
+                src_vid = Path(raw_vid)
+                clip_path = _prepare_eval_clip(
+                    src_vid, eval_clips_dir, max_frames=int(eval_max_frames)
                 )
-                pred_dirs.append(pjob.local_output_dir or str(pred_out))
-            else:
-                pred_dirs.append(
-                    self._run_local_predict(
-                        source_path=clip_path,
-                        weights_path=w_path,
-                        conf=float(conf),
-                        output_dir=pred_out,
+                pred_out = eval_dir / f"video_{v_idx + 1:02d}_{src_vid.stem}"
+                if train_backend == "colab":
+                    pjob = self.colab.run_predict(
+                        ColabPredictRequest(
+                            model="yolo_labelme",
+                            source_path=str(clip_path),
+                            weights=w_path,
+                            conf=float(conf),
+                            save_csv=True,
+                            save_video=False,
+                            accelerator=accelerator,
+                            backend=colab_backend,
+                            session_name=session_name,
+                            keep_runtime=keep_runtime
+                            if v_idx == len(example_videos) - 1
+                            else True,
+                            output_dir=str(pred_out),
+                        ),
                         log_callback=log_callback,
                     )
-                )
+                    if pjob.session_name and not session_name:
+                        session_name = pjob.session_name
+                        created_session_name = pjob.session_name
+                    pred_dirs.append(pjob.local_output_dir or str(pred_out))
+                else:
+                    pred_dirs.append(
+                        self._run_local_predict(
+                            source_path=clip_path,
+                            weights_path=w_path,
+                            conf=float(conf),
+                            output_dir=pred_out,
+                            log_callback=log_callback,
+                        )
+                    )
+        finally:
+            if train_backend == "colab" and not keep_runtime and created_session_name:
+                try:
+                    self.colab.stop_session(created_session_name, backend=colab_backend)
+                except Exception:
+                    pass
 
         return evaluate_iteration_outputs(
             example_videos=example_videos,

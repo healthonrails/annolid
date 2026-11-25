@@ -338,12 +338,13 @@ class TapNextOnnxProcessor(BasePointTrackingProcessor):
 
         prepared = []
         for frame in padded_frames[:target_len]:
+            is_uint8 = frame.dtype == np.uint8
             resized = cv2.resize(
                 frame,
                 (int(self._input_width), int(self._input_height)),
                 interpolation=cv2.INTER_LINEAR,
             ).astype(np.float32)
-            if resized.max(initial=0.0) > 1.5:
+            if is_uint8 or resized.max(initial=0.0) > 1.5:
                 resized = resized / 255.0
             prepared.append(resized)
         clip = np.stack(prepared, axis=0)
@@ -730,14 +731,16 @@ class TapNextOnnxProcessor(BasePointTrackingProcessor):
             logger.info("TAPNext: saved frames %d-%d", chunk_start, saved_until)
             if int(saved_until) >= actual_end:
                 break
+            # Advance continuously from saved_until rather than jumping over
+            # untracked frames when seed_frame < start_frame.
             chunk_start_iter = int(saved_until)
-            if chunk_start_iter < int(self.start_frame):
-                chunk_start_iter = int(self.start_frame)
             if chunk_start_iter == chunk_start:
                 chunk_start_iter += chunk_size
 
         if self._stop_triggered:
-            return self._stop_message(saved_until or self.start_frame)
+            return self._stop_message(
+                saved_until if saved_until is not None else self.start_frame
+            )
 
         message = (
             f"Completed. Saved frames {self.start_frame}-{saved_until}"

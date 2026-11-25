@@ -91,7 +91,10 @@ class CoWTrackerProcessor(BasePointTrackingProcessor):
             ) from exc
         validate_cowtracker_runtime()
 
-        dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+        is_cuda = getattr(self.device, "type", str(self.device)) == "cuda"
+        dtype = (
+            torch.float16 if (is_cuda and torch.cuda.is_available()) else torch.float32
+        )
         cache_key = (str(self.device), self.window_len, self.stride)
         if cache_key in _MODEL_CACHE:
             logger.debug(
@@ -134,12 +137,21 @@ class CoWTrackerProcessor(BasePointTrackingProcessor):
             return None, None, None
 
         del grid_size, grid_query_frame
+        total_frames = int(getattr(self.video_loader, "num_frames", 0) or 0)
+        if end_frame is None or int(end_frame) < 0:
+            actual_end = max(int(start_frame), total_frames - 1)
+        else:
+            actual_end = (
+                min(int(end_frame), max(0, total_frames - 1))
+                if total_frames > 0
+                else int(end_frame)
+            )
         logger.info(
-            "Running CoWTracker inference: frames %d to %d", start_frame, end_frame
+            "Running CoWTracker inference: frames %d to %d", start_frame, actual_end
         )
 
-        # Load video frames
-        video = self.video_loader.get_frames_between(start_frame, end_frame)
+        # CV2Video.get_frames_between uses half-open [start, end) semantics.
+        video = self.video_loader.get_frames_between(int(start_frame), actual_end + 1)
         video_tensor = (
             torch.from_numpy(video).permute(0, 3, 1, 2).float().to(self.device)
         )
@@ -347,7 +359,11 @@ class CoWTrackerProcessor(BasePointTrackingProcessor):
             q_x = int(np.clip(queries[i, 1], 0, self.video_width - 1))
             q_y = int(np.clip(queries[i, 2], 0, self.video_height - 1))
             incremental_tracks[0, :, i] = seg_tracks[:, q_y, q_x]
-            incremental_vis[0, :, i] = seg_vis[:, q_y, q_x]
+            # CoWTracker head outputs sigmoid visibility probabilities in (0, 1);
+            # threshold to boolean so occluded keypoints are not forced visible.
+            incremental_vis[0, :, i] = (seg_vis[:, q_y, q_x] > 0.5).to(
+                incremental_vis.dtype
+            )
 
         self.extract_frame_points(
             incremental_tracks,
@@ -371,6 +387,8 @@ class CoWTrackerProcessor(BasePointTrackingProcessor):
             q_x = int(np.clip(queries[i, 1], 0, self.video_width - 1))
             q_y = int(np.clip(queries[i, 2], 0, self.video_height - 1))
             output_tracks[0, :, i] = accumulated["track"][0, :, q_y, q_x]
-            output_vis[0, :, i] = accumulated["vis"][0, :, q_y, q_x]
+            output_vis[0, :, i] = (accumulated["vis"][0, :, q_y, q_x] > 0.5).to(
+                output_vis.dtype
+            )
 
         return output_tracks, output_vis, original_video

@@ -132,34 +132,58 @@ class OnnxFrameIndexer:
         backend = self._get_backend()
         existing = self.load_index()
 
+        existing_uris = set(existing.image_uris) if existing is not None else set()
         new_uris: List[str] = []
         new_flags: List[tuple[str, ...]] = []
         new_captions: List[str] = []
-        new_images: List[np.ndarray] = []
+        vec_batches: List[np.ndarray] = []
+        batch_images: List[np.ndarray] = []
+        batch_size = 32
 
         for row in frame_data:
             uri = str(row.get("image_uri") or "")
-            if not uri:
+            if not uri or uri in existing_uris:
                 continue
             path = Path(uri)
             if not path.is_file():
                 continue
             try:
                 with Image.open(path) as opened:
-                    new_images.append(np.asarray(opened.convert("RGB"), dtype=np.uint8))
+                    batch_images.append(
+                        np.asarray(opened.convert("RGB"), dtype=np.uint8)
+                    )
             except Exception as exc:
                 logger.warning("Skipping unreadable frame %s: %s", path, exc)
                 continue
+            existing_uris.add(uri)
             new_uris.append(uri)
             raw_flags = row.get("flags") or []
             new_flags.append(tuple(str(f) for f in raw_flags))
             new_captions.append(str(row.get("caption") or ""))
+            if len(batch_images) >= batch_size:
+                vec_batches.append(backend.embed_frames_batch(batch_images))
+                batch_images.clear()
 
-        if not new_images:
+        if batch_images:
+            vec_batches.append(backend.embed_frames_batch(batch_images))
+            batch_images.clear()
+
+        if not vec_batches:
             return
 
-        new_vecs = backend.embed_frames_batch(new_images)
+        new_vecs = np.concatenate(vec_batches, axis=0)
         if existing is not None and len(existing) > 0:
+            existing_dim = (
+                int(existing.embeddings.shape[1])
+                if existing.embeddings.ndim == 2
+                else 0
+            )
+            new_dim = int(new_vecs.shape[1]) if new_vecs.ndim == 2 else 0
+            if existing_dim != new_dim:
+                raise ValueError(
+                    f"Cannot append embeddings of dimension {new_dim} to existing "
+                    f"index of dimension {existing_dim} ({self.index_path})."
+                )
             merged_uris = existing.image_uris + tuple(new_uris)
             merged_flags = existing.flags + tuple(new_flags)
             merged_captions = existing.captions + tuple(new_captions)

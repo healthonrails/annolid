@@ -91,6 +91,7 @@ class InRange:
                 threshold.copy(), cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE
             )
 
+        contours = list(contours)
         out = frame.copy()
 
         i = 0

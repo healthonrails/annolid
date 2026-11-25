@@ -82,7 +82,7 @@ def fill_missing_predictions(
     print("Fill instances with names in the list:", all_instance_names)
     missing_predictions = []
     max_frame_number = df.frame_number.max()
-    for frame_number in df.frame_number:
+    for frame_number in df.frame_number.unique():
         pred_instance = set(df[df.frame_number == frame_number].instance_name.unique())
         missing_instance = all_instance_names - pred_instance
         for instance_name in missing_instance:
@@ -103,17 +103,18 @@ def fill_missing_predictions(
                     & (df.instance_name == instance_name)
                 ]
             if df_instance.shape[0] >= 1:
-                fill_value = df_instance.iloc[0]
+                fill_value = df_instance.iloc[0].copy()
             else:
                 # (f"No instances {instance_name} in this window")
                 # move to the next frame
                 continue
-            fill_value.frame_number = frame_number
+            fill_value["frame_number"] = frame_number
             missing_predictions.append(fill_value)
             count += 1
             if count % 1000 == 0:
                 print(f"Filling {count} missing {instance_name}")
-    df = df.append(missing_predictions, ignore_index=True)
+    if missing_predictions:
+        df = pd.concat([df, pd.DataFrame(missing_predictions)], ignore_index=True)
     return df
 
 

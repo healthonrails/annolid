@@ -14,7 +14,6 @@ def get_device():
         import torch
     except Exception:
         return "cpu"
-    torch.set_grad_enabled(False)
     if torch.cuda.is_available():
         device = "cuda"
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():

@@ -26,7 +26,7 @@ def predict_mask_to_labelme(img_path=None, score_threshold=0.29):
     preds = predict_coco(img_tensor)
     labels = preds[0]["labels"]
     scores = preds[0]["scores"]
-    labels = labels.numpy()
+    labels = labels.detach().cpu().numpy()
     label_list = []
 
     coco_labels = get_coco_labels()
@@ -36,6 +36,8 @@ def predict_mask_to_labelme(img_path=None, score_threshold=0.29):
         score = scores[i].cpu().numpy()
         if score >= score_threshold:
             polys, has_holes = mask_to_polygons(i_mask)
+            if not polys:
+                continue
             polys = polys[0]
 
             shape = Shape(label=coco_labels[labels[i]], shape_type="polygon", flags={})
@@ -43,7 +45,7 @@ def predict_mask_to_labelme(img_path=None, score_threshold=0.29):
                 shape.addPoint((x, y))
             label_list.append(shape)
     save_labels(
-        img_path.replace(".jpg", ".json"),
+        str(Path(img_path).with_suffix(".json")),
         img_path,
         label_list,
         ny,
