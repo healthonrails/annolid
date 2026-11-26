@@ -3,11 +3,51 @@ from __future__ import annotations
 import base64
 import binascii
 import json
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from annolid.utils.logger import logger
 
-from ..tool_call_utils import sanitize_tool_call_requests
+from ..tool_call_utils import normalize_tool_arguments, sanitize_tool_call_requests
+
+
+def _tool_call_signature(call: Mapping[str, Any]) -> str:
+    return (
+        f"{call.get('name', '')}:"
+        f"{json.dumps(call.get('arguments', {}), ensure_ascii=False, sort_keys=True, default=str)}"
+    )
+
+
+def merge_streamed_ollama_tool_calls(
+    tool_calls_by_id: Dict[str, Dict[str, Any]],
+    incoming_calls: Iterable[Mapping[str, Any]],
+    *,
+    seen_signatures: Optional[set[str]] = None,
+) -> None:
+    """Merge streamed Ollama tool calls without overwriting distinct idless calls."""
+    signatures = seen_signatures if seen_signatures is not None else set()
+    for raw_call in incoming_calls:
+        call = dict(raw_call)
+        call_id = str(call.get("id") or "").strip()
+        sig = _tool_call_signature(call)
+        if call_id in tool_calls_by_id:
+            existing = tool_calls_by_id[call_id]
+            if _tool_call_signature(existing) == sig:
+                continue
+            # Ollama often omits tool call IDs, so parse_ollama_tool_calls assigns
+            # `ollama_call_0` on every chunk. Allocate a fresh ID rather than
+            # silently clobbering an earlier distinct call.
+            if call_id.startswith(("ollama_call_", "call_")):
+                if sig in signatures:
+                    continue
+                next_idx = len(tool_calls_by_id)
+                while f"ollama_call_{next_idx}" in tool_calls_by_id:
+                    next_idx += 1
+                call_id = f"ollama_call_{next_idx}"
+                call["id"] = call_id
+        elif sig in signatures and call_id.startswith(("ollama_call_", "call_")):
+            continue
+        tool_calls_by_id[call_id] = call
+        signatures.add(sig)
 
 
 def collect_ollama_stream(
@@ -19,6 +59,7 @@ def collect_ollama_stream(
     """Collect non-streaming output from an Ollama stream iterator."""
     chunks: List[str] = []
     tool_calls_by_id: Dict[str, Dict[str, Any]] = {}
+    seen_signatures: set[str] = set()
     done_reason = "stop"
     for part in stream_iter:
         if not isinstance(part, dict):
@@ -31,12 +72,15 @@ def collect_ollama_stream(
                 chunks.append(content)
             raw_tool_calls = msg.get("tool_calls")
             if raw_tool_calls:
-                for call in sanitize_tool_call_requests(
+                sanitized = sanitize_tool_call_requests(
                     parse_tool_calls(raw_tool_calls),
                     allowed_tool_names=allowed_tool_names,
-                ):
-                    call_id = call["id"]
-                    tool_calls_by_id[call_id] = call
+                )
+                merge_streamed_ollama_tool_calls(
+                    tool_calls_by_id,
+                    sanitized,
+                    seen_signatures=seen_signatures,
+                )
     return "".join(chunks).strip(), list(tool_calls_by_id.values()), done_reason
 
 
@@ -51,15 +95,7 @@ def parse_ollama_tool_calls(raw_calls: Any) -> List[Dict[str, Any]]:
         name = str(fn.get("name") or "").strip()
         if not name:
             continue
-        args = fn.get("arguments", {})
-        if isinstance(args, str):
-            try:
-                parsed = json.loads(args)
-                args = parsed if isinstance(parsed, dict) else {"_raw": args}
-            except json.JSONDecodeError:
-                args = {"_raw": args}
-        elif not isinstance(args, dict):
-            args = {"_raw": args}
+        args = normalize_tool_arguments(fn.get("arguments", {}))
         call_id = str(item.get("id") or f"ollama_call_{idx}")
         tool_calls.append(
             {
@@ -69,6 +105,34 @@ def parse_ollama_tool_calls(raw_calls: Any) -> List[Dict[str, Any]]:
             }
         )
     return tool_calls
+
+
+def _normalize_ollama_tool_calls(raw_tool_calls: Any) -> List[Dict[str, Any]]:
+    converted: List[Dict[str, Any]] = []
+    for item in list(raw_tool_calls or []):
+        if not isinstance(item, Mapping):
+            continue
+        fn = item.get("function")
+        if isinstance(fn, Mapping):
+            name = str(fn.get("name") or "").strip()
+            raw_args = fn.get("arguments", {})
+        else:
+            name = str(item.get("name") or "").strip()
+            raw_args = item.get("arguments", {})
+        if not name:
+            continue
+        entry: Dict[str, Any] = {
+            "type": "function",
+            "function": {
+                "name": name,
+                "arguments": normalize_tool_arguments(raw_args),
+            },
+        }
+        call_id = str(item.get("id") or "").strip()
+        if call_id:
+            entry["id"] = call_id
+        converted.append(entry)
+    return converted
 
 
 def normalize_messages_for_ollama(
@@ -108,6 +172,18 @@ def normalize_messages_for_ollama(
             existing_images = msg.get("images")
             if isinstance(existing_images, list) and existing_images:
                 out["images"] = list(existing_images)
+
+        if role == "assistant":
+            raw_tool_calls = msg.get("tool_calls")
+            if raw_tool_calls:
+                normalized_calls = _normalize_ollama_tool_calls(raw_tool_calls)
+                if normalized_calls:
+                    out["tool_calls"] = normalized_calls
+        elif role == "tool":
+            tool_name = str(msg.get("tool_name") or msg.get("name") or "").strip()
+            if tool_name:
+                out["tool_name"] = tool_name
+
         normalized.append(out)
     return normalized
 

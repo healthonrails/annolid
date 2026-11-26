@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Tuple
 
+from annolid.core.agent.tool_call_utils import strip_tool_call_markup
 from annolid.core.agent.web_intents import (
     classify_web_access_stage,
     has_live_web_intent,
@@ -156,7 +157,7 @@ def sanitize_final_response_text(text: str) -> str:
         value,
         flags=re.IGNORECASE,
     )
-    value = re.sub(r"<\|tool_call_begin\|>[\s\S]*?<\|tool_call_end\|>", "", value)
+    value = strip_tool_call_markup(value)
     value = re.sub(r"<\|tool_call_argument_begin\|>", "", value)
     value = re.sub(r"<\|tool_calls_section_(?:begin|end)\|>", "", value)
     value = re.sub(r"<\|tool_call_(?:begin|end)\|>", "", value)

@@ -24,6 +24,10 @@ class CodeSearchTool(FunctionTool):
         return "code_search"
 
     @property
+    def read_only(self) -> bool:
+        return True
+
+    @property
     def description(self) -> str:
         return (
             "Search text across source files and return file/line matches with "
@@ -184,6 +188,10 @@ class CodeExplainTool(FunctionTool):
     @property
     def name(self) -> str:
         return "code_explain"
+
+    @property
+    def read_only(self) -> bool:
+        return True
 
     @property
     def description(self) -> str:

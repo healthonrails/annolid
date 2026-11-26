@@ -333,6 +333,33 @@ TOOL_GROUPS: Mapping[str, Set[str]] = {
         "admin_eval_run",
         "admin_update_run",
     },
+    "group:memory": {"memory_search", "memory_get"},
+    "group:training": {
+        "annolid_dataset_inspect",
+        "annolid_dataset_prepare",
+        "annolid_train_start",
+        "annolid_eval_start",
+        "annolid_eval_report",
+    },
+    "group:citations": {
+        "literature_search",
+        "gui_arxiv_search",
+        "gui_save_citation",
+        "gui_verify_citations",
+    },
+    "group:coding": {
+        *_CAPABILITY_FILESYSTEM,
+        "git_status",
+        "git_cli",
+        "git_diff",
+        "git_log",
+        "github_pr_status",
+        "gh_cli",
+        "github_pr_checks",
+        "exec",
+        "exec_start",
+        "exec_process",
+    },
 }
 
 LEGACY_TOOL_NAME_ALIASES: Dict[str, str] = {
@@ -359,6 +386,11 @@ def classify_destructive_tool_call(
     args = params if isinstance(params, dict) else {}
     if canonical in {"exec", "exec_start"}:
         return "Execute a shell command on this machine"
+    if canonical == "exec_process":
+        action = str(args.get("action") or "").strip().lower()
+        if action in {"write", "submit", "kill"}:
+            return "Send input to or terminate a running background process"
+        return None
     if canonical in {"gui_delete_selected_shapes", "gui_delete_shapes_in_annotation"}:
         return "Delete annotation shapes"
     if canonical == "gui_remove_log_folder":
@@ -372,6 +404,14 @@ def classify_destructive_tool_call(
     if canonical == "git_cli":
         if bool(args.get("allow_mutation", False)):
             return "Run a mutating Git command"
+        return None
+    if canonical == "gh_cli":
+        if bool(args.get("allow_mutation", False)):
+            return "Run a mutating GitHub CLI command"
+        return None
+    if canonical in {"annolid_run", "annolid_dataset_prepare", "annolid_train_start"}:
+        if bool(args.get("allow_mutation", False)):
+            return "Run a mutating Annolid workflow command"
         return None
     return None
 
@@ -435,19 +475,76 @@ class ToolPermissionContext:
         }
 
 
-_HIGH_RISK_INTENT_MARKERS = {
-    "intent:high-risk",
-    "intent:high_risk",
-    "allow:high-risk",
-    "allow_high_risk",
-    "unsafe:high-risk",
-}
+HIGH_RISK_INTENT_MARKERS: frozenset[str] = frozenset(
+    {
+        "intent:high-risk",
+        "intent:high_risk",
+        "allow:high-risk",
+        "allow_high_risk",
+        "unsafe:high-risk",
+    }
+)
+_HIGH_RISK_INTENT_MARKERS: Set[str] = set(HIGH_RISK_INTENT_MARKERS)
+
+HIGH_RISK_TOOL_MESSAGING: frozenset[str] = frozenset(
+    {
+        "email",
+        "list_emails",
+        "read_email",
+        "message",
+        "camera_snapshot",
+    }
+)
+HIGH_RISK_TOOL_RUNTIME_EXEC: frozenset[str] = frozenset(
+    {"exec", "exec_start", "exec_process"}
+)
+HIGH_RISK_TOOL_AUTOMATION: frozenset[str] = frozenset(
+    {"cron", "automation_schedule", "spawn", "spawn_behavior_subagent"}
+)
+HIGH_RISK_TOOL_RUNTIME_AUTOMATION: frozenset[str] = (
+    HIGH_RISK_TOOL_MESSAGING | HIGH_RISK_TOOL_AUTOMATION
+)
+
+CONCURRENCY_SAFE_READ_ONLY_TOOLS: frozenset[str] = frozenset(
+    {
+        "read_file",
+        "list_dir",
+        "code_search",
+        "code_explain",
+        "git_status",
+        "git_diff",
+        "git_log",
+        "github_pr_status",
+        "github_pr_checks",
+        "memory_search",
+        "memory_get",
+        "web_search",
+        "web_fetch",
+        "literature_search",
+        "video_info",
+        "video_list_inference_models",
+        "list_emails",
+        "read_email",
+        "annolid_dataset_inspect",
+        "annolid_tracking_stats",
+        "annolid_track_qc",
+        "annolid_kinematics_stats",
+        "annolid_zone_analysis",
+        "annolid_behavior_time_budget",
+        "annolid_behavior_qc",
+        "annolid_behavior_irr",
+        "annolid_behavior_cohort",
+        "annolid_eval_report",
+        "annolid_novelty_check",
+        "calculator",
+    }
+)
 
 
 def _has_explicit_high_risk_intent(markers: Iterable[str]) -> bool:
     for marker in markers:
         value = str(marker or "").strip().lower()
-        if value in _HIGH_RISK_INTENT_MARKERS:
+        if value in HIGH_RISK_INTENT_MARKERS:
             return True
     return False
 
@@ -460,36 +557,16 @@ def _apply_high_risk_guards(
     if explicit_high_risk_intent:
         return set(allowed)
     resolved = set(allowed)
-    automation_or_messaging = {
-        "email",
-        "list_emails",
-        "read_email",
-        "message",
-        "camera_snapshot",
-        "cron",
-        "automation_schedule",
-        "spawn",
-        "spawn_behavior_subagent",
-    }
     # Deny-by-default for process execution mixed with messaging/automation primitives.
-    runtime_exec = {"exec", "exec_start", "exec_process"}
-    if any(t in resolved for t in runtime_exec) and any(
-        t in resolved for t in automation_or_messaging
+    if any(t in resolved for t in HIGH_RISK_TOOL_RUNTIME_EXEC) and any(
+        t in resolved for t in HIGH_RISK_TOOL_RUNTIME_AUTOMATION
     ):
-        resolved.difference_update(runtime_exec)
+        resolved.difference_update(HIGH_RISK_TOOL_RUNTIME_EXEC)
     # Deny-by-default for automated file exfiltration chains.
     if (
         "read_file" in resolved
         and ("email" in resolved or "message" in resolved)
-        and any(
-            t in resolved
-            for t in {
-                "cron",
-                "automation_schedule",
-                "spawn",
-                "spawn_behavior_subagent",
-            }
-        )
+        and any(t in resolved for t in HIGH_RISK_TOOL_AUTOMATION)
     ):
         resolved.discard("read_file")
     # Deny-by-default for subagent spawning mixed with scheduling + direct messaging.

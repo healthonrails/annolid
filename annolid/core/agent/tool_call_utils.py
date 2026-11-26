@@ -6,6 +6,24 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set
 
 _TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,96}$")
 _TOOL_CALL_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_MARKDOWN_FENCE_RE = re.compile(
+    r"^\s*```(?:json|JSON)?\s*\n?(.*?)\n?\s*```\s*$",
+    re.DOTALL,
+)
+_TRAILING_COMMA_RE = re.compile(r",\s*([}\]])")
+_KIMI_TOOL_CALL_RE = re.compile(
+    r"<\|tool_call_begin\|>\s*(?:functions\.)?([A-Za-z0-9_-]+)"
+    r"(?::([A-Za-z0-9_-]+))?\s*<\|tool_call_argument_begin\|>\s*(.*?)\s*<\|tool_call_end\|>",
+    re.DOTALL,
+)
+_KIMI_TOOL_CALL_STRIP_RE = re.compile(
+    r"<\|tool_call_begin\|>.*?<\|tool_call_end\|>",
+    re.DOTALL,
+)
+_QWEN_TOOL_CALL_RE = re.compile(
+    r"<tool_call>\s*(.*?)\s*</tool_call>",
+    re.DOTALL | re.IGNORECASE,
+)
 
 
 def sanitize_tool_name(name: Any) -> str:
@@ -43,23 +61,132 @@ def sanitize_tool_call_id_segment(value: Any) -> str:
     return trimmed if _TOOL_CALL_ID_RE.match(trimmed) else trimmed
 
 
+def _try_parse_json_object(candidate: str) -> Optional[Dict[str, Any]]:
+    try:
+        parsed = json.loads(candidate)
+    except Exception:
+        return None
+    if isinstance(parsed, dict):
+        return dict(parsed)
+    # Local/OpenAI-compat models occasionally double-encode tool arguments as a JSON string.
+    if isinstance(parsed, str):
+        inner_text = parsed.strip()
+        if inner_text.startswith("{"):
+            try:
+                inner = json.loads(inner_text)
+            except Exception:
+                return None
+            if isinstance(inner, dict):
+                return dict(inner)
+    return None
+
+
 def normalize_tool_arguments(raw_args: Any) -> Dict[str, Any]:
     if raw_args is None:
         return {}
-    if isinstance(raw_args, dict):
+    if isinstance(raw_args, Mapping):
         return dict(raw_args)
     if isinstance(raw_args, str):
         text = raw_args.strip()
         if not text:
             return {}
-        try:
-            parsed = json.loads(text)
-        except Exception:
-            return {"_raw": raw_args}
-        if isinstance(parsed, dict):
-            return dict(parsed)
+        parsed = _try_parse_json_object(text)
+        if parsed is not None:
+            return parsed
+
+        # Strip surrounding markdown code fences (e.g. ```json { ... } ```).
+        fenced_match = _MARKDOWN_FENCE_RE.match(text)
+        candidate = fenced_match.group(1).strip() if fenced_match else text
+        if candidate != text:
+            parsed = _try_parse_json_object(candidate)
+            if parsed is not None:
+                return parsed
+
+        # Repair trailing commas before closing braces/brackets.
+        no_trailing = _TRAILING_COMMA_RE.sub(r"\1", candidate)
+        if no_trailing != candidate:
+            parsed = _try_parse_json_object(no_trailing)
+            if parsed is not None:
+                return parsed
+
+        # Optional json_repair recovery for near-JSON objects (single quotes,
+        # unescaped newlines, missing closing brace). Require an opening brace
+        # and key/value separator so arbitrary garbage still fails closed to _raw.
+        if candidate.startswith("{") and ":" in candidate:
+            try:
+                import json_repair  # type: ignore
+
+                repaired = json_repair.loads(candidate)
+                if isinstance(repaired, dict) and repaired:
+                    return dict(repaired)
+            except Exception:
+                pass
         return {"_raw": raw_args}
     return {"_raw": raw_args}
+
+
+def extract_text_tool_calls(text: str) -> List[Dict[str, Any]]:
+    """Extract text-encoded tool calls (Kimi and Qwen/Hermes markup formats)."""
+    source = str(text or "")
+    if not source:
+        return []
+    found: List[Dict[str, Any]] = []
+
+    if "<|tool_call_begin|>" in source:
+        for idx, match in enumerate(_KIMI_TOOL_CALL_RE.finditer(source)):
+            name = str(match.group(1) or "").strip()
+            call_idx = str(match.group(2) or idx)
+            raw_args = str(match.group(3) or "").strip()
+            if not name:
+                continue
+            found.append(
+                {
+                    "id": f"call_{call_idx}",
+                    "name": name,
+                    "arguments": normalize_tool_arguments(raw_args),
+                }
+            )
+
+    if "<tool_call>" in source.lower():
+        for match in _QWEN_TOOL_CALL_RE.finditer(source):
+            body = str(match.group(1) or "").strip()
+            if not body:
+                continue
+            payload = normalize_tool_arguments(body)
+            if "_raw" in payload and len(payload) == 1:
+                continue
+            name = str(payload.get("name") or "").strip()
+            if not name:
+                continue
+            raw_args: Any = payload.get("arguments")
+            if raw_args is None and "parameters" in payload:
+                raw_args = payload.get("parameters")
+            elif raw_args is None and "args" in payload:
+                raw_args = payload.get("args")
+            call_id = str(payload.get("id") or f"call_{len(found)}")
+            found.append(
+                {
+                    "id": call_id,
+                    "name": name,
+                    "arguments": normalize_tool_arguments(raw_args),
+                }
+            )
+
+    return found
+
+
+def strip_tool_call_markup(text: str) -> str:
+    """Remove Kimi and Qwen/Hermes inline tool-call markup from assistant text."""
+    cleaned = str(text or "")
+    if not cleaned:
+        return ""
+    if "<|tool_call" in cleaned:
+        cleaned = _KIMI_TOOL_CALL_STRIP_RE.sub("", cleaned)
+        cleaned = cleaned.replace("<|tool_calls_section_begin|>", "")
+        cleaned = cleaned.replace("<|tool_calls_section_end|>", "")
+    if "<tool_call>" in cleaned.lower():
+        cleaned = _QWEN_TOOL_CALL_RE.sub("", cleaned)
+    return cleaned.strip()
 
 
 def sanitize_tool_call_requests(

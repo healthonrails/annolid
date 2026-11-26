@@ -217,6 +217,69 @@ class UnifiedLLMProvider(LLMProvider):
             converted.append(entry)
         return converted
 
+    @staticmethod
+    def _convert_content_blocks_for_anthropic(
+        content: Any,
+    ) -> str | List[Dict[str, Any]]:
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if not isinstance(content, list):
+            return json.dumps(content, ensure_ascii=False, default=str)
+
+        blocks: List[Dict[str, Any]] = []
+        for item in content:
+            if isinstance(item, str):
+                if item:
+                    blocks.append({"type": "text", "text": item})
+                continue
+            if not isinstance(item, dict):
+                continue
+            item_type = str(item.get("type") or "").strip().lower()
+            if item_type == "text":
+                text = str(item.get("text") or "")
+                if text:
+                    blocks.append({"type": "text", "text": text})
+                continue
+            if item_type == "image_url":
+                image_obj = item.get("image_url")
+                url = (
+                    str(image_obj.get("url") or "").strip()
+                    if isinstance(image_obj, dict)
+                    else str(image_obj or "").strip()
+                )
+                if not url:
+                    continue
+                if url.startswith("data:") and ";base64," in url:
+                    header, b64_data = url.split(";base64,", 1)
+                    media_type = header[5:].strip() or "image/png"
+                    if b64_data:
+                        blocks.append(
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": media_type,
+                                    "data": b64_data,
+                                },
+                            }
+                        )
+                elif url.startswith(("http://", "https://")):
+                    blocks.append(
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "url",
+                                "url": url,
+                            },
+                        }
+                    )
+                continue
+            if item_type in {"image", "document", "tool_use", "tool_result"}:
+                blocks.append(dict(item))
+        return blocks
+
     def _convert_messages_for_anthropic(
         self, messages: List[Dict[str, Any]]
     ) -> tuple[str, List[Dict[str, Any]]]:
@@ -228,12 +291,16 @@ class UnifiedLLMProvider(LLMProvider):
             content = msg.get("content")
             if role == "system":
                 if isinstance(content, str):
-                    system_parts.append(content)
+                    if content.strip():
+                        system_parts.append(content)
                 elif content is not None:
                     system_parts.append(str(content))
                 continue
 
             if role == "tool":
+                tool_content = self._convert_content_blocks_for_anthropic(content)
+                if isinstance(tool_content, list) and not tool_content:
+                    tool_content = ""
                 converted.append(
                     {
                         "role": "user",
@@ -241,7 +308,7 @@ class UnifiedLLMProvider(LLMProvider):
                             {
                                 "type": "tool_result",
                                 "tool_use_id": str(msg.get("tool_call_id") or ""),
-                                "content": content if content is not None else "",
+                                "content": tool_content,
                             }
                         ],
                     }
@@ -252,6 +319,12 @@ class UnifiedLLMProvider(LLMProvider):
                 blocks: List[Dict[str, Any]] = []
                 if isinstance(content, str) and content:
                     blocks.append({"type": "text", "text": content})
+                elif isinstance(content, list):
+                    converted_blocks = self._convert_content_blocks_for_anthropic(
+                        content
+                    )
+                    if isinstance(converted_blocks, list):
+                        blocks.extend(converted_blocks)
                 for idx, tc in enumerate(list(msg.get("tool_calls") or [])):
                     fn = dict(tc.get("function") or {})
                     blocks.append(
@@ -264,18 +337,24 @@ class UnifiedLLMProvider(LLMProvider):
                             ),
                         }
                     )
+                if not blocks:
+                    # Anthropic rejects empty assistant text blocks; skip no-op turns.
+                    continue
                 converted.append(
                     {
                         "role": "assistant",
-                        "content": blocks or [{"type": "text", "text": ""}],
+                        "content": blocks,
                     }
                 )
                 continue
 
+            user_content = self._convert_content_blocks_for_anthropic(content)
+            if isinstance(user_content, list) and not user_content:
+                user_content = ""
             converted.append(
                 {
                     "role": "user",
-                    "content": content if content is not None else "",
+                    "content": user_content,
                 }
             )
 
@@ -285,14 +364,19 @@ class UnifiedLLMProvider(LLMProvider):
                 prev = merged[-1]["content"]
                 curr = msg["content"]
                 if isinstance(prev, str):
-                    prev = [{"type": "text", "text": prev}]
+                    prev = [{"type": "text", "text": prev}] if prev else []
+                else:
+                    prev = list(prev)
                 if isinstance(curr, str):
-                    curr = [{"type": "text", "text": curr}]
+                    curr = [{"type": "text", "text": curr}] if curr else []
                 if isinstance(curr, list):
                     prev.extend(curr)
-                merged[-1]["content"] = prev
+                merged[-1]["content"] = prev or ""
             else:
                 merged.append(msg)
+
+        if merged and merged[0]["role"] != "user":
+            merged.insert(0, {"role": "user", "content": "Continue."})
 
         return "\n\n".join([text for text in system_parts if text]).strip(), merged
 
@@ -373,6 +457,7 @@ class UnifiedLLMProvider(LLMProvider):
             payload["stream"] = True
             response_content: List[str] = []
             reasoning_chunks: List[str] = []
+            streamed_tool_calls: Dict[int, Dict[str, Any]] = {}
             finish_reason = "stop"
             usage: Dict[str, int] = {}
 
@@ -401,19 +486,77 @@ class UnifiedLLMProvider(LLMProvider):
                 if reasoning and on_token:
                     on_token(f"<think>{reasoning}</think>")
                     reasoning_chunks.append(str(reasoning))
-                if content and on_token:
-                    on_token(content)
+                if content:
+                    if on_token:
+                        on_token(content)
                     response_content.append(content)
+                delta_tool_calls = self._get_value(delta, "tool_calls", None)
+                if isinstance(delta_tool_calls, (list, tuple)):
+                    for fallback_idx, tc_delta in enumerate(delta_tool_calls):
+                        raw_idx = self._get_value(tc_delta, "index", None)
+                        slot = (
+                            int(raw_idx)
+                            if isinstance(raw_idx, int)
+                            and not isinstance(raw_idx, bool)
+                            else fallback_idx
+                        )
+                        entry = streamed_tool_calls.setdefault(
+                            slot,
+                            {"id": "", "name": "", "arguments": []},
+                        )
+                        tc_id = str(self._get_value(tc_delta, "id", "") or "").strip()
+                        if tc_id:
+                            entry["id"] = tc_id
+                        fn_delta = self._get_value(tc_delta, "function", None)
+                        if fn_delta is not None:
+                            fn_name = str(
+                                self._get_value(fn_delta, "name", "") or ""
+                            ).strip()
+                            if fn_name:
+                                entry["name"] = fn_name
+                            fn_args = self._get_value(fn_delta, "arguments", None)
+                            if isinstance(fn_args, str) and fn_args:
+                                entry["arguments"].append(fn_args)
                 chunk_finish = self._get_value(choices[0], "finish_reason", None)
                 if chunk_finish:
                     finish_reason = str(chunk_finish)
+
+            parsed_tool_calls: List[ToolCallRequest] = []
+            for idx, slot in enumerate(sorted(streamed_tool_calls)):
+                entry = streamed_tool_calls[slot]
+                name = str(entry.get("name") or "").strip()
+                if not name:
+                    continue
+                parsed_tool_calls.append(
+                    ToolCallRequest(
+                        id=str(entry.get("id") or f"call_{idx}"),
+                        name=name,
+                        arguments=self._parse_tool_call_arguments(
+                            "".join(entry.get("arguments") or [])
+                        ),
+                    )
+                )
+            content_text = "".join(response_content)
+            reasoning_text = "".join(reasoning_chunks) if reasoning_chunks else None
+            if (
+                not content_text
+                and not parsed_tool_calls
+                and not reasoning_text
+                and finish_reason == "stop"
+            ):
+                return LLMResponse(
+                    content="Model provider returned an empty streamed response.",
+                    finish_reason="error",
+                    usage=usage,
+                    error_kind="empty",
+                    error_should_retry=True,
+                )
             return LLMResponse(
-                content="".join(response_content),
+                content=content_text,
+                tool_calls=parsed_tool_calls,
                 finish_reason=finish_reason,
                 usage=usage,
-                reasoning_content="".join(reasoning_chunks)
-                if reasoning_chunks
-                else None,
+                reasoning_content=reasoning_text,
             )
 
         completion = await client.chat.completions.create(**payload)

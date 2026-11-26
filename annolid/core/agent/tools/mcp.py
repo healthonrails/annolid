@@ -1,16 +1,67 @@
 """MCP client: connects to MCP servers and wraps their tools as native annolid tools."""
 
+import asyncio
 import hashlib
 import json
 import re
 from contextlib import AsyncExitStack
 from typing import Any, Dict
+from urllib.parse import urlsplit
 
 from annolid.utils.logger import logger
 
 from .function_base import FunctionTool
 from .function_registry import FunctionToolRegistry
 from .resolve import ensure_node_env, resolve_command
+
+_DEFAULT_MCP_CONNECT_TIMEOUT_S = 30.0
+_MCP_ALLOWED_URL_SCHEMES = frozenset({"http", "https"})
+
+
+def _validate_mcp_server_url(url: str) -> str:
+    value = str(url or "").strip()
+    if not value:
+        return "empty URL"
+    parsed = urlsplit(value)
+    scheme = str(parsed.scheme or "").strip().lower()
+    if scheme not in _MCP_ALLOWED_URL_SCHEMES:
+        return f"unsupported URL scheme {scheme or '(none)'!r}"
+    if not str(parsed.netloc or "").strip():
+        return "URL must include a hostname"
+    return ""
+
+
+def _format_mcp_content_block(block: Any, types_module: Any) -> str:
+    text_type = getattr(types_module, "TextContent", None)
+    if text_type is not None and isinstance(block, text_type):
+        return str(getattr(block, "text", "") or "")
+    image_type = getattr(types_module, "ImageContent", None)
+    block_type = str(getattr(block, "type", "") or "").strip().lower()
+    if (
+        image_type is not None and isinstance(block, image_type)
+    ) or block_type == "image":
+        mime = str(getattr(block, "mimeType", "unknown") or "unknown")
+        data_len = len(str(getattr(block, "data", "") or ""))
+        return f"[Image content: mimeType={mime}, base64_chars={data_len}]"
+    resource_type = getattr(types_module, "EmbeddedResource", None)
+    if (
+        resource_type is not None and isinstance(block, resource_type)
+    ) or block_type == "resource":
+        resource = getattr(block, "resource", None)
+        uri = str(getattr(resource, "uri", "") or "")
+        text = getattr(resource, "text", None)
+        if isinstance(text, str) and text.strip():
+            return f"[Resource {uri}]\n{text}" if uri else text
+        blob = getattr(resource, "blob", None)
+        if blob:
+            return (
+                f"[Binary resource {uri or '(unnamed)'}: base64_chars={len(str(blob))}]"
+            )
+        return f"[Resource {uri or '(empty)'}]"
+    rendered = str(block)
+    if len(rendered) > 2000:
+        return rendered[:2000] + "... [truncated non-text MCP block]"
+    return rendered
 
 
 class MCPToolWrapper(FunctionTool):
@@ -45,12 +96,19 @@ class MCPToolWrapper(FunctionTool):
         from mcp import types
 
         result = await self._session.call_tool(self._original_name, arguments=kwargs)
+        is_error = bool(getattr(result, "isError", False))
         parts = []
         for block in getattr(result, "content", []) or []:
-            if isinstance(block, types.TextContent):
-                parts.append(block.text)
-            else:
-                parts.append(str(block))
+            formatted = _format_mcp_content_block(block, types)
+            if formatted:
+                parts.append(formatted)
+
+        def _with_error_prefix(payload_text: str) -> str:
+            if not is_error:
+                return payload_text
+            if payload_text.lower().startswith("error:"):
+                return payload_text
+            return f"Error: {payload_text}"
 
         if parts:
             text_payload = "\n".join(parts).strip()
@@ -76,7 +134,7 @@ class MCPToolWrapper(FunctionTool):
                     "Please refine your query to return more specific data (e.g., using document.body.innerText "
                     "rather than full HTML elements) to avoid context limit errors.]"
                 )
-            return text_payload
+            return _with_error_prefix(text_payload)
 
         def _truncate_json(data: Any, max_len: int = 50) -> Any:
             if isinstance(data, list):
@@ -107,11 +165,11 @@ class MCPToolWrapper(FunctionTool):
                 if len(struct_text) > 40000:
                     struct_data = _truncate_json(structured, max_len=15)
                     struct_text = json.dumps(struct_data, ensure_ascii=False, indent=2)
-                return struct_text
+                return _with_error_prefix(struct_text)
             except Exception:
-                return str(structured)
+                return _with_error_prefix(str(structured))
 
-        if getattr(result, "isError", False):
+        if is_error:
             return "Error: MCP tool call returned an error with no text payload."
         return "(no output)"
 
@@ -131,7 +189,11 @@ def _build_wrapper_tool_name(server_name: str, tool_name: str) -> str:
 
 
 async def connect_mcp_servers(
-    mcp_servers: Dict[str, Any], registry: FunctionToolRegistry, stack: AsyncExitStack
+    mcp_servers: Dict[str, Any],
+    registry: FunctionToolRegistry,
+    stack: AsyncExitStack,
+    *,
+    connect_timeout_seconds: float = _DEFAULT_MCP_CONNECT_TIMEOUT_S,
 ) -> None:
     """Connect to configured MCP servers and register their tools."""
     try:
@@ -140,6 +202,10 @@ async def connect_mcp_servers(
     except ImportError:
         logger.warning("mcp package not installed, skipping MCP servers")
         return
+
+    timeout_s = max(
+        1.0, float(connect_timeout_seconds or _DEFAULT_MCP_CONNECT_TIMEOUT_S)
+    )
 
     for name, cfg in mcp_servers.items():
         try:
@@ -170,12 +236,24 @@ async def connect_mcp_servers(
                 params = StdioServerParameters(
                     command=resolved_cmd, args=c.args, env=server_env
                 )
-                read, write = await stack.enter_async_context(stdio_client(params))
+                read, write = await asyncio.wait_for(
+                    stack.enter_async_context(stdio_client(params)),
+                    timeout=timeout_s,
+                )
             elif c.url:
+                url_error = _validate_mcp_server_url(c.url)
+                if url_error:
+                    logger.warning(
+                        "MCP server '%s': invalid URL (%s), skipping",
+                        name,
+                        url_error,
+                    )
+                    continue
                 from mcp.client.streamable_http import streamable_http_client
 
-                read, write, _ = await stack.enter_async_context(
-                    streamable_http_client(c.url)
+                read, write, _ = await asyncio.wait_for(
+                    stack.enter_async_context(streamable_http_client(c.url)),
+                    timeout=timeout_s,
                 )
             else:
                 logger.warning(
@@ -183,10 +261,13 @@ async def connect_mcp_servers(
                 )
                 continue
 
-            session = await stack.enter_async_context(ClientSession(read, write))
-            await session.initialize()
+            session = await asyncio.wait_for(
+                stack.enter_async_context(ClientSession(read, write)),
+                timeout=timeout_s,
+            )
+            await asyncio.wait_for(session.initialize(), timeout=timeout_s)
 
-            tools = await session.list_tools()
+            tools = await asyncio.wait_for(session.list_tools(), timeout=timeout_s)
             for tool_def in tools.tools:
                 wrapper = MCPToolWrapper(session, name, tool_def)
                 registry.register(wrapper)

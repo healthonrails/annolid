@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from typing import Any, Callable
 
 
@@ -68,9 +69,7 @@ def wrap_tool_callback(
 ) -> Callable[..., Any]:
     label = str(name or "tool").replace("_", " ")
 
-    def _wrapped(*args, **kwargs):
-        emit_progress(f"Running tool: {label}")
-        result = callback(*args, **kwargs)
+    def _emit_outcome(result: Any) -> None:
         if isinstance(result, dict):
             if bool(result.get("ok")):
                 emit_progress(f"Finished tool: {label}")
@@ -78,6 +77,41 @@ def wrap_tool_callback(
                 emit_progress(f"Tool failed: {label}")
         else:
             emit_progress(f"Finished tool: {label}")
+
+    if inspect.iscoroutinefunction(callback):
+
+        async def _wrapped_async(*args, **kwargs):
+            emit_progress(f"Running tool: {label}")
+            try:
+                result = await callback(*args, **kwargs)
+            except Exception:
+                emit_progress(f"Tool failed: {label}")
+                raise
+            _emit_outcome(result)
+            return result
+
+        return _wrapped_async
+
+    def _wrapped(*args, **kwargs):
+        emit_progress(f"Running tool: {label}")
+        try:
+            result = callback(*args, **kwargs)
+        except Exception:
+            emit_progress(f"Tool failed: {label}")
+            raise
+        if inspect.isawaitable(result):
+
+            async def _await_result():
+                try:
+                    awaited = await result
+                except Exception:
+                    emit_progress(f"Tool failed: {label}")
+                    raise
+                _emit_outcome(awaited)
+                return awaited
+
+            return _await_result()
+        _emit_outcome(result)
         return result
 
     return _wrapped

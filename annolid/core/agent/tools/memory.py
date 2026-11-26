@@ -21,6 +21,10 @@ class MemorySearchTool(FunctionTool):
         return "memory_search"
 
     @property
+    def read_only(self) -> bool:
+        return True
+
+    @property
     def description(self) -> str:
         return (
             "Search markdown memory files (including memory/HISTORY.md) and return "
@@ -74,6 +78,10 @@ class MemoryGetTool(FunctionTool):
     @property
     def name(self) -> str:
         return "memory_get"
+
+    @property
+    def read_only(self) -> bool:
+        return True
 
     @property
     def description(self) -> str:

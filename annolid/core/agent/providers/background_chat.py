@@ -692,15 +692,23 @@ def build_ollama_llm_callable(
         def _invoke_chat_stream(
             tools_payload: Optional[List[Dict[str, Any]]],
         ) -> Dict[str, Any]:
+            from .ollama_utils import merge_streamed_ollama_tool_calls
+
+            ollama_client_cls = getattr(ollama_module, "Client", None)
+            use_scoped_client = bool(host) and callable(ollama_client_cls)
             prev_host_present = "OLLAMA_HOST" in os.environ
             prev_host_value = os.environ.get("OLLAMA_HOST")
             try:
-                if host:
-                    os.environ["OLLAMA_HOST"] = host
+                if use_scoped_client:
+                    target_client = ollama_client_cls(host=host)
                 else:
-                    os.environ.pop("OLLAMA_HOST", None)
+                    target_client = ollama_module
+                    if host:
+                        os.environ["OLLAMA_HOST"] = host
+                    else:
+                        os.environ.pop("OLLAMA_HOST", None)
                 stream_iter = stream_ollama_chat(
-                    ollama_module,
+                    target_client,
                     settings=settings,
                     model=model_id,
                     messages=prepared,
@@ -709,6 +717,7 @@ def build_ollama_llm_callable(
                 )
                 chunks: List[str] = []
                 tool_calls_by_id: Dict[str, Dict[str, Any]] = {}
+                seen_signatures: set[str] = set()
                 done_reason = "stop"
                 for part in stream_iter:
                     if not isinstance(part, dict):
@@ -725,12 +734,15 @@ def build_ollama_llm_callable(
                                 )
                         raw_tool_calls = msg.get("tool_calls")
                         if raw_tool_calls:
-                            for call in sanitize_tool_call_requests(
+                            sanitized = sanitize_tool_call_requests(
                                 parse_tool_calls(raw_tool_calls),
                                 allowed_tool_names=allowed_tool_names,
-                            ):
-                                call_id = call["id"]
-                                tool_calls_by_id[call_id] = call
+                            )
+                            merge_streamed_ollama_tool_calls(
+                                tool_calls_by_id,
+                                sanitized,
+                                seen_signatures=seen_signatures,
+                            )
                 content = "".join(chunks).strip()
                 tool_calls = list(tool_calls_by_id.values())
                 return {
@@ -738,10 +750,11 @@ def build_ollama_llm_callable(
                     "message": {"content": content, "tool_calls": tool_calls},
                 }
             finally:
-                if prev_host_present and prev_host_value is not None:
-                    os.environ["OLLAMA_HOST"] = prev_host_value
-                else:
-                    os.environ.pop("OLLAMA_HOST", None)
+                if not use_scoped_client:
+                    if prev_host_present and prev_host_value is not None:
+                        os.environ["OLLAMA_HOST"] = prev_host_value
+                    else:
+                        os.environ.pop("OLLAMA_HOST", None)
 
         try:
             response = await asyncio.wait_for(

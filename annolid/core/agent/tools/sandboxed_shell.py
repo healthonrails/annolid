@@ -133,6 +133,13 @@ class SandboxedExecTool(ExecTool):
                 except Exception:
                     pass
                 return f"Error: Command timed out after {self.timeout} seconds"
+            except asyncio.CancelledError:
+                proc.kill()
+                try:
+                    await proc.wait()
+                except Exception:
+                    pass
+                raise
 
             parts: list[str] = []
             if stdout:

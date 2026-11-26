@@ -4,18 +4,32 @@ These tools provide browser automation capabilities independent of the GUI,
 using the MCP protocol to connect to a Playwright MCP server.
 """
 
+import asyncio
 import json
+import weakref
 from typing import Any, Dict, Optional
 
 from annolid.utils.logger import logger
 
 from .function_base import FunctionTool
 from .function_registry import FunctionToolRegistry
+from .resolve import ensure_node_env, resolve_command
 
 # Global session and browser state for MCP browser tools
 _mcp_browser_session: Optional[Any] = None
 _mcp_browser_stack: Optional[Any] = None
+_mcp_browser_locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = weakref.WeakKeyDictionary()
 _BROWSER_SAFE_URL_SCHEMES = {"http", "https", "about"}
+_MCP_BROWSER_CONNECT_TIMEOUT_S = 30.0
+
+
+def _get_mcp_browser_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    lock = _mcp_browser_locks.get(loop)
+    if lock is None:
+        lock = asyncio.Lock()
+        _mcp_browser_locks[loop] = lock
+    return lock
 
 
 def _validate_browser_url(url: str) -> tuple[str, str]:
@@ -59,6 +73,12 @@ async def _call_mcp_tool(
         for block in getattr(result, "content", []) or []:
             if isinstance(block, types.TextContent):
                 texts.append(str(block.text or ""))
+        if bool(getattr(result, "isError", False)):
+            payload["ok"] = False
+            payload["error"] = (
+                "\n".join(texts).strip() or "MCP browser tool returned an error"
+            )
+            return payload
         payload["ok"] = True
         if texts:
             payload["message"] = "\n".join(texts)
@@ -74,62 +94,105 @@ async def _ensure_mcp_browser_session(mcp_servers: Dict[str, Any]) -> Optional[A
     if _mcp_browser_session is not None:
         return _mcp_browser_session
 
-    # Look for Playwright MCP server configuration
-    playwright_cfg = None
-    for name, cfg in mcp_servers.items():
-        if "playwright" in name.lower():
-            playwright_cfg = cfg
-            break
+    async with _get_mcp_browser_lock():
+        if _mcp_browser_session is not None:
+            return _mcp_browser_session
 
-    if playwright_cfg is None:
-        logger.warning("No Playwright MCP server configured")
-        return None
+        # Look for Playwright MCP server configuration
+        playwright_cfg = None
+        for name, cfg in mcp_servers.items():
+            if "playwright" in name.lower():
+                playwright_cfg = cfg
+                break
 
-    try:
-        from contextlib import AsyncExitStack
-        from mcp import ClientSession, StdioServerParameters
-        from mcp.client.stdio import stdio_client
-
-        # Handle config as dict or object
-        if hasattr(playwright_cfg, "to_dict"):
-            c = playwright_cfg
-        else:
-            from annolid.core.agent.config.schema import MCPServerConfig
-
-            c = MCPServerConfig.from_dict(playwright_cfg)
-
-        if c.command:
-            params = StdioServerParameters(
-                command=c.command, args=c.args, env=c.env or None
-            )
-            _mcp_browser_stack = AsyncExitStack()
-            read, write = await _mcp_browser_stack.enter_async_context(
-                stdio_client(params)
-            )
-        elif c.url:
-            from mcp.client.streamable_http import streamable_http_client
-
-            _mcp_browser_stack = AsyncExitStack()
-            read, write, _ = await _mcp_browser_stack.enter_async_context(
-                streamable_http_client(c.url)
-            )
-        else:
-            logger.warning("MCP browser: no command or url configured")
+        if playwright_cfg is None:
+            logger.warning("No Playwright MCP server configured")
             return None
 
-        _mcp_browser_session = await _mcp_browser_stack.enter_async_context(
-            ClientSession(read, write)
-        )
-        await _mcp_browser_session.initialize()
-        logger.info("MCP browser session connected")
-        return _mcp_browser_session
+        stack: Optional[Any] = None
+        try:
+            from contextlib import AsyncExitStack
+            from urllib.parse import urlsplit
+            from mcp import ClientSession, StdioServerParameters
+            from mcp.client.stdio import stdio_client
 
-    except ImportError:
-        logger.warning("mcp package not installed")
-        return None
-    except Exception as e:
-        logger.error("Failed to connect to MCP browser: %s", e)
-        return None
+            # Handle config as dict or object
+            if hasattr(playwright_cfg, "to_dict"):
+                c = playwright_cfg
+            else:
+                from annolid.core.agent.config.schema import MCPServerConfig
+
+                c = MCPServerConfig.from_dict(playwright_cfg)
+
+            stack = AsyncExitStack()
+            await stack.__aenter__()
+            if c.command:
+                resolved_cmd = resolve_command(c.command)
+                if resolved_cmd is None:
+                    logger.warning(
+                        "MCP browser: command '%s' not found on PATH", c.command
+                    )
+                    await stack.aclose()
+                    return None
+                server_env = ensure_node_env()
+                if c.env:
+                    server_env.update(c.env)
+                params = StdioServerParameters(
+                    command=resolved_cmd, args=c.args, env=server_env
+                )
+                read, write = await asyncio.wait_for(
+                    stack.enter_async_context(stdio_client(params)),
+                    timeout=_MCP_BROWSER_CONNECT_TIMEOUT_S,
+                )
+            elif c.url:
+                parsed = urlsplit(str(c.url or "").strip())
+                scheme = str(parsed.scheme or "").strip().lower()
+                if (
+                    scheme not in {"http", "https"}
+                    or not str(parsed.netloc or "").strip()
+                ):
+                    logger.warning("MCP browser: invalid server URL %r", c.url)
+                    await stack.aclose()
+                    return None
+                from mcp.client.streamable_http import streamable_http_client
+
+                read, write, _ = await asyncio.wait_for(
+                    stack.enter_async_context(streamable_http_client(c.url)),
+                    timeout=_MCP_BROWSER_CONNECT_TIMEOUT_S,
+                )
+            else:
+                logger.warning("MCP browser: no command or url configured")
+                await stack.aclose()
+                return None
+
+            session = await asyncio.wait_for(
+                stack.enter_async_context(ClientSession(read, write)),
+                timeout=_MCP_BROWSER_CONNECT_TIMEOUT_S,
+            )
+            await asyncio.wait_for(
+                session.initialize(), timeout=_MCP_BROWSER_CONNECT_TIMEOUT_S
+            )
+            _mcp_browser_stack = stack
+            _mcp_browser_session = session
+            logger.info("MCP browser session connected")
+            return _mcp_browser_session
+
+        except ImportError:
+            logger.warning("mcp package not installed")
+            if stack is not None:
+                try:
+                    await stack.aclose()
+                except Exception:
+                    pass
+            return None
+        except Exception as e:
+            logger.error("Failed to connect to MCP browser: %s", e)
+            if stack is not None:
+                try:
+                    await stack.aclose()
+                except Exception:
+                    pass
+            return None
 
 
 async def _close_mcp_browser_session() -> None:
@@ -414,15 +477,18 @@ class McpBrowserScrollTool(FunctionTool):
 
     async def execute(self, **kwargs: Any) -> str:
         # MCP browser uses press_key for scrolling
-        _ = kwargs.get("delta_y", 800)
+        raw_delta_y = kwargs.get("delta_y", 800)
+        try:
+            delta_y = int(raw_delta_y)
+        except (TypeError, ValueError):
+            delta_y = 800
+        key = "PageUp" if delta_y < 0 else "PageDown"
 
         session = await _ensure_mcp_browser_session(self._mcp_servers)
         if session is None:
             return json.dumps({"error": "MCP browser session not available"})
 
-        payload = await _call_mcp_tool(
-            session, "browser_press_key", {"key": "PageDown"}
-        )
+        payload = await _call_mcp_tool(session, "browser_press_key", {"key": key})
         return json.dumps(payload)
 
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Sequence
 
+from annolid.utils.atomic_io import atomic_write_text
+
 from .function_base import FunctionTool
 from .common import _resolve_read_path, _resolve_write_path
 from .pdf import ExtractPdfImagesTool, ExtractPdfTextTool, OpenPdfTool
@@ -24,18 +26,35 @@ class ReadFileTool(FunctionTool):
         return "read_file"
 
     @property
+    def read_only(self) -> bool:
+        return True
+
+    @property
     def description(self) -> str:
-        return "Read the contents of a UTF-8 text file at the given path."
+        return (
+            "Read the contents of a UTF-8 text file at the given path, "
+            "optionally restricted to an inclusive 1-based line range."
+        )
 
     @property
     def parameters(self) -> dict[str, Any]:
         return {
             "type": "object",
-            "properties": {"path": {"type": "string"}},
+            "properties": {
+                "path": {"type": "string"},
+                "start_line": {"type": "integer", "minimum": 1},
+                "end_line": {"type": "integer", "minimum": 1},
+            },
             "required": ["path"],
         }
 
-    async def execute(self, path: str, **kwargs: Any) -> str:
+    async def execute(
+        self,
+        path: str,
+        start_line: int | None = None,
+        end_line: int | None = None,
+        **kwargs: Any,
+    ) -> str:
         del kwargs
         try:
             file_path = _resolve_read_path(
@@ -58,7 +77,15 @@ class ReadFileTool(FunctionTool):
                     "Error: PDF is a binary file. Use extract_pdf_text(path=...) "
                     "or open_pdf(path=...) to read PDF content."
                 )
-            return file_path.read_text(encoding="utf-8")
+            text = file_path.read_text(encoding="utf-8")
+            if start_line is None and end_line is None:
+                return text
+            start = max(1, int(start_line or 1))
+            if end_line is not None and int(end_line) < start:
+                return f"Error: end_line ({end_line}) must be >= start_line ({start})."
+            lines = text.splitlines()
+            end = len(lines) if end_line is None else min(len(lines), int(end_line))
+            return "\n".join(lines[start - 1 : end])
         except PermissionError as exc:
             return f"Error: {exc}"
         except UnicodeDecodeError:
@@ -97,8 +124,7 @@ class WriteFileTool(FunctionTool):
         del kwargs
         try:
             file_path = _resolve_write_path(path, allowed_dir=self._allowed_dir)
-            file_path.parent.mkdir(parents=True, exist_ok=True)
-            file_path.write_text(content, encoding="utf-8")
+            atomic_write_text(file_path, content, encoding="utf-8")
             return f"Successfully wrote {len(content)} bytes to {path}"
         except PermissionError as exc:
             return f"Error: {exc}"
@@ -118,7 +144,7 @@ class EditFileTool(FunctionTool):
     def description(self) -> str:
         return (
             "Edit a file by replacing old_text with new_text. "
-            "The old_text must match exactly."
+            "The old_text must match exactly unless replace_all=true."
         )
 
     @property
@@ -129,12 +155,18 @@ class EditFileTool(FunctionTool):
                 "path": {"type": "string"},
                 "old_text": {"type": "string"},
                 "new_text": {"type": "string"},
+                "replace_all": {"type": "boolean"},
             },
             "required": ["path", "old_text", "new_text"],
         }
 
     async def execute(
-        self, path: str, old_text: str, new_text: str, **kwargs: Any
+        self,
+        path: str,
+        old_text: str,
+        new_text: str,
+        replace_all: bool = False,
+        **kwargs: Any,
     ) -> str:
         del kwargs
         try:
@@ -156,13 +188,17 @@ class EditFileTool(FunctionTool):
                     "Error: old_text not found in file. Make sure it matches exactly."
                 )
             count = content.count(old_text)
-            if count > 1:
+            if count > 1 and not bool(replace_all):
                 return (
-                    f"Warning: old_text appears {count} times. Please make it unique."
+                    f"Warning: old_text appears {count} times. "
+                    "Please make it unique or set replace_all=true."
                 )
-            file_path.write_text(
-                content.replace(old_text, new_text, 1), encoding="utf-8"
+            updated = (
+                content.replace(old_text, new_text)
+                if bool(replace_all)
+                else content.replace(old_text, new_text, 1)
             )
+            atomic_write_text(file_path, updated, encoding="utf-8")
             return f"Successfully edited {path}"
         except PermissionError as exc:
             return f"Error: {exc}"
@@ -184,6 +220,10 @@ class ListDirTool(FunctionTool):
         return "list_dir"
 
     @property
+    def read_only(self) -> bool:
+        return True
+
+    @property
     def description(self) -> str:
         return "List the contents of a directory."
 
@@ -191,11 +231,14 @@ class ListDirTool(FunctionTool):
     def parameters(self) -> dict[str, Any]:
         return {
             "type": "object",
-            "properties": {"path": {"type": "string"}},
+            "properties": {
+                "path": {"type": "string"},
+                "max_entries": {"type": "integer", "minimum": 1, "maximum": 5000},
+            },
             "required": ["path"],
         }
 
-    async def execute(self, path: str, **kwargs: Any) -> str:
+    async def execute(self, path: str, max_entries: int = 500, **kwargs: Any) -> str:
         del kwargs
         try:
             dir_path = _resolve_read_path(
@@ -207,10 +250,14 @@ class ListDirTool(FunctionTool):
                 return f"Error: Directory not found: {path}"
             if not dir_path.is_dir():
                 return f"Error: Not a directory: {path}"
+            cap = max(1, min(int(max_entries or 500), 5000))
+            all_entries = sorted(dir_path.iterdir())
             items = []
-            for item in sorted(dir_path.iterdir()):
+            for item in all_entries[:cap]:
                 prefix = "DIR " if item.is_dir() else "FILE"
                 items.append(f"{prefix}\t{item.name}")
+            if len(all_entries) > cap:
+                items.append(f"... ({len(all_entries) - cap} more entries omitted)")
             return "\n".join(items) if items else f"Directory {path} is empty"
         except PermissionError as exc:
             return f"Error: {exc}"

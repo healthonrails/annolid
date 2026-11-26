@@ -324,13 +324,14 @@ def _convert_tools(tools: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
 def _convert_messages(
     messages: Sequence[Dict[str, Any]],
 ) -> Tuple[str, List[Dict[str, Any]]]:
-    system_prompt = ""
+    system_parts: List[str] = []
     input_items: List[Dict[str, Any]] = []
     for idx, msg in enumerate(messages):
         role = msg.get("role")
         content = msg.get("content")
         if role == "system":
-            system_prompt = content if isinstance(content, str) else ""
+            if isinstance(content, str) and content.strip():
+                system_parts.append(content.strip())
             continue
         if role == "user":
             input_items.append(_convert_user_message(content))
@@ -346,16 +347,21 @@ def _convert_messages(
                         "id": f"msg_{idx}",
                     }
                 )
-            for tool_call in msg.get("tool_calls", []) or []:
+            for tc_idx, tool_call in enumerate(msg.get("tool_calls", []) or []):
                 fn = tool_call.get("function") or {}
                 call_id, item_id = _split_tool_call_id(tool_call.get("id"))
+                raw_arguments = fn.get("arguments")
+                if isinstance(raw_arguments, str):
+                    arguments_str = raw_arguments or "{}"
+                else:
+                    arguments_str = json.dumps(raw_arguments or {}, ensure_ascii=False)
                 input_items.append(
                     {
                         "type": "function_call",
-                        "id": item_id or f"fc_{idx}",
-                        "call_id": call_id or f"call_{idx}",
+                        "id": item_id or f"fc_{idx}_{tc_idx}",
+                        "call_id": call_id or f"call_{idx}_{tc_idx}",
                         "name": fn.get("name"),
-                        "arguments": fn.get("arguments") or "{}",
+                        "arguments": arguments_str,
                     }
                 )
             continue
@@ -368,7 +374,7 @@ def _convert_messages(
                     "output": _convert_tool_output(content),
                 }
             )
-    return system_prompt, input_items
+    return "\n\n".join(system_parts), input_items
 
 
 def _convert_user_message(content: Any) -> Dict[str, Any]:
@@ -566,15 +572,14 @@ async def _consume_event_stream(
                     continue
                 buf = tool_call_buffers.get(call_id) or {}
                 args_raw = buf.get("arguments") or item.get("arguments") or "{}"
-                try:
-                    args = json.loads(args_raw)
-                except Exception:
-                    args = {"_raw": args_raw}
+                from ..tool_call_utils import normalize_tool_arguments
+
+                args = normalize_tool_arguments(args_raw)
                 tool_calls.append(
                     ToolCallRequest(
                         id=f"{call_id}|{buf.get('id') or item.get('id') or 'fc_0'}",
                         name=str(buf.get("name") or item.get("name") or ""),
-                        arguments=args if isinstance(args, dict) else {"_raw": args},
+                        arguments=args,
                     )
                 )
         elif event_type == "response.completed":

@@ -1,16 +1,39 @@
 from __future__ import annotations
 
+from collections import OrderedDict
+import difflib
 import logging
 import re
-from typing import Any
+from typing import Any, Iterable
 
 from .function_base import FunctionTool
 
 logger = logging.getLogger(__name__)
 
 
-_PATH_ARGUMENTS = ("path", "file_path", "filename", "output_path", "new_path")
-_ABS_PATH_RE = re.compile(r"(?P<path>/(?:[^\s\"'`;|<>])+)")
+_PATH_ARGUMENTS = (
+    "path",
+    "file_path",
+    "filename",
+    "output_path",
+    "new_path",
+    "source",
+    "source_path",
+    "destination",
+    "dest_path",
+    "target",
+    "target_path",
+    "repo_path",
+    "dataset_folder",
+    "workspace",
+    "directory",
+    "dir_path",
+    "video_path",
+    "bib_file",
+    "working_dir",
+    "workdir",
+)
+_ABS_OR_HOME_PATH_RE = re.compile(r"(?P<path>(?:/|~/)(?:[^\s\"'`;|<>])+)")
 _WORKSPACE_VIOLATION_MARKERS = (
     "outside allowed directory",
     "outside allowed read roots",
@@ -18,6 +41,11 @@ _WORKSPACE_VIOLATION_MARKERS = (
     "path outside working dir",
     "hard policy boundary",
 )
+_MAX_WORKSPACE_VIOLATION_SIGNATURES = 256
+
+
+def _is_abs_or_home_path(value: str) -> bool:
+    return value.startswith("/") or value.startswith("~")
 
 
 def _workspace_violation_signature(
@@ -26,16 +54,16 @@ def _workspace_violation_signature(
 ) -> str | None:
     for key in _PATH_ARGUMENTS:
         value = str(params.get(key) or "").strip()
-        if value.startswith("/"):
+        if _is_abs_or_home_path(value):
             return _normalize_signature_path(value)
 
     if tool_name in {"exec", "exec_start"}:
         command = str(params.get("command") or params.get("cmd") or "")
-        match = _ABS_PATH_RE.search(command)
+        match = _ABS_OR_HOME_PATH_RE.search(command)
         if match:
             return _normalize_signature_path(match.group("path"))
         working_dir = str(params.get("working_dir") or params.get("workdir") or "")
-        if working_dir.startswith("/"):
+        if _is_abs_or_home_path(working_dir):
             return _normalize_signature_path(working_dir)
     return None
 
@@ -55,7 +83,7 @@ class FunctionToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, FunctionTool] = {}
         self._aliases: dict[str, str] = {}
-        self._workspace_violation_counts: dict[str, int] = {}
+        self._workspace_violation_counts: OrderedDict[str, int] = OrderedDict()
 
     @staticmethod
     def _normalize_tool_name(name: str) -> str:
@@ -71,6 +99,11 @@ class FunctionToolRegistry:
         if mapped and mapped in self._tools:
             return mapped, True
         return normalized, False
+
+    def canonical_name(self, name: str) -> str:
+        """Resolve an alias to its canonical registered name, or return normalized name."""
+        canonical, _ = self._resolve_tool_name(name)
+        return canonical
 
     def register(self, tool: FunctionTool, *, replace: bool = False) -> bool:
         name = self._normalize_tool_name(tool.name)
@@ -127,20 +160,75 @@ class FunctionToolRegistry:
         canonical, _ = self._resolve_tool_name(name)
         return canonical in self._tools
 
-    def get_definitions(self) -> list[dict[str, Any]]:
-        return [tool.to_schema() for tool in self._tools.values()]
+    def values(self) -> list[FunctionTool]:
+        return list(self._tools.values())
+
+    def reset_violation_counts(self) -> None:
+        self._workspace_violation_counts.clear()
+
+    def get_definitions(
+        self,
+        *,
+        allowed_names: Iterable[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        if allowed_names is None:
+            return [tool.to_schema() for tool in self._tools.values()]
+        allowed = {
+            self.canonical_name(str(name))
+            for name in allowed_names
+            if str(name or "").strip()
+        }
+        return [
+            tool.to_schema() for name, tool in self._tools.items() if name in allowed
+        ]
+
+    def _record_workspace_violation(self, signature: str) -> int:
+        count = self._workspace_violation_counts.get(signature, 0) + 1
+        self._workspace_violation_counts[signature] = count
+        self._workspace_violation_counts.move_to_end(signature)
+        while (
+            len(self._workspace_violation_counts) > _MAX_WORKSPACE_VIOLATION_SIGNATURES
+        ):
+            self._workspace_violation_counts.popitem(last=False)
+        return count
 
     async def execute(self, name: str, params: dict[str, Any]) -> str:
         normalized_name = self._normalize_tool_name(name)
         canonical_name, via_alias = self._resolve_tool_name(normalized_name)
         tool = self._tools.get(canonical_name)
         if tool is None:
-            return f"Error: Tool '{name}' not found"
+            candidates = list(self._tools.keys()) + list(self._aliases.keys())
+            suggestions = (
+                difflib.get_close_matches(normalized_name, candidates, n=3, cutoff=0.6)
+                if normalized_name and candidates
+                else []
+            )
+            hint = f". Did you mean: {', '.join(suggestions)}?" if suggestions else ""
+            return f"Error: Tool '{name}' not found{hint}"
         if via_alias:
             logger.warning(
                 "Deprecated tool alias '%s' invoked; use '%s' instead.",
                 normalized_name,
                 canonical_name,
+            )
+
+        if not isinstance(params, dict):
+            return (
+                f"Error: Invalid parameters for tool '{name}': "
+                f"parameters must be a JSON object, got {type(params).__name__}"
+            )
+
+        schema_props = (tool.parameters or {}).get("properties", {})
+        if (
+            "_raw" in params
+            and isinstance(schema_props, dict)
+            and "_raw" not in schema_props
+        ):
+            raw_preview = str(params.get("_raw") or "")[:160]
+            return (
+                f"Error: Invalid JSON arguments for tool '{name}': "
+                f"could not parse arguments into a JSON object (raw={raw_preview!r}). "
+                "Retry with a valid JSON object matching the tool schema."
             )
 
         try:
@@ -152,8 +240,7 @@ class FunctionToolRegistry:
             result = await tool.execute(**params)
             signature = _workspace_violation_signature(canonical_name, params)
             if signature and _is_workspace_violation_result(result):
-                count = self._workspace_violation_counts.get(signature, 0) + 1
-                self._workspace_violation_counts[signature] = count
+                count = self._record_workspace_violation(signature)
                 if count >= 3:
                     return (
                         "Error: refusing repeated workspace-bypass attempts for "

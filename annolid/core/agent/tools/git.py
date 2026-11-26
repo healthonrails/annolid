@@ -50,10 +50,21 @@ class _RepoCliTool(FunctionTool):
                 )
             except asyncio.TimeoutError:
                 proc.kill()
+                try:
+                    await proc.wait()
+                except Exception:
+                    pass
                 payload["error"] = (
                     f"Command timed out after {self._timeout} seconds: {' '.join(args)}"
                 )
                 return json.dumps(payload)
+            except asyncio.CancelledError:
+                proc.kill()
+                try:
+                    await proc.wait()
+                except Exception:
+                    pass
+                raise
         except FileNotFoundError:
             payload["error"] = f"Command not found: {args[0]}"
             return json.dumps(payload)
@@ -251,7 +262,15 @@ class GitCliTool(_RepoCliTool):
             repo = self._resolve_repo_path(repo_path)
         except PermissionError as exc:
             return json.dumps({"error": str(exc), "repo_path": str(repo_path)})
-        normalized = self._normalize_args(args=args, command=command)
+        try:
+            normalized = self._normalize_args(args=args, command=command)
+        except ValueError as exc:
+            return json.dumps(
+                {
+                    "error": f"Invalid git command syntax: {exc}",
+                    "repo_path": str(repo),
+                }
+            )
         if not normalized:
             return json.dumps(
                 {
@@ -388,7 +407,15 @@ class GitHubCliTool(_RepoCliTool):
             repo = self._resolve_repo_path(repo_path)
         except PermissionError as exc:
             return json.dumps({"error": str(exc), "repo_path": str(repo_path)})
-        normalized = self._normalize_args(args=args, command=command)
+        try:
+            normalized = self._normalize_args(args=args, command=command)
+        except ValueError as exc:
+            return json.dumps(
+                {
+                    "error": f"Invalid gh command syntax: {exc}",
+                    "repo_path": str(repo),
+                }
+            )
         if not normalized:
             return json.dumps(
                 {
@@ -414,6 +441,10 @@ class GitStatusTool(_RepoCliTool):
     @property
     def name(self) -> str:
         return "git_status"
+
+    @property
+    def read_only(self) -> bool:
+        return True
 
     @property
     def description(self) -> str:
@@ -448,6 +479,10 @@ class GitDiffTool(_RepoCliTool):
     @property
     def name(self) -> str:
         return "git_diff"
+
+    @property
+    def read_only(self) -> bool:
+        return True
 
     @property
     def description(self) -> str:
@@ -504,6 +539,10 @@ class GitLogTool(_RepoCliTool):
         return "git_log"
 
     @property
+    def read_only(self) -> bool:
+        return True
+
+    @property
     def description(self) -> str:
         return "Show recent git commit history."
 
@@ -544,6 +583,10 @@ class GitHubPrStatusTool(_RepoCliTool):
         return "github_pr_status"
 
     @property
+    def read_only(self) -> bool:
+        return True
+
+    @property
     def description(self) -> str:
         return "Show GitHub pull request status for the current branch using gh CLI."
 
@@ -568,6 +611,10 @@ class GitHubPrChecksTool(_RepoCliTool):
     @property
     def name(self) -> str:
         return "github_pr_checks"
+
+    @property
+    def read_only(self) -> bool:
+        return True
 
     @property
     def description(self) -> str:

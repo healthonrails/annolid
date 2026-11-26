@@ -43,13 +43,51 @@ from .providers import (
     resolve_openai_codex,
     resolve_openai_compat,
 )
-from .web_intents import (
-    LIVE_WEB_INTENT_TOKENS,
-    WEATHER_INTENT_TOKENS,
-    has_fast_web_data_intent,
+from .context_compaction import (
+    ContextCompactionDecision,
+    has_unresolved_tool_tasks,
+    plan_context_compaction,
+)
+from .tool_execution import (
+    ThinkTagStreamParser,
+    build_tool_only_fallback_answer,
+    can_skip_empty_final_repair,
+    compact_tool_result_for_llm,
+    extract_snapshot_media_path,
+    extract_tool_result_preview,
+    extract_tool_result_preview_from_payload,
+    is_concurrency_safe_tool_call,
+    partition_tool_calls_for_execution,
+    repair_tool_arguments_for_execution,
+    tool_result_looks_user_ready,
+)
+from .tool_selector import (
+    ANALYTICS_INTENT_TOKENS,
+    ANALYTICS_TOOL_NAMES,
+    BROWSER_WORKFLOW_TOOL_NAMES,
+    DEFAULT_TOOL_PRIORITY,
+    DEFAULT_TOOL_SELECTION_MAX,
+    TOOL_SELECTOR_STOPWORDS,
+    ToolSchemaIndex as _ToolSchemaIndex,
+    VCS_INTENT_TOKENS,
+    VCS_TOOL_NAMES,
+    WEB_INTENT_TOKENS,
+    build_tool_tokens,
+    compile_tool_index,
+    score_tool_schema,
+    select_default_tool_definitions,
+    select_relevant_tool_definitions,
+    tokenize_text,
+    tool_signature,
 )
 from .tools import FunctionToolRegistry
-from .tools.policy import classify_destructive_tool_call
+from .tools.policy import (
+    HIGH_RISK_INTENT_MARKERS,
+    HIGH_RISK_TOOL_AUTOMATION,
+    HIGH_RISK_TOOL_MESSAGING,
+    HIGH_RISK_TOOL_RUNTIME_EXEC,
+    classify_destructive_tool_call,
+)
 from .observability import emit_governance_event
 from .tools.function_builtin import (
     AutomationSchedulerTool,
@@ -63,13 +101,14 @@ from .tools.function_builtin import (
 from annolid.core.agent.tools.swarm_tool import SwarmTool
 from annolid.core.agent.swarm_budget import resolve_swarm_turn_budget
 from .tool_call_utils import (
+    extract_text_tool_calls,
     normalize_tool_arguments,
     sanitize_tool_call_id,
     sanitize_tool_call_id_segment,
     sanitize_tool_call_requests,
     sanitize_tool_name,
+    strip_tool_call_markup,
 )
-from .web_prompt_utils import derive_web_lookup_prompt_from_messages
 
 if TYPE_CHECKING:  # pragma: no cover
     from .subagent import SubagentManager
@@ -110,21 +149,6 @@ class AgentMemoryConfig:
     max_history_messages: int = 24
     memory_window: int = 50
     include_facts_in_system_prompt: bool = True
-
-
-@dataclass(frozen=True)
-class ContextCompactionDecision:
-    messages: Sequence[Dict[str, Any]]
-    trimmed_count: int = 0
-    skipped_due_to_active_tasks: bool = False
-
-
-@dataclass(frozen=True)
-class _ToolSchemaIndex:
-    schema: Dict[str, Any]
-    name: str
-    desc: str
-    tokens: frozenset[str]
 
 
 class InMemorySessionStore:
@@ -227,24 +251,19 @@ class AgentLoop:
     """
 
     _MIN_CONSOLIDATION_TRANSCRIPT_CHARS = 64
-    _HIGH_RISK_INTENT_MARKERS = (
-        "intent:high-risk",
-        "intent:high_risk",
-        "allow:high-risk",
-        "allow_high_risk",
-        "unsafe:high-risk",
+    _HIGH_RISK_INTENT_MARKERS = tuple(sorted(HIGH_RISK_INTENT_MARKERS))
+    _HIGH_RISK_TOOL_MESSAGING = HIGH_RISK_TOOL_MESSAGING
+    _HIGH_RISK_TOOL_RUNTIME_EXEC = HIGH_RISK_TOOL_RUNTIME_EXEC
+    _HIGH_RISK_TOOL_AUTOMATION = HIGH_RISK_TOOL_AUTOMATION
+    _HIGH_RISK_TOOL_RUNTIME_AUTOMATION = frozenset(
+        {"automation_schedule", "spawn", "spawn_behavior_subagent"}
     )
-    _HIGH_RISK_TOOL_MESSAGING = frozenset(
-        {"email", "list_emails", "read_email", "message", "camera_snapshot"}
-    )
-    _HIGH_RISK_TOOL_RUNTIME_EXEC = frozenset({"exec", "exec_start", "exec_process"})
-    _HIGH_RISK_TOOL_AUTOMATION = frozenset({"cron", "automation_schedule", "spawn"})
-    _HIGH_RISK_TOOL_RUNTIME_AUTOMATION = frozenset({"automation_schedule", "spawn"})
     _FINAL_ANSWER_REPAIR_PROMPT = (
         "Provide the final user-facing answer now using only the tool results above. "
         "Do not call any more tools. Keep it concise, concrete, and directly actionable."
     )
     _MAX_TOOL_RESULT_CHARS_FOR_LLM = 32000
+    _MAX_CONCURRENT_READ_ONLY_TOOLS = 4
     _CONTEXT_COMPACT_MAX_MESSAGES = 48
     _CONTEXT_COMPACT_MAX_NON_SYSTEM_MESSAGES = 36
 
@@ -273,10 +292,12 @@ class AgentLoop:
         tool_approval_callback: Optional[
             Callable[[str, Dict[str, Any], str], Any]
         ] = None,
+        max_selected_tools: Optional[int] = None,
     ) -> None:
         self._tools = tools
         self._tool_permission_context = tool_permission_context
         self._tool_approval_callback = tool_approval_callback
+        self._max_selected_tools = max_selected_tools
         runtime_cfg = resolve_agent_runtime_config(profile=profile)
         resolved_max_iterations = (
             runtime_cfg.max_tool_iterations
@@ -329,7 +350,7 @@ class AgentLoop:
         self._model_override = model
         self._profile = profile
         self._llm_callable = llm_callable
-        self._cached_tool_signature: Optional[tuple[tuple[str, str], ...]] = None
+        self._cached_tool_signature: Optional[tuple[tuple[str, str, str], ...]] = None
         self._cached_tool_index: List[_ToolSchemaIndex] = []
         self._cached_default_tools: List[Dict[str, Any]] = []
 
@@ -536,6 +557,7 @@ class AgentLoop:
             last_tool_cycle_signature: Optional[tuple[str, ...]] = None
             last_iteration = 0
             empty_final_repair_used = False
+            unknown_tool_recovery_used = False
 
             for iteration in range(1, self._max_iterations + 1):
                 last_iteration = iteration
@@ -562,72 +584,64 @@ class AgentLoop:
                 if session_id and session_id.startswith("swarm:"):
                     active_node_id = session_id.split(":", 1)[1].lower()
 
-                token_buffer = []
-                thought_buffer = []
-                is_thinking = False
+                think_parser = ThinkTagStreamParser()
                 last_update = time.perf_counter()
+                last_progress_at = 0.0
                 last_progress_text = ""
+                pending_progress_text = ""
                 runtime_loop = asyncio.get_running_loop()
 
+                def _schedule_progress(text: str) -> None:
+                    nonlocal last_progress_text, last_progress_at, pending_progress_text
+                    if on_progress is None or not text or text == last_progress_text:
+                        return
+                    last_progress_text = text
+                    pending_progress_text = ""
+                    last_progress_at = time.perf_counter()
+                    progress_task = runtime_loop.create_task(
+                        self._dispatch_progress(on_progress, text)
+                    )
+
+                    def _log_progress_failure(task: asyncio.Task[Any]) -> None:
+                        with suppress(Exception):
+                            err = task.exception()
+                            if err is not None:
+                                self._logger.warning(
+                                    "on_progress callback failed: %s",
+                                    err,
+                                )
+
+                    progress_task.add_done_callback(_log_progress_failure)
+
                 def _on_llm_token(token: str) -> None:
-                    nonlocal is_thinking, last_update, last_progress_text
+                    nonlocal last_update, pending_progress_text
                     raw_token = str(token or "")
                     if not raw_token:
                         return
-                    remaining = raw_token
-                    while remaining:
-                        if is_thinking:
-                            end_idx = remaining.find("</think>")
-                            if end_idx < 0:
-                                thought_buffer.append(remaining)
-                                remaining = ""
-                                continue
-                            if end_idx > 0:
-                                thought_buffer.append(remaining[:end_idx])
-                            remaining = remaining[end_idx + len("</think>") :]
-                            is_thinking = False
-                            continue
+                    thought_delta, output_delta = think_parser.feed(raw_token)
+                    if not thought_delta and not output_delta:
+                        return
 
-                        start_idx = remaining.find("<think>")
-                        if start_idx < 0:
-                            token_buffer.append(remaining)
-                            remaining = ""
-                            continue
-                        if start_idx > 0:
-                            token_buffer.append(remaining[:start_idx])
-                        remaining = remaining[start_idx + len("<think>") :]
-                        is_thinking = True
-                    progress_text = (
-                        str("".join(thought_buffer) or "").strip()
-                        or str("".join(token_buffer) or "").strip()
-                    )
-                    if (
-                        on_progress is not None
-                        and progress_text
-                        and progress_text != last_progress_text
-                    ):
-                        last_progress_text = progress_text
-                        progress_task = runtime_loop.create_task(
-                            self._dispatch_progress(on_progress, progress_text)
+                    now = time.perf_counter()
+                    if on_progress is not None:
+                        progress_text = (
+                            think_parser.thought_text.strip()
+                            or think_parser.output_text.strip()
                         )
-
-                        def _log_progress_failure(task: asyncio.Task[Any]) -> None:
-                            with suppress(Exception):
-                                err = task.exception()
-                                if err is not None:
-                                    self._logger.warning(
-                                        "on_progress callback failed: %s",
-                                        err,
-                                    )
-
-                        progress_task.add_done_callback(_log_progress_failure)
+                        if progress_text and progress_text != last_progress_text:
+                            if (
+                                last_progress_at == 0.0
+                                or (now - last_progress_at) >= 0.05
+                            ):
+                                _schedule_progress(progress_text)
+                            else:
+                                pending_progress_text = progress_text
 
                     # Throttled visualizer update (every 500ms or so)
-                    now = time.perf_counter()
                     if now - last_update > 0.5:
                         last_update = now
-                        current_thought = "".join(thought_buffer)
-                        current_output = "".join(token_buffer)
+                        current_thought = think_parser.thought_text
+                        current_output = think_parser.output_text
 
                         short_thought = (
                             (current_thought[-100:] + "...")
@@ -639,26 +653,16 @@ class AgentLoop:
                             if len(current_output) > 100
                             else current_output
                         )
-
-                        try:
-                            from annolid.gui.widgets.threejs_viewer_server import (
-                                update_swarm_node,
-                            )
-
-                            update_swarm_node(
-                                active_node_id,
-                                "active",
-                                f"Output: {short_output}"
-                                if short_output
-                                else "Thinking...",
-                                thinking=short_thought,
-                                parent=parent_id.lower() if parent_id else "",
-                            )
-                        except Exception as exc:
-                            self._logger.debug(
-                                "Swarm visualizer streaming update failed: %s",
-                                exc,
-                            )
+                        self._notify_swarm_visualizer(
+                            active_node_id,
+                            "active",
+                            f"Output: {short_output}"
+                            if short_output
+                            else "Thinking...",
+                            thinking=short_thought,
+                            parent=parent_id.lower() if parent_id else "",
+                            context="streaming",
+                        )
 
                 compaction = self._plan_context_compaction(messages)
                 if compaction.skipped_due_to_active_tasks:
@@ -686,6 +690,15 @@ class AgentLoop:
                         on_token=_on_llm_token,
                     )
                 finally:
+                    think_parser.flush()
+                    if on_progress is not None:
+                        flushed_text = (
+                            pending_progress_text
+                            or think_parser.thought_text.strip()
+                            or think_parser.output_text.strip()
+                        )
+                        if flushed_text and flushed_text != last_progress_text:
+                            _schedule_progress(flushed_text)
                     llm_total_ms += (time.perf_counter() - llm_cycle_started) * 1000.0
 
                 assistant_text = str(response.get("content") or "")
@@ -696,9 +709,8 @@ class AgentLoop:
                     )
                     response["content"] = assistant_text
 
-                tool_calls = self._sanitize_tool_calls(
-                    self._extract_tool_calls(response)
-                )
+                raw_extracted_calls = self._extract_tool_calls(response)
+                tool_calls = self._sanitize_tool_calls(raw_extracted_calls)
                 self._logger.info(
                     "annolid-bot profile iteration session=%s model=%s iteration=%d llm_ms=%.1f tool_calls=%d",
                     session_id,
@@ -728,26 +740,13 @@ class AgentLoop:
                     tools_str = ", ".join(
                         str(tc.get("name") or "") for tc in tool_calls
                     )
-                    active_node_id = "planner"
-                    if session_id and session_id.startswith("swarm:"):
-                        active_node_id = session_id.split(":", 1)[1].lower()
-
-                    try:
-                        from annolid.gui.widgets.threejs_viewer_server import (
-                            update_swarm_node,
-                        )
-
-                        update_swarm_node(
-                            active_node_id,
-                            "active",
-                            f"Executing: {tools_str}",
-                            thinking=reasoning or self._strip_think(assistant_text),
-                        )
-                    except Exception as exc:
-                        self._logger.debug(
-                            "Swarm visualizer tool update failed: %s",
-                            exc,
-                        )
+                    self._notify_swarm_visualizer(
+                        active_node_id,
+                        "active",
+                        f"Executing: {tools_str}",
+                        thinking=reasoning or self._strip_think(assistant_text),
+                        context="tool",
+                    )
 
                     tool_cycle_signature = tuple(
                         f"{call.get('name', '')}:{json.dumps(call.get('arguments', {}), ensure_ascii=False, sort_keys=True)}"
@@ -768,20 +767,7 @@ class AgentLoop:
 
                     # Clean up assistant text to remove raw tool call syntax before saving to history,
                     # so the LLM doesn't get confused by both raw text tools and native JSON `tool_calls`.
-                    clean_assistant_text = assistant_text
-                    if "<|tool_call_begin|>" in clean_assistant_text:
-                        import re
-
-                        clean_assistant_text = re.sub(
-                            r"<\|tool_call_begin\|>.*?<\|tool_call_end\|>",
-                            "",
-                            clean_assistant_text,
-                            flags=re.DOTALL,
-                        )
-                        clean_assistant_text = re.sub(
-                            r"<\|tool_calls_section_end\|>", "", clean_assistant_text
-                        )
-                        clean_assistant_text = clean_assistant_text.strip()
+                    clean_assistant_text = strip_tool_call_markup(assistant_text)
 
                     messages.append(
                         {
@@ -804,28 +790,54 @@ class AgentLoop:
                         explicit_high_risk_intent=explicit_high_risk_intent,
                     )
 
-                    try:
-                        from annolid.gui.widgets.threejs_viewer_server import (
-                            update_swarm_node,
-                        )
-
-                        update_swarm_node(active_node_id, "idle", "Awaiting Tasks")
-                    except Exception as exc:
-                        self._logger.debug(
-                            "Swarm visualizer idle update failed: %s",
-                            exc,
-                        )
+                    self._notify_swarm_visualizer(
+                        active_node_id, "idle", "Awaiting Tasks", context="idle"
+                    )
 
                     tool_exec_total_ms += cycle_exec_ms
                     tool_call_count += cycle_call_count
                     continue
                 else:
-                    # Fallback for local models that output raw string tokens instead of JSON arrays
-                    active_node_id = "planner"
-                    if session_id and session_id.startswith("swarm:"):
-                        active_node_id = session_id.split(":", 1)[1].lower()
-
-                    import re
+                    # One-shot self-correction when the model hallucinated an unregistered
+                    # (but syntactically valid) tool name and emitted no user-facing text.
+                    stripped_visible = self._strip_think(
+                        strip_tool_call_markup(assistant_text)
+                    )
+                    unknown_valid_names = [
+                        clean
+                        for clean in (
+                            sanitize_tool_name(c.get("name"))
+                            for c in raw_extracted_calls
+                        )
+                        if clean
+                    ]
+                    if (
+                        unknown_valid_names
+                        and not stripped_visible
+                        and not unknown_tool_recovery_used
+                        and iteration < self._max_iterations
+                        and self._tools.tool_names
+                    ):
+                        unknown_tool_recovery_used = True
+                        available_names = [
+                            str((t.get("function") or {}).get("name") or "")
+                            for t in tool_definitions
+                            if isinstance(t, Mapping)
+                        ]
+                        available_names = [n for n in available_names if n] or list(
+                            self._tools.tool_names[:20]
+                        )
+                        messages.append(
+                            {
+                                "role": "system",
+                                "content": (
+                                    f"Unavailable tool call(s) ignored: {', '.join(unknown_valid_names)}. "
+                                    f"Use ONLY available tools ({', '.join(available_names)}) "
+                                    "or answer directly without tools."
+                                ),
+                            }
+                        )
+                        continue
 
                     text_tools = re.findall(
                         r"(?:functions\.|<\|tool_call_begin\|>\s*)([a-zA-Z0-9_]+)",
@@ -833,35 +845,25 @@ class AgentLoop:
                     )
                     if text_tools:
                         tools_str = ", ".join(set(text_tools))
-                        try:
-                            from annolid.gui.widgets.threejs_viewer_server import (
-                                update_swarm_node,
-                            )
-
-                            update_swarm_node(
-                                active_node_id, "active", f"Executing: {tools_str}"
-                            )
-                        except Exception as exc:
-                            self._logger.debug(
-                                "Swarm visualizer text-tool update failed: %s",
-                                exc,
-                            )
-                    try:
-                        from annolid.gui.widgets.threejs_viewer_server import (
-                            update_swarm_node,
+                        self._notify_swarm_visualizer(
+                            active_node_id,
+                            "active",
+                            f"Executing: {tools_str}",
+                            context="text-tool",
                         )
-
-                        update_swarm_node(active_node_id, "idle", "Awaiting Tasks")
-                    except Exception as exc:
-                        self._logger.debug(
-                            "Swarm visualizer text-tool reset failed: %s",
-                            exc,
-                        )
+                    self._notify_swarm_visualizer(
+                        active_node_id,
+                        "idle",
+                        "Awaiting Tasks",
+                        context="text-tool reset",
+                    )
 
                 repeated_tool_cycles = 0
                 last_tool_cycle_signature = None
 
-                final_content = self._strip_think(assistant_text)
+                final_content = self._strip_think(
+                    strip_tool_call_markup(assistant_text)
+                )
                 if (
                     not str(final_content or "").strip()
                     and tool_runs
@@ -1023,35 +1025,24 @@ class AgentLoop:
             # Update visualizer with final output if in a swarm
             if session_id and session_id.startswith("swarm:"):
                 active_node_id = session_id.split(":", 1)[1].lower()
-                try:
-                    from annolid.gui.widgets.threejs_viewer_server import (
-                        update_swarm_node,
-                    )
-
-                    # Clean up output for display (strip thinking tags)
-                    clean_output = str(final_content or "")
-                    thinking_block = ""
-                    if "<think>" in clean_output and "</think>" in clean_output:
-                        parts = clean_output.split("</think>", 1)
-                        thinking_block = parts[0].replace("<think>", "").strip()
-                        clean_output = parts[1].strip()
-
-                    update_swarm_node(
-                        active_node_id,
-                        "idle",
-                        "Awaiting Tasks",
-                        thinking=thinking_block[:100] + "..."
-                        if len(thinking_block) > 100
-                        else thinking_block,
-                        output=clean_output[:150] + "..."
-                        if len(clean_output) > 150
-                        else clean_output,
-                    )
-                except Exception as exc:
-                    self._logger.debug(
-                        "Swarm visualizer final update failed: %s",
-                        exc,
-                    )
+                clean_output = str(final_content or "")
+                thinking_block = ""
+                if "<think>" in clean_output and "</think>" in clean_output:
+                    parts = clean_output.split("</think>", 1)
+                    thinking_block = parts[0].replace("<think>", "").strip()
+                    clean_output = parts[1].strip()
+                self._notify_swarm_visualizer(
+                    active_node_id,
+                    "idle",
+                    "Awaiting Tasks",
+                    thinking=thinking_block[:100] + "..."
+                    if len(thinking_block) > 100
+                    else thinking_block,
+                    output=clean_output[:150] + "..."
+                    if len(clean_output) > 150
+                    else clean_output,
+                    context="final",
+                )
 
             result = AgentLoopResult(
                 content=final_content,
@@ -1316,6 +1307,126 @@ class AgentLoop:
         llm_elapsed_ms = (time.perf_counter() - llm_started) * 1000.0
         return dict(response), llm_elapsed_ms
 
+    def _notify_swarm_visualizer(
+        self,
+        node_id: str,
+        status: str,
+        label: str,
+        *,
+        context: str = "",
+        **kwargs: Any,
+    ) -> None:
+        try:
+            from annolid.gui.widgets.threejs_viewer_server import update_swarm_node
+
+            update_swarm_node(node_id, status, label, **kwargs)
+        except Exception as exc:
+            self._logger.debug(
+                "Swarm visualizer %s update failed: %s",
+                context or "node",
+                exc,
+            )
+
+    def _canonical_tool_name(self, name: str) -> str:
+        resolver = getattr(self._tools, "canonical_name", None)
+        if callable(resolver):
+            resolved = str(resolver(name) or "").strip()
+            if resolved:
+                return resolved
+        return str(name or "").strip()
+
+    async def _run_single_tool_call(
+        self,
+        *,
+        session_id: str,
+        iteration: int,
+        name: str,
+        canonical_name: str,
+        args: Dict[str, Any],
+        executed_tools: set[str],
+        explicit_high_risk_intent: bool,
+    ) -> tuple[str, float, bool]:
+        """Execute a single tool call after policy, high-risk, and approval checks.
+
+        Returns `(result_text, elapsed_ms, actually_executed)`.
+        """
+        tool_started = time.perf_counter()
+        block_reason = ""
+        try:
+            if self._tool_permission_context is not None and (
+                self._tool_permission_context.blocks(canonical_name)
+                or (
+                    canonical_name != name
+                    and self._tool_permission_context.blocks(name)
+                )
+            ):
+                block_reason = f"Tool '{name}' is blocked by tool permission policy."
+            if not block_reason:
+                block_reason = self._high_risk_block_reason(
+                    tool_name=canonical_name,
+                    executed_tools=executed_tools,
+                    explicit_high_risk_intent=explicit_high_risk_intent,
+                )
+            if not block_reason and self._tool_approval_callback is not None:
+                risk_reason = classify_destructive_tool_call(canonical_name, args)
+                if risk_reason:
+                    approved = False
+                    try:
+                        decision = self._tool_approval_callback(
+                            canonical_name, dict(args), risk_reason
+                        )
+                        if inspect.isawaitable(decision):
+                            decision = await decision
+                        approved = bool(decision)
+                    except Exception as exc:
+                        self._logger.warning(
+                            "Destructive tool approval callback failed for %s; denying execution: %s",
+                            canonical_name,
+                            exc,
+                        )
+                        approved = False
+                    with suppress(Exception):
+                        emit_governance_event(
+                            event_type="tool_approval",
+                            action=canonical_name,
+                            outcome="approved" if approved else "denied",
+                            actor="user",
+                            details={
+                                "session_id": session_id,
+                                "risk_reason": risk_reason,
+                            },
+                        )
+                    if not approved:
+                        block_reason = (
+                            f"Tool '{name}' was denied by user confirmation "
+                            f"({risk_reason})."
+                        )
+            if block_reason:
+                result = f"Error: {block_reason}"
+            else:
+                if self._tool_timeout_seconds is not None:
+                    result = await asyncio.wait_for(
+                        self._tools.execute(name, args),
+                        timeout=self._tool_timeout_seconds,
+                    )
+                else:
+                    result = await self._tools.execute(name, args)
+        except asyncio.TimeoutError:
+            result = (
+                f"Error: Tool '{name}' timed out after "
+                f"{float(self._tool_timeout_seconds or 0.0):.1f}s"
+            )
+            self._logger.warning(
+                "annolid-bot tool timeout session=%s model=%s iteration=%d tool=%s timeout_s=%.1f",
+                session_id,
+                self.model,
+                iteration,
+                name,
+                float(self._tool_timeout_seconds or 0.0),
+            )
+        tool_elapsed_ms = (time.perf_counter() - tool_started) * 1000.0
+        return str(result), tool_elapsed_ms, not bool(block_reason)
+
     async def _execute_tool_cycle(
         self,
         *,
@@ -1330,93 +1441,44 @@ class AgentLoop:
     ) -> tuple[float, int]:
         cycle_exec_ms = 0.0
         cycle_call_count = 0
+
+        prepared: List[tuple[str, str, str, Dict[str, Any], bool]] = []
         for call in tool_calls:
             call_id = str(call.get("id") or "")
             name = str(call.get("name") or "")
-            raw_args = call.get("arguments")
-            args = self._normalize_args(raw_args)
+            canonical_name = self._canonical_tool_name(name)
+            args = self._normalize_args(call.get("arguments"))
             args = self._repair_tool_arguments_for_execution(
-                name=name,
+                name=canonical_name,
                 args=args,
                 messages=messages,
             )
-            tool_started = time.perf_counter()
-            try:
-                block_reason = ""
-                if (
-                    self._tool_permission_context is not None
-                    and self._tool_permission_context.blocks(name)
-                ):
-                    block_reason = (
-                        f"Tool '{name}' is blocked by tool permission policy."
-                    )
-                if not block_reason:
-                    block_reason = self._high_risk_block_reason(
-                        tool_name=name,
-                        executed_tools=executed_tools,
-                        explicit_high_risk_intent=explicit_high_risk_intent,
-                    )
-                if not block_reason and self._tool_approval_callback is not None:
-                    risk_reason = classify_destructive_tool_call(name, args)
-                    if risk_reason:
-                        approved = False
-                        try:
-                            decision = self._tool_approval_callback(
-                                name, dict(args), risk_reason
-                            )
-                            if inspect.isawaitable(decision):
-                                decision = await decision
-                            approved = bool(decision)
-                        except Exception as exc:
-                            self._logger.warning(
-                                "Destructive tool approval callback failed for %s; denying execution: %s",
-                                name,
-                                exc,
-                            )
-                            approved = False
-                        with suppress(Exception):
-                            emit_governance_event(
-                                event_type="tool_approval",
-                                action=name,
-                                outcome="approved" if approved else "denied",
-                                actor="user",
-                                details={
-                                    "session_id": session_id,
-                                    "risk_reason": risk_reason,
-                                },
-                            )
-                        if not approved:
-                            block_reason = (
-                                f"Tool '{name}' was denied by user confirmation "
-                                f"({risk_reason})."
-                            )
-                if block_reason:
-                    result = f"Error: {block_reason}"
-                else:
-                    if self._tool_timeout_seconds is not None:
-                        result = await asyncio.wait_for(
-                            self._tools.execute(name, args),
-                            timeout=self._tool_timeout_seconds,
-                        )
-                    else:
-                        result = await self._tools.execute(name, args)
-            except asyncio.TimeoutError:
-                result = (
-                    f"Error: Tool '{name}' timed out after "
-                    f"{float(self._tool_timeout_seconds or 0.0):.1f}s"
-                )
-                self._logger.warning(
-                    "annolid-bot tool timeout session=%s model=%s iteration=%d tool=%s timeout_s=%.1f",
-                    session_id,
-                    self.model,
-                    iteration,
-                    name,
-                    float(self._tool_timeout_seconds or 0.0),
-                )
-            tool_elapsed_ms = (time.perf_counter() - tool_started) * 1000.0
+            tool_obj = self._tools.get(canonical_name)
+            is_parallel = is_concurrency_safe_tool_call(
+                canonical_name=canonical_name,
+                tool_obj=tool_obj,
+                args=args,
+            )
+            prepared.append((call_id, name, canonical_name, args, is_parallel))
+
+        batches = partition_tool_calls_for_execution([item[4] for item in prepared])
+        sem = asyncio.Semaphore(max(1, int(self._MAX_CONCURRENT_READ_ONLY_TOOLS)))
+
+        def _record_result(
+            *,
+            call_id: str,
+            name: str,
+            canonical_name: str,
+            args: Dict[str, Any],
+            result: str,
+            tool_elapsed_ms: float,
+            was_executed: bool,
+        ) -> None:
+            nonlocal cycle_exec_ms, cycle_call_count
             cycle_exec_ms += tool_elapsed_ms
             cycle_call_count += 1
-            executed_tools.add(name)
+            if was_executed:
+                executed_tools.add(canonical_name)
             if tool_elapsed_ms >= 500.0:
                 self._logger.info(
                     "annolid-bot profile tool session=%s model=%s iteration=%d tool=%s elapsed_ms=%.1f",
@@ -1431,163 +1493,107 @@ class AgentLoop:
                     call_id=call_id,
                     name=name,
                     arguments=dict(args),
-                    result=str(result),
+                    result=result,
                 )
             )
-            # Intercept snapshots for media delivery if not sent via email
-            if name in {
-                "check_stream_source",
-                "gui_check_stream_source",
-                "camera_snapshot",
-            }:
-                try:
-                    res_data = json.loads(str(result or "{}"))
-                    if isinstance(res_data, dict) and res_data.get("ok"):
-                        # Extract snapshot_path from various possible locations
-                        # (Top-level, inside 'payload', or inside 'steps/capture')
-                        def find_snapshot_path(d: Any) -> str:
-                            if not isinstance(d, dict):
-                                return ""
-                            # 1. Direct hit
-                            path = str(d.get("snapshot_path") or "").strip()
-                            if path:
-                                return path
-                            # 2. Check common ancestors
-                            for key in ("payload", "steps", "capture"):
-                                if key in d:
-                                    path = find_snapshot_path(d[key])
-                                    if path:
-                                        return path
-                            return ""
-
-                        snapshot_path = find_snapshot_path(res_data)
-                        email_to = str(
-                            res_data.get("email_to")
-                            or res_data.get("payload", {}).get("email_to")
-                            or ""
-                        ).strip()
-
-                        if snapshot_path and not email_to:
-                            # Ensure absolute path for the delivery channel
-                            path_obj = Path(snapshot_path)
-                            if not path_obj.is_absolute():
-                                base = Path(self._workspace or Path.cwd()).resolve()
-                                path_obj = (base / path_obj).resolve()
-                            media_list.append(str(path_obj))
-                except Exception as exc:
-                    self._logger.debug(
-                        "Tool result media extraction failed for %s: %s",
-                        name,
-                        exc,
-                    )
+            try:
+                media_path = extract_snapshot_media_path(
+                    name=canonical_name,
+                    result=result,
+                    workspace=self._workspace,
+                )
+                if media_path:
+                    media_list.append(media_path)
+            except Exception as exc:
+                self._logger.debug(
+                    "Tool result media extraction failed for %s: %s",
+                    name,
+                    exc,
+                )
             messages.append(
                 {
                     "role": "tool",
                     "tool_call_id": call_id,
                     "name": name,
                     "content": self._compact_tool_result_for_llm(
-                        name=name, result=str(result)
+                        name=name, result=result
                     ),
                 }
             )
+
+        for is_parallel_batch, indices in batches:
+            if not is_parallel_batch:
+                idx = indices[0]
+                call_id, name, canonical_name, args, _ = prepared[idx]
+                result, elapsed_ms, was_executed = await self._run_single_tool_call(
+                    session_id=session_id,
+                    iteration=iteration,
+                    name=name,
+                    canonical_name=canonical_name,
+                    args=args,
+                    executed_tools=executed_tools,
+                    explicit_high_risk_intent=explicit_high_risk_intent,
+                )
+                _record_result(
+                    call_id=call_id,
+                    name=name,
+                    canonical_name=canonical_name,
+                    args=args,
+                    result=result,
+                    tool_elapsed_ms=elapsed_ms,
+                    was_executed=was_executed,
+                )
+                continue
+
+            snapshot_executed = set(executed_tools)
+
+            async def _run_bounded(idx: int) -> tuple[str, float, bool]:
+                _, item_name, item_canonical, item_args, _ = prepared[idx]
+                async with sem:
+                    return await self._run_single_tool_call(
+                        session_id=session_id,
+                        iteration=iteration,
+                        name=item_name,
+                        canonical_name=item_canonical,
+                        args=item_args,
+                        executed_tools=snapshot_executed,
+                        explicit_high_risk_intent=explicit_high_risk_intent,
+                    )
+
+            outcomes = await asyncio.gather(*(_run_bounded(i) for i in indices))
+            for idx, (result, elapsed_ms, was_executed) in zip(indices, outcomes):
+                call_id, name, canonical_name, args, _ = prepared[idx]
+                _record_result(
+                    call_id=call_id,
+                    name=name,
+                    canonical_name=canonical_name,
+                    args=args,
+                    result=result,
+                    tool_elapsed_ms=elapsed_ms,
+                    was_executed=was_executed,
+                )
+
         self._append_post_tool_guidance(messages)
         return cycle_exec_ms, cycle_call_count
 
     def _compact_tool_result_for_llm(self, *, name: str, result: str) -> str:
-        text = str(result or "")
-        limit = int(self._MAX_TOOL_RESULT_CHARS_FOR_LLM)
-        if len(text) <= limit:
-            return text
-
-        try:
-            payload = json.loads(text)
-            if isinstance(payload, dict):
-                raw_text = payload.get("text")
-                if isinstance(raw_text, str) and raw_text:
-                    reserve = 400
-                    max_text = max(1000, limit - reserve)
-                    if len(raw_text) > max_text:
-                        payload["text"] = raw_text[:max_text]
-                        payload["truncated_for_llm"] = True
-                        payload["original_text_length"] = len(raw_text)
-                        return json.dumps(payload, ensure_ascii=False)
-        except (json.JSONDecodeError, TypeError):
-            payload = None
-
-        omitted = max(0, len(text) - limit)
-        return (
-            text[:limit]
-            + f"\n...[tool output truncated for LLM; omitted {omitted} chars]"
+        return compact_tool_result_for_llm(
+            name=name,
+            result=result,
+            limit=int(self._MAX_TOOL_RESULT_CHARS_FOR_LLM),
         )
 
     @staticmethod
     def _build_tool_only_fallback_answer(*, tool_runs: Sequence[AgentToolRun]) -> str:
-        if not tool_runs:
-            return ""
-        last = tool_runs[-1]
-        preview = AgentLoop._extract_tool_result_preview(last.result)
-        if preview:
-            if AgentLoop._tool_result_looks_user_ready(last.name, preview):
-                return preview[:800]
-            return (
-                f"I ran `{last.name}` and recovered the tool output below because the "
-                "model returned an empty final response.\n\n"
-                f"{preview[:800]}"
-            )
-        return (
-            f"I ran `{last.name}` but the model returned an empty final response and "
-            "the tool did not provide readable output. Please retry."
-        )
+        return build_tool_only_fallback_answer(tool_runs)
 
     @staticmethod
     def _extract_tool_result_preview(raw_result: Any) -> str:
-        raw = str(raw_result or "").strip()
-        if not raw:
-            return ""
-        preview = ""
-        try:
-            payload = json.loads(raw)
-            preview = AgentLoop._extract_tool_result_preview_from_payload(payload)
-        except Exception:
-            preview = raw
-        preview = re.sub(r"<think>[\s\S]*?</think>", "", str(preview or ""))
-        preview = re.sub(
-            r"<\|tool_calls_section_begin\|>[\s\S]*?<\|tool_calls_section_end\|>",
-            "",
-            preview,
-            flags=re.IGNORECASE,
-        )
-        preview = re.sub(r"\s+", " ", preview).strip()
-        return preview
+        return extract_tool_result_preview(raw_result)
 
     @staticmethod
     def _extract_tool_result_preview_from_payload(payload: Any) -> str:
-        if isinstance(payload, dict):
-            for key in ("error", "text", "content", "message", "result"):
-                value = payload.get(key)
-                if isinstance(value, str) and value.strip():
-                    return value
-                if isinstance(value, dict):
-                    nested = AgentLoop._extract_tool_result_preview_from_payload(value)
-                    if nested:
-                        return nested
-            if isinstance(payload.get("items"), list):
-                parts: list[str] = []
-                for item in payload.get("items")[:3]:
-                    nested = AgentLoop._extract_tool_result_preview_from_payload(item)
-                    if nested:
-                        parts.append(nested)
-                if parts:
-                    return "\n".join(parts)
-        if isinstance(payload, list):
-            parts = []
-            for item in payload[:3]:
-                nested = AgentLoop._extract_tool_result_preview_from_payload(item)
-                if nested:
-                    parts.append(nested)
-            if parts:
-                return "\n".join(parts)
-        return ""
+        return extract_tool_result_preview_from_payload(payload)
 
     def _repair_tool_arguments_for_execution(
         self,
@@ -1596,56 +1602,24 @@ class AgentLoop:
         args: Mapping[str, Any],
         messages: Sequence[Mapping[str, Any]],
     ) -> Dict[str, Any]:
-        repaired = dict(args or {})
-        tool_name = str(name or "").strip().lower()
-        if tool_name != "web_search":
-            return repaired
-        query = str(repaired.get("query") or repaired.get("q") or "").strip()
-        if query:
-            repaired["query"] = query
-            return repaired
-        derived_query, repaired_prompt = derive_web_lookup_prompt_from_messages(
-            messages
+        repaired, repaired_prompt = repair_tool_arguments_for_execution(
+            name=name,
+            args=args,
+            messages=messages,
         )
-        if derived_query:
-            repaired["query"] = derived_query
-            if repaired_prompt:
-                self._logger.info(
-                    "annolid-bot repaired missing web_search query from prompt"
-                )
+        if repaired_prompt:
+            self._logger.info(
+                "annolid-bot repaired missing web_search query from prompt"
+            )
         return repaired
 
     @staticmethod
     def _tool_result_looks_user_ready(tool_name: str, preview: str) -> bool:
-        name = str(tool_name or "").strip().lower()
-        text = str(preview or "").strip()
-        if not text:
-            return False
-        if name in {
-            "web_search",
-            "gui_web_get_dom_text",
-            "gui_pdf_get_text",
-            "gui_pdf_summarize",
-        }:
-            return True
-        if name in {"read_file", "extract_pdf_text"} and len(text) >= 80:
-            return True
-        if text.lower().startswith(("results for:", "current conditions", "weather")):
-            return True
-        return False
+        return tool_result_looks_user_ready(tool_name, preview)
 
     @staticmethod
     def _can_skip_empty_final_repair(*, tool_runs: Sequence[AgentToolRun]) -> bool:
-        raw = str(os.getenv("ANNOLID_AGENT_EMPTY_FINAL_FASTPATH", "1")).strip().lower()
-        if raw in {"0", "false", "no", "off"}:
-            return False
-        if not tool_runs:
-            return False
-        last = tool_runs[-1]
-        preview = AgentLoop._extract_tool_result_preview(last.result)
-        if not preview:
-            return False
-        return AgentLoop._tool_result_looks_user_ready(last.name, preview)
+        return can_skip_empty_final_repair(tool_runs)
 
     async def _repair_empty_final_answer(
         self,
@@ -1689,85 +1663,16 @@ class AgentLoop:
     def _plan_context_compaction(
         cls, messages: Sequence[Mapping[str, Any]]
     ) -> ContextCompactionDecision:
-        materialized = [dict(msg) for msg in messages]
-        total_count = len(materialized)
-        if total_count <= cls._CONTEXT_COMPACT_MAX_MESSAGES:
-            return ContextCompactionDecision(messages=materialized, trimmed_count=0)
-        if cls._has_unresolved_tool_tasks(materialized):
-            # Do not compact while there are unresolved assistant->tool links.
-            return ContextCompactionDecision(
-                messages=materialized,
-                trimmed_count=0,
-                skipped_due_to_active_tasks=True,
-            )
-
-        system_indices = [
-            idx
-            for idx, msg in enumerate(materialized)
-            if str(msg.get("role") or "").strip().lower() == "system"
-        ]
-        system_set = set(system_indices)
-        non_system_indices = [
-            idx for idx in range(total_count) if idx not in system_set
-        ]
-        kept_non_system = non_system_indices[
-            -cls._CONTEXT_COMPACT_MAX_NON_SYSTEM_MESSAGES :
-        ]
-
-        max_total = max(1, int(cls._CONTEXT_COMPACT_MAX_MESSAGES))
-        system_budget = max(0, max_total - len(kept_non_system))
-        kept_system: List[int] = []
-        if system_indices and system_budget > 0:
-            if len(system_indices) <= system_budget:
-                kept_system = list(system_indices)
-            elif system_budget == 1:
-                kept_system = [system_indices[0]]
-            else:
-                first = system_indices[0]
-                tail = system_indices[-(system_budget - 1) :]
-                kept_system = [first] + [idx for idx in tail if idx != first]
-        elif system_indices and max_total > 1:
-            # Preserve the first system message when possible, then keep newest context.
-            kept_system = [system_indices[0]]
-            kept_non_system = kept_non_system[-(max_total - 1) :]
-        elif system_indices and max_total == 1:
-            kept_system = [system_indices[0]]
-            kept_non_system = []
-
-        kept_indices = sorted(set(kept_system + kept_non_system))
-        compacted = [materialized[idx] for idx in kept_indices][-max_total:]
-        trimmed = max(0, total_count - len(compacted))
-        return ContextCompactionDecision(
-            messages=compacted,
-            trimmed_count=trimmed,
-            skipped_due_to_active_tasks=False,
+        return plan_context_compaction(
+            messages,
+            max_messages=cls._CONTEXT_COMPACT_MAX_MESSAGES,
+            max_non_system_messages=cls._CONTEXT_COMPACT_MAX_NON_SYSTEM_MESSAGES,
         )
 
     @classmethod
     def _has_unresolved_tool_tasks(cls, messages: Sequence[Mapping[str, Any]]) -> bool:
         del cls
-        pending_ids: set[str] = set()
-        saw_idless_tool_call = False
-        for message in messages:
-            role = str(message.get("role") or "").strip().lower()
-            if role == "assistant":
-                tool_calls = message.get("tool_calls")
-                if isinstance(tool_calls, Sequence):
-                    for call in tool_calls:
-                        if not isinstance(call, Mapping):
-                            continue
-                        call_id = str(call.get("id") or "").strip()
-                        if call_id:
-                            pending_ids.add(call_id)
-                        else:
-                            # Conservative fallback for malformed/raw tool call records.
-                            saw_idless_tool_call = True
-                continue
-            if role == "tool":
-                tool_call_id = str(message.get("tool_call_id") or "").strip()
-                if tool_call_id:
-                    pending_ids.discard(tool_call_id)
-        return bool(pending_ids) or saw_idless_tool_call
+        return has_unresolved_tool_tasks(messages)
 
     async def _build_initial_messages(
         self,
@@ -1893,7 +1798,7 @@ class AgentLoop:
         self,
     ) -> tuple[
         List[Dict[str, Any]],
-        tuple[tuple[str, str], ...],
+        tuple[tuple[str, str, str], ...],
         List[_ToolSchemaIndex],
         List[Dict[str, Any]],
     ]:
@@ -2753,11 +2658,15 @@ class AgentLoop:
             }
         ]
 
-        resp = await self._llm_callable(
+        llm_call = self._llm_callable(
             [{"role": "system", "content": prompt}],
             save_memory_tool,
             self.model,
         )
+        if self._llm_timeout_seconds is not None:
+            resp = await asyncio.wait_for(llm_call, timeout=self._llm_timeout_seconds)
+        else:
+            resp = await llm_call
         for call in self._sanitize_tool_calls(
             self._extract_tool_calls(resp),
             allowed_tool_names=("save_memory",),
@@ -2981,7 +2890,11 @@ class AgentLoop:
                 allowed_read_roots=self._allowed_read_roots,
                 mcp_servers=self._mcp_servers,
                 llm_timeout_seconds=self._llm_timeout_seconds,
+                tool_timeout_seconds=self._tool_timeout_seconds,
                 strict_runtime_tool_guard=self._strict_runtime_tool_guard,
+                tool_permission_context=self._tool_permission_context,
+                tool_approval_callback=self._tool_approval_callback,
+                max_selected_tools=self._max_selected_tools,
             )
 
         return _loop_factory
@@ -3044,172 +2957,14 @@ class AgentLoop:
         )
         return await manager.run_swarm(task, max_turns=resolved_turns)
 
-    _TOOL_SELECTOR_STOPWORDS = {
-        "a",
-        "an",
-        "and",
-        "are",
-        "as",
-        "at",
-        "be",
-        "by",
-        "for",
-        "from",
-        "how",
-        "i",
-        "in",
-        "is",
-        "it",
-        "me",
-        "of",
-        "on",
-        "or",
-        "that",
-        "the",
-        "this",
-        "to",
-        "use",
-        "with",
-        "you",
-        "your",
-    }
-    _DEFAULT_TOOL_SELECTION_MAX = 6
-    _WEB_INTENT_TOKENS = frozenset(
-        set(LIVE_WEB_INTENT_TOKENS)
-        | {
-            "search",
-            "web",
-            "website",
-            "threejs",
-            "three",
-            "3d",
-            "url",
-        }
-    )
-    _VCS_INTENT_TOKENS = frozenset(
-        {
-            "git",
-            "github",
-            "gh",
-            "commit",
-            "commits",
-            "branch",
-            "branches",
-            "diff",
-            "staged",
-            "unstaged",
-            "pull",
-            "request",
-            "requests",
-            "pr",
-            "merge",
-            "rebase",
-            "checkout",
-        }
-    )
-    _VCS_TOOL_NAMES = (
-        "git_status",
-        "git_diff",
-        "git_log",
-        "github_pr_status",
-        "github_pr_checks",
-        "git_cli",
-        "gh_cli",
-    )
-    _ANALYTICS_INTENT_TOKENS = frozenset(
-        {
-            "stats",
-            "statistics",
-            "statistical",
-            "qc",
-            "quality",
-            "kinematics",
-            "velocity",
-            "speed",
-            "freezing",
-            "immobility",
-            "tortuosity",
-            "zone",
-            "zones",
-            "occupancy",
-            "preference",
-            "ethogram",
-            "budget",
-            "irr",
-            "kappa",
-            "krippendorff",
-            "rater",
-            "raters",
-            "cohort",
-            "anova",
-            "pvalue",
-            "fdr",
-            "transitions",
-            "markov",
-            "report",
-            "gaps",
-        }
-    )
-    _ANALYTICS_TOOL_NAMES = frozenset(
-        {
-            "annolid_generate_report",
-            "annolid_track_qc",
-            "annolid_kinematics_stats",
-            "annolid_zone_analysis",
-            "annolid_behavior_time_budget",
-            "annolid_behavior_qc",
-            "annolid_behavior_irr",
-            "annolid_behavior_cohort",
-            "annolid_tracking_stats",
-            "gui_analyze_tracking_stats",
-            "annolid_eval_report",
-        }
-    )
-    _DEFAULT_TOOL_PRIORITY = (
-        "mcp_browser",
-        "mcp_browser_navigate",
-        "mcp_browser_snapshot",
-        "mcp_browser_type",
-        "mcp_browser_click",
-        "mcp_browser_wait",
-        "gui_start_realtime_stream",
-        "gui_stop_realtime_stream",
-        "gui_label_behavior_segments",
-        "gui_segment_track_video",
-        "sam3_agent_video_track",
-        "gui_open_video",
-        "gui_open_url",
-        "gui_open_in_browser",
-        "gui_open_threejs",
-        "gui_open_threejs_example",
-        "clawhub_search_skills",
-        "clawhub_install_skill",
-        "gui_web_get_dom_text",
-        "gui_web_capture_screenshot",
-        "gui_web_describe_view",
-        "gui_web_extract_structured",
-        "gui_web_click",
-        "gui_web_type",
-        "gui_web_scroll",
-        "gui_web_find_forms",
-        "gui_web_run_steps",
-        "gui_open_pdf",
-        "gui_pdf_summarize",
-        "gui_set_frame",
-        "gui_set_ai_text_prompt",
-        "gui_run_ai_text_segmentation",
-        "gui_track_next_frames",
-        "gui_context",
-        "run_swarm",
-        "read_file",
-        "list_dir",
-        "video_info",
-        "video_sample_frames",
-        "open_pdf",
-        "extract_pdf_text",
-        "download_pdf",
-        "web_search",
-    )
+    _TOOL_SELECTOR_STOPWORDS = set(TOOL_SELECTOR_STOPWORDS)
+    _DEFAULT_TOOL_SELECTION_MAX = DEFAULT_TOOL_SELECTION_MAX
+    _WEB_INTENT_TOKENS = WEB_INTENT_TOKENS
+    _VCS_INTENT_TOKENS = VCS_INTENT_TOKENS
+    _VCS_TOOL_NAMES = VCS_TOOL_NAMES
+    _ANALYTICS_INTENT_TOKENS = ANALYTICS_INTENT_TOKENS
+    _ANALYTICS_TOOL_NAMES = ANALYTICS_TOOL_NAMES
+    _DEFAULT_TOOL_PRIORITY = DEFAULT_TOOL_PRIORITY
     _REMEMBER_NOTE_RE = re.compile(
         r"^\s*(?:please\s+)?remember(?:\s+that)?\s+(.+?)\s*$",
         flags=re.IGNORECASE,
@@ -3224,49 +2979,18 @@ class AgentLoop:
         "for visual description of the current web view, prefer `gui_web_describe_view`. "
         "before claiming browsing limits. Do not reveal private chain-of-thought."
     )
-    _BROWSER_WORKFLOW_TOOL_NAMES = frozenset(
-        {
-            "mcp_browser",
-            "mcp_browser_navigate",
-            "mcp_browser_snapshot",
-            "mcp_browser_type",
-            "mcp_browser_click",
-            "mcp_browser_wait",
-            "mcp_browser_screenshot",
-            "mcp_browser_scroll",
-        }
-    )
+    _BROWSER_WORKFLOW_TOOL_NAMES = BROWSER_WORKFLOW_TOOL_NAMES
     _TOKENIZE_RE = re.compile(r"[a-zA-Z0-9_]+")
 
     @classmethod
     def _tokenize_text(cls, text: str) -> List[str]:
-        raw = cls._TOKENIZE_RE.findall(str(text or "").lower())
-        return [t for t in raw if len(t) > 1 and t not in cls._TOOL_SELECTOR_STOPWORDS]
+        del cls
+        return tokenize_text(text)
 
     @classmethod
     def _build_tool_tokens(cls, schema: Mapping[str, Any]) -> set[str]:
-        fn = schema.get("function")
-        if not isinstance(fn, Mapping):
-            return set()
-        parts: List[str] = [
-            str(fn.get("name") or ""),
-            str(fn.get("description") or ""),
-        ]
-        params = fn.get("parameters")
-        if isinstance(params, Mapping):
-            props = params.get("properties")
-            if isinstance(props, Mapping):
-                for key, value in props.items():
-                    parts.append(str(key))
-                    if isinstance(value, Mapping):
-                        parts.append(str(value.get("description") or ""))
-                        enum_values = value.get("enum")
-                        if isinstance(enum_values, list):
-                            parts.extend(str(item) for item in enum_values)
-        tokens: set[str] = set()
-        for part in parts:
-            tokens.update(cls._tokenize_text(part))
-        return tokens
+        del cls
+        return build_tool_tokens(schema)
 
     @classmethod
     def _score_tool_schema(
@@ -3274,60 +2998,27 @@ class AgentLoop:
         tool_entry: _ToolSchemaIndex,
         query_tokens: Sequence[str],
     ) -> int:
-        if not query_tokens:
-            return 0
-        score = 0
-        for token in query_tokens:
-            if token in tool_entry.tokens:
-                score += 2
-            if token and token in tool_entry.name:
-                score += 3
-            if token and token in tool_entry.desc:
-                score += 1
-        return score
+        del cls
+        return score_tool_schema(tool_entry, query_tokens)
 
     @classmethod
     def _compile_tool_index(
         cls,
         all_tool_definitions: Sequence[Mapping[str, Any]],
     ) -> List[_ToolSchemaIndex]:
-        compiled: List[_ToolSchemaIndex] = []
-        for schema in all_tool_definitions:
-            schema_dict = dict(schema)
-            fn = schema_dict.get("function")
-            if not isinstance(fn, Mapping):
-                continue
-            compiled.append(
-                _ToolSchemaIndex(
-                    schema=schema_dict,
-                    name=str(fn.get("name") or "").lower(),
-                    desc=str(fn.get("description") or "").lower(),
-                    tokens=frozenset(cls._build_tool_tokens(schema_dict)),
-                )
-            )
-        return compiled
+        del cls
+        return compile_tool_index(all_tool_definitions)
 
     @staticmethod
     def _tool_signature(
         all_tool_definitions: Sequence[Mapping[str, Any]],
-    ) -> tuple[tuple[str, str], ...]:
-        pairs: List[tuple[str, str]] = []
-        for schema in all_tool_definitions:
-            fn = schema.get("function")
-            if not isinstance(fn, Mapping):
-                continue
-            pairs.append(
-                (
-                    str(fn.get("name") or ""),
-                    str(fn.get("description") or ""),
-                )
-            )
-        return tuple(sorted(pairs))
+    ) -> tuple[tuple[str, str, str], ...]:
+        return tool_signature(all_tool_definitions)
 
     def _get_cached_tool_index(
         self,
         all_tool_definitions: Sequence[Mapping[str, Any]],
-        signature: tuple[tuple[str, str], ...],
+        signature: tuple[tuple[str, str, str], ...],
     ) -> List[_ToolSchemaIndex]:
         if self._cached_tool_signature == signature and len(
             self._cached_tool_index
@@ -3342,7 +3033,7 @@ class AgentLoop:
     def _get_cached_default_tools(
         self,
         tool_index: Sequence[_ToolSchemaIndex],
-        signature: tuple[tuple[str, str], ...],
+        signature: tuple[tuple[str, str, str], ...],
     ) -> List[Dict[str, Any]]:
         if self._cached_tool_signature == signature and self._cached_default_tools:
             return list(self._cached_default_tools)
@@ -3360,163 +3051,32 @@ class AgentLoop:
         user_message_text: str,
         messages: Sequence[Mapping[str, Any]],
     ) -> List[Dict[str, Any]]:
-        tools = [entry.schema for entry in tool_index] or [
-            dict(t) for t in all_tool_definitions
-        ]
-        if len(tools) <= 2:
-            return [dict(t) for t in tools]
-        user_tokens = self._tokenize_text(user_message_text)
-        if not user_tokens:
-            return [dict(t) for t in default_tool_definitions]
-
-        # Use recent interaction context to improve follow-up turns.
-        tail_text_parts: List[str] = []
-        for msg in messages[-6:]:
-            role = str(msg.get("role") or "")
-            if role in {"assistant", "tool"}:
-                tail_text_parts.append(str(msg.get("content") or ""))
-        tail_tokens = self._tokenize_text(" ".join(tail_text_parts))
-        query_tokens = list(dict.fromkeys([*user_tokens, *tail_tokens]))
-
-        scored: List[tuple[int, Dict[str, Any]]] = []
-        entries = list(tool_index) or self._compile_tool_index(tools)
-        web_intent = bool(self._WEB_INTENT_TOKENS.intersection(query_tokens))
-        fast_web_data_intent = has_fast_web_data_intent(query_tokens)
-        weather_intent = bool(WEATHER_INTENT_TOKENS.intersection(query_tokens))
-        vcs_intent = bool(self._VCS_INTENT_TOKENS.intersection(query_tokens))
-        analytics_intent = bool(
-            self._ANALYTICS_INTENT_TOKENS.intersection(query_tokens)
+        registered_names = (
+            set(self._tools.tool_names)
+            if hasattr(self._tools, "tool_names")
+            and isinstance(self._tools.tool_names, (list, tuple, set))
+            else None
         )
-        for entry in entries:
-            score = self._score_tool_schema(entry, query_tokens)
-            if analytics_intent and entry.name in self._ANALYTICS_TOOL_NAMES:
-                score += 14
-            if self._browser_first_for_web and web_intent:
-                if fast_web_data_intent and entry.name in {"web_search", "web_fetch"}:
-                    score += 22
-                elif entry.name in self._BROWSER_WORKFLOW_TOOL_NAMES:
-                    score += 24
-                elif "browser" in entry.name or "browser" in entry.desc:
-                    score += 12
-                if fast_web_data_intent and (
-                    entry.name in self._BROWSER_WORKFLOW_TOOL_NAMES
-                    or "browser" in entry.name
-                ):
-                    score = max(1, score - 12)
-                if entry.name == "web_search" and not fast_web_data_intent:
-                    score = max(1, score - 6)
-            if score > 0:
-                scored.append((score, entry.schema))
-        if not scored:
-            return [dict(t) for t in default_tool_definitions]
-
-        scored.sort(
-            key=lambda item: (
-                -item[0],
-                str((item[1].get("function") or {}).get("name") or ""),
-            )
+        return select_relevant_tool_definitions(
+            all_tool_definitions=all_tool_definitions,
+            tool_index=tool_index,
+            default_tool_definitions=default_tool_definitions,
+            user_message_text=user_message_text,
+            messages=messages,
+            registered_tool_names=registered_names,
+            browser_first_for_web=self._browser_first_for_web,
+            max_selected_tools=self._max_selected_tools,
         )
-        max_tools = min(6, max(3, len(scored)))
-        selected = [schema for _, schema in scored[:max_tools]]
-        selected_names = {
-            str((schema.get("function") or {}).get("name") or "") for schema in selected
-        }
-        if "read_file" in self._tools and "read_file" not in selected_names:
-            read_file_schema = next(
-                (
-                    schema
-                    for schema in tools
-                    if str((schema.get("function") or {}).get("name") or "")
-                    == "read_file"
-                ),
-                None,
-            )
-            if read_file_schema is not None:
-                if weather_intent and selected:
-                    selected[-1] = read_file_schema
-                    selected_names.add("read_file")
-                elif len(selected) < max_tools:
-                    selected.append(read_file_schema)
-                    selected_names.add("read_file")
-        if vcs_intent:
-            tool_by_name = {
-                str((schema.get("function") or {}).get("name") or ""): schema
-                for schema in tools
-            }
-            preferred_vcs: List[str] = ["git_status", "git_diff"]
-            if "github" in query_tokens or "gh" in query_tokens or "pr" in query_tokens:
-                preferred_vcs.extend(["github_pr_status", "github_pr_checks"])
-            for name in self._VCS_TOOL_NAMES:
-                if name in tool_by_name and name not in preferred_vcs:
-                    preferred_vcs.append(name)
-            protected_vcs_names: set[str] = {"read_file"}
-            for name in preferred_vcs:
-                schema = tool_by_name.get(name)
-                if schema is None:
-                    continue
-                if name in selected_names:
-                    protected_vcs_names.add(name)
-                    continue
-                if len(selected) < max_tools:
-                    selected.append(schema)
-                    selected_names.add(name)
-                    protected_vcs_names.add(name)
-                    continue
-                replace_idx = len(selected) - 1
-                while replace_idx >= 0:
-                    existing_name = str(
-                        (selected[replace_idx].get("function") or {}).get("name") or ""
-                    )
-                    if existing_name not in protected_vcs_names:
-                        break
-                    replace_idx -= 1
-                if replace_idx < 0:
-                    break
-                selected[replace_idx] = schema
-                protected_vcs_names.add(name)
-                selected_names = {
-                    str((entry.get("function") or {}).get("name") or "")
-                    for entry in selected
-                }
-        return selected or [dict(t) for t in default_tool_definitions]
 
     @classmethod
     def _select_default_tool_definitions(
         cls,
         tools: Sequence[Mapping[str, Any]],
     ) -> List[Dict[str, Any]]:
-        if len(tools) <= cls._DEFAULT_TOOL_SELECTION_MAX:
-            return [dict(t) for t in tools]
-
-        by_name: Dict[str, Dict[str, Any]] = {}
-        for schema in tools:
-            fn = schema.get("function")
-            if not isinstance(fn, Mapping):
-                continue
-            name = str(fn.get("name") or "").strip()
-            if not name:
-                continue
-            by_name.setdefault(name, dict(schema))
-
-        selected: List[Dict[str, Any]] = []
-        selected_names: set[str] = set()
-        for name in cls._DEFAULT_TOOL_PRIORITY:
-            schema = by_name.get(name)
-            if schema is None:
-                continue
-            selected.append(schema)
-            selected_names.add(name)
-            if len(selected) >= cls._DEFAULT_TOOL_SELECTION_MAX:
-                return selected
-
-        remaining_names = sorted(
-            name for name in by_name.keys() if name not in selected_names
+        return select_default_tool_definitions(
+            tools,
+            max_tools=cls._DEFAULT_TOOL_SELECTION_MAX,
         )
-        for name in remaining_names:
-            selected.append(by_name[name])
-            if len(selected) >= cls._DEFAULT_TOOL_SELECTION_MAX:
-                break
-        return selected or [dict(t) for t in tools[: cls._DEFAULT_TOOL_SELECTION_MAX]]
 
     def _sanitize_tool_calls(
         self,
@@ -3594,24 +3154,7 @@ class AgentLoop:
 
         if not normalized:
             content = str(response.get("content") or "")
-            import re
-            import json
-
-            matches = re.finditer(
-                r"<\|tool_call_begin\|>\s*(?:functions\.)?([a-zA-Z0-9_]+)(?::[a-zA-Z0-9_-]+)?\s*<\|tool_call_argument_begin\|>\s*(.*?)\s*<\|tool_call_end\|>",
-                content,
-                re.DOTALL,
-            )
-            for i, match in enumerate(matches):
-                name = match.group(1).strip()
-                args_str = match.group(2).strip()
-                try:
-                    args = json.loads(args_str)
-                except Exception:
-                    args = {"_raw": args_str}
-                normalized.append(
-                    {"id": f"call_parsed_{i}", "name": name, "arguments": args}
-                )
+            normalized.extend(extract_text_tool_calls(content))
         return normalized
 
     def _to_openai_tool_call(self, call: Mapping[str, Any]) -> Dict[str, Any]:

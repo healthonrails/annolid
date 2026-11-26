@@ -390,42 +390,101 @@ class OpenAICompatProvider(LLMProvider):
 
         stream_payload = dict(payload)
         stream_payload["stream"] = True
-        response_content = []
-        reasoning_chunks = []
+        response_content: List[str] = []
+        reasoning_chunks: List[str] = []
+        streamed_tool_calls: Dict[int, Dict[str, Any]] = {}
         finish_reason = "stop"
-        usage = {}
+        usage: Dict[str, int] = {}
 
         stream = await client.chat.completions.create(**stream_payload)
         async for chunk in stream:
-            if not chunk.choices:
-                if hasattr(chunk, "usage") and chunk.usage:
+            choices = self._get_value(chunk, "choices", None)
+            if not choices:
+                chunk_usage = self._get_value(chunk, "usage", None)
+                if chunk_usage:
                     usage = {
-                        "prompt_tokens": chunk.usage.prompt_tokens,
-                        "completion_tokens": chunk.usage.completion_tokens,
-                        "total_tokens": chunk.usage.total_tokens,
+                        "prompt_tokens": int(
+                            self._get_value(chunk_usage, "prompt_tokens", 0) or 0
+                        ),
+                        "completion_tokens": int(
+                            self._get_value(chunk_usage, "completion_tokens", 0) or 0
+                        ),
+                        "total_tokens": int(
+                            self._get_value(chunk_usage, "total_tokens", 0) or 0
+                        ),
                     }
                 continue
 
-            delta = chunk.choices[0].delta
-            content = getattr(delta, "content", "") or ""
+            delta = self._get_value(choices[0], "delta", None)
+            content = str(self._get_value(delta, "content", "") or "")
             # reasoning_content is sometimes in the delta for O1/O3 or deepseek
-            reasoning = getattr(delta, "reasoning_content", None)
+            reasoning = self._get_value(delta, "reasoning_content", None)
 
             if reasoning and on_token is not None:
                 on_token(f"<think>{reasoning}</think>")
-                reasoning_chunks.append(reasoning)
+                reasoning_chunks.append(str(reasoning))
 
             if content:
                 if on_token is not None:
                     on_token(content)
                 response_content.append(content)
 
-            if chunk.choices[0].finish_reason:
-                finish_reason = chunk.choices[0].finish_reason
+            delta_tool_calls = self._get_value(delta, "tool_calls", None)
+            if isinstance(delta_tool_calls, (list, tuple)):
+                for fallback_idx, tc_delta in enumerate(delta_tool_calls):
+                    raw_idx = self._get_value(tc_delta, "index", None)
+                    slot = (
+                        int(raw_idx)
+                        if isinstance(raw_idx, int) and not isinstance(raw_idx, bool)
+                        else fallback_idx
+                    )
+                    entry = streamed_tool_calls.setdefault(
+                        slot,
+                        {"id": "", "name": "", "arguments": []},
+                    )
+                    tc_id = str(self._get_value(tc_delta, "id", "") or "").strip()
+                    if tc_id:
+                        entry["id"] = tc_id
+                    fn_delta = self._get_value(tc_delta, "function", None)
+                    if fn_delta is not None:
+                        fn_name = str(
+                            self._get_value(fn_delta, "name", "") or ""
+                        ).strip()
+                        if fn_name:
+                            entry["name"] = fn_name
+                        fn_args = self._get_value(fn_delta, "arguments", None)
+                        if isinstance(fn_args, str) and fn_args:
+                            entry["arguments"].append(fn_args)
+
+            chunk_finish = self._get_value(choices[0], "finish_reason", None)
+            if chunk_finish:
+                finish_reason = str(chunk_finish)
+
+        from ..tool_call_utils import normalize_tool_arguments
+
+        parsed_tool_calls: List[ToolCallRequest] = []
+        for idx, slot in enumerate(sorted(streamed_tool_calls)):
+            entry = streamed_tool_calls[slot]
+            name = str(entry.get("name") or "").strip()
+            if not name:
+                continue
+            raw_args_str = "".join(entry.get("arguments") or [])
+            parsed_tool_calls.append(
+                ToolCallRequest(
+                    id=str(entry.get("id") or f"call_{idx}"),
+                    name=name,
+                    arguments=normalize_tool_arguments(raw_args_str),
+                )
+            )
 
         content = "".join(response_content)
         reasoning_content = "".join(reasoning_chunks) if reasoning_chunks else None
-        if not content and not reasoning_content and finish_reason == "stop":
+        if (
+            not content
+            and not parsed_tool_calls
+            and not reasoning_content
+            and finish_reason == "stop"
+        ):
             return LLMResponse(
                 content="Model provider returned an empty streamed response.",
                 finish_reason="error",
@@ -435,6 +494,7 @@ class OpenAICompatProvider(LLMProvider):
             )
         return LLMResponse(
             content=content,
+            tool_calls=parsed_tool_calls,
             finish_reason=finish_reason,
             usage=usage,
             reasoning_content=reasoning_content,
@@ -467,29 +527,38 @@ class OpenAICompatProvider(LLMProvider):
                 error_should_retry=True,
             )
 
+        from ..tool_call_utils import normalize_tool_arguments
+
         tool_calls: List[ToolCallRequest] = []
-        for tc in list(self._get_value(message, "tool_calls", None) or []):
+        for idx, tc in enumerate(
+            list(self._get_value(message, "tool_calls", None) or [])
+        ):
             fn = self._get_value(tc, "function", None)
             raw_args = self._get_value(fn, "arguments", "{}")
-            args: Dict[str, Any]
-            if isinstance(raw_args, str):
-                try:
-                    parsed = json.loads(raw_args)
-                    args = parsed if isinstance(parsed, dict) else {"_raw": raw_args}
-                except json.JSONDecodeError:
-                    args = {"_raw": raw_args}
-            elif isinstance(raw_args, dict):
-                args = dict(raw_args)
-            else:
-                args = {"_raw": raw_args}
-
+            args = normalize_tool_arguments(raw_args)
+            call_id = str(self._get_value(tc, "id", "") or "").strip() or f"call_{idx}"
             tool_calls.append(
                 ToolCallRequest(
-                    id=str(self._get_value(tc, "id", "")),
-                    name=str(self._get_value(fn, "name", "")),
+                    id=call_id,
+                    name=str(self._get_value(fn, "name", "") or ""),
                     arguments=args,
                 )
             )
+
+        if not tool_calls:
+            legacy_fn = self._get_value(message, "function_call", None)
+            if legacy_fn is not None:
+                legacy_name = str(self._get_value(legacy_fn, "name", "") or "").strip()
+                if legacy_name:
+                    tool_calls.append(
+                        ToolCallRequest(
+                            id="call_0",
+                            name=legacy_name,
+                            arguments=normalize_tool_arguments(
+                                self._get_value(legacy_fn, "arguments", "{}")
+                            ),
+                        )
+                    )
 
         usage: Dict[str, int] = {}
         usage_obj = self._get_value(completion, "usage", None)
