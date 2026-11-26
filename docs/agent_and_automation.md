@@ -346,10 +346,10 @@ For `behavior_classifier`, the eval launcher can now also write confusion-matrix
 
 The GUI now includes **AI & Models → Draft Research Paper with Swarm…**, which opens Annolid Bot with a prefilled prompt that invokes `draft_paper_swarm`.
 
-- If a PDF is open, the launcher passes the current PDF title and path into the prompt so the swarm can ground the draft in the active paper.
-- The bot can build a `build_research_packet` preflight first. The packet combines collected literature, novelty risk, a manuscript review rubric, writing checklist, and guardrails against fabricated citations or numbers.
-- `draft_paper_swarm` searches literature by default, passes the collected references into the swarm, and adds the research packet guardrails to the drafting task. Set `max_literature_results=0` only when you intentionally want to skip search.
-- Use `assess_paper_draft` on generated markdown to flag placeholder text, missing manuscript sections, weak citation coverage, and numeric-claim risk before treating the draft as paper-ready.
+- If a PDF is open, the launcher extracts the PDF title (falling back to the filename stem) and passes the current PDF title and path into the prompt so the swarm can ground the draft in the active paper.
+- The bot can build a `build_research_packet` preflight first. The packet combines collected literature (with authors, venues, abstracts, and assigned `[@key]` citation keys), novelty risk, a manuscript review rubric, writing checklist, and guardrails against fabricated citations or numbers.
+- `draft_paper_swarm` searches literature by default (or accepts pre-collected `related_work`), passes the collected references and research packet guardrails into an Outliner/Writer/Reviewer swarm (where only the Reviewer can declare `TASK COMPLETE`), runs deterministic draft-quality assessment on the resulting manuscript, and can atomically export `.md`, `.bib`, and quality JSON when `output_dir` and `allow_mutation=true` are provided. Set `max_literature_results=0` only when you intentionally want to skip search.
+- Use `assess_paper_draft` on inline Markdown/LaTeX or a file (`paper_path`, optionally paired with `bib_path`) to flag placeholder text, empty or missing sections, unresolved citation keys, uncited references, and ungrounded quantitative claims before treating the draft as paper-ready.
 - This is a thin GUI entry point over the same swarm-backed paper drafting workflow used by the agent tools.
 
 ## Citation Integrity Workflow
@@ -395,9 +395,10 @@ To consolidate paper-drafting signals in one artifact, use `annolid_paper_run_re
   - model evaluation table from `annolid_eval_report`,
   - citation verification batch summary,
   - novelty preflight summary,
+  - optional manuscript draft quality summary (including `## Manuscript Draft Quality` in Markdown),
   - warnings and reproducibility checklist.
-- Inputs can be passed as an in-memory eval report object or as `eval_report_json_path`, plus optional `citation_report_path` and `novelty_report_path`.
-- It returns a unified markdown+JSON payload and can optionally write files when `report_dir` is provided with `allow_mutation=true`.
+- Inputs can be passed as an in-memory eval report object or as `eval_report_json_path`, plus optional `citation_report_path`, `novelty_report_path`, `draft_quality_report_path`, or `paper_draft_path` (optionally paired with `bib_path` to cross-check inline citation keys).
+- It returns a unified markdown+JSON payload and can optionally write JSON, Markdown, CSV, and LaTeX (`_table.tex`) files when `report_dir` is provided with `allow_mutation=true`.
 
 ### Paper-Ready Quality Gates
 

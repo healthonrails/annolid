@@ -2,12 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import re
 import time
 from dataclasses import dataclass
 from contextlib import suppress
-from typing import Any, Awaitable, Callable, Dict, List, Protocol
+from typing import Any, Awaitable, Callable, Collection, Dict, List, Protocol
 
 from annolid.core.agent.loop import AgentLoop
+
+_NEGATED_TASK_COMPLETE_RE = re.compile(
+    r"\b(?:do\s+not|don't|never|not\s+yet|not|cannot|can't|avoid|without|before)\s+"
+    r"(?:say|saying|write|writing|output|outputting|include|including|declare|declaring|mark|marking)?\s*"
+    r"['\"`]?task\s+complete['\"`]?",
+    re.IGNORECASE,
+)
+_TASK_COMPLETE_RE = re.compile(r"\bTASK\s+COMPLETE\b")
 
 
 class _SupportsRun(Protocol):
@@ -46,10 +55,35 @@ class SwarmAgent:
 class SwarmManager:
     """Orchestrates multiple agents to collaborate on complex tasks."""
 
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        max_context_chars: int = 24000,
+        max_turn_output_chars: int = 24000,
+        completion_agents: Collection[str] | None = None,
+    ):
         self.agents: Dict[str, SwarmAgent] = {}
         self.history: List[Dict[str, str]] = []
-        self.max_context_chars = 24000
+        self.max_context_chars = max(4000, int(max_context_chars))
+        self.max_turn_output_chars = max(2000, int(max_turn_output_chars))
+        self.completion_agents: set[str] | None = (
+            {
+                str(name).strip().lower()
+                for name in completion_agents
+                if str(name).strip()
+            }
+            if completion_agents is not None
+            else None
+        )
+
+    @staticmethod
+    def _is_task_complete_signal(content: str) -> bool:
+        """Return True when ``content`` affirmatively declares ``TASK COMPLETE``."""
+        text = str(content or "")
+        if not _TASK_COMPLETE_RE.search(text):
+            return False
+        stripped = _NEGATED_TASK_COMPLETE_RE.sub("", text)
+        return bool(_TASK_COMPLETE_RE.search(stripped))
 
     def register_agent(self, agent: SwarmAgent) -> None:
         self.agents[agent.name] = agent
@@ -91,7 +125,11 @@ class SwarmManager:
         return f"{value[:head].rstrip()} ... {value[-tail:].lstrip()}"
 
     @staticmethod
-    def _summarize_context_entries(entries: List[Dict[str, str]]) -> str:
+    def _summarize_context_entries(
+        entries: List[Dict[str, str]],
+        *,
+        latest_turn_limit: int = 0,
+    ) -> str:
         if not entries:
             return ""
         counts: Dict[str, int] = {}
@@ -114,6 +152,25 @@ class SwarmManager:
             if len(recent_lines) < 6:
                 prefix = f"{agent} ({role})" if role else agent
                 recent_lines.append(f"- {prefix}: {snippet}")
+
+        latest_full_turn = ""
+        if latest_turn_limit > 0:
+            for entry in reversed(entries):
+                if str(entry.get("kind") or "turn").strip().lower() == "turn":
+                    latest_agent = str(entry.get("agent") or "").strip()
+                    latest_role = str(entry.get("role") or "").strip()
+                    raw_content = str(entry.get("content") or "").strip()
+                    if latest_agent and raw_content:
+                        label = (
+                            f"{latest_agent} ({latest_role})"
+                            if latest_role
+                            else latest_agent
+                        )
+                        latest_full_turn = (
+                            f"# Latest Contribution ({label})\n"
+                            + SwarmManager._shorten_text(raw_content, latest_turn_limit)
+                        )
+                        break
 
         condensed: List[str] = []
         for agent in sorted(counts):
@@ -142,11 +199,20 @@ class SwarmManager:
                 "# Condensed Agent State\n"
                 + "\n".join(f"- {line}" for line in condensed)
             )
+        if latest_full_turn:
+            sections.append(latest_full_turn)
         return "\n\n".join(sections).strip()
 
     def _build_swarm_context(self, task: str) -> str:
         base = f"# Swarm Task\n{task.strip()}\n"
-        summary = self._summarize_context_entries(self.history)
+        latest_limit = (
+            min(6000, int(self.max_context_chars) // 3)
+            if int(self.max_context_chars) >= 4000
+            else 0
+        )
+        summary = self._summarize_context_entries(
+            self.history, latest_turn_limit=latest_limit
+        )
         if summary:
             base = f"{base}\n{summary}"
         compact = base.strip()
@@ -246,12 +312,21 @@ class SwarmManager:
                     if loop is None:
                         continue
 
+                    can_complete = (
+                        self.completion_agents is None
+                        or agent.name.strip().lower() in self.completion_agents
+                    )
+                    completion_hint = (
+                        "If the task is fully resolved, include 'TASK COMPLETE' in your output."
+                        if can_complete
+                        else "Focus strictly on your role; do not terminate the swarm early."
+                    )
                     swarm_prompt = (
                         f"You are part of an Agent Swarm.\n"
                         f"Your role is: {agent.role}\n\n"
                         f"Current Swarm Context:\n{current_context}\n\n"
                         f"Please contribute to the task based on your role. "
-                        f"If the task is fully resolved, include 'TASK COMPLETE' in your output."
+                        f"{completion_hint}"
                     )
 
                     def _progress_cb(text: str, p_agent=previous_agent_name) -> None:
@@ -352,9 +427,13 @@ class SwarmManager:
                     except Exception:
                         pass
 
-                    if len(content) > 6000:
+                    max_turn_chars = max(
+                        2000, int(getattr(self, "max_turn_output_chars", 24000))
+                    )
+                    if len(content) > max_turn_chars:
+                        half = max_turn_chars // 2
                         content = (
-                            content[:3000] + "\n... [TRUNCATED] ...\n" + content[-3000:]
+                            content[:half] + "\n... [TRUNCATED] ...\n" + content[-half:]
                         )
 
                     turn_output = f"\n--- {agent.name} ({agent.role}) ---\n{content}\n"
@@ -368,7 +447,7 @@ class SwarmManager:
                     current_context = self._build_swarm_context(task)
                     previous_agent_name = agent.name
 
-                    if "TASK COMPLETE" in content:
+                    if can_complete and self._is_task_complete_signal(content):
                         final_output = (
                             output + "\nSwarm reached consensus: TASK COMPLETE."
                         )

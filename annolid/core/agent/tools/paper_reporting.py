@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+import re
 from typing import Any, Mapping, Sequence
+
+from annolid.utils.atomic_io import atomic_write_text
 
 from .common import (
     _normalize_allowed_read_roots,
@@ -435,6 +438,7 @@ def _build_markdown(
     eval_report: Mapping[str, Any],
     citation: Mapping[str, Any] | None,
     novelty: Mapping[str, Any] | None,
+    draft_quality: Mapping[str, Any] | None = None,
     warnings: Sequence[str],
     checklist: Sequence[Mapping[str, object]],
     paper_ready_gate: Mapping[str, Any],
@@ -520,6 +524,22 @@ def _build_markdown(
     else:
         lines.append("Novelty summary not provided.")
 
+    if isinstance(draft_quality, Mapping) and draft_quality.get("available"):
+        missing = list(draft_quality.get("missing_sections") or [])
+        lines.extend(
+            [
+                "",
+                "## Manuscript Draft Quality",
+                "",
+                f"- Status: `{_normalize_status(draft_quality.get('quality_status')).upper()}`",
+                f"- Words: `{_safe_int(draft_quality.get('word_count'))}`",
+                f"- Inline citations: `{_safe_int(draft_quality.get('citation_count'))}`",
+                f"- Placeholders: `{_safe_int(draft_quality.get('placeholder_count'))}`",
+                f"- Unresolved citation keys: `{_safe_int(draft_quality.get('unresolved_citation_count'))}`",
+                f"- Missing sections: `{', '.join(missing) if missing else 'none'}`",
+            ]
+        )
+
     lines.extend(["", "## Warnings", ""])
     if warnings:
         lines.extend(f"- {item}" for item in warnings)
@@ -540,6 +560,41 @@ def _build_markdown(
     return "\n".join(lines).strip() + "\n"
 
 
+def _sanitize_report_basename(
+    base_name: str, *, default: str = "paper_run_report"
+) -> str:
+    raw = str(base_name or "").strip()
+    if not raw:
+        return default
+    if "/" in raw or "\\" in raw or ".." in raw:
+        raise ValueError(
+            "report_basename must be a plain filename stem without path separators or '..'."
+        )
+    cleaned = re.sub(r"[^a-zA-Z0-9._-]+", "_", raw).strip("._")
+    if not cleaned:
+        raise ValueError("report_basename must contain alphanumeric characters.")
+    return cleaned
+
+
+def _extract_draft_quality_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
+    metrics = (
+        payload.get("metrics") if isinstance(payload.get("metrics"), Mapping) else {}
+    )
+    status = _normalize_status(payload.get("quality_status", "warn"))
+    return {
+        "available": True,
+        "quality_status": status,
+        "word_count": _safe_int(metrics.get("word_count"), 0),
+        "citation_count": _safe_int(metrics.get("citation_count"), 0),
+        "placeholder_count": _safe_int(metrics.get("placeholder_count"), 0),
+        "unresolved_citation_count": _safe_int(
+            metrics.get("unresolved_citation_count"), 0
+        ),
+        "missing_sections": list(payload.get("missing_sections") or []),
+        "warnings": [str(w) for w in (payload.get("warnings") or []) if str(w).strip()],
+    }
+
+
 def _write_unified_report_files(
     *,
     report: Mapping[str, Any],
@@ -548,15 +603,28 @@ def _write_unified_report_files(
 ) -> dict[str, str]:
     out_dir = Path(report_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
-    stem = str(base_name or "paper_run_report").strip() or "paper_run_report"
+    stem = _sanitize_report_basename(base_name, default="paper_run_report")
     json_path = out_dir / f"{stem}.json"
     md_path = out_dir / f"{stem}.md"
-    json_path.write_text(json.dumps(dict(report), indent=2), encoding="utf-8")
-    md_path.write_text(str(report.get("report_markdown") or ""), encoding="utf-8")
-    return {
+    atomic_write_text(json_path, json.dumps(dict(report), indent=2))
+    atomic_write_text(md_path, str(report.get("report_markdown") or ""))
+    written = {
         "json": str(json_path),
         "markdown": str(md_path),
     }
+    eval_block = report.get("evaluation")
+    paper_table = (
+        eval_block.get("paper_table")
+        if isinstance(eval_block, Mapping)
+        and isinstance(eval_block.get("paper_table"), Mapping)
+        else {}
+    )
+    latex_table = str(paper_table.get("latex") or "").strip()
+    if latex_table:
+        tex_path = out_dir / f"{stem}_table.tex"
+        atomic_write_text(tex_path, latex_table + "\n")
+        written["latex_table"] = str(tex_path)
+    return written
 
 
 class AnnolidPaperRunReportTool(FunctionTool):
@@ -596,6 +664,9 @@ class AnnolidPaperRunReportTool(FunctionTool):
                 "eval_report_json_path": {"type": "string"},
                 "citation_report_path": {"type": "string"},
                 "novelty_report_path": {"type": "string"},
+                "draft_quality_report_path": {"type": "string"},
+                "paper_draft_path": {"type": "string"},
+                "bib_path": {"type": "string"},
                 "report_dir": {"type": "string"},
                 "report_basename": {"type": "string"},
                 "paper_ready_gate": {"type": "boolean"},
@@ -621,6 +692,9 @@ class AnnolidPaperRunReportTool(FunctionTool):
         eval_report_json_path: str = "",
         citation_report_path: str = "",
         novelty_report_path: str = "",
+        draft_quality_report_path: str = "",
+        paper_draft_path: str = "",
+        bib_path: str = "",
         report_dir: str = "",
         report_basename: str = "paper_run_report",
         paper_ready_gate: bool = False,
@@ -671,11 +745,75 @@ class AnnolidPaperRunReportTool(FunctionTool):
                     _load_json_payload(novelty_path)
                 )
 
+            draft_quality_summary: dict[str, Any] | None = None
+            if str(draft_quality_report_path or "").strip():
+                dq_path = _resolve_read_path(
+                    draft_quality_report_path,
+                    allowed_dir=self._allowed_dir,
+                    allowed_read_roots=self._allowed_read_roots,
+                )
+                draft_quality_summary = _extract_draft_quality_summary(
+                    _load_json_payload(dq_path)
+                )
+            elif str(paper_draft_path or "").strip():
+                from annolid.services.paper_writer import assess_paper_draft_quality
+
+                draft_path = _resolve_read_path(
+                    paper_draft_path,
+                    allowed_dir=self._allowed_dir,
+                    allowed_read_roots=self._allowed_read_roots,
+                )
+                bib_refs: list[dict[str, object]] = []
+                if str(bib_path or "").strip():
+                    from annolid.utils.citations import load_bibtex
+
+                    resolved_bib = _resolve_read_path(
+                        bib_path,
+                        allowed_dir=self._allowed_dir,
+                        allowed_read_roots=self._allowed_read_roots,
+                    )
+                    for entry in load_bibtex(resolved_bib):
+                        bib_refs.append(
+                            {
+                                "key": entry.key,
+                                "title": entry.fields.get("title") or entry.key,
+                                "author": entry.fields.get("author") or "",
+                                "year": entry.fields.get("year") or "",
+                                "doi": entry.fields.get("doi") or "",
+                                "venue": entry.fields.get("journal")
+                                or entry.fields.get("booktitle")
+                                or "",
+                                "source": "bibtex",
+                            }
+                        )
+                draft_quality_summary = _extract_draft_quality_summary(
+                    assess_paper_draft_quality(
+                        draft_path.read_text(encoding="utf-8"),
+                        references=bib_refs,
+                    )
+                )
+
             checklist = _build_reproducibility_checklist(
                 eval_report=report_obj,
                 citation=citation_summary,
                 novelty=novelty_summary,
             )
+            if isinstance(draft_quality_summary, Mapping) and draft_quality_summary.get(
+                "available"
+            ):
+                checklist.append(
+                    {
+                        "id": "manuscript_draft_quality",
+                        "status": str(
+                            draft_quality_summary.get("quality_status") or "warn"
+                        ),
+                        "message": (
+                            f"Manuscript draft audit: words={_safe_int(draft_quality_summary.get('word_count'))}, "
+                            f"citations={_safe_int(draft_quality_summary.get('citation_count'))}, "
+                            f"placeholders={_safe_int(draft_quality_summary.get('placeholder_count'))}."
+                        ),
+                    }
+                )
             checklist_status = _merge_quality_status(
                 *[item.get("status") for item in checklist]
             )
@@ -704,6 +842,9 @@ class AnnolidPaperRunReportTool(FunctionTool):
                 novelty_summary.get("quality_status", "warn")
                 if isinstance(novelty_summary, Mapping)
                 else "warn",
+                draft_quality_summary.get("quality_status", "pass")
+                if isinstance(draft_quality_summary, Mapping)
+                else "pass",
                 checklist_status,
                 gate.get("status", "pass"),
             )
@@ -712,6 +853,11 @@ class AnnolidPaperRunReportTool(FunctionTool):
                 citation=citation_summary,
                 novelty=novelty_summary,
             )
+            if isinstance(draft_quality_summary, Mapping) and draft_quality_summary.get(
+                "available"
+            ):
+                for item_msg in draft_quality_summary.get("warnings") or []:
+                    warnings.append(f"Manuscript draft: {item_msg}")
             for item in gate.get("checks", []):
                 if not isinstance(item, Mapping):
                     continue
@@ -727,6 +873,7 @@ class AnnolidPaperRunReportTool(FunctionTool):
                 eval_report=report_obj,
                 citation=citation_summary,
                 novelty=novelty_summary,
+                draft_quality=draft_quality_summary,
                 warnings=warnings,
                 checklist=checklist,
                 paper_ready_gate=gate,
@@ -768,10 +915,13 @@ class AnnolidPaperRunReportTool(FunctionTool):
                 },
                 "citation": citation_summary or {"available": False},
                 "novelty": novelty_summary or {"available": False},
+                "draft_quality": draft_quality_summary or {"available": False},
                 "inputs": {
                     "eval_report_json_path": str(eval_report_json_path or ""),
                     "citation_report_path": str(citation_report_path or ""),
                     "novelty_report_path": str(novelty_report_path or ""),
+                    "draft_quality_report_path": str(draft_quality_report_path or ""),
+                    "paper_draft_path": str(paper_draft_path or ""),
                 },
                 "warnings": warnings,
                 "reproducibility_checklist": checklist,

@@ -418,9 +418,22 @@ class MediaWorkflowMixin:
         if pdf_manager is not None and hasattr(pdf_manager, "get_pdf_state"):
             try:
                 pdf_state = dict(pdf_manager.get_pdf_state() or {})
-                topic_default = str(pdf_state.get("title") or "").strip()
+                pdf_path = str(pdf_state.get("path") or "").strip()
+                extracted_title = ""
+                if pdf_path:
+                    try:
+                        from annolid.services.pdf_parsing import extract_pdf_title
+
+                        extracted_title = str(extract_pdf_title(pdf_path) or "").strip()
+                    except Exception:
+                        extracted_title = ""
+                topic_default = (
+                    extracted_title or str(pdf_state.get("title") or "").strip()
+                )
                 if topic_default.lower().endswith(".pdf"):
                     topic_default = Path(topic_default).stem
+                if extracted_title and not str(pdf_state.get("extracted_title") or ""):
+                    pdf_state["extracted_title"] = extracted_title
             except Exception:
                 pdf_state = {}
                 topic_default = ""

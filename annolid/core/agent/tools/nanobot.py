@@ -406,8 +406,18 @@ async def register_nanobot_style_tools(
 
     register_tool(LiteratureSearchTool())
     register_tool(ResearchPacketTool())
-    register_tool(PaperDraftQualityTool())
-    register_tool(DraftPaperSwarmTool())
+    register_tool(
+        PaperDraftQualityTool(
+            allowed_dir=allowed_dir,
+            allowed_read_roots=allowed_read_roots,
+        )
+    )
+    register_tool(
+        DraftPaperSwarmTool(
+            allowed_dir=allowed_dir,
+            allowed_read_roots=allowed_read_roots,
+        )
+    )
 
     register_tool(MessageTool(send_callback=send_callback))
     register_tool(SpawnTool(spawn_callback=spawn_callback))
