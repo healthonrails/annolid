@@ -13,6 +13,7 @@ from annolid.colab.monitor import load_metrics_from_results_csv
 from .models import (
     FLY_BEHAVIORS,
     MOUSE_SCENARIOS,
+    RAT_SCENARIOS,
     Sim2RealIterationRecord,
     SimDatasetConfig,
     SimIterationAdjustment,
@@ -631,6 +632,14 @@ def suggest_next_iteration(
                         break
                 recommendations.append(
                     f"Add close-contact scenario to dataset (`{next_cfg.scenarios}`) to improve multi-mouse separation."
+                )
+            elif next_cfg.species == "rat":
+                for scen in ("gait_transition", "bumpy_terrain", "bound", "walk"):
+                    if scen not in next_cfg.scenarios and scen in RAT_SCENARIOS:
+                        next_cfg.scenarios.append(scen)
+                        break
+                recommendations.append(
+                    f"Add varied Rat NCAP locomotion scenario (`{next_cfg.scenarios}`) to expand posture diversity."
                 )
             else:
                 for beh in ("grooming", "forage_walk", "backward_walk"):

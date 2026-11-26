@@ -2607,10 +2607,16 @@ class AIChatWidget(
             "fly_brain": "fly_brain_mouse_html",
             "fly_brain_mouse": "fly_brain_mouse_html",
             "fly_brain_mouse_html": "fly_brain_mouse_html",
+            "rat": "rat_ncap_html",
+            "rat_ncap": "rat_ncap_html",
+            "rat_ncap_html": "rat_ncap_html",
+            "rat_ncap_simulation_json": "rat_ncap_simulation_json",
         }
         normalized = re.sub(r"[^a-z0-9]+", "_", raw).strip("_")
         if normalized in mapping:
             return mapping[normalized]
+        if "rat" in raw:
+            return "rat_ncap_html"
         if "fly" in raw and ("brain" in raw or "mouse" in raw or "mice" in raw):
             return "fly_brain_mouse_html"
         if "two" in raw and "mice" in raw:

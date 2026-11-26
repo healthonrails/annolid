@@ -568,6 +568,72 @@ class ViewerToolsMixin:
         if result == 3:
             self.install_flybody_optional()
 
+    def show_rat_ncap_status_dialog(self) -> None:
+        from annolid.gui.rat_ncap_support import summarize_rat_ncap_status
+
+        summary = summarize_rat_ncap_status()
+        lines = [
+            f"External rat-ncap repo: {summary.get('repo_root') or 'not configured (using built-in Rat NCAP)'}",
+            f"MuJoCo rat.xml: {summary.get('rat_xml_path') or 'not found (built-in 3D & NumPy physics active)'}",
+            f"MuJoCo Rat v2 physics ready: {bool(summary.get('mujoco_rat_ready'))}",
+        ]
+        for cand in summary.get("candidates") or []:
+            py = cand.get("python", "")
+            status = "ready" if cand.get("ready") else "not ready"
+            mj = "mujoco=yes" if cand.get("mujoco_available") else "mujoco=no"
+            lines.append(f"Python: {py} [{status}; {mj}]")
+
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle(self.tr("Rat NCAP Setup & Status"))
+        layout = QtWidgets.QVBoxLayout(dialog)
+
+        summary_label = QtWidgets.QLabel(
+            self.tr(
+                "Rat v2 / Rat NCAP biomechanical simulation (38 DOFs, spinal RG circuit, "
+                "flexor-extensor spring muscles, and in-silico ablations)."
+            ),
+            dialog,
+        )
+        summary_label.setWordWrap(True)
+        layout.addWidget(summary_label)
+
+        ready = bool(summary.get("ready"))
+        status_label = QtWidgets.QLabel(
+            self.tr("Status: Ready (Built-in Rat NCAP)")
+            if ready
+            else self.tr("Status: Check Python Environment"),
+            dialog,
+        )
+        layout.addWidget(status_label)
+
+        details = QtWidgets.QPlainTextEdit(dialog)
+        details.setReadOnly(True)
+        details.setPlainText("\n".join(lines))
+        details.setMinimumHeight(160)
+        layout.addWidget(details, 1)
+
+        buttons = QtWidgets.QDialogButtonBox(dialog)
+        open_3d_btn = buttons.addButton(
+            self.tr("Open Rat 3D Simulation"),
+            QtWidgets.QDialogButtonBox.ActionRole,
+        )
+        open_payload_btn = buttons.addButton(
+            self.tr("Open Gait Rollout"),
+            QtWidgets.QDialogButtonBox.ActionRole,
+        )
+        buttons.addButton(QtWidgets.QDialogButtonBox.Close)
+        layout.addWidget(buttons)
+
+        open_3d_btn.clicked.connect(lambda: dialog.done(2))
+        open_payload_btn.clicked.connect(lambda: dialog.done(3))
+        buttons.rejected.connect(dialog.reject)
+
+        result = dialog.exec_()
+        if result == 2:
+            self.open_threejs_example("rat_ncap_html")
+        elif result == 3:
+            self.open_threejs_example("rat_ncap_simulation_json")
+
     def _start_live_flybody_example(
         self, manager, *, behavior: str, label: str
     ) -> bool:
@@ -891,6 +957,7 @@ class ViewerToolsMixin:
 
         backend_combo = QtWidgets.QComboBox(dialog)
         backend_combo.addItem("FlyBody", "flybody")
+        backend_combo.addItem("Rat NCAP (Rat v2)", "rat_ncap")
         backend_combo.addItem("Identity", "identity")
 
         input_edit = QtWidgets.QLineEdit(dialog)

@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, Optional
 
-SimSpecies = Literal["mouse", "fly"]
+SimSpecies = Literal["mouse", "rat", "fly"]
 SimTaskKind = Literal["yolo_seg", "yolo_pose", "yolo_detect"]
 SimExportLevel = Literal["instances", "parts"]
 SimTrainingBackend = Literal["colab", "local"]
@@ -126,6 +126,67 @@ FLY_KEYPOINT_NAMES: tuple[str, ...] = (
     "leg_hind_right",
 )
 
+RAT_ARENAS: tuple[str, ...] = (
+    "treadmill",
+    "open_field",
+    "circular_open_field",
+    "bumpy_terrain",
+    "elevated_plus_maze",
+)
+
+RAT_CAMERA_VIEWS: tuple[str, ...] = (
+    "oblique",
+    "track_right",
+    "track_left",
+    "track_top",
+    "track_front",
+    "ventral",
+)
+
+RAT_COAT_PATTERNS: tuple[str, ...] = (
+    "black_hooded",
+    "cinnamon",
+    "gray",
+)
+
+RAT_INTERFACES: tuple[str, ...] = (
+    "flexor_extensor",
+    "position_stiffness",
+    "position",
+    "torque",
+)
+
+RAT_SCENARIOS: tuple[str, ...] = (
+    "trot",
+    "walk",
+    "bound",
+    "gait_transition",
+    "bumpy_terrain",
+    "open_field_explore",
+    "v0_ablation_bound",
+    "v3_ablation_trot",
+    "stand",
+)
+
+RAT_KEYPOINT_NAMES: tuple[str, ...] = (
+    "nose",
+    "head",
+    "left_ear",
+    "right_ear",
+    "neck",
+    "thorax",
+    "torso_center",
+    "lumbar",
+    "pelvis",
+    "tail_base",
+    "tail_mid",
+    "tail_tip",
+    "left_forepaw",
+    "right_forepaw",
+    "left_hindpaw",
+    "right_hindpaw",
+)
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -239,6 +300,11 @@ class SimDatasetConfig:
     real_oversample_factor: int = 2
     fly_subject_count: int = 1
     fly_brain_dynamics: str = "spiking"
+    rat_coat: str = "black_hooded"
+    rat_interface: str = "flexor_extensor"
+    rat_ablation: str = "none"
+    rat_ablation_scale: float = 0.0
+    rat_terrain_bump_cm: float = 0.0
     allow_fallback: bool = False
 
     def to_dict(self) -> dict[str, Any]:

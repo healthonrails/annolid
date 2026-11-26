@@ -462,7 +462,7 @@ def analyze_example_videos(
 
     # Species classification (honoring explicit user hint)
     hint = str(species_hint or "auto").strip().lower()
-    if hint in {"mouse", "fly"}:
+    if hint in {"mouse", "rat", "fly"}:
         species = hint
         species_conf = 1.0
         rationale["species"] = f"Explicitly set by user (`{species}`)."
@@ -473,6 +473,20 @@ def analyze_example_videos(
             species = "fly"
             species_conf = 0.92
             rationale["species"] = "Matched fly/Drosophila cue in example filename."
+        elif any(
+            tok in joined_names
+            for tok in (
+                "rat",
+                "long_evans",
+                "longevans",
+                "wistar",
+                "sprague",
+                "rat_ncap",
+            )
+        ):
+            species = "rat"
+            species_conf = 0.92
+            rationale["species"] = "Matched rat/Long-Evans cue in example filename."
         elif any(
             tok in joined_names
             for tok in ("mouse", "mice", "rodent", "calms", "ventral")
@@ -566,6 +580,75 @@ def analyze_example_videos(
         else:
             scenarios = ["walk_imitation", "forage_walk", "grooming"]
         rationale["arena"] = f"Inferred `{arena}` fly arena geometry."
+    elif species == "rat":
+        if "bumpy" in joined_names or "terrain" in joined_names:
+            arena = "bumpy_terrain"
+            rationale["arena"] = "Bumpy terrain cue detected -> `bumpy_terrain`."
+        elif "treadmill" in joined_names or "belt" in joined_names:
+            arena = "treadmill"
+            rationale["arena"] = "Treadmill cue detected -> `treadmill`."
+        elif "plus" in joined_names or "epm" in joined_names:
+            arena = "elevated_plus_maze"
+            rationale["arena"] = (
+                "Elevated plus maze cue detected -> `elevated_plus_maze`."
+            )
+        elif _detect_circular_arena(bg_gray):
+            arena = "circular_open_field"
+            rationale["arena"] = (
+                "Detected circular arena boundary -> `circular_open_field`."
+            )
+        else:
+            arena = "open_field"
+            rationale["arena"] = "Rectangular arena profile -> `open_field`."
+
+        if "ventral" in joined_names or "bottom" in joined_names:
+            camera_view = "ventral"
+            rationale["camera_view"] = "Ventral gait cue -> `ventral`."
+        elif (
+            "side" in joined_names
+            or "lateral" in joined_names
+            or "right" in joined_names
+        ):
+            camera_view = "track_right"
+            rationale["camera_view"] = "Lateral/side view cue -> `track_right`."
+        elif "front" in joined_names:
+            camera_view = "track_front"
+            rationale["camera_view"] = "Frontal view cue -> `track_front`."
+        elif "top" in joined_names or "overhead" in joined_names:
+            camera_view = "track_top"
+            rationale["camera_view"] = "Overhead camera cue -> `track_top`."
+        else:
+            camera_view = "oblique"
+            rationale["camera_view"] = (
+                "Default 3D rat locomotion perspective -> `oblique`."
+            )
+
+        if "cinnamon" in joined_names or "brown" in joined_names:
+            coat_pair = "cinnamon"
+            rationale["coat_pair"] = "Cinnamon coat cue -> `cinnamon`."
+        elif "gray" in joined_names or "grey" in joined_names:
+            coat_pair = "gray"
+            rationale["coat_pair"] = "Gray coat cue -> `gray`."
+        elif subj_luma > 135.0 and subj_spread < 24.0:
+            coat_pair = "gray"
+            rationale["coat_pair"] = (
+                f"Lighter uniform subject luminance ({subj_luma:.1f}) -> `gray`."
+            )
+        else:
+            coat_pair = "black_hooded"
+            rationale["coat_pair"] = (
+                "Default Long-Evans hooded rat coat -> `black_hooded`."
+            )
+
+        headstage = "none"
+        if arena == "bumpy_terrain":
+            scenarios = ["bumpy_terrain", "trot", "walk"]
+        elif "bound" in joined_names or "gallop" in joined_names:
+            scenarios = ["bound", "gait_transition", "trot"]
+        elif "ablat" in joined_names or "v0" in joined_names:
+            scenarios = ["v0_ablation_bound", "trot"]
+        else:
+            scenarios = ["trot", "walk", "gait_transition"]
     else:
         # Mouse arena geometry
         if "home" in joined_names or "cage" in joined_names or has_wire_bars:
@@ -762,4 +845,13 @@ def build_default_sim_config(
         ),
         domain_randomization=0.25,
         fly_subject_count=max(1, min(6, int(profile.estimated_subject_count))),
+        rat_coat=(
+            profile.recommended_coat_pair
+            if profile.species == "rat"
+            and profile.recommended_coat_pair in {"black_hooded", "cinnamon", "gray"}
+            else "black_hooded"
+        ),
+        rat_terrain_bump_cm=2.2
+        if profile.recommended_arena == "bumpy_terrain"
+        else 0.0,
     )

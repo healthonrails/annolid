@@ -14,6 +14,7 @@ include environment.yml
 recursive-include annolid *.yaml *.yml *.json *.txt *.txt.gz *.md *.qrc *.html *.css *.sh
 recursive-include annolid *.js
 recursive-include annolid *.png *.jpg *.jpeg *.gif *.svg *.ico *.icns
+include annolid/gui/assets/threejs/*.glb
 include annolid/annotation/labels_interaction
 
 # Exclude editor settings, local env files, and build artifacts (even if present locally).

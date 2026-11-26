@@ -96,6 +96,7 @@ nav:
       - Brain 3D Reconstruction: brain_3d_reconstruction.md
       - Simulation and FlyBody: simulation_flybody.md
       - Two-Mouse 3D Simulation: two_mice_simulation.md
+      - Rat NCAP 3D Simulation: simulation_rat_ncap.md
       - COCO Data Flow: coco_data_flow.md
       - Pose Estimation Workflow: pose_estimation_workflow.md
       - DeepLabCut, SLEAP & Pose Interoperability: pose_interoperability.md

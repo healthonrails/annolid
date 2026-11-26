@@ -45,6 +45,60 @@ def generate_flybody_mapping_template(
     )
 
 
+def generate_rat_ncap_mapping_template(
+    *,
+    keypoints: Sequence[str],
+    pose_schema: PoseSchema | None = None,
+) -> SimulationMapping:
+    """Generate a Rat v2 / Rat NCAP keypoint-to-site mapping template."""
+    from annolid.simulation.rat_ncap import RAT_V2_KEYPOINT_TO_SITE
+
+    ordered_keypoints = _normalize_keypoints(keypoints, pose_schema=pose_schema)
+    keypoint_to_site = {
+        name: RAT_V2_KEYPOINT_TO_SITE.get(
+            _sanitize_name(name), f"{_sanitize_name(name)}_site"
+        )
+        for name in ordered_keypoints
+        if name
+    }
+    site_to_joint = {
+        "head": "atlas",
+        "cervical_site": "cervical_extend",
+        "lumbar_site": "lumbar_extend",
+        "finger_sensor_L": "finger_L",
+        "finger_sensor_R": "finger_R",
+        "toe_sensor_L": "toe_L",
+        "toe_sensor_R": "toe_R",
+    }
+    metadata = {
+        "template": "rat_ncap",
+        "species": "rattus_norvegicus",
+        "body_model": "rat_v2",
+        "notes": [
+            "Sites follow Rat v2 / rat-ncap MuJoCo site conventions.",
+            "Keep units in meters when combining with Annolid depth.ndjson lifting.",
+            "Supported neuromechanical interfaces: flexor_extensor, position_stiffness, position, torque.",
+        ],
+    }
+    return simulation_mapping_from_dict(
+        {
+            "backend": "rat_ncap",
+            "keypoint_to_site": keypoint_to_site,
+            "site_to_joint": site_to_joint,
+            "coordinate_system": {
+                "units": "meters",
+                "camera_intrinsics": {
+                    "fx": None,
+                    "fy": None,
+                    "cx": None,
+                    "cy": None,
+                },
+            },
+            "metadata": metadata,
+        }
+    )
+
+
 def save_simulation_mapping_template(
     mapping: SimulationMapping,
     path: str | Path,

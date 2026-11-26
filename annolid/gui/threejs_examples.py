@@ -16,9 +16,11 @@ THREEJS_EXAMPLE_IDS = (
     "wave_surface_obj",
     "sphere_points_ply",
     "flybody_simulation_json",
+    "rat_ncap_simulation_json",
     "brain_viewer_html",
     "two_mice_html",
     "fly_brain_mouse_html",
+    "rat_ncap_html",
     "swarm_visualizer_html",
 )
 
@@ -134,9 +136,11 @@ def generate_threejs_example(example_id: str, out_dir: str | Path) -> Path:
         "wave_surface_obj": _build_wave_surface_obj,
         "sphere_points_ply": _build_sphere_points_ply,
         "flybody_simulation_json": _build_flybody_simulation_json,
+        "rat_ncap_simulation_json": _build_rat_ncap_simulation_json,
         "brain_viewer_html": _build_brain_viewer_html,
         "two_mice_html": _build_two_mice_html,
         "fly_brain_mouse_html": _build_fly_brain_mouse_html,
+        "rat_ncap_html": _build_rat_ncap_html,
         "swarm_visualizer_html": _build_swarm_visualizer_html,
     }
     builder = builders.get(example_id)
@@ -167,6 +171,29 @@ def _build_fly_brain_mouse_html(_out: Path) -> Path:
         _out,
         title="Annolid Three.js Fly-Brain Mouse Example",
     )
+
+
+def _build_rat_ncap_html(_out: Path) -> Path:
+    return _resolve_or_generate_bundled_html(
+        "rat_ncap.html",
+        _out,
+        title="Annolid Three.js Rat NCAP 3D Simulation",
+    )
+
+
+def _build_rat_ncap_simulation_json(out: Path) -> Path:
+    from annolid.simulation.rat_ncap_live import build_live_rat_ncap_payload
+
+    path = out / "rat_ncap_simulation.json"
+    payload = build_live_rat_ncap_payload(
+        steps=120,
+        behavior="gait_transition",
+        interface="flexor_extensor",
+        coat="black_hooded",
+        seed=7,
+    )
+    path.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+    return path
 
 
 def _build_swarm_visualizer_html(_out: Path) -> Path:

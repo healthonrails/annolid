@@ -16,6 +16,10 @@ from .models import (
     MOUSE_LIGHTING_PRESETS,
     MOUSE_OCCLUDERS,
     MOUSE_SCENARIOS,
+    RAT_ARENAS,
+    RAT_COAT_PATTERNS,
+    RAT_INTERFACES,
+    RAT_SCENARIOS,
     SimDatasetConfig,
 )
 from .service import Sim2RealWorkflowService
@@ -69,7 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_an.add_argument(
         "--species",
-        choices=("auto", "mouse", "fly"),
+        choices=("auto", "mouse", "rat", "fly"),
         default="auto",
         help="Target simulation species (auto infers from video cues).",
     )
@@ -96,22 +100,34 @@ def build_parser() -> argparse.ArgumentParser:
     p_gen.add_argument(
         "--output", default=None, help="Optional custom dataset output dir."
     )
-    p_gen.add_argument("--species", choices=("mouse", "fly"), default=None)
+    p_gen.add_argument("--species", choices=("mouse", "rat", "fly"), default=None)
     p_gen.add_argument(
         "--task", choices=("yolo_seg", "yolo_pose", "yolo_detect"), default=None
     )
     p_gen.add_argument("--export-level", choices=("instances", "parts"), default=None)
-    p_gen.add_argument("--arena", choices=MOUSE_ARENAS, default=None)
+    p_gen.add_argument(
+        "--arena",
+        choices=tuple(dict.fromkeys(MOUSE_ARENAS + RAT_ARENAS)),
+        default=None,
+    )
     p_gen.add_argument("--camera", default=None, help="Camera view override.")
     p_gen.add_argument("--lighting", choices=MOUSE_LIGHTING_PRESETS, default=None)
     p_gen.add_argument("--coat-pair", choices=MOUSE_COAT_PAIRS, default=None)
+    p_gen.add_argument("--rat-coat", choices=RAT_COAT_PATTERNS, default=None)
+    p_gen.add_argument("--rat-interface", choices=RAT_INTERFACES, default=None)
+    p_gen.add_argument("--rat-ablation", default=None)
+    p_gen.add_argument("--rat-terrain-bump-cm", type=float, default=None)
     p_gen.add_argument("--occluder", choices=MOUSE_OCCLUDERS, default=None)
     p_gen.add_argument("--headstage", choices=MOUSE_HEADSTAGES, default=None)
     p_gen.add_argument(
         "--scenarios",
         nargs="+",
         default=None,
-        help=f"Mouse scenarios ({', '.join(MOUSE_SCENARIOS)}) or FlyBody behaviors ({', '.join(FLY_BEHAVIORS)}).",
+        help=(
+            f"Mouse scenarios ({', '.join(MOUSE_SCENARIOS)}), "
+            f"Rat scenarios ({', '.join(RAT_SCENARIOS)}), "
+            f"or FlyBody behaviors ({', '.join(FLY_BEHAVIORS)})."
+        ),
     )
     p_gen.add_argument("--frames-per-scenario", type=int, default=None)
     p_gen.add_argument("--width", type=int, default=None)
@@ -229,6 +245,14 @@ def _apply_generate_overrides(
         cfg.lighting = str(args.lighting)
     if getattr(args, "coat_pair", None):
         cfg.coat_pair = str(args.coat_pair)
+    if getattr(args, "rat_coat", None):
+        cfg.rat_coat = str(args.rat_coat)
+    if getattr(args, "rat_interface", None):
+        cfg.rat_interface = str(args.rat_interface)
+    if getattr(args, "rat_ablation", None):
+        cfg.rat_ablation = str(args.rat_ablation)
+    if getattr(args, "rat_terrain_bump_cm", None) is not None:
+        cfg.rat_terrain_bump_cm = float(args.rat_terrain_bump_cm)
     if getattr(args, "occluder", None):
         cfg.occluder = str(args.occluder)
     if getattr(args, "headstage", None):

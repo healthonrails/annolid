@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-__all__ = ["FlyBodyAdapter", "IdentitySimulationAdapter"]
+__all__ = ["FlyBodyAdapter", "IdentitySimulationAdapter", "RatNCAPAdapter"]
 
 
 def __getattr__(name: str) -> Any:
@@ -20,4 +20,8 @@ def __getattr__(name: str) -> Any:
         from annolid.simulation.adapters.flybody import FlyBodyAdapter
 
         return FlyBodyAdapter
+    if name == "RatNCAPAdapter":
+        from annolid.simulation.adapters.rat_ncap import RatNCAPAdapter
+
+        return RatNCAPAdapter
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -29,6 +29,10 @@ from annolid.sim2real import (
     MOUSE_LIGHTING_PRESETS,
     MOUSE_OCCLUDERS,
     MOUSE_SCENARIOS,
+    RAT_ARENAS,
+    RAT_CAMERA_VIEWS,
+    RAT_COAT_PATTERNS,
+    RAT_SCENARIOS,
     Sim2RealProjectState,
     Sim2RealWorkflowService,
     SimDatasetConfig,
@@ -210,8 +214,11 @@ class Sim2RealStudioDialog(QtWidgets.QDialog):
         analyze_row = QtWidgets.QHBoxLayout()
         analyze_row.addWidget(QtWidgets.QLabel(self.tr("Species Hint:")))
         self.species_hint_combo = QtWidgets.QComboBox()
-        self.species_hint_combo.addItem(self.tr("Auto-Detect (Mouse / Fly)"), "auto")
+        self.species_hint_combo.addItem(
+            self.tr("Auto-Detect (Mouse / Rat / Fly)"), "auto"
+        )
         self.species_hint_combo.addItem(self.tr("Mouse (3D Three.js)"), "mouse")
+        self.species_hint_combo.addItem(self.tr("Rat (Rat NCAP 3D Three.js)"), "rat")
         self.species_hint_combo.addItem(self.tr("Fly (FlyBody 3D MuJoCo)"), "fly")
         self.analyze_btn = QtWidgets.QPushButton(
             self.tr("Analyze Environment && Match 3D Simulation")
@@ -263,6 +270,7 @@ class Sim2RealStudioDialog(QtWidgets.QDialog):
 
         self.sim_species_combo = QtWidgets.QComboBox()
         self.sim_species_combo.addItem(self.tr("Mouse 3D (Bundled Three.js)"), "mouse")
+        self.sim_species_combo.addItem(self.tr("Rat 3D (Rat NCAP Three.js)"), "rat")
         self.sim_species_combo.addItem(self.tr("Fly 3D (FlyBody MuJoCo)"), "fly")
         self.sim_species_combo.currentIndexChanged.connect(self._on_species_changed)
         form.addRow(self.tr("Simulation Engine:"), self.sim_species_combo)
@@ -745,26 +753,52 @@ class Sim2RealStudioDialog(QtWidgets.QDialog):
     ) -> None:
         sp = str(species or "mouse").strip().lower()
         is_fly = sp == "fly"
+        is_rat = sp == "rat"
+
+        prev_arena = self.sim_arena_combo.currentData()
+        self.sim_arena_combo.clear()
+        arenas = RAT_ARENAS if is_rat else MOUSE_ARENAS
+        for a in arenas:
+            self.sim_arena_combo.addItem(a, a)
+        if prev_arena in arenas:
+            self.sim_arena_combo.setCurrentIndex(
+                self.sim_arena_combo.findData(prev_arena)
+            )
 
         self.sim_camera_combo.clear()
-        cams = FLY_CAMERA_VIEWS if is_fly else MOUSE_CAMERA_VIEWS
+        cams = (
+            FLY_CAMERA_VIEWS
+            if is_fly
+            else (RAT_CAMERA_VIEWS if is_rat else MOUSE_CAMERA_VIEWS)
+        )
         for cam in cams:
             self.sim_camera_combo.addItem(cam, cam)
 
+        self.sim_coat_combo.clear()
+        coats = RAT_COAT_PATTERNS if is_rat else MOUSE_COAT_PAIRS
+        for cp in coats:
+            self.sim_coat_combo.addItem(cp, cp)
+
         self.sim_coat_combo.setEnabled(not is_fly)
-        self.sim_occluder_combo.setEnabled(not is_fly)
-        self.sim_headstage_combo.setEnabled(not is_fly)
+        self.sim_occluder_combo.setEnabled((not is_fly) and (not is_rat))
+        self.sim_headstage_combo.setEnabled((not is_fly) and (not is_rat))
         self.fly_count_spin.setEnabled(is_fly)
 
         self.scenarios_list.clear()
-        choices = FLY_BEHAVIORS if is_fly else MOUSE_SCENARIOS
+        choices = (
+            FLY_BEHAVIORS if is_fly else (RAT_SCENARIOS if is_rat else MOUSE_SCENARIOS)
+        )
         picked = set(
             selected_scenarios
             if selected_scenarios
             else (
                 ["walk_imitation", "forage_walk"]
                 if is_fly
-                else ["arena_explore", "social_huddle"]
+                else (
+                    ["trot", "walk", "gait_transition"]
+                    if is_rat
+                    else ["arena_explore", "social_huddle"]
+                )
             )
         )
         for item_name in choices:
@@ -782,7 +816,9 @@ class Sim2RealStudioDialog(QtWidgets.QDialog):
         selected_scens = [item.text() for item in self.scenarios_list.selectedItems()]
         if not selected_scens:
             selected_scens = (
-                ["walk_imitation"] if species == "fly" else ["arena_explore"]
+                ["walk_imitation"]
+                if species == "fly"
+                else (["trot"] if species == "rat" else ["arena_explore"])
             )
         state = self._service.load_state()
         width = 640
@@ -790,14 +826,24 @@ class Sim2RealStudioDialog(QtWidgets.QDialog):
         if isinstance(state.current_sim_config, dict):
             width = int(state.current_sim_config.get("width") or 640)
             height = int(state.current_sim_config.get("height") or 480)
+        coat_val = str(
+            self.sim_coat_combo.currentData()
+            or ("black_hooded" if species == "rat" else "default")
+        )
         return SimDatasetConfig(
             species=species,
             task=str(self.sim_task_combo.currentData() or "yolo_seg"),
             export_level=str(self.sim_level_combo.currentData() or "instances"),
-            arena=str(self.sim_arena_combo.currentData() or "open_field"),
-            camera_view=str(self.sim_camera_combo.currentData() or "top-close"),
+            arena=str(
+                self.sim_arena_combo.currentData()
+                or ("treadmill" if species == "rat" else "open_field")
+            ),
+            camera_view=str(
+                self.sim_camera_combo.currentData()
+                or ("oblique" if species == "rat" else "top-close")
+            ),
             lighting=str(self.sim_lighting_combo.currentData() or "default"),
-            coat_pair=str(self.sim_coat_combo.currentData() or "default"),
+            coat_pair=coat_val,
             occluder=str(self.sim_occluder_combo.currentData() or "none"),
             headstage=str(self.sim_headstage_combo.currentData() or "none"),
             scenarios=selected_scens,
@@ -811,6 +857,7 @@ class Sim2RealStudioDialog(QtWidgets.QDialog):
             domain_randomization=float(self.dr_spin.value()),
             real_labeled_dir=self.real_labeled_edit.text().strip() or None,
             fly_subject_count=int(self.fly_count_spin.value()),
+            rat_coat=coat_val if species == "rat" else "black_hooded",
             allow_fallback=bool(self.allow_fallback_chk.isChecked()),
         )
 
@@ -828,7 +875,10 @@ class Sim2RealStudioDialog(QtWidgets.QDialog):
             (self.sim_arena_combo, cfg.arena),
             (self.sim_camera_combo, cfg.camera_view),
             (self.sim_lighting_combo, cfg.lighting),
-            (self.sim_coat_combo, cfg.coat_pair),
+            (
+                self.sim_coat_combo,
+                cfg.rat_coat if cfg.species == "rat" else cfg.coat_pair,
+            ),
             (self.sim_occluder_combo, cfg.occluder),
             (self.sim_headstage_combo, cfg.headstage),
         ):

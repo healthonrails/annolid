@@ -25,6 +25,7 @@ from .flybody_render_worker import (
 from .models import (
     FLY_KEYPOINT_NAMES,
     MOUSE_KEYPOINT_NAMES,
+    RAT_KEYPOINT_NAMES,
     SimDatasetArtifact,
     SimDatasetConfig,
     VideoEnvironmentProfile,
@@ -40,6 +41,7 @@ LogCallback = Optional[Callable[[str], None]]
 REPO_ROOT = Path(__file__).resolve().parents[2]
 THREEJS_ROOT = REPO_ROOT / "annolid" / "gui" / "assets" / "threejs"
 TWO_MICE_SCENE_REL = "annolid/gui/assets/threejs/two_mice.html"
+RAT_NCAP_SCENE_REL = "annolid/gui/assets/threejs/rat_ncap.html"
 
 MOUSE_COARSE_ID_TO_NAME: dict[int, str] = {
     1: "head",
@@ -50,6 +52,7 @@ MOUSE_COARSE_ID_TO_NAME: dict[int, str] = {
 
 MOUSE_FLIP_IDX: list[int] = [0, 2, 1, 3, 5, 4, 6, 8, 7, 9, 10, 11, 12]
 FLY_FLIP_IDX: list[int] = [0, 1, 2, 4, 3, 6, 5, 8, 7, 10, 9]
+RAT_FLIP_IDX: list[int] = [0, 1, 3, 2, 4, 5, 6, 7, 8, 9, 10, 11, 13, 12, 15, 14]
 
 
 def _emit(cb: LogCallback, msg: str) -> None:
@@ -252,10 +255,21 @@ def _export_yolo_dataset(
 
     task_norm = str(task or "yolo_seg").strip().lower()
     level_norm = str(export_level or "instances").strip().lower()
-    keypoint_names = (
-        list(FLY_KEYPOINT_NAMES) if species == "fly" else list(MOUSE_KEYPOINT_NAMES)
+    species_cls = (
+        "fly" if species == "fly" else ("rat" if species == "rat" else "mouse")
     )
-    flip_idx = list(FLY_FLIP_IDX) if species == "fly" else list(MOUSE_FLIP_IDX)
+    keypoint_names = (
+        list(FLY_KEYPOINT_NAMES)
+        if species == "fly"
+        else (
+            list(RAT_KEYPOINT_NAMES) if species == "rat" else list(MOUSE_KEYPOINT_NAMES)
+        )
+    )
+    flip_idx = (
+        list(FLY_FLIP_IDX)
+        if species == "fly"
+        else (list(RAT_FLIP_IDX) if species == "rat" else list(MOUSE_FLIP_IDX))
+    )
 
     # Collect deterministic class list.
     class_set: list[str] = []
@@ -266,7 +280,7 @@ def _export_yolo_dataset(
         return class_set.index(name)
 
     if task_norm == "yolo_pose":
-        _register_class("fly" if species == "fly" else "mouse")
+        _register_class(species_cls)
     elif level_norm == "parts":
         part_order = (
             list(FLY_PART_ID_TO_NAME.values())
@@ -276,7 +290,7 @@ def _export_yolo_dataset(
         for p_name in part_order:
             _register_class(p_name)
     else:
-        _register_class("fly" if species == "fly" else "mouse")
+        _register_class(species_cls)
 
     # Deterministic group-aware train/val split so oversampled copies of the
     # same source frame can never leak across both train and val splits.
@@ -329,7 +343,7 @@ def _export_yolo_dataset(
         label_lines: list[str] = []
         for inst in rec.get("instances") or []:
             if task_norm == "yolo_pose":
-                cls_name = "fly" if species == "fly" else "mouse"
+                cls_name = species_cls
                 cls_id = _register_class(cls_name)
                 bbox = _bbox_from_polygons(inst.get("polygons") or [], w, h)
                 if bbox is None:
@@ -369,10 +383,7 @@ def _export_yolo_dataset(
                 else:
                     bbox = _bbox_from_polygons(inst.get("polygons") or [], w, h)
                     if bbox is not None:
-                        cls_name = str(
-                            inst.get("class_name")
-                            or ("fly" if species == "fly" else "mouse")
-                        )
+                        cls_name = str(inst.get("class_name") or species_cls)
                         cls_id = _register_class(cls_name)
                         x0, y0, x1, y1 = bbox
                         label_lines.append(
@@ -394,10 +405,7 @@ def _export_yolo_dataset(
                             )
                             label_lines.append(f"{cls_id} {coords}")
                 else:
-                    cls_name = str(
-                        inst.get("class_name")
-                        or ("fly" if species == "fly" else "mouse")
-                    )
+                    cls_name = str(inst.get("class_name") or species_cls)
                     cls_id = _register_class(cls_name)
                     for poly in inst.get("polygons") or []:
                         if len(poly) < 3:
@@ -858,6 +866,7 @@ def generate_mouse_3d_dataset(
                         args=[
                             "--use-gl=angle",
                             "--use-angle=swiftshader",
+                            "--enable-unsafe-swiftshader",
                             "--enable-webgl",
                             "--ignore-gpu-blocklist",
                         ],
@@ -1696,6 +1705,445 @@ def generate_fly_sim_dataset(
     )
 
 
+def _render_procedural_rat_frames(
+    config: SimDatasetConfig,
+    out_dir: Path,
+    profile: Optional[VideoEnvironmentProfile],
+    log_callback: LogCallback,
+) -> list[dict[str, Any]]:
+    """Deterministic OpenCV procedural fallback driven by RatNCAPController 3D kinematics."""
+    from annolid.simulation.rat_ncap import (
+        RAT_V2_KEYPOINT_NAMES,
+        RatNCAPConfig,
+        RatNCAPController,
+    )
+
+    w, h = int(config.width), int(config.height)
+    rng = np.random.default_rng(int(config.seed))
+    ref_bg = load_reference_background(profile)
+    scenarios = list(config.scenarios or ["trot", "walk"])
+    img_dir = out_dir / "labelme"
+    img_dir.mkdir(parents=True, exist_ok=True)
+
+    coat = str(config.rat_coat or "black_hooded").strip().lower()
+    coat_palette = {
+        "black_hooded": ((36, 36, 40), (232, 236, 240)),
+        "cinnamon": ((46, 78, 124), (218, 228, 238)),
+        "gray": ((118, 110, 104), (232, 234, 236)),
+    }
+    hood_bgr, body_bgr = coat_palette.get(coat, coat_palette["black_hooded"])
+    skin_bgr = (168, 178, 224)
+
+    records: list[dict[str, Any]] = []
+    for s_idx, scenario in enumerate(scenarios):
+        ctrl = RatNCAPController(
+            RatNCAPConfig(
+                interface=config.rat_interface,
+                behavior=scenario,
+                coat=coat,
+                ablation=config.rat_ablation,
+                ablation_scale=float(config.rat_ablation_scale),
+                terrain_bump_cm=float(config.rat_terrain_bump_cm),
+                seed=int(config.seed) + s_idx * 31,
+            )
+        )
+        for f_idx in range(int(config.frames_per_scenario)):
+            for _ in range(3):
+                step_data = ctrl.step()
+
+            if ref_bg is not None and config.composite_on_real_background:
+                canvas = cv2.resize(ref_bg, (w, h), interpolation=cv2.INTER_LINEAR)
+            else:
+                bg_val = int(profile.mean_luminance) if profile is not None else 210
+                canvas = np.full((h, w, 3), bg_val, dtype=np.uint8)
+
+            root_x, root_y, root_z = step_data["root_pos"]
+            kps_3d = step_data["keypoints_3d"]
+            scale_px = min(w, h) * 1.45
+            cx_img = w * 0.5 + float(rng.uniform(-0.10, 0.10)) * w
+            cy_img = h * 0.55 + float(rng.uniform(-0.08, 0.08)) * h
+
+            def _proj(pt3: Sequence[float]) -> tuple[float, float]:
+                dx = float(pt3[0]) - float(root_x)
+                dy = float(pt3[1]) - float(root_y)
+                dz = float(pt3[2]) - float(root_z)
+                if config.camera_view in {"track_top", "top"}:
+                    px = cx_img + dx * scale_px
+                    py = cy_img - dy * scale_px
+                else:
+                    px = cx_img + dx * scale_px + 0.25 * dy * scale_px
+                    py = cy_img - dz * scale_px + 0.30 * dy * scale_px
+                return float(np.clip(px, 2.0, w - 3.0)), float(
+                    np.clip(py, 2.0, h - 3.0)
+                )
+
+            kp_2d: dict[str, tuple[float, float]] = {
+                name: _proj(kps_3d[name])
+                for name in RAT_V2_KEYPOINT_NAMES
+                if name in kps_3d
+            }
+
+            full_mask = np.zeros((h, w), dtype=np.uint8)
+            part_masks = {
+                k: np.zeros((h, w), dtype=np.uint8)
+                for k in ("head", "torso", "limbs", "tail")
+            }
+
+            # Draw tail -> limbs -> torso -> head
+            tail_pts = np.asarray(
+                [kp_2d["tail_base"], kp_2d["tail_mid"], kp_2d["tail_tip"]],
+                dtype=np.int32,
+            )
+            cv2.polylines(
+                canvas,
+                [tail_pts],
+                False,
+                skin_bgr,
+                max(4, int(min(w, h) * 0.016)),
+                cv2.LINE_AA,
+            )
+            cv2.polylines(
+                part_masks["tail"],
+                [tail_pts],
+                False,
+                255,
+                max(4, int(min(w, h) * 0.016)),
+            )
+
+            for anchor, paw in (
+                ("thorax", "left_forepaw"),
+                ("thorax", "right_forepaw"),
+                ("pelvis", "left_hindpaw"),
+                ("pelvis", "right_hindpaw"),
+            ):
+                p0 = (int(kp_2d[anchor][0]), int(kp_2d[anchor][1]))
+                p1 = (int(kp_2d[paw][0]), int(kp_2d[paw][1]))
+                rad = max(5, int(min(w, h) * 0.018))
+                cv2.line(canvas, p0, p1, body_bgr, rad, cv2.LINE_AA)
+                cv2.circle(canvas, p1, max(4, rad // 2), skin_bgr, -1, cv2.LINE_AA)
+                cv2.line(part_masks["limbs"], p0, p1, 255, rad)
+
+            pelvis_pt = (int(kp_2d["pelvis"][0]), int(kp_2d["pelvis"][1]))
+            thorax_pt = (int(kp_2d["thorax"][0]), int(kp_2d["thorax"][1]))
+            torso_r = max(14, int(min(w, h) * 0.068))
+            cv2.line(canvas, pelvis_pt, thorax_pt, body_bgr, torso_r * 2, cv2.LINE_AA)
+            cv2.circle(
+                canvas, thorax_pt, int(torso_r * 0.95), hood_bgr, -1, cv2.LINE_AA
+            )
+            cv2.line(part_masks["torso"], pelvis_pt, thorax_pt, 255, torso_r * 2)
+
+            head_pt = (int(kp_2d["head"][0]), int(kp_2d["head"][1]))
+            nose_pt = (int(kp_2d["nose"][0]), int(kp_2d["nose"][1]))
+            head_r = max(10, int(min(w, h) * 0.044))
+            cv2.line(canvas, head_pt, nose_pt, hood_bgr, head_r, cv2.LINE_AA)
+            cv2.circle(canvas, head_pt, head_r, hood_bgr, -1, cv2.LINE_AA)
+            cv2.circle(canvas, nose_pt, max(3, head_r // 3), skin_bgr, -1, cv2.LINE_AA)
+            cv2.line(part_masks["head"], head_pt, nose_pt, 255, head_r)
+            cv2.circle(part_masks["head"], head_pt, head_r, 255, -1)
+
+            for pm in part_masks.values():
+                full_mask |= pm
+
+            if profile is not None and config.match_example_photometry:
+                canvas = apply_environment_photometry(
+                    canvas,
+                    profile,
+                    strength=config.photometry_strength,
+                    domain_randomization=config.domain_randomization,
+                    rng=rng,
+                )
+
+            polys = _mask_to_polygons(full_mask, min_area=14.0)
+            parts: dict[str, list[list[list[float]]]] = {}
+            for pname, pm in part_masks.items():
+                pp = _mask_to_polygons(pm, min_area=8.0)
+                if pp:
+                    parts[pname] = pp
+            kps_list = [
+                {
+                    "name": name,
+                    "x": round(kp_2d[name][0], 2),
+                    "y": round(kp_2d[name][1], 2),
+                    "v": 2,
+                }
+                for name in RAT_V2_KEYPOINT_NAMES
+                if name in kp_2d
+            ]
+            instances = (
+                [
+                    {
+                        "group_id": 1,
+                        "label": "rat_1",
+                        "class_name": "rat",
+                        "polygons": polys,
+                        "parts": parts,
+                        "keypoints": kps_list,
+                    }
+                ]
+                if polys
+                else []
+            )
+
+            stem = f"rat_{scenario}_f{f_idx:04d}"
+            img_path = img_dir / f"{stem}.jpg"
+            cv2.imwrite(str(img_path), canvas, [int(cv2.IMWRITE_JPEG_QUALITY), 92])
+            lm = _build_labelme_json(
+                image_filename=img_path.name,
+                width=w,
+                height=h,
+                instances=instances,
+            )
+            (img_dir / f"{stem}.json").write_text(
+                json.dumps(lm, indent=2) + "\n", encoding="utf-8"
+            )
+            records.append(
+                {
+                    "stem": stem,
+                    "scenario": scenario,
+                    "image_path": str(img_path),
+                    "width": w,
+                    "height": h,
+                    "instances": instances,
+                }
+            )
+    return records
+
+
+def generate_rat_3d_dataset(
+    config: SimDatasetConfig,
+    output_dir: str | Path,
+    *,
+    profile: Optional[VideoEnvironmentProfile] = None,
+    log_callback: LogCallback = None,
+) -> SimDatasetArtifact:
+    """Generate environment-matched Rat v2 / Rat NCAP 3D synthetic dataset via bundled Three.js scene."""
+    out_dir = Path(output_dir).expanduser().resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    labelme_dir = out_dir / "labelme"
+    labelme_dir.mkdir(parents=True, exist_ok=True)
+
+    w, h = int(config.width), int(config.height)
+    scenarios = list(config.scenarios or ["trot", "walk", "gait_transition"])
+    notes: list[str] = []
+    renderer = "threejs_rat_ncap_3d"
+    records: list[dict[str, Any]] = []
+
+    playwright_ok = importlib.util.find_spec("playwright") is not None
+    scene_file = REPO_ROOT / RAT_NCAP_SCENE_REL
+
+    if not playwright_ok or not scene_file.is_file():
+        if not config.allow_fallback:
+            raise RuntimeError(
+                "Playwright or bundled Rat NCAP 3D scene (`annolid/gui/assets/threejs/rat_ncap.html`) "
+                "is unavailable. Install Playwright Chromium (`playwright install chromium`) or pass "
+                "`allow_fallback=True` to opt into the procedural Rat NCAP fallback renderer."
+            )
+        renderer = "procedural_rat_fallback"
+        notes.append(
+            "Fallback Rat NCAP renderer used because Playwright Chromium was unavailable (`allow_fallback=True`)."
+        )
+        records = _render_procedural_rat_frames(config, out_dir, profile, log_callback)
+    else:
+        try:
+            from playwright.sync_api import sync_playwright
+
+            server, base_url, _thread = _start_static_server(REPO_ROOT)
+            ref_bg = load_reference_background(profile)
+            rng = np.random.default_rng(int(config.seed))
+            coat = str(config.rat_coat or "black_hooded")
+            _emit(
+                log_callback,
+                f"Launching Rat NCAP 3D Three.js renderer ({len(scenarios)} scenario(s), "
+                f"{config.frames_per_scenario} frames each, arena={config.arena}, "
+                f"camera={config.camera_view}, coat={coat}, interface={config.rat_interface})...",
+            )
+            try:
+                with sync_playwright() as p:
+                    browser = p.chromium.launch(
+                        headless=True,
+                        args=[
+                            "--use-gl=angle",
+                            "--use-angle=swiftshader",
+                            "--enable-unsafe-swiftshader",
+                            "--enable-webgl",
+                            "--ignore-gpu-blocklist",
+                        ],
+                    )
+                    page = browser.new_page(viewport={"width": w, "height": h})
+                    try:
+                        for s_idx, scenario in enumerate(scenarios):
+                            query_dict: dict[str, Any] = {
+                                "dataset": 1,
+                                "frame": 0,
+                                "fps": int(config.fps),
+                                "seed": int(config.seed) + s_idx * 97,
+                                "camera_view": config.camera_view,
+                                "scenario": scenario,
+                                "arena": config.arena,
+                                "coat": coat,
+                                "interface": config.rat_interface,
+                            }
+                            if config.lighting and config.lighting != "default":
+                                query_dict["lighting"] = config.lighting
+                            if config.rat_ablation and config.rat_ablation != "none":
+                                query_dict["ablation"] = config.rat_ablation
+                                query_dict["ablation_scale"] = config.rat_ablation_scale
+                            if config.rat_terrain_bump_cm > 0:
+                                query_dict["bump_cm"] = config.rat_terrain_bump_cm
+
+                            url = f"{base_url}/{RAT_NCAP_SCENE_REL}?{urlencode(query_dict)}"
+                            _emit(
+                                log_callback,
+                                f"Rendering Rat NCAP scenario '{scenario}'...",
+                            )
+                            page.goto(url, wait_until="load", timeout=120_000)
+                            page.wait_for_selector(
+                                "#c[data-dataset-ready='true']", timeout=120_000
+                            )
+
+                            for f_idx in range(int(config.frames_per_scenario)):
+                                payload = page.evaluate(
+                                    "idx => window.annolidPoseDataset.setFrame(idx)",
+                                    f_idx,
+                                )
+                                seg_payload = page.evaluate(
+                                    "() => window.annolidPoseDataset.captureSegmentationMasks()"
+                                )
+                                png_bytes = page.screenshot(type="png")
+                                img_arr = np.frombuffer(png_bytes, dtype=np.uint8)
+                                bgr = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
+                                if bgr is None:
+                                    continue
+
+                                track_map, _fine_map, coarse_map = (
+                                    _decode_segmentation_rle(seg_payload)
+                                )
+                                if (
+                                    ref_bg is not None
+                                    and config.composite_on_real_background
+                                ):
+                                    bgr = composite_foreground_onto_background(
+                                        bgr, track_map > 0, ref_bg
+                                    )
+                                if (
+                                    profile is not None
+                                    and config.match_example_photometry
+                                ):
+                                    bgr = apply_environment_photometry(
+                                        bgr,
+                                        profile,
+                                        strength=config.photometry_strength,
+                                        domain_randomization=config.domain_randomization,
+                                        rng=rng,
+                                    )
+
+                                subj_by_track: dict[int, dict[str, Any]] = {}
+                                for subj in payload.get("subjects") or []:
+                                    tid = int(subj.get("track_id") or 1)
+                                    subj_by_track[tid] = subj
+
+                                instances: list[dict[str, Any]] = []
+                                for tid in sorted(
+                                    int(x) for x in np.unique(track_map) if int(x) > 0
+                                ):
+                                    inst_mask = track_map == tid
+                                    polys = _mask_to_polygons(inst_mask)
+                                    if not polys:
+                                        continue
+                                    parts: dict[str, list[list[list[float]]]] = {}
+                                    for cid, pname in MOUSE_COARSE_ID_TO_NAME.items():
+                                        pm = inst_mask & (coarse_map == cid)
+                                        part_polys = _mask_to_polygons(pm, min_area=8.0)
+                                        if part_polys:
+                                            parts[pname] = part_polys
+
+                                    subj = subj_by_track.get(tid) or {}
+                                    kp_map = subj.get("keypoints") or {}
+                                    kps_list: list[dict[str, Any]] = []
+                                    for k_name in RAT_KEYPOINT_NAMES:
+                                        vals = kp_map.get(k_name)
+                                        if (
+                                            isinstance(vals, (list, tuple))
+                                            and len(vals) >= 3
+                                        ):
+                                            kps_list.append(
+                                                {
+                                                    "name": str(k_name),
+                                                    "x": round(float(vals[0]), 2),
+                                                    "y": round(float(vals[1]), 2),
+                                                    "v": int(vals[2]),
+                                                }
+                                            )
+                                    instances.append(
+                                        {
+                                            "group_id": tid,
+                                            "label": f"rat_{tid}",
+                                            "class_name": "rat",
+                                            "polygons": polys,
+                                            "parts": parts,
+                                            "keypoints": kps_list,
+                                        }
+                                    )
+
+                                stem = f"rat_{scenario}_f{f_idx:04d}"
+                                img_path = labelme_dir / f"{stem}.jpg"
+                                cv2.imwrite(
+                                    str(img_path),
+                                    bgr,
+                                    [int(cv2.IMWRITE_JPEG_QUALITY), 92],
+                                )
+                                lm = _build_labelme_json(
+                                    image_filename=img_path.name,
+                                    width=bgr.shape[1],
+                                    height=bgr.shape[0],
+                                    instances=instances,
+                                )
+                                (labelme_dir / f"{stem}.json").write_text(
+                                    json.dumps(lm, indent=2) + "\n",
+                                    encoding="utf-8",
+                                )
+                                records.append(
+                                    {
+                                        "stem": stem,
+                                        "scenario": scenario,
+                                        "image_path": str(img_path),
+                                        "width": int(bgr.shape[1]),
+                                        "height": int(bgr.shape[0]),
+                                        "instances": instances,
+                                    }
+                                )
+                    finally:
+                        page.close()
+                        browser.close()
+            finally:
+                server.shutdown()
+                server.server_close()
+        except Exception as exc:
+            if not config.allow_fallback:
+                raise RuntimeError(
+                    f"Rat NCAP 3D Three.js Playwright capture failed: {exc}. "
+                    "Ensure Chromium is installed (`playwright install chromium`) or pass "
+                    "`allow_fallback=True` for procedural fallback."
+                ) from exc
+            renderer = "procedural_rat_fallback"
+            notes.append(
+                f"Playwright failed ({exc}); fell back to procedural Rat NCAP renderer."
+            )
+            records = _render_procedural_rat_frames(
+                config, out_dir, profile, log_callback
+            )
+
+    return _finalize_generated_dataset(
+        records=records,
+        config=config,
+        out_dir=out_dir,
+        labelme_dir=labelme_dir,
+        renderer=renderer,
+        notes=notes,
+        log_callback=log_callback,
+    )
+
+
 def _load_real_labelme_records(
     real_dir: Path, *, species: str, oversample: int = 1
 ) -> list[dict[str, Any]]:
@@ -1703,7 +2151,9 @@ def _load_real_labelme_records(
     loaded: list[dict[str, Any]] = []
     if not real_dir.is_dir():
         return loaded
-    default_cls = "fly" if species == "fly" else "mouse"
+    default_cls = (
+        "fly" if species == "fly" else ("rat" if species == "rat" else "mouse")
+    )
     for jf in sorted(real_dir.glob("*.json")):
         try:
             payload = json.loads(jf.read_text(encoding="utf-8"))
@@ -1741,7 +2191,9 @@ def _load_real_labelme_records(
                 continue
             raw_lbl = str(sh.get("label") or default_cls).strip()
             cls_name = (
-                default_cls if raw_lbl.startswith(("mouse_", "fly_")) else raw_lbl
+                default_cls
+                if raw_lbl.startswith(("mouse_", "rat_", "fly_"))
+                else raw_lbl
             )
             instances.append(
                 {
@@ -1861,10 +2313,14 @@ def generate_sim_dataset(
     profile: Optional[VideoEnvironmentProfile] = None,
     log_callback: LogCallback = None,
 ) -> SimDatasetArtifact:
-    """Unified entry point generating either a Mouse 3D or FlyBody 3D synthetic dataset."""
+    """Unified entry point generating a Mouse 3D, Rat NCAP 3D, or FlyBody 3D synthetic dataset."""
     species = str(config.species or "mouse").strip().lower()
     if species == "fly":
         return generate_fly_sim_dataset(
+            config, output_dir, profile=profile, log_callback=log_callback
+        )
+    if species == "rat":
+        return generate_rat_3d_dataset(
             config, output_dir, profile=profile, log_callback=log_callback
         )
     if species == "mouse":
@@ -1872,5 +2328,5 @@ def generate_sim_dataset(
             config, output_dir, profile=profile, log_callback=log_callback
         )
     raise ValueError(
-        f"Unsupported simulation species '{species}'. Use 'mouse' or 'fly'."
+        f"Unsupported simulation species '{species}'. Use 'mouse', 'rat', or 'fly'."
     )

@@ -13,6 +13,7 @@ class SimulationRunnerPlugin(ModelPluginBase):
         "annolid-run predict simulation_runner --help-model",
         "annolid-run predict simulation_runner --backend identity --input pose.json --mapping sim.json --out-ndjson sim.ndjson",
         "annolid-run predict simulation_runner --backend flybody --input pose.ndjson --mapping flybody.yaml --out-ndjson flybody.ndjson --dry-run",
+        "annolid-run predict simulation_runner --backend rat_ncap --rollout-steps 180 --behavior trot --interface flexor_extensor --out-ndjson rat_trot.ndjson",
     )
     predict_help_sections = (
         (
@@ -46,6 +47,13 @@ class SimulationRunnerPlugin(ModelPluginBase):
                 "--behavior",
                 "--dynamics",
                 "--connectome-path",
+                "--interface",
+                "--coat",
+                "--target-speed",
+                "--ablation",
+                "--ablation-scale",
+                "--rg-noise-std",
+                "--terrain-bump-cm",
                 "--seed",
                 "--smooth-mode",
                 "--fps",
@@ -57,7 +65,7 @@ class SimulationRunnerPlugin(ModelPluginBase):
     def add_predict_args(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument(
             "--backend",
-            choices=("identity", "flybody"),
+            choices=("identity", "flybody", "rat_ncap"),
             required=True,
             help="Simulation backend to run.",
         )
@@ -181,10 +189,52 @@ class SimulationRunnerPlugin(ModelPluginBase):
             help="Optional custom MaleCNS/FlyWire connectome file (.json, .csv, .tsv, .parquet, .feather, or .npz).",
         )
         parser.add_argument(
+            "--interface",
+            choices=("flexor_extensor", "position_stiffness", "position", "torque"),
+            default="flexor_extensor",
+            help="Neuromechanical interface for rat_ncap backend.",
+        )
+        parser.add_argument(
+            "--coat",
+            choices=("black_hooded", "cinnamon", "gray"),
+            default="black_hooded",
+            help="Long-Evans rat coat pattern for rat_ncap backend.",
+        )
+        parser.add_argument(
+            "--target-speed",
+            type=float,
+            default=None,
+            help="Target locomotion speed (m/s, 0.0-1.0) for rat_ncap rollouts.",
+        )
+        parser.add_argument(
+            "--ablation",
+            choices=("none", "v0v_v0d", "v0d", "v0v", "v3f_v3a", "v3f", "v3a"),
+            default="none",
+            help="In-silico spinal interneuron ablation preset for rat_ncap.",
+        )
+        parser.add_argument(
+            "--ablation-scale",
+            type=float,
+            default=0.0,
+            help="Activity scaling factor k in [0, 1] for the ablated rat_ncap population.",
+        )
+        parser.add_argument(
+            "--rg-noise-std",
+            type=float,
+            default=0.0,
+            help="Multiplicative RG synaptic weight noise standard deviation (sigma) for rat_ncap.",
+        )
+        parser.add_argument(
+            "--terrain-bump-cm",
+            type=float,
+            default=0.0,
+            help="Bumpy terrain amplitude in centimeters (0-4 cm) for rat_ncap.",
+        )
+        parser.add_argument(
             "--seed",
             type=int,
             default=7,
-            help="Deterministic RNG seed for connectome rollout.",
+            help="Deterministic RNG seed for connectome or spinal rollout.",
         )
 
     def predict(self, args: argparse.Namespace) -> int:
@@ -192,6 +242,7 @@ class SimulationRunnerPlugin(ModelPluginBase):
             SimulationRunRequest,
             build_default_output_path,
             generate_flybody_mapping_template,
+            generate_rat_ncap_mapping_template,
             read_pose_frames,
             run_simulation_workflow,
             save_simulation_mapping_template,
@@ -205,9 +256,9 @@ class SimulationRunnerPlugin(ModelPluginBase):
                 video_name=args.video_name,
             )
         if args.write_mapping_template:
-            if args.backend != "flybody":
+            if args.backend not in {"flybody", "rat_ncap"}:
                 raise RuntimeError(
-                    "Mapping template generation is currently implemented for the FlyBody backend only."
+                    "Mapping template generation is implemented for flybody and rat_ncap backends."
                 )
             keypoints = []
             if args.pose_schema:
@@ -232,7 +283,10 @@ class SimulationRunnerPlugin(ModelPluginBase):
                     "Cannot generate a mapping template without keypoints. "
                     "Provide --pose-schema, --template-keypoints, or --input."
                 )
-            template = generate_flybody_mapping_template(keypoints=keypoints)
+            if args.backend == "rat_ncap":
+                template = generate_rat_ncap_mapping_template(keypoints=keypoints)
+            else:
+                template = generate_flybody_mapping_template(keypoints=keypoints)
             save_simulation_mapping_template(template, args.write_mapping_template)
             return 0
 
@@ -275,6 +329,15 @@ class SimulationRunnerPlugin(ModelPluginBase):
             dynamics=str(getattr(args, "dynamics", "spiking") or "spiking"),
             connectome_path=getattr(args, "connectome_path", None),
             seed=int(getattr(args, "seed", 7)),
+            interface=str(
+                getattr(args, "interface", "flexor_extensor") or "flexor_extensor"
+            ),
+            coat=str(getattr(args, "coat", "black_hooded") or "black_hooded"),
+            target_speed=getattr(args, "target_speed", None),
+            ablation=str(getattr(args, "ablation", "none") or "none"),
+            ablation_scale=float(getattr(args, "ablation_scale", 0.0) or 0.0),
+            rg_noise_std=float(getattr(args, "rg_noise_std", 0.0) or 0.0),
+            terrain_bump_cm=float(getattr(args, "terrain_bump_cm", 0.0) or 0.0),
         )
         run_simulation_workflow(request)
         return 0

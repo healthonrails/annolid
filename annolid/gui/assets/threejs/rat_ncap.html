@@ -1,0 +1,448 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" href="data:," />
+  <title>Annolid: Rat NCAP 3D Biomechanical & Spinal Circuit Simulation</title>
+  <style>
+    :root {
+      color-scheme: dark;
+    }
+
+    html,
+    body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #cfd5dd;
+      font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      user-select: none;
+    }
+
+    body.dataset-capture #rat-ncap-panel,
+    body.dataset-capture .hud,
+    body.dataset-capture #scene-status {
+      display: none !important;
+    }
+
+    #c {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    #scene-status {
+      position: absolute;
+      top: 16px;
+      left: 16px;
+      font-size: 12px;
+      color: #1e293b;
+      background: rgba(255, 255, 255, 0.78);
+      padding: 4px 10px;
+      border-radius: 6px;
+    }
+
+    #scene-status:empty {
+      display: none;
+    }
+
+    .hud {
+      position: absolute;
+      bottom: 22px;
+      left: 22px;
+      color: #e2e8f0;
+      font-size: 11.5px;
+      border-left: 3px solid #38bdf8;
+      padding: 12px 14px;
+      background: rgba(15, 23, 42, 0.84);
+      backdrop-filter: blur(8px);
+      border-radius: 0 8px 8px 0;
+      letter-spacing: 0.03em;
+      pointer-events: none;
+      min-width: 268px;
+    }
+
+    .hud h1 {
+      margin: 0 0 3px 0;
+      font-size: 12.5px;
+      letter-spacing: 0.10em;
+      color: #f8fafc;
+      text-transform: uppercase;
+    }
+
+    .hud .sub {
+      margin: 0 0 8px 0;
+      font-size: 10.5px;
+      color: #94a3b8;
+    }
+
+    .data-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 3px;
+    }
+
+    .data-row .label {
+      color: #94a3b8;
+    }
+
+    .data-row .val {
+      color: #f1f5f9;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-weight: 600;
+    }
+
+    #rat-ncap-panel {
+      position: absolute;
+      top: 14px;
+      right: 14px;
+      width: 306px;
+      max-height: calc(100vh - 28px);
+      overflow-y: auto;
+      background: rgba(12, 18, 32, 0.88);
+      border: 1px solid rgba(148, 163, 184, 0.25);
+      border-radius: 10px;
+      color: #e2e8f0;
+      backdrop-filter: blur(10px);
+      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+      font-size: 11.5px;
+    }
+
+    #rat-ncap-panel.collapsed .rn-body {
+      display: none;
+    }
+
+    .rn-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+    }
+
+    .rn-title {
+      font-weight: 700;
+      font-size: 12.5px;
+      color: #f8fafc;
+      display: block;
+    }
+
+    .rn-subtitle {
+      font-size: 10px;
+      color: #94a3b8;
+    }
+
+    .rn-collapse-btn {
+      background: rgba(51, 65, 85, 0.8);
+      color: #f8fafc;
+      border: 1px solid rgba(148, 163, 184, 0.3);
+      border-radius: 6px;
+      width: 24px;
+      height: 24px;
+      cursor: pointer;
+      font-weight: 700;
+    }
+
+    .rn-body {
+      padding: 10px 12px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .rn-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .rn-pill {
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      background: rgba(56, 189, 248, 0.2);
+      color: #38bdf8;
+      border: 1px solid rgba(56, 189, 248, 0.45);
+    }
+
+    .rn-select {
+      width: 100%;
+      background: #1e293b;
+      color: #f1f5f9;
+      border: 1px solid rgba(148, 163, 184, 0.3);
+      border-radius: 6px;
+      padding: 4px 6px;
+      font-size: 11px;
+    }
+
+    .rn-label-line {
+      display: flex;
+      justify-content: space-between;
+      font-size: 10.5px;
+      color: #cbd5e1;
+      margin-bottom: 2px;
+    }
+
+    .rn-label-line span:last-child {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      color: #38bdf8;
+    }
+
+    .rn-slider {
+      width: 100%;
+      accent-color: #38bdf8;
+      margin: 0;
+    }
+
+    .rn-section {
+      border-top: 1px solid rgba(148, 163, 184, 0.14);
+      padding-top: 7px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .rn-section-title {
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #94a3b8;
+      font-weight: 700;
+    }
+
+    .rn-btn-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+    }
+
+    .rn-btn {
+      background: #1e293b;
+      color: #e2e8f0;
+      border: 1px solid rgba(148, 163, 184, 0.28);
+      border-radius: 6px;
+      padding: 5px 8px;
+      font-size: 10.5px;
+      cursor: pointer;
+    }
+
+    .rn-btn:hover {
+      background: #334155;
+      border-color: #38bdf8;
+    }
+
+    .rn-checks {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      font-size: 10.5px;
+      color: #cbd5e1;
+    }
+
+    .rn-checks label {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      cursor: pointer;
+    }
+
+    .rn-scope-wrap {
+      background: #0c1220;
+      border: 1px solid rgba(148, 163, 184, 0.22);
+      border-radius: 6px;
+      padding: 4px;
+    }
+
+    #rat-spinal-scope {
+      display: block;
+      width: 100%;
+      height: 112px;
+      border-radius: 4px;
+    }
+
+    .rn-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      margin-top: 4px;
+      font-size: 9.5px;
+      color: #94a3b8;
+    }
+
+    .rn-dot {
+      display: inline-block;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      margin-right: 3px;
+    }
+  </style>
+</head>
+
+<body>
+  <canvas id="c" aria-label="Interactive Rat NCAP 3D simulation"></canvas>
+  <div id="scene-status" role="status">Loading Rat v2 &amp; NCAP spinal circuit…</div>
+
+  <aside id="rat-ncap-panel" aria-label="Rat NCAP Spinal Circuit Controller">
+    <div class="rn-header">
+      <div>
+        <span class="rn-title">Rat NCAP · Spinal Controller</span>
+        <span class="rn-subtitle">Rat v2 · 38 DOFs (31 loc.) · arXiv:2611.23364</span>
+      </div>
+      <button type="button" class="rn-collapse-btn" id="rat-collapse-btn" title="Collapse or expand Rat NCAP controls">−</button>
+    </div>
+
+    <div class="rn-body">
+      <div class="rn-row">
+        <select class="rn-select" id="rat-behavior-select" aria-label="Rat behavior preset">
+          <option value="stand">Stand (0.0 m/s)</option>
+          <option value="walk">Walk (0.22 m/s)</option>
+          <option value="trot" selected>Trot (0.50 m/s)</option>
+          <option value="bound">Bound (0.88 m/s)</option>
+          <option value="gait_transition">Gait Transition Ramp</option>
+          <option value="bumpy_terrain">Bumpy Terrain (2.2 cm)</option>
+          <option value="v0_ablation_bound">V0v+V0d Ablation → Bound</option>
+          <option value="v3_ablation_trot">V3f+V3a Ablation (Trot Intact)</option>
+          <option value="open_field_explore">Open-Field Explore</option>
+        </select>
+        <span class="rn-pill" id="rat-gait-pill">TROT</span>
+      </div>
+
+      <div>
+        <div class="rn-label-line">
+          <span>Brainstem Speed Command</span>
+          <span id="rat-speed-val">0.50 m/s</span>
+        </div>
+        <input class="rn-slider" id="rat-speed-slider" type="range" min="0" max="1" step="0.01" value="0.50" />
+      </div>
+
+      <div class="rn-checks">
+        <label><input type="checkbox" id="rat-auto-ramp" /> Auto Gait Ramp</label>
+        <label><input type="checkbox" id="rat-lock-lumbar" /> Lock Lumbar</label>
+      </div>
+
+      <div class="rn-scope-wrap">
+        <canvas id="rat-spinal-scope" width="274" height="112"></canvas>
+        <div class="rn-legend">
+          <span><i class="rn-dot" style="background:#38bdf8"></i>FL</span>
+          <span><i class="rn-dot" style="background:#34d399"></i>FR</span>
+          <span><i class="rn-dot" style="background:#f59e0b"></i>HL</span>
+          <span><i class="rn-dot" style="background:#f472b6"></i>HR</span>
+          <span><i class="rn-dot" style="background:#a78bfa"></i>V0d</span>
+          <span><i class="rn-dot" style="background:#fb7185"></i>V3f</span>
+        </div>
+      </div>
+
+      <div class="rn-section">
+        <div class="rn-section-title">Neuromechanical Interface &amp; Body</div>
+        <select class="rn-select" id="rat-interface-select" aria-label="Neuromechanical interface">
+          <option value="flexor_extensor" selected>Flexor-Extensor (Spring Muscle)</option>
+          <option value="position_stiffness">Position + Dynamic Stiffness (poskp)</option>
+          <option value="position">Position PD (pos)</option>
+          <option value="torque">Direct Torque (trq)</option>
+        </select>
+        <div class="rn-row">
+          <select class="rn-select" id="rat-coat-select" aria-label="Long-Evans rat coat">
+            <option value="black_hooded" selected>Black-Hooded</option>
+            <option value="cinnamon">Cinnamon</option>
+            <option value="gray">Gray</option>
+          </select>
+          <select class="rn-select" id="rat-camera-select" aria-label="Camera preset">
+            <option value="oblique" selected>Oblique</option>
+            <option value="track_right">Track Right</option>
+            <option value="track_left">Track Left</option>
+            <option value="track_top">Track Top</option>
+            <option value="track_front">Track Front</option>
+            <option value="ventral">Ventral</option>
+          </select>
+        </div>
+        <select class="rn-select" id="rat-arena-select" aria-label="Arena or terrain">
+          <option value="treadmill" selected>Treadmill Belt</option>
+          <option value="bumpy_terrain">Bumpy Heightfield</option>
+          <option value="open_field">Open Field Arena</option>
+          <option value="circular_open_field">Circular Open Field</option>
+          <option value="elevated_plus_maze">Elevated Plus Maze</option>
+        </select>
+        <div>
+          <div class="rn-label-line">
+            <span>Terrain Bump Height</span>
+            <span id="rat-bump-val">0.0 cm</span>
+          </div>
+          <input class="rn-slider" id="rat-bump-slider" type="range" min="0" max="4" step="0.1" value="0" />
+        </div>
+      </div>
+
+      <div class="rn-section">
+        <div class="rn-section-title">In-Silico Spinal Perturbations</div>
+        <div>
+          <div class="rn-label-line">
+            <span>V0v + V0d Commissural Scale</span>
+            <span id="rat-v0-val">1.00×</span>
+          </div>
+          <input class="rn-slider" id="rat-v0-slider" type="range" min="0" max="1" step="0.05" value="1" />
+        </div>
+        <div>
+          <div class="rn-label-line">
+            <span>V3f + V3a Synchrony Scale</span>
+            <span id="rat-v3-val">1.00×</span>
+          </div>
+          <input class="rn-slider" id="rat-v3-slider" type="range" min="0" max="1" step="0.05" value="1" />
+        </div>
+        <div>
+          <div class="rn-label-line">
+            <span>RG Synaptic Weight Noise</span>
+            <span id="rat-noise-val">σ=0.00</span>
+          </div>
+          <input class="rn-slider" id="rat-noise-slider" type="range" min="0" max="0.5" step="0.02" value="0" />
+        </div>
+        <div class="rn-btn-grid">
+          <button type="button" class="rn-btn" id="rat-ablate-v0-btn">Toggle V0 Ablation</button>
+          <button type="button" class="rn-btn" id="rat-ablate-v3-btn">Toggle V3 Ablation</button>
+        </div>
+      </div>
+
+      <div class="rn-section">
+        <div class="rn-checks">
+          <label><input type="checkbox" id="rat-muscle-vis" /> Muscle Effort</label>
+          <label><input type="checkbox" id="rat-kp-vis" /> 3D Keypoints</label>
+        </div>
+        <div class="rn-btn-grid">
+          <button type="button" class="rn-btn" id="rat-pause-btn">Pause</button>
+          <button type="button" class="rn-btn" id="rat-reset-btn">Reset Circuit</button>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <div class="hud">
+    <h1>Rat v2 · Rat NCAP</h1>
+    <p class="sub">Long-Evans biomechanical rig · spinal RG + spring muscles</p>
+    <div class="data-row"><span class="label">GAIT</span><span class="val" id="hud-gait">TROT</span></div>
+    <div class="data-row"><span class="label">SPEED</span><span class="val" id="hud-speed">0.50 m/s</span></div>
+    <div class="data-row"><span class="label">STEP FREQ</span><span class="val" id="hud-freq">3.45 Hz</span></div>
+    <div class="data-row"><span class="label">STEP LENGTH</span><span class="val" id="hud-step-len">14.5 cm</span></div>
+    <div class="data-row"><span class="label">DUTY FACTOR</span><span class="val" id="hud-duty">62%</span></div>
+    <div class="data-row"><span class="label">MECH POWER</span><span class="val" id="hud-power">+0.000 / -0.000 W</span></div>
+    <div class="data-row"><span class="label">PHASES (REL FR)</span><span class="val" id="hud-phases">FL 0.50 · HL 0.00 · HR 0.50</span></div>
+  </div>
+
+  <script type="module">
+    import('./rat_ncap_scene.js').catch(error => {
+      console.error('Rat NCAP 3D scene failed to load:', error);
+      const status = document.getElementById('scene-status');
+      if (status) {
+        status.textContent =
+          'Could not load the Rat NCAP 3D scene. Check WebGL support in this browser view, then reload.';
+      }
+    });
+  </script>
+</body>
+
+</html>

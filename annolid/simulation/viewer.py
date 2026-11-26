@@ -103,6 +103,22 @@ def _infer_edges_from_labels(labels: List[str]) -> List[List[str]]:
     add(["thorax", "thorax_site"], ["abdomen", "abdomen_tip", "abdomen_tip_site"])
     add(["head", "head_site"], ["left_antenna", "left_antenna_site", "antenna_left"])
     add(["head", "head_site"], ["right_antenna", "right_antenna_site", "antenna_right"])
+    # Rat v2 / quadruped skeleton edges
+    add(["nose", "nose_site"], ["head", "head_site"])
+    add(["head", "head_site"], ["left_ear", "left_ear_site"])
+    add(["head", "head_site"], ["right_ear", "right_ear_site"])
+    add(["head", "head_site"], ["neck", "cervical_site"])
+    add(["neck", "cervical_site"], ["thorax", "torso", "torso_center"])
+    add(["thorax", "torso"], ["torso_center", "lumbar", "lumbar_site"])
+    add(["torso_center"], ["lumbar", "lumbar_site"])
+    add(["lumbar", "lumbar_site"], ["pelvis"])
+    add(["pelvis"], ["tail_base", "tail_base_site"])
+    add(["tail_base", "tail_base_site"], ["tail_mid", "tail_mid_site"])
+    add(["tail_mid", "tail_mid_site"], ["tail_tip", "tail_tip_site"])
+    add(["thorax", "torso"], ["left_forepaw", "finger_sensor_l", "hand_l"])
+    add(["thorax", "torso"], ["right_forepaw", "finger_sensor_r", "hand_r"])
+    add(["pelvis"], ["left_hindpaw", "toe_sensor_l", "foot_l"])
+    add(["pelvis"], ["right_hindpaw", "toe_sensor_r", "foot_r"])
     for seg, prefix in (
         ("t1_left", "left_front"),
         ("t1_right", "right_front"),

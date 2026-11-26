@@ -20,6 +20,10 @@ def build_simulation_adapter(name: str):
         from annolid.simulation.adapters.flybody import FlyBodyAdapter
 
         return FlyBodyAdapter()
+    if label in {"rat_ncap", "rat", "rat-ncap"}:
+        from annolid.simulation.adapters.rat_ncap import RatNCAPAdapter
+
+        return RatNCAPAdapter()
     raise ValueError(f"Unsupported simulation backend: {name}")
 
 
@@ -47,6 +51,13 @@ class SimulationRunRequest:
     dynamics: str = "spiking"
     connectome_path: str | None = None
     seed: int = 7
+    interface: str = "flexor_extensor"
+    coat: str = "black_hooded"
+    target_speed: float | None = None
+    ablation: str = "none"
+    ablation_scale: float = 0.0
+    rg_noise_std: float = 0.0
+    terrain_bump_cm: float = 0.0
 
 
 def build_default_output_path(
@@ -107,6 +118,13 @@ def run_simulation_workflow(request: SimulationRunRequest) -> Path:
         "behavior": str(request.behavior or "walk_imitation"),
         "dynamics": str(request.dynamics or "spiking"),
         "seed": int(request.seed),
+        "interface": str(request.interface or "flexor_extensor"),
+        "coat": str(request.coat or "black_hooded"),
+        "target_speed": request.target_speed,
+        "ablation": str(request.ablation or "none"),
+        "ablation_scale": float(request.ablation_scale),
+        "rg_noise_std": float(request.rg_noise_std),
+        "terrain_bump_cm": float(request.terrain_bump_cm),
     }
     if request.connectome_path:
         adapter_config["connectome_path"] = str(
@@ -125,6 +143,13 @@ def run_simulation_workflow(request: SimulationRunRequest) -> Path:
                 "behavior": str(request.behavior or "walk_imitation"),
                 "dynamics": str(request.dynamics or "spiking"),
                 "seed": int(request.seed),
+                "interface": str(request.interface or "flexor_extensor"),
+                "coat": str(request.coat or "black_hooded"),
+                "target_speed": request.target_speed,
+                "ablation": str(request.ablation or "none"),
+                "ablation_scale": float(request.ablation_scale),
+                "rg_noise_std": float(request.rg_noise_std),
+                "terrain_bump_cm": float(request.terrain_bump_cm),
             }
             if request.connectome_path:
                 initial_state["connectome_path"] = str(

@@ -1144,6 +1144,27 @@ class MenuController:
             w.show_flybody_status_dialog,
             tip=w.tr("Inspect optional FlyBody repo and runtime readiness"),
         )
+        w.threejs_example_rat_ncap_action = self._action_factory(
+            w.tr("Rat NCAP 3D Simulation"),
+            lambda: w.open_threejs_example("rat_ncap_html"),
+            tip=w.tr(
+                "Open the interactive 3D Long-Evans Rat v2 & spinal NCAP circuit simulation with gait transitions, muscle interfaces, and in-silico ablations"
+            ),
+        )
+        w.threejs_example_rat_ncap_payload_action = self._action_factory(
+            w.tr("Rat NCAP Simulation Example"),
+            lambda: w.open_threejs_example("rat_ncap_simulation_json"),
+            tip=w.tr(
+                "Open a 3D Rat NCAP gait-transition rollout in the Three.js viewer"
+            ),
+        )
+        w.rat_ncap_status_action = self._action_factory(
+            w.tr("Rat NCAP Status…"),
+            w.show_rat_ncap_status_dialog,
+            tip=w.tr(
+                "Inspect built-in Rat NCAP controller and optional MuJoCo / rat-ncap checkout readiness"
+            ),
+        )
         w.threejs_example_brain_viewer_action = self._action_factory(
             w.tr("Brain 3D Viewer (Web)"),
             lambda: w.open_threejs_example("brain_viewer_html"),
@@ -1171,15 +1192,18 @@ class MenuController:
         w.threejs_examples_menu.addAction(w.threejs_example_wave_action)
         w.threejs_examples_menu.addAction(w.threejs_example_sphere_action)
         w.threejs_examples_menu.addAction(w.threejs_example_flybody_action)
+        w.threejs_examples_menu.addAction(w.threejs_example_rat_ncap_payload_action)
         w.threejs_examples_menu.addSeparator()
         w.threejs_examples_menu.addAction(w.open_simulation_3d_viewer_action)
         w.threejs_examples_menu.addAction(w.run_simulation_3d_viewer_action)
         w.threejs_examples_menu.addAction(w.flybody_status_action)
         w.threejs_examples_menu.addAction(w.install_flybody_action)
+        w.threejs_examples_menu.addAction(w.rat_ncap_status_action)
         w.threejs_examples_menu.addSeparator()
         w.threejs_examples_menu.addAction(w.threejs_example_brain_viewer_action)
         w.threejs_examples_menu.addAction(w.threejs_example_two_mice_action)
         w.threejs_examples_menu.addAction(w.threejs_example_fly_brain_mouse_action)
+        w.threejs_examples_menu.addAction(w.threejs_example_rat_ncap_action)
         w.threejs_examples_menu.addAction(w.threejs_example_swarm_visualizer_action)
 
         # ------------------------------------------------------------------

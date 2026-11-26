@@ -44,6 +44,14 @@ _THREEJS_ALLOWED_ASSETS = {
     "two_mice_simulation.js",
     "two_mice_control.js",
     "two_mice_fly_brain.js",
+    "rat_ncap.html",
+    "rat_ncap_scene.js",
+    "rat_ncap_circuit.js",
+    "rat_ncap_model.js",
+    "rat_v2_skin.glb",
+    "rat_blackhooded.jpg",
+    "rat_cinnamon.jpg",
+    "rat_gray.jpg",
     "swarm_visualizer.html",
     "parser.worker.js",
 }
@@ -227,6 +235,16 @@ def _ensure_threejs_http_server() -> str:
                         content_type = "text/css"
                     elif name.endswith(".html"):
                         content_type = "text/html"
+                    elif name.endswith(".glb"):
+                        content_type = "model/gltf-binary"
+                    elif name.endswith((".jpg", ".jpeg")):
+                        content_type = "image/jpeg"
+                    elif name.endswith(".png"):
+                        content_type = "image/png"
+                    elif name.endswith(".webp"):
+                        content_type = "image/webp"
+                    elif name.endswith(".json"):
+                        content_type = "application/json"
                     else:
                         content_type = "application/javascript"
 

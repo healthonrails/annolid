@@ -1,0 +1,41 @@
+backend: rat_ncap
+keypoint_to_site:
+  nose: nose_site
+  head: head
+  left_ear: left_ear_site
+  right_ear: right_ear_site
+  neck: cervical_site
+  thorax: torso
+  torso_center: torso
+  lumbar: lumbar_site
+  pelvis: pelvis
+  tail_base: tail_base_site
+  tail_mid: tail_mid_site
+  tail_tip: tail_tip_site
+  left_forepaw: finger_sensor_L
+  right_forepaw: finger_sensor_R
+  left_hindpaw: toe_sensor_L
+  right_hindpaw: toe_sensor_R
+site_to_joint:
+  head: atlas
+  cervical_site: cervical_extend
+  lumbar_site: lumbar_extend
+  finger_sensor_L: finger_L
+  finger_sensor_R: finger_R
+  toe_sensor_L: toe_L
+  toe_sensor_R: toe_R
+coordinate_system:
+  units: meters
+  camera_intrinsics:
+    fx: null
+    fy: null
+    cx: null
+    cy: null
+metadata:
+  template: rat_ncap
+  species: rattus_norvegicus
+  body_model: rat_v2
+  notes:
+    - Sites follow Rat v2 / rat-ncap MuJoCo site conventions (head, torso, pelvis, finger_sensor_L/R, toe_sensor_L/R).
+    - Keep units in meters when combining with Annolid depth.ndjson lifting.
+    - Supported neuromechanical interfaces: flexor_extensor, position_stiffness, position, torque.

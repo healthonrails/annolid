@@ -419,6 +419,7 @@ annolid = [
     "core/agent/workspace/**/*.md",
     "core/agent/workspace/**/*.sh",
     "detector/configs/*.json",
+    "gui/assets/threejs/*.glb",
     "tracker/cowtracker/cowtracker/thirdparty/vggt/VENDORED_MANIFEST.json",
 ]
 
