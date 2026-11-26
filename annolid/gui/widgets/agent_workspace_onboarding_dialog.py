@@ -20,6 +20,9 @@ class AgentWorkspaceOnboardingDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self.setWindowTitle("Annolid Bot Workspace Onboarding")
         self.resize(860, 620)
+        self._preview_completed = False
+        self._apply_completed = False
+        self._last_workspace = ""
         self._build_ui()
         self._refresh_status()
 
@@ -49,6 +52,7 @@ class AgentWorkspaceOnboardingDialog(QtWidgets.QDialog):
         path_row = QtWidgets.QHBoxLayout()
         path_row.addWidget(QtWidgets.QLabel("Workspace:"))
         self.workspace_edit = QtWidgets.QLineEdit(str(get_agent_workspace_path()))
+        self.workspace_edit.returnPressed.connect(self._refresh_status)
         path_row.addWidget(self.workspace_edit, 1)
         browse = QtWidgets.QPushButton("Browse…")
         browse.clicked.connect(self._choose_workspace)
@@ -113,6 +117,8 @@ class AgentWorkspaceOnboardingDialog(QtWidgets.QDialog):
         )
         if selected:
             self.workspace_edit.setText(selected)
+            self._preview_completed = False
+            self._apply_completed = False
             self._refresh_status()
 
     def _workspace(self) -> str:
@@ -174,8 +180,13 @@ class AgentWorkspaceOnboardingDialog(QtWidgets.QDialog):
         self._render_restore_result(payload)
 
     def _refresh_status(self) -> None:
+        workspace = self._workspace()
+        if self._last_workspace and workspace != self._last_workspace:
+            self._preview_completed = False
+            self._apply_completed = False
+        self._last_workspace = workspace
         try:
-            payload = get_agent_status(workspace=self._workspace())
+            payload = get_agent_status(workspace=workspace)
         except Exception as exc:
             self.summary_label.setText(f"Status refresh failed: {exc}")
             return
@@ -188,6 +199,13 @@ class AgentWorkspaceOnboardingDialog(QtWidgets.QDialog):
                 missing += 1
             rows.append(("status", str(path), status))
         self._set_rows(rows)
+        backup_count = int(payload.get("workspace_backup_count") or 0)
+        self.restore_btn.setEnabled(backup_count > 0)
+        self.restore_btn.setToolTip(
+            f"Restore from {backup_count} available backup(s)."
+            if backup_count > 0
+            else "No workspace backups exist yet."
+        )
         health = dict(payload.get("workspace_health") or {})
         guidance = list(health.get("guidance") or [])
         guidance_text = " | ".join(str(line) for line in guidance) if guidance else ""
@@ -198,9 +216,9 @@ class AgentWorkspaceOnboardingDialog(QtWidgets.QDialog):
         )
         self._update_guide(
             has_templates=missing == 0,
-            has_preview=False,
-            has_apply=False,
-            has_backup=bool(payload.get("workspace_backup_count", 0)),
+            has_preview=self._preview_completed,
+            has_apply=self._apply_completed,
+            has_backup=backup_count > 0,
         )
 
     def _render_onboard_result(self, payload: Dict[str, Any], *, title: str) -> None:
@@ -214,6 +232,13 @@ class AgentWorkspaceOnboardingDialog(QtWidgets.QDialog):
         summary = dict(payload.get("summary") or {})
         summary_text = ", ".join(f"{k}={v}" for k, v in sorted(summary.items()))
         backup_dir = payload.get("backup_dir")
+        if bool(payload.get("dry_run")):
+            self._preview_completed = True
+        else:
+            self._apply_completed = True
+        if backup_dir:
+            self.restore_btn.setEnabled(True)
+            self.restore_btn.setToolTip(f"Latest backup: {backup_dir}")
         details = (
             f"{title} workspace={payload.get('workspace')} "
             f"dry_run={payload.get('dry_run')} update={payload.get('overwrite')} "
@@ -226,8 +251,8 @@ class AgentWorkspaceOnboardingDialog(QtWidgets.QDialog):
         health_after = dict(payload.get("workspace_health_after") or {})
         self._update_guide(
             has_templates=int(health_after.get("template_missing_count", 0)) == 0,
-            has_preview=bool(payload.get("dry_run")),
-            has_apply=not bool(payload.get("dry_run")),
+            has_preview=self._preview_completed,
+            has_apply=self._apply_completed,
             has_backup=bool(backup_dir),
         )
 
@@ -252,10 +277,11 @@ class AgentWorkspaceOnboardingDialog(QtWidgets.QDialog):
         if pre_backup:
             details += f" | pre_restore_backup_dir={pre_backup}"
         self.summary_label.setText(details)
+        self._apply_completed = True
         self._update_guide(
             has_templates=True,
-            has_preview=False,
-            has_apply=True,
+            has_preview=self._preview_completed,
+            has_apply=self._apply_completed,
             has_backup=bool(payload.get("backup_dir")),
         )
 
@@ -313,10 +339,13 @@ class AgentWorkspaceOnboardingDialog(QtWidgets.QDialog):
         self.guide_progress.setValue(min(completed, 4))
 
     def _open_workspace_folder(self) -> None:
-        path = self._workspace()
-        QtGui.QDesktopServices.openUrl(
-            QtCore.QUrl.fromLocalFile(str(Path(path).expanduser()))
-        )
+        path = Path(self._workspace()).expanduser()
+        if not path.exists():
+            self.summary_label.setText(
+                f"Workspace folder does not exist yet ({path}). Click Apply to initialize it."
+            )
+            return
+        QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(str(path)))
 
     def _open_capabilities_dialog(self) -> None:
         dialog = getattr(self, "_agent_capabilities_dialog", None)

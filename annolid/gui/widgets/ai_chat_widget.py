@@ -1,38 +1,28 @@
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import logging
 import sys as sys
 from collections import OrderedDict
 import os
-import tempfile
-import time
-import webbrowser
 from datetime import datetime
-from pathlib import Path
-import re
 from typing import Any, Dict, List, Optional
 from qtpy import QtCore, QtGui, QtWidgets
 from annolid.gui.qt_compat import configure_compact_combo, palette_color_role
 from qtpy.QtCore import QThreadPool
 
-from annolid.infrastructure.agent_config import (
-    get_agent_config_path as get_config_path,
-    load_agent_config as load_config,
-)
 from annolid.infrastructure.agent_workspace import (
     get_agent_workspace_path as get_agent_workspace_path,
 )
 from annolid.services.chat_backend_support import (
-    ERROR_TYPE_CANCELLED,
-    TURN_STATUS_CANCELLED,
+    ERROR_TYPE_CANCELLED as ERROR_TYPE_CANCELLED,
+    TURN_STATUS_CANCELLED as TURN_STATUS_CANCELLED,
 )
 from annolid.services.chat_bus import (
-    InboundMessage,
+    InboundMessage as InboundMessage,
     MessageBus,
-    OutboundMessage,
-    decode_outbound_chat_event,
+    OutboundMessage as OutboundMessage,
+    decode_outbound_chat_event as decode_outbound_chat_event,
 )
 from annolid.services.chat_session import (
     AgentSessionManager,
@@ -40,7 +30,7 @@ from annolid.services.chat_session import (
 )
 from annolid.gui.widgets.ai_chat_audio_controller import ChatAudioController
 from annolid.gui.widgets.ai_chat_backend import (
-    StreamingChatTask,
+    StreamingChatTask as StreamingChatTask,
     clear_chat_session,
 )
 from annolid.gui.widgets.ai_chat_actions_mixin import (
@@ -52,6 +42,12 @@ from annolid.gui.widgets.ai_chat_actions_mixin import (
     _tail_text_from_file as _tail_text_from_file,
 )
 from annolid.gui.widgets.ai_chat_behavior_mixin import AIChatBehaviorMixin
+from annolid.gui.widgets.ai_chat_composer_mixin import (
+    AIChatComposerMixin,
+    _CHAT_IMAGE_SUFFIXES as _CHAT_IMAGE_SUFFIXES,
+    get_config_path as get_config_path,
+    load_config as load_config,
+)
 from annolid.gui.widgets.ai_chat_slash_mixin import (
     AIChatSlashMixin,
     _compose_slash_selection_draft as _compose_slash_selection_draft,
@@ -59,6 +55,9 @@ from annolid.gui.widgets.ai_chat_slash_mixin import (
     _extract_slash_selection_state as _extract_slash_selection_state,
     _split_slash_value_list as _split_slash_value_list,
 )
+from annolid.gui.widgets.ai_chat_streaming_mixin import AIChatStreamingMixin
+from annolid.gui.widgets.ai_chat_theme import build_chat_widget_stylesheet
+from annolid.gui.widgets.ai_chat_viewer_mixin import AIChatViewerCitationsMixin
 from annolid.gui.widgets.ai_chat_bubble import (
     _ChatBubble,
     _emoji_supported as _emoji_supported,
@@ -66,11 +65,10 @@ from annolid.gui.widgets.ai_chat_bubble import (
 )
 from annolid.gui.widgets.ai_chat_session_dialog import ChatSessionManagerDialog
 from annolid.gui.widgets.ai_chat_zulip import (
-    _ZulipSendTask,
-    build_zulip_draft_target,
-    missing_zulip_config_fields,
+    _ZulipSendTask as _ZulipSendTask,
+    build_zulip_draft_target as build_zulip_draft_target,
+    missing_zulip_config_fields as missing_zulip_config_fields,
 )
-from annolid.gui.widgets.citation_manager_widget import CitationManagerDialog
 from annolid.gui.widgets.behavior_slash_dialog import (
     BehaviorSlashDialog as BehaviorSlashDialog,
 )
@@ -94,24 +92,14 @@ from annolid.utils.llm_settings import (
     provider_kind,
     save_llm_settings,
 )
-from annolid.utils.citations import (
-    BibEntry,
-    load_bibtex,
-    merge_validated_fields,
-    save_bibtex,
-    upsert_entry,
-    validate_basic_citation_fields,
-    validate_citation_metadata,
-)
-from annolid.services.citation_verify import (
-    build_citation_verification_report,
-    write_citation_verification_report,
-)
 
 logger = logging.getLogger(__name__)
 
 
 class AIChatWidget(
+    AIChatStreamingMixin,
+    AIChatComposerMixin,
+    AIChatViewerCitationsMixin,
     AIChatSlashMixin,
     AIChatBehaviorMixin,
     AIChatActionsMixin,
@@ -169,7 +157,9 @@ class AIChatWidget(
         self._audio_controller: Optional[ChatAudioController] = None
         self._session_store = get_chat_session_store()
         self._session_manager = (
-            getattr(self._session_store, "manager", None) or AgentSessionManager()
+            getattr(self._session_store, "manager", None)
+            or getattr(self._session_store, "_manager", None)
+            or AgentSessionManager()
         )
         self._max_prompt_chars = 4000
         self._last_user_prompt: str = ""
@@ -211,7 +201,12 @@ class AIChatWidget(
         self._slash_hint_widgets: List[QtWidgets.QToolButton] = []
         self._chip_drag_source: Optional[QtWidgets.QWidget] = None
         self._chip_drag_start_pos: Optional[QtCore.QPoint] = None
+        self._prompt_history: List[str] = []
+        self._prompt_history_index: int = -1
+        self._prompt_history_draft: str = ""
+        self._auto_follow_scroll: bool = True
 
+        self.setAcceptDrops(True)
         self._build_ui()
         self._apply_theme_styles()
         self._update_model_selector()
@@ -230,6 +225,18 @@ class AIChatWidget(
         self.chat_area = self._build_chat_area()
         root.addWidget(self.chat_area, 1)
 
+        # Compact jump-to-latest strip (shown when scrolled up during conversation)
+        jump_row = QtWidgets.QHBoxLayout()
+        jump_row.setContentsMargins(8, 2, 8, 2)
+        jump_row.addStretch(1)
+        self.jump_to_latest_button = QtWidgets.QPushButton("Jump to latest ↓", self)
+        self.jump_to_latest_button.setObjectName("jumpToLatestButton")
+        self.jump_to_latest_button.setVisible(False)
+        self.jump_to_latest_button.clicked.connect(self._jump_to_latest_messages)
+        jump_row.addWidget(self.jump_to_latest_button, 0)
+        jump_row.addStretch(1)
+        root.addLayout(jump_row)
+
         # 3. Input Area Container
         self.input_container = self._build_input_container()
         root.addWidget(self.input_container)
@@ -246,26 +253,32 @@ class AIChatWidget(
     def _build_header_bar(self) -> QtWidgets.QWidget:
         header_widget = QtWidgets.QWidget(self)
         header_widget.setObjectName("headerBar")
-        header_layout = QtWidgets.QHBoxLayout(header_widget)
-        header_layout.setContentsMargins(16, 12, 16, 12)
-        header_layout.setSpacing(12)
+        header_vbox = QtWidgets.QVBoxLayout(header_widget)
+        header_vbox.setContentsMargins(12, 10, 12, 10)
+        header_vbox.setSpacing(6)
 
-        # Bot Icon
+        # Row 1: Bot icon, title/session summary, and compact action buttons
+        top_row = QtWidgets.QHBoxLayout()
+        top_row.setContentsMargins(0, 0, 0, 0)
+        top_row.setSpacing(8)
+
         self.bot_icon_label = QtWidgets.QLabel(self)
         self.bot_icon_label.setObjectName("chatBotIconLabel")
-        self.bot_icon_label.setFixedSize(32, 32)
+        self.bot_icon_label.setFixedSize(28, 28)
         self.bot_icon_label.setAlignment(QtCore.Qt.AlignCenter)
         self._set_bot_icon()
-        header_layout.addWidget(self.bot_icon_label)
+        top_row.addWidget(self.bot_icon_label, 0, QtCore.Qt.AlignTop)
 
-        # Title & Model Info
         title_col = QtWidgets.QVBoxLayout()
         title_col.setContentsMargins(0, 0, 0, 0)
         title_col.setSpacing(2)
 
         self.chat_title_label = QtWidgets.QLabel("Annolid Bot", self)
         self.chat_title_label.setObjectName("chatTitleLabel")
-        self.chat_title_label.setObjectName("chatTitleLabel")
+        self.chat_title_label.setMinimumWidth(0)
+        self.chat_title_label.setSizePolicy(
+            QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred
+        )
         title_col.addWidget(self.chat_title_label)
 
         self.session_chip_label = QtWidgets.QLabel(self)
@@ -285,14 +298,52 @@ class AIChatWidget(
         )
         title_col.addWidget(self.capability_summary_label)
 
-        # Provider & Model Selectors (Compact row)
+        top_row.addLayout(title_col, 1)
+
+        actions_row = QtWidgets.QHBoxLayout()
+        actions_row.setContentsMargins(0, 0, 0, 0)
+        actions_row.setSpacing(2)
+
+        self.new_chat_button = self._create_header_button(
+            "document-new", "New chat session", QtWidgets.QStyle.SP_FileIcon
+        )
+        actions_row.addWidget(self.new_chat_button)
+
+        self.clear_chat_button = self._create_header_button(
+            "edit-clear", "Clear conversation", QtWidgets.QStyle.SP_BrowserStop
+        )
+        actions_row.addWidget(self.clear_chat_button)
+
+        self.sessions_button = self._create_header_button(
+            "view-list-details",
+            "Manage sessions",
+            QtWidgets.QStyle.SP_FileDialogDetailedView,
+        )
+        actions_row.addWidget(self.sessions_button)
+
+        self.capabilities_button = self._create_header_button(
+            "help-contents",
+            "Inspect agent tools and skills",
+            QtWidgets.QStyle.SP_MessageBoxInformation,
+        )
+        actions_row.addWidget(self.capabilities_button)
+
+        self.configure_button = self._create_header_button(
+            "preferences-system", "Settings", QtWidgets.QStyle.SP_FileDialogInfoView
+        )
+        actions_row.addWidget(self.configure_button)
+
+        top_row.addLayout(actions_row, 0)
+        header_vbox.addLayout(top_row)
+
+        # Row 2: Full-width Provider & Model selectors (readable even in narrow docks)
         provider_model_row = QtWidgets.QHBoxLayout()
         provider_model_row.setContentsMargins(0, 0, 0, 0)
         provider_model_row.setSpacing(6)
 
         self.provider_selector = QtWidgets.QComboBox(self)
         self.provider_selector.setObjectName("chatProviderSelector")
-        self.provider_selector.setMinimumWidth(84)
+        self.provider_selector.setMinimumWidth(76)
         configure_compact_combo(
             self.provider_selector,
             min_chars=8,
@@ -308,37 +359,14 @@ class AIChatWidget(
         self.model_selector.setObjectName("chatModelSelector")
         self.model_selector.setEditable(True)
         self.model_selector.setInsertPolicy(QtWidgets.QComboBox.InsertAtTop)
-        self.model_selector.setMinimumWidth(90)
+        self.model_selector.setMinimumWidth(84)
         configure_compact_combo(
             self.model_selector,
-            min_chars=12,
+            min_chars=10,
             popup_min_width=280,
         )
         provider_model_row.addWidget(self.model_selector, 1)
-        title_col.addLayout(provider_model_row)
-
-        header_layout.addLayout(title_col, 1)
-
-        # Spacer
-        header_layout.addStretch(0)
-
-        # Session & Settings Actions
-        self.clear_chat_button = self._create_header_button(
-            "edit-clear", "Clear conversation", QtWidgets.QStyle.SP_BrowserStop
-        )
-        header_layout.addWidget(self.clear_chat_button)
-
-        self.sessions_button = self._create_header_button(
-            "view-list-details",
-            "Manage sessions",
-            QtWidgets.QStyle.SP_FileDialogDetailedView,
-        )
-        header_layout.addWidget(self.sessions_button)
-
-        self.configure_button = self._create_header_button(
-            "preferences-system", "Settings", QtWidgets.QStyle.SP_FileDialogInfoView
-        )
-        header_layout.addWidget(self.configure_button)
+        header_vbox.addLayout(provider_model_row)
 
         return header_widget
 
@@ -469,13 +497,40 @@ class AIChatWidget(
         self.zulip_panel = self._build_zulip_panel()
         layout.addWidget(self.zulip_panel)
 
+        # Visible attachment pill when an image/snapshot is explicitly attached
+        self.attachment_chip_widget = QtWidgets.QFrame(self)
+        self.attachment_chip_widget.setObjectName("attachmentChipBar")
+        self.attachment_chip_widget.setVisible(False)
+        attach_row = QtWidgets.QHBoxLayout(self.attachment_chip_widget)
+        attach_row.setContentsMargins(6, 2, 6, 2)
+        attach_row.setSpacing(6)
+        self.attachment_chip_label = QtWidgets.QLabel("", self.attachment_chip_widget)
+        self.attachment_chip_label.setObjectName("attachmentChipLabel")
+        self.attachment_chip_label.setMinimumWidth(0)
+        self.attachment_chip_label.setSizePolicy(
+            QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred
+        )
+        attach_row.addWidget(self.attachment_chip_label, 1)
+        self.clear_attachment_button = QtWidgets.QToolButton(
+            self.attachment_chip_widget
+        )
+        self.clear_attachment_button.setObjectName("attachmentClearButton")
+        self.clear_attachment_button.setText("×")
+        self.clear_attachment_button.setToolTip("Remove attached image")
+        self.clear_attachment_button.setFixedSize(20, 20)
+        self.clear_attachment_button.clicked.connect(self._clear_attached_image)
+        attach_row.addWidget(self.clear_attachment_button, 0)
+        layout.addWidget(self.attachment_chip_widget)
+
         # 2. Full-width Prompt Input + Compact Composer Action Bar beneath
         self.prompt_text_edit = QtWidgets.QPlainTextEdit(self)
         self.prompt_text_edit.setPlaceholderText("Message Annolid Bot...")
         self.prompt_text_edit.setMinimumWidth(120)
+        self.prompt_text_edit.setMinimumHeight(48)
+        self.prompt_text_edit.setMaximumHeight(156)
         self.prompt_text_edit.setFixedHeight(54)
         self.prompt_text_edit.setToolTip(
-            "Type a message. Use Ctrl+Enter to send. Type / to pick skills, tools, and commands."
+            "Type a message (Ctrl+Enter to send, Alt+Up/Down for history, / for commands, drop files to attach)."
         )
         layout.addWidget(self.prompt_text_edit)
 
@@ -488,7 +543,7 @@ class AIChatWidget(
         tools_layout.setSpacing(2)
 
         self.attach_file_button = self._create_input_icon(
-            _symbol_text("📎", "F"), "Attach file"
+            _symbol_text("📎", "F"), "Attach file or image"
         )
         self.share_canvas_button = self._create_input_icon(
             _symbol_text("🎨", "C"), "Share Canvas"
@@ -502,12 +557,17 @@ class AIChatWidget(
         self.zulip_button = self._create_input_icon(
             _symbol_text("✉", "@"), "Draft and send to Zulip"
         )
+        self.options_button = self._create_input_icon(
+            _symbol_text("⚙", "O"), "Bot context & tool options"
+        )
+        self.options_button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
 
         tools_layout.addWidget(self.attach_file_button)
         tools_layout.addWidget(self.share_canvas_button)
         tools_layout.addWidget(self.share_window_button)
         tools_layout.addWidget(self.citation_button)
         tools_layout.addWidget(self.zulip_button)
+        tools_layout.addWidget(self.options_button)
         input_row.addLayout(tools_layout)
         input_row.addStretch(1)
 
@@ -519,15 +579,35 @@ class AIChatWidget(
         self.talk_button.setObjectName("talkButton")
         self.talk_button.setText(_symbol_text("🎤", "Mic"))
         self.talk_button.setToolTip("Record voice input")
-        self.talk_button.setFixedSize(32, 32)
+        self.talk_button.setMinimumSize(32, 32)
+        self.talk_button.setFixedHeight(32)
+        self.talk_button.setSizePolicy(
+            QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Fixed
+        )
+
+        self.stop_button = QtWidgets.QToolButton(self)
+        self.stop_button.setObjectName("stopButton")
+        self.stop_button.setText(_symbol_text("⏹", "Stop"))
+        self.stop_button.setToolTip("Stop current response (Esc)")
+        self.stop_button.setMinimumSize(32, 32)
+        self.stop_button.setFixedHeight(32)
+        self.stop_button.setSizePolicy(
+            QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Fixed
+        )
+        self.stop_button.setVisible(False)
 
         self.send_button = QtWidgets.QToolButton(self)
         self.send_button.setObjectName("sendButton")
         self.send_button.setText(_symbol_text("🚀", ">"))
         self.send_button.setToolTip("Send message (Ctrl+Enter)")
-        self.send_button.setFixedSize(32, 32)
+        self.send_button.setMinimumSize(32, 32)
+        self.send_button.setFixedHeight(32)
+        self.send_button.setSizePolicy(
+            QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Fixed
+        )
 
         send_layout.addWidget(self.talk_button)
+        send_layout.addWidget(self.stop_button)
         send_layout.addWidget(self.send_button)
         input_row.addLayout(send_layout)
 
@@ -662,122 +742,23 @@ class AIChatWidget(
         btn.setFont(font)
         return btn
 
-    def _build_zulip_panel(self) -> QtWidgets.QFrame:
-        panel = QtWidgets.QFrame(self)
-        panel.setObjectName("zulipDraftPanel")
-        panel.setVisible(False)
-
-        layout = QtWidgets.QVBoxLayout(panel)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(6)
-
-        top_row = QtWidgets.QHBoxLayout()
-        top_row.setSpacing(6)
-
-        self.zulip_target_type_combo = QtWidgets.QComboBox(panel)
-        self.zulip_target_type_combo.addItem("Stream", userData="stream")
-        self.zulip_target_type_combo.addItem("Direct Message", userData="dm")
-        top_row.addWidget(self.zulip_target_type_combo, 0)
-
-        self.zulip_stream_edit = QtWidgets.QLineEdit(panel)
-        self.zulip_stream_edit.setPlaceholderText("Stream")
-        top_row.addWidget(self.zulip_stream_edit, 1)
-
-        self.zulip_topic_edit = QtWidgets.QLineEdit(panel)
-        self.zulip_topic_edit.setPlaceholderText("Topic")
-        top_row.addWidget(self.zulip_topic_edit, 1)
-
-        self.zulip_recipients_edit = QtWidgets.QLineEdit(panel)
-        self.zulip_recipients_edit.setPlaceholderText(
-            "email@example.com, teammate@example.com"
-        )
-        self.zulip_recipients_edit.setVisible(False)
-        top_row.addWidget(self.zulip_recipients_edit, 1)
-
-        self.zulip_defaults_button = QtWidgets.QPushButton("Defaults", panel)
-        self.zulip_defaults_button.setObjectName("quickActionButton")
-        top_row.addWidget(self.zulip_defaults_button, 0)
-
-        layout.addLayout(top_row)
-
-        bottom_row = QtWidgets.QHBoxLayout()
-        bottom_row.setSpacing(6)
-
-        self.zulip_last_reply_button = QtWidgets.QPushButton("Use Last Reply", panel)
-        self.zulip_last_reply_button.setObjectName("quickActionButton")
-        self.zulip_last_reply_button.setToolTip(
-            "Copy the latest Annolid Bot reply into the current draft."
-        )
-        bottom_row.addWidget(self.zulip_last_reply_button, 0)
-
-        self.zulip_info_label = QtWidgets.QLabel(
-            f"Uses the current draft in the prompt box. Configure Zulip in {get_config_path()}",
-            panel,
-        )
-        self.zulip_info_label.setObjectName("chatStatusLabel")
-        self.zulip_info_label.setWordWrap(True)
-        bottom_row.addWidget(self.zulip_info_label, 1)
-
-        self.zulip_send_button = QtWidgets.QPushButton("Send to Zulip", panel)
-        self.zulip_send_button.setObjectName("sendButton")
-        bottom_row.addWidget(self.zulip_send_button, 0)
-
-        layout.addLayout(bottom_row)
-        return panel
-
-    def _create_hidden_toggles(self, layout):
-        # We might want to expose these via a menu later, but for now defaults
-        self.attach_canvas_checkbox = QtWidgets.QCheckBox("Attach canvas", self)
-        self.attach_canvas_checkbox.setChecked(True)
-        self.attach_canvas_checkbox.setVisible(False)
-
-        self.attach_window_checkbox = QtWidgets.QCheckBox("Attach window", self)
-        self.attach_window_checkbox.setVisible(False)
-
-        self.tool_trace_checkbox = QtWidgets.QCheckBox("Trace", self)
-        self.tool_trace_checkbox.setChecked(False)
-        self.tool_trace_checkbox.setVisible(False)
-
-        self.allow_web_tools_checkbox = QtWidgets.QCheckBox("Allow web", self)
-        self.allow_web_tools_checkbox.setChecked(True)
-        self.allow_web_tools_checkbox.setVisible(False)
-
-        layout.addWidget(self.attach_canvas_checkbox)
-        layout.addWidget(self.attach_window_checkbox)
-        layout.addWidget(self.tool_trace_checkbox)
-        layout.addWidget(self.allow_web_tools_checkbox)
-
-        # Shared image label logic expects this object
-        self.shared_image_label = QtWidgets.QLabel("", self)
-        self.shared_image_label.setVisible(False)
-        layout.addWidget(self.shared_image_label)
-
-    def _attach_file(self) -> None:
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self,
-            "Attach File",
-            "",
-            "All Files (*)",
-        )
-        if path:
-            # For now, just append to prompt with a note
-            # In a real implementation we would add it to a list of attachments
-            current = self.prompt_text_edit.toPlainText()
-            if current:
-                current += "\n"
-            self.prompt_text_edit.setPlainText(current + f"[Attached: {path}]")
-
     def _wire_ui_signals(self) -> None:
         self.provider_selector.currentIndexChanged.connect(self.on_provider_changed)
         self.model_selector.currentIndexChanged.connect(self.on_model_changed)
         self.model_selector.editTextChanged.connect(self.on_model_text_edited)
         self.prompt_text_edit.textChanged.connect(self._on_prompt_text_changed)
         self.prompt_text_edit.installEventFilter(self)
+        scroll_bar = self.scroll_area.verticalScrollBar()
+        if scroll_bar is not None:
+            scroll_bar.valueChanged.connect(self._on_chat_scroll_changed)
         line_edit = self.model_selector.lineEdit()
         if line_edit is not None:
             line_edit.editingFinished.connect(self.on_model_editing_finished)
+        self.new_chat_button.clicked.connect(self.start_new_chat_session)
+        self.capabilities_button.clicked.connect(self.open_agent_capabilities_dialog)
         self.configure_button.clicked.connect(self.open_llm_settings_dialog)
         self.send_button.clicked.connect(self.chat_with_model)
+        self.stop_button.clicked.connect(self._stop_running_response)
         self.share_canvas_button.clicked.connect(self._share_canvas_now)
         self.share_window_button.clicked.connect(self._share_window_now)
         self.citation_button.clicked.connect(self._open_citation_manager)
@@ -790,305 +771,10 @@ class AIChatWidget(
         self.zulip_send_button.clicked.connect(self._send_current_draft_to_zulip)
         self.attach_file_button.clicked.connect(self._attach_file)
         self.talk_button.clicked.connect(self.toggle_recording)
-        self.clear_chat_button.clicked.connect(self.clear_chat_conversation)
+        self.clear_chat_button.clicked.connect(self._confirm_clear_chat_conversation)
         self.sessions_button.clicked.connect(self.open_session_manager_dialog)
         self._on_prompt_text_changed()
         self._sync_zulip_target_field_visibility()
-
-    def _toggle_zulip_panel(self) -> None:
-        visible = not bool(self.zulip_panel.isVisible())
-        self.zulip_panel.setVisible(visible)
-        if visible:
-            self._load_zulip_defaults()
-            if self.zulip_target_type_combo.currentData() == "dm":
-                self.zulip_recipients_edit.setFocus()
-            else:
-                self.zulip_stream_edit.setFocus()
-            self.status_label.setText("Zulip draft panel opened.")
-        else:
-            self.status_label.setText("Zulip draft panel hidden.")
-
-    def _sync_zulip_target_field_visibility(self) -> None:
-        target_type = str(self.zulip_target_type_combo.currentData() or "stream")
-        is_dm = target_type == "dm"
-        self.zulip_stream_edit.setVisible(not is_dm)
-        self.zulip_topic_edit.setVisible(not is_dm)
-        self.zulip_recipients_edit.setVisible(is_dm)
-
-    def _load_zulip_defaults(self) -> None:
-        cfg = load_config().tools.zulip
-        if self.zulip_target_type_combo.currentData() == "dm":
-            return
-        if not self.zulip_stream_edit.text().strip():
-            self.zulip_stream_edit.setText(str(cfg.stream or "").strip())
-        if not self.zulip_topic_edit.text().strip():
-            self.zulip_topic_edit.setText(str(cfg.topic or "").strip())
-
-    def _use_last_reply_for_zulip(self) -> None:
-        text = self._last_assistant_text()
-        if not text:
-            self.status_label.setText("No assistant reply available for Zulip.")
-            return
-        self.prompt_text_edit.setPlainText(text)
-        self.prompt_text_edit.setFocus()
-        self.status_label.setText("Loaded last assistant reply into the draft.")
-
-    def _send_current_draft_to_zulip(self) -> None:
-        if self._zulip_send_active:
-            self.status_label.setText("Zulip send already in progress.")
-            return
-        content = self.prompt_text_edit.toPlainText().strip()
-        if not content:
-            self.status_label.setText("Write a draft before sending to Zulip.")
-            return
-
-        zulip_cfg = load_config().tools.zulip.to_dict()
-        missing = missing_zulip_config_fields(zulip_cfg)
-        if missing:
-            detail = ", ".join(missing)
-            self.status_label.setText(f"Configure Zulip first: {detail}")
-            QtWidgets.QMessageBox.warning(
-                self,
-                "Zulip not configured",
-                f"Annolid Bot needs a valid Zulip configuration before it can send.\n\nMissing: {detail}\n\nConfig file: {get_config_path()}",
-            )
-            return
-
-        try:
-            target = build_zulip_draft_target(
-                str(self.zulip_target_type_combo.currentData() or "stream"),
-                stream=self.zulip_stream_edit.text(),
-                topic=self.zulip_topic_edit.text(),
-                recipients=self.zulip_recipients_edit.text(),
-                default_stream=str(zulip_cfg.get("stream") or ""),
-                default_topic=str(zulip_cfg.get("topic") or ""),
-            )
-        except ValueError as exc:
-            self.status_label.setText(str(exc))
-            return
-
-        self._zulip_send_active = True
-        self._zulip_target_summary = target.summary
-        self.zulip_send_button.setEnabled(False)
-        self.status_label.setText(f"Sending to {target.summary}...")
-        self.thread_pool.start(
-            _ZulipSendTask(
-                self,
-                config=zulip_cfg,
-                chat_id=target.chat_id,
-                content=content,
-                target_summary=target.summary,
-            )
-        )
-
-    @QtCore.Slot(bool, str, str)
-    def _finish_zulip_send(
-        self, success: bool, detail: str, target_summary: str
-    ) -> None:
-        self._zulip_send_active = False
-        self.zulip_send_button.setEnabled(True)
-        summary = str(target_summary or self._zulip_target_summary or "Zulip").strip()
-        if success:
-            self.status_label.setText(f"Sent draft to {summary}.")
-            self.prompt_text_edit.clear()
-        else:
-            self.status_label.setText(f"Zulip send failed: {detail}")
-
-    def _apply_quick_action(self, text: str) -> None:
-        prompt_text = str(text or "").strip()
-        if not prompt_text:
-            return
-        existing_text = self.prompt_text_edit.toPlainText().rstrip()
-        if existing_text:
-            merged_text = f"{existing_text}\n{prompt_text}"
-        else:
-            merged_text = prompt_text
-        self.prompt_text_edit.setPlainText(merged_text)
-        cursor = self.prompt_text_edit.textCursor()
-        cursor.movePosition(QtGui.QTextCursor.End)
-        self.prompt_text_edit.setTextCursor(cursor)
-        self.prompt_text_edit.setFocus()
-        self._on_prompt_text_changed()
-
-    def _refresh_quick_action_buttons(self) -> None:
-        while self.quick_actions_layout.count():
-            item = self.quick_actions_layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                if widget in (
-                    getattr(self, "add_quick_action_button", None),
-                    getattr(self, "remove_quick_action_button", None),
-                    getattr(self, "behavior_label_preset_button", None),
-                ):
-                    continue
-                widget.deleteLater()
-        self.quick_action_buttons = []
-        if self._selected_quick_action_index is not None and (
-            self._selected_quick_action_index < 0
-            or self._selected_quick_action_index >= len(self._quick_actions)
-        ):
-            self._selected_quick_action_index = None
-        for idx, (label, prompt) in enumerate(self._quick_actions):
-            btn = QtWidgets.QPushButton(label, self)
-            btn.setObjectName("quickActionButton")
-            btn.setToolTip(prompt)
-            btn.setCheckable(True)
-            btn.setChecked(idx == self._selected_quick_action_index)
-            btn.clicked.connect(
-                lambda _checked=False, i=idx: self._on_quick_action_clicked(i)
-            )
-            self.quick_action_buttons.append(btn)
-            self.quick_actions_layout.addWidget(btn, 0)
-
-        self.quick_actions_layout.addStretch(1)
-        self.quick_actions_layout.addWidget(self.behavior_label_preset_button)
-        self.quick_actions_layout.addWidget(self.add_quick_action_button)
-        self.quick_actions_layout.addWidget(self.remove_quick_action_button)
-        self._set_remove_quick_action_enabled(
-            self._selected_quick_action_index is not None
-        )
-
-    def _run_behavior_label_preset_one_second(self) -> None:
-        host = self.host_window_widget or self.window()
-        video_path = str(getattr(host, "video_file", "") or "").strip()
-        if not video_path:
-            self.status_label.setText(
-                "Load a video first, then run 'Label 1s Behaviors'."
-            )
-            return
-
-        labels = self._labels_from_schema_or_flags()
-        if labels:
-            draft = (
-                f"label behavior in {video_path} "
-                f"with labels {', '.join(labels)} from defined list every 1s"
-            )
-        else:
-            draft = f"label behavior in {video_path} from defined list every 1s"
-        self._apply_quick_action(draft)
-        self.status_label.setText(
-            "Drafted 1s behavior labeling command. Edit if needed, then press Send."
-        )
-
-    def _on_quick_action_clicked(self, index: int) -> None:
-        if index < 0 or index >= len(self._quick_actions):
-            return
-
-        # If already selected, maybe toggle off?
-        # But user wants to click and then click - to remove.
-        # So we must keep it selected.
-        self._selected_quick_action_index = index
-
-        for idx, btn in enumerate(self.quick_action_buttons):
-            btn.setChecked(idx == index)
-
-        # Update the removal button state immediately
-        self._set_remove_quick_action_enabled(True)
-        self._persist_quick_actions_to_settings()
-
-        self._apply_quick_action(self._quick_actions[index][1])
-
-    def _add_quick_action(self) -> None:
-        label, ok = QtWidgets.QInputDialog.getText(
-            self,
-            "Add Quick Prompt",
-            "Button label:",
-        )
-        label_text = str(label or "").strip()
-        if not ok or not label_text:
-            return
-        prompt, ok = QtWidgets.QInputDialog.getMultiLineText(
-            self,
-            "Add Quick Prompt",
-            "Prompt text:",
-            "",
-        )
-        prompt_text = str(prompt or "").strip()
-        if not ok or not prompt_text:
-            return
-        self._quick_actions.append((label_text, prompt_text))
-        self._selected_quick_action_index = len(self._quick_actions) - 1
-        self._refresh_quick_action_buttons()
-        self._persist_quick_actions_to_settings()
-
-    def _remove_selected_quick_action(self) -> None:
-        index = self._selected_quick_action_index
-        if index is None or index < 0 or index >= len(self._quick_actions):
-            QtWidgets.QMessageBox.information(
-                self,
-                "Quick Prompts",
-                "Select a quick prompt button to remove.",
-            )
-            return
-        self._quick_actions.pop(index)
-        if self._quick_actions:
-            self._selected_quick_action_index = min(index, len(self._quick_actions) - 1)
-        else:
-            self._selected_quick_action_index = None
-        self._refresh_quick_action_buttons()
-        self._persist_quick_actions_to_settings()
-
-    def _load_quick_actions_from_settings(self) -> None:
-        settings = self.llm_settings if isinstance(self.llm_settings, dict) else {}
-        ui_block = settings.get("ui")
-        if not isinstance(ui_block, dict):
-            self._quick_actions = self._default_quick_actions()
-            self._selected_quick_action_index = None
-            return
-        raw_items = ui_block.get("chat_quick_actions")
-        parsed: List[tuple[str, str]] = []
-        if isinstance(raw_items, list):
-            for item in raw_items:
-                label = ""
-                prompt = ""
-                if isinstance(item, dict):
-                    label = str(item.get("label") or "").strip()
-                    prompt = str(item.get("prompt") or "").strip()
-                elif isinstance(item, (list, tuple)) and len(item) >= 2:
-                    label = str(item[0] or "").strip()
-                    prompt = str(item[1] or "").strip()
-                if label and prompt:
-                    parsed.append((label, prompt))
-        self._quick_actions = parsed or self._default_quick_actions()
-        raw_index = ui_block.get("chat_selected_quick_action")
-        try:
-            idx = int(raw_index) if raw_index is not None else -1
-        except (TypeError, ValueError):
-            idx = -1
-        if 0 <= idx < len(self._quick_actions):
-            self._selected_quick_action_index = idx
-        else:
-            self._selected_quick_action_index = None
-
-    def _persist_quick_actions_to_settings(self) -> None:
-        if not isinstance(self.llm_settings, dict):
-            return
-        ui_block = self.llm_settings.get("ui")
-        if not isinstance(ui_block, dict):
-            ui_block = {}
-        ui_block["chat_quick_actions"] = [
-            {"label": label, "prompt": prompt} for label, prompt in self._quick_actions
-        ]
-        ui_block["chat_selected_quick_action"] = (
-            int(self._selected_quick_action_index)
-            if self._selected_quick_action_index is not None
-            else -1
-        )
-        self.llm_settings["ui"] = ui_block
-        try:
-            save_llm_settings(self.llm_settings)
-        except Exception:
-            pass
-
-    def _set_remove_quick_action_enabled(self, enabled: bool) -> None:
-        button = getattr(self, "remove_quick_action_button", None)
-        if button is None:
-            return
-        try:
-            button.setEnabled(bool(enabled))
-        except RuntimeError:
-            # Dialog/widget can be shutting down while queued callbacks still arrive.
-            return
 
     @staticmethod
     def _set_button_icon(
@@ -1131,85 +817,22 @@ class AIChatWidget(
         )
         self.prompt_count_label.style().unpolish(self.prompt_count_label)
         self.prompt_count_label.style().polish(self.prompt_count_label)
-        can_send = bool(text.strip()) and not self.is_streaming_chat
-        self.send_button.setEnabled(can_send)
+        self._sync_prompt_input_height()
+        has_text = bool(text.strip())
+        self.send_button.setEnabled(has_text)
+        self.send_button.setToolTip(
+            "Queue follow-up message (Ctrl+Enter)"
+            if self.is_streaming_chat
+            else "Send message (Ctrl+Enter)"
+        )
+        stop_btn = getattr(self, "stop_button", None)
+        if stop_btn is not None:
+            stop_btn.setVisible(bool(self.is_streaming_chat))
         zulip_button = getattr(self, "zulip_send_button", None)
         if zulip_button is not None:
-            zulip_button.setEnabled(bool(text.strip()) and not self._zulip_send_active)
+            zulip_button.setEnabled(has_text and not self._zulip_send_active)
         self._update_slash_completion_ui()
         self._refresh_selected_capability_chips()
-
-    def _start_typing_indicator(self) -> None:
-        self._typing_tick = 0
-        self._on_typing_timer_tick()
-        self._typing_timer.start()
-
-    def _stop_typing_indicator(self) -> None:
-        if self._typing_timer.isActive():
-            self._typing_timer.stop()
-
-    def _on_typing_timer_tick(self) -> None:
-        if not self.is_streaming_chat:
-            self._stop_typing_indicator()
-            return
-        self._typing_tick += 1
-        self._render_progress_in_bubble()
-
-    def _render_progress_in_bubble(self) -> None:
-        if not self.is_streaming_chat:
-            return
-        if self._current_response_bubble is None:
-            return
-        lines: List[str] = []
-        if self.enable_progress_stream and self._progress_lines:
-            # Keep latest provider/model reasoning visible at the top.
-            lines.extend(self._progress_lines[:32])
-        if not lines:
-            dots = "." * ((self._typing_tick % 3) + 1)
-            lines = [f"Thinking{dots}"]
-        self._current_response_bubble.set_thinking_text(
-            "\n".join(lines),
-            in_progress=True,
-        )
-        QtCore.QTimer.singleShot(0, self._reflow_chat_bubbles)
-        QtCore.QTimer.singleShot(0, self._scroll_to_bottom)
-
-    def _append_thinking_progress_line(
-        self,
-        line: str,
-        *,
-        boilerplate: set[str],
-    ) -> None:
-        value = str(line or "").strip()
-        if not value:
-            return
-        low = value.lower()
-        has_rich_progress = any(
-            str(item or "").strip().lower() not in boilerplate
-            for item in self._progress_lines
-        )
-        if low in boilerplate and has_rich_progress:
-            return
-        if low not in boilerplate and self._progress_lines:
-            self._progress_lines = [
-                item
-                for item in self._progress_lines
-                if str(item or "").strip().lower() not in boilerplate
-            ]
-
-        if self._progress_lines:
-            top = str(self._progress_lines[0] or "").strip()
-            # Some providers stream reasoning as a progressively longer prefix.
-            if value.startswith(top) and len(value) > len(top):
-                self._progress_lines[0] = value
-                return
-            if top.startswith(value):
-                return
-        if value in self._progress_lines:
-            self._progress_lines.remove(value)
-        self._progress_lines.insert(0, value)
-        if len(self._progress_lines) > 256:
-            self._progress_lines = self._progress_lines[:256]
 
     def eventFilter(self, watched: QtCore.QObject, event: QtCore.QEvent) -> bool:
         try:
@@ -1336,6 +959,29 @@ class AIChatWidget(
                     if key == QtCore.Qt.Key_Up:
                         self._move_slash_completion_selection(-1)
                         return True
+                if key == QtCore.Qt.Key_Escape and self.is_streaming_chat:
+                    self._stop_running_response()
+                    return True
+                if (modifiers & QtCore.Qt.AltModifier) and not (
+                    modifiers & QtCore.Qt.ControlModifier
+                ):
+                    if key == QtCore.Qt.Key_Up and self._navigate_prompt_history(-1):
+                        return True
+                    if key == QtCore.Qt.Key_Down and self._navigate_prompt_history(1):
+                        return True
+                if modifiers == QtCore.Qt.NoModifier:
+                    if key == QtCore.Qt.Key_Up and (
+                        not self.prompt_text_edit.toPlainText().strip()
+                        or self._prompt_history_index >= 0
+                    ):
+                        if self._navigate_prompt_history(-1):
+                            return True
+                    if (
+                        key == QtCore.Qt.Key_Down
+                        and self._prompt_history_index >= 0
+                        and self._navigate_prompt_history(1)
+                    ):
+                        return True
                 if event.key() in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter) and bool(
                     event.modifiers() & QtCore.Qt.ControlModifier
                 ):
@@ -1364,203 +1010,7 @@ class AIChatWidget(
         try:
             palette = self.palette()
             is_dark = palette.color(palette_color_role("Window")).lightness() < 128
-
-            # Theme-aware colors
-            if is_dark:
-                bg_main = "#111317"
-                bg_input = "#1a1d23"
-                fg_main = "#e7e8ea"
-                border_main = "#31353c"
-                title_fg = "#f4f5f6"
-                subtitle_fg = "#9ea4af"
-                bubble_user_bg = "#2b5c54"
-                bubble_user_border = "#3a756b"
-                bubble_assistant_bg = "#1f2228"
-                bubble_assistant_border = "#31353e"
-            else:
-                bg_main = "#ffffff"
-                bg_input = "#f1f3f4"
-                fg_main = "#202124"
-                border_main = "#dadce0"
-                title_fg = "#1a73e8"
-                subtitle_fg = "#5f6368"
-                bubble_user_bg = "#e8f0fe"
-                bubble_user_border = "#c6dafc"
-                bubble_assistant_bg = "#f1f3f4"
-                bubble_assistant_border = "#e0e0e0"
-
-            self.setStyleSheet(
-                f"""
-                QWidget#AIChatWidget {{
-                    background: {bg_main};
-                    color: {fg_main};
-                    border: none;
-                    outline: none;
-                }}
-                /* Specific containers to avoid broad QWidget styling */
-                #chatContainer, #headerBar, #inputBarContainer {{
-                    background: {bg_main};
-                    color: {fg_main};
-                    border: none;
-                }}
-                QComboBox {{
-                    border: 1px solid {border_main};
-                    border-radius: 8px;
-                    background: {bg_input};
-                    color: {fg_main};
-                    min-height: 24px;
-                    padding: 3px 8px;
-                }}
-                QLineEdit {{
-                    border: 1px solid {border_main};
-                    border-radius: 8px;
-                    background: {bg_input};
-                    color: {fg_main};
-                    min-height: 24px;
-                    padding: 3px 8px;
-                }}
-                QScrollArea {{
-                    border: none;
-                    background: {bg_main};
-                }}
-                QScrollArea > QWidget > QWidget {{
-                    border: none;
-                    background: {bg_main};
-                }}
-                QPlainTextEdit {{
-                    border: 1px solid {border_main};
-                    border-radius: 12px;
-                    background: {bg_input};
-                    padding: 8px;
-                    font-size: 14px;
-                    color: {fg_main};
-                }}
-                QPlainTextEdit:focus {{
-                     border: 1px solid {title_fg};
-                }}
-                QLabel#chatTitleLabel {{
-                    color: {title_fg};
-                    font-size: 18px;
-                    font-weight: 700;
-                    background: transparent;
-                }}
-                QLabel#chatSubtitleLabel {{
-                    color: {subtitle_fg};
-                    font-size: 12px;
-                    background: transparent;
-                }}
-                QLabel#chatCapabilitySummaryLabel {{
-                    color: {fg_main};
-                    font-size: 11px;
-                    background: rgba(128, 128, 128, 0.10);
-                    border: 1px solid {border_main};
-                    border-radius: 10px;
-                    padding: 2px 8px;
-                }}
-                QPushButton#quickActionButton {{
-                    border: 1px solid {border_main};
-                    border-radius: 14px;
-                    padding: 6px 12px;
-                    font-size: 12px;
-                    background: {bg_input};
-                    color: {fg_main};
-                }}
-                QPushButton#quickActionButton:hover {{
-                    background: {bubble_assistant_border};
-                }}
-                QPushButton#sendButton {{
-                    border: 1px solid {bubble_user_border};
-                    border-radius: 12px;
-                    padding: 6px 12px;
-                    background: {bubble_user_bg};
-                    color: {fg_main};
-                    font-weight: 600;
-                }}
-                QPushButton#sendButton:disabled {{
-                    color: {subtitle_fg};
-                }}
-                /* Input Bar Icons */
-                QToolButton#chatInputButton {{
-                    background: transparent;
-                    border: none;
-                    border-radius: 6px;
-                }}
-                QToolButton#chatInputButton:hover {{
-                    background: rgba(128, 128, 128, 0.15);
-                }}
-                /* Chat Bubbles */
-                QFrame#chatBubble {{
-                     border-radius: 12px;
-                }}
-                QFrame#chatBubble[role="user"] {{
-                    background-color: {bubble_user_bg};
-                    border: 1px solid {bubble_user_border};
-                    margin-left: 40px;
-                }}
-                QFrame#chatBubble[role="assistant"] {{
-                    background-color: {bubble_assistant_bg};
-                    border: 1px solid {bubble_assistant_border};
-                    margin-right: 40px;
-                }}
-                /* Bubble Actions */
-                QPushButton#bubbleActionButton {{
-                    background: transparent;
-                    border: none;
-                    border-radius: 4px;
-                    padding: 2px;
-                }}
-                QPushButton#bubbleActionButton:hover {{
-                     background: rgba(128, 128, 128, 0.1);
-                }}
-                QToolButton#thinkingToggleButton {{
-                    border: none;
-                    background: transparent;
-                    color: {subtitle_fg};
-                    font-size: 11px;
-                    font-weight: 600;
-                    text-align: left;
-                    padding: 2px 0;
-                }}
-                QToolButton#thinkingToggleButton:hover {{
-                    color: {fg_main};
-                }}
-                QTextBrowser#thinkingView {{
-                    border: 1px solid {border_main};
-                    border-radius: 8px;
-                    background: rgba(128, 128, 128, 0.08);
-                    padding: 6px 8px;
-                }}
-                QLabel#sender {{
-                    color: {subtitle_fg};
-                    font-size: 11px;
-                    font-weight: 600;
-                    margin-bottom: 2px;
-                    background: transparent;
-                }}
-                QLabel#meta {{
-                    color: {subtitle_fg};
-                    font-size: 10px;
-                    background: transparent;
-                }}
-                /* Floating Input Bar */
-                QFrame#inputBarContainer {{
-                    background: {bg_input};
-                    border-top: 1px solid {border_main};
-                    border-bottom-left-radius: 12px;
-                    border-bottom-right-radius: 12px;
-                }}
-                QFrame#zulipDraftPanel {{
-                    background: {bg_main};
-                    border: 1px solid {border_main};
-                    border-radius: 12px;
-                }}
-                QLabel#chatStatusLabel {{
-                    color: {subtitle_fg};
-                    font-size: 11px;
-                    background: transparent;
-                }}
-                """
-            )
+            self.setStyleSheet(build_chat_widget_stylesheet(is_dark))
             self._is_dark_theme = is_dark
             if hasattr(self, "chat_layout"):
                 for bubble in self._iter_chat_bubbles():
@@ -1578,9 +1028,43 @@ class AIChatWidget(
             self._apply_theme_styles()
         super().changeEvent(event)
 
+    def _is_near_bottom(self, threshold_px: int = 48) -> bool:
+        bar = self.scroll_area.verticalScrollBar()
+        if bar is None:
+            return True
+        return int(bar.maximum() - bar.value()) <= int(threshold_px)
+
+    def _on_chat_scroll_changed(self, _value: int = 0) -> None:
+        near_bottom = self._is_near_bottom()
+        self._auto_follow_scroll = near_bottom
+        jump_btn = getattr(self, "jump_to_latest_button", None)
+        if jump_btn is not None:
+            has_bubbles = len(self._iter_chat_bubbles()) > 0
+            jump_btn.setVisible(bool(has_bubbles and not near_bottom))
+
+    def _jump_to_latest_messages(self) -> None:
+        self._auto_follow_scroll = True
+        self._scroll_to_bottom()
+        jump_btn = getattr(self, "jump_to_latest_button", None)
+        if jump_btn is not None:
+            jump_btn.setVisible(False)
+
     def _scroll_to_bottom(self) -> None:
         bar = self.scroll_area.verticalScrollBar()
-        bar.setValue(bar.maximum())
+        if bar is not None:
+            bar.setValue(bar.maximum())
+        self._auto_follow_scroll = True
+        jump_btn = getattr(self, "jump_to_latest_button", None)
+        if jump_btn is not None:
+            jump_btn.setVisible(False)
+
+    def _scroll_to_bottom_if_following(self) -> None:
+        if self._auto_follow_scroll or self._is_near_bottom():
+            self._scroll_to_bottom()
+        else:
+            jump_btn = getattr(self, "jump_to_latest_button", None)
+            if jump_btn is not None:
+                jump_btn.setVisible(True)
 
     def _iter_chat_bubbles(self) -> List[_ChatBubble]:
         bubbles: List[_ChatBubble] = []
@@ -1608,6 +1092,15 @@ class AIChatWidget(
             int(viewport.width()) if viewport is not None else int(self.width())
         )
         return max(320, int(base_width) - 12)
+
+    def _reflow_single_bubble(self, bubble: Optional[_ChatBubble]) -> None:
+        if bubble is None:
+            return
+        try:
+            max_width = self._bubble_max_width()
+            bubble.apply_layout_width(max_width - 24, max_width)
+        except RuntimeError:
+            return
 
     def _reflow_chat_bubbles(self) -> None:
         max_width = self._bubble_max_width()
@@ -1674,7 +1167,7 @@ class AIChatWidget(
         # Insert before trailing stretch item.
         insert_idx = max(0, self.chat_layout.count() - 1)
         self.chat_layout.insertWidget(insert_idx, row_widget)
-        self._reflow_chat_bubbles()
+        self._reflow_single_bubble(bubble)
         self._update_empty_state_visibility()
         QtCore.QTimer.singleShot(0, self._scroll_to_bottom)
         return bubble
@@ -1772,8 +1265,25 @@ class AIChatWidget(
             if current_idx > deleted_idx:
                 row_bubble.setProperty("history_index", current_idx - 1)
 
-    def _regenerate_from_bubble(self, _text: str) -> None:
-        prompt = str(self._last_user_prompt or "").strip()
+    def _prompt_for_assistant_bubble(self, bubble: _ChatBubble) -> str:
+        bubbles = self._iter_chat_bubbles()
+        try:
+            idx = bubbles.index(bubble)
+        except ValueError:
+            idx = -1
+        if idx > 0:
+            for prev in reversed(bubbles[:idx]):
+                if prev.property("role") == "user":
+                    text = (prev.raw_text() or prev.text()).strip()
+                    if text:
+                        return text
+        return str(self._last_user_prompt or "").strip()
+
+    def _regenerate_from_bubble(self, target: Any) -> None:
+        if isinstance(target, _ChatBubble):
+            prompt = self._prompt_for_assistant_bubble(target)
+        else:
+            prompt = str(self._last_user_prompt or "").strip()
         if not prompt:
             self.status_label.setText("No prompt available to regenerate.")
             return
@@ -1970,6 +1480,39 @@ class AIChatWidget(
             except Exception:
                 self.provider_selector.setToolTip(f"AI Provider: {provider_text}")
 
+    def start_new_chat_session(self) -> None:
+        if self.is_streaming_chat or self._chat_task_active:
+            self.status_label.setText(
+                "Stop or wait for the current response before starting a new session."
+            )
+            return
+        new_id = self._new_startup_session_id()
+        if new_id == self.session_id:
+            new_id = f"{new_id}_next"
+        self.session_id = new_id
+        self._approved_destructive_tools.clear()
+        self._clear_chat_bubbles()
+        self.status_label.setText("Started new chat session.")
+        self._refresh_header_chips()
+        self.prompt_text_edit.setFocus()
+
+    def _confirm_clear_chat_conversation(self) -> None:
+        if self.is_streaming_chat:
+            self.status_label.setText("Wait for current response to finish.")
+            return
+        if len(self._iter_chat_bubbles()) > 0:
+            reply = QtWidgets.QMessageBox.question(
+                self,
+                "Clear Conversation",
+                "Clear all messages in the current session?\n\n"
+                "Tip: Use New Chat to start a fresh session without clearing history.",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.No,
+            )
+            if reply != QtWidgets.QMessageBox.Yes:
+                return
+        self.clear_chat_conversation()
+
     def clear_chat_conversation(self) -> None:
         if self.is_streaming_chat:
             self.status_label.setText("Wait for current response to finish.")
@@ -2036,6 +1579,7 @@ class AIChatWidget(
                     history_index=idx,
                     history_message_id=str(msg.get("message_id") or ""),
                     history_role=role,
+                    allow_regenerate=True,
                 )
             elif role == "system":
                 self._add_bubble(
@@ -2122,251 +1666,6 @@ class AIChatWidget(
         payload = self._bot_action_results.get(str(action), {})
         return dict(payload or {})
 
-    def _default_citation_bib_path(self) -> Path:
-        return get_agent_workspace_path() / "citations.bib"
-
-    @staticmethod
-    def _extract_doi_for_citation(text: str) -> str:
-        raw = str(text or "")
-        if not raw:
-            return ""
-        match = re.search(
-            r"\b(10\.\d{4,9}/[-._;()/:A-Za-z0-9]+)\b",
-            raw,
-            flags=re.IGNORECASE,
-        )
-        return str(match.group(1) or "").rstrip(").,;!?") if match else ""
-
-    @staticmethod
-    def _extract_year_for_citation(text: str) -> str:
-        years = re.findall(r"\b(19\d{2}|20\d{2})\b", str(text or ""))
-        return years[0] if years else ""
-
-    @staticmethod
-    def _normalize_citation_key_for_ui(
-        title: str, year: str, fallback: str = "paper"
-    ) -> str:
-        text = str(title or fallback or "paper").strip().lower()
-        tokens = re.findall(r"[a-z0-9]+", text)
-        stem = "_".join(tokens[:3]) if tokens else "paper"
-        yr = str(year or "").strip()
-        key = f"{stem}_{yr}" if yr else stem
-        key = re.sub(r"[^a-zA-Z0-9:_\-.]+", "_", key).strip("_")
-        return key or "paper"
-
-    def _citation_entry_from_active_pdf(self) -> Optional[BibEntry]:
-        self.bot_pdf_get_state()
-        state = self.get_bot_action_result("pdf_get_state") or dict(
-            self._bot_action_result or {}
-        )
-        if not bool(state.get("ok")) or not bool(state.get("has_pdf")):
-            return None
-        path = str(state.get("path") or "").strip()
-        title = str(state.get("title") or "").strip()
-        if title.lower().endswith(".pdf"):
-            title = title[:-4]
-        self.bot_pdf_get_text(9000, 2)
-        text_payload = self.get_bot_action_result("pdf_get_text") or dict(
-            self._bot_action_result or {}
-        )
-        text = str(text_payload.get("text") or "")
-        doi = self._extract_doi_for_citation(text)
-        year = self._extract_year_for_citation(text)
-        fields: Dict[str, str] = {
-            "title": title or Path(path).stem.replace("_", " "),
-            "note": "Saved from active Annolid PDF viewer.",
-            "source_path": path,
-        }
-        if year:
-            fields["year"] = year
-        if doi:
-            fields["doi"] = doi
-            fields["url"] = f"https://doi.org/{doi}"
-        arxiv_match = re.search(
-            r"\b(\d{4}\.\d{4,5}(?:v\d+)?)\b",
-            text,
-            flags=re.IGNORECASE,
-        )
-        if arxiv_match:
-            fields["archiveprefix"] = "arXiv"
-            fields["eprint"] = str(arxiv_match.group(1) or "").strip()
-        key = self._normalize_citation_key_for_ui(
-            fields["title"], fields.get("year", "")
-        )
-        return BibEntry(entry_type="article", key=key, fields=fields)
-
-    def _citation_entry_from_active_web(self) -> Optional[BibEntry]:
-        self.bot_web_get_state()
-        state = self.get_bot_action_result("web_get_state") or dict(
-            self._bot_action_result or {}
-        )
-        if not bool(state.get("ok")) or not bool(state.get("has_page")):
-            return None
-        url = str(state.get("url") or "").strip()
-        if not url:
-            return None
-        title = str(state.get("title") or "").strip()
-        self.bot_web_get_dom_text(9000)
-        text_payload = self.get_bot_action_result("web_get_dom_text") or dict(
-            self._bot_action_result or {}
-        )
-        text = str(text_payload.get("text") or "")
-        doi = self._extract_doi_for_citation(f"{url}\n{text}")
-        year = self._extract_year_for_citation(text)
-        fields: Dict[str, str] = {
-            "title": title or "Web page citation",
-            "url": url,
-            "note": "Saved from active Annolid web viewer.",
-        }
-        if year:
-            fields["year"] = year
-        if doi:
-            fields["doi"] = doi
-        arxiv_match = re.search(
-            r"arxiv\.org/(?:abs|pdf)/(\d{4}\.\d{4,5}(?:v\d+)?)",
-            url,
-            flags=re.IGNORECASE,
-        )
-        if arxiv_match:
-            fields["archiveprefix"] = "arXiv"
-            fields["eprint"] = str(arxiv_match.group(1) or "").strip()
-        key = self._normalize_citation_key_for_ui(
-            fields["title"], fields.get("year", "")
-        )
-        return BibEntry(entry_type="article", key=key, fields=fields)
-
-    def _save_citation_from_active_context(
-        self,
-        *,
-        source: str = "auto",
-        key: str = "",
-        bib_path: Optional[Path] = None,
-        validate_before_save: bool = True,
-        strict_validation: bool = False,
-        verify_after_save: bool = False,
-    ) -> Dict[str, Any]:
-        source_norm = str(source or "auto").strip().lower()
-        if source_norm not in {"auto", "pdf", "web"}:
-            source_norm = "auto"
-        entry: Optional[BibEntry] = None
-        used_source = source_norm
-        if source_norm in {"auto", "pdf"}:
-            entry = self._citation_entry_from_active_pdf()
-            if entry:
-                used_source = "pdf"
-        if entry is None and source_norm in {"auto", "web"}:
-            entry = self._citation_entry_from_active_web()
-            if entry:
-                used_source = "web"
-        if entry is None:
-            return {
-                "ok": False,
-                "error": "No active PDF/web context found to create citation.",
-            }
-        basic_errors = validate_basic_citation_fields(
-            {
-                "__key__": str(key or "").strip(),
-                "year": str(entry.fields.get("year") or ""),
-                "doi": str(entry.fields.get("doi") or ""),
-            }
-        )
-        if basic_errors:
-            return {"ok": False, "error": " ".join(basic_errors)}
-        chosen_key = str(key or "").strip()
-        if chosen_key:
-            entry.key = re.sub(r"[^a-zA-Z0-9:_\-.]+", "_", chosen_key).strip("_")
-        validation: Dict[str, Any] = {
-            "checked": False,
-            "verified": False,
-            "provider": "",
-            "score": 0.0,
-            "message": "",
-            "candidate": {},
-        }
-        if bool(validate_before_save):
-            validation = validate_citation_metadata(entry.fields, timeout_s=1.8)
-            entry.fields = merge_validated_fields(
-                entry.fields, validation, replace_when_confident=True
-            )
-            if bool(strict_validation) and not bool(validation.get("verified")):
-                return {
-                    "ok": False,
-                    "error": (
-                        "Citation validation failed strict mode. "
-                        + str(validation.get("message") or "")
-                    ).strip(),
-                    "validation": validation,
-                }
-            if not chosen_key:
-                candidate_key = str(
-                    dict(validation.get("candidate") or {}).get("__bibkey__") or ""
-                ).strip()
-                if candidate_key:
-                    entry.key = re.sub(r"[^a-zA-Z0-9:_\-.]+", "_", candidate_key).strip(
-                        "_"
-                    )
-                else:
-                    entry.key = self._normalize_citation_key_for_ui(
-                        str(entry.fields.get("title") or "").strip(),
-                        str(entry.fields.get("year") or "").strip(),
-                    )
-        target_bib = bib_path or self._default_citation_bib_path()
-        target_bib = Path(target_bib).expanduser()
-        target_bib.parent.mkdir(parents=True, exist_ok=True)
-        entries = load_bibtex(target_bib) if target_bib.exists() else []
-        updated, created = upsert_entry(entries, entry)
-        save_bibtex(target_bib, updated, sort_keys=True)
-        payload: Dict[str, Any] = {
-            "ok": True,
-            "created": bool(created),
-            "key": entry.key,
-            "bib_file": str(target_bib),
-            "source": used_source,
-            "validation": validation,
-        }
-        if bool(verify_after_save):
-            report = build_citation_verification_report(
-                key=str(entry.key or ""),
-                bib_file=str(target_bib),
-                source=used_source,
-                fields=dict(entry.fields),
-                validation=validation,
-            )
-            payload["verification"] = dict(report.get("verification") or {})
-            report_path = write_citation_verification_report(
-                report,
-                reports_dir=target_bib.parent
-                / ".annolid_cache"
-                / "citation_verification",
-                report_stem=f"{target_bib.stem}_{entry.key}",
-            )
-            payload["verification_report"] = str(report_path)
-        return payload
-
-    def _open_citation_manager(self) -> None:
-        dialog = CitationManagerDialog(
-            default_bib_path_getter=self._default_citation_bib_path,
-            save_from_context=self._save_citation_from_active_context,
-            parent=self,
-        )
-        dialog.exec_()
-
-    def _canvas_pixmap_ready(self) -> bool:
-        host = self.host_window_widget or self.window()
-        canvas = getattr(host, "canvas", None)
-        pixmap = getattr(canvas, "pixmap", None)
-        return bool(
-            pixmap is not None and hasattr(pixmap, "isNull") and not pixmap.isNull()
-        )
-
-    def _wait_for_canvas_pixmap(self, timeout_ms: int = 3000) -> bool:
-        deadline = QtCore.QDeadlineTimer(int(max(1, timeout_ms)))
-        while not deadline.hasExpired():
-            if self._canvas_pixmap_ready():
-                return True
-            QtWidgets.QApplication.processEvents(QtCore.QEventLoop.AllEvents, 50)
-        return self._canvas_pixmap_ready()
-
     def shutdown(self, *, wait_ms: int = 3000) -> bool:
         """Stop background workers, audio threads, timers, and clean temp snapshots."""
         try:
@@ -2415,578 +1714,6 @@ class AIChatWidget(
             )
             return
         super().closeEvent(event)
-
-    @QtCore.Slot(str)
-    def bot_open_video(self, video_path: str) -> None:
-        path = str(video_path or "").strip()
-        if not path:
-            self.status_label.setText("Bot action failed: empty video path.")
-            return
-        host = self.host_window_widget or self.window()
-        open_video = getattr(host, "openVideo", None)
-        if not callable(open_video):
-            self.status_label.setText("Bot action failed: video loader is unavailable.")
-            return
-        try:
-            open_video(from_video_list=True, video_path=path, programmatic_call=True)
-            self.status_label.setText(f"Opened video: {os.path.basename(path)}")
-        except Exception as exc:
-            self.status_label.setText(f"Bot action failed: {exc}")
-
-    @QtCore.Slot(str)
-    def bot_open_image(self, image_path: str) -> None:
-        path_text = str(image_path or "").strip()
-        if not path_text:
-            self.status_label.setText("Bot action failed: empty image path.")
-            return
-        resolved = Path(path_text).expanduser()
-        if not resolved.exists() or not resolved.is_file():
-            self.status_label.setText(
-                f"Bot action failed: image not found: {path_text}"
-            )
-            return
-        host = self.host_window_widget or self.window()
-        load_file = getattr(host, "loadFile", None)
-        if not callable(load_file):
-            self.status_label.setText("Bot action failed: image loader is unavailable.")
-            return
-        try:
-            load_file(str(resolved))
-            set_view = getattr(host, "_set_active_view", None)
-            if callable(set_view):
-                set_view("canvas")
-            self.status_label.setText(f"Opened image on canvas: {resolved.name}")
-        except Exception as exc:
-            self.status_label.setText(f"Bot action failed: {exc}")
-
-    def _set_bot_action_result(self, *args: Any, **kwargs: Any) -> None:
-        """
-        Backward-compatible bot action result setter.
-        Supports both call styles:
-        - _set_bot_action_result(payload_dict)
-        - _set_bot_action_result(action_name, payload_dict)
-        """
-        # Preferred path: two positional args => (action, payload)
-        action = ""
-        payload: Dict[str, Any] = {}
-        if len(args) >= 2:
-            action = str(args[0] or "").strip()
-            payload = dict(args[1] or {})
-        elif len(args) == 1:
-            value = args[0]
-            if isinstance(value, dict):
-                payload = dict(value or {})
-                action = str(payload.get("action") or "").strip()
-            else:
-                action = str(value or "").strip()
-                payload = dict(kwargs.get("result") or {})
-        else:
-            action = str(kwargs.get("action") or "").strip()
-            payload = dict(kwargs.get("result") or kwargs.get("payload") or {})
-
-        if action:
-            self._bot_action_results[action] = dict(payload)
-        self._bot_action_result = dict(payload)
-
-    def _resolve_web_manager(self):
-        host = self.host_window_widget or self.window()
-        return getattr(host, "web_manager", None)
-
-    def _resolve_pdf_manager(self):
-        host = self.host_window_widget or self.window()
-        return getattr(host, "pdf_manager", None)
-
-    def _normalize_url_for_open(self, url: str) -> Optional[QtCore.QUrl]:
-        value = str(url or "").strip()
-        if not value:
-            return None
-        parsed = QtCore.QUrl(value)
-        if parsed.isValid() and parsed.scheme().lower() in {"http", "https", "file"}:
-            return parsed
-        local_path = Path(value).expanduser()
-        if local_path.exists() and local_path.is_file():
-            return QtCore.QUrl.fromLocalFile(str(local_path))
-        if "://" not in value:
-            fallback = QtCore.QUrl(f"https://{value}")
-            if fallback.isValid() and fallback.scheme().lower() in {"http", "https"}:
-                return fallback
-        return None
-
-    def _open_url_in_web_viewer(self, parsed: QtCore.QUrl) -> bool:
-        normalized = str(parsed.toString() or "").strip()
-        if not normalized:
-            return False
-        host = self.host_window_widget or self.window()
-        show_web = getattr(host, "show_web_in_viewer", None)
-        if callable(show_web) and bool(show_web(normalized)):
-            return True
-        manager = self._resolve_web_manager()
-        if manager is not None and hasattr(manager, "show_url_in_viewer"):
-            try:
-                return bool(manager.show_url_in_viewer(normalized))
-            except Exception:
-                return False
-        return False
-
-    def _open_chat_link_default(self, url: str) -> None:
-        parsed = self._normalize_url_for_open(url)
-        if parsed is None:
-            self.status_label.setText("Invalid URL.")
-            return
-        normalized = str(parsed.toString() or "").strip()
-        if self._open_url_in_web_viewer(parsed):
-            self.status_label.setText(
-                f"Opened URL in embedded web viewer: {normalized}"
-            )
-            return
-        if QtGui.QDesktopServices.openUrl(parsed):
-            self.status_label.setText(f"Opened URL in browser: {normalized}")
-            return
-        self.status_label.setText("Could not open URL.")
-
-    def _open_chat_link_in_browser(self, url: str, mode: str = "default") -> None:
-        parsed = self._normalize_url_for_open(url)
-        if parsed is None:
-            self.status_label.setText("Invalid URL.")
-            return
-        normalized = str(parsed.toString() or "").strip()
-        request = str(mode or "default").strip().lower()
-        opened = False
-        if request == "new_tab":
-            opened = bool(webbrowser.open(normalized, new=2, autoraise=True))
-        elif request == "new_window":
-            opened = bool(webbrowser.open(normalized, new=1, autoraise=True))
-        else:
-            opened = QtGui.QDesktopServices.openUrl(parsed)
-        if not opened:
-            opened = QtGui.QDesktopServices.openUrl(parsed)
-        if opened:
-            if request == "new_tab":
-                self.status_label.setText(
-                    f"Requested opening in browser new tab: {normalized}"
-                )
-            elif request == "new_window":
-                self.status_label.setText(
-                    f"Requested opening in browser new window: {normalized}"
-                )
-            else:
-                self.status_label.setText(f"Opened URL in browser: {normalized}")
-            return
-        self.status_label.setText("Could not open URL in browser.")
-
-    @QtCore.Slot(str)
-    def bot_open_pdf(self, pdf_path: str = "") -> None:
-        host = self.host_window_widget or self.window()
-        pdf_import_widget = getattr(host, "pdf_import_widget", None)
-        open_pdf = getattr(pdf_import_widget, "open_pdf", None)
-        open_pdf_path = getattr(pdf_import_widget, "open_pdf_path", None)
-        if not callable(open_pdf):
-            self.status_label.setText("Bot action failed: PDF opener is unavailable.")
-            return
-        try:
-            resolved = str(pdf_path or "").strip()
-            if resolved and callable(open_pdf_path):
-                ok = bool(open_pdf_path(resolved))
-                if ok:
-                    self.status_label.setText(
-                        f"Opened PDF: {os.path.basename(resolved)}"
-                    )
-                else:
-                    self.status_label.setText("Bot action failed: could not open PDF.")
-                return
-            # Reuse the exact same flow as File > Open PDF...
-            open_pdf()
-            self.status_label.setText("Opened PDF picker.")
-        except Exception as exc:
-            self.status_label.setText(f"Bot action failed: {exc}")
-
-    @QtCore.Slot(str)
-    def bot_open_url(self, url: str) -> None:
-        parsed = self._normalize_url_for_open(url)
-        if parsed is None:
-            self.status_label.setText("Bot action failed: invalid URL or file path.")
-            return
-        normalized = str(parsed.toString() or "").strip()
-        if self._open_url_in_web_viewer(parsed):
-            self.status_label.setText(f"Opened URL in canvas: {normalized}")
-            return
-        opened = QtGui.QDesktopServices.openUrl(parsed)
-        if opened:
-            self.status_label.setText(f"Opened URL in browser: {normalized}")
-            return
-        self.status_label.setText("Bot action failed: could not open URL.")
-
-    @QtCore.Slot(str)
-    def bot_open_in_browser(self, url: str) -> None:
-        parsed = self._normalize_url_for_open(url)
-        if parsed is None:
-            self.status_label.setText("Bot action failed: invalid URL.")
-            return
-        target_url = str(parsed.toString() or "").strip()
-        opened = QtGui.QDesktopServices.openUrl(parsed)
-        if opened:
-            self.status_label.setText(f"Opened URL in browser: {target_url}")
-            return
-        self.status_label.setText("Bot action failed: could not open URL.")
-
-    @staticmethod
-    def _normalize_threejs_example_input(example: str) -> str:
-        raw = str(example or "").strip().lower()
-        if not raw:
-            return "two_mice_html"
-        mapping = {
-            "helix": "helix_points_csv",
-            "helix_points_csv": "helix_points_csv",
-            "wave": "wave_surface_obj",
-            "wave_surface_obj": "wave_surface_obj",
-            "sphere": "sphere_points_ply",
-            "sphere_points_ply": "sphere_points_ply",
-            "brain": "brain_viewer_html",
-            "brain_viewer_html": "brain_viewer_html",
-            "two_mice": "two_mice_html",
-            "two_mice_html": "two_mice_html",
-            "fly_brain": "fly_brain_mouse_html",
-            "fly_brain_mouse": "fly_brain_mouse_html",
-            "fly_brain_mouse_html": "fly_brain_mouse_html",
-            "rat": "rat_ncap_html",
-            "rat_ncap": "rat_ncap_html",
-            "rat_ncap_html": "rat_ncap_html",
-            "rat_ncap_simulation_json": "rat_ncap_simulation_json",
-        }
-        normalized = re.sub(r"[^a-z0-9]+", "_", raw).strip("_")
-        if normalized in mapping:
-            return mapping[normalized]
-        if "rat" in raw:
-            return "rat_ncap_html"
-        if "fly" in raw and ("brain" in raw or "mouse" in raw or "mice" in raw):
-            return "fly_brain_mouse_html"
-        if "two" in raw and "mice" in raw:
-            return "two_mice_html"
-        if "brain" in raw:
-            return "brain_viewer_html"
-        if "helix" in raw:
-            return "helix_points_csv"
-        if "wave" in raw:
-            return "wave_surface_obj"
-        if "sphere" in raw:
-            return "sphere_points_ply"
-        return "two_mice_html"
-
-    @QtCore.Slot(str)
-    def bot_open_threejs_example(self, example_id: str = "") -> None:
-        host = self.host_window_widget or self.window()
-        open_example = getattr(host, "open_threejs_example", None)
-        if not callable(open_example):
-            self.status_label.setText(
-                "Bot action failed: Three.js examples unavailable."
-            )
-            return
-        resolved = self._normalize_threejs_example_input(example_id)
-        try:
-            open_example(resolved)
-            self.status_label.setText(f"Opened Three.js example: {resolved}")
-        except Exception as exc:
-            self.status_label.setText(f"Bot action failed: {exc}")
-
-    @QtCore.Slot(str)
-    def bot_open_threejs(self, path_or_url: str) -> None:
-        target = str(path_or_url or "").strip()
-        if not target:
-            self.status_label.setText("Bot action failed: provide a 3D path or URL.")
-            return
-        host = self.host_window_widget or self.window()
-        manager = getattr(host, "threejs_manager", None)
-        if manager is None:
-            ensure_threejs_manager = getattr(host, "ensure_threejs_manager", None)
-            if callable(ensure_threejs_manager):
-                try:
-                    manager = ensure_threejs_manager()
-                except Exception:
-                    manager = None
-        if manager is None:
-            self.status_label.setText(
-                "Bot action failed: Three.js viewer is unavailable."
-            )
-            return
-
-        local_path = Path(target).expanduser()
-        try:
-            is_local_zarr = (
-                local_path.exists()
-                and local_path.is_dir()
-                and local_path.suffix.lower() == ".zarr"
-            )
-            if local_path.exists() and (local_path.is_file() or is_local_zarr):
-                suffix = local_path.suffix.lower()
-                if suffix in {".html", ".htm", ".xhtml"}:
-                    url = QtCore.QUrl.fromLocalFile(str(local_path)).toString()
-                    if bool(manager.show_url_in_viewer(url)):
-                        self.status_label.setText(
-                            f"Opened Three.js URL: {local_path.name}"
-                        )
-                        return
-                elif bool(manager.show_model_in_viewer(local_path)):
-                    self.status_label.setText(
-                        f"Opened Three.js model: {local_path.name}"
-                    )
-                    return
-        except Exception:
-            pass
-
-        parsed = self._normalize_url_for_open(target)
-        if parsed is not None:
-            normalized = str(parsed.toString() or "").strip()
-            scheme = str(parsed.scheme() or "").lower()
-            if normalized and scheme in {"http", "https", "file"}:
-                try:
-                    if bool(manager.show_url_in_viewer(normalized)):
-                        self.status_label.setText(f"Opened Three.js URL: {normalized}")
-                        return
-                except Exception:
-                    pass
-
-        self.status_label.setText("Bot action failed: could not open Three.js content.")
-
-    @QtCore.Slot(int)
-    def bot_web_get_dom_text(self, max_chars: int) -> None:
-        manager = self._resolve_web_manager()
-        if manager is None:
-            payload = {"ok": False, "error": "Embedded web manager is unavailable."}
-            self._set_bot_action_result("web_get_dom_text", payload)
-            self.status_label.setText("Bot action failed: web manager unavailable.")
-            return
-        try:
-            payload = manager.get_page_text(max_chars=int(max_chars))
-        except Exception as exc:
-            payload = {"ok": False, "error": str(exc)}
-        self._set_bot_action_result("web_get_dom_text", payload)
-        self.status_label.setText(
-            "Captured page text." if payload.get("ok") else "Bot action failed."
-        )
-
-    @QtCore.Slot()
-    def bot_web_get_state(self) -> None:
-        manager = self._resolve_web_manager()
-        if manager is None:
-            payload = {"ok": False, "error": "Embedded web manager is unavailable."}
-            self._set_bot_action_result("web_get_state", payload)
-            self.status_label.setText("Bot action failed: web manager unavailable.")
-            return
-        try:
-            payload = manager.get_web_state()
-        except Exception as exc:
-            payload = {"ok": False, "error": str(exc)}
-        self._set_bot_action_result("web_get_state", payload)
-
-    @QtCore.Slot(int)
-    def bot_web_capture_screenshot(self, max_width: int) -> None:
-        manager = self._resolve_web_manager()
-        if manager is None:
-            payload = {"ok": False, "error": "Embedded web manager is unavailable."}
-            self._set_bot_action_result("web_capture_screenshot", payload)
-            self.status_label.setText("Bot action failed: web manager unavailable.")
-            return
-        try:
-            payload = manager.capture_screenshot(max_width=int(max_width))
-        except Exception as exc:
-            payload = {"ok": False, "error": str(exc)}
-        self._set_bot_action_result("web_capture_screenshot", payload)
-        self.status_label.setText(
-            "Captured web screenshot." if payload.get("ok") else "Bot action failed."
-        )
-
-    @QtCore.Slot(int)
-    def bot_web_describe_view(self, max_width: int) -> None:
-        manager = self._resolve_web_manager()
-        if manager is None:
-            payload = {"ok": False, "error": "Embedded web manager is unavailable."}
-            self._set_bot_action_result("web_describe_view", payload)
-            self.status_label.setText("Bot action failed: web manager unavailable.")
-            return
-        try:
-            payload = manager.describe_current_view(max_width=int(max_width))
-        except Exception as exc:
-            payload = {"ok": False, "error": str(exc)}
-        self._set_bot_action_result("web_describe_view", payload)
-        self.status_label.setText(
-            "Submitted screenshot for description."
-            if payload.get("ok")
-            else "Bot action failed."
-        )
-
-    @QtCore.Slot()
-    def bot_pdf_get_state(self) -> None:
-        manager = self._resolve_pdf_manager()
-        if manager is None:
-            payload = {"ok": False, "error": "PDF manager is unavailable."}
-            self._set_bot_action_result("pdf_get_state", payload)
-            self.status_label.setText("Bot action failed: PDF manager unavailable.")
-            return
-        try:
-            payload = manager.get_pdf_state()
-        except Exception as exc:
-            payload = {"ok": False, "error": str(exc)}
-        self._set_bot_action_result("pdf_get_state", payload)
-
-    @QtCore.Slot(int, int)
-    @QtCore.Slot(int, int, int)
-    def bot_pdf_get_text(self, max_chars: int, pages: int, start_page: int = 0) -> None:
-        manager = self._resolve_pdf_manager()
-        if manager is None:
-            payload = {"ok": False, "error": "PDF manager is unavailable."}
-            self._set_bot_action_result("pdf_get_text", payload)
-            self.status_label.setText("Bot action failed: PDF manager unavailable.")
-            return
-        try:
-            payload = manager.get_pdf_text(
-                max_chars=int(max_chars),
-                pages=int(pages),
-                start_page=int(start_page or 0),
-            )
-        except Exception as exc:
-            payload = {"ok": False, "error": str(exc)}
-        self._set_bot_action_result("pdf_get_text", payload)
-        self.status_label.setText(
-            "Captured PDF text." if payload.get("ok") else "Bot action failed."
-        )
-
-    @QtCore.Slot(int, int)
-    def bot_pdf_find_sections(self, max_sections: int, max_pages: int) -> None:
-        manager = self._resolve_pdf_manager()
-        if manager is None:
-            payload = {"ok": False, "error": "PDF manager is unavailable."}
-            self._set_bot_action_result(payload)
-            self.status_label.setText("Bot action failed: PDF manager unavailable.")
-            return
-        try:
-            payload = manager.get_pdf_sections(
-                max_sections=int(max_sections),
-                max_pages=int(max_pages),
-            )
-        except Exception as exc:
-            payload = {"ok": False, "error": str(exc)}
-        self._set_bot_action_result(payload)
-        self.status_label.setText(
-            "Detected PDF sections." if payload.get("ok") else "Bot action failed."
-        )
-
-    @QtCore.Slot(str)
-    def bot_web_click(self, selector: str) -> None:
-        manager = self._resolve_web_manager()
-        if manager is None:
-            payload = {"ok": False, "error": "Embedded web manager is unavailable."}
-            self._set_bot_action_result(payload)
-            self.status_label.setText("Bot action failed: web manager unavailable.")
-            return
-        try:
-            payload = manager.click_selector(str(selector or ""))
-        except Exception as exc:
-            payload = {"ok": False, "error": str(exc)}
-        self._set_bot_action_result(payload)
-        self.status_label.setText(
-            "Clicked selector." if payload.get("ok") else "Bot action failed."
-        )
-
-    @QtCore.Slot(str, str, bool)
-    def bot_web_type(self, selector: str, text: str, submit: bool) -> None:
-        manager = self._resolve_web_manager()
-        if manager is None:
-            payload = {"ok": False, "error": "Embedded web manager is unavailable."}
-            self._set_bot_action_result(payload)
-            self.status_label.setText("Bot action failed: web manager unavailable.")
-            return
-        try:
-            payload = manager.type_selector(
-                str(selector or ""), str(text or ""), submit=bool(submit)
-            )
-        except Exception as exc:
-            payload = {"ok": False, "error": str(exc)}
-        self._set_bot_action_result(payload)
-        self.status_label.setText(
-            "Typed into selector." if payload.get("ok") else "Bot action failed."
-        )
-
-    @QtCore.Slot(int)
-    def bot_web_scroll(self, delta_y: int) -> None:
-        manager = self._resolve_web_manager()
-        if manager is None:
-            payload = {"ok": False, "error": "Embedded web manager is unavailable."}
-            self._set_bot_action_result(payload)
-            self.status_label.setText("Bot action failed: web manager unavailable.")
-            return
-        try:
-            payload = manager.scroll_by(delta_y=int(delta_y))
-        except Exception as exc:
-            payload = {"ok": False, "error": str(exc)}
-        self._set_bot_action_result(payload)
-        self.status_label.setText(
-            "Scrolled page." if payload.get("ok") else "Bot action failed."
-        )
-
-    @QtCore.Slot()
-    def bot_web_find_forms(self) -> None:
-        manager = self._resolve_web_manager()
-        if manager is None:
-            payload = {"ok": False, "error": "Embedded web manager is unavailable."}
-            self._set_bot_action_result(payload)
-            self.status_label.setText("Bot action failed: web manager unavailable.")
-            return
-        try:
-            payload = manager.find_forms()
-        except Exception as exc:
-            payload = {"ok": False, "error": str(exc)}
-        self._set_bot_action_result(payload)
-        self.status_label.setText(
-            "Inspected forms." if payload.get("ok") else "Bot action failed."
-        )
-
-    @QtCore.Slot()
-    def bot_web_save_current(self) -> None:
-        manager = self._resolve_web_manager()
-        if manager is None:
-            payload = {"ok": False, "error": "Embedded web manager is unavailable."}
-            self._set_bot_action_result("web_save_current", payload)
-            self.status_label.setText("Bot action failed: web manager unavailable.")
-            return
-        try:
-            payload = manager.save_current_page()
-        except Exception as exc:
-            payload = {"ok": False, "error": str(exc)}
-        self._set_bot_action_result("web_save_current", payload)
-        if payload.get("ok"):
-            if payload.get("queued"):
-                self.status_label.setText("Saving web content in background...")
-            else:
-                saved_path = str(payload.get("last_saved_path") or "").strip()
-                self.status_label.setText(
-                    f"Saved web content: {os.path.basename(saved_path)}"
-                    if saved_path
-                    else "Saved web content."
-                )
-            return
-        self.status_label.setText("Bot action failed.")
-
-    @QtCore.Slot(int)
-    def bot_set_frame(self, frame_index: int) -> None:
-        host = self.host_window_widget or self.window()
-        setter = getattr(host, "set_frame_number", None)
-        if not callable(setter):
-            self.status_label.setText(
-                "Bot action failed: frame navigation unavailable."
-            )
-            return
-        try:
-            setter(int(frame_index))
-            self.status_label.setText(f"Moved to frame {int(frame_index)}")
-        except Exception as exc:
-            self.status_label.setText(f"Bot action failed: {exc}")
-
-    @QtCore.Slot(str)
-    def bot_set_chat_prompt(self, text: str) -> None:
-        value = str(text or "").strip()
-        self.prompt_text_edit.setPlainText(value)
-        self.prompt_text_edit.setFocus()
-        self.status_label.setText("Chat prompt updated by bot.")
 
     def _track_slash_defaults(self) -> Dict[str, Any]:
         host = self.host_window_widget or self.window()
@@ -3106,470 +1833,3 @@ class AIChatWidget(
             self.status_label.setText(f"Started tracking to frame {int(to_frame)}")
         except Exception as exc:
             self.status_label.setText(f"Bot action failed: {exc}")
-
-    def set_image_path(self, image_path: str, *, explicit: bool = False) -> None:
-        if image_path and image_path not in self._snapshot_paths:
-            self._cleanup_snapshots()
-        self.image_path = image_path
-        if explicit:
-            self._pending_explicit_image_path = str(image_path or "").strip()
-        self._update_shared_image_label(image_path)
-
-    def set_next_chat_mode(self, mode: str) -> None:
-        value = str(mode or "default").strip().lower()
-        self._next_chat_mode = value or "default"
-
-    def _consume_next_chat_mode(self) -> str:
-        value = str(getattr(self, "_next_chat_mode", "default") or "default").strip()
-        self._next_chat_mode = "default"
-        return value.lower() or "default"
-
-    def register_managed_temp_image(self, image_path: str) -> None:
-        """Track externally-created temp images for later cleanup."""
-        path = str(image_path or "").strip()
-        if path and path not in self._snapshot_paths:
-            self._snapshot_paths.append(path)
-
-    def _cleanup_snapshots(self) -> None:
-        stale = list(self._snapshot_paths)
-        self._snapshot_paths.clear()
-        for path in stale:
-            try:
-                if path and os.path.exists(path):
-                    os.remove(path)
-            except OSError:
-                pass
-
-    def _snapshot_widget_to_tempfile(
-        self, widget: Optional[QtWidgets.QWidget], prefix: str
-    ) -> Optional[str]:
-        if widget is None:
-            return None
-        try:
-            pixmap = widget.grab()
-        except Exception:
-            return None
-        if pixmap is None or pixmap.isNull():
-            return None
-        try:
-            fd, tmp_path = tempfile.mkstemp(prefix=prefix, suffix=".png")
-            os.close(fd)
-            if not pixmap.save(tmp_path, "PNG"):
-                os.remove(tmp_path)
-                return None
-            self._snapshot_paths.append(tmp_path)
-            return tmp_path
-        except Exception:
-            return None
-
-    def _snapshot_canvas_to_tempfile(self) -> Optional[str]:
-        return self._snapshot_widget_to_tempfile(self.canvas_widget, "annolid_canvas_")
-
-    def _snapshot_window_to_tempfile(self) -> Optional[str]:
-        host = self.host_window_widget or self.window()
-        return self._snapshot_widget_to_tempfile(host, "annolid_window_")
-
-    def _update_shared_image_label(self, image_path: Optional[str]) -> None:
-        if image_path and os.path.exists(image_path):
-            self.shared_image_label.setText(
-                f"Shared image: {os.path.basename(image_path)}"
-            )
-        else:
-            self.shared_image_label.setText("Shared image: none")
-
-    def _share_canvas_now(self) -> None:
-        image_path = self._snapshot_canvas_to_tempfile()
-        if image_path:
-            self.set_image_path(image_path, explicit=True)
-            self._add_bubble(
-                "Annolid Bot",
-                f"Canvas snapshot attached: {os.path.basename(image_path)}",
-                is_user=False,
-            )
-
-    def _share_window_now(self) -> None:
-        image_path = self._snapshot_window_to_tempfile()
-        if image_path:
-            self.set_image_path(image_path, explicit=True)
-            self._add_bubble(
-                "Annolid Bot",
-                f"Window snapshot attached: {os.path.basename(image_path)}",
-                is_user=False,
-            )
-
-    # ---- Research Intent Handling ----
-
-    def _prepare_chat_image(self, *, chat_mode: str = "default") -> Optional[str]:
-        explicit_path = str(
-            getattr(self, "_pending_explicit_image_path", "") or ""
-        ).strip()
-        self._pending_explicit_image_path = ""
-        if explicit_path and os.path.exists(explicit_path):
-            self.image_path = explicit_path
-            self._update_shared_image_label(explicit_path)
-            return explicit_path
-        if str(chat_mode or "").strip().lower() == "vision_describe":
-            current = str(getattr(self, "image_path", "") or "").strip()
-            if current and os.path.exists(current):
-                return current
-        use_window = self.attach_window_checkbox.isChecked()
-        use_canvas = self.attach_canvas_checkbox.isChecked()
-        image_path = None
-        if use_window:
-            image_path = self._snapshot_window_to_tempfile()
-        elif use_canvas:
-            image_path = self._snapshot_canvas_to_tempfile()
-        if image_path:
-            self.set_image_path(image_path)
-        return image_path
-
-    def _snapshot_host_track_fallback_model(self) -> str:
-        host = getattr(self, "host_window_widget", None)
-        if host is None:
-            with contextlib.suppress(Exception):
-                host = self.window()
-        combo = getattr(host, "_selectAiModelComboBox", None)
-        if combo is None:
-            return ""
-        try:
-            current = str(combo.currentText() or "").strip()
-            if current and current.lower() != "sam3":
-                return current
-            for index in range(int(combo.count())):
-                item = str(combo.itemText(index) or "").strip()
-                if item and item.lower() != "sam3":
-                    return item
-        except Exception:
-            return ""
-        return ""
-
-    def chat_with_model(self) -> None:
-        self._refresh_runtime_llm_settings()
-        raw_prompt = self.prompt_text_edit.toPlainText().strip()
-        if not raw_prompt:
-            return
-        slash_state = _extract_slash_selection_state(raw_prompt)
-        clean_prompt = str(slash_state.get("clean_prompt") or "").strip()
-        selected_skill_names = list(slash_state.get("selected_skill_names") or [])
-        selected_tool_names = list(slash_state.get("selected_tool_names") or [])
-        slash_commands = list(slash_state.get("slash_commands") or [])
-        if bool(slash_state.get("open_capabilities")) and not clean_prompt:
-            self._open_agent_capabilities_dialog()
-            self.status_label.setText("Opened agent capabilities.")
-            return
-        if not clean_prompt:
-            if selected_skill_names or selected_tool_names:
-                self.status_label.setText(
-                    "Selected skills/tools applied. Add a prompt to send."
-                )
-            return
-        if not self._ensure_provider_ready():
-            return
-
-        self._add_bubble("You", raw_prompt, is_user=True)
-        self.prompt_text_edit.clear()
-
-        chat_mode = self._consume_next_chat_mode()
-        chat_image_path = self._prepare_chat_image(chat_mode=chat_mode)
-        ui_prepared = False
-        if not self._chat_task_active:
-            self._prepare_streaming_turn_ui(raw_prompt)
-            ui_prepared = True
-        else:
-            pending = int(self._chat_message_bus.inbound.qsize()) + 1
-            self.status_label.setText(f"Queued message ({pending} pending)")
-
-        inbound_metadata = {
-            "provider": self.selected_provider,
-            "model": self.selected_model,
-            "session_id": self.session_id,
-            "chat_mode": chat_mode,
-            "show_tool_trace": bool(self.tool_trace_checkbox.isChecked()),
-            "enable_web_tools": bool(self.allow_web_tools_checkbox.isChecked()),
-            "settings": dict(self.llm_settings or {}),
-            "image_path": str(chat_image_path or self.image_path or ""),
-            "host_track_fallback_model": self._snapshot_host_track_fallback_model(),
-            "ui_prepared": bool(ui_prepared),
-            "raw_prompt": raw_prompt,
-            "selected_skill_names": selected_skill_names,
-            "selected_tool_names": selected_tool_names,
-            "slash_commands": slash_commands,
-        }
-        inbound = InboundMessage(
-            channel="gui",
-            sender_id="gui_user",
-            chat_id=self.session_id,
-            content=clean_prompt,
-            media=(
-                [str(chat_image_path or self.image_path or "")]
-                if str(chat_image_path or self.image_path or "").strip()
-                else []
-            ),
-            metadata=inbound_metadata,
-        )
-        self._chat_message_bus.inbound.put_nowait(inbound)
-        if not self._chat_inbound_bus_timer.isActive():
-            self._chat_inbound_bus_timer.start()
-
-    def _prepare_streaming_turn_ui(self, prompt: str) -> None:
-        self._last_user_prompt = str(prompt or "").strip()
-        self._latest_progress_text = ""
-        self._has_streamed_response_chunk = False
-        self._progress_lines = []
-        assistant_name = self._assistant_display_name()
-        self.status_label.setText("")
-        self._current_response_bubble = self._add_bubble(
-            assistant_name,
-            "",
-            is_user=False,
-            allow_regenerate=True,
-            allow_stop=True,
-        )
-        self._current_response_bubble.set_thinking_text("Thinking.", in_progress=True)
-        self.send_button.setEnabled(False)
-        self.is_streaming_chat = True
-        self._start_typing_indicator()
-
-    def _drain_inbound_bus_messages(self) -> None:
-        if self._chat_task_active:
-            return
-        try:
-            inbound = self._chat_message_bus.inbound.get_nowait()
-        except asyncio.QueueEmpty:
-            self._chat_inbound_bus_timer.stop()
-            return
-        inbound_meta = dict(getattr(inbound, "metadata", {}) or {})
-        if not bool(inbound_meta.get("ui_prepared", False)):
-            self._prepare_streaming_turn_ui(str(getattr(inbound, "content", "") or ""))
-            inbound_meta["ui_prepared"] = True
-            inbound = InboundMessage(
-                channel=str(getattr(inbound, "channel", "gui") or "gui"),
-                sender_id=str(getattr(inbound, "sender_id", "gui_user") or "gui_user"),
-                chat_id=str(
-                    getattr(inbound, "chat_id", self.session_id) or self.session_id
-                ),
-                content=str(getattr(inbound, "content", "") or ""),
-                media=list(getattr(inbound, "media", []) or []),
-                metadata=inbound_meta,
-            )
-        self._chat_task_active = True
-        task = StreamingChatTask(
-            widget=self,
-            prompt=str(getattr(inbound, "content", "") or ""),
-            session_store=self._session_store,
-            inbound=inbound,
-        )
-        self._active_turn_id = str(getattr(task, "turn_id", "") or "").strip()
-        self.thread_pool.start(task)
-        self._active_chat_task = task
-        if self._chat_message_bus.inbound.qsize() <= 0:
-            self._chat_inbound_bus_timer.stop()
-
-    @QtCore.Slot(str)
-    def enqueue_outbound_bus_message(self, payload_text: str) -> None:
-        self._chat_message_bus.outbound.put_nowait(
-            OutboundMessage(
-                channel="gui-ui",
-                chat_id=self.session_id,
-                content=str(payload_text or ""),
-                metadata={"source": "ai_chat_backend"},
-            )
-        )
-        if not self._chat_bus_timer.isActive():
-            self._chat_bus_timer.start()
-
-    def _drain_outbound_bus_messages(self) -> None:
-        processed = 0
-        max_events_per_tick = 64
-        while processed < max_events_per_tick:
-            try:
-                outbound = self._chat_message_bus.outbound.get_nowait()
-            except asyncio.QueueEmpty:
-                self._chat_bus_timer.stop()
-                return
-            processed += 1
-            self.consume_outbound_chat_event(str(outbound.content or ""))
-        if self._chat_message_bus.outbound.qsize() <= 0:
-            self._chat_bus_timer.stop()
-
-    @QtCore.Slot(str)
-    def consume_outbound_chat_event(self, payload_text: str) -> None:
-        event = decode_outbound_chat_event(payload_text)
-        if event is None:
-            return
-        event_turn_id = str(getattr(event, "turn_id", "") or "").strip()
-        active_turn_id = str(getattr(self, "_active_turn_id", "") or "").strip()
-        if event_turn_id and active_turn_id and event_turn_id != active_turn_id:
-            # Drop stale chunks/progress/final events from a cancelled or previous turn.
-            return
-        if event_turn_id and not active_turn_id and not self._chat_task_active:
-            # Drop delayed events arriving after a turn was already stopped/finished.
-            return
-        dedupe_key = str(getattr(event, "idempotency_key", "") or "").strip()
-        if dedupe_key:
-            if dedupe_key in self._seen_event_keys:
-                return
-            self._seen_event_keys[dedupe_key] = time.monotonic()
-            self._seen_event_keys.move_to_end(dedupe_key)
-            while len(self._seen_event_keys) > int(self._seen_event_key_limit):
-                self._seen_event_keys.popitem(last=False)
-        if event.kind == "chunk":
-            self.stream_chat_chunk(event.text)
-            return
-        if event.kind == "progress":
-            self.stream_chat_progress(event.text)
-            return
-        error_type = str(getattr(event, "error_type", "") or "").strip().lower()
-        turn_status = str(getattr(event, "turn_status", "") or "").strip().lower()
-        self.update_chat_response(
-            event.text,
-            bool(event.is_error),
-            error_type=error_type,
-            turn_status=turn_status,
-        )
-
-    @QtCore.Slot(str)
-    def stream_chat_chunk(self, chunk: str) -> None:
-        if self._current_response_bubble is None:
-            return
-        if not self._has_streamed_response_chunk:
-            self._has_streamed_response_chunk = True
-            self._current_response_bubble.set_text("")
-        self._current_response_bubble.append_text(chunk)
-        QtCore.QTimer.singleShot(0, self._reflow_chat_bubbles)
-        QtCore.QTimer.singleShot(0, self._scroll_to_bottom)
-
-    @QtCore.Slot(str)
-    def stream_chat_progress(self, update: str) -> None:
-        text = str(update or "").strip()
-        if not text:
-            return
-        self._latest_progress_text = text
-        boilerplate = {
-            "starting agent loop",
-            "loading tools and context",
-            "prepared system prompt",
-            "received model response",
-        }
-        parts = [part.strip() for part in text.splitlines() if part.strip()]
-        if not parts:
-            return
-        for part in parts:
-            self._append_thinking_progress_line(part, boilerplate=boilerplate)
-        self._render_progress_in_bubble()
-
-    @QtCore.Slot(str, bool)
-    def update_chat_response(
-        self,
-        message: str,
-        is_error: bool,
-        *,
-        error_type: str = "",
-        turn_status: str = "",
-    ) -> None:
-        text = str(message or "")
-        now = time.monotonic()
-        if (
-            self._current_response_bubble is None
-            and text.strip()
-            and text.strip() == self._last_final_message_text
-            and bool(is_error) == self._last_final_message_is_error
-            and (now - float(self._last_final_message_ts)) <= 2.0
-        ):
-            # Guard against duplicate final events emitted for the same turn.
-            return
-
-        if self._current_response_bubble is None:
-            bubble = self._add_bubble(
-                "Assistant",
-                text,
-                is_user=False,
-            )
-            self._current_response_bubble = bubble
-
-        self._current_response_bubble.finish_thinking(collapse=True)
-        if is_error:
-            if self._has_streamed_response_chunk:
-                current = self._current_response_bubble.text()
-                self._current_response_bubble.set_text((current + "\n" + text).strip())
-            else:
-                self._current_response_bubble.set_text(text or "Error")
-            if str(error_type or "").strip():
-                self.status_label.setText(f"Error ({str(error_type).strip()})")
-            else:
-                self.status_label.setText("Error")
-        elif text:
-            self._current_response_bubble.set_text(text)
-            status = str(turn_status or "").strip().lower()
-            if status == TURN_STATUS_CANCELLED:
-                self.status_label.setText("Cancelled")
-            elif status:
-                self.status_label.setText(status.capitalize())
-            else:
-                self.status_label.setText("Done")
-        else:
-            self.status_label.setText("Done")
-
-        self.is_streaming_chat = False
-        self._stop_typing_indicator()
-        self._latest_progress_text = ""
-        self._has_streamed_response_chunk = False
-        self._chat_task_active = False
-        self._on_prompt_text_changed()
-        self._active_chat_task = None
-        self._active_turn_id = ""
-        if self._current_response_bubble is not None:
-            self._current_response_bubble.set_stop_visible(False)
-        self._current_response_bubble = None
-        self._current_progress_bubble = None
-        self._progress_lines = []
-        self._last_final_message_text = text.strip()
-        self._last_final_message_is_error = bool(is_error)
-        self._last_final_message_ts = now
-        QtCore.QTimer.singleShot(0, self._reflow_chat_bubbles)
-        QtCore.QTimer.singleShot(0, self._scroll_to_bottom)
-        if self._chat_message_bus.inbound.qsize() > 0:
-            if not self._chat_inbound_bus_timer.isActive():
-                self._chat_inbound_bus_timer.start()
-            QtCore.QTimer.singleShot(0, self._drain_inbound_bus_messages)
-
-    def _stop_running_response(self) -> None:
-        if not self._chat_task_active:
-            return
-        task = self._active_chat_task
-        if task is not None and hasattr(task, "request_cancel"):
-            with contextlib.suppress(Exception):
-                task.request_cancel()
-        self.status_label.setText("Stopping...")
-        if self._current_response_bubble is not None:
-            self._current_response_bubble.set_stop_visible(False)
-        self.update_chat_response(
-            "Stopped by user.",
-            False,
-            error_type=ERROR_TYPE_CANCELLED,
-            turn_status=TURN_STATUS_CANCELLED,
-        )
-
-    def _last_assistant_text(self) -> str:
-        # Find last non-user bubble text.
-        for bubble in reversed(self._iter_chat_bubbles()):
-            if bubble.property("role") == "assistant":
-                text = bubble.text().strip()
-                if text:
-                    return text
-        return ""
-
-    def read_last_reply_async(self) -> None:
-        if self._audio_controller is None:
-            return
-        self._audio_controller.read_last_reply_async()
-
-    def speak_text_async(self, text: str) -> None:
-        if self._audio_controller is None:
-            return
-        self._audio_controller.speak_text_async(text)
-
-    def toggle_recording(self) -> None:
-        if self._audio_controller is None:
-            return
-        self._audio_controller.toggle_recording()

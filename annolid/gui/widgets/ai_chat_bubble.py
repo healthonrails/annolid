@@ -181,6 +181,10 @@ class _ChatBubble(QtWidgets.QFrame):
         self.copy_button = self._create_action_button(
             _symbol_text("📋", "C"), "Copy text"
         )
+        self._copy_button_default_text = self.copy_button.text()
+        self._copy_reset_timer = QtCore.QTimer(self)
+        self._copy_reset_timer.setSingleShot(True)
+        self._copy_reset_timer.timeout.connect(self._restore_copy_button)
         self.regenerate_button = self._create_action_button(
             _symbol_text("🔄", "R"), "Regenerate"
         )
@@ -520,13 +524,23 @@ class _ChatBubble(QtWidgets.QFrame):
         if callable(self._on_speak):
             self._on_speak(self.text())
 
+    def _restore_copy_button(self) -> None:
+        try:
+            self.copy_button.setText(self._copy_button_default_text)
+            self.copy_button.setToolTip("Copy text")
+        except RuntimeError:
+            return
+
     def _copy_text(self) -> None:
         if callable(self._on_copy):
-            self._on_copy(self.text())
+            self._on_copy(self.raw_text() or self.text())
+        self.copy_button.setText("✓")
+        self.copy_button.setToolTip("Copied!")
+        self._copy_reset_timer.start(1200)
 
     def _regenerate(self) -> None:
         if callable(self._on_regenerate):
-            self._on_regenerate(self.text())
+            self._on_regenerate(self)
 
     def _stop(self) -> None:
         if callable(self._on_stop):

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
-from qtpy import QtWidgets
+from qtpy import QtCore, QtWidgets
+
+from annolid.utils.llm_settings import list_providers, load_llm_settings
 
 
 class AgentRunDialog(QtWidgets.QDialog):
@@ -91,12 +93,15 @@ class AgentRunDialog(QtWidgets.QDialog):
         layout.addRow(self.tr("LLM profile"), self.llm_profile_edit)
 
         self.llm_provider_edit = QtWidgets.QLineEdit(str(cfg.get("llm_provider") or ""))
-        self.llm_provider_edit.setPlaceholderText(self.tr("openai / ollama"))
+        self.llm_provider_edit.setPlaceholderText(
+            self.tr("ollama, openai, anthropic, gemini, …")
+        )
         layout.addRow(self.tr("LLM provider"), self.llm_provider_edit)
 
         self.llm_model_edit = QtWidgets.QLineEdit(str(cfg.get("llm_model") or ""))
         self.llm_model_edit.setPlaceholderText(self.tr("model name"))
         layout.addRow(self.tr("LLM model"), self.llm_model_edit)
+        self._setup_llm_completers()
 
         self.llm_persist_chk = QtWidgets.QCheckBox(self.tr("Persist LLM settings"))
         self.llm_persist_chk.setChecked(bool(cfg.get("llm_persist", False)))
@@ -200,6 +205,49 @@ class AgentRunDialog(QtWidgets.QDialog):
         self.vision_device_edit.setEnabled(enabled)
         self.vision_weights_edit.setEnabled(is_dino)
         self.vision_weights_btn.setEnabled(is_dino)
+
+    def _setup_llm_completers(self) -> None:
+        try:
+            self._llm_settings_snapshot: Dict[str, Any] = dict(
+                load_llm_settings() or {}
+            )
+            providers = list_providers(self._llm_settings_snapshot)
+        except Exception:
+            self._llm_settings_snapshot = {}
+            providers = ["ollama", "openai", "anthropic", "openrouter", "gemini"]
+
+        provider_completer = QtWidgets.QCompleter(providers, self)
+        provider_completer.setCaseSensitivity(QtCore.Qt.CaseInsensitive)
+        self.llm_provider_edit.setCompleter(provider_completer)
+        self.llm_provider_edit.textChanged.connect(self._refresh_model_completer)
+        self._refresh_model_completer(self.llm_provider_edit.text())
+
+    def _refresh_model_completer(self, provider_text: str) -> None:
+        provider_key = str(provider_text or "").strip().lower()
+        if not provider_key and isinstance(self._llm_settings_snapshot, dict):
+            provider_key = (
+                str(self._llm_settings_snapshot.get("provider") or "").strip().lower()
+            )
+        models: List[str] = []
+        seen: set[str] = set()
+        if provider_key and isinstance(self._llm_settings_snapshot, dict):
+            block = self._llm_settings_snapshot.get(provider_key)
+            if isinstance(block, dict):
+                for field in ("preferred_models", "custom_models"):
+                    for item in list(block.get(field) or []):
+                        name = str(item or "").strip()
+                        if name and name not in seen:
+                            seen.add(name)
+                            models.append(name)
+            last_model = str(
+                (self._llm_settings_snapshot.get("last_models") or {}).get(provider_key)
+                or ""
+            ).strip()
+            if last_model and last_model not in seen:
+                models.insert(0, last_model)
+        model_completer = QtWidgets.QCompleter(models, self)
+        model_completer.setCaseSensitivity(QtCore.Qt.CaseInsensitive)
+        self.llm_model_edit.setCompleter(model_completer)
 
     def _update_llm_controls(self, adapter: str) -> None:
         enabled = str(adapter).strip().lower() != "none"

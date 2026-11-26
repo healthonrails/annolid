@@ -50,6 +50,7 @@ class AgentCapabilitiesDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self.setWindowTitle("Annolid Agent Capabilities")
         self.resize(1100, 760)
+        self._last_payload: Dict[str, Any] = {}
         self._build_ui()
         self.refresh()
 
@@ -58,7 +59,8 @@ class AgentCapabilitiesDialog(QtWidgets.QDialog):
 
         intro = QtWidgets.QLabel(
             "Inspect the current agent tool policy and skill discovery in one place. "
-            "Use a task hint to preview which skills the runtime would choose."
+            "Use a task hint to preview which skills the runtime would choose. "
+            "Double-click any tool or skill row to copy its slash command."
         )
         intro.setWordWrap(True)
         layout.addWidget(intro)
@@ -66,10 +68,16 @@ class AgentCapabilitiesDialog(QtWidgets.QDialog):
         controls = QtWidgets.QHBoxLayout()
         controls.addWidget(QtWidgets.QLabel("Workspace:"))
         self.workspace_edit = QtWidgets.QLineEdit(str(get_agent_workspace_path()))
+        self.workspace_edit.returnPressed.connect(self.refresh)
         controls.addWidget(self.workspace_edit, 1)
+        self.browse_workspace_btn = QtWidgets.QPushButton("Browse…")
+        self.browse_workspace_btn.clicked.connect(self._browse_workspace)
+        controls.addWidget(self.browse_workspace_btn)
         controls.addWidget(QtWidgets.QLabel("Task hint:"))
         self.task_hint_edit = QtWidgets.QLineEdit()
+        self.task_hint_edit.setClearButtonEnabled(True)
         self.task_hint_edit.setPlaceholderText("e.g. check today's weather")
+        self.task_hint_edit.returnPressed.connect(self.refresh)
         controls.addWidget(self.task_hint_edit, 2)
         controls.addWidget(QtWidgets.QLabel("Top K:"))
         self.top_k_spin = QtWidgets.QSpinBox()
@@ -116,21 +124,35 @@ class AgentCapabilitiesDialog(QtWidgets.QDialog):
 
         self.tools_page = QtWidgets.QWidget()
         tools_layout = QtWidgets.QVBoxLayout(self.tools_page)
+        self.tools_filter_edit = QtWidgets.QLineEdit(self.tools_page)
+        self.tools_filter_edit.setClearButtonEnabled(True)
+        self.tools_filter_edit.setPlaceholderText("Filter tools by name or policy…")
+        self.tools_filter_edit.textChanged.connect(self._filter_tools_table)
+        tools_layout.addWidget(self.tools_filter_edit)
         self.tools_table = QtWidgets.QTableWidget(0, 4, self)
         _set_table_headers(
             self.tools_table,
             ["Tool", "Allowed", "Source", "Policy"],
         )
+        self.tools_table.itemDoubleClicked.connect(self._copy_selected_tool_slash)
         tools_layout.addWidget(self.tools_table)
         self.tabs.addTab(self.tools_page, "Tools")
 
         self.skills_page = QtWidgets.QWidget()
         skills_layout = QtWidgets.QVBoxLayout(self.skills_page)
+        self.skills_filter_edit = QtWidgets.QLineEdit(self.skills_page)
+        self.skills_filter_edit.setClearButtonEnabled(True)
+        self.skills_filter_edit.setPlaceholderText(
+            "Filter skills by name, source, or description…"
+        )
+        self.skills_filter_edit.textChanged.connect(self._filter_skills_table)
+        skills_layout.addWidget(self.skills_filter_edit)
         self.skills_table = QtWidgets.QTableWidget(0, 4, self)
         _set_table_headers(
             self.skills_table,
             ["Skill", "Available", "Source", "Description"],
         )
+        self.skills_table.itemDoubleClicked.connect(self._copy_selected_skill_slash)
         skills_layout.addWidget(self.skills_table)
         self.tabs.addTab(self.skills_page, "Skills")
 
@@ -142,11 +164,23 @@ class AgentCapabilitiesDialog(QtWidgets.QDialog):
         self.tabs.addTab(self.suggestions_page, "Suggestions")
 
         button_row = QtWidgets.QHBoxLayout()
-        button_row.addStretch(1)
+        self.feedback_label = QtWidgets.QLabel("", self)
+        self.feedback_label.setEnabled(False)
+        button_row.addWidget(self.feedback_label, 1)
         close_btn = QtWidgets.QPushButton("Close")
         close_btn.clicked.connect(self.close)
         button_row.addWidget(close_btn)
         layout.addLayout(button_row)
+
+    def _browse_workspace(self) -> None:
+        selected = QtWidgets.QFileDialog.getExistingDirectory(
+            self,
+            "Select Agent Workspace",
+            self._workspace(),
+        )
+        if selected:
+            self.workspace_edit.setText(selected)
+            self.refresh()
 
     def _workspace(self) -> str:
         value = self.workspace_edit.text().strip()
@@ -160,7 +194,8 @@ class AgentCapabilitiesDialog(QtWidgets.QDialog):
             task_hint=self.task_hint_edit.text().strip(),
             top_k=int(self.top_k_spin.value()),
         )
-        self._render_payload(payload)
+        self._last_payload = dict(payload or {})
+        self._render_payload(self._last_payload)
 
     def _render_payload(self, payload: Dict[str, Any]) -> None:
         tool_pool = dict(payload.get("tool_pool") or {})
@@ -182,6 +217,56 @@ class AgentCapabilitiesDialog(QtWidgets.QDialog):
         self._populate_tools_table(tool_pool)
         self._populate_skills_table(skill_pool)
         self._populate_suggestions(payload.get("skill_pool", {}))
+        self._filter_tools_table()
+        self._filter_skills_table()
+
+    def _filter_tools_table(self) -> None:
+        needle = str(self.tools_filter_edit.text() or "").strip().lower()
+        for row in range(self.tools_table.rowCount()):
+            if not needle:
+                self.tools_table.setRowHidden(row, False)
+                continue
+            row_text = " ".join(
+                str(self.tools_table.item(row, col).text() or "")
+                for col in range(self.tools_table.columnCount())
+                if self.tools_table.item(row, col) is not None
+            ).lower()
+            self.tools_table.setRowHidden(row, needle not in row_text)
+
+    def _filter_skills_table(self) -> None:
+        needle = str(self.skills_filter_edit.text() or "").strip().lower()
+        for row in range(self.skills_table.rowCount()):
+            if not needle:
+                self.skills_table.setRowHidden(row, False)
+                continue
+            row_text = " ".join(
+                str(self.skills_table.item(row, col).text() or "")
+                for col in range(self.skills_table.columnCount())
+                if self.skills_table.item(row, col) is not None
+            ).lower()
+            self.skills_table.setRowHidden(row, needle not in row_text)
+
+    def _copy_selected_tool_slash(self, item: QtWidgets.QTableWidgetItem) -> None:
+        name_item = self.tools_table.item(item.row(), 0)
+        name = str(name_item.text() if name_item is not None else "").strip()
+        if not name:
+            return
+        cmd = f"/tool {name}"
+        clipboard = QtWidgets.QApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(cmd)
+        self.feedback_label.setText(f"Copied '{cmd}' to clipboard.")
+
+    def _copy_selected_skill_slash(self, item: QtWidgets.QTableWidgetItem) -> None:
+        name_item = self.skills_table.item(item.row(), 0)
+        name = str(name_item.text() if name_item is not None else "").strip()
+        if not name:
+            return
+        cmd = f"/skill {name}"
+        clipboard = QtWidgets.QApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(cmd)
+        self.feedback_label.setText(f"Copied '{cmd}' to clipboard.")
 
     def _populate_tools_table(self, tool_pool: Dict[str, Any]) -> None:
         allowed = {str(item) for item in tool_pool.get("allowed_tools") or []}
@@ -243,12 +328,15 @@ class AgentCapabilitiesDialog(QtWidgets.QDialog):
         self.suggestions_text.setPlainText("\n".join(lines))
 
     def _copy_json(self) -> None:
-        payload = describe_agent_capabilities(
+        payload = self._last_payload or describe_agent_capabilities(
             workspace=self._workspace(),
             task_hint=self.task_hint_edit.text().strip(),
             top_k=int(self.top_k_spin.value()),
         )
-        QtWidgets.QApplication.clipboard().setText(_json_text(payload))
+        clipboard = QtWidgets.QApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(_json_text(payload))
+        self.feedback_label.setText("Copied capabilities JSON to clipboard.")
 
     def _apply_task_hint_preset(self, task_hint: str) -> None:
         self.task_hint_edit.setText(str(task_hint or "").strip())

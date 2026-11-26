@@ -201,7 +201,6 @@ class AIChatSlashMixin:
         self.capability_chip_label.setVisible(has_chips)
         self.clear_capability_chips_button.setVisible(has_chips)
         self._refresh_suggested_skill_chips()
-        self._refresh_inline_slash_hints()
 
     def _refresh_suggested_skill_chips(self) -> None:
         layout = getattr(self, "suggested_chip_layout", None)
