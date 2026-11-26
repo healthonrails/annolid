@@ -1,0 +1,576 @@
+\documentclass[10pt,twocolumn,letterpaper]{article}
+
+\usepackage[letterpaper,textwidth=6.95in,textheight=9.05in,columnsep=0.28in,top=0.92in]{geometry}
+\usepackage{times}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{xcolor}
+\usepackage{microtype}
+\usepackage{hyperref}
+\usepackage{caption}
+\usepackage{enumitem}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+
+\titlespacing*{\section}{0pt}{6pt plus 1pt minus 1pt}{2.4pt plus 0.5pt}
+\titlespacing*{\subsection}{0pt}{4.5pt plus 0.8pt minus 0.8pt}{1.8pt plus 0.4pt}
+\titlespacing*{\paragraph}{0pt}{2.8pt plus 0.4pt minus 0.4pt}{0.5em}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!55!black,
+  citecolor=blue!55!black,
+  urlcolor=blue!55!black,
+  pdftitle={From Pixels to Circuits: Bidirectional 3D Biomechanical Digital Twins and Mechanistic Neural Control Across Species in Annolid},
+  pdfauthor={Anonymous Authors}
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\renewcommand{\headrulewidth}{0pt}
+\fancyhead[C]{\small\color{gray!70!black}Annolid Technical Publication \quad$\cdot$\quad Bidirectional Digital Animal Behavior, 3D Biomechanics \& Neural Control}
+\fancyfoot[C]{\small\thepage}
+\fancypagestyle{plain}{%
+  \fancyhf{}
+  \renewcommand{\headrulewidth}{0pt}
+  \fancyhead[C]{\small\color{gray!70!black}Annolid Technical Publication \quad$\cdot$\quad Revised Preprint (November 2026)}
+  \fancyfoot[C]{\small\thepage}
+}
+
+\captionsetup{font=footnotesize,labelfont=bf,skip=3pt}
+\setlength{\textfloatsep}{7pt plus 1.5pt minus 1.5pt}
+\setlength{\dbltextfloatsep}{8pt plus 1.5pt minus 1.5pt}
+\setlength{\floatsep}{6pt plus 1.5pt minus 1.5pt}
+\setlength{\intextsep}{6pt plus 1.5pt minus 1.5pt}
+\renewcommand{\topfraction}{0.92}
+\renewcommand{\dbltopfraction}{0.92}
+\renewcommand{\textfraction}{0.07}
+
+\title{\vspace{-2.0em}\Large\textbf{From Pixels to Circuits: Bidirectional 3D Biomechanical Digital Twins\\and Mechanistic Neural Control Across Species in Annolid}\vspace{-0.5em}}
+
+\author{
+  Anonymous Authors
+}
+\date{\vspace{-1.4em}}
+
+\begin{document}
+\raggedbottom
+\maketitle
+\thispagestyle{plain}
+
+\setlength{\abovedisplayskip}{4.5pt}
+\setlength{\belowdisplayskip}{4.5pt}
+
+% =========================================================================
+% ABSTRACT
+% =========================================================================
+\begin{abstract}
+\vspace{-0.4em}
+Computational neuroethology is converging on a unified paradigm that links markerless behavioral tracking with physically grounded 3D animal bodies and mechanistic neural circuit controllers. Yet current toolchains remain sharply fragmented: top-down reinforcement-learning virtual animals (Virtual Rodent, FlyBody, MIMIC-MJX) rely on GPU clusters and black-box policies without identified biological cell types, whereas bottom-up mechanistic models (FlyWire LIF, NeuroMechFly~v2, Rat NCAP) lack accessible bridges to real-world video tracking, multi-view 3D reconstruction, and inverse biomechanics. We present a lean, pure-NumPy bidirectional architecture embedded inside \textbf{Annolid} that closes the \textbf{Pixels $\leftrightarrow$ 3D Biomechanical Digital Twin $\leftrightarrow$ Mechanistic Neural Circuit} loop across three benchmarked species: \emph{Rattus norvegicus}, \emph{Mus musculus}, and \emph{Drosophila melanogaster}. Four integrated contributions anchor the framework: (1)~calibrated multi-view 3D triangulation with Brown--Conrady undistortion, leave-one-out outlier pruning, robust monocular depth lifting (\texttt{bilinear}/\texttt{median\_patch}), and \emph{rigid-bone} Position-Based Dynamics (PBD) projection; (2)~real-to-sim 31-DOF rodent inverse kinematics (IK) via Kabsch 6-DOF trunk alignment, automatic DANNCE/Anipose schema and Sim(3) body-scale/unit normalization, and an \emph{exact closed-form KKT solver} for antagonistic spring-muscle inverse dynamics (ID), audited directly against independent MuJoCo~3.5.0 rigid-body rat (0.36\,kg) and mouse (25.6\,g) quadrupeds; (3)~a stride-windowed, bandpass-Hilbert, Froude-similarity \emph{spinal circuit identifier} that blindly infers brainstem drive and both $V0$ and $V3$ commissural interneuron deficits from noisy, occluded 3D kinematics across rodent species; and (4)~an in-silico optogenetic, Kir2.1 silencing, and three-factor dopaminergic Mushroom Body plasticity engine---scaling up to a \textbf{2,000-KC APL-sparsified} (5\% active, 4,000 plastic synapses) spiking memory---for sparse whole-CNS \emph{Drosophila} Leaky Integrate-and-Fire (LIF) connectomes. Across reproducible CPU benchmarks with bootstrap 95\% confidence intervals and paired nonparametric tests, rigid-bone PBD reduces 4-view MPJPE by \textbf{45.1\%} at $\sigma=6$\,px (6.03 $\to$ 3.31\,mm, Wilcoxon $p=1.6\times 10^{-11}$), cuts 30\% camera-dropout occlusion error by \textbf{41.6\%}, shrinks bone-length CV \textbf{60$\times$} (13.91\% $\to$ 0.23\%), and rejects \textbf{100.0\%} (374/374) of 65\,px single-view outliers; blind 6-class spinal inference reaches \textbf{100.0\% (180/180)} accuracy at $\sigma_{\mathrm{3D}}=4$\,mm (McNemar $p=1.5\times 10^{-33}$ vs.\ baseline; $V0$ and $V3$ deficit F1 $=1.000$) and transfers zero-shot to independent MuJoCo rat trajectories (\textbf{100.0\% / 100.0\% / 92.0\%} across $0 / 2 / 4$\,mm noise, $r=0.86\text{--}0.90$) and to 25.6\,g \emph{Mus musculus} DANNCE-mm tracks with 8\% paw occlusion (\textbf{100.0\% / 100.0\% / 92.0\%}, $r=0.84\text{--}0.90$); and our spiking LIF \emph{Drosophila} connectome preserves \textbf{100.0\% (45/45)} selectivity under $\sigma=0.7$ Dale's-law noise (vs.\ 77.8\% rate, McNemar $p=0.0020$), achieves \textbf{100.0\% (10/10)} multi-odor acquisition, 20\%-noise generalization, and selective single-odor reversal (preserving 9/9 non-target odors) in the 2,000-KC LIF Mushroom Body, and executes complete 166,700-neuron MaleCNS~v1.0 LIF substeps across $2.0\text{--}16.7$M directed edges in \textbf{2.95--13.67\,ms} on 78-neuropil modular graphs (\textbf{19.0--22.7\% faster} than random Erd\H{o}s--R\'enyi CSR via cache locality) within \textbf{31.2--199.0\,MB} RAM on CPU.
+\end{abstract}
+
+% =========================================================================
+% 1. INTRODUCTION
+% =========================================================================
+\section{Introduction}
+
+Understanding how nervous systems generate agile, adaptive behavior in physical environments is a central challenge of modern neuroscience~\cite{krakauer2017neuroscience,datta2019computational}. Between 2024 and 2026, three previously separate advances have matured simultaneously:
+\begin{enumerate}[leftmargin=*,itemsep=1.2pt,topsep=1.5pt]
+  \item \textbf{Markerless 2D/3D Behavioral Quantification:} Deep pose estimators~\cite{mathis2018deeplabcut,pereira2022sleap,dunn2021dannce,karashchuk2021anipose}, chirality-free anatomical part segmentation, and behavioral-neural embedding methods~\cite{weinreb2024keypointmoseq,schneider2023cebra} now extract sub-second kinematics from freely moving animals across laboratories.
+  \item \textbf{High-Fidelity 3D Biomechanical Digital Twins:} Anatomically calibrated musculoskeletal bodies in MuJoCo~\cite{todorov2012mujoco} and GPU-accelerated MJX---including the Virtual Rodent~\cite{aldarondo2024virtualrodent}, FlyBody~\cite{vaxenburg2025flybody}, NeuroMechFly~v2~\cite{wangchen2024neuromechfly2}, MIMIC-MJX / STAC-MJX~\cite{zhang2025mimicmjx}, and the 38-DOF skinned Long-Evans Rat~v2 rig~\cite{bhattasali2026ratncap}---capture ground contact, wing aerodynamics, and antagonistic joint compliance.
+  \item \textbf{Connectome- and Circuit-Constrained Neural Control:} Whole-CNS electron-microscopy wiring diagrams of \emph{Drosophila} (FlyWire~\cite{dorkenwald2024flywire}, MANC~\cite{takemura2024manc}, and MaleCNS~v1.0 spanning 166,700 neurons~\cite{berg2025malecns}) have enabled biophysical Leaky Integrate-and-Fire (LIF) brain models~\cite{shiu2024drosophilalif}, while mammalian spinal circuit priors (\emph{Rat NCAP})~\cite{bhattasali2022ncap,bhattasali2026ratncap} reproduce speed-dependent quadrupedal gait transitions and genetic ablation phenotypes~\cite{bellardita2015v0,danner2017spinal} without imitation learning.
+\end{enumerate}
+
+Despite this progress, everyday behavioral neuroscience laboratories still face a stark \emph{two-way integration chasm}. On the \textbf{Real-to-Sim} side, raw 2D/3D pose predictions violate bone lengths, suffer single-camera occlusion dropouts and outlier spikes, and stop at unstructured Cartesian point clouds---yielding neither anatomically bounded joint angles, nor muscle activations, nor causal hypotheses about which spinal or descending circuits explain an observed phenotype. On the \textbf{Sim-to-Real} and \textbf{mechanistic modeling} side, black-box deep RL policies offer no one-to-one mapping to identified interneuron classes ($V0_d$, $V0_v$, $V3$, \texttt{DNp09}, \texttt{MDN}, \texttt{Pair1}, \texttt{aDN1}), whereas standalone research simulators require heavy JAX/GPU stacks that cannot be bundled into lean desktop annotation software.
+
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=0.98\textwidth]{figures/fig1_architecture.pdf}
+  \caption{\textbf{Bidirectional Neuro-Biomechanical Digital Twin Architecture in Annolid.} (1)~Markerless single- or multi-view video poses, depth sidecars, and temporal smoothers feed into (2)~our distortion-aware multi-view DLT + Huber Gauss--Newton triangulator, robust monocular depth lifter, and rigid-bone Position-Based Dynamics (PBD) manifold projector (cutting bone-length CV by 98.3\%). (3)~The 3D biomechanical twin performs DANNCE/Anipose schema normalization, Sim(3) body-scale/unit alignment, Kabsch 6-DOF trunk alignment, anatomically bounded 31-DOF rodent inverse kinematics, and exact closed-form KKT antagonistic spring-muscle inverse dynamics (audited against MuJoCo~3.5.0 rat and mouse quadrupeds) alongside optional MuJoCo FlyBody and Three.js 41-bone GLB rendering. (4)~Mechanistic neural circuits span mammalian spinal NCAP rhythm generation ($V0_d$/$V0_v$/$V3_f$/$V3_a$) with Froude cross-species similarity and sparse \emph{Drosophila} MaleCNS/FlyWire LIF spiking connectomes with Chrimson optogenetics, Kir2.1 silencing, and 2,000-KC APL-sparsified PAM/PPL1 Mushroom Body plasticity.}
+  \label{fig:arch}
+\end{figure*}
+
+In this work, we close this bidirectional loop directly inside \textbf{Annolid} (Figure~\ref{fig:arch}) using a strictly lean pure-NumPy core (zero mandatory PyTorch, JAX, SciPy, or MuJoCo imports at load or inference time, with seamless optional MuJoCo/FlyBody and bundled WebGL/Three.js interoperability). Our contributions are fourfold:
+
+\begin{enumerate}[leftmargin=*,itemsep=1.2pt,topsep=1.5pt]
+  \item \textbf{Robust Multi-View \& Depth 3D Lifting with Rigid-Bone Manifolds (\texttt{annolid.simulation.lifting}):} We introduce calibrated camera models with Brown--Conrady lens undistortion, confidence-weighted DLT initialization, leave-one-out single-view outlier rejection, Huber Gauss--Newton refinement, \texttt{bilinear}/\texttt{median\_patch} monocular depth lifting with camera extrinsics, and \emph{rigid-bone} PBD projection. We quantify both the anatomical hazard of constraining articulated paw tethers (\texttt{thorax}--\texttt{paw}) and the exact low- vs.\ high-noise bias--variance tradeoff of spatial-only ($\lambda_t=0$) versus temporal ($\lambda_t=0.15$) PBD across Gaussian jitter, 65\,px outliers, and 30\% camera-dropout occlusions.
+  \item \textbf{Real-to-Sim 31-DOF Rodent IK, Exact KKT Spring-Muscle ID \& Cross-Species MuJoCo~3.5.0 Audit (\texttt{annolid.simulation.biomechanics}):} We develop automatic DANNCE/Rat7M/Anipose keypoint aliasing, Sim(3) unit/body-scale estimation, Kabsch 6-DOF trunk alignment, anatomically bounded 31-DOF IK, and an \emph{exact closed-form KKT solver} for antagonistic spring-muscle activations $(a_{\mathrm{flx}}, a_{\mathrm{ext}}) \in [0,1]^2$ ($0.0000$\,Nm surrogate residual at 2,470\,FPS). Crucially, to break single-model circularity and test cross-species transfer, we audit against \emph{two independent MuJoCo~3.5.0 rigid-body quadrupeds}---a 0.36\,kg rat and a 25.6\,g mouse (\emph{Mus musculus}) using DANNCE millimeter coordinates and empirical Bellardita \& Kiehn cadences---verifying zero-shot kinematic transfer ($r=0.84\text{--}0.90$) while transparently quantifying where surrogate-inertia decoupled ID diverges from full Lagrangian \texttt{mj\_inverse} torques.
+  \item \textbf{Noise-Robust Cross-Species 6-Class Blind Spinal Circuit Identification:} Diagnosing Rayleigh velocity bias, broadband phase noise, transient paw dropouts, and a tight diagonal-synchrony walk/trot boundary, we engineer a Kabsch multi-landmark, stride-windowed, bandpass-Hilbert identifier using Froude dynamic similarity~\cite{alexander1983froude} ($\tilde{v} = v/\sqrt{s}$), missing-keypoint interpolation, an extended $[0.8, 14.0]$\,Hz cadence band, and a principled Hildebrand diagonal-synchrony threshold ($d_{\mathrm{diag}} < 0.18$). Across 180 blind trials spanning 6 classes (including both speed-matched $V0$ and $V3$ deficits), it reaches \textbf{100.0\%} accuracy at $\sigma_{\mathrm{3D}}=4$\,mm ($V0$ and $V3$ F1 $=1.000$) and generalizes zero-shot to noisy MuJoCo rat tracks (\textbf{92--100\%}) and noisy, 8\%-paw-occluded 25.6\,g mouse DANNCE-mm tracks (\textbf{92--100\%}).
+  \item \textbf{Causal Perturbations, 2,000-KC Spiking LIF Plasticity \& Modular MaleCNS Scaling (\texttt{annolid.simulation.fly\_brain}):} We augment Annolid's sparse CSR Brain+VNC connectome with timed Chrimson optogenetics, Kir2.1 silencing, Dale's-law sign-preserving synaptic noise, and three-factor PAM/PPL1 Mushroom Body plasticity---scaling from canonical 2-odor reversal to a \textbf{2,000-KC APL-sparsified} (5\% active, 4,000 plastic synapses) spiking memory supporting 10-odor discrimination and selective single-odor reversal. We verify closed-loop motor outputs across five behaviors, prove statistically ($p=0.0020$ at $\sigma=0.7$) that LIF multiplicity confers Dale's-law noise resilience, and benchmark \emph{complete} 166,700-neuron MaleCNS~v1.0 LIF substeps on both random Erd\H{o}s--R\'enyi and biologically clustered \textbf{78-neuropil modular} CSR topologies up to 16.7M directed edges.
+\end{enumerate}
+
+% =========================================================================
+% 2. RELATED WORK & RESEARCH SYNTHESIS
+% =========================================================================
+\section{Research Landscape \& Related Work}
+
+Table~\ref{tab:landscape} synthesizes the 2024--2026 landscape across digital animal modeling, 3D biomechanical lifting, and neural control.
+
+\paragraph{Top-Down Embodied RL Virtual Animals.}
+Aldarondo et~al.~\cite{aldarondo2024virtualrodent} trained deep RL policies on a MuJoCo virtual rat to imitate freely moving 3D kinematics, showing that network latents predict motor cortex and striatal population activity better than kinematics alone via inverse dynamics. Vaxenburg et~al.~\cite{vaxenburg2025flybody} introduced \emph{FlyBody}, an anatomically detailed MuJoCo fruit fly supporting walking and vision-guided flight, and Zhang et~al.~\cite{zhang2025mimicmjx} introduced \emph{MIMIC-MJX} (\texttt{STAC-MJX} + \texttt{TRACK-MJX}) for GPU-parallel neuromechanical emulation across rodents, flies, stick insects, and \emph{C.~elegans}. While powerful for inverse-dynamics representation discovery, black-box policies cannot undergo cell-type-specific genetic ablations ($V0_d$, \texttt{Pair1}, \texttt{MDN}) and require GPU-heavy JAX/RL pipelines.
+
+\paragraph{Bottom-Up Mechanistic \& Connectome-Constrained Control.}
+In \emph{Drosophila}, the completion of FlyWire (139k female brain neurons)~\cite{dorkenwald2024flywire}, MANC (23k VNC neurons)~\cite{takemura2024manc}, and MaleCNS~v1.0 (166.7k whole-CNS neurons spanning brain, neck connective, and VNC)~\cite{berg2025malecns} catalyzed whole-brain LIF modeling~\cite{shiu2024drosophilalif} and closed-loop sensorimotor simulators such as NeuroMechFly~v2 / FlyGym~\cite{wangchen2024neuromechfly2}. In mammals, Danner et~al.~\cite{danner2017spinal} formalized commissural ($V0_d$, $V0_v$, $V3$) and long propriospinal networks governing speed-dependent gaits, explaining Bellardita \& Kiehn's~\cite{bellardita2015v0} finding that $V0$ ablation switches mice from trotting to premature bounding. Recently, Bhattasali et~al.~\cite{bhattasali2026ratncap} combined mammalian spinal priors (\emph{Rat NCAP}) with a 38-DOF Rat~v2 body and antagonistic spring-muscle actuation, achieving emergent \texttt{walk $\to$ trot $\to$ bound} transitions without imitation learning.
+
+\paragraph{3D Pose Lifting \& Behavioral Decoding.}
+Multi-view pipelines such as Anipose~\cite{karashchuk2021anipose} and volumetric DANNCE~\cite{dunn2021dannce} recover 3D markerless keypoints, while Keypoint-MoSeq~\cite{weinreb2024keypointmoseq} and CEBRA~\cite{schneider2023cebra} parse behavioral syllables and neural manifolds. Yet most ethology suites stop at Cartesian point clouds without anatomically bounded IK, muscle-force inversion, or causal circuit testing. Annolid unites all three layers in one accessible platform.
+
+\begin{table*}[t]
+\centering
+\caption{\textbf{Comparative Synthesis of 2024--2026 Digital Animal Behavior, 3D Biomechanics, and Neural Control Frameworks.} Annolid integrates video-to-3D lifting, anatomical IK/ID, causal cell-type perturbations, and Sim-to-Real supervision in a lean pure-NumPy core with optional MuJoCo interoperability.}
+\label{tab:landscape}
+\scriptsize
+\setlength{\tabcolsep}{3.4pt}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{@{}lcccccc@{}}
+\toprule
+\textbf{Framework / Study} & \textbf{Benchmarked Species} & \textbf{Neural Control Paradigm} & \textbf{3D Lifting / IK} & \textbf{Muscle ID} & \textbf{Cell-Type Causal} & \textbf{Core Runtime} \\
+\midrule
+Anipose~\cite{karashchuk2021anipose} / DANNCE~\cite{dunn2021dannce} & Multi / Rodent & None (Tracking) & Multi-view / 3D CNN & No & No & Python / PyTorch \\
+Virtual Rodent~\cite{aldarondo2024virtualrodent} & Rat & Black-box Deep RL & External MoCap & No & No & MuJoCo + GPU RL \\
+MIMIC-MJX / STAC-MJX~\cite{zhang2025mimicmjx} & Rat / Mouse / Fly & Imitation Deep RL & GPU MJX IK & No & No & JAX + MuJoCo-MJX \\
+FlyBody~\cite{vaxenburg2025flybody} & \emph{Drosophila} & Deep RL (Walk/Flight) & Optional IK & No & No & MuJoCo + dm\_control \\
+NeuroMechFly~v2~\cite{wangchen2024neuromechfly2} & \emph{Drosophila} & Hierarchical CPG + Vision & Replay / Sim & No & Partial (CPG) & MuJoCo (FlyGym) \\
+FlyWire LIF~\cite{shiu2024drosophilalif} & \emph{Drosophila} & Whole-Brain Spiking LIF & Disembodied & No & Yes (Opto/Lesion) & Brian2 / PyTorch \\
+Rat NCAP~\cite{bhattasali2026ratncap} & Rat (Rat~v2) & Spinal CPG Priors (RL) & Forward Sim & Spring-Muscle & Yes ($V0$/$V3$ Ablation) & MuJoCo / MJX + JAX \\
+\midrule
+\textbf{Annolid Digital Twin (Ours)} & \textbf{Rat + Mouse + Fly} & \textbf{MaleCNS LIF + Rat NCAP} & \textbf{Multi-View + Depth + IK} & \textbf{Exact KKT ID} & \textbf{Opto + Kir2.1 + $V0$/$V3$} & \textbf{Pure NumPy (+Opt.\ MJ)} \\
+\bottomrule
+\end{tabular}}
+\end{table*}
+
+% =========================================================================
+% 3. METHODS
+% =========================================================================
+\section{Methods}
+
+\subsection{Multi-View 3D Triangulation, Depth Lifting \& Rigid-Bone PBD}
+
+\paragraph{Camera Model \& Outlier-Resistant Triangulation.}
+Each calibrated view $c \in \{1,\dots,M\}$ is parameterized by intrinsics $\mathbf{K}_c = (f_x, f_y, c_x, c_y)$, world-to-camera extrinsics $(\mathbf{R}_c, \mathbf{t}_c)$, and Brown--Conrady distortion $\mathbf{d}_c = (k_1, k_2, p_1, p_2, k_3)$. Raw 2D observations $(u_{c}, v_{c})$ with detector confidence $s_c$ are iteratively undistorted via fixed-point inversion of the radial-tangential distortion field. For any keypoint observed in $M \ge 2$ views, we initialize $\mathbf{X}_0 \in \mathbb{R}^3$ via confidence-weighted Direct Linear Transform (DLT) SVD on rows $\sqrt{s_c}(u_c \mathbf{p}_{c,3}^\top - \mathbf{p}_{c,1}^\top)$ and $\sqrt{s_c}(v_c \mathbf{p}_{c,3}^\top - \mathbf{p}_{c,2}^\top)$ where $\mathbf{P}_c = \mathbf{K}_c[\mathbf{R}_c \mid \mathbf{t}_c]$. We then refine $\mathbf{X}$ with damped Gauss--Newton iterations minimizing Huber-weighted reprojection error ($\delta = 4$\,px):
+\begin{equation}
+  \min_{\mathbf{X}\in\mathbb{R}^3} \sum_{c \in \mathcal{V}} s_c \, \rho_\delta\!\left(\left\|\pi_c(\mathbf{X}) - \mathbf{u}_c\right\|_2\right).
+\end{equation}
+When $|\mathcal{V}| \ge 3$ and $\max_{c \in \mathcal{V}} \|\pi_c(\mathbf{X}) - \mathbf{u}_c\|_2 > \tau_{\mathrm{out}}$, greedy leave-one-out consensus pruning drops the single view whose exclusion maximally reduces worst-case reprojection error before final refinement. For monocular depth sidecars, \texttt{lift\_pose\_frames\_with\_depth} supports subpixel \texttt{bilinear} interpolation, spike-resistant $(2r+1)\times(2r+1)$ \texttt{median\_patch} sampling, and camera-to-world extrinsics $\mathbf{X}_w = \mathbf{R}_c^\top(\mathbf{X}_c - \mathbf{t}_c)$.
+
+\paragraph{Rigid-Bone Position-Based Dynamics (PBD) Manifold Projection.}
+Raw triangulated keypoints stretch and compress bone segments across frames. Given a set of \emph{rigid} anatomical bone edges $\mathcal{E}_{\mathrm{rigid}}$ (the 11 cranial, axial, and caudal bones of Rat~v2, explicitly excluding articulated \texttt{thorax/pelvis}$\to$\texttt{paw} visualization tethers whose chord length varies dynamically across stance and swing), we estimate canonical bone lengths $L_{ij}$ via the confidence-weighted temporal median across the clip and iterate confidence-weighted PBD projections with optional Laplacian temporal acceleration smoothing ($\lambda_t \in [0, 0.15]$):
+\begin{align}
+  \Delta \mathbf{x}_i &= +\frac{w_i^{-1}}{w_i^{-1} + w_j^{-1}}\, \alpha \left(\|\mathbf{x}_j - \mathbf{x}_i\| - L_{ij}\right)\hat{\mathbf{u}}_{ij}, \\
+  \Delta \mathbf{x}_j &= -\frac{w_j^{-1}}{w_i^{-1} + w_j^{-1}}\, \alpha \left(\|\mathbf{x}_j - \mathbf{x}_i\| - L_{ij}\right)\hat{\mathbf{u}}_{ij},
+\end{align}
+where $w_i = \max(s_i, 0.05)^p$ anchors high-confidence landmarks while snapping uncertain or occluded endpoints onto the exact bone manifold. Setting $\lambda_t = 0$ eliminates low-noise motion blur in sub-pixel calibrated rigs, whereas $\lambda_t = 0.15$ suppresses 3D triangulation jitter when $\sigma \ge 2$\,px.
+
+\subsection{Real-to-Sim Rat~v2 31-DOF IK \& Exact KKT Spring-Muscle ID}
+
+\paragraph{Cross-Schema Ingestion, Sim(3) Scale Normalization \& Kabsch 6-DOF IK.}
+To accept real-world rodent pose conventions without manual pre-processing, \texttt{estimate\_rodent\_body\_scale} resolves canonical Rat~v2 landmarks alongside case-insensitive \textbf{DANNCE/Rat7M} (\texttt{HeadF}, \texttt{SpineF}, \texttt{SpineM}, \texttt{SpineL}, \texttt{HandL/R}, \texttt{FootL/R}), \textbf{Anipose}, \textbf{LocoMouse}, and \textbf{SLEAP} aliases. From the temporal median of canonical pairwise trunk/cranial distances ($d_{\mathrm{obs}} / d_{\mathrm{ref}}$), it automatically detects coordinate units (\texttt{mm} if $>15\times$ canonical, \texttt{cm} if $>2.5\times$, else \texttt{m}) and isotropic body scale $s$ relative to Rat~v2 (snapping $s \in [0.80, 1.25]$ to $1.0$ to preserve canonical rat calibration, while scaling 25\,g mice cleanly at $s \approx 0.35$). Intermittent occluded landmarks are linearly interpolated across transient dropouts prior to alignment. We then align the rigid anterior/cranial subset $\mathcal{K}_{\mathrm{trunk}} = \{\text{torso\_center}, \text{thorax}, \text{neck}, \text{head}, \text{nose}, \text{left\_ear}, \text{right\_ear}\}$ onto canonical Rat~v2 local coordinates $\mathbf{L}_k$ via Kabsch SVD ($\mathbf{H} = \sum_k \bar{\mathbf{L}}_k \bar{\mathbf{W}}_k^\top = \mathbf{U}\boldsymbol{\Sigma}\mathbf{V}^\top$, $\mathbf{R} = \mathbf{V}\mathrm{diag}(1,1,\det(\mathbf{V}\mathbf{U}^\top))\mathbf{U}^\top$). Recovering root translation as the full multi-landmark centroid $\mathbf{r} = \bar{\mathbf{W}} - \mathbf{R}\bar{\mathbf{L}}$ suppresses root jitter by $\sqrt{|\mathcal{K}_{\mathrm{trunk}}|} \approx 2.65\times$ compared to anchoring on \texttt{torso\_center} alone, preventing common-mode paw phase leakage.
+
+Transforming posterior trunk and paw landmarks into body-local coordinates $\mathbf{p}_{\mathrm{loc}} = \mathbf{R}^\top(\mathbf{p}_w - \mathbf{r})$, we solve lumbar extension/lateral bending and all 4 limb joint chains (8~DOFs/forelimb, 6~DOFs/hindlimb; 31 locomotion DOFs total) from sagittal stride excursion $\Delta x$, lateral abduction $\Delta y$, and vertical clearance above a sequence-level robust ground plane ($z_{\mathrm{ground}} = P_{15}(z_{\mathrm{paws}}) - 4$\,mm), clamped strictly within \texttt{RAT\_V2\_JOINT\_RANGES}.
+
+\paragraph{Exact Closed-Form KKT Spring-Muscle Inverse Dynamics.}
+Following Rat NCAP Appendix~C.2~\cite{bhattasali2026ratncap}, each joint $j \in \{1,\dots,31\}$ is actuated by antagonistic linear spring muscles with reparameterized stiffnesses $(k_{f,j}, k_{e,j})$ and offsets $(c_{f,j}, c_{e,j})$ satisfying exact equilibrium matching at $a_f = a_e = 1, q = q_{\mathrm{eq}}$:
+\begin{align}
+  \tau_j &= a_{e,j} A_j(q_j) - a_{f,j} B_j(q_j) - k_{d,j} \dot{q}_j, \\
+  A_j(q_j) &= k_{e,j}(q^{\mathrm{hi}}_j - q_j + c_{e,j}) \ge 0, \nonumber\\
+  B_j(q_j) &= k_{f,j}(q_j - q^{\mathrm{lo}}_j + c_{f,j}) \ge 0. \nonumber
+\end{align}
+Given reconstructed joint trajectories $(q_j(t), \dot{q}_j(t), \ddot{q}_j(t))$ and surrogate inverse torque $\tau_{\mathrm{req},j} = I_j \ddot{q}_j + d_j \dot{q}_j$, recovering $(a_{f,j}, a_{e,j}) \in [0,1]^2$ is underdetermined due to co-contraction. We solve the strictly convex minimum-deviation co-contraction problem around baseline tone $c_0 = 0.45$:
+\begin{equation}
+  \min_{a_e, a_f \in [0,1]} \tfrac{1}{2}\!\big[(a_e - c_0)^2 + (a_f - c_0)^2\big]
+  \;\;\text{s.t.}\;\; A a_e - B a_f = y,
+\end{equation}
+where $y = \tau_{\mathrm{req}} + k_d \dot{q}$. Its unique global optimum admits an $O(1)$ closed-form KKT projection:
+\begin{equation}
+  \lambda^\star = \frac{y - (A - B)c_0}{A^2 + B^2}, \;\; a_e^\star = c_0 + \lambda^\star A, \;\; a_f^\star = c_0 - \lambda^\star B,
+\end{equation}
+with exact active-set projection onto $[0,1]^2$ upon saturation. This reproduces feasible surrogate torques to machine precision ($0.0000$\,Nm residual) while computing signed mechanical power $P^\pm = \sum_j (\tau_j \dot{q}_j)^\pm$, effective stiffness $k_{\mathrm{eff},j} = a_{e,j} k_{e,j} + a_{f,j} k_{f,j}$, and Cost of Transport $\mathrm{CoT} = \overline{|P|} / (mg\bar{v})$.
+
+\subsection{Noise-Robust 6-Class Blind Spinal Circuit Identification}
+
+Inferring hidden spinal circuit state from noisy 3D poses requires overcoming three distinct failure modes:
+\begin{enumerate}[leftmargin=*,itemsep=1pt,topsep=1.5pt]
+  \item \textbf{Rayleigh Velocity Bias:} Frame-to-frame speed $\|\mathbf{r}_{t+1}-\mathbf{r}_t\|/\Delta t$ suffers positive bias $\frac{\sqrt{\pi}}{2}\frac{\sqrt{2}\sigma_r}{\Delta t} \approx 0.13$\,m/s at $\sigma_{\mathrm{3D}}=4$\,mm, turning stationary rats into false walkers. Using median stride-window velocity over $W = \lfloor 0.20/\Delta t \rfloor$ frames suppresses phantom speed $10\times$ without biasing steady locomotion.
+  \item \textbf{Broadband Phase, Mouse Cadence \& Duty-Factor Distortion:} Vertical paw lift ($\sim$15--24\,mm in rats; $\sim$5--8\,mm in mice) offers $>10\times$ higher SNR than raw sagittal hip excursion under 3D jitter. After bridging transient occluded frames, we extract dominant step cadence across $f_{\mathrm{step}} \in [0.8, \min(14.0, 0.48/\Delta t)]$\,Hz (covering both 1.7--5.5\,Hz rats and 2.5--12\,Hz mice~\cite{bellardita2015v0}) from normalized paw clearances, apply band-filtered FFT analytic Hilbert phases around $[0.55 f_{\mathrm{step}}, 1.65 f_{\mathrm{step}}]$ to estimate amplitude-weighted circular interlimb offsets $(\phi_{\mathrm{FL}}, \phi_{\mathrm{HL}}, \phi_{\mathrm{HR}})$ relative to \texttt{FR} and Phase-Locking Value (PLV), and apply an edge-preserving 3-tap rolling median filter for stance duty factor $\beta$.
+  \item \textbf{Diagonal-Couplet Walk vs.\ Trot Boundary:} Under tracking noise, paw-clearance jitter depresses estimated duty factor $\beta$ below $0.72$, causing loose diagonal-synchrony thresholds ($d_{\mathrm{diag}} < 0.24$, only $0.01$ away from 4-beat lateral-sequence walk's exact $d_{\mathrm{diag}} = 0.25$) to collapse walks into trots. Tightening the Hildebrand diagonal-couplet criterion to the clean midpoint $d_{\mathrm{diag}} = \tfrac{1}{2}[d_\circ(\phi_{\mathrm{HL}}, 0) + d_\circ(\phi_{\mathrm{HR}}, \phi_{\mathrm{FL}})] < 0.18$ preserves diagonal trots ($0.00\text{--}0.12$) while separating lateral-sequence walks ($0.23\text{--}0.25$) even under severe vertical noise.
+\end{enumerate}
+
+To generalize gait-transition thresholds across rodent body sizes without re-tuning, we invoke Alexander \& Jayes' \textbf{Froude dynamic similarity hypothesis}~\cite{alexander1983froude} ($\mathrm{Fr} = v^2 / (g L)$): given auto-detected body scale $s = L / L_{\mathrm{rat}}$, we map physical speed $\bar{v}$ to canonical Froude-equivalent speed $\tilde{v} = \bar{v} / \sqrt{s}$. From the left-right synchrony score $S_{\mathrm{LR}} = 1 - 2\min(0.5, \tfrac{1}{2}[d_\circ(\phi_{\mathrm{FL}}, 0) + d_\circ(\phi_{\mathrm{HL}}, \phi_{\mathrm{HR}})])$ and inferred brainstem command $\hat{c} = \mathrm{clip}(\tilde{v}, 0, 1)$, we compute mechanistic commissural integrity indices grounded in Bellardita \& Kiehn~\cite{bellardita2015v0} and Danner et~al.~\cite{danner2017spinal}:
+\begin{align}
+  I_{V0} &= \begin{cases} 1 - S_{\mathrm{LR}} & \text{if } \tilde{v} \in [0.16, 0.66]\text{\,m/s}, \\ 1 & \text{otherwise}, \end{cases} \\
+  I_{V3} &= \begin{cases} S_{\mathrm{LR}} & \text{if } \tilde{v} > 0.66\text{\,m/s}, \\ 1 & \text{otherwise}. \end{cases}
+\end{align}
+Premature left-right synchrony ($I_{V0} \to 0$) inside the moderate trot band blindly diagnoses a \texttt{v0\_commissural\_deficit\_phenotype}, whereas persistent left-right alternation ($I_{V3} \to 0$, trot/walk at $\tilde{v} \ge 0.72$\,m/s) blindly diagnoses a \texttt{v3\_synchrony\_deficit\_phenotype}.
+
+\subsection{\emph{Drosophila} Sparse LIF Connectome, Perturbations \& MB Plasticity}
+
+Annolid's \texttt{FlyBrainController} compiles canonical cell-type circuits (55~populations, 79~pathways), individual-neuron expanded spiking connectomes (1,470~neurons, 15,860~synapses; 1,534~neurons / 16,340~synapses with Mushroom Body plasticity), or external MaleCNS~v1.0 / FlyWire / MANC tables (\texttt{.csv}, \texttt{.parquet}, \texttt{.npz}) into $O(|E|)$ sparse CSR synaptic operators preserving \emph{Drosophila} receptor polarity (ACh~$+1$, GABA~$-1$, central GluCl~$-0.6$, NMJ Glu~$+1$, OA~$+0.85$, DA~$+0.5$, 5-HT~$-0.3$). In spiking mode, neurons integrate biophysical LIF dynamics ($V_{\mathrm{rest}}=-52$\,mV, $V_{\mathrm{th}}=-45$\,mV, $\tau_{\mathrm{ref}}=2.2$\,ms, $\tau_{\mathrm{syn}}=5$\,ms, $\Delta t_{\mathrm{sub}}=0.2$\,ms) with event-driven CSR spike propagation.
+
+We introduce four mechanistic neuroscience interfaces in \texttt{FlyBrainController}: (i)~timed Chrimson optogenetics (\texttt{stimulate\_cell\_type}); (ii)~cell-type-specific Kir2.1 silencing (\texttt{set\_ablation}, $k \in [0,1]$ across both rate and LIF spiking substeps); (iii)~Dale's-law sign-preserving multiplicative synaptic noise ($\max(0.05, 1+\sigma\epsilon)$, \texttt{apply\_synaptic\_noise}); and (iv)~three-factor dopaminergic Mushroom Body plasticity supporting both canonical 2-odor reversal (\texttt{build\_plastic\_fly\_connectome}) and a high-dimensional \textbf{2,000-KC APL-sparsified memory} (\texttt{SparseMushroomBodyMemory}): 50 antennal-lobe Projection Neurons (PNs) randomly innervate $N_{\mathrm{KC}}=2{,}000$ Kenyon cells with 6 claws per KC (sparse binary projection $\mathbf{W}_{\mathrm{PN}\to\mathrm{KC}}$), an Anterior Paired Lateral (APL) global GABAergic neuron enforces exact 5\% winner-take-all sparsity ($k=100$ active KCs), and per-KC eligibility traces ($\tau_e = 90$\,ms) drive 4,000 online plastic KC$\to$MBON synapses $\Delta w_{k,\mathrm{app}} = \eta e_k (\mathrm{PAM}-\mathrm{PPL1})\Delta t$, $\Delta w_{k,\mathrm{avd}} = -\Delta w_{k,\mathrm{app}}$ bounded in $[0.15, 2.50]$ directly inside the 1,534-neuron LIF spiking connectome.
+
+% =========================================================================
+% 4. EXPERIMENTS & RESULTS
+% =========================================================================
+\section{Experiments \& Quantitative Results}
+
+All benchmarks execute deterministically on CPU via \texttt{scripts/run\_neurotwin\_\allowbreak publication\_benchmarks.py} directly against Annolid's production modules, with 2,000-resample bootstrap 95\% confidence intervals (CIs) and two-sided paired Wilcoxon signed-rank, Mann--Whitney~$U$, and exact McNemar hypothesis tests recorded in \texttt{benchmark\_results.json}.
+
+\subsection{Experiment 1: Multi-View 3D Lifting, PBD Ablations, Occlusion \& Depth}
+
+We evaluate 2-, 3-, and 4-camera rigs with Brown--Conrady distortion over 60 trotting frames (960 3D keypoints/condition) across Gaussian 2D noise $\sigma \in [0, 8]$\,px, spatial-only ($\lambda_t=0$) vs.\ temporal ($\lambda_t=0.15$) rigid-bone PBD, 20\% 65\,px single-view outliers, 30\% single-camera occlusion dropouts, and monocular depth lifting across clean vs.\ 8\%-spiked depth maps (Figure~\ref{fig:exp1} and Table~\ref{tab:exp1}).
+
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=0.98\textwidth]{figures/fig2_multiview_3d_lifting.pdf}
+  \caption{\textbf{Multi-View 3D Reconstruction, PBD Ablation, Occlusion/Outliers, and Monocular Depth Lifting.} (a)~4-view 3D MPJPE across 2D noise (shaded 95\% bootstrap CI): spatial-only rigid PBD ($\lambda_t=0$) preserves sub-millimeter accuracy at $\sigma \le 1$\,px ($0.063$ / $0.847$\,mm vs.\ $0.946$\,mm raw GN), while adding temporal regularization ($\lambda_t=0.15$) cuts error 45.1\% at $\sigma=6$\,px ($6.03 \to 3.31$\,mm, $p=1.6\times 10^{-11}$). All-edge PBD induces a 2.06\,mm zero-noise bias. (b)~Leave-one-out pruning rejects 100.0\% of 65\,px outliers (374/374) and rigid PBD cuts 30\% camera-dropout occlusion error by 41.6\% ($p \le 1.7\times 10^{-11}$). (c)~Monocular depth lifting: \texttt{bilinear} cuts clean error 13.4\% ($p=1.9\times 10^{-9}$) and \texttt{median\_patch} cuts 8\%-spike error 63.0\% ($p=4.4\times 10^{-5}$).}
+  \label{fig:exp1}
+\end{figure*}
+
+\begin{table}[t]
+\centering
+\caption{\textbf{Multi-View Triangulation, PBD Ablation, Outliers \& 30\% View Dropout (60 Frames, 960 Points).} Mean MPJPE (mm) with 95\% bootstrap CIs and paired Wilcoxon $p$-values (Rigid PBD vs.\ DLT+GN).}
+\label{tab:exp1}
+\scriptsize
+\setlength{\tabcolsep}{2.3pt}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}lrrrrrr@{}}
+\toprule
+\textbf{Setting} & \textbf{DLT+GN} & \textbf{Rigid} & \textbf{Rigid} & \textbf{All-Edge} & \textbf{Bone CV (\%)} & \textbf{Wilcox.} \\
+ & (mm) & ($\lambda_t=0$) & ($\lambda_t=0.15$) [95\% CI] & (mm) & Before $\to$ After & $p$-val \\
+\midrule
+4-Cam, $\sigma=0$\,px & \textbf{0.00} & 0.06 & 0.85 [0.75, 0.94] & 2.06 & 0.18 $\to$ 0.02 & $1.6\mathrm{e}{-11}$ \\
+4-Cam, $\sigma=1$\,px & 0.95 & \textbf{0.85} & 1.02 [0.95, 1.11] & 2.16 & 2.23 $\to$ 0.04 & $7.4\mathrm{e}{-2}$ \\
+4-Cam, $\sigma=2$\,px & 1.88 & 1.66 & \textbf{1.41} [1.33, 1.48] & 2.40 & 4.60 $\to$ 0.08 & $8.8\mathrm{e}{-11}$ \\
+3-Cam, $\sigma=4$\,px & 4.61 & 4.11 & \textbf{2.66} [2.57, 2.75] & 3.35 & 10.18 $\to$ 0.21 & $1.6\mathrm{e}{-11}$ \\
+2-Cam, $\sigma=4$\,px & 6.18 & 5.35 & \textbf{3.44} [3.30, 3.59] & 3.98 & 15.50 $\to$ 0.26 & $1.6\mathrm{e}{-11}$ \\
+4-Cam, $\sigma=6$\,px & 6.03 & 5.28 & \textbf{3.31} [3.18, 3.44] & 3.94 & 13.91 $\to$ 0.23 & $1.6\mathrm{e}{-11}$ \\
+4-Cam, $\sigma=8$\,px & 8.32 & 7.42 & \textbf{4.74} [4.55, 4.96] & 5.16 & 17.56 $\to$ 0.34 & $1.6\mathrm{e}{-11}$ \\
+\midrule
+3-Cam + 20\% 65px Out.$^\dagger$ & 7.96$^\ddagger$ & --- & \textbf{1.56} [1.42, 1.74] & --- & 8.81 $\to$ 0.23 & $1.8\mathrm{e}{-11}$ \\
+4-Cam + 20\% 65px Out.$^\dagger$ & 6.21$^\ddagger$ & --- & \textbf{1.26} [1.19, 1.33] & --- & 3.70 $\to$ 0.07 & $1.6\mathrm{e}{-11}$ \\
+3-Cam + 30\% Dropout & 5.01 & --- & \textbf{2.93} [2.81, 3.05] & --- & 11.28 $\to$ 0.26 & $1.7\mathrm{e}{-11}$ \\
+4-Cam + 30\% Dropout & 4.25 & --- & \textbf{2.48} [2.38, 2.59] & --- & 9.86 $\to$ 0.21 & $1.6\mathrm{e}{-11}$ \\
+\bottomrule
+\multicolumn{7}{@{}l@{}}{\tiny $^\dagger$100.0\% outlier rejection (183/183 in 3-cam, 191/191 in 4-cam; $\tau=10$\,px). $^\ddagger$Unprotected DLT baseline.}
+\end{tabular}}
+\end{table}
+
+Four quantitative findings emerge. First, \textbf{separating spatial bone projection from temporal smoothing resolves the low-noise bias--variance tradeoff}: spatial-only rigid PBD ($\lambda_t=0$) adds only $0.063$\,mm residual at $\sigma=0$\,px (from slight lumbar curvature) and already outperforms raw DLT+GN at $\sigma=1$\,px ($0.85$ vs.\ $0.95$\,mm), whereas adding $\lambda_t=0.15$ yields substantial gains for realistic tracking noise ($\sigma \ge 2$\,px), cutting 4-camera $\sigma=6$\,px MPJPE by \textbf{45.1\%} ($6.03 \to 3.31$\,mm, $p=1.6\times 10^{-11}$) and collapsing bone-length CV \textbf{60$\times$} ($13.91\% \to 0.23\%$, $-98.3\%$). Conversely, na\"ive all-edge PBD locks articulated paw chords and injects 2.06\,mm bias even at zero noise. Second, leave-one-out consensus pruning rejects \textbf{100.0\%} (374/374) of 65\,px single-camera outliers, cutting 3-camera MPJPE \textbf{5.1$\times$} ($7.96 \to 1.56$\,mm, $p=1.8\times 10^{-11}$). Third, under \textbf{30\% random single-view occlusion dropout} at $\sigma=4$\,px (281--301 missing observations), rigid-bone PBD cuts 3D error by \textbf{41.6\%} in both 3- and 4-camera rigs ($5.01 \to 2.93$\,mm and $4.25 \to 2.48$\,mm, $p \le 1.7\times 10^{-11}$). Fourth, in monocular depth lifting, \texttt{bilinear} cuts clean error 13.4\% ($16.09 \to 13.93$\,mm, $p=1.9\times 10^{-9}$) while $3\times 3$ \texttt{median\_patch} slashes 8\%-spike error \textbf{63.0\%} ($44.43 \to 16.45$\,mm, $p=4.4\times 10^{-5}$).
+
+\subsection{Experiment 2: Rat NCAP Spinal Phase Map \& 4 Neuromechanical Interfaces}
+
+We sweep 17 brainstem speed commands $v \in [0.00, 0.96]$\,m/s across five $V0_v{+}V0_d$ activity scales ($k_{V0} \in \{1.0, 0.75, 0.50, 0.25, 0.0\}$), $V3_f{+}V3_a$ ablations, all four neuromechanical interfaces, bumpy terrain (3\,cm), and RG synaptic weight noise ($\sigma \in [0, 0.40]$, 10~seeds) (Figure~\ref{fig:exp2} and Table~\ref{tab:exp2}).
+
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=0.98\textwidth]{figures/fig3_rat_ncap_biomechanics.pdf}
+  \caption{\textbf{Mammalian Rat NCAP Spinal Phase Diagram and Neuromechanical Interfaces.} (a)~Speed $\times$ $V0_v{+}V0_d$ phase map reproduces smooth intact \texttt{stand $\to$ walk $\to$ trot $\to$ bound} transitions at $k_{V0} \ge 0.25$ and complete collapse of the trot regime into premature bounding upon $V0$ ablation ($k_{V0}=0.0$). (b)~Mean positive mechanical power across the four neuromechanical interfaces over walk, trot, bound, and 3\,cm bumpy terrain. (c)~Left-right synchrony jump upon $V0_v{+}V0_d$ ablation inside the shaded moderate-speed diagnostic trot regime ($0.18\text{--}0.66$\,m/s).}
+  \label{fig:exp2}
+\end{figure*}
+
+\begin{table}[t]
+\centering
+\caption{\textbf{Rat~v2 Neuromechanical Interface Comparison Across Gaits and 3\,cm Bumpy Terrain.} Reporting joint excursion and RMS velocity clarifies why open-loop spring-muscle actuation generates larger mechanical power than attenuated PD position tracking.}
+\label{tab:exp2}
+\scriptsize
+\setlength{\tabcolsep}{2.4pt}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}llrrrrrr@{}}
+\toprule
+\textbf{Interface} & \textbf{Regime} & \textbf{Pos.\ Pwr} & \textbf{Neg.\ Pwr} & \textbf{Mean $k_{\mathrm{eff}}$} & \textbf{Joint Exc.} & \textbf{RMS $|\dot{q}|$} & \textbf{CoT} \\
+ & ($v$, m/s) & (W) & (W) & (Nm/rad) & (ptp$^\circ$) & (rad/s) & \\
+\midrule
+\multirow{4}{*}{\texttt{flexor\_extensor}} & Walk (0.22) & 0.637 & -0.007 & 0.173 & 4.33 & 0.617 & 0.85 \\
+ & Trot (0.50) & 1.484 & -0.029 & 0.163 & 4.98 & 0.893 & 0.88 \\
+ & Bound (0.88) & 4.465 & -0.969 & 0.147 & 4.80 & 1.365 & 1.80 \\
+ & Bumpy (0.44) & 1.375 & -0.026 & 0.164 & 5.04 & 0.866 & 0.92 \\
+\midrule
+\texttt{position\_stiffness} & Trot (0.50) & 0.142 & -0.003 & 0.202 & 1.52 & 0.238 & 0.08 \\
+\texttt{position} (fixed PD) & Trot (0.50) & 0.382 & -0.010 & 0.301 & 2.09 & 0.392 & 0.23 \\
+\texttt{torque} (direct) & Trot (0.50) & 0.434 & -0.008 & 0.000 & 2.04 & 0.414 & 0.26 \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+Intact Rat NCAP ($k_{V0}=1.0$) transitions smoothly from \texttt{stand} ($0$\,Hz, $\beta=1.0$) to \texttt{walk} ($0.06\text{--}0.24$\,m/s, $1.73\text{--}2.44$\,Hz, $\beta=0.71\text{--}0.78$), \texttt{trot} ($0.30\text{--}0.72$\,m/s, $2.67\text{--}4.31$\,Hz, $S_{\mathrm{LR}}=0.11\text{--}0.16$), a narrow transitional point at $0.78$\,m/s ($S_{\mathrm{LR}}=0.42$), and \texttt{bound} ($0.84\text{--}0.96$\,m/s, $4.78\text{--}5.24$\,Hz, $S_{\mathrm{LR}}=0.71\text{--}0.80$). Complete $V0_v{+}V0_d$ ablation ($k_{V0}=0.0$) snaps $S_{\mathrm{LR}}$ to \textbf{0.83--0.91} across the entire $0.18\text{--}0.72$\,m/s band (matching Bellardita \& Kiehn~\cite{bellardita2015v0}), while $V3_f{+}V3_a$ ablation preserves intact walk/trot up to $0.60$\,m/s and prevents bounding at $0.84\text{--}0.92$\,m/s ($\phi_{\mathrm{FL}}=0.43\text{--}0.47$). Over 10 seeds of Dale's-law RG weight noise up to $\sigma=0.40$, trot coordination remains \textbf{100.0\%} intact (88.6\% speed retention).
+
+Table~\ref{tab:exp2} also clarifies an important actuator-scaling distinction across interfaces: at identical $0.50$\,m/s trot speed, \texttt{flexor\_extensor} exhibits $10.5\times$ higher positive mechanical power than \texttt{position\_stiffness} ($1.484$ vs.\ $0.142$\,W) because open-loop antagonistic spring-muscle commands $(a_e - a_f)$ scale against full torque capacity $\tau_{\max}$, driving \textbf{3.3$\times$ wider joint excursion} ($4.98^\circ$ vs.\ $1.52^\circ$) and \textbf{3.75$\times$ faster joint angular velocity} ($0.893$ vs.\ $0.238$\,rad/s) than gain-attenuated proportional tracking $(k_{\mathrm{eq}}\cdot s_{kp})(q_{\mathrm{target}}-q)$. Reporting excursion and RMS velocity alongside power prevents misleading cross-interface energy comparisons.
+
+\subsection{Experiment 3: 6-Class Blind Spinal Inference \& Independent MuJoCo~3.5.0 Audit}
+
+\paragraph{In-Model IK \& Exact KKT Inversion.}
+On clean Rat~v2 trotting tracks, 31-DOF IK achieves \textbf{5.56\,mm} FK RMSE, \textbf{$r=0.968$} sagittal joint correlation ($0.995^\circ$ RMSE), \textbf{0} joint-limit violations across all noise levels ($0\text{--}8$\,mm), and \textbf{0.000000\,Nm} exact KKT residual on ground-truth joint tracks.
+
+\paragraph{180-Trial 6-Class Blind Spinal Phenotype Identification.}
+We evaluate \textbf{180 blind trials} (6 classes $\times$ 30 randomized speeds/seeds) testing \emph{both} speed-matched commissural deficits simultaneously: \texttt{v0\_commissural\_deficit} ($v \in [0.32, 0.58]$\,m/s, overlapping \texttt{intact\_trot}) and \texttt{v3\_synchrony\_deficit} ($v \in [0.84, 0.96]$\,m/s, overlapping \texttt{intact\_bound}). Figure~\ref{fig:exp3}a--b compares our Kabsch + stride-window + bandpass-Hilbert identifier against a 6-class single-anchor raw-sagittal baseline:
+\begin{itemize}[leftmargin=*,itemsep=1pt,topsep=1.5pt]
+  \item At $\sigma_{\mathrm{3D}} = 2$\,mm, our identifier achieves \textbf{99.4\%} [95\% CI: 98.3, 100.0] accuracy (vs.\ 81.7\% baseline, McNemar $p=4.1\times 10^{-9}$) and Macro-F1 $= 0.994$.
+  \item At $\sigma_{\mathrm{3D}} = 4$\,mm, our tightened diagonal-synchrony boundary ($d_{\mathrm{diag}} < 0.18$) eliminates walk-to-trot confusion completely: overall accuracy reaches \textbf{100.0\% (180/180)} vs.\ 38.9\% baseline (\textbf{+61.1\,pts}, McNemar $p=1.5\times 10^{-33}$), scoring \textbf{30/30} on every single class (\texttt{Stand}, \texttt{Walk}, \texttt{Trot}, \texttt{Bound}, \texttt{V0-Deficit}, \texttt{V3-Deficit}). Both mechanistic biomarkers cleanly separate speed-matched lesions: $I_{V0}=0.074$ vs.\ $0.922$ (Mann--Whitney $p=1.5\times 10^{-11}$; F1 $= 1.000$) and $I_{V3}=0.252$ vs.\ $0.886$ ($p=1.5\times 10^{-11}$; F1 $= 1.000$).
+  \item At extreme noise ($\sigma_{\mathrm{3D}} = 8\text{--}10$\,mm), the single-anchor baseline collapses to chance (\textbf{17.2\% / 16.7\%}), while our identifier retains \textbf{97.2\%} [94.4, 99.4] (\textbf{+80.0\,pts}, $p=9.0\times 10^{-44}$) and \textbf{86.1\%} [80.6, 90.6] ($p=4.7\times 10^{-38}$), sustaining $V0$ F1 $=0.984/0.968$ and $V3$ F1 $= \mathbf{1.000/1.000}$.
+\end{itemize}
+
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=0.98\textwidth]{figures/fig4_real2sim_inversion.pdf}
+  \caption{\textbf{6-Class Blind Spinal Circuit Identification (180 Trials) and Cross-Species Independent MuJoCo~3.5.0 Physics Validation.} (a)~6-class blind accuracy with shaded 95\% bootstrap CIs: our estimator achieves 99.4--100.0\% at $\sigma \le 4$\,mm and 97.2\% at 8\,mm (+80.0\,pts over baseline, $p=9.0\times 10^{-44}$) while maintaining $V0$ and $V3$ deficit F1 $=0.968\text{--}1.000$. Orange stars mark zero-shot transfer to independent 0.36\,kg rat MuJoCo trajectories (100\%, 100\%, 92\% at 0, 2, 4\,mm), and pink diamonds mark cross-species zero-shot transfer to 25.6\,g \emph{Mus musculus} MuJoCo trajectories ingested via DANNCE millimeter aliases with 8\% paw occlusion (100\%, 100\%, 92\% at 0, 0.7, 1.4\,mm). (b)~Perfect 180/180 6$\times$6 blind confusion matrix at $\sigma=4$\,mm. (c)~Independent MuJoCo~3.5.0 physics audit: out-of-model sagittal IK correlation reaches $r=0.86\text{--}0.90$ across all 5 rat regimes ($r=0.84\text{--}0.90$ in mouse), while comparing decoupled KKT torques against \texttt{mj\_inverse} explicitly quantifies the $7.7\text{--}16.4\times$ surrogate-inertia magnitude gap.}
+  \label{fig:exp3}
+\end{figure*}
+
+\paragraph{Independent MuJoCo~3.5.0 Rat \& Cross-Species 25.6\,g Mouse Validation.}
+To eliminate single-model circularity and verify cross-species, real-world schema readiness, we built \emph{two} independent rigid-body quadrupeds in \textbf{MuJoCo~3.5.0}~\cite{todorov2012mujoco} sharing zero forward kinematics with \texttt{RatNCAPController} (Table~\ref{tab:mujoco} and Figure~\ref{fig:exp3}c): (1)~a \textbf{0.36\,kg articulated rat} (RK4, $\Delta t=2$\,ms, gravity $-9.81$\,m/s$^2$, frictional foot--floor contacts, 16 canonical sites) generating realistic rat kinematics ($10.8\text{--}18.5$\,mm paw lift, $53.9\text{--}56.7$\,mm stride); and (2)~a \textbf{25.6\,g \emph{Mus musculus}} quadruped (\texttt{implicitfast}, $\Delta t=1$\,ms, $0.35\times$ linear scale) driven at Bellardita \& Kiehn's~\cite{bellardita2015v0} empirical mouse step cadences ($2.67$\,Hz walk, $6.00$\,Hz trot/$V0$-deficit, $10.00$\,Hz bound/$V3$-deficit), exported in \textbf{DANNCE/Rat7M millimeter} site names (\texttt{HeadF}, \texttt{SpineF/M/L}, \texttt{HandL/R}, \texttt{FootL/R}) and stressed with both 3D Gaussian jitter and \textbf{8\% random paw occlusion dropout}.
+
+\begin{table}[t]
+\centering
+\caption{\textbf{Cross-Species Independent MuJoCo~3.5.0 Validation (0.36\,kg Rat \& 25.6\,g Mouse in DANNCE mm).} Zero-shot kinematic and blind spinal transfer succeed across both species ($r=0.84\text{--}0.90$, 0 joint violations, 92--100\% noisy/occluded transfer), while auditing decoupled KKT ID against full Lagrangian \texttt{mj\_inverse} demarcates exact physical torque limits.}
+\label{tab:mujoco}
+\scriptsize
+\setlength{\tabcolsep}{2.2pt}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}lrrrrrr@{}}
+\toprule
+\textbf{0.36\,kg Rat MuJoCo} & \textbf{Blind} & \textbf{Paw Lift} & \textbf{IK $r$} & \textbf{MJ Sw.\ / St.} & \textbf{KKT ID} & \textbf{$\tau$ Corr.} \\
+ & \textbf{Match} & (mm) & (0 viol.) & $\tau_{\mathrm{RMS}}$ (Nm) & $\tau_{\mathrm{RMS}}$ (Nm) & $r_{\mathrm{full}}$ \\
+\midrule
+Walk (0.17\,m/s) & \checkmark & 15.2 & 0.896 & 0.025 / 0.066 & 0.545 & 0.410 \\
+Trot (0.46\,m/s) & \checkmark & 18.5 & 0.872 & 0.043 / 0.052 & 0.777 & 0.400 \\
+$V0$-Def.\ (0.47\,m/s) & \checkmark & 15.2 & 0.891 & 0.041 / 0.108 & 0.787 & 0.559 \\
+Bound (0.84\,m/s) & \checkmark & 10.8 & 0.875 & 0.080 / 0.136 & 0.837 & 0.548 \\
+$V3$-Def.\ (0.87\,m/s) & \checkmark & 16.2 & 0.859 & 0.074 / 0.088 & 0.842 & 0.287 \\
+\multicolumn{7}{@{}l@{}}{\textbf{Rat Noisy Transfer (25/$\sigma$):} 0\,mm: \textbf{100\%}; 2\,mm: \textbf{100\%} [100,100]; 4\,mm: \textbf{92\%} [80,100].} \\
+\midrule
+\textbf{25.6\,g Mouse (DANNCE mm)} & \textbf{Match} & \textbf{Unit / $s$} & \textbf{IK $r$} & \textbf{$v$ (m/s)} & \textbf{$\tilde{v}_{\mathrm{Fr}}$ (m/s)} & \textbf{$f$ (Hz)} \\
+\midrule
+Walk & \checkmark & mm / 0.35 & 0.898 & 0.116 & 0.196 & 2.67 \\
+Trot & \checkmark & mm / 0.35 & 0.865 & 0.264 & 0.446 & 6.00 \\
+$V0$-Deficit & \checkmark & mm / 0.35 & 0.867 & 0.238 & 0.402 & 6.00 \\
+Bound & \checkmark & mm / 0.35 & 0.853 & 0.446 & 0.754 & 10.00 \\
+$V3$-Deficit & \checkmark & mm / 0.35 & 0.841 & 0.464 & 0.785 & 10.00 \\
+\multicolumn{7}{@{}l@{}}{\textbf{Mouse + 8\% Paw Occl.\ (25/$\sigma$):} 0\,mm: \textbf{100\%}; 0.7\,mm: \textbf{100\%}; 1.4\,mm: \textbf{92\%} [80,100].} \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+Three decisive conclusions follow from Table~\ref{tab:mujoco}. First, \textbf{kinematic IK and blind spinal circuit identification transfer zero-shot across both physics engines and mammalian species}: all 5 rat MuJoCo phenotypes match at 0 and 2\,mm (\textbf{100.0\%}, 25/25) and hold at \textbf{92.0\%} [80, 100] at 4\,mm ($r=0.859\text{--}0.896$, zero joint-limit violations). Second, \textbf{Sim(3) scale detection and Froude dynamic similarity bridge rats to mice seamlessly}: fed raw millimeter DANNCE coordinates of a 25.6\,g mouse, \texttt{estimate\_rodent\_body\_scale} automatically detects \texttt{mm} units and $s=0.350$, maps physical speeds ($0.116\text{--}0.464$\,m/s) via $\tilde{v}=v/\sqrt{s}$ to Froude-equivalent rat speeds ($0.196\text{--}0.785$\,m/s), tracks 2.67--10.00\,Hz cadences cleanly ($r=0.841\text{--}0.898$, 0 violations), and achieves \textbf{100.0\% / 100.0\% / 92.0\%} blind classification across $0 / 0.7 / 1.4$\,mm noise ($0/2/4$\,mm rat-equivalent) even under \textbf{8\% paw occlusion}. Third, \textbf{auditing inverse dynamics against \texttt{mj\_inverse} establishes exact physical boundaries}: physical rat limb torques ($0.025\text{--}0.080$\,Nm swing; $0.052\text{--}0.136$\,Nm stance with ground reaction forces) are $7.7\text{--}16.4\times$ smaller than Annolid's decoupled KKT surrogate ($0.545\text{--}0.842$\,Nm, waveform correlation $r=0.29\text{--}0.56$), because Rat NCAP's 50\,Hz compliant surrogate uses artificial stability inertia ($I_{\mathrm{eff}} = 0.008\,k_{\mathrm{eq}}$) and omits contact Jacobian forces $\mathbf{J}_c^\top \mathbf{f}_c$. Thus, pure-NumPy KKT ID excels for rapid, zero-dependency Rat NCAP diagnostics and relative gait-power trends, whereas absolute physiological joint-torque estimation requires full MuJoCo Lagrangian ID.
+
+\subsection{Experiment 4: \emph{Drosophila} Connectome Perturbations, Spiking Plasticity \& Scaling}
+
+\paragraph{Selectivity \& Closed-Loop Motor Verification.}
+Across five canonical behaviors (\texttt{walk}, \texttt{backward}, \texttt{grooming}, \texttt{escape}, \texttt{flight}), both the 55-population rate model and the \textbf{1,470-neuron / 15,860-synapse} LIF connectome achieve \textbf{100.0\% (5/5)} descending-neuron selectivity (Figure~\ref{fig:exp4}a). Verifying decoded motor-pool outputs directly in 1,470-neuron LIF mode confirms functionally valid actuation: forward walking locks contralateral tripod legs near anti-phase ($\Delta\phi_{\mathrm{T1}} = 169.3^\circ$, claw duty $0.85$, forward sign $+1$); backward walking drives \texttt{VNC\_Reverse} $= 0.888$ (reversing stroke sign to $-1$); grooming releases foreleg claws (\texttt{T1} $= 0.00$) with high coxa elevation ($0.846$) while anchoring mid/hind claws (\texttt{T2/T3} $= 0.95$); Giant Fiber escape releases all six claws ($0.00$) with ballistic \texttt{T2} femur jump thrust ($1.35$); and flight drives WBPG frequency trim (\texttt{user\_0} $= 0.896$).
+
+\begin{figure*}[t]
+  \centering
+  \includegraphics[width=0.98\textwidth]{figures/fig5_drosophila_connectome.pdf}
+  \caption{\textbf{\emph{Drosophila} Whole-CNS Connectome Selectivity, Spiking LIF Dopaminergic Plasticity, and Modular vs.\ Random MaleCNS Scaling.} (a)~Normalized descending neuron rates across 5 behaviors in the 1,470-neuron LIF connectome (100\% selectivity). (b)~Three-factor PAM/PPL1 acquisition and contingency reversal verified in \emph{both} 1,534-neuron biophysical LIF spiking (solid) and 61-population rate dynamics (dashed): Odor~A and Odor~B acquire opposite motor valences ($+0.91$ vs.\ $-0.83$ in LIF) and cleanly invert after Trial~9 ($-0.59$ vs.\ $+0.40$). (c)~Complete MaleCNS~v1.0 (166,700 neurons) LIF substep CPU latency comparing biologically clustered 78-neuropil modular CSR (80\% intra-neuropil, lognormal weights) against random Erd\H{o}s--R\'enyi CSR alongside total RAM across 2.0M, 8.3M, and 16.7M directed edges: modular locality speeds up full-LIF substeps by \textbf{19.0--22.7\%}.}
+  \label{fig:exp4}
+\end{figure*}
+
+\paragraph{Causal Optogenetics \& Kir2.1 Silencing.}
+Table~\ref{tab:exp4_causal} summarizes eight causal interventions in the 1,470-neuron LIF connectome. Timed Chrimson activation of \texttt{MDN}, \texttt{Pair1}, \texttt{aDN1}, or \texttt{DNp01} overrides ongoing forward walking into backward moonwalking (\texttt{DNp09}: $0.85 \to 0.01$), freezing ($0.85 \to 0.00$), grooming ($0.85 \to 0.01$), or Giant Fiber escape (\texttt{DNp01}: $0.00 \to 0.97$). Conversely, Kir2.1 silencing isolates exact disinhibitory motifs: silencing \texttt{VNC\_MDN\_Inh} during co-presented Walk+\texttt{MDN} restores \texttt{DNp09} ($0.00 \to 0.86$); silencing \texttt{DNp01} abolishes escape ($0.93 \to 0.00$); and silencing ascending tarsal-contact neurons (\texttt{AN\_Contact}) breaks the \textbf{Fraenkel flight-inhibition reflex}, releasing wing-power \texttt{DNg02} ($0.00 \to 0.78$) while tarsal sensors remain loaded.
+
+\begin{table}[t]
+\centering
+\caption{\textbf{In-Silico Chrimson Optogenetics and Kir2.1 Silencing in the 1,470-Neuron LIF \emph{Drosophila} Connectome.}}
+\label{tab:exp4_causal}
+\scriptsize
+\setlength{\tabcolsep}{2.6pt}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}lllrr@{}}
+\toprule
+\textbf{Intervention} & \textbf{Base $\to$ Perturbed} & \textbf{Readout} & \textbf{Before} & \textbf{After} \\
+\midrule
+Opto \texttt{MDN} & Walk $\to$ Moonwalk & \texttt{MDN} / \texttt{DNp09} & 0.00 / 0.85 & \textbf{0.89} / \textbf{0.01} \\
+Opto \texttt{Pair1} & Walk $\to$ Arrest & \texttt{Pair1} / \texttt{DNp09} & 0.00 / 0.85 & \textbf{0.88} / \textbf{0.00} \\
+Opto \texttt{aDN1} & Walk $\to$ Groom & \texttt{aDN1} / \texttt{DNp09} & 0.00 / 0.85 & \textbf{0.89} / \textbf{0.01} \\
+Opto \texttt{DNp01} & Walk $\to$ Escape & \texttt{DNp01} & 0.00 & \textbf{0.97} \\
+\midrule
+Silence \texttt{Pair1} & Groom (Arrest Loss) & \texttt{Pair1} & 0.84 & \textbf{0.00} \\
+Silence \texttt{VNC\_MDN\_Inh} & Walk+MDN (Disinhib.) & \texttt{DNp09} & 0.00 & \textbf{0.86} \\
+Silence \texttt{DNp01} & Escape $\to$ Flight & \texttt{DNp01} & 0.93 & \textbf{0.00} \\
+Silence \texttt{AN\_Contact} & Walk $\to$ Flight (Fraenkel) & \texttt{DNg02} & 0.00 & \textbf{0.78} \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+\paragraph{Population Redundancy Confers Statistically Significant Dale's-Law Noise Tolerance.}
+Across 15 random seeds $\times$ 3 behaviors ($N=45$ trials per noise level, $\sigma \in [0, 0.7]$), single-unit rate dynamics degrade monotonically from \textbf{100.0\%} ($\sigma \le 0.1$) to 95.6\% ($\sigma=0.3$), \textbf{84.4\%} [73.3, 93.3] ($\sigma=0.5$), \textbf{80.0\%} [68.8, 91.1] ($\sigma=0.6$), and \textbf{77.8\%} [64.4, 88.9] ($\sigma=0.7$). By contrast, the 1,470-neuron LIF connectome maintains \textbf{100.0\% (45/45)} circuit selectivity across the entire range (exact McNemar $p = 0.0156$ at $\sigma=0.5$, $p = 0.0039$ at $\sigma=0.6$, and $\mathbf{p = 0.0020}$ at $\sigma=0.7$), demonstrating that biological neuron multiplicity acts as a structural variance-reduction prior across parallel projection fibers.
+
+\paragraph{Spiking LIF 2-Odor Reversal, 2,000-KC High-Dimensional Memory \& Modular MaleCNS Scaling.}
+In closed-loop Mushroom Body conditioning (Figure~\ref{fig:exp4}b), three-factor PAM/PPL1 learning succeeds cleanly in \emph{both} 61-population rate dynamics and the expanded \textbf{1,534-neuron / 16,340-synapse biophysical LIF spiking} connectome. In LIF spiking mode, neutral naive responses ($0.00, 0.00$) separate over 8 acquisition trials into strong approach for rewarded Odor~A ($w_A^{\mathrm{app}}=1.46$, valence $+0.910$) versus avoidance for punished Odor~B ($w_B^{\mathrm{avd}}=1.47$, valence $-0.826$); swapping contingencies at Trial~9 drives clean extinction (Trial~14--16) and full spiking behavioral reversal by Trial~20 ($-0.595$ vs.\ $+0.397$; rate mode: $+0.922/-0.792 \to -0.732/+0.908$).
+
+Scaling beyond two odors, we coupled our pure-NumPy \textbf{2,000-KC APL-sparsified Mushroom Body} (50 PNs $\to$ 2,000 KCs, 6 claws/KC, exact 5\% sparsity $= 100$ active KCs, 4,000 plastic synapses) into the 1,534-neuron LIF connectome and trained 10 distinct 50-D odors (5 rewarded CS$+$, 5 punished CS$-$) in \textbf{2.98\,s} on CPU. The sparse spiking memory achieves \textbf{100.0\% (10/10)} clean discrimination (CS$+$ valences $+0.744$ to $+0.938$ vs.\ CS$-$ $-0.725$ to $-0.891$) and \textbf{100.0\% (10/10)} generalization under 20\% Gaussian PN corruption. Critically, selectively reversing \emph{only} Odor~\#0 from CS$+$ to CS$-$ (without retraining Odors~\#1--\#9) flips Odor~\#0's spiking motor valence from \textbf{$+0.744 \to -0.727$} while \textbf{9/9 (100\%)} non-target odors preserve their exact learned valences ($+0.857$ to $+0.903$ and $-0.652$ to $-0.829$), directly verifying catastrophic-interference resistance via APL-enforced sparse Kenyon-cell coding.
+
+Finally, Table~\ref{tab:throughput} profiles real-time single-CPU throughput and \emph{complete} LIF substep scaling (voltage integration + refractory gating + spike detection + conductance decay + CSR spike propagation) up to MaleCNS~v1.0 scale (166,700 neurons) across mean out-degrees 12 (2.0M edges), 50 (8.34M edges), and 100 (16.67M directed edges). Comparing random Erd\H{o}s--R\'enyi graphs against biologically realistic \textbf{78-neuropil modular CSR} topologies (80\% intra-neuropil clustering, 20\% long-range projection fibers, lognormal synaptic weights) confirms our cache-locality hypothesis: modular connectome structure cuts complete MaleCNS LIF substep latency by \textbf{19.0--22.7\%} (\textbf{2.95, 7.12, and 13.67\,ms} vs.\ 3.81, 8.79, and 17.25\,ms on ER) while holding total CSR + state RAM at \textbf{31.2--199.0\,MB} on a standard laptop CPU.
+
+\begin{table}[t]
+\centering
+\caption{\textbf{Single-CPU Throughput and Full-LIF MaleCNS~v1.0 Scaling (166,700 Neurons, ER vs.\ 78-Neuropil Modular CSR, Zero GPU).}}
+\label{tab:throughput}
+\scriptsize
+\setlength{\tabcolsep}{2.3pt}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+\textbf{Closed-Loop Workload} & \textbf{Nodes/DOFs} & \textbf{Latency} & \textbf{Rate} & \textbf{Real-Time} \\
+ & & (ms/step) & (steps/s) & \textbf{Speedup} \\
+\midrule
+Rat NCAP Rollout (31 DOF, 50\,Hz) & 22 & 0.355 & 2,819 & \textbf{56.4$\times$} \\
+Rat~v2 IK + KKT Spring-Muscle ID & 31 & 0.405 & 2,470 & \textbf{49.4$\times$} \\
+FlyBrain Rate (55 pops, 500\,Hz) & 55 & 0.128 & 7,832 & \textbf{15.7$\times$} \\
+FlyBrain LIF Spiking (0.2\,ms sub) & 1,470 & 0.457 & 2,189 & \textbf{4.38$\times$} \\
+\midrule
+\textbf{Whole-CNS LIF Substep Scaling} & \textbf{Edges} & \textbf{ER LIF (ms)} & \textbf{78-Mod.\ LIF} & \textbf{Total RAM} \\
+\midrule
+10,000 N (mean out-deg 12) & 0.12M & 0.172 & --- & 1.87\,MB \\
+50,000 N (mean out-deg 12) & 0.60M & 0.874 & --- & 9.35\,MB \\
+166,700 N (MaleCNS, deg 12) & 2.00M & 3.811 & \textbf{2.947} ($-22.7\%$) & 31.16\,MB \\
+166,700 N (MaleCNS, deg 50) & 8.34M & 8.789 & \textbf{7.117} ($-19.0\%$) & 103.64\,MB \\
+\textbf{166,700 N (MaleCNS, deg 100)} & \textbf{16.67M} & 17.253 & \textbf{13.666} ($-20.8\%$) & \textbf{198.98\,MB} \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+% =========================================================================
+% 5. DISCUSSION & LIMITATIONS
+% =========================================================================
+\section{Discussion, Limitations \& Future Directions}
+
+Our revised experiments surface four actionable principles for computational neuroethology:
+\begin{enumerate}[leftmargin=*,itemsep=1.2pt,topsep=1.5pt]
+  \item \textbf{Rigid-Bone Separation and Adaptive Temporal Regularization:} Constraining articulated limb visualization tethers actively corrupts 3D reconstruction, whereas rigid-bone PBD preserves anatomical fidelity across Gaussian jitter, 65\,px outliers, and 30\% view dropouts. Practitioners should pair $\lambda_t=0$ with sub-pixel multi-view rigs and $\lambda_t=0.15$ with noisy field recordings.
+  \item \textbf{Froude-Scaled Circuit Biomarkers Transfer Across Engines and Species:} Grounding gait classification in Sim(3) body-scale normalization, Froude dynamic similarity~\cite{alexander1983froude}, stride-windowed velocity, bandpass vertical-lift Hilbert phase, and a principled diagonal-couplet boundary ($d_{\mathrm{diag}}<0.18$) yields 100\% 6-class rat accuracy at $\sigma=4$\,mm and 92--100\% zero-shot transfer to both 0.36\,kg rat and 25.6\,g DANNCE-mm mouse MuJoCo quadrupeds---even under 8\% paw occlusion.
+  \item \textbf{Honest Separation of Surrogate vs.\ Lagrangian Inverse Dynamics:} Auditing decoupled KKT inversion directly against MuJoCo \texttt{mj\_inverse} reveals that surrogate Euler inertia overestimates absolute rigid-body torques by $7.7\text{--}16.4\times$. Pure-NumPy KKT inversion is ideal for rapid, zero-dependency Rat NCAP diagnostics, whereas absolute ground-reaction load estimation should invoke Annolid's optional MuJoCo backend.
+  \item \textbf{Multiplicity, APL Sparsity, and Neuropil Locality as Structural Priors:} Expanding cell-type circuits into multi-neuron LIF connectomes confers Dale's-law noise immunity ($p=0.0020$), 5\% APL-enforced Kenyon-cell sparsity prevents catastrophic interference across 10 odors and selective single-odor reversal inside 4,000 plastic synapses, and 78-neuropil modular clustering accelerates 166,700-neuron MaleCNS LIF substeps by 19.0--22.7\% inside $<200$\,MB RAM.
+\end{enumerate}
+
+\paragraph{Limitations \& Future Work.}
+Although our dual-species MuJoCo~3.5.0 audit (0.36\,kg rat and 25.6\,g DANNCE-mm mouse), 2,000-KC APL-sparsified LIF Mushroom Body, and 78-neuropil modular MaleCNS CSR benchmarks close the primary modeling and scalability gaps, three empirical frontiers remain for prospective experimental work. First, blind $V0$/$V3$ spinal identification has not yet been benchmarked on recorded \emph{in-vivo} multi-view videos of live transgenic rodent cohorts (e.g., Bellardita \& Kiehn~\cite{bellardita2015v0} or PAIR-R24M); our validated DANNCE/Anipose mm-unit Sim(3) adapter now makes direct ingestion of such laboratory datasets straightforward. Second, while our 78-neuropil modular CSR topology mirrors MaleCNS~v1.0 spatial clustering and lognormal weight statistics, full biological simulation of the published \texttt{male-cns:v1.0} feather connectivity table remains to be evaluated on closed-loop sensorimotor arenas. Third, coupling our 2,000-KC sparse Mushroom Body to turbulent 3D spatial odor-plume navigation in MuJoCo FlyBody~\cite{vaxenburg2025flybody} is a natural next step toward closed-loop foraging neuroethology.
+
+% =========================================================================
+% 6. CONCLUSION
+% =========================================================================
+\section{Conclusion}
+
+We presented a unified, dependency-lean, cross-species digital twin and mechanistic neural control framework inside Annolid that bridges markerless video tracking, calibrated 3D anatomical lifting, closed-form spring-muscle inverse biomechanics, mammalian spinal CPG control, independent MuJoCo cross-validation, and sparse whole-CNS \emph{Drosophila} LIF connectomes. Deterministic, reproducible, and faster than real time on standard CPUs, Annolid brings causal in-silico neuroethology directly into everyday behavioral workflows.
+
+% =========================================================================
+% REFERENCES
+% =========================================================================
+\begin{thebibliography}{99}
+\setlength{\itemsep}{1.1pt}
+\scriptsize
+
+\bibitem{aldarondo2024virtualrodent}
+D.~Aldarondo, J.~Merel, J.~D. Marshall, L.~Hasenclever, U.~Klibaite, A.~Gellis, Y.~Tassa, G.~Wayne, M.~Botvinick, and B.~P. {\"O}lveczky.
+\newblock A virtual rodent predicts the structure of neural activity across behaviours.
+\newblock {\em Nature}, 632:594--602, 2024.
+
+\bibitem{alexander1983froude}
+R.~M. Alexander and A.~S. Jayes.
+\newblock A dynamic similarity hypothesis for the gaits of quadrupedal mammals.
+\newblock {\em Journal of Zoology}, 201(1):135--152, 1983.
+
+\bibitem{bellardita2015v0}
+C.~Bellardita and O.~Kiehn.
+\newblock Phenotypic characterization of speed-associated gait changes in mice reveals modular organization of locomotor networks.
+\newblock {\em Current Biology}, 25(11):1426--1436, 2015.
+
+\bibitem{berg2025malecns}
+S.~Berg, I.~R. Beckett, M.~Costa, P.~Schlegel, HHMI Janelia FlyEM Project Team, et~al.
+\newblock Sexual dimorphism in the complete connectome of the \emph{Drosophila} male central nervous system (\texttt{male-cns:v1.0}).
+\newblock {\em bioRxiv}, doi:10.1101/2025.10.09.680999, 2025.
+
+\bibitem{bhattasali2022ncap}
+N.~X. Bhattasali, A.~M. Zador, and T.~A. Engel.
+\newblock Neural circuit architectural priors for embodied control.
+\newblock In {\em Advances in Neural Information Processing Systems (NeurIPS)}, 2022.
+
+\bibitem{bhattasali2026ratncap}
+N.~X. Bhattasali, J.~Cui, L.~Pinto, and G.~W. Lindsay.
+\newblock Neural circuit architectural priors for rat locomotion.
+\newblock In {\em Advances in Neural Information Processing Systems (NeurIPS)} / {\em arXiv preprint arXiv:2611.23364}, 2026.
+
+\bibitem{danner2017spinal}
+S.~M. Danner, N.~A. Shevtsova, A.~Frigon, and I.~A. Rybak.
+\newblock Computational modeling of spinal circuits controlling limb coordination and gaits in quadrupeds.
+\newblock {\em eLife}, 6:e31050, 2017.
+
+\bibitem{datta2019computational}
+S.~R. Datta, D.~J. Anderson, K.~Branson, P.~Perona, and A.~Leifer.
+\newblock Computational neuroethology: A call to action.
+\newblock {\em Neuron}, 104(1):11--24, 2019.
+
+\bibitem{dorkenwald2024flywire}
+S.~Dorkenwald, A.~Matsliah, A.~R. Sterling, P.~Schlegel, S.-c.~Yu, C.~E. McKellar, et~al.
+\newblock Neuronal wiring diagram of an adult brain.
+\newblock {\em Nature}, 634:124--138, 2024.
+
+\bibitem{dunn2021dannce}
+T.~W. Dunn, J.~D. Marshall, K.~S. Severson, D.~E. Aldarondo, D.~G.~C. Hildebrand, S.~N. Chettih, W.~L. Wang, A.~J. Gellis, D.~E. Carlson, D.~Aronov, W.~A. Freiwald, F.~Wang, and B.~P. {\"O}lveczky.
+\newblock Geometric deep learning enables 3D kinematic profiling across species and environments.
+\newblock {\em Nature Methods}, 18:564--573, 2021.
+
+\bibitem{karashchuk2021anipose}
+P.~Karashchuk, K.~L. Rupp, E.~S. Dickinson, S.~Walling-Bell, E.~Sanders, E.~Azim, B.~W. Brunton, and J.~C. Tuthill.
+\newblock Anipose: A toolkit for robust markerless 3D pose estimation.
+\newblock {\em Cell Reports}, 36(13):109730, 2021.
+
+\bibitem{krakauer2017neuroscience}
+J.~W. Krakauer, A.~A. Ghazanfar, A.~Gomez-Marin, M.~A. MacIver, and D.~Poeppel.
+\newblock Neuroscience needs behavior: Correcting a reductionist bias.
+\newblock {\em Neuron}, 93(3):480--490, 2017.
+
+\bibitem{mathis2018deeplabcut}
+A.~Mathis, P.~Mamidanna, K.~M. Cury, T.~Abe, V.~N. Murthy, M.~W. Mathis, and M.~Bethge.
+\newblock DeepLabCut: Markerless pose estimation of user-defined body parts with deep learning.
+\newblock {\em Nature Neuroscience}, 21:1281--1289, 2018.
+
+\bibitem{pereira2022sleap}
+T.~D. Pereira, N.~Tabris, A.~Matsliah, D.~M. Turner, J.~Li, S.~Ravindranath, E.~S. Papadoyannis, E.~Normand, D.~S. Deutsch, Z.~Y. Wang, G.~C. McKenzie-Smith, C.~C. Mitelut, M.~D. Castro, J.~D'Uva, S.~Kislin, D.~H. Sanes, S.~D. Kocher, S.~S.-H. Wang, A.~L. Falkner, J.~W. Shaevitz, and M.~Murthy.
+\newblock SLEAP: A deep learning system for multi-animal pose tracking.
+\newblock {\em Nature Methods}, 19:486--495, 2022.
+
+\bibitem{schneider2023cebra}
+S.~Schneider, J.~H. Lee, and M.~W. Mathis.
+\newblock Learnable latent embeddings for joint behavioural and neural analysis.
+\newblock {\em Nature}, 617:360--368, 2023.
+
+\bibitem{shiu2024drosophilalif}
+P.~K. Shiu, G.~R. Sterne, N.~Spiller, R.~Franconville, A.~Sandoval, J.~Zhou, N.~Simha, C.~H. Kang, S.~Yu, J.~S. Kim, S.~Dorkenwald, A.~Matsliah, P.~Schlegel, S.-c.~Yu, C.~E. McKellar, A.~Sterling, M.~Costa, K.~Eichler, A.~S. Bates, N.~Eckstein, J.~Funke, G.~S.~X.~E. Jefferis, M.~Murthy, S.~Bidaye, S.~Seung, and K.~Scott.
+\newblock A \emph{Drosophila} computational brain model reveals sensorimotor processing.
+\newblock {\em Nature}, 634:210--219, 2024.
+
+\bibitem{takemura2024manc}
+S.-y.~Takemura, K.~J. Hayworth, G.~B. Huang, M.~Januszewski, Z.~Lu, E.~C. Marin, S.~Preibisch, C.~S. Xu, J.~Bogovic, A.~S. Champion, H.~S.~J. Cheong, et~al.
+\newblock A connectome of the male \emph{Drosophila} ventral nerve cord.
+\newblock {\em eLife}, 13:RP97769, 2024.
+
+\bibitem{todorov2012mujoco}
+E.~Todorov, T.~Erez, and Y.~Tassa.
+\newblock MuJoCo: A physics engine for model-based control.
+\newblock In {\em IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)}, pages 5026--5033, 2012.
+
+\bibitem{vaxenburg2025flybody}
+R.~Vaxenburg, I.~Siwanowicz, J.~Merel, A.~A. Robie, C.~Morrow, G.~Novati, Z.~Stefanidi, G.~M. Card, M.~B. Reiser, M.~M. Botvinick, K.~M. Branson, Y.~Tassa, and S.~C. Turaga.
+\newblock Whole-body physics simulation of fruit fly locomotion.
+\newblock {\em Nature}, 640:729--738, 2025.
+
+\bibitem{wangchen2024neuromechfly2}
+S.~Wang-Chen, V.~A. Stimpfling, T.~K.~C. Lam, P.~{\"O}zdil, L.~Genoud, F.~Hurtak, and P.~Ramdya.
+\newblock NeuroMechFly v2: Simulating embodied sensorimotor control in adult \emph{Drosophila}.
+\newblock {\em Nature Methods}, 21:2353--2362, 2024.
+
+\bibitem{weinreb2024keypointmoseq}
+C.~Weinreb, J.~E. Pearl, S.~Lin, M.~A.~M. Osman, L.~Zhang, S.~Annapragada, E.~Conlin, R.~Hoffmann, S.~Makowska, W.~F. Gillis, M.~Jay, S.~Ye, A.~Mathis, M.~W. Mathis, T.~Pereira, S.~W. Linderman, and S.~R. Datta.
+\newblock Keypoint-MoSeq: Parsing behavior by linking point tracking to pose dynamics.
+\newblock {\em Nature Methods}, 21:1329--1339, 2024.
+
+\bibitem{zhang2025mimicmjx}
+C.~Y. Zhang, Y.~Yang, A.~Sirbu, E.~T.~T. Abe, E.~W{\"a}rnberg, E.~J. Leonardis, D.~E. Aldarondo, A.~Lee, A.~Prasad, J.~Foat, K.~Bian, J.~Park, R.~Bhatt, V.~N. Patel, H.~Saunders, A.~O. Barbano, A.~Nagamori, A.~R. Thanawalla, K.~W. Huang, F.~Plum, H.~K. Beck, S.~W. Flavell, D.~Labonte, B.~A. Richards, B.~W. Brunton, E.~Azim, B.~P. {\"O}lveczky, and T.~D. Pereira.
+\newblock MIMIC-MJX: Neuromechanical emulation of animal behavior.
+\newblock {\em arXiv preprint arXiv:2511.20532}, 2025.
+
+\end{thebibliography}
+
+\end{document}
