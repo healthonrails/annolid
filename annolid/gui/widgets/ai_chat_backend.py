@@ -2652,7 +2652,8 @@ class StreamingChatTask(
                     (
                         f"{self.provider}|{self.model}|{self.prompt}|{pdf_path}|"
                         f"{max_chars}|{candidate.get('label')}|{attempt['candidate_limit']}|{excerpt}"
-                    ).encode("utf-8")
+                    ).encode("utf-8"),
+                    usedforsecurity=False,
                 ).hexdigest()
                 if cache_key in llm_cache:
                     cached_value = str(llm_cache.get(cache_key) or "")

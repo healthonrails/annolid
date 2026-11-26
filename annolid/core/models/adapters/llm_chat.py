@@ -357,15 +357,33 @@ class LLMChatAdapter(RuntimeModel):
         }
         if "think" in extra_body:
             payload["think"] = bool(extra_body.get("think"))
-        request = urllib.request.Request(
-            f"{host.rstrip('/')}/api/chat",
+        from urllib.parse import urlparse
+
+        endpoint_url = f"{host.rstrip('/')}/api/chat"
+        parsed_endpoint = urlparse(endpoint_url)
+        if (
+            parsed_endpoint.scheme.lower() not in {"http", "https"}
+            or not parsed_endpoint.hostname
+        ):
+            raise RuntimeError(f"Unsupported Ollama endpoint URL: {endpoint_url!r}")
+        request = urllib.request.Request(  # noqa: S310 - scheme validated above
+            endpoint_url,
             data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
+        max_bytes = 32 * 1024 * 1024
         try:
-            with urllib.request.urlopen(request, timeout=120.0) as response:
-                return json.loads(response.read().decode("utf-8"))
+            with urllib.request.urlopen(request, timeout=120.0) as response:  # noqa: S310
+                try:
+                    raw = response.read(max_bytes + 1)
+                except TypeError:
+                    raw = response.read()
+                if len(raw) > max_bytes:
+                    raise RuntimeError(
+                        "Ollama native chat response exceeded size limit."
+                    )
+                return json.loads(raw.decode("utf-8"))
         except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
             raise RuntimeError(f"Ollama native chat request failed: {exc}") from exc
 

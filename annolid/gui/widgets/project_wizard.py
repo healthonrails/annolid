@@ -8,6 +8,7 @@ and pose configuration in a step-by-step flow.
 from __future__ import annotations
 
 import copy
+import html
 from pathlib import Path
 from typing import List, Optional
 
@@ -848,8 +849,12 @@ class SummaryPage(QtWidgets.QWizardPage):
         # Project info
         project_path = wizard.project_info_page.project_path()
         html_parts.append("<h3>📁 Project</h3>")
-        html_parts.append(f"<p><b>Name:</b> {project_path.name}</p>")
-        html_parts.append(f"<p><b>Location:</b> {project_path.parent}</p>")
+        html_parts.append(
+            f"<p><b>Name:</b> {html.escape(project_path.name, quote=True)}</p>"
+        )
+        html_parts.append(
+            f"<p><b>Location:</b> {html.escape(str(project_path.parent), quote=True)}</p>"
+        )
 
         # Videos
         videos = wizard.video_import_page.get_videos()
@@ -857,7 +862,7 @@ class SummaryPage(QtWidgets.QWizardPage):
         if videos:
             html_parts.append("<ul>")
             for v in videos[:5]:
-                html_parts.append(f"<li>{Path(v).name}</li>")
+                html_parts.append(f"<li>{html.escape(Path(v).name, quote=True)}</li>")
             if len(videos) > 5:
                 html_parts.append(f"<li><i>...and {len(videos) - 5} more</i></li>")
             html_parts.append("</ul>")
@@ -868,14 +873,18 @@ class SummaryPage(QtWidgets.QWizardPage):
         schema = wizard.subject_behavior_page.get_schema()
         html_parts.append(f"<h3>🐭 Subjects ({len(schema.subjects)})</h3>")
         if schema.subjects:
-            names = ", ".join(s.name for s in schema.subjects[:5])
+            names = ", ".join(
+                html.escape(str(s.name), quote=True) for s in schema.subjects[:5]
+            )
             if len(schema.subjects) > 5:
                 names += f", ...+{len(schema.subjects) - 5} more"
             html_parts.append(f"<p>{names}</p>")
 
         html_parts.append(f"<h3>📋 Behaviors ({len(schema.behaviors)})</h3>")
         if schema.behaviors:
-            names = ", ".join(b.name for b in schema.behaviors[:5])
+            names = ", ".join(
+                html.escape(str(b.name), quote=True) for b in schema.behaviors[:5]
+            )
             if len(schema.behaviors) > 5:
                 names += f", ...+{len(schema.behaviors) - 5} more"
             html_parts.append(f"<p>{names}</p>")
@@ -889,7 +898,9 @@ class SummaryPage(QtWidgets.QWizardPage):
                 f"{len(pose.symmetry_pairs)} symmetry pairs)</h3>"
             )
             if pose.keypoints:
-                kps = ", ".join(pose.keypoints[:8])
+                kps = ", ".join(
+                    html.escape(str(kp), quote=True) for kp in pose.keypoints[:8]
+                )
                 if len(pose.keypoints) > 8:
                     kps += f", ...+{len(pose.keypoints) - 8} more"
                 html_parts.append(f"<p>{kps}</p>")

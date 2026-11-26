@@ -2304,7 +2304,7 @@ class DinoKPSEGPoseDataset(torch.utils.data.Dataset):
         )
         if cache_salt:
             payload = payload + b"|" + bytes(cache_salt)
-        digest = hashlib.sha1(payload).hexdigest()
+        digest = hashlib.sha1(payload, usedforsecurity=False).hexdigest()
         return self.cache_dir / f"{digest}.pt"
 
     def _load_or_compute_features(

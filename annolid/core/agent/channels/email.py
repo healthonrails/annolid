@@ -3,6 +3,7 @@ import email
 import imaplib
 import os
 import smtplib
+import ssl
 from email.utils import parseaddr
 from email.message import EmailMessage
 from typing import Any, Awaitable, Callable, Optional
@@ -11,6 +12,8 @@ from annolid.core.agent.bus import OutboundMessage
 from annolid.utils.logger import logger
 
 from .base import BaseChannel
+
+_EMAIL_NETWORK_TIMEOUT_SECONDS = 30.0
 
 SendCallback = Callable[[OutboundMessage], Awaitable[None] | None]
 
@@ -98,7 +101,12 @@ class EmailChannel(BaseChannel):
         def _sync_poll():
             messages = []
             try:
-                mail = imaplib.IMAP4_SSL(imap_host, imap_port)
+                mail = imaplib.IMAP4_SSL(
+                    imap_host,
+                    imap_port,
+                    ssl_context=ssl.create_default_context(),
+                    timeout=_EMAIL_NETWORK_TIMEOUT_SECONDS,
+                )
                 mail.login(user, password)
                 mail.select("inbox")
                 status, response = mail.search(None, "UNSEEN")
@@ -107,7 +115,11 @@ class EmailChannel(BaseChannel):
 
                 for num in response[0].split():
                     status, msg_data = mail.fetch(num, "(RFC822)")
-                    if status != "OK":
+                    if (
+                        status != "OK"
+                        or not msg_data
+                        or not isinstance(msg_data[0], tuple)
+                    ):
                         continue
 
                     raw_email = msg_data[0][1]
@@ -119,10 +131,17 @@ class EmailChannel(BaseChannel):
                     if msg.is_multipart():
                         for part in msg.walk():
                             if part.get_content_type() == "text/plain":
-                                body = part.get_payload(decode=True).decode()
-                                break
+                                decoded = part.get_payload(decode=True)
+                                if decoded is not None:
+                                    body = decoded.decode(errors="replace")
+                                    break
                     else:
-                        body = msg.get_payload(decode=True).decode()
+                        decoded = msg.get_payload(decode=True)
+                        body = (
+                            decoded.decode(errors="replace")
+                            if decoded is not None
+                            else ""
+                        )
 
                     messages.append(
                         {"sender": sender, "subject": subject, "body": body, "num": num}
@@ -178,13 +197,22 @@ class EmailChannel(BaseChannel):
             else:
                 subject = str(orig_subject)
 
+            subject = subject.replace("\r", " ").replace("\n", " ").strip()
+            recipient = (
+                str(msg.chat_id or "").replace("\r", "").replace("\n", "").strip()
+            )
             email_msg["Subject"] = subject
             email_msg["From"] = user
-            email_msg["To"] = msg.chat_id
+            email_msg["To"] = recipient
 
             def _sync_send():
-                with smtplib.SMTP(smtp_host, smtp_port) as server:
-                    server.starttls()
+                tls_context = ssl.create_default_context()
+                with smtplib.SMTP(
+                    smtp_host,
+                    smtp_port,
+                    timeout=_EMAIL_NETWORK_TIMEOUT_SECONDS,
+                ) as server:
+                    server.starttls(context=tls_context)
                     server.login(user, password)
                     server.send_message(email_msg)
 

@@ -143,7 +143,7 @@ class ExecTool(FunctionTool):
                 return (
                     "Error: Command blocked by safety guard (path traversal detected)"
                 )
-            cwd_path = Path(cwd).resolve()
+            cwd_path = Path(cwd).expanduser().resolve()
             workspace_root = self._workspace_root or cwd_path
             if not self._is_within_root(cwd_path, workspace_root):
                 return (
@@ -180,7 +180,7 @@ class ExecTool(FunctionTool):
             command,
         )
         home_paths = re.findall(
-            r"(?:^|[\s|>&;=('\"])(~[^\s\"'>;|<&]+)",
+            r"(?:^|[\s|>&;=('\"])(~[^\s\"'>;|<&]*)",
             command,
         )
         return posix_paths + home_paths

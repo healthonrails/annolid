@@ -6,6 +6,7 @@ import argparse
 from collections import Counter, OrderedDict, defaultdict
 from dataclasses import FrozenInstanceError, is_dataclass
 import hashlib
+import hmac
 import io
 import logging
 from pathlib import (
@@ -693,7 +694,7 @@ def _verify_checkpoint_file_and_sha256(
                     break
                 hasher.update(chunk)
         actual = hasher.hexdigest().lower()
-        if actual != expected:
+        if not hmac.compare_digest(actual, expected):
             raise ValueError(
                 f"SHA-256 mismatch for checkpoint '{checkpoint_path}': "
                 f"expected {expected}, got {actual}."

@@ -16,6 +16,7 @@ import urllib.request
 import weakref
 
 from annolid.utils.logger import logger
+from annolid.utils.safe_http import safe_urlopen
 
 
 class InferenceCancelledError(RuntimeError):
@@ -323,6 +324,12 @@ def cancellable_download_file(
     if is_stop_requested(stop_event):
         raise InferenceCancelledError("Model checkpoint download cancelled.")
 
+    from urllib.parse import urlparse
+
+    parsed_url = urlparse(str(url or "").strip())
+    if parsed_url.scheme.lower() not in {"http", "https"} or not parsed_url.hostname:
+        raise ValueError(f"Unsupported download URL scheme or host: {url!r}")
+
     preferred = Path(dest_path)
     fallback = default_model_cache_dir(cache_subdir) / preferred.name
     existing = _existing_nonempty_checkpoint(preferred, fallback)
@@ -350,9 +357,11 @@ def cancellable_download_file(
         req_headers = {"User-Agent": "Annolid/1.0"}
         if headers:
             req_headers.update(headers)
-        request = urllib.request.Request(url, headers=req_headers)
+        request = urllib.request.Request(  # noqa: S310 - scheme validated above
+            url, headers=req_headers
+        )
 
-        md5_hasher = hashlib.md5() if md5 else None
+        md5_hasher = hashlib.md5(usedforsecurity=False) if md5 else None
         sha256_hasher = hashlib.sha256() if sha256 else None
         resp = None
         unsub = None
@@ -361,7 +370,13 @@ def cancellable_download_file(
             if is_stop_requested(stop_event):
                 raise InferenceCancelledError("Model checkpoint download cancelled.")
 
-            resp = urllib.request.urlopen(request, timeout=timeout)
+            resp = safe_urlopen(
+                request,
+                timeout=timeout,
+                allow_private=False,
+                allow_loopback=True,
+                urlopen_func=urllib.request.urlopen,
+            )
 
             def _abort_stream() -> None:
                 if resp is not None:

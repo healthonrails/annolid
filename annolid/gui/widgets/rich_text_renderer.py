@@ -1,8 +1,10 @@
 import base64
 import html
+from html.parser import HTMLParser
 import io
 import re
 from typing import Any, Dict, List, Match, Optional, Tuple
+from urllib.parse import urlparse
 
 from qtpy import QtGui
 
@@ -128,21 +130,239 @@ class RichTextRenderer:
     def escape_html(text: Optional[str]) -> str:
         if text is None:
             return ""
-        return html.escape(text, quote=False)
+        return html.escape(text, quote=True)
 
     def _build_markdown_engine(self) -> Optional["MarkdownIt"]:
         if MarkdownIt is None:
             return None
 
-        md = MarkdownIt("commonmark", {"typographer": True, "linkify": True})
+        md = MarkdownIt(
+            "commonmark", {"html": False, "typographer": True, "linkify": True}
+        )
         md = md.enable("table").enable("strikethrough")
         if tasklists is not None:
             md = md.use(tasklists, clickable_checkbox=False)
         return md
 
+    _SAFE_HTML_TAGS = frozenset(
+        {
+            "a",
+            "abbr",
+            "acronym",
+            "b",
+            "blockquote",
+            "br",
+            "code",
+            "del",
+            "div",
+            "em",
+            "h1",
+            "h2",
+            "h3",
+            "h4",
+            "h5",
+            "h6",
+            "hr",
+            "i",
+            "img",
+            "input",
+            "li",
+            "ol",
+            "p",
+            "pre",
+            "s",
+            "span",
+            "strong",
+            "table",
+            "tbody",
+            "td",
+            "th",
+            "thead",
+            "tr",
+            "u",
+            "ul",
+        }
+    )
+    _DROP_CONTENT_TAGS = frozenset(
+        {"script", "style", "iframe", "object", "embed", "applet", "svg", "math"}
+    )
+    _VOID_HTML_TAGS = frozenset({"br", "hr", "img", "input"})
+    _SAFE_HTML_ATTRS: Dict[str, frozenset[str]] = {
+        "a": frozenset({"href", "title", "rel", "class", "style"}),
+        "img": frozenset({"src", "alt", "style", "class"}),
+        "input": frozenset({"type", "checked", "disabled", "class"}),
+        "div": frozenset({"class", "style"}),
+        "span": frozenset({"class", "style"}),
+        "p": frozenset({"class", "style"}),
+        "code": frozenset({"class", "style"}),
+        "pre": frozenset({"class", "style"}),
+        "td": frozenset({"align", "class", "style"}),
+        "th": frozenset({"align", "class", "style"}),
+        "ul": frozenset({"class", "style"}),
+        "ol": frozenset({"class", "style"}),
+        "li": frozenset({"class", "style"}),
+        "blockquote": frozenset({"class", "style"}),
+        "table": frozenset({"class", "style"}),
+    }
+    _SAFE_CSS_PROPERTIES = frozenset(
+        {
+            "color",
+            "background-color",
+            "font-family",
+            "font-size",
+            "font-weight",
+            "font-style",
+            "text-align",
+            "margin",
+            "padding",
+            "border",
+            "border-radius",
+            "line-height",
+            "border-collapse",
+            "border-spacing",
+            "width",
+            "max-width",
+            "height",
+            "max-height",
+            "overflow",
+            "overflow-x",
+            "display",
+            "flex-direction",
+            "gap",
+            "align-self",
+            "justify-content",
+            "white-space",
+        }
+    )
+
+    @classmethod
+    def _sanitize_url_attr(cls, raw_url: str, *, allow_data_image: bool) -> str:
+        candidate = str(raw_url or "").strip()
+        if not candidate:
+            return "#"
+        if candidate.startswith("#"):
+            return candidate
+        lowered = candidate.lower()
+        if allow_data_image and lowered.startswith("data:image/png;base64,"):
+            return candidate
+        parsed = urlparse(candidate)
+        if parsed.scheme.lower() in {"http", "https", "mailto"}:
+            return candidate
+        return "#"
+
+    @classmethod
+    def _sanitize_style_attr(cls, raw_style: str) -> str:
+        safe_decls: list[str] = []
+        for decl in str(raw_style or "").split(";"):
+            if ":" not in decl:
+                continue
+            prop, val = decl.split(":", 1)
+            prop_name = prop.strip().lower()
+            val_text = val.strip()
+            if not prop_name or not val_text:
+                continue
+            if prop_name not in cls._SAFE_CSS_PROPERTIES:
+                continue
+            lowered_val = val_text.lower()
+            if any(
+                token in lowered_val
+                for token in (
+                    "url(",
+                    "expression(",
+                    "javascript:",
+                    "vbscript:",
+                    "@import",
+                )
+            ):
+                continue
+            safe_decls.append(f"{prop_name}:{val_text}")
+        return "; ".join(safe_decls)
+
+    @classmethod
+    def _fallback_sanitize_html(cls, html_content: str) -> str:
+        """Stdlib HTML allowlist sanitizer used when optional ``bleach`` is absent."""
+
+        class _SafeHtmlSanitizer(HTMLParser):
+            def __init__(self) -> None:
+                super().__init__(convert_charrefs=False)
+                self.parts: list[str] = []
+                self._skip_depth = 0
+
+            def handle_starttag(
+                self, tag: str, attrs: list[tuple[str, Optional[str]]]
+            ) -> None:
+                tag_low = tag.lower()
+                if tag_low in cls._DROP_CONTENT_TAGS:
+                    self._skip_depth += 1
+                    return
+                if self._skip_depth > 0 or tag_low not in cls._SAFE_HTML_TAGS:
+                    return
+                allowed = cls._SAFE_HTML_ATTRS.get(tag_low, frozenset())
+                rendered_attrs: list[str] = []
+                if tag_low == "input":
+                    attr_map = {k.lower(): (v or "") for k, v in attrs}
+                    if attr_map.get("type", "").strip().lower() != "checkbox":
+                        return
+                for raw_name, raw_val in attrs:
+                    attr_name = raw_name.lower()
+                    if attr_name not in allowed:
+                        continue
+                    val = "" if raw_val is None else str(raw_val)
+                    if attr_name == "href":
+                        val = cls._sanitize_url_attr(val, allow_data_image=False)
+                    elif attr_name == "src":
+                        val = cls._sanitize_url_attr(val, allow_data_image=True)
+                    elif attr_name == "style":
+                        val = cls._sanitize_style_attr(val)
+                        if not val:
+                            continue
+                    if raw_val is None and attr_name in {"checked", "disabled"}:
+                        rendered_attrs.append(f" {attr_name}")
+                    else:
+                        rendered_attrs.append(
+                            f' {attr_name}="{html.escape(val, quote=True)}"'
+                        )
+                self.parts.append(f"<{tag_low}{''.join(rendered_attrs)}>")
+
+            def handle_startendtag(
+                self, tag: str, attrs: list[tuple[str, Optional[str]]]
+            ) -> None:
+                self.handle_starttag(tag, attrs)
+
+            def handle_endtag(self, tag: str) -> None:
+                tag_low = tag.lower()
+                if tag_low in cls._DROP_CONTENT_TAGS:
+                    if self._skip_depth > 0:
+                        self._skip_depth -= 1
+                    return
+                if (
+                    self._skip_depth > 0
+                    or tag_low not in cls._SAFE_HTML_TAGS
+                    or tag_low in cls._VOID_HTML_TAGS
+                ):
+                    return
+                self.parts.append(f"</{tag_low}>")
+
+            def handle_data(self, data: str) -> None:
+                if self._skip_depth == 0:
+                    self.parts.append(html.escape(data, quote=False))
+
+            def handle_entityref(self, name: str) -> None:
+                if self._skip_depth == 0:
+                    self.parts.append(f"&{name};")
+
+            def handle_charref(self, name: str) -> None:
+                if self._skip_depth == 0:
+                    self.parts.append(f"&#{name};")
+
+        parser = _SafeHtmlSanitizer()
+        parser.feed(str(html_content or ""))
+        parser.close()
+        return "".join(parser.parts)
+
     def _sanitize_rendered_html(self, html_content: str) -> str:
         if bleach is None:
-            return html_content
+            return self._fallback_sanitize_html(html_content)
 
         allowed_tags = bleach.sanitizer.ALLOWED_TAGS.union(
             {
@@ -335,7 +555,7 @@ class RichTextRenderer:
             return "#"
 
         def replace_image(match: Match[str]) -> str:
-            alt = escape_segment(match.group(1))
+            alt = html.escape(match.group(1), quote=True)
             url = sanitize_url(match.group(2))
             return add_token(f'<img alt="{alt}" src="{url}"/>', "IMG")
 

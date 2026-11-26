@@ -5,8 +5,11 @@ import json
 import os
 from pathlib import Path
 from typing import Optional
+import urllib.parse
 import urllib.request
 import uuid
+
+_MAX_TRANSCRIPTION_RESPONSE_BYTES = 16 * 1024 * 1024
 
 
 def _encode_multipart_formdata(
@@ -46,6 +49,9 @@ def _transcribe_via_urllib(
     path: Path,
     model: str,
 ) -> str:
+    parsed = urllib.parse.urlparse(str(url or "").strip())
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        raise ValueError(f"Unsupported transcription URL scheme or host: {url!r}")
     body, content_type = _encode_multipart_formdata(
         fields={"model": model},
         file_field="file",
@@ -55,14 +61,19 @@ def _transcribe_via_urllib(
     )
     request_headers = dict(headers)
     request_headers["Content-Type"] = content_type
-    request = urllib.request.Request(
+    request = urllib.request.Request(  # noqa: S310 - scheme validated above
         url,
         data=body,
         headers=request_headers,
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=60.0) as response:
-        raw = response.read()
+    with urllib.request.urlopen(request, timeout=60.0) as response:  # noqa: S310
+        try:
+            raw = response.read(_MAX_TRANSCRIPTION_RESPONSE_BYTES + 1)
+        except TypeError:
+            raw = response.read()
+    if len(raw) > _MAX_TRANSCRIPTION_RESPONSE_BYTES:
+        raise ValueError("Transcription API response exceeded size limit.")
     payload = json.loads(raw.decode("utf-8"))
     if not isinstance(payload, dict):
         return ""

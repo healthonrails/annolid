@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
+from urllib.parse import unquote, urlparse
 from urllib.request import urlopen
 
 from annolid.core.agent.observability import emit_governance_event
@@ -67,6 +70,27 @@ class UpdateManagerService:
                 h.update(chunk)
         return h.hexdigest()
 
+    @staticmethod
+    def _safe_artifact_filename(artifact_url: str, fallback: str) -> str:
+        raw_url = str(artifact_url or "").strip()
+        parsed_path = unquote(urlparse(raw_url).path or "")
+        candidate = parsed_path.replace("\\", "/").rsplit("/", 1)[-1].strip()
+        if (
+            not candidate
+            or candidate in {".", ".."}
+            or candidate.startswith(".")
+            or "/" in candidate
+            or "\\" in candidate
+            or "\x00" in candidate
+        ):
+            candidate = fallback
+        safe = "".join(
+            ch if (ch.isalnum() or ch in "._-") else "_" for ch in candidate
+        ).lstrip(".")
+        if not safe or safe in {".", ".."}:
+            return "update.artifact"
+        return safe
+
     def download_and_verify_artifact(
         self,
         plan: SignedUpdatePlan,
@@ -74,10 +98,15 @@ class UpdateManagerService:
         timeout_s: float = 20.0,
         execute: bool = False,
     ) -> Dict[str, Any]:
-        artifact_name = os.path.basename(
-            str(plan.manifest.artifact_url or "").strip()
-        ) or (f"{plan.project}-{plan.manifest.version}.artifact")
-        out_path = self.stage_dir / artifact_name
+        fallback_name = f"{plan.project}-{plan.manifest.version}.artifact"
+        artifact_name = self._safe_artifact_filename(
+            str(plan.manifest.artifact_url or ""), fallback=fallback_name
+        )
+        out_path = (self.stage_dir / artifact_name).resolve()
+        if out_path.parent != self.stage_dir:
+            raise ValueError(
+                f"Refusing update artifact path outside stage_dir: {artifact_name!r}"
+            )
         payload: Dict[str, Any] = {
             "phase": "stage_artifact",
             "ok": True,
@@ -88,37 +117,59 @@ class UpdateManagerService:
         if not execute:
             payload["dry_run"] = True
             return payload
+        tmp_path: Optional[Path] = None
         try:
             url = str(plan.manifest.artifact_url or "").strip()
-            if not url.lower().startswith(("https://", "file://")):
+            parsed_url = urlparse(url)
+            if parsed_url.scheme.lower() not in {"https", "file"}:
                 raise ValueError(
                     f"Refusing update artifact URL with unsupported scheme: {url!r}"
                 )
             max_artifact_bytes = 512 * 1024 * 1024
-            with urlopen(url, timeout=max(1.0, float(timeout_s))) as resp:  # noqa: S310
-                chunks: list[bytes] = []
-                total = 0
-                while True:
-                    chunk = resp.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    total += len(chunk)
-                    if total > max_artifact_bytes:
-                        raise ValueError("Update artifact exceeds maximum allowed size")
-                    chunks.append(chunk)
-                data = b"".join(chunks)
-            out_path.write_bytes(data)
-            digest = self._sha256(out_path)
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=f".{artifact_name}.",
+                suffix=".part",
+                dir=str(self.stage_dir),
+            )
+            tmp_path = Path(tmp_name)
+            hasher = hashlib.sha256()
+            total = 0
+            try:
+                with os.fdopen(fd, "wb") as out_fh:
+                    with urlopen(url, timeout=max(1.0, float(timeout_s))) as resp:  # noqa: S310
+                        while True:
+                            chunk = resp.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            total += len(chunk)
+                            if total > max_artifact_bytes:
+                                raise ValueError(
+                                    "Update artifact exceeds maximum allowed size"
+                                )
+                            hasher.update(chunk)
+                            out_fh.write(chunk)
+            except Exception:
+                tmp_path.unlink(missing_ok=True)
+                raise
+
+            digest = hasher.hexdigest()
             expected = str(plan.manifest.artifact_sha256 or "").strip().lower()
             payload["sha256"] = digest
-            payload["bytes_downloaded"] = len(data)
+            payload["bytes_downloaded"] = total
             if not expected:
+                tmp_path.unlink(missing_ok=True)
                 payload["ok"] = False
                 payload["reason"] = "artifact_checksum_missing"
-            elif digest.lower() != expected:
+            elif not hmac.compare_digest(digest.lower(), expected):
+                tmp_path.unlink(missing_ok=True)
                 payload["ok"] = False
                 payload["reason"] = "artifact_checksum_mismatch"
+            else:
+                os.replace(str(tmp_path), str(out_path))
+                tmp_path = None
         except Exception as exc:
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
             payload["ok"] = False
             payload["reason"] = "artifact_download_failed"
             payload["error"] = str(exc)

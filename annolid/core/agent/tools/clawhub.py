@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from annolid.core.agent.observability import emit_governance_event
+from annolid.utils.safe_http import build_http_request, read_bounded, safe_urlopen
 
 from .function_base import FunctionTool
 
@@ -42,23 +43,44 @@ _MAX_SKILL_DOWNLOAD_BYTES = 50 * 1024 * 1024
 _MAX_UNCOMPRESSED_ZIP_BYTES = 100 * 1024 * 1024
 
 
+def _validate_clawhub_url(url: str) -> str:
+    candidate = str(url or "").strip()
+    if not candidate or any(ord(ch) < 32 or ord(ch) == 127 for ch in candidate):
+        raise ValueError("Invalid ClawHub URL.")
+    parsed = urllib.parse.urlparse(candidate)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        raise ValueError(
+            f"Unsupported ClawHub URL scheme or host: {parsed.scheme or 'none'!r}"
+        )
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("Embedded credentials are not allowed in ClawHub URLs.")
+    return candidate
+
+
 def _http_get_json(
     url: str,
     timeout_sec: int = 20,
     *,
     max_bytes: int = _MAX_JSON_RESPONSE_BYTES,
 ) -> Any:
-    req = urllib.request.Request(
-        url,
+    safe_url = _validate_clawhub_url(url)
+    req = build_http_request(
+        safe_url,
         headers={
             "Accept": "application/json",
             "User-Agent": "annolid-clawhub/1.0",
         },
+        allow_private=False,
+        allow_loopback=True,
     )
-    with urllib.request.urlopen(req, timeout=timeout_sec) as response:
-        raw = response.read(max_bytes + 1)
-    if len(raw) > max_bytes:
-        raise ValueError(f"ClawHub JSON response exceeded {max_bytes} byte limit.")
+    with safe_urlopen(
+        req,
+        timeout=timeout_sec,
+        allow_private=False,
+        allow_loopback=True,
+        urlopen_func=urllib.request.urlopen,
+    ) as response:
+        raw = read_bounded(response, max_bytes, label="ClawHub JSON response")
     return json.loads(raw.decode("utf-8"))
 
 
@@ -68,14 +90,21 @@ def _http_get_bytes(
     *,
     max_bytes: int = _MAX_SKILL_DOWNLOAD_BYTES,
 ) -> bytes:
-    req = urllib.request.Request(
-        url,
+    safe_url = _validate_clawhub_url(url)
+    req = build_http_request(
+        safe_url,
         headers={"User-Agent": "annolid-clawhub/1.0"},
+        allow_private=False,
+        allow_loopback=True,
     )
-    with urllib.request.urlopen(req, timeout=timeout_sec) as response:
-        raw = response.read(max_bytes + 1)
-    if len(raw) > max_bytes:
-        raise ValueError(f"ClawHub archive download exceeded {max_bytes} byte limit.")
+    with safe_urlopen(
+        req,
+        timeout=timeout_sec,
+        allow_private=False,
+        allow_loopback=True,
+        urlopen_func=urllib.request.urlopen,
+    ) as response:
+        raw = read_bounded(response, max_bytes, label="ClawHub archive download")
     return bytes(raw)
 
 
@@ -87,9 +116,11 @@ def _safe_extract_zip(zip_path: Path, dest_dir: Path) -> None:
             mode = member.external_attr >> 16
             if stat.S_ISLNK(mode):
                 raise ValueError(f"Unsafe symlink in zip archive: {member.filename}")
-            member_path = Path(member.filename)
+            normalized_name = str(member.filename or "").replace("\\", "/")
+            member_path = Path(normalized_name)
             if (
-                member_path.is_absolute()
+                "\x00" in normalized_name
+                or member_path.is_absolute()
                 or member_path.drive
                 or ".." in member_path.parts
             ):
@@ -101,12 +132,25 @@ def _safe_extract_zip(zip_path: Path, dest_dir: Path) -> None:
                 raise ValueError(
                     f"Zip member escapes extraction root: {member.filename}"
                 )
-            total_uncompressed += max(0, int(member.file_size))
-            if total_uncompressed > _MAX_UNCOMPRESSED_ZIP_BYTES:
+            if member.is_dir():
+                target_resolved.mkdir(parents=True, exist_ok=True)
+                continue
+            target_resolved.parent.mkdir(parents=True, exist_ok=True)
+            if target_resolved.is_symlink():
                 raise ValueError(
-                    f"Uncompressed skill archive exceeds {_MAX_UNCOMPRESSED_ZIP_BYTES} byte limit."
+                    f"Refusing to overwrite symlink during extraction: {member.filename}"
                 )
-        zf.extractall(dest_resolved)
+            with zf.open(member, "r") as src_fh, target_resolved.open("wb") as dst_fh:
+                while True:
+                    chunk = src_fh.read(64 * 1024)
+                    if not chunk:
+                        break
+                    total_uncompressed += len(chunk)
+                    if total_uncompressed > _MAX_UNCOMPRESSED_ZIP_BYTES:
+                        raise ValueError(
+                            f"Uncompressed skill archive exceeds {_MAX_UNCOMPRESSED_ZIP_BYTES} byte limit."
+                        )
+                    dst_fh.write(chunk)
     for extracted in dest_resolved.rglob("*"):
         if extracted.is_symlink():
             raise ValueError(f"Unsafe symlink extracted from archive: {extracted.name}")
@@ -321,7 +365,7 @@ async def clawhub_install_skill(
                 target_dir.unlink()
             elif target_dir.exists():
                 shutil.rmtree(target_dir)
-            shutil.copytree(source_root, target_dir, symlinks=True)
+            shutil.copytree(source_root, target_dir, symlinks=False)
     except Exception as exc:
         emit_governance_event(
             event_type="skills",

@@ -126,7 +126,7 @@ def _build_wrapper_tool_name(server_name: str, tool_name: str) -> str:
     base = f"mcp_{_sanitize_tool_name_part(server_name)}_{_sanitize_tool_name_part(tool_name)}"
     if len(base) <= 64:
         return base
-    digest = hashlib.sha1(base.encode("utf-8")).hexdigest()[:8]
+    digest = hashlib.sha1(base.encode("utf-8"), usedforsecurity=False).hexdigest()[:8]
     return f"{base[:55]}_{digest}"[:64]
 
 

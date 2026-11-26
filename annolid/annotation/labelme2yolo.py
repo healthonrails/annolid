@@ -423,7 +423,9 @@ class Labelme2YOLO:
         safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw.replace("/", "__"))
         if len(safe) <= 200:
             return safe
-        digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:10]
+        digest = hashlib.sha1(raw.encode("utf-8"), usedforsecurity=False).hexdigest()[
+            :10
+        ]
         return f"{safe[:180]}_{digest}"
 
     @staticmethod

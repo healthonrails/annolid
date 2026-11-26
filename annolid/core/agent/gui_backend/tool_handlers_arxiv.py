@@ -13,6 +13,7 @@ import urllib.request
 
 from annolid.core.agent.tools.pdf import DownloadPdfTool
 from annolid.services.literature_search import search_literature
+from annolid.utils.safe_http import build_http_request, read_bounded, safe_urlopen
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -110,6 +111,10 @@ def _fetch_arxiv_feed_bytes(
         raise RuntimeError(
             "arXiv temporarily unavailable due to repeated rate limiting. Retry later."
         )
+    parsed_url = urllib.parse.urlparse(str(url or "").strip())
+    if parsed_url.scheme.lower() not in {"http", "https"} or not parsed_url.hostname:
+        raise ValueError(f"Unsupported arXiv URL scheme or host: {url!r}")
+    max_feed_bytes = 10 * 1024 * 1024
     attempts = max(1, int(max_attempts))
     delay = 1.0
     for attempt in range(1, attempts + 1):
@@ -118,14 +123,20 @@ def _fetch_arxiv_feed_bytes(
                 "arXiv temporarily unavailable due to repeated rate limiting. Retry later."
             )
         try:
-            req = urllib.request.Request(
+            req = build_http_request(
                 url,
                 headers={"User-Agent": "annolid-arxiv-client/1.0"},
+                allow_private=False,
             )
-            with urllib.request.urlopen(
-                req, timeout=max(1.0, float(timeout_s))
+            with safe_urlopen(
+                req,
+                timeout=max(1.0, float(timeout_s)),
+                allow_private=False,
+                urlopen_func=urllib.request.urlopen,
             ) as response:
-                payload = response.read()
+                payload = read_bounded(
+                    response, max_feed_bytes, label="arXiv feed response"
+                )
             _arxiv_circuit_on_success()
             return payload
         except urllib.error.HTTPError as exc:
@@ -312,9 +323,16 @@ async def arxiv_search_tool(
         emit_progress("Downloading PDF...")
         downloads_dir = workspace / "downloads"
         downloads_dir.mkdir(parents=True, exist_ok=True)
-        safe_title = "".join(c for c in title if c.isalnum() or c in " ._-").strip()
+        safe_title = (
+            "".join(c for c in title if c.isalnum() or c in " ._-")
+            .strip()
+            .lstrip(".")
+            .strip()
+        )
+        if not safe_title or safe_title in {".", ".."}:
+            safe_title = "paper"
         if len(safe_title) > 100:
-            safe_title = safe_title[:100].rstrip(" ._-")
+            safe_title = safe_title[:100].rstrip(" ._-") or "paper"
         filename = f"{safe_title}.pdf"
         output_path = str(downloads_dir / filename)
 

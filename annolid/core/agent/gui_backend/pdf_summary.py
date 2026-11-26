@@ -230,10 +230,13 @@ def summarize_active_pdf_with_cache(
         cache_key = hashlib.sha1(
             f"{pdf_path.resolve()}:{int(stat.st_mtime_ns)}:{int(stat.st_size)}".encode(
                 "utf-8"
-            )
+            ),
+            usedforsecurity=False,
         ).hexdigest()[:12]
     except Exception:
-        cache_key = hashlib.sha1(str(pdf_path).encode("utf-8")).hexdigest()[:12]
+        cache_key = hashlib.sha1(
+            str(pdf_path).encode("utf-8"), usedforsecurity=False
+        ).hexdigest()[:12]
     safe_stem = re.sub(r"[^a-zA-Z0-9._-]+", "_", pdf_path.stem).strip("._-")
     if not safe_stem:
         safe_stem = "paper"

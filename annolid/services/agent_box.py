@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hmac
+import secrets
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -134,6 +136,10 @@ class BoxOAuthCallbackServer:
                     ).encode("utf-8")
                     self.send_response(200)
                     self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Pragma", "no-cache")
+                    self.send_header("X-Content-Type-Options", "nosniff")
+                    self.send_header("Referrer-Policy", "no-referrer")
                     self.send_header("Content-Length", str(len(body)))
                     self.end_headers()
                     self.wfile.write(body)
@@ -432,10 +438,11 @@ def complete_box_oauth_browser_flow(
             1,
         )
 
+    expected_state = str(state or "").strip() or secrets.token_urlsafe(32)
     auth_url = build_box_authorize_url(
         client_id=resolved_client_id,
         redirect_uri=resolved_redirect_uri,
-        state=state,
+        state=expected_state,
         authorize_base_url=resolved_authorize_base_url,
     )
     opened = False
@@ -467,6 +474,23 @@ def complete_box_oauth_browser_flow(
                 {
                     "error": str(callback.get("error") or "Box authorization failed."),
                     "error_description": str(callback.get("error_description") or ""),
+                    "authorize_url": auth_url,
+                    "callback_url": callback_url,
+                    "opened_in_browser": opened,
+                }
+            )
+            return (result, 1)
+
+        returned_state = str(callback.get("state") or "").strip()
+        if not returned_state or not hmac.compare_digest(
+            returned_state, expected_state
+        ):
+            result.update(
+                {
+                    "error": (
+                        "Box OAuth state verification failed (missing or mismatched "
+                        "CSRF state parameter)."
+                    ),
                     "authorize_url": auth_url,
                     "callback_url": callback_url,
                     "opened_in_browser": opened,

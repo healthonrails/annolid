@@ -425,18 +425,25 @@ async def register_nanobot_style_tools(
     register_tool(ListTasksTool())
     register_tool(CancelTaskTool())
     register_tool(SwarmTool())
-    register_tool(CronTool(store_path=cron_store_path, send_callback=send_callback))
+    attachment_roots: list[str | Path] = []
+    if allowed_dir is not None:
+        attachment_roots.append(allowed_dir)
+    for root in allowed_read_roots or []:
+        if str(root).strip():
+            attachment_roots.append(root)
+
+    register_tool(
+        CronTool(
+            store_path=cron_store_path,
+            send_callback=send_callback,
+            allowed_attachment_roots=attachment_roots or None,
+        )
+    )
 
     email_tools_enabled = any(
         should_register_tool(name) for name in ("email", "list_emails", "read_email")
     )
     if email_cfg and email_cfg.enabled and email_tools_enabled:
-        attachment_roots: list[str | Path] = []
-        if allowed_dir is not None:
-            attachment_roots.append(allowed_dir)
-        for root in allowed_read_roots or []:
-            if str(root).strip():
-                attachment_roots.append(root)
         register_tool(
             EmailTool(
                 smtp_host=email_cfg.smtp_host,

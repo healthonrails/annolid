@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import os
 import re
 
@@ -62,7 +63,7 @@ def operator_consent_phrase() -> str:
 
 
 def has_operator_consent(value: str) -> bool:
-    return str(value or "").strip() == operator_consent_phrase()
+    return hmac.compare_digest(str(value or "").strip(), operator_consent_phrase())
 
 
 def is_digest_pinned_container_image(value: object) -> bool:

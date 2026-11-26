@@ -13,6 +13,7 @@ from typing import Any, Awaitable, Callable, Optional
 from annolid.core.agent.bus import OutboundMessage
 from annolid.core.agent.security_network import validate_public_url_target
 from annolid.utils.logger import logger
+from annolid.utils.safe_http import read_bounded, safe_urlopen
 
 from .base import BaseChannel
 
@@ -381,13 +382,26 @@ class WhatsAppChannel(BaseChannel):
             },
         )
         try:
-            with urllib.request.urlopen(  # noqa: S310 - endpoint validated above
-                req, timeout=timeout_s
+            with safe_urlopen(
+                req,
+                timeout=timeout_s,
+                allowed_schemes=("https",),
+                allowed_hosts=("graph.facebook.com",),
+                allow_private=False,
+                allow_redirects=False,
+                urlopen_func=urllib.request.urlopen,
             ) as response:
-                body = response.read().decode("utf-8", errors="replace")
+                body = read_bounded(
+                    response, 2 * 1024 * 1024, label="WhatsApp API response"
+                ).decode("utf-8", errors="replace")
                 return True, int(getattr(response, "status", 200) or 200), body
         except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
+            try:
+                body = read_bounded(
+                    exc, 256 * 1024, label="WhatsApp API error body"
+                ).decode("utf-8", errors="replace")
+            except Exception:
+                body = ""
             return False, int(exc.code or 0), body
         except Exception as exc:
             return False, 0, str(exc)

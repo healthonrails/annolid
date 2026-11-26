@@ -81,7 +81,9 @@ def _build_model(num_classes: int, weights: Optional[str] = None) -> torch.nn.Mo
     )
 
     if weights is not None:
-        state = torch.load(weights, map_location="cpu", weights_only=True)
+        from annolid.utils.safe_torch_load import safe_torch_load
+
+        state = safe_torch_load(weights, map_location="cpu")
         # Handle both raw state_dict and {"model": state_dict} wrappers
         if "model" in state:
             state = state["model"]

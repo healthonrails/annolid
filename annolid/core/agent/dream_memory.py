@@ -464,9 +464,9 @@ class DreamMemoryManager:
             normalized = entry.text.strip()
             if not normalized:
                 continue
-            candidate_id = hashlib.sha1(normalized.lower().encode("utf-8")).hexdigest()[
-                :16
-            ]
+            candidate_id = hashlib.sha1(
+                normalized.lower().encode("utf-8"), usedforsecurity=False
+            ).hexdigest()[:16]
             tokens = _tokenize(normalized)
             record = items.get(candidate_id)
             if not isinstance(record, dict):
@@ -541,12 +541,15 @@ class DreamMemoryManager:
         themes = [token for token, _ in ranked[:8]]
         theme_ids: List[str] = []
         for theme in themes:
-            theme_id = hashlib.sha1(theme.encode("utf-8")).hexdigest()[:16]
+            theme_id = hashlib.sha1(
+                theme.encode("utf-8"), usedforsecurity=False
+            ).hexdigest()[:16]
             theme_ids.append(theme_id)
         touched_candidates: set[str] = set()
         for entry in pending:
             candidate_id = hashlib.sha1(
-                entry.text.strip().lower().encode("utf-8")
+                entry.text.strip().lower().encode("utf-8"),
+                usedforsecurity=False,
             ).hexdigest()[:16]
             touched_candidates.add(candidate_id)
         for candidate_id in touched_candidates:
@@ -794,7 +797,9 @@ class DreamMemoryManager:
     @staticmethod
     def _make_run_id(*, cursor_start: int, cursor_end: int) -> str:
         seed = f"{_now_iso()}::{cursor_start}:{cursor_end}"
-        return hashlib.sha1(seed.encode("utf-8")).hexdigest()[:12]
+        return hashlib.sha1(seed.encode("utf-8"), usedforsecurity=False).hexdigest()[
+            :12
+        ]
 
     def _build_summary_entry(
         self,

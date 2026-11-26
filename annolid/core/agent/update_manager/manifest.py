@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, List
+from urllib.parse import quote
 from urllib.request import urlopen
+
+_PYPI_PROJECT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_MAX_MANIFEST_BYTES = 16 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -97,10 +102,21 @@ def fetch_channel_manifest(
     channel: str = "stable",
     timeout_s: float = 4.0,
 ) -> UpdateManifest:
+    project_name = str(project or "").strip()
+    if not _PYPI_PROJECT_RE.fullmatch(project_name):
+        raise ValueError(f"Invalid package project name: {project!r}")
     resolved_channel = _normalize_channel(channel)
-    url = f"https://pypi.org/pypi/{project}/json"
+    url = f"https://pypi.org/pypi/{quote(project_name, safe='')}/json"
     with urlopen(url, timeout=max(0.5, float(timeout_s))) as resp:  # noqa: S310
-        payload = json.loads(resp.read().decode("utf-8"))
+        try:
+            raw = resp.read(_MAX_MANIFEST_BYTES + 1)
+        except TypeError:
+            raw = resp.read()
+        if len(raw) > _MAX_MANIFEST_BYTES:
+            raise RuntimeError(
+                "Release manifest response exceeded maximum allowed size."
+            )
+        payload = json.loads(raw.decode("utf-8"))
 
     releases = payload.get("releases") if isinstance(payload, dict) else {}
     if not isinstance(releases, dict):

@@ -60,7 +60,9 @@ def _infer_split_from_path(
 
 
 def _short_hash(value: str, length: int = 10) -> str:
-    return hashlib.sha1(value.encode("utf-8", errors="ignore")).hexdigest()[:length]
+    return hashlib.sha1(
+        value.encode("utf-8", errors="ignore"), usedforsecurity=False
+    ).hexdigest()[:length]
 
 
 def _install_file(src: Path, dst: Path, *, mode: str) -> None:

@@ -572,6 +572,15 @@ class ZulipChannel(BaseChannel):
     ) -> dict[str, Any]:
         token = _basic_auth_token(user, api_key)
         url = f"{base_url}{path}"
+        parsed_url = urllib.parse.urlparse(url)
+        if (
+            parsed_url.scheme.lower() not in {"http", "https"}
+            or not parsed_url.hostname
+        ):
+            return {
+                "result": "error",
+                "msg": f"Unsupported Zulip URL scheme or host: {url!r}",
+            }
         if params:
             query = urllib.parse.urlencode(
                 {
@@ -588,13 +597,30 @@ class ZulipChannel(BaseChannel):
         if form is not None:
             body = urllib.parse.urlencode(form).encode("utf-8")
             headers["Content-Type"] = "application/x-www-form-urlencoded"
-        req = urllib.request.Request(url, data=body, headers=headers, method=method)
+        req = urllib.request.Request(  # noqa: S310 - scheme validated above
+            url, data=body, headers=headers, method=method
+        )
+        max_response_bytes = 16 * 1024 * 1024
+        max_error_bytes = 1 * 1024 * 1024
         try:
-            with urllib.request.urlopen(req, timeout=30) as response:
-                raw = response.read().decode("utf-8", errors="replace")
+            with urllib.request.urlopen(req, timeout=30) as response:  # noqa: S310
+                try:
+                    raw_bytes = response.read(max_response_bytes + 1)
+                except TypeError:
+                    raw_bytes = response.read()
+                if len(raw_bytes) > max_response_bytes:
+                    return {
+                        "result": "error",
+                        "msg": "Zulip response exceeded size limit",
+                    }
+                raw = raw_bytes.decode("utf-8", errors="replace")
         except urllib.error.HTTPError as exc:
             with contextlib.suppress(Exception):
-                payload = exc.read().decode("utf-8", errors="replace")
+                try:
+                    err_bytes = exc.read(max_error_bytes + 1)
+                except TypeError:
+                    err_bytes = exc.read()
+                payload = err_bytes[:max_error_bytes].decode("utf-8", errors="replace")
                 data = json.loads(payload or "{}")
                 if isinstance(data, dict):
                     return data
@@ -644,7 +670,9 @@ class ZulipChannel(BaseChannel):
         stream = str(self._cfg("stream", "") or "").strip().lower()
         topic = str(self._cfg("topic", "") or "").strip().lower()
         scope = "|".join((server_url, user, stream, topic))
-        digest = hashlib.sha1(scope.encode("utf-8")).hexdigest()[:12]
+        digest = hashlib.sha1(scope.encode("utf-8"), usedforsecurity=False).hexdigest()[
+            :12
+        ]
         return os.path.expanduser(
             f"~/.annolid/agent/channels/zulip_cursor_{digest}.json"
         )

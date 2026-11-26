@@ -19,6 +19,45 @@ BOX_AUTHORIZE_URL = f"{BOX_AUTHORIZE_BASE_URL}/api/oauth2/authorize"
 BOX_TOKEN_URL = "https://api.box.com/oauth2/token"
 BOX_API_BASE = "https://api.box.com/2.0"
 BOX_UPLOAD_API_BASE = "https://upload.box.com/api/2.0"
+_MAX_BOX_JSON_BYTES = 16 * 1024 * 1024
+_MAX_BOX_DOWNLOAD_BYTES = 512 * 1024 * 1024
+_MAX_BOX_ERROR_BYTES = 1 * 1024 * 1024
+
+
+def _validate_box_endpoint_url(url: str, *, allow_loopback_http: bool = False) -> str:
+    candidate = str(url or "").strip()
+    if not candidate or any(ord(ch) < 32 or ord(ch) == 127 for ch in candidate):
+        raise ValueError("Box endpoint URL is empty or contains control characters.")
+    parsed = parse.urlsplit(candidate)
+    scheme = parsed.scheme.lower()
+    host = str(parsed.hostname or "").strip().lower()
+    if not host or parsed.username is not None or parsed.password is not None:
+        raise ValueError("Box endpoint URL must have a valid host without credentials.")
+    if scheme == "https":
+        return candidate
+    if (
+        allow_loopback_http
+        and scheme == "http"
+        and host in {"127.0.0.1", "localhost", "::1"}
+    ):
+        return candidate
+    raise ValueError(
+        f"Box endpoint URL must use https:// (got scheme '{scheme or 'none'}')."
+    )
+
+
+def _read_bounded_bytes(stream: Any, *, max_bytes: int) -> bytes:
+    try:
+        data = stream.read(max_bytes + 1)
+    except TypeError:
+        data = stream.read()
+    raw = bytes(data or b"")
+    if len(raw) > max_bytes:
+        raise BoxApiError(
+            status=0,
+            message=f"Box API response exceeded {max_bytes} byte limit.",
+        )
+    return raw
 
 
 class BoxApiError(RuntimeError):
@@ -71,11 +110,30 @@ def _resolve_box_authorize_url(authorize_base_url: str) -> str:
 
     candidate = raw_value
     if "://" not in candidate:
+        # Reject explicit non-HTTP schemes such as `javascript:...` or `file:...`.
+        if ":" in candidate.split("/", 1)[0]:
+            host_part, _, port_part = candidate.split("/", 1)[0].partition(":")
+            if not port_part.isdigit():
+                raise ValueError(
+                    "authorize_base_url must be a valid https:// Box host without embedded credentials."
+                )
         candidate = f"https://{candidate.lstrip('/')}"
 
     parsed = parse.urlsplit(candidate)
-    if not parsed.scheme or not parsed.netloc:
-        raise ValueError("authorize_base_url must include a valid Box host.")
+    try:
+        _ = parsed.port
+    except ValueError as exc:
+        raise ValueError("authorize_base_url contains an invalid port.") from exc
+    if (
+        parsed.scheme.lower() != "https"
+        or not parsed.netloc
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        raise ValueError(
+            "authorize_base_url must be a valid https:// Box host without embedded credentials."
+        )
 
     path = str(parsed.path or "").rstrip("/")
     if path.endswith("/api/oauth2/authorize"):
@@ -169,9 +227,13 @@ def _oauth_token_request(
     form_payload: dict[str, str],
     timeout_s: float,
 ) -> dict[str, Any]:
-    encoded = parse.urlencode(form_payload).encode("utf-8")
-    req = request.Request(
+    safe_token_url = _validate_box_endpoint_url(
         str(token_url or BOX_TOKEN_URL),
+        allow_loopback_http=True,
+    )
+    encoded = parse.urlencode(form_payload).encode("utf-8")
+    req = request.Request(  # noqa: S310 - scheme validated above
+        safe_token_url,
         method="POST",
         data=encoded,
         headers={
@@ -196,11 +258,12 @@ def _oauth_token_request(
 
 
 def _send_request(*, req: request.Request, timeout_s: float) -> Any:
+    _validate_box_endpoint_url(req.full_url, allow_loopback_http=True)
     try:
         with request.urlopen(req, timeout=max(1.0, float(timeout_s or 30.0))) as resp:  # noqa: S310
-            body = resp.read()
+            body = _read_bounded_bytes(resp, max_bytes=_MAX_BOX_JSON_BYTES)
     except error.HTTPError as exc:
-        body = exc.read()
+        body = _read_bounded_bytes(exc, max_bytes=_MAX_BOX_ERROR_BYTES)
         parsed_payload: Any = None
         message = str(exc)
         if body:
@@ -452,17 +515,18 @@ class BoxApiClient:
         }
         if headers:
             req_headers.update(headers)
-        req = request.Request(
-            final_url,
+        safe_final_url = _validate_box_endpoint_url(final_url, allow_loopback_http=True)
+        req = request.Request(  # noqa: S310 - scheme validated above
+            safe_final_url,
             method=str(method or "GET").upper(),
             data=data,
             headers=req_headers,
         )
         try:
             with request.urlopen(req, timeout=self.timeout_s) as resp:  # noqa: S310
-                return resp.read()
+                return _read_bounded_bytes(resp, max_bytes=_MAX_BOX_DOWNLOAD_BYTES)
         except error.HTTPError as exc:
-            body = exc.read()
+            body = _read_bounded_bytes(exc, max_bytes=_MAX_BOX_ERROR_BYTES)
             parsed_payload: Any = None
             message = str(exc)
             if body:

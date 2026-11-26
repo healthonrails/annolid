@@ -188,6 +188,8 @@ class LanceDBRetriever:
     ) -> Optional[str]:
         filter_parts = []
         if scope:
+            if "\x00" in str(scope):
+                raise ValueError("Filter scope must not contain NUL bytes.")
             safe_scope = str(scope).replace("'", "''")
             filter_parts.append(f"scope = '{safe_scope}'")
         if filters:
@@ -204,8 +206,12 @@ class LanceDBRetriever:
                 if isinstance(value, bool):
                     filter_parts.append(f"{key} = {'true' if value else 'false'}")
                 elif isinstance(value, (int, float)):
+                    if not math.isfinite(float(value)):
+                        continue
                     filter_parts.append(f"{key} = {value}")
                 elif isinstance(value, str):
+                    if "\x00" in value:
+                        continue
                     safe_value = value.replace("'", "''")
                     filter_parts.append(f"{key} = '{safe_value}'")
         return " AND ".join(filter_parts) if filter_parts else None

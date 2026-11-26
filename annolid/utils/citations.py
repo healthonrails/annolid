@@ -12,6 +12,7 @@ import json
 from typing import Iterable
 
 from annolid.utils.atomic_io import atomic_write_text
+from annolid.utils.safe_http import build_http_request, safe_urlopen
 
 _NON_ENTRY_DIRECTIVES = frozenset({"comment", "preamble", "string"})
 _MAX_HTTP_RESPONSE_BYTES = 2 * 1024 * 1024
@@ -389,11 +390,17 @@ def _http_json(
     if email:
         headers["User-Agent"] = f"annolid-citation-validator/1.0 (mailto:{email})"
 
-    req = urllib.request.Request(
-        url=safe_url,
+    req = build_http_request(
+        safe_url,
         headers=headers,
+        allow_private=False,
     )
-    with urllib.request.urlopen(req, timeout=max(0.5, float(timeout_s))) as response:
+    with safe_urlopen(
+        req,
+        timeout=max(0.5, float(timeout_s)),
+        allow_private=False,
+        urlopen_func=urllib.request.urlopen,
+    ) as response:
         payload = _read_bounded_http(response)
     decoded = payload.decode("utf-8", errors="replace")
     data = json.loads(decoded)
@@ -407,8 +414,8 @@ def _http_text(
     allowed_hosts: frozenset[str] | None = None,
 ) -> str:
     safe_url = _validate_http_url(url, allowed_hosts=allowed_hosts)
-    req = urllib.request.Request(
-        url=safe_url,
+    req = build_http_request(
+        safe_url,
         headers={
             "User-Agent": (
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -416,8 +423,16 @@ def _http_text(
             ),
             "Accept": "text/html,*/*;q=0.8",
         },
+        allowed_hosts=allowed_hosts,
+        allow_private=False,
     )
-    with urllib.request.urlopen(req, timeout=max(0.5, float(timeout_s))) as response:
+    with safe_urlopen(
+        req,
+        timeout=max(0.5, float(timeout_s)),
+        allowed_hosts=allowed_hosts,
+        allow_private=False,
+        urlopen_func=urllib.request.urlopen,
+    ) as response:
         payload = _read_bounded_http(response)
     return payload.decode("utf-8", errors="replace")
 

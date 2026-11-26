@@ -58,7 +58,9 @@ def encode_outbound_chat_event(event: OutboundChatEvent) -> str:
         if event_id:
             digest_parts.append(event_id)
         digest_src = "|".join(digest_parts)
-        idempotency_key = hashlib.sha1(digest_src.encode("utf-8")).hexdigest()
+        idempotency_key = hashlib.sha1(
+            digest_src.encode("utf-8"), usedforsecurity=False
+        ).hexdigest()
     payload = {
         "direction": direction,
         "kind": kind,

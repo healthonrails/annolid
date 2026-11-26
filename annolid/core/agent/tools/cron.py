@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import tempfile
 import uuid
 from datetime import datetime
 from email.utils import parseaddr
@@ -24,19 +25,30 @@ class CronTool(FunctionTool):
         *,
         store_path: Path | None = None,
         send_callback: Callable[[str, str, str], Awaitable[None] | None] | None = None,
+        allowed_attachment_roots: list[str | Path] | None = None,
     ):
         self._channel = ""
         self._chat_id = ""
         self._send_callback = send_callback
+        self._allowed_attachment_roots: list[Path] = [
+            Path(root).expanduser().resolve()
+            for root in (allowed_attachment_roots or [])
+            if str(root or "").strip()
+        ]
         if store_path is None:
             store_path = self._resolve_default_store_path()
         self._service = CronService(store_path=store_path, on_job=self._on_job)
 
     @staticmethod
+    def _private_temp_store_path() -> Path:
+        uid = os.getuid() if hasattr(os, "getuid") else "user"
+        return Path(tempfile.gettempdir()) / f"annolid-cron-{uid}" / "jobs.json"
+
+    @staticmethod
     def _resolve_default_store_path() -> Path:
         candidates = [
             default_cron_store_path(),
-            Path("/tmp") / "annolid" / "cron" / "jobs.json",
+            CronTool._private_temp_store_path(),
         ]
         for path in candidates:
             if CronTool._is_store_path_writable(path):
@@ -47,6 +59,14 @@ class CronTool(FunctionTool):
     def _is_store_path_writable(path: Path) -> bool:
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
+            if path.parent.is_symlink():
+                return False
+            if hasattr(os, "getuid") and path.parent.stat().st_uid != os.getuid():
+                return False
+            try:
+                path.parent.chmod(0o700)
+            except OSError:
+                pass
         except OSError:
             return False
         probe = path.parent / f".cron-write-probe-{os.getpid()}-{uuid.uuid4().hex}"
@@ -237,6 +257,27 @@ class CronTool(FunctionTool):
                     "Error: email_to is required for scheduled email jobs "
                     "unless the current chat_id is an email address."
                 )
+            if "\r" in normalized_email_to or "\n" in normalized_email_to:
+                return "Error: email_to must not contain newline characters."
+            normalized_subject = (
+                str(email_subject or "").strip() or "Scheduled message from Annolid Bot"
+            )
+            if "\r" in normalized_subject or "\n" in normalized_subject:
+                return "Error: email_subject must not contain newline characters."
+            if normalized_attachments and self._allowed_attachment_roots:
+                for raw_att in normalized_attachments:
+                    try:
+                        att_path = Path(raw_att).expanduser().resolve()
+                    except OSError:
+                        return f"Error: invalid attachment path: {raw_att}"
+                    if not any(
+                        att_path == root or att_path.is_relative_to(root)
+                        for root in self._allowed_attachment_roots
+                    ):
+                        return (
+                            f"Error: attachment path '{raw_att}' is outside "
+                            "allowed workspace/read roots."
+                        )
             if not normalized_email_content:
                 normalized_email_content = payload_message
             if not normalized_email_content:
@@ -249,8 +290,7 @@ class CronTool(FunctionTool):
                 channel=self._channel,
                 to=self._chat_id,
                 email_to=normalized_email_to,
-                email_subject=str(email_subject or "").strip()
-                or "Scheduled message from Annolid Bot",
+                email_subject=normalized_subject,
                 email_content=normalized_email_content,
                 attachment_paths=normalized_attachments,
             )

@@ -337,7 +337,9 @@ class CanvasWorkflowMixin:
 
     @staticmethod
     def _video_brightness_contrast_settings_key(video_key: str) -> str:
-        digest = hashlib.sha1(video_key.encode("utf-8")).hexdigest()
+        digest = hashlib.sha1(
+            video_key.encode("utf-8"), usedforsecurity=False
+        ).hexdigest()
         return f"video/brightness_contrast/{digest}"
 
     def get_video_brightness_contrast_values(

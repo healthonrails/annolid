@@ -358,6 +358,10 @@ class GoogleDriveTool(FunctionTool):
                 )
         return resolved
 
+    @staticmethod
+    def _escape_drive_query_value(value: str) -> str:
+        return str(value or "").replace("\\", "\\\\").replace("'", "\\'")
+
     def _ensure_drive_folder_path(
         self,
         service: Any,
@@ -370,9 +374,9 @@ class GoogleDriveTool(FunctionTool):
             return ""
         parent_id = ""
         for part in [p.strip() for p in cleaned.split("/") if p.strip()]:
-            escaped = part.replace("'", "\\'")
+            escaped = self._escape_drive_query_value(part)
             parent_clause = (
-                f" and '{parent_id}' in parents"
+                f" and '{self._escape_drive_query_value(parent_id)}' in parents"
                 if parent_id
                 else " and 'root' in parents"
             )
@@ -422,9 +426,11 @@ class GoogleDriveTool(FunctionTool):
         folder_id: str,
         supports_all_drives: bool,
     ) -> dict[str, Any] | None:
-        escaped_name = str(file_name).replace("'", "\\'")
+        escaped_name = self._escape_drive_query_value(str(file_name))
         parent_clause = (
-            f" and '{folder_id}' in parents" if folder_id else " and 'root' in parents"
+            f" and '{self._escape_drive_query_value(folder_id)}' in parents"
+            if folder_id
+            else " and 'root' in parents"
         )
         q = f"name='{escaped_name}' and trashed=false{parent_clause}"
         res = (
@@ -662,7 +668,8 @@ class GoogleDriveTool(FunctionTool):
         supports_all_drives: bool = True,
     ) -> list[dict[str, Any]]:
         service = self._get_service()
-        q = f"'{folder_id}' in parents and trashed=false"
+        safe_folder_id = self._escape_drive_query_value(folder_id)
+        q = f"'{safe_folder_id}' in parents and trashed=false"
         payload = (
             service.files()
             .list(

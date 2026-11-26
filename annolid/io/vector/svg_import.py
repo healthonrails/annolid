@@ -14,6 +14,24 @@ _COMMAND_RE = re.compile(
     r"[MmLlHhVvCcQqTtSsAaZz]|[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?"
 )
 _MATRIX_RE = re.compile(r"([A-Za-z]+)\(([^)]*)\)")
+_MAX_SVG_BYTES = 50 * 1024 * 1024
+_UNSAFE_XML_ENTITY_RE = re.compile(
+    r"<!(?:ENTITY|DOCTYPE[^>]*\[)\b|<!DOCTYPE[^>]*\[",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _safe_parse_svg_text(text: str) -> ET.Element:
+    raw_text = str(text or "")
+    if len(raw_text.encode("utf-8", errors="replace")) > _MAX_SVG_BYTES:
+        raise ValueError(
+            f"SVG input exceeds maximum allowed size ({_MAX_SVG_BYTES} bytes)."
+        )
+    if _UNSAFE_XML_ENTITY_RE.search(raw_text):
+        raise ValueError(
+            "Refusing to parse SVG containing XML entity or internal DTD subset declarations."
+        )
+    return ET.fromstring(raw_text)  # noqa: S314 - bounded and ENTITY/internal DTD rejected above
 
 
 @dataclass(frozen=True)
@@ -468,7 +486,11 @@ def _iter_paths(
 
 def import_svg_document(path: str | Path) -> ImportedVectorDocument:
     resolved = Path(path)
-    root = ET.parse(resolved).getroot()
+    if resolved.stat().st_size > _MAX_SVG_BYTES:
+        raise ValueError(
+            f"SVG file exceeds maximum allowed size ({_MAX_SVG_BYTES} bytes): {resolved}"
+        )
+    root = _safe_parse_svg_text(resolved.read_text(encoding="utf-8"))
     return _import_svg_root(root, source_path=str(resolved))
 
 
@@ -506,7 +528,7 @@ def _import_svg_root(root: ET.Element, *, source_path: str) -> ImportedVectorDoc
 def import_svg_string(
     text: str, *, source_path: str = "<memory>"
 ) -> ImportedVectorDocument:
-    root = ET.fromstring(text)
+    root = _safe_parse_svg_text(text)
     return _import_svg_root(root, source_path=source_path)
 
 

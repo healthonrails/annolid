@@ -2184,7 +2184,8 @@ def train(
         cache_fingerprint = hashlib.sha1(
             f"{model_name}|{short_side}|{layers}|{feature_merge}".encode(
                 "utf-8", errors="ignore"
-            )
+            ),
+            usedforsecurity=False,
         ).hexdigest()[:12]
         cache_dir = cache_root / cache_fingerprint
         _ensure_dir(cache_dir)

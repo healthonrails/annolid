@@ -24,6 +24,7 @@ from .models import (
     normalize_accelerator,
 )
 from .notebooks import build_colab_drive_url
+from annolid.utils.safe_http import build_http_request, read_bounded, safe_urlopen
 
 LogCallback = Optional[Callable[[str], None]]
 
@@ -497,17 +498,29 @@ class ColabApiBackend:
         data = json.dumps(body).encode("utf-8") if body is not None else None
         last_exc: Optional[Exception] = None
         for attempt in range(self._MAX_RETRIES + 1):
-            req = urllib.request.Request(
+            req = build_http_request(
                 url,
                 data=data,
                 headers=headers,
                 method=method.upper(),
+                allow_private=False,
+                allow_loopback=True,
+                allow_http_only_for_loopback=True,
             )
             try:
-                with urllib.request.urlopen(
-                    req, timeout=float(timeout or self._timeout_s)
+                with safe_urlopen(
+                    req,
+                    timeout=float(timeout or self._timeout_s),
+                    allow_private=False,
+                    allow_loopback=True,
+                    allow_http_only_for_loopback=True,
+                    urlopen_func=urllib.request.urlopen,
                 ) as resp:
-                    raw = resp.read().decode("utf-8", errors="replace").strip()
+                    raw = (
+                        read_bounded(resp, 20 * 1024 * 1024, label="Colab API response")
+                        .decode("utf-8", errors="replace")
+                        .strip()
+                    )
                     if not raw:
                         return {}
                     parsed = json.loads(raw)
@@ -515,7 +528,9 @@ class ColabApiBackend:
             except urllib.error.HTTPError as exc:
                 err_body = ""
                 try:
-                    err_body = exc.read().decode("utf-8", errors="replace")
+                    err_body = read_bounded(
+                        exc, 256 * 1024, label="Colab API error body"
+                    ).decode("utf-8", errors="replace")
                 except Exception:
                     pass
                 if (
@@ -887,13 +902,23 @@ class ColabApiBackend:
         try:
             for attempt in range(self._MAX_RETRIES + 1):
                 url = f"{active.proxy_url}/files/{encoded_rel}"
-                req = urllib.request.Request(
+                req = build_http_request(
                     url,
                     headers={"X-Colab-Runtime-Proxy-Token": active.proxy_token},
                     method="GET",
+                    allow_private=False,
+                    allow_loopback=True,
+                    allow_http_only_for_loopback=True,
                 )
                 try:
-                    with urllib.request.urlopen(req, timeout=600.0) as resp:
+                    with safe_urlopen(
+                        req,
+                        timeout=600.0,
+                        allow_private=False,
+                        allow_loopback=True,
+                        allow_http_only_for_loopback=True,
+                        urlopen_func=urllib.request.urlopen,
+                    ) as resp:
                         with open(tmp, "wb") as dst:
                             while True:
                                 chunk = resp.read(self._STREAM_DOWNLOAD_CHUNK_BYTES)

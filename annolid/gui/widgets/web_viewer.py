@@ -32,6 +32,11 @@ from annolid.utils.citations import (
     upsert_entry,
 )
 from annolid.utils.logger import logger
+from annolid.utils.safe_http import (
+    build_http_request,
+    safe_urlopen,
+    validate_http_url,
+)
 from annolid.gui.widgets.webengine_lifecycle import release_webengine_view
 import importlib
 import os
@@ -613,14 +618,28 @@ class _SavePdfTask(QtCore.QRunnable):
         return path
 
     @staticmethod
+    def _is_pmc_host(parsed: urllib.parse.ParseResult) -> bool:
+        if str(parsed.scheme or "").strip().lower() not in {"http", "https"}:
+            return False
+        hostname = str(parsed.hostname or "").strip().lower().rstrip(".")
+        return hostname == "pmc.ncbi.nlm.nih.gov"
+
+    @staticmethod
     def _candidate_download_urls(url: str) -> list[str]:
         primary = str(url or "").strip()
         if not primary:
             return []
-        candidates = [primary]
         parsed = urllib.parse.urlparse(primary)
-        host = str(parsed.netloc or "").lower()
-        if "pmc.ncbi.nlm.nih.gov" in host and "/pdf/" in str(parsed.path or "").lower():
+        if (
+            str(parsed.scheme or "").strip().lower() not in {"http", "https"}
+            or not parsed.hostname
+        ):
+            return []
+        candidates = [primary]
+        if (
+            _SavePdfTask._is_pmc_host(parsed)
+            and "/pdf/" in str(parsed.path or "").lower()
+        ):
             match = re.search(r"\b(PMC\d+)\b", primary, flags=re.IGNORECASE)
             if match:
                 pmcid = match.group(1).upper()
@@ -700,14 +719,19 @@ class _SavePdfTask(QtCore.QRunnable):
         }
 
     @staticmethod
-    def _solve_pmc_pow_nonce(challenge: str, difficulty: int) -> int:
-        target = "0" * max(1, int(difficulty))
-        nonce = 0
-        while True:
+    def _solve_pmc_pow_nonce(
+        challenge: str, difficulty: int, *, max_iterations: int = 10_000_000
+    ) -> int:
+        capped_difficulty = max(1, min(6, int(difficulty)))
+        target = "0" * capped_difficulty
+        for nonce in range(max_iterations):
             digest = hashlib.sha256(f"{challenge}{nonce}".encode("utf-8")).hexdigest()
             if digest.startswith(target):
                 return nonce
-            nonce += 1
+        raise RuntimeError(
+            f"PMC proof-of-work challenge exceeded {max_iterations} iterations "
+            f"(difficulty={capped_difficulty})."
+        )
 
     def _download_with_pmc_pow(
         self,
@@ -722,9 +746,9 @@ class _SavePdfTask(QtCore.QRunnable):
             return False, f"Failed to save PDF: {exc}"
 
         parsed = urllib.parse.urlparse(candidate_url)
-        host = str(parsed.netloc or "").strip().lower()
-        if "pmc.ncbi.nlm.nih.gov" not in host:
+        if not self._is_pmc_host(parsed):
             return False, "Failed to save PDF: unsupported PMC host."
+        host = str(parsed.hostname or "").strip().lower().rstrip(".")
 
         headers = {
             "User-Agent": (
@@ -736,29 +760,64 @@ class _SavePdfTask(QtCore.QRunnable):
             "Accept-Language": "en-US,en;q=0.9",
             "Referer": source_url,
         }
+
+        def _guard_pmc_request(request: object) -> None:
+            validate_http_url(
+                str(getattr(request, "url", "") or ""),
+                allowed_schemes=("http", "https"),
+                allow_private=False,
+                resolve_dns=True,
+            )
+
+        max_challenge_html_bytes = 2 * 1024 * 1024
         try:
             with httpx.Client(
                 follow_redirects=True,
                 max_redirects=8,
                 timeout=60.0,
+                event_hooks={"request": [_guard_pmc_request]},
             ) as client:
-                initial = client.get(candidate_url, headers=headers)
-                content_type = str(initial.headers.get("content-type") or "").lower()
-                if content_type.startswith("application/pdf"):
-                    payload = bytes(initial.content or b"")
-                    if not payload.startswith(b"%PDF-"):
-                        return (
-                            False,
-                            "Failed to save PDF: initial PDF response is invalid.",
-                        )
-                    if len(payload) > self.max_bytes:
-                        raise ValueError(
-                            f"PDF is too large ({len(payload)} bytes). Max is {self.max_bytes} bytes."
-                        )
-                    with output_path.open("wb") as handle:
-                        handle.write(payload)
-                    return True, ""
-                params = self._extract_pmc_pow_params(str(initial.text or ""))
+                with client.stream("GET", candidate_url, headers=headers) as initial:
+                    content_type = str(
+                        initial.headers.get("content-type") or ""
+                    ).lower()
+                    if content_type.startswith("application/pdf"):
+                        chunks: list[bytes] = []
+                        total = 0
+                        for chunk in initial.iter_bytes():
+                            if not chunk:
+                                continue
+                            total += len(chunk)
+                            if total > self.max_bytes:
+                                raise ValueError(
+                                    f"PDF is too large ({total} bytes). Max is {self.max_bytes} bytes."
+                                )
+                            chunks.append(chunk)
+                        payload = b"".join(chunks)
+                        if not payload.startswith(b"%PDF-"):
+                            return (
+                                False,
+                                "Failed to save PDF: initial PDF response is invalid.",
+                            )
+                        with output_path.open("wb") as handle:
+                            handle.write(payload)
+                        return True, ""
+
+                    html_chunks: list[bytes] = []
+                    html_size = 0
+                    for chunk in initial.iter_bytes():
+                        if not chunk:
+                            continue
+                        html_size += len(chunk)
+                        if html_size > max_challenge_html_bytes:
+                            raise ValueError(
+                                f"PMC challenge page exceeded {max_challenge_html_bytes} byte limit."
+                            )
+                        html_chunks.append(chunk)
+                    initial_text = b"".join(html_chunks).decode(
+                        "utf-8", errors="replace"
+                    )
+                params = self._extract_pmc_pow_params(initial_text)
                 if not params:
                     return (
                         False,
@@ -768,7 +827,7 @@ class _SavePdfTask(QtCore.QRunnable):
                 difficulty = int(params.get("difficulty") or 4)
                 cookie_name = str(params.get("cookie_name") or "").strip()
                 cookie_path = str(params.get("cookie_path") or "/").strip() or "/"
-                if not challenge or not cookie_name:
+                if not challenge or not cookie_name or difficulty > 6:
                     return (
                         False,
                         "Failed to save PDF: invalid PMC challenge parameters.",
@@ -817,7 +876,14 @@ class _SavePdfTask(QtCore.QRunnable):
             urls = self._candidate_download_urls(self.download_url)
             content_type = ""
             for candidate_url in urls:
-                request = urllib.request.Request(
+                parsed_candidate = urllib.parse.urlparse(candidate_url)
+                if (
+                    str(parsed_candidate.scheme or "").strip().lower()
+                    not in {"http", "https"}
+                    or not parsed_candidate.hostname
+                ):
+                    continue
+                request = urllib.request.Request(  # noqa: S310 - scheme validated above
                     candidate_url,
                     headers={
                         "User-Agent": (
@@ -832,7 +898,12 @@ class _SavePdfTask(QtCore.QRunnable):
                     method="GET",
                 )
                 try:
-                    with urllib.request.urlopen(request, timeout=60) as response:
+                    with safe_urlopen(
+                        request,
+                        timeout=60,
+                        allow_private=False,
+                        urlopen_func=urllib.request.urlopen,
+                    ) as response:
                         content_type = str(
                             response.headers.get("Content-Type") or ""
                         ).lower()
@@ -2984,13 +3055,19 @@ class WebViewerWidget(QtWidgets.QWidget):
             return "", f"Unsupported image URL scheme: {scheme or 'unknown'}"
 
         try:
-            req = urllib.request.Request(
+            req = build_http_request(
                 src,
                 headers={
                     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
                 },
+                allow_private=False,
             )
-            with urllib.request.urlopen(req, timeout=30) as response:
+            with safe_urlopen(
+                req,
+                timeout=30,
+                allow_private=False,
+                urlopen_func=urllib.request.urlopen,
+            ) as response:
                 content_type = str(response.headers.get("content-type") or "").split(
                     ";", 1
                 )[0]

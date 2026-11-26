@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import importlib
 import json
 import sys
@@ -212,6 +213,18 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
     def webengine_available(self) -> bool:
         return bool(_WEBENGINE_AVAILABLE and self._web_view is not None)
 
+    @staticmethod
+    def _js_literal(value: object) -> str:
+        """Encode JSON safely for embedding inside an HTML ``<script>`` tag."""
+        return (
+            json.dumps(value, ensure_ascii=False)
+            .replace("&", "\\u0026")
+            .replace("<", "\\u003c")
+            .replace(">", "\\u003e")
+            .replace("\u2028", "\\u2028")
+            .replace("\u2029", "\\u2029")
+        )
+
     def _build_viewer_html(
         self,
         *,
@@ -225,11 +238,13 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
         pick_mode: str = "",
         object_region_map: dict[str, str] | None = None,
     ) -> str:
-        escaped_title = json.dumps(title)
-        escaped_url = json.dumps(model_url)
-        escaped_ext = json.dumps(model_ext)
-        escaped_pick_mode = json.dumps(str(pick_mode or ""))
-        escaped_object_region_map = json.dumps(dict(object_region_map or {}))
+        escaped_title = self._js_literal(title)
+        escaped_url = self._js_literal(model_url)
+        escaped_ext = self._js_literal(model_ext)
+        escaped_pick_mode = self._js_literal(str(pick_mode or ""))
+        escaped_object_region_map = self._js_literal(dict(object_region_map or {}))
+        safe_status_text = html.escape(str(status_text or ""), quote=True)
+        safe_hints_text = html.escape(str(hints_text or ""), quote=True)
         return f"""
 <!doctype html>
 <html>
@@ -330,8 +345,8 @@ class ThreeJsViewerWidget(QtWidgets.QWidget):
   <div id="annolidThreeCategoryPanel" hidden></div>
   <div id="annolidThreeVolumePanel" hidden></div>
 
-  <div id="annolidThreeStatus">{status_text}</div>
-  <div id="annolidThreeHints">{hints_text}</div>
+  <div id="annolidThreeStatus">{safe_status_text}</div>
+  <div id="annolidThreeHints">{safe_hints_text}</div>
   <script type="module" src="threejs/annolid_threejs_viewer.js"></script>
 </body>
 </html>

@@ -413,7 +413,9 @@ class AgentMetaLearner:
             ):
                 continue
             sig_source = f"{tool_name}:{reason_l[:120]}"
-            sig_hash = hashlib.sha1(sig_source.encode("utf-8")).hexdigest()[:10]
+            sig_hash = hashlib.sha1(
+                sig_source.encode("utf-8"), usedforsecurity=False
+            ).hexdigest()[:10]
             signature = f"{tool_name}:{sig_hash}"
             if signature in seen:
                 continue
@@ -1133,7 +1135,9 @@ class AgentMetaLearner:
         tool_name: str,
         reason: str,
     ) -> str:
-        digest = hashlib.sha1(signature.encode("utf-8")).hexdigest()[:8]
+        digest = hashlib.sha1(
+            signature.encode("utf-8"), usedforsecurity=False
+        ).hexdigest()[:8]
         name = f"meta-recover-{_slug(tool_name, max_len=20)}-{digest}"
         skill_dir = self.workspace / "skills" / name
         skill_file = skill_dir / "SKILL.md"

@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field
+import urllib.parse
 import urllib.request
 from pathlib import Path
 import subprocess
@@ -323,8 +324,27 @@ class MediaPipeEngine:
             url = self.MODEL_URLS.get(
                 self.model_identifier, self.MODEL_URLS["mediapipe_pose"]
             )
+            parsed = urllib.parse.urlparse(str(url or "").strip())
+            if parsed.scheme.lower() != "https" or not parsed.hostname:
+                raise ValueError(f"Unsupported MediaPipe model URL: {url!r}")
             logger.info("Downloading MediaPipe model from %s to %s", url, local_path)
-            urllib.request.urlretrieve(url, local_path)
+            part_path = local_path.with_name(f".{local_path.name}.part")
+            req = urllib.request.Request(  # noqa: S310 - scheme validated above
+                url,
+                headers={"User-Agent": "Annolid-MediaPipe/1.0"},
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=120.0) as resp:  # noqa: S310
+                    with part_path.open("wb") as out_fh:
+                        while True:
+                            chunk = resp.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            out_fh.write(chunk)
+                part_path.replace(local_path)
+            except Exception:
+                part_path.unlink(missing_ok=True)
+                raise
 
         return local_path
 

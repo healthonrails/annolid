@@ -4,12 +4,26 @@ import asyncio
 import email
 import imaplib
 import mimetypes
+import re
 import smtplib
+import ssl
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any
 
 from .function_base import FunctionTool
+
+_EMAIL_NETWORK_TIMEOUT_SECONDS = 30.0
+_MAX_EMAIL_ATTACHMENT_BYTES = 25 * 1024 * 1024
+_IMAP_MESSAGE_ID_RE = re.compile(r"^[0-9]+$")
+
+
+def _contains_header_newline(value: str) -> bool:
+    return "\r" in value or "\n" in value
+
+
+def _create_tls_context() -> ssl.SSLContext:
+    return ssl.create_default_context()
 
 
 class EmailTool(FunctionTool):
@@ -83,11 +97,20 @@ class EmailTool(FunctionTool):
                 missing.append("password")
             return f"Error: Email tool not configured. Missing: {', '.join(missing)}"
 
+        recipient = str(to or "").strip()
+        subject_text = str(subject or "")
+        if _contains_header_newline(recipient) or _contains_header_newline(
+            subject_text
+        ):
+            return (
+                "Error sending email: header values must not contain CR/LF characters."
+            )
+
         email_msg = EmailMessage()
         email_msg.set_content(content)
-        email_msg["Subject"] = subject
+        email_msg["Subject"] = subject_text
         email_msg["From"] = self._user
-        email_msg["To"] = to
+        email_msg["To"] = recipient
 
         attachments = self._normalize_attachment_paths(attachment_paths)
         for attachment in attachments:
@@ -95,6 +118,12 @@ class EmailTool(FunctionTool):
             if valid_path is None:
                 return f"Error sending email: {error}"
             try:
+                file_size = valid_path.stat().st_size
+                if file_size > _MAX_EMAIL_ATTACHMENT_BYTES:
+                    return (
+                        f"Error sending email: attachment {valid_path.name} exceeds "
+                        f"{_MAX_EMAIL_ATTACHMENT_BYTES // (1024 * 1024)} MiB limit."
+                    )
                 payload = valid_path.read_bytes()
             except Exception as exc:
                 return f"Error sending email: failed to read attachment {valid_path}: {exc}"
@@ -111,8 +140,13 @@ class EmailTool(FunctionTool):
             )
 
         def _sync_send():
-            with smtplib.SMTP(self._smtp_host, self._smtp_port) as server:
-                server.starttls()
+            tls_context = _create_tls_context()
+            with smtplib.SMTP(
+                self._smtp_host,
+                self._smtp_port,
+                timeout=_EMAIL_NETWORK_TIMEOUT_SECONDS,
+            ) as server:
+                server.starttls(context=tls_context)
                 server.login(self._user, self._password)
                 server.send_message(email_msg)
 
@@ -209,7 +243,12 @@ class ListEmailsTool(FunctionTool):
 
         def _sync_list():
             try:
-                mail = imaplib.IMAP4_SSL(self._imap_host, self._imap_port)
+                mail = imaplib.IMAP4_SSL(
+                    self._imap_host,
+                    self._imap_port,
+                    ssl_context=_create_tls_context(),
+                    timeout=_EMAIL_NETWORK_TIMEOUT_SECONDS,
+                )
                 mail.login(self._user, self._password)
                 mail.select("inbox")
                 criteria = "UNSEEN" if unread_only else "ALL"
@@ -285,15 +324,24 @@ class ReadEmailTool(FunctionTool):
         del kwargs
         if not all([self._imap_host, self._user, self._password]):
             return "Error: IMAP credentials not configured."
+        normalized_email_id = str(email_id or "").strip()
+        if not _IMAP_MESSAGE_ID_RE.fullmatch(normalized_email_id):
+            return "Error: Invalid email_id; expected a numeric IMAP message ID."
 
         def _sync_read():
             try:
-                mail = imaplib.IMAP4_SSL(self._imap_host, self._imap_port)
+                mail = imaplib.IMAP4_SSL(
+                    self._imap_host,
+                    self._imap_port,
+                    ssl_context=_create_tls_context(),
+                    timeout=_EMAIL_NETWORK_TIMEOUT_SECONDS,
+                )
                 mail.login(self._user, self._password)
                 mail.select("inbox")
-                status, msg_data = mail.fetch(str(email_id).encode(), "(RFC822)")
-                if status != "OK":
-                    return f"Error: Could not find email with ID {email_id}"
+                email_id_bytes = normalized_email_id.encode("ascii")
+                status, msg_data = mail.fetch(email_id_bytes, "(RFC822)")
+                if status != "OK" or not msg_data or not isinstance(msg_data[0], tuple):
+                    return f"Error: Could not find email with ID {normalized_email_id}"
 
                 raw_email = msg_data[0][1]
                 msg = email.message_from_bytes(raw_email)
@@ -302,14 +350,19 @@ class ReadEmailTool(FunctionTool):
                 if msg.is_multipart():
                     for part in msg.walk():
                         if part.get_content_type() == "text/plain":
-                            body = part.get_payload(decode=True).decode(
-                                errors="replace"
-                            )
-                            break
+                            decoded_part = part.get_payload(decode=True)
+                            if decoded_part is not None:
+                                body = decoded_part.decode(errors="replace")
+                                break
                     if not body:
                         body = "[No plain text body found]"
                 else:
-                    body = msg.get_payload(decode=True).decode(errors="replace")
+                    decoded_body = msg.get_payload(decode=True)
+                    body = (
+                        decoded_body.decode(errors="replace")
+                        if decoded_body is not None
+                        else ""
+                    )
 
                 res = [
                     f"From: {msg['From']}",
@@ -320,7 +373,7 @@ class ReadEmailTool(FunctionTool):
                 ]
 
                 # Mark as seen
-                mail.store(str(email_id).encode(), "+FLAGS", "\\Seen")
+                mail.store(email_id_bytes, "+FLAGS", "\\Seen")
 
                 mail.close()
                 mail.logout()

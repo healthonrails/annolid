@@ -577,7 +577,9 @@ def write_dino_kpseg_tensorboard_embeddings(
     if bool(cfg.cache_features):
         cache_root = Path.home() / ".cache" / "annolid" / "dinokpseg" / "features"
         cache_fingerprint = f"{model_name}|{short_side}|{layers}"
-        digest = hashlib.sha1(cache_fingerprint.encode("utf-8")).hexdigest()[:12]
+        digest = hashlib.sha1(
+            cache_fingerprint.encode("utf-8"), usedforsecurity=False
+        ).hexdigest()[:12]
         cache_dir = cache_root / digest
         cache_dir.mkdir(parents=True, exist_ok=True)
 

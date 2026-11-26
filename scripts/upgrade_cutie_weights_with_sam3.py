@@ -58,6 +58,7 @@ from annolid.segmentation.cutie_vos.model.weight_compression import (  # noqa: E
 )
 from annolid.segmentation.cutie_vos.utils.tensor_utils import aggregate  # noqa: E402
 from annolid.utils.model_assets import md5sum, sha256sum  # noqa: E402
+from annolid.utils.safe_torch_load import safe_torch_load  # noqa: E402
 from evaluate_cutie_bodyparts_benchmark import (  # noqa: E402
     CUTIE_CFG_DIR,
     DEFAULT_BASE_WEIGHTS,
@@ -343,7 +344,7 @@ def extract_sam3_teacher_representations(
 ) -> Tuple[List[Dict[str, torch.Tensor]], torch.Tensor]:
     clip_names = [c["name"] for c in train_clips]
     if cache_path is not None and cache_path.is_file():
-        cached = torch.load(cache_path, map_location="cpu", weights_only=True)
+        cached = safe_torch_load(cache_path, map_location="cpu")
         if cached.get("clip_names") == clip_names:
             print(
                 f"\n=== Loaded Cached SAM 3.1 Teacher Pyramids from {cache_path.name} ==="
@@ -392,7 +393,7 @@ def extract_sam3_teacher_representations(
         d_model=256,
         scale_factors=[4.0, 2.0, 1.0],
     )
-    raw = torch.load(sam3_ckpt_path, map_location="cpu", weights_only=True)
+    raw = safe_torch_load(sam3_ckpt_path, map_location="cpu")
     if "model" in raw and isinstance(raw["model"], dict):
         raw = raw["model"]
 
@@ -495,7 +496,7 @@ def extract_dinov3_teacher_representations(
     """Extract DINOv3 ViT-L/16 (1024-dim, 24x24 patch grid at 384x384) dense semantic part features."""
     clip_names = [c["name"] for c in train_clips]
     if cache_path is not None and cache_path.is_file():
-        cached = torch.load(cache_path, map_location="cpu", weights_only=True)
+        cached = safe_torch_load(cache_path, map_location="cpu")
         if cached.get("clip_names") == clip_names:
             print(
                 f"\n=== Loaded Cached DINOv3 ViT-L/16 Teacher Features from {cache_path.name} ==="
@@ -1072,13 +1073,13 @@ def main() -> None:
     # 4. Initialize dense Cutie from layer-selective blend of upstream + prior v1 (if dense)
     cfg = build_cutie_config(orig_backup_path)
     orig_dense_sd = unwrap_cutie_state_dict(
-        torch.load(orig_backup_path, map_location="cpu", weights_only=True)
+        safe_torch_load(orig_backup_path, map_location="cpu")
     )
     init_dense_sd: OrderedDict[str, torch.Tensor] = OrderedDict()
 
     prior_v1_sd = None
     if args.output_weights.is_file():
-        raw_v1 = torch.load(args.output_weights, map_location="cpu", weights_only=True)
+        raw_v1 = safe_torch_load(args.output_weights, map_location="cpu")
         if not is_compact_cutie_checkpoint(raw_v1):
             cand = unwrap_cutie_state_dict(raw_v1)
             if list(cand.keys()) == list(orig_dense_sd.keys()):

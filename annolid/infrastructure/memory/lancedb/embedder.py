@@ -42,6 +42,7 @@ class Embedder:
                 headers=headers,
                 json=payload,
                 timeout=10,
+                allow_redirects=False,
             )
             resp.raise_for_status()
             data = resp.json()

@@ -98,15 +98,31 @@ def ollama_model_supports_vision(model: str, *, host: str = "") -> Optional[bool
     if cache_key in _OLLAMA_MODEL_CAPABILITY_CACHE:
         return _OLLAMA_MODEL_CAPABILITY_CACHE[cache_key]
 
-    request = urllib.request.Request(
-        f"{base_host}/api/show",
+    from urllib.parse import urlparse
+
+    endpoint_url = f"{base_host}/api/show"
+    parsed_endpoint = urlparse(endpoint_url)
+    if (
+        parsed_endpoint.scheme.lower() not in {"http", "https"}
+        or not parsed_endpoint.hostname
+    ):
+        return None
+    request = urllib.request.Request(  # noqa: S310 - scheme validated above
+        endpoint_url,
         data=json.dumps({"model": model_text}).encode("utf-8"),
         headers={"Content-Type": "application/json"},
         method="POST",
     )
+    max_bytes = 4 * 1024 * 1024
     try:
-        with urllib.request.urlopen(request, timeout=2.0) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+        with urllib.request.urlopen(request, timeout=2.0) as response:  # noqa: S310
+            try:
+                raw = response.read(max_bytes + 1)
+            except TypeError:
+                raw = response.read()
+            if len(raw) > max_bytes:
+                return None
+            payload = json.loads(raw.decode("utf-8"))
     except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
         logger.debug(
             "Could not inspect Ollama model capabilities for %s: %s",

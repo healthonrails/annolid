@@ -83,7 +83,13 @@ _PDFJS_BENIGN_CONSOLE_PATTERNS = (
 
 def _js_literal(value: object) -> str:
     text = json.dumps(value, ensure_ascii=False)
-    return text.replace("</", "<\\/")
+    return (
+        text.replace("&", "\\u0026")
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
 
 
 def _build_pdfjs_viewer_html(

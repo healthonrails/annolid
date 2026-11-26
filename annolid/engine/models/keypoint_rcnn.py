@@ -260,7 +260,9 @@ class KeypointRCNNPlugin(ModelPluginBase):
         score_thr = float(args.score_threshold)
 
         # Load checkpoint
-        state = torch.load(weights_path, map_location="cpu", weights_only=True)
+        from annolid.utils.safe_torch_load import safe_torch_load
+
+        state = safe_torch_load(weights_path, map_location="cpu")
         num_keypoints: int = int(state.get("num_keypoints", 17))
         keypoint_names = list(
             state.get("keypoint_names", [f"kp{i}" for i in range(num_keypoints)])

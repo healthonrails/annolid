@@ -152,7 +152,9 @@ def _stage_inferred_coco_spec(
     payload: dict[str, object],
     write_dir: Path,
 ) -> Path:
-    digest = hashlib.sha1(str(dataset_root).encode("utf-8")).hexdigest()[:10]
+    digest = hashlib.sha1(
+        str(dataset_root).encode("utf-8"), usedforsecurity=False
+    ).hexdigest()[:10]
     cache_dir = (
         Path(write_dir).expanduser().resolve()
         / ".annolid"

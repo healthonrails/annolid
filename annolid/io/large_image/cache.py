@@ -31,7 +31,8 @@ def optimized_large_image_cache_path(source_path: str | Path) -> Path:
     source = Path(source_path).expanduser().resolve()
     stat = source.stat()
     fingerprint = hashlib.sha1(
-        f"{source}|{stat.st_mtime_ns}|{stat.st_size}".encode("utf-8")
+        f"{source}|{stat.st_mtime_ns}|{stat.st_size}".encode("utf-8"),
+        usedforsecurity=False,
     ).hexdigest()[:12]
     safe_stem = "".join(
         ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in source.stem

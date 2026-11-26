@@ -94,7 +94,9 @@ def _build_keypoint_model(
     )
 
     if weights is not None:
-        state = torch.load(weights, map_location="cpu", weights_only=True)
+        from annolid.utils.safe_torch_load import safe_torch_load
+
+        state = safe_torch_load(weights, map_location="cpu")
         if "model" in state:
             state = state["model"]
         model.load_state_dict(state, strict=False)

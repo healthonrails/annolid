@@ -300,6 +300,16 @@ class AnnolidRunTool(FunctionTool):
             allowed_read_roots=self._allowed_read_roots,
         )
 
+    @staticmethod
+    def _has_help_flag(argv: Sequence[str]) -> bool:
+        for tok in argv:
+            token = str(tok or "").strip().lower()
+            if token == "--":
+                break
+            if token in {"-h", "--help", "--help-model"}:
+                return True
+        return False
+
     def _validate_argv_paths(
         self,
         argv: Sequence[str],
@@ -309,10 +319,7 @@ class AnnolidRunTool(FunctionTool):
     ) -> None:
         if self._allowed_dir is None:
             return
-        if any(
-            str(tok or "").strip().lower() in {"-h", "--help", "--help-model"}
-            for tok in argv
-        ):
+        if self._has_help_flag(argv):
             return
         base_dir = (working_dir or self._allowed_dir).resolve()
 
@@ -377,7 +384,7 @@ class AnnolidRunTool(FunctionTool):
         if not cleaned:
             return False
         lowered = [part.lower() for part in cleaned]
-        if any(flag in {"-h", "--help", "--help-model"} for flag in lowered):
+        if cls._has_help_flag(lowered):
             return False
 
         non_flag_tokens = [tok for tok in lowered if not tok.startswith("-")]

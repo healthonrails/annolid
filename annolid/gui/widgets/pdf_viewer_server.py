@@ -103,6 +103,33 @@ def _store_pdfjs_http_viewer_html(html: str) -> str:
     return token
 
 
+def _allowed_loopback_cors_origin(
+    origin: str, server_port: Optional[int]
+) -> Optional[str]:
+    """Allow CORS only for exact loopback origins matching this local server."""
+    raw = str(origin or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return None
+    if parsed.scheme.lower() != "http":
+        return None
+    if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+        return None
+    host = str(parsed.hostname or "").strip().lower()
+    if host not in {"127.0.0.1", "localhost", "::1"}:
+        return None
+    if server_port is not None and server_port > 0:
+        try:
+            if parsed.port != int(server_port):
+                return None
+        except ValueError:
+            return None
+    return f"{parsed.scheme.lower()}://{parsed.netloc}"
+
+
 class _PdfJsHttpRequestHandler(BaseHTTPRequestHandler):
     """Local HTTP request handler serving PDF.js assets, viewer HTML, and PDF bytes."""
 
@@ -110,6 +137,18 @@ class _PdfJsHttpRequestHandler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt: str, *args: object) -> None:  # noqa: D401
         return
+
+    def _send_security_headers(self) -> None:
+        self.send_header("X-Content-Type-Options", "nosniff")
+        headers = getattr(self, "headers", None)
+        origin = headers.get("Origin", "") if headers is not None else ""
+        server_port = getattr(getattr(self, "server", None), "server_port", None)
+        if server_port is None:
+            server_port = _PDFJS_HTTP_PORT
+        allowed_origin = _allowed_loopback_cors_origin(origin, server_port)
+        if allowed_origin:
+            self.send_header("Access-Control-Allow-Origin", allowed_origin)
+            self.send_header("Vary", "Origin")
 
     def do_HEAD(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler
         self._serve(send_body=False)
@@ -119,7 +158,7 @@ class _PdfJsHttpRequestHandler(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self._send_security_headers()
         self.send_header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Range, Content-Type")
         self.send_header(
@@ -164,7 +203,7 @@ class _PdfJsHttpRequestHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", content_type)
             self.send_header("Cache-Control", "no-store")
-            self.send_header("Access-Control-Allow-Origin", "*")
+            self._send_security_headers()
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             if send_body:
@@ -185,7 +224,7 @@ class _PdfJsHttpRequestHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
-            self.send_header("Access-Control-Allow-Origin", "*")
+            self._send_security_headers()
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             if send_body:
@@ -216,7 +255,7 @@ class _PdfJsHttpRequestHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/pdf")
             self.send_header("Accept-Ranges", "bytes")
             self.send_header("Cache-Control", "no-store")
-            self.send_header("Access-Control-Allow-Origin", "*")
+            self._send_security_headers()
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
@@ -228,7 +267,7 @@ class _PdfJsHttpRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/pdf")
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self._send_security_headers()
         self.send_header(
             "Access-Control-Expose-Headers",
             "Accept-Ranges, Content-Range, Content-Length",

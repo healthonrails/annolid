@@ -142,15 +142,285 @@ def _prune_threejs_http_tokens(*, now_ts: float | None = None) -> None:
         _THREEJS_HTTP_TOKEN_ASSET_ROOTS.pop(token, None)
 
 
+def _allowed_threejs_cors_origin(
+    origin: str, server_port: Optional[int]
+) -> Optional[str]:
+    """Allow CORS only for exact loopback origins matching this local server."""
+    raw = str(origin or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return None
+    if parsed.scheme.lower() != "http":
+        return None
+    if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+        return None
+    host = str(parsed.hostname or "").strip().lower()
+    if host not in {"127.0.0.1", "localhost", "::1"}:
+        return None
+    if server_port is not None and server_port > 0:
+        try:
+            if parsed.port != int(server_port):
+                return None
+        except ValueError:
+            return None
+    return f"{parsed.scheme.lower()}://{parsed.netloc}"
+
+
 def _threejs_asset_path(filename: str) -> Optional[Path]:
     try:
-        root = Path(__file__).resolve().parents[1] / "assets" / "threejs"
+        root = (Path(__file__).resolve().parents[1] / "assets" / "threejs").resolve()
         candidate = (root / filename).resolve()
+        if candidate.parent != root:
+            return None
         if candidate.exists() and candidate.is_file():
             return candidate
     except Exception:
         return None
     return None
+
+
+class _ThreeJsHttpServer(ThreadingHTTPServer):
+    request_queue_size = 64
+    daemon_threads = True
+
+
+class _ThreeJsRequestHandler(BaseHTTPRequestHandler):
+    server_version = "AnnolidThreeJsServer/1.0"
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, fmt: str, *args: object) -> None:  # noqa: D401
+        return
+
+    def _send_security_headers(self) -> None:
+        self.send_header("X-Content-Type-Options", "nosniff")
+        headers = getattr(self, "headers", None)
+        origin = headers.get("Origin", "") if headers is not None else ""
+        server_port = getattr(getattr(self, "server", None), "server_port", None)
+        if server_port is None:
+            server_port = _THREEJS_HTTP_PORT
+        allowed_origin = _allowed_threejs_cors_origin(origin, server_port)
+        if allowed_origin:
+            self.send_header("Access-Control-Allow-Origin", allowed_origin)
+            self.send_header("Vary", "Origin")
+
+    def do_HEAD(self) -> None:  # noqa: N802
+        self._serve(send_body=False)
+
+    def do_GET(self) -> None:  # noqa: N802
+        self._serve(send_body=True)
+
+    def do_OPTIONS(self) -> None:  # noqa: N802
+        self.send_response(204)
+        self._send_security_headers()
+        self.send_header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Range, Content-Type")
+        self.send_header(
+            "Access-Control-Expose-Headers",
+            "Accept-Ranges, Content-Range, Content-Length",
+        )
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _serve(self, *, send_body: bool) -> None:
+        try:
+            parsed = urlparse(self.path)
+            path = parsed.path or ""
+        except Exception:
+            self.send_error(400)
+            return
+
+        if path == "/swarm/status":
+            payload = json.dumps(get_swarm_state()).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store")
+            self._send_security_headers()
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            if send_body:
+                self.wfile.write(payload)
+            return
+
+        if path.startswith("/threejs/"):
+            name = unquote(path[len("/threejs/") :]).strip().lstrip("/")
+            if "\0" in name:
+                self.send_error(400)
+                return
+            if name not in _THREEJS_ALLOWED_ASSETS:
+                self.send_error(404)
+                return
+            try:
+                asset = _threejs_asset_path(name)
+                if asset is None:
+                    self.send_error(404)
+                    return
+                mtime_ns = int(asset.stat().st_mtime_ns)
+                with _THREEJS_HTTP_LOCK:
+                    cached = _THREEJS_HTTP_ASSET_CACHE.get(name)
+                if cached is None or cached[0] != mtime_ns:
+                    payload = asset.read_bytes()
+                    cached = (mtime_ns, payload)
+                    with _THREEJS_HTTP_LOCK:
+                        _THREEJS_HTTP_ASSET_CACHE[name] = cached
+            except Exception:
+                self.send_error(404)
+                return
+            payload = cached[1]
+            if name.endswith(".css"):
+                content_type = "text/css"
+            elif name.endswith(".html"):
+                content_type = "text/html"
+            elif name.endswith(".glb"):
+                content_type = "model/gltf-binary"
+            elif name.endswith((".jpg", ".jpeg")):
+                content_type = "image/jpeg"
+            elif name.endswith(".png"):
+                content_type = "image/png"
+            elif name.endswith(".webp"):
+                content_type = "image/webp"
+            elif name.endswith(".json"):
+                content_type = "application/json"
+            else:
+                content_type = "application/javascript"
+
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Cache-Control", "no-store")
+            self._send_security_headers()
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            if send_body:
+                try:
+                    self.wfile.write(payload)
+                except Exception:
+                    return
+            return
+
+        if not path.startswith("/model/"):
+            self.send_error(404)
+            return
+
+        token_and_path = unquote(path[len("/model/") :]).strip()
+        if "\0" in token_and_path:
+            self.send_error(400)
+            return
+        parts = token_and_path.split("/", 1)
+        token = parts[0]
+
+        # Get the base model file path
+        with _THREEJS_HTTP_LOCK:
+            _prune_threejs_http_tokens()
+            base_file_path = _THREEJS_HTTP_TOKENS.get(token)
+            asset_roots = dict(_THREEJS_HTTP_TOKEN_ASSET_ROOTS.get(token) or {})
+        if base_file_path is None:
+            logger.warning("Token not found: %s", token)
+            self.send_error(404)
+            return
+
+        logger.info(
+            "Model request: token=%s, base_file=%s, parts=%s",
+            token,
+            base_file_path,
+            parts,
+        )
+
+        # If no additional path, serve the base file
+        if len(parts) == 1:
+            file_path = base_file_path
+        else:
+            # Serve a related file in the same directory
+            requested_filename = parts[1]
+            model_dir = base_file_path.parent
+            requested_parts = Path(requested_filename).parts
+            asset_root: Path | None = None
+            if requested_parts:
+                alias = requested_parts[0]
+                asset_root = asset_roots.get(alias)
+            if asset_root is not None:
+                relative_asset = (
+                    Path(*requested_parts[1:]) if len(requested_parts) > 1 else Path()
+                )
+                file_path = asset_root / relative_asset
+                allowed_root = asset_root
+            else:
+                file_path = model_dir / requested_filename
+                allowed_root = model_dir
+
+            logger.info(
+                "Related file request: %s, full_path=%s, exists=%s",
+                requested_filename,
+                file_path,
+                file_path.exists(),
+            )
+
+            # Security check: only serve files in the same directory or subdirectories
+            try:
+                rel_target = file_path.resolve().relative_to(allowed_root.resolve())
+            except ValueError:
+                # File is outside the model directory
+                logger.warning(
+                    "Security violation: requested file %s is outside allowed root %s",
+                    file_path,
+                    allowed_root,
+                )
+                self.send_error(403)
+                return
+            if any(part.startswith(".") for part in rel_target.parts):
+                self.send_error(403)
+                return
+
+        if file_path.name.startswith("."):
+            self.send_error(403)
+            return
+        if file_path.suffix.lower() not in _THREEJS_ALLOWED_MODEL_SUFFIXES:
+            self.send_error(403)
+            return
+
+        if not file_path.exists() or not file_path.is_file():
+            self.send_error(404)
+            return
+
+        try:
+            file_size = file_path.stat().st_size
+        except Exception:
+            self.send_error(404)
+            return
+
+        content_type, _ = mimetypes.guess_type(str(file_path))
+        if not content_type:
+            suffix = file_path.suffix.lower()
+            if suffix == ".stl":
+                content_type = "model/stl"
+            elif suffix == ".obj":
+                content_type = "model/obj"
+            elif suffix == ".mtl":
+                content_type = "model/mtl"
+            elif suffix == ".ply":
+                content_type = "model/ply"
+            elif suffix == ".glb":
+                content_type = "model/gltf-binary"
+            elif suffix == ".gltf":
+                content_type = "model/gltf+json"
+            elif suffix in (".png", ".jpg", ".jpeg"):
+                content_type = f"image/{suffix[1:]}"
+            else:
+                content_type = "application/octet-stream"
+
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "no-store")
+        self._send_security_headers()
+        self.send_header("Content-Length", str(file_size))
+        self.end_headers()
+        if send_body:
+            try:
+                with file_path.open("rb") as f:
+                    shutil.copyfileobj(f, self.wfile)
+            except Exception:
+                return
 
 
 def _ensure_threejs_http_server() -> str:
@@ -159,231 +429,7 @@ def _ensure_threejs_http_server() -> str:
         if _THREEJS_HTTP_SERVER is not None and _THREEJS_HTTP_PORT is not None:
             return f"http://127.0.0.1:{_THREEJS_HTTP_PORT}"
 
-        class _ThreeJsHttpServer(ThreadingHTTPServer):
-            request_queue_size = 64
-            daemon_threads = True
-
-        class _Handler(BaseHTTPRequestHandler):
-            server_version = "AnnolidThreeJsServer/1.0"
-            protocol_version = "HTTP/1.1"
-
-            def log_message(self, fmt: str, *args: object) -> None:  # noqa: D401
-                return
-
-            def do_HEAD(self) -> None:  # noqa: N802
-                self._serve(send_body=False)
-
-            def do_GET(self) -> None:  # noqa: N802
-                self._serve(send_body=True)
-
-            def do_OPTIONS(self) -> None:  # noqa: N802
-                self.send_response(204)
-                self.send_header("Access-Control-Allow-Origin", "*")
-                self.send_header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
-                self.send_header("Access-Control-Allow-Headers", "Range, Content-Type")
-                self.send_header(
-                    "Access-Control-Expose-Headers",
-                    "Accept-Ranges, Content-Range, Content-Length",
-                )
-                self.send_header("Content-Length", "0")
-                self.end_headers()
-
-            def _serve(self, *, send_body: bool) -> None:
-                try:
-                    parsed = urlparse(self.path)
-                    path = parsed.path or ""
-                except Exception:
-                    self.send_error(400)
-                    return
-
-                if path == "/swarm/status":
-                    payload = json.dumps(get_swarm_state()).encode("utf-8")
-                    self.send_response(200)
-                    self.send_header("Content-Type", "application/json")
-                    self.send_header("Cache-Control", "no-store")
-                    self.send_header("Access-Control-Allow-Origin", "*")
-                    self.send_header("Content-Length", str(len(payload)))
-                    self.end_headers()
-                    if send_body:
-                        self.wfile.write(payload)
-                    return
-
-                if path.startswith("/threejs/"):
-                    name = unquote(path[len("/threejs/") :]).strip().lstrip("/")
-                    if "\0" in name:
-                        self.send_error(400)
-                        return
-                    if name not in _THREEJS_ALLOWED_ASSETS:
-                        self.send_error(404)
-                        return
-                    try:
-                        asset = _threejs_asset_path(name)
-                        if asset is None:
-                            self.send_error(404)
-                            return
-                        mtime_ns = int(asset.stat().st_mtime_ns)
-                        cached = _THREEJS_HTTP_ASSET_CACHE.get(name)
-                        if cached is None or cached[0] != mtime_ns:
-                            payload = asset.read_bytes()
-                            cached = (mtime_ns, payload)
-                            _THREEJS_HTTP_ASSET_CACHE[name] = cached
-                    except Exception:
-                        self.send_error(404)
-                        return
-                    payload = cached[1]
-                    if name.endswith(".css"):
-                        content_type = "text/css"
-                    elif name.endswith(".html"):
-                        content_type = "text/html"
-                    elif name.endswith(".glb"):
-                        content_type = "model/gltf-binary"
-                    elif name.endswith((".jpg", ".jpeg")):
-                        content_type = "image/jpeg"
-                    elif name.endswith(".png"):
-                        content_type = "image/png"
-                    elif name.endswith(".webp"):
-                        content_type = "image/webp"
-                    elif name.endswith(".json"):
-                        content_type = "application/json"
-                    else:
-                        content_type = "application/javascript"
-
-                    self.send_response(200)
-                    self.send_header("Content-Type", content_type)
-                    self.send_header("Cache-Control", "no-store")
-                    self.send_header("Access-Control-Allow-Origin", "*")
-                    self.send_header("Content-Length", str(len(payload)))
-                    self.end_headers()
-                    if send_body:
-                        try:
-                            self.wfile.write(payload)
-                        except Exception:
-                            return
-                    return
-
-                if not path.startswith("/model/"):
-                    self.send_error(404)
-                    return
-
-                token_and_path = unquote(path[len("/model/") :]).strip()
-                if "\0" in token_and_path:
-                    self.send_error(400)
-                    return
-                parts = token_and_path.split("/", 1)
-                token = parts[0]
-
-                # Get the base model file path
-                with _THREEJS_HTTP_LOCK:
-                    _prune_threejs_http_tokens()
-                    base_file_path = _THREEJS_HTTP_TOKENS.get(token)
-                    asset_roots = dict(_THREEJS_HTTP_TOKEN_ASSET_ROOTS.get(token) or {})
-                if base_file_path is None:
-                    logger.warning("Token not found: %s", token)
-                    self.send_error(404)
-                    return
-
-                logger.info(
-                    "Model request: token=%s, base_file=%s, parts=%s",
-                    token,
-                    base_file_path,
-                    parts,
-                )
-
-                # If no additional path, serve the base file
-                if len(parts) == 1:
-                    file_path = base_file_path
-                else:
-                    # Serve a related file in the same directory
-                    requested_filename = parts[1]
-                    model_dir = base_file_path.parent
-                    requested_parts = Path(requested_filename).parts
-                    asset_root: Path | None = None
-                    if requested_parts:
-                        alias = requested_parts[0]
-                        asset_root = asset_roots.get(alias)
-                    if asset_root is not None:
-                        relative_asset = (
-                            Path(*requested_parts[1:])
-                            if len(requested_parts) > 1
-                            else Path()
-                        )
-                        file_path = asset_root / relative_asset
-                        allowed_root = asset_root
-                    else:
-                        file_path = model_dir / requested_filename
-                        allowed_root = model_dir
-
-                    logger.info(
-                        "Related file request: %s, full_path=%s, exists=%s",
-                        requested_filename,
-                        file_path,
-                        file_path.exists(),
-                    )
-
-                    # Security check: only serve files in the same directory or subdirectories
-                    try:
-                        file_path.resolve().relative_to(allowed_root.resolve())
-                    except ValueError:
-                        # File is outside the model directory
-                        logger.warning(
-                            "Security violation: requested file %s is outside allowed root %s",
-                            file_path,
-                            allowed_root,
-                        )
-                        self.send_error(403)
-                        return
-
-                if file_path.name.startswith("."):
-                    self.send_error(403)
-                    return
-                if file_path.suffix.lower() not in _THREEJS_ALLOWED_MODEL_SUFFIXES:
-                    self.send_error(403)
-                    return
-
-                if not file_path.exists() or not file_path.is_file():
-                    self.send_error(404)
-                    return
-
-                try:
-                    file_size = file_path.stat().st_size
-                except Exception:
-                    self.send_error(404)
-                    return
-
-                content_type, _ = mimetypes.guess_type(str(file_path))
-                if not content_type:
-                    suffix = file_path.suffix.lower()
-                    if suffix == ".stl":
-                        content_type = "model/stl"
-                    elif suffix == ".obj":
-                        content_type = "model/obj"
-                    elif suffix == ".mtl":
-                        content_type = "model/mtl"
-                    elif suffix == ".ply":
-                        content_type = "model/ply"
-                    elif suffix == ".glb":
-                        content_type = "model/gltf-binary"
-                    elif suffix == ".gltf":
-                        content_type = "model/gltf+json"
-                    elif suffix in (".png", ".jpg", ".jpeg"):
-                        content_type = f"image/{suffix[1:]}"
-                    else:
-                        content_type = "application/octet-stream"
-
-                self.send_response(200)
-                self.send_header("Content-Type", content_type)
-                self.send_header("Cache-Control", "no-store")
-                self.send_header("Access-Control-Allow-Origin", "*")
-                self.send_header("Content-Length", str(file_size))
-                self.end_headers()
-                if send_body:
-                    try:
-                        with file_path.open("rb") as f:
-                            shutil.copyfileobj(f, self.wfile)
-                    except Exception:
-                        return
-
-        httpd = _ThreeJsHttpServer(("127.0.0.1", 0), _Handler)
+        httpd = _ThreeJsHttpServer(("127.0.0.1", 0), _ThreeJsRequestHandler)
         _THREEJS_HTTP_SERVER = httpd
         _THREEJS_HTTP_PORT = int(getattr(httpd, "server_port", 0) or 0)
         thread = threading.Thread(target=httpd.serve_forever, daemon=True)

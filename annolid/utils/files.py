@@ -456,12 +456,25 @@ def create_tracking_csv_file(
 
 
 def clone_git_repository(repo_url, destination_path):
+    from urllib.parse import urlparse
+
+    url_text = str(repo_url or "").strip()
+    if not url_text or url_text.startswith("-"):
+        raise ValueError(f"Invalid git repository URL: {repo_url!r}")
+    parsed = urlparse(url_text)
+    if parsed.scheme and parsed.scheme.lower() not in {"https", "http", "ssh", "git"}:
+        raise ValueError(f"Unsupported git repository URL scheme: {parsed.scheme!r}")
+    if url_text.lower().startswith("ext::"):
+        raise ValueError("Unsupported git ext:: transport.")
     try:
         # Create the destination directory if it doesn't exist
         os.makedirs(destination_path, exist_ok=True)
 
-        # Execute the Git clone command
-        subprocess.run(["git", "clone", repo_url, destination_path])
+        # Execute the Git clone command with `--` to prevent option injection.
+        subprocess.run(
+            ["git", "clone", "--", url_text, str(destination_path)],
+            check=True,
+        )
 
         print("Repository cloned successfully.")
     except Exception as e:
@@ -471,28 +484,36 @@ def clone_git_repository(repo_url, destination_path):
 # Function to download a file
 
 
-def download_file(url, destination_path):
+def download_file(url, destination_path, *, timeout: float = 30.0):
+    from urllib.parse import urlparse
     import requests
 
-    response = requests.get(url)
+    url_text = str(url or "").strip()
+    parsed = urlparse(url_text)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        raise ValueError(f"Unsupported download URL scheme or host: {url!r}")
+    response = requests.get(url_text, timeout=max(1.0, float(timeout)), stream=True)
     if response.status_code == 200:
         with open(destination_path, "wb") as file:
-            file.write(response.content)
-            print("Download complete.")
+            for chunk in response.iter_content(chunk_size=65536):
+                if chunk:
+                    file.write(chunk)
+        print("Download complete.")
     else:
         print("Failed to download file.")
 
 
 def open_or_start_file(file_name):
+    resolved_target = str(Path(str(file_name)).expanduser().resolve())
     # macOS
     if platform.system() == "Darwin":
-        subprocess.call(("open", file_name))
+        subprocess.call(("open", resolved_target))
     # Windows
     elif platform.system() == "Windows":
-        os.startfile(file_name)
+        os.startfile(resolved_target)
     # linux
     else:
-        subprocess.call(("xdg-open", file_name))
+        subprocess.call(("xdg-open", resolved_target))
 
 
 def merge_annotation_folders(

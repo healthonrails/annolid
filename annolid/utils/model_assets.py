@@ -2,24 +2,46 @@ from __future__ import annotations
 
 from hashlib import sha256
 import hashlib
+import hmac
 from pathlib import Path
+import urllib.parse
 import urllib.request
+
+_GOOGLE_DRIVE_HOSTS = frozenset(
+    {
+        "drive.google.com",
+        "docs.google.com",
+        "drive.usercontent.google.com",
+    }
+)
+
+
+def _validate_http_download_url(url: str) -> str:
+    candidate = str(url or "").strip()
+    parsed = urllib.parse.urlparse(candidate)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        raise ValueError(f"Unsupported model asset URL scheme or host: {url!r}")
+    return candidate
 
 
 def _is_google_drive_url(url: str) -> bool:
-    lowered = str(url or "").strip().lower()
-    return "drive.google.com" in lowered or "docs.google.com" in lowered
+    parsed = urllib.parse.urlparse(str(url or "").strip())
+    if parsed.scheme.lower() not in {"http", "https"}:
+        return False
+    host = str(parsed.hostname or "").strip().lower().rstrip(".")
+    return host in _GOOGLE_DRIVE_HOSTS
 
 
 def _http_chunked_download(url: str, target: Path) -> str:
+    safe_url = _validate_http_download_url(url)
     target.parent.mkdir(parents=True, exist_ok=True)
     part_path = target.with_name(f"{target.name}.part")
-    req = urllib.request.Request(
-        url,
+    req = urllib.request.Request(  # noqa: S310 - scheme validated above
+        safe_url,
         headers={"User-Agent": "Annolid-ModelAssets/1.0"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        with urllib.request.urlopen(req, timeout=120) as resp:  # noqa: S310
             with part_path.open("wb") as out_f:
                 while True:
                     chunk = resp.read(1024 * 1024)
@@ -146,8 +168,18 @@ def ensure_cached_model_asset(
 ) -> Path:
     if not file_name:
         raise ValueError("file_name must be non-empty")
+    raw_name = str(file_name).strip()
+    if (
+        not raw_name
+        or raw_name in {".", ".."}
+        or "/" in raw_name
+        or "\\" in raw_name
+        or "\x00" in raw_name
+    ):
+        raise ValueError(f"Unsafe model asset file_name: {file_name!r}")
     if not url:
         raise ValueError("url must be non-empty")
+    safe_url = _validate_http_download_url(url)
     sha_expected = str(expected_sha256 or "").strip().lower()
     md5_expected = str(expected_md5 or "").strip().lower()
     if bool(sha_expected) == bool(md5_expected):
@@ -155,20 +187,28 @@ def ensure_cached_model_asset(
             "Provide exactly one checksum: expected_sha256 or expected_md5"
         )
 
-    target_dir = Path(cache_dir).expanduser() if cache_dir else model_downloads_dir()
+    target_dir = (
+        Path(cache_dir).expanduser().resolve()
+        if cache_dir
+        else model_downloads_dir().resolve()
+    )
     target_dir.mkdir(parents=True, exist_ok=True)
-    target = target_dir / file_name
+    target = (target_dir / raw_name).resolve()
+    if target.parent != target_dir:
+        raise ValueError(
+            f"Model asset file_name escapes cache directory: {file_name!r}"
+        )
 
     def _matches_checksum(path: Path) -> bool:
         if sha_expected:
-            return sha256sum(path) == sha_expected
-        return md5sum(path) == md5_expected
+            return hmac.compare_digest(sha256sum(path), sha_expected)
+        return hmac.compare_digest(md5sum(path), md5_expected)
 
     if target.is_file() and _matches_checksum(target):
         return target
 
     target.unlink(missing_ok=True)
-    _cached_download(url, target, quiet=quiet, fuzzy=fuzzy)
+    _cached_download(safe_url, target, quiet=quiet, fuzzy=fuzzy)
 
     if not target.is_file():
         raise RuntimeError(f"Failed to download model asset: {url}")

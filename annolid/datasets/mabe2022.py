@@ -3,9 +3,14 @@ https://www.aicrowd.com/showcase/getting-started-mouse-triplets-video-data
 
 """
 
+from collections import Counter, OrderedDict, defaultdict
+import codecs
 import os
+import pickle
+from typing import Any
 import cv2
 import numpy as np
+from numpy.lib import format as _np_format
 
 import torch
 import torchvision.transforms as T
@@ -14,9 +19,124 @@ from annolid.data.videos import CV2Video
 from annolid.annotation.keypoints import save_labels
 
 
+_SAFE_NPY_BUILTINS: dict[str, Any] = {
+    "bool": bool,
+    "bytearray": bytearray,
+    "bytes": bytes,
+    "complex": complex,
+    "dict": dict,
+    "float": float,
+    "frozenset": frozenset,
+    "int": int,
+    "list": list,
+    "set": set,
+    "slice": slice,
+    "str": str,
+    "tuple": tuple,
+}
+_SAFE_NPY_COLLECTIONS: dict[str, Any] = {
+    "OrderedDict": OrderedDict,
+    "defaultdict": defaultdict,
+    "Counter": Counter,
+}
+
+
+def _build_safe_numpy_globals() -> dict[tuple[str, str], Any]:
+    allowed: dict[tuple[str, str], Any] = {
+        ("numpy", "ndarray"): np.ndarray,
+        ("numpy", "dtype"): np.dtype,
+    }
+    for mod_attr in ("_core", "core"):
+        core_mod = getattr(np, mod_attr, None)
+        multiarray = (
+            getattr(core_mod, "multiarray", None) if core_mod is not None else None
+        )
+        if multiarray is not None:
+            for fn_name in ("_reconstruct", "scalar"):
+                fn = getattr(multiarray, fn_name, None)
+                if fn is not None:
+                    allowed[("numpy.core.multiarray", fn_name)] = fn
+                    allowed[("numpy._core.multiarray", fn_name)] = fn
+    for scalar_dt in (
+        np.bool_,
+        np.int8,
+        np.int16,
+        np.int32,
+        np.int64,
+        np.uint8,
+        np.uint16,
+        np.uint32,
+        np.uint64,
+        np.float16,
+        np.float32,
+        np.float64,
+        np.complex64,
+        np.complex128,
+        np.str_,
+        np.bytes_,
+        np.object_,
+    ):
+        dt_cls = type(np.dtype(scalar_dt))
+        for item in (scalar_dt, dt_cls):
+            mod = getattr(item, "__module__", "")
+            name = getattr(item, "__qualname__", getattr(item, "__name__", ""))
+            if mod and name:
+                allowed[(mod, name)] = item
+    return allowed
+
+
+_SAFE_NPY_NUMPY_GLOBALS = _build_safe_numpy_globals()
+
+
+class _RestrictedNpyUnpickler(pickle.Unpickler):
+    """Restricted unpickler for MABe2022 .npy object-array archives."""
+
+    def find_class(self, module: str, name: str) -> Any:
+        if module in ("builtins", "__builtin__"):
+            if name in _SAFE_NPY_BUILTINS:
+                return _SAFE_NPY_BUILTINS[name]
+            raise pickle.UnpicklingError(
+                f"Blocked unsafe builtin in MABe2022 .npy archive: {module}.{name}"
+            )
+        if module == "collections":
+            if name in _SAFE_NPY_COLLECTIONS:
+                return _SAFE_NPY_COLLECTIONS[name]
+            raise pickle.UnpicklingError(
+                f"Blocked unsafe collections global in MABe2022 .npy archive: {module}.{name}"
+            )
+        if module in ("_codecs", "codecs") and name == "encode":
+            return codecs.encode
+        target = _SAFE_NPY_NUMPY_GLOBALS.get((module, name))
+        if target is not None:
+            return target
+        raise pickle.UnpicklingError(
+            f"Blocked untrusted global in MABe2022 .npy archive: {module}.{name}"
+        )
+
+
+def _safe_load_npy_item(path: str | os.PathLike[str]) -> Any:
+    """Load a MABe2022 .npy file without unrestricted pickle execution."""
+    with open(path, "rb") as fp:
+        version = _np_format.read_magic(fp)
+        if version == (1, 0):
+            _shape, _fortran_order, dtype = _np_format.read_array_header_1_0(fp)
+        elif version == (2, 0):
+            _shape, _fortran_order, dtype = _np_format.read_array_header_2_0(fp)
+        else:
+            _shape, _fortran_order, dtype = _np_format._read_array_header(fp, version)
+        if not dtype.hasobject:
+            fp.seek(0)
+            arr = np.load(fp, allow_pickle=False)
+        else:
+            arr = _RestrictedNpyUnpickler(fp).load()
+    if isinstance(arr, np.ndarray) and arr.ndim == 0:
+        return arr.item()
+    return arr
+
+
 def load_user_train(path_to_train="user_train.npy"):
     if os.path.exists(path_to_train):
-        user_train_data = np.load(path_to_train, allow_pickle=True).item()
+        user_train_data = _safe_load_npy_item(path_to_train)
         return user_train_data
     else:
         return
@@ -24,7 +144,7 @@ def load_user_train(path_to_train="user_train.npy"):
 
 def load_keypoints(path_to_keypoints="submission_keypoints.npy"):
     if os.path.exists(path_to_keypoints):
-        keypoints = np.load(path_to_keypoints, allow_pickle=True).item()
+        keypoints = _safe_load_npy_item(path_to_keypoints)
         return keypoints
 
 

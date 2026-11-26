@@ -53,12 +53,14 @@ class _CachedFeatureExtractor:
     def _image_signature(self, image: Image.Image | np.ndarray) -> Tuple[object, ...]:
         if isinstance(image, Image.Image):
             pil = image.convert("RGB")
-            digest = hashlib.sha1(pil.tobytes()).hexdigest()
+            digest = hashlib.sha1(pil.tobytes(), usedforsecurity=False).hexdigest()
             return ("pil", pil.width, pil.height, digest)
         arr = np.asarray(image)
         if arr.ndim < 2:
             return ("arr", "invalid")
-        digest = hashlib.sha1(np.ascontiguousarray(arr).tobytes()).hexdigest()
+        digest = hashlib.sha1(
+            np.ascontiguousarray(arr).tobytes(), usedforsecurity=False
+        ).hexdigest()
         return ("arr", int(arr.shape[1]), int(arr.shape[0]), str(arr.dtype), digest)
 
     def extract(

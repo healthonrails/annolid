@@ -28,6 +28,7 @@ from qtpy import QtCore, QtGui, QtWidgets
 from annolid.gui.widgets.webengine_lifecycle import release_webengine_view
 from annolid.utils.logger import logger
 from annolid.utils.runs import shared_runs_root
+from annolid.utils.safe_http import build_http_request, read_bounded, safe_urlopen
 
 
 @dataclass(frozen=True)
@@ -91,8 +92,14 @@ def _tensorboard_env() -> dict:
 
 def _can_connect(url: str, *, timeout: float = 0.5) -> bool:
     try:
-        req = urllib.request.Request(url, method="GET")
-        with urllib.request.urlopen(req, timeout=timeout):
+        req = build_http_request(url, method="GET", allow_private=True)
+        with safe_urlopen(
+            req,
+            timeout=timeout,
+            allow_private=True,
+            allow_redirects=False,
+            urlopen_func=urllib.request.urlopen,
+        ):
             return True
     except urllib.error.HTTPError:
         # An HTTP status response still proves the server socket is reachable.
@@ -106,12 +113,22 @@ def _plugin_enabled(
 ) -> Optional[bool]:
     base = url.rstrip("/")
     try:
-        req = urllib.request.Request(f"{base}/data/plugins_listing", method="GET")
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        req = build_http_request(
+            f"{base}/data/plugins_listing", method="GET", allow_private=True
+        )
+        with safe_urlopen(
+            req,
+            timeout=timeout,
+            allow_private=True,
+            allow_redirects=False,
+            urlopen_func=urllib.request.urlopen,
+        ) as resp:
             status = getattr(resp, "status", 200)
             if not (200 <= int(status) < 300):
                 return None
-            raw = resp.read().decode("utf-8", errors="replace")
+            raw = read_bounded(
+                resp, 2 * 1024 * 1024, label="TensorBoard plugins listing"
+            ).decode("utf-8", errors="replace")
     except Exception:
         return None
     try:

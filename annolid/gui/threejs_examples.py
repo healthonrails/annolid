@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import html
 import json
 import math
+import re
 import time
 from pathlib import Path
 from typing import Callable
@@ -10,6 +12,23 @@ from functools import lru_cache
 
 from annolid.gui.flybody_support import resolve_local_flybody_repo
 from annolid.utils.logger import logger
+
+_MAX_XML_BYTES = 50 * 1024 * 1024
+_UNSAFE_XML_DECL_RE = re.compile(rb"<!(?:DOCTYPE|ENTITY)\b", re.IGNORECASE)
+
+
+def _safe_parse_xml_root(path: Path) -> ET.Element:
+    if path.stat().st_size > _MAX_XML_BYTES:
+        raise ValueError(
+            f"XML file exceeds maximum allowed size ({_MAX_XML_BYTES} bytes)."
+        )
+    raw = path.read_bytes()
+    if _UNSAFE_XML_DECL_RE.search(raw):
+        raise ValueError(
+            "Refusing to parse XML containing DOCTYPE/ENTITY declarations."
+        )
+    return ET.fromstring(raw)  # noqa: S314 - bounded and DOCTYPE/ENTITY rejected above
+
 
 THREEJS_EXAMPLE_IDS = (
     "helix_points_csv",
@@ -211,6 +230,7 @@ def _resolve_or_generate_bundled_html(filename: str, out: Path, *, title: str) -
         return bundled
 
     # Fallback for slim package builds missing optional example assets.
+    safe_title = html.escape(str(title or ""), quote=True)
     fallback = out / filename
     fallback.write_text(
         "\n".join(
@@ -219,10 +239,10 @@ def _resolve_or_generate_bundled_html(filename: str, out: Path, *, title: str) -
                 "<html lang='en'>",
                 "<head>",
                 "  <meta charset='utf-8'/>",
-                f"  <title>{title}</title>",
+                f"  <title>{safe_title}</title>",
                 "</head>",
                 "<body>",
-                f"  <h1>{title}</h1>",
+                f"  <h1>{safe_title}</h1>",
                 "  <p>Bundled Three.js example asset was not packaged in this install.</p>",
                 "</body>",
                 "</html>",
@@ -411,8 +431,8 @@ def _load_flybody_floor() -> dict[str, object] | None:
     if not floor_xml.exists():
         return None
     try:
-        root = ET.parse(floor_xml).getroot()
-    except ET.ParseError:
+        root = _safe_parse_xml_root(floor_xml)
+    except (ET.ParseError, ValueError, OSError):
         return None
     floor_geom = None
     for geom in root.findall(".//geom"):
@@ -538,8 +558,7 @@ def _load_flybody_asset_index(
     """Return (mesh_name->filename, default_mesh_scale, worldbody, xml_materials)."""
     del xml_mtime_ns
     xml_path = Path(xml_path_str)
-    tree = ET.parse(xml_path)
-    root = tree.getroot()
+    root = _safe_parse_xml_root(xml_path)
     mesh_files: dict[str, str] = {}
     xml_materials: dict[str, tuple[float, float, float, float]] = {}
     asset_node = root.find("asset")

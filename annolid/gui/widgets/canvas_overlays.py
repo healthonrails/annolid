@@ -243,7 +243,9 @@ class BehaviorOverlayMixin:
                 except Exception:
                     rgb = None
         if rgb is None:
-            digest = hashlib.md5(item.label.lower().encode("utf-8")).hexdigest()
+            digest = hashlib.md5(
+                item.label.lower().encode("utf-8"), usedforsecurity=False
+            ).hexdigest()
             rgb = _FALLBACK_BEHAVIOR_PALETTE[
                 int(digest, 16) % len(_FALLBACK_BEHAVIOR_PALETTE)
             ]

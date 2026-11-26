@@ -34,14 +34,18 @@ _FORBIDDEN_ATTRS = frozenset(
         "func_globals",
         "func_code",
         "func_closure",
+        "format",
+        "format_map",
     }
 )
+_MAX_SANDBOX_STDOUT_BYTES = 4 * 1024 * 1024
 
 _CHILD_RUNNER = r"""
 import ast, json, sys
 try:
     import resource
-    resource.setrlimit(resource.RLIMIT_CPU, (5, 5))
+    cpu_limit = max(1, int(float(sys.argv[1]))) if len(sys.argv) > 1 else 5
+    resource.setrlimit(resource.RLIMIT_CPU, (cpu_limit, cpu_limit))
 except Exception:
     pass
 
@@ -83,7 +87,12 @@ sys.stdout.write(json.dumps(result))
 """
 
 
+def _is_forbidden_identifier(name: str) -> bool:
+    return name.startswith("__") or name.endswith("__")
+
+
 def _validate_sandbox_ast(tree: ast.AST) -> None:
+    match_class_cls = getattr(ast, "MatchClass", None)
     for node in ast.walk(tree):
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             raise SandboxExecutionError(
@@ -91,16 +100,52 @@ def _validate_sandbox_ast(tree: ast.AST) -> None:
             )
         if isinstance(node, ast.Attribute):
             attr = str(node.attr or "")
-            if attr.startswith("__") or attr.endswith("__") or attr in _FORBIDDEN_ATTRS:
+            if _is_forbidden_identifier(attr) or attr in _FORBIDDEN_ATTRS:
                 raise SandboxExecutionError(
                     f"Disallowed attribute access in sandboxed analysis: {attr!r}"
                 )
         if isinstance(node, ast.Name):
             name = str(node.id or "")
-            if name.startswith("__") or name.endswith("__"):
+            if _is_forbidden_identifier(name):
                 raise SandboxExecutionError(
                     f"Disallowed identifier in sandboxed analysis: {name!r}"
                 )
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            def_name = str(node.name or "")
+            if _is_forbidden_identifier(def_name):
+                raise SandboxExecutionError(
+                    f"Disallowed definition name in sandboxed analysis: {def_name!r}"
+                )
+        if isinstance(node, ast.arg):
+            arg_name = str(node.arg or "")
+            if _is_forbidden_identifier(arg_name):
+                raise SandboxExecutionError(
+                    f"Disallowed parameter name in sandboxed analysis: {arg_name!r}"
+                )
+        if isinstance(node, ast.keyword) and node.arg is not None:
+            kw_name = str(node.arg or "")
+            if _is_forbidden_identifier(kw_name) or kw_name in _FORBIDDEN_ATTRS:
+                raise SandboxExecutionError(
+                    f"Disallowed keyword name in sandboxed analysis: {kw_name!r}"
+                )
+        if isinstance(node, (ast.Global, ast.Nonlocal)):
+            for bound_name in node.names:
+                if _is_forbidden_identifier(str(bound_name or "")):
+                    raise SandboxExecutionError(
+                        f"Disallowed identifier in sandboxed analysis: {bound_name!r}"
+                    )
+        if isinstance(node, ast.ExceptHandler) and node.name:
+            if _is_forbidden_identifier(str(node.name)):
+                raise SandboxExecutionError(
+                    f"Disallowed identifier in sandboxed analysis: {node.name!r}"
+                )
+        if match_class_cls is not None and isinstance(node, match_class_cls):
+            for kwd_attr in getattr(node, "kwd_attrs", ()) or ():
+                attr_name = str(kwd_attr or "")
+                if _is_forbidden_identifier(attr_name) or attr_name in _FORBIDDEN_ATTRS:
+                    raise SandboxExecutionError(
+                        f"Disallowed match attribute in sandboxed analysis: {attr_name!r}"
+                    )
 
 
 def execute_generated_analysis(
@@ -132,16 +177,23 @@ def execute_generated_analysis(
             f"Sandbox inputs must be JSON-serializable: {exc}"
         ) from exc
 
+    effective_timeout = max(0.5, float(timeout_s))
     with tempfile.TemporaryDirectory(prefix="annolid_sandbox_") as tmp_dir:
         try:
             proc = subprocess.run(
-                [sys.executable, "-I", "-c", _CHILD_RUNNER],
+                [
+                    sys.executable,
+                    "-I",
+                    "-c",
+                    _CHILD_RUNNER,
+                    str(int(effective_timeout + 1)),
+                ],
                 input=encoded_payload,
                 capture_output=True,
                 text=True,
                 cwd=tmp_dir,
                 env={"PYTHONHASHSEED": "0"},
-                timeout=max(0.5, float(timeout_s)),
+                timeout=effective_timeout,
                 check=False,
             )
         except subprocess.TimeoutExpired as exc:
@@ -157,8 +209,11 @@ def execute_generated_analysis(
             f"Sandboxed analysis failed (exit {proc.returncode}): {err_msg[-500:]}"
         )
 
+    stdout_text = proc.stdout or "{}"
+    if len(stdout_text.encode("utf-8", errors="replace")) > _MAX_SANDBOX_STDOUT_BYTES:
+        raise SandboxExecutionError("Sandboxed analysis output exceeded size limit.")
     try:
-        parsed = json.loads(proc.stdout or "{}")
+        parsed = json.loads(stdout_text)
     except json.JSONDecodeError as exc:
         raise SandboxExecutionError(
             f"Sandboxed analysis returned invalid JSON output: {exc}"

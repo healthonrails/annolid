@@ -3780,7 +3780,7 @@ def test_cron_tool_add_direct_scheduled_email_with_schedule_time_alias(
 
 def test_cron_tool_default_store_path_does_not_use_cwd_annolid(monkeypatch) -> None:
     default_path = Path("/var/nonwritable/agent-workspace/cron/jobs.json")
-    tmp_path = Path("/tmp/annolid/cron/jobs.json")
+    tmp_path = CronTool._private_temp_store_path()
 
     monkeypatch.setattr(
         "annolid.core.agent.tools.cron.default_cron_store_path",

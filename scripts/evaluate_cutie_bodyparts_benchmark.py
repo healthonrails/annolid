@@ -28,6 +28,7 @@ from annolid.segmentation.cutie_vos.inference.inference_core import InferenceCor
 from annolid.segmentation.cutie_vos.interactive_utils import image_to_torch
 from annolid.segmentation.cutie_vos.model.cutie import CUTIE
 from annolid.utils.devices import get_device
+from annolid.utils.safe_torch_load import safe_torch_load
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CUTIE_CFG_DIR = REPO_ROOT / "annolid" / "segmentation" / "cutie_vos" / "config"
@@ -428,7 +429,7 @@ def load_cutie_for_eval(
 
     t0 = time.perf_counter()
     model = CUTIE(cfg, pretrained_backbone=pretrained_backbone).to(device).eval()
-    raw_sd = torch.load(weights_path, map_location=device, weights_only=True)
+    raw_sd = safe_torch_load(weights_path, map_location=device)
     model.load_weights(unwrap_cutie_state_dict(raw_sd))
     load_ms = (time.perf_counter() - t0) * 1000.0
     return model, cfg, load_ms

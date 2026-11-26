@@ -18,6 +18,27 @@ class LanceDBMemoryBackend(MemoryBackend):
     """LanceDB implementation of the MemoryBackend protocol."""
 
     TABLE_NAME = "memory"
+    _MUTABLE_UPDATE_COLUMNS = frozenset(
+        {
+            "text",
+            "vector",
+            "scope",
+            "category",
+            "source",
+            "timestamp_ms",
+            "importance",
+            "token_count",
+            "tags",
+            "metadata_json",
+        }
+    )
+
+    @staticmethod
+    def _escape_sql_literal(value: str, *, field_name: str) -> str:
+        text = str(value)
+        if "\x00" in text:
+            raise ValueError(f"{field_name} must not contain NUL bytes.")
+        return text.replace("'", "''")
 
     def __init__(self, config: LanceDBConfig):
         self.config = config
@@ -153,7 +174,9 @@ class LanceDBMemoryBackend(MemoryBackend):
         for row in rows:
             try:
                 new_vector = active_embedder.embed(str(row["text"]))
-                safe_id = str(row["id"]).replace("'", "''")
+                safe_id = self._escape_sql_literal(
+                    str(row["id"]), field_name="memory_id"
+                )
                 self._table.update(
                     where=f"id = '{safe_id}'", values={"vector": new_vector}
                 )
@@ -196,7 +219,7 @@ class LanceDBMemoryBackend(MemoryBackend):
             return False
 
         try:
-            safe_memory_id = memory_id.replace("'", "''")
+            safe_memory_id = self._escape_sql_literal(memory_id, field_name="memory_id")
             self._table.delete(f"id = '{safe_memory_id}'")
             return True
         except Exception as e:
@@ -208,7 +231,11 @@ class LanceDBMemoryBackend(MemoryBackend):
             return False
 
         try:
+            if not isinstance(patch, dict) or not patch:
+                return False
             update_values = dict(patch)
+            if "id" in update_values:
+                raise ValueError("Cannot modify immutable 'id' column.")
             if "text" in update_values and "vector" not in update_values:
                 new_text = str(update_values["text"] or "")
                 if new_text and getattr(self, "embedder", None) is not None:
@@ -219,7 +246,12 @@ class LanceDBMemoryBackend(MemoryBackend):
                 )
             if "tags" in update_values and not isinstance(update_values["tags"], list):
                 update_values["tags"] = list(update_values["tags"])
-            safe_memory_id = memory_id.replace("'", "''")
+            unknown_cols = set(update_values.keys()) - self._MUTABLE_UPDATE_COLUMNS
+            if unknown_cols:
+                raise ValueError(
+                    f"Unsupported memory update columns: {sorted(unknown_cols)}"
+                )
+            safe_memory_id = self._escape_sql_literal(memory_id, field_name="memory_id")
             self._table.update(where=f"id = '{safe_memory_id}'", values=update_values)
             return True
         except Exception as e:
@@ -232,7 +264,7 @@ class LanceDBMemoryBackend(MemoryBackend):
 
         try:
             if scope:
-                safe_scope = scope.replace("'", "''")
+                safe_scope = self._escape_sql_literal(scope, field_name="scope")
                 count = len(
                     self._table.search()
                     .where(f"scope = '{safe_scope}'", prefilter=True)

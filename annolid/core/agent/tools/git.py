@@ -186,28 +186,38 @@ class GitCliTool(_RepoCliTool):
     _BLOCKED_OPTION_PREFIXES: tuple[str, ...] = (
         "-c",
         "--config-env",
+        "--exec",
         "--exec-path",
         "--git-dir",
         "--work-tree",
         "--upload-pack",
         "--receive-pack",
         "--ext-diff",
+        "--textconv",
+        "--open-files-in-pager",
+        "--paginate",
         "--output",
         "--no-index",
     )
 
     @classmethod
     def _has_dangerous_option(cls, args: Sequence[str]) -> bool:
+        subcommand = ""
         for raw in args:
             token = str(raw or "").strip()
             if not token:
                 continue
+            if not subcommand and not token.startswith("-"):
+                subcommand = token.lower()
             lowered = token.lower()
             for prefix in cls._BLOCKED_OPTION_PREFIXES:
                 if lowered == prefix or lowered.startswith(prefix + "="):
                     return True
             # Also catch attached short -c / -C forms like -ccore.pager=... or -C/outside/repo
             if lowered.startswith("-c") and len(token) > 2:
+                return True
+            # Block `git grep -O<pager>` (short form of --open-files-in-pager).
+            if subcommand == "grep" and (token == "-O" or token.startswith("-O")):
                 return True
         return False
 

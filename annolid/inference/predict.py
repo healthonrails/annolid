@@ -54,7 +54,9 @@ def _build_model(num_classes: int, weights_path: str, device: str):
         in_features_mask, 256, num_classes
     )
 
-    state = torch.load(weights_path, map_location="cpu", weights_only=True)
+    from annolid.utils.safe_torch_load import safe_torch_load
+
+    state = safe_torch_load(weights_path, map_location="cpu")
     if "model" in state:
         state = state["model"]
     model.load_state_dict(state, strict=False)

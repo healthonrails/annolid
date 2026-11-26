@@ -178,6 +178,8 @@ def test_box_oauth_callback_server_rejects_https_loopback() -> None:
 
 
 def test_complete_box_oauth_browser_flow(monkeypatch) -> None:
+    from urllib.parse import parse_qs, urlparse
+
     opened: list[str] = []
 
     def _fake_open_new_tab(url: str) -> bool:
@@ -212,7 +214,8 @@ def test_complete_box_oauth_browser_flow(monkeypatch) -> None:
             return self.callback_url
 
         def wait_for_result(self, timeout_s: float = 300.0) -> dict[str, str]:
-            return {"ok": True, "code": "abc123", "state": ""}
+            state_val = parse_qs(urlparse(opened[-1]).query).get("state", [""])[0]
+            return {"ok": True, "code": "abc123", "state": state_val}
 
         def stop(self) -> None:
             return None
@@ -240,9 +243,13 @@ def test_complete_box_oauth_browser_flow(monkeypatch) -> None:
 
 
 def test_complete_box_oauth_browser_flow_persists_tokens(monkeypatch) -> None:
+    from urllib.parse import parse_qs, urlparse
+
     saved: dict[str, object] = {}
+    opened: list[str] = []
 
     def _fake_open_new_tab(url: str) -> bool:
+        opened.append(url)
         return True
 
     def _fake_exchange_box_authorization_code(**kwargs):
@@ -266,7 +273,8 @@ def test_complete_box_oauth_browser_flow_persists_tokens(monkeypatch) -> None:
             return self.callback_url
 
         def wait_for_result(self, timeout_s: float = 300.0) -> dict[str, str]:
-            return {"ok": True, "code": "abc123", "state": ""}
+            state_val = parse_qs(urlparse(opened[-1]).query).get("state", [""])[0]
+            return {"ok": True, "code": "abc123", "state": state_val}
 
         def stop(self) -> None:
             return None

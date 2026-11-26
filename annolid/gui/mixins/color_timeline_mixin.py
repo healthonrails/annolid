@@ -150,7 +150,9 @@ class ColorTimelineMixin:
         config = self._config
         if config.get("shape_color") == "auto":
             normalized_label = label.lower()
-            hash_digest = hashlib.md5(normalized_label.encode("utf-8")).hexdigest()
+            hash_digest = hashlib.md5(
+                normalized_label.encode("utf-8"), usedforsecurity=False
+            ).hexdigest()
             hash_int = int(hash_digest, 16)
             shift_offset = config.get("shift_auto_shape_color", 0)
             index = (hash_int + shift_offset) % len(LABEL_COLORMAP)

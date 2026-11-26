@@ -15,6 +15,7 @@ GUI goals (this patch):
 
 from __future__ import annotations
 
+import html as _html
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -1676,10 +1677,12 @@ class TrainingSummaryPage(QtWidgets.QWizardPage):
 
         # Build clean “review screen” HTML
         def row(k: str, v: str) -> str:
+            safe_k = _html.escape(str(k or ""), quote=True)
+            safe_v = _html.escape(str(v or ""), quote=True)
             return f"""
             <tr>
-              <td style="padding: 6px 10px; color:#A7B3C2; width: 180px; font-weight:700;">{k}</td>
-              <td style="padding: 6px 10px; color:#E9EEF5; font-weight:700;">{v}</td>
+              <td style="padding: 6px 10px; color:#A7B3C2; width: 180px; font-weight:700;">{safe_k}</td>
+              <td style="padding: 6px 10px; color:#E9EEF5; font-weight:700;">{safe_v}</td>
             </tr>
             """
 

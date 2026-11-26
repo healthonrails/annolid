@@ -552,49 +552,93 @@ def package_inference_inputs(
     )
 
 
+_MAX_ARCHIVE_EXTRACT_BYTES = 4 * 1024 * 1024 * 1024
+
+
+def _validate_archive_member_path(raw_name: str, dest: Path) -> Path:
+    normalized = str(raw_name or "").replace("\\", "/")
+    rel = Path(normalized)
+    if "\x00" in normalized or rel.is_absolute() or rel.drive or ".." in rel.parts:
+        raise ValueError(
+            f"Refusing to extract archive member outside destination: {raw_name}"
+        )
+    member_path = (dest / rel).resolve()
+    if dest != member_path and dest not in member_path.parents:
+        raise ValueError(
+            f"Refusing to extract archive member outside destination: {raw_name}"
+        )
+    return member_path
+
+
 def safe_extract_archive(archive_path: str | Path, dest_dir: str | Path) -> list[Path]:
     """Safely extract a .zip or .tar.gz archive with path-traversal protection."""
+    import stat
+
     src = Path(archive_path).expanduser().resolve()
     dest = Path(dest_dir).expanduser().resolve()
     dest.mkdir(parents=True, exist_ok=True)
     extracted: list[Path] = []
+    total_extracted_bytes = 0
 
     if zipfile.is_zipfile(src):
         with zipfile.ZipFile(src, "r") as zf:
             for info in zf.infolist():
-                member_path = (dest / info.filename).resolve()
-                if dest != member_path and dest not in member_path.parents:
+                mode = info.external_attr >> 16
+                if stat.S_ISLNK(mode):
                     raise ValueError(
-                        f"Refusing to extract archive member outside destination: {info.filename}"
+                        f"Refusing to extract symlink from archive: {info.filename}"
                     )
+                member_path = _validate_archive_member_path(info.filename, dest)
                 if info.is_dir():
                     member_path.mkdir(parents=True, exist_ok=True)
                     continue
                 member_path.parent.mkdir(parents=True, exist_ok=True)
+                if member_path.is_symlink():
+                    raise ValueError(
+                        f"Refusing to overwrite symlink at destination: {info.filename}"
+                    )
                 with zf.open(info, "r") as src_f, open(member_path, "wb") as dst_f:
-                    shutil.copyfileobj(src_f, dst_f)
+                    while True:
+                        chunk = src_f.read(64 * 1024)
+                        if not chunk:
+                            break
+                        total_extracted_bytes += len(chunk)
+                        if total_extracted_bytes > _MAX_ARCHIVE_EXTRACT_BYTES:
+                            raise ValueError(
+                                "Extracted archive exceeds maximum allowed size limit."
+                            )
+                        dst_f.write(chunk)
                 extracted.append(member_path)
         return extracted
 
     if tarfile.is_tarfile(src):
         with tarfile.open(src, "r:*") as tf:
             for member in tf.getmembers():
-                member_path = (dest / member.name).resolve()
-                if dest != member_path and dest not in member_path.parents:
-                    raise ValueError(
-                        f"Refusing to extract tar member outside destination: {member.name}"
-                    )
+                member_path = _validate_archive_member_path(member.name, dest)
                 if member.isdir():
                     member_path.mkdir(parents=True, exist_ok=True)
                     continue
                 if not member.isfile():
                     continue
                 member_path.parent.mkdir(parents=True, exist_ok=True)
+                if member_path.is_symlink():
+                    raise ValueError(
+                        f"Refusing to overwrite symlink at destination: {member.name}"
+                    )
                 src_obj = tf.extractfile(member)
                 if src_obj is None:
                     continue
                 with src_obj, open(member_path, "wb") as dst_f:
-                    shutil.copyfileobj(src_obj, dst_f)
+                    while True:
+                        chunk = src_obj.read(64 * 1024)
+                        if not chunk:
+                            break
+                        total_extracted_bytes += len(chunk)
+                        if total_extracted_bytes > _MAX_ARCHIVE_EXTRACT_BYTES:
+                            raise ValueError(
+                                "Extracted archive exceeds maximum allowed size limit."
+                            )
+                        dst_f.write(chunk)
                 extracted.append(member_path)
         return extracted
 

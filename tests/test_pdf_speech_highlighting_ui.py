@@ -1274,10 +1274,22 @@ def test_pdf_viewer_server_http_handler_serves_assets_ranges_and_empty_pdf_in_pr
         assert hdrs_r["content-length"] == "5"
         assert body_r == sample_bytes[2:7]
 
-        # 6) OPTIONS CORS preflight & unknown token 404
-        st_opt, hdrs_opt, _ = _invoke_http_handler("OPTIONS", f"/pdf/{sample_tok}")
+        # 6) OPTIONS CORS preflight allows only loopback origins (never wildcard '*')
+        st_opt, hdrs_opt, _ = _invoke_http_handler(
+            "OPTIONS",
+            f"/pdf/{sample_tok}",
+            req_headers={"Origin": "http://127.0.0.1:8000"},
+        )
         assert st_opt == 204
-        assert hdrs_opt["access-control-allow-origin"] == "*"
+        assert hdrs_opt["access-control-allow-origin"] == "http://127.0.0.1:8000"
+
+        st_evil, hdrs_evil, _ = _invoke_http_handler(
+            "OPTIONS",
+            f"/pdf/{sample_tok}",
+            req_headers={"Origin": "https://evil.example"},
+        )
+        assert st_evil == 204
+        assert "access-control-allow-origin" not in hdrs_evil
 
         st_404, _, _ = _invoke_http_handler("GET", "/pdf/nonexistent")
         assert st_404 == 404

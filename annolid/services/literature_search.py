@@ -18,6 +18,7 @@ import xml.etree.ElementTree as ET
 import json
 
 from annolid.utils.atomic_io import atomic_write_text
+from annolid.utils.safe_http import build_http_request, safe_urlopen
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -282,14 +283,20 @@ def _read_bounded_response(
 
 def _http_json(url: str, *, timeout_s: float = _DEFAULT_TIMEOUT_S) -> dict[str, object]:
     safe_url = _validate_http_url(url)
-    req = urllib.request.Request(
-        url=safe_url,
+    req = build_http_request(
+        safe_url,
         headers={
             "User-Agent": "annolid-literature-search/1.0",
             "Accept": "application/json",
         },
+        allow_private=False,
     )
-    with urllib.request.urlopen(req, timeout=max(1.0, float(timeout_s))) as response:
+    with safe_urlopen(
+        req,
+        timeout=max(1.0, float(timeout_s)),
+        allow_private=False,
+        urlopen_func=urllib.request.urlopen,
+    ) as response:
         raw = _read_bounded_response(response)
     payload = json.loads(raw.decode("utf-8", errors="replace"))
     return payload if isinstance(payload, dict) else {}
@@ -297,11 +304,17 @@ def _http_json(url: str, *, timeout_s: float = _DEFAULT_TIMEOUT_S) -> dict[str, 
 
 def _http_bytes(url: str, *, timeout_s: float = _DEFAULT_TIMEOUT_S) -> bytes:
     safe_url = _validate_http_url(url)
-    req = urllib.request.Request(
-        url=safe_url,
+    req = build_http_request(
+        safe_url,
         headers={"User-Agent": "annolid-literature-search/1.0"},
+        allow_private=False,
     )
-    with urllib.request.urlopen(req, timeout=max(1.0, float(timeout_s))) as response:
+    with safe_urlopen(
+        req,
+        timeout=max(1.0, float(timeout_s)),
+        allow_private=False,
+        urlopen_func=urllib.request.urlopen,
+    ) as response:
         return _read_bounded_response(response)
 
 
@@ -372,7 +385,9 @@ def _search_arxiv(
         raise ValueError(
             "Refusing to parse arXiv XML containing DOCTYPE/ENTITY declarations."
         )
-    root = ET.fromstring(xml_bytes)
+    root = ET.fromstring(  # noqa: S314 - DOCTYPE/ENTITY declarations rejected above
+        xml_bytes
+    )
     out: list[LiteratureResult] = []
     for entry in root.findall("atom:entry", _ARXIV_NS):
         title = (

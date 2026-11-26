@@ -195,16 +195,34 @@ class DictionaryLookupTask(QtCore.QRunnable):
                         "<p style='color:#777;font-size:11px'>Source: macOS Dictionary</p>"
                     )
             if not html:
+                import json
                 import requests
                 from urllib.parse import quote
 
-                url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{quote(word)}"
-                response = requests.get(url, timeout=8)
-                if response.status_code == 404:
-                    error = f"No definition found for “{word}”."
-                else:
-                    response.raise_for_status()
-                    html = self._format_html(word, response.json())
+                url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{quote(word, safe='')}"
+                max_dict_bytes = 2 * 1024 * 1024
+                with requests.get(
+                    url, timeout=8, allow_redirects=False, stream=True
+                ) as response:
+                    if response.status_code == 404:
+                        error = f"No definition found for “{word}”."
+                    else:
+                        response.raise_for_status()
+                        chunks: list[bytes] = []
+                        total = 0
+                        for chunk in response.iter_content(chunk_size=16384):
+                            if not chunk:
+                                continue
+                            total += len(chunk)
+                            if total > max_dict_bytes:
+                                raise ValueError(
+                                    f"Dictionary API response exceeded {max_dict_bytes} byte limit."
+                                )
+                            chunks.append(chunk)
+                        payload = json.loads(
+                            b"".join(chunks).decode("utf-8", errors="replace")
+                        )
+                        html = self._format_html(word, payload)
         except Exception as exc:
             error = f"Dictionary lookup failed: {exc}"
 
