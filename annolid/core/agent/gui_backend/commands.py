@@ -580,7 +580,7 @@ def parse_direct_gui_command(prompt: str) -> Dict[str, Any]:
 
     model_match = re.search(
         r"(?:set|switch)\s+(?:chat\s+)?model\s+"
-        r"(ollama|openai|openrouter|gemini)\s*[:/]\s*([^\n]+)",
+        r"([a-z0-9][a-z0-9_-]{1,31})\s*[:/]\s*([^\n]+)",
         text,
         flags=re.IGNORECASE,
     )

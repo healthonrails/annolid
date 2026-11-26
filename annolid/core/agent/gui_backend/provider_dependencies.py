@@ -49,6 +49,15 @@ def format_dependency_error(
             "Codex CLI provider requires the `codex` executable. "
             "Install Codex and ensure `codex` is available on PATH."
         )
+    if kind == "anthropic" and (
+        "anthropic package is required" in lowered
+        or "no module named 'anthropic'" in lowered
+    ):
+        return (
+            "Anthropic provider requires the `anthropic` package. "
+            "Install it in your Annolid environment, for example: "
+            "`.venv/bin/pip install anthropic`."
+        )
     if kind == "gemini" and (
         "google-generativeai" in lowered
         or "google.generativeai" in lowered

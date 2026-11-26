@@ -68,7 +68,13 @@ _SECRET_SUBSTITUTIONS = (
         r"\1<redacted>\3",
     ),
     (
-        re.compile(r"(?i)\b(?:sk-(?:or-)?|nvapi-|ghp_)[a-z0-9_-]{12,}\b"),
+        re.compile(
+            r"(?i)\b(?:sk-(?:ant-|proj-|svcacct-|or-)?|nvapi-|ghp_|gsk_|xai-)[a-z0-9_-]{12,}\b"
+        ),
+        "<redacted>",
+    ),
+    (
+        re.compile(r"\bAIza[0-9A-Za-z_-]{20,}\b"),
         "<redacted>",
     ),
 )

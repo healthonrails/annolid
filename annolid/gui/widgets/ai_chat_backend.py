@@ -2683,7 +2683,12 @@ class StreamingChatTask(
                             )
                         )
                         raw = str((response or {}).get("content") or "").strip()
-                    elif kind in {"openai_compat", "openai_codex", "codex_cli"}:
+                    elif kind in {
+                        "openai_compat",
+                        "openai_codex",
+                        "codex_cli",
+                        "anthropic",
+                    }:
                         _user_prompt, raw = self._run_sync_call_loop_safe(
                             run_chat_openai,
                             prompt=f"{system_prompt}\n\n{user_prompt}",
@@ -3940,7 +3945,7 @@ class StreamingChatTask(
                 return text
             raise RuntimeError("Model returned empty tutorial content.")
 
-        if kind in {"openai_compat", "openai_codex", "codex_cli"}:
+        if kind in {"openai_compat", "openai_codex", "codex_cli", "anthropic"}:
             _user_prompt, text = await asyncio.to_thread(
                 run_chat_openai,
                 prompt=f"{system_prompt}\n\n{user_prompt}",

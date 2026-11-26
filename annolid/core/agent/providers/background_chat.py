@@ -22,6 +22,7 @@ from .ollama_runtime import is_tool_support_error, stream_ollama_chat
 from .codex_cli_provider import CodexCLIProvider, resolve_codex_cli
 from .openai_codex_provider import OpenAICodexProvider, resolve_openai_codex
 from .openai_compat import OpenAICompatProvider, resolve_openai_compat
+from .unified_provider import UnifiedLLMProvider
 
 OLLAMA_PLAIN_MODE_COOLDOWN_TURNS = 2
 MAX_INLINE_MODEL_IMAGE_BYTES = 20 * 1024 * 1024
@@ -81,6 +82,13 @@ def dependency_error_for_kind(kind: str) -> Optional[str]:
                 "Codex CLI provider requires the `codex` executable. "
                 "Install Codex and ensure `codex` is available on PATH."
             )
+    if kind == "anthropic":
+        if importlib.util.find_spec("anthropic") is None:
+            return (
+                "Anthropic provider requires the `anthropic` package. "
+                "Install it in your Annolid environment, for example: "
+                "`.venv/bin/pip install anthropic`."
+            )
     if kind == "gemini":
         if importlib.util.find_spec("google.generativeai") is None:
             return (
@@ -101,31 +109,28 @@ def _inject_openai_compat_env_defaults(
         return out
     defs = provider_definitions(settings)
     spec = defs.get(provider_key, {})
-    env_keys = spec.get("env_keys", [])
-    if isinstance(env_keys, str):
-        env_keys = [env_keys]
-    if not isinstance(env_keys, list):
-        env_keys = []
+    raw_env_keys = spec.get("api_key_env") or spec.get("env_keys") or []
+    if isinstance(raw_env_keys, str):
+        raw_env_keys = [raw_env_keys]
+    if not isinstance(raw_env_keys, list):
+        raw_env_keys = []
 
     if not str(out.get("api_key") or "").strip():
-        for env_name in env_keys:
+        for env_name in raw_env_keys:
             value = str(os.getenv(str(env_name).strip()) or "").strip()
             if value:
                 out["api_key"] = value
                 break
 
-    # Fallbacks for aliases/custom providers that may not define env_keys.
-    if not str(out.get("api_key") or "").strip():
-        for env_name in (
-            "OPENAI_API_KEY",
-            "OPENROUTER_API_KEY",
-            "NVIDIA_API_KEY",
-            "MOONSHOT_API_KEY",
-        ):
-            value = str(os.getenv(env_name) or "").strip()
-            if value:
-                out["api_key"] = value
-                break
+    # Explicit OpenRouter base_url override on the built-in openai provider.
+    if (
+        provider_key == "openai"
+        and not str(out.get("api_key") or "").strip()
+        and "openrouter" in str(out.get("base_url") or "").lower()
+    ):
+        or_key = str(os.getenv("OPENROUTER_API_KEY") or "").strip()
+        if or_key:
+            out["api_key"] = or_key
 
     if not str(out.get("base_url") or "").strip():
         env_base = str(spec.get("base_url_env") or "").strip()
@@ -246,13 +251,19 @@ def run_ollama_streaming_chat(
     ollama_module = importlib.import_module("ollama")
 
     host = str(settings.get("ollama", {}).get("host") or "").strip()
+    ollama_client_cls = getattr(ollama_module, "Client", None)
+    use_scoped_client = bool(host) and callable(ollama_client_cls)
     prev_host_present = "OLLAMA_HOST" in os.environ
     prev_host_value = os.environ.get("OLLAMA_HOST")
     try:
-        if host:
-            os.environ["OLLAMA_HOST"] = host
+        if use_scoped_client:
+            target_client = ollama_client_cls(host=host)
         else:
-            os.environ.pop("OLLAMA_HOST", None)
+            target_client = ollama_module
+            if host:
+                os.environ["OLLAMA_HOST"] = host
+            else:
+                os.environ.pop("OLLAMA_HOST", None)
 
         messages = load_history_messages()
         user_message: Dict[str, Any] = {"role": "user", "content": prompt}
@@ -261,7 +272,7 @@ def run_ollama_streaming_chat(
         messages.append(user_message)
 
         stream = stream_ollama_chat(
-            ollama_module,
+            target_client,
             settings=settings,
             model=model,
             messages=messages,
@@ -283,10 +294,11 @@ def run_ollama_streaming_chat(
         persist_turn(prompt, full_response)
         emit_final("", False)
     finally:
-        if prev_host_present and prev_host_value is not None:
-            os.environ["OLLAMA_HOST"] = prev_host_value
-        else:
-            os.environ.pop("OLLAMA_HOST", None)
+        if not use_scoped_client:
+            if prev_host_present and prev_host_value is not None:
+                os.environ["OLLAMA_HOST"] = prev_host_value
+            else:
+                os.environ.pop("OLLAMA_HOST", None)
 
 
 def run_openai_compat_chat(
@@ -443,6 +455,79 @@ def run_codex_cli_chat(
     return user_prompt, text
 
 
+def run_anthropic_chat(
+    *,
+    prompt: str,
+    image_path: str,
+    model: str,
+    provider_name: str,
+    settings: Dict[str, Any],
+    load_history_messages: Callable[[], List[Dict[str, Any]]],
+    max_tokens: int = 4096,
+    timeout_s: Optional[float] = None,
+) -> Tuple[str, str]:
+    provider_key = str(provider_name or "anthropic").strip().lower()
+    provider_block = dict(settings.get(provider_key, {}) or {})
+    defs = provider_definitions(settings)
+    spec = defs.get(provider_key, {})
+    api_key = str(provider_block.get("api_key") or "").strip()
+    if not api_key:
+        env_candidates = list(spec.get("api_key_env") or spec.get("env_keys") or [])
+        if "ANTHROPIC_API_KEY" not in env_candidates:
+            env_candidates.append("ANTHROPIC_API_KEY")
+        for env_name in env_candidates:
+            val = str(os.getenv(str(env_name).strip()) or "").strip()
+            if val:
+                api_key = val
+                break
+    if not api_key:
+        raise ValueError(
+            "Anthropic API key is missing. Configure it in AI Model Settings."
+        )
+
+    base_url = str(
+        provider_block.get("base_url")
+        or os.getenv(str(spec.get("base_url_env") or "ANTHROPIC_BASE_URL"))
+        or ""
+    ).strip()
+    if base_url.rstrip("/") == "https://api.anthropic.com":
+        base_url = ""
+
+    model_name = str(model or "claude-sonnet-4-5").strip() or "claude-sonnet-4-5"
+    provider = UnifiedLLMProvider(
+        provider_name="anthropic",
+        api_key=api_key,
+        api_base=base_url or None,
+        default_model=model_name,
+    )
+    user_prompt, messages = _build_provider_messages(
+        prompt=prompt,
+        image_path=image_path,
+        load_history_messages=load_history_messages,
+        image_mode="data_url",
+    )
+
+    async def _chat_once() -> str:
+        return await _run_provider_text_request(
+            provider=provider,
+            provider_name=provider_key,
+            model=model_name,
+            messages=messages,
+            max_tokens=max_tokens,
+            timeout_s=timeout_s,
+            temperature=0.7,
+        )
+
+    try:
+        text = asyncio.run(_chat_once())
+    except asyncio.TimeoutError as exc:
+        limit = float(timeout_s) if timeout_s is not None else 0.0
+        raise TimeoutError(
+            f"Provider request timed out after {limit:.0f}s for {provider_key}:{model_name}."
+        ) from exc
+    return user_prompt, text
+
+
 def run_gemini_chat(
     *,
     prompt: str,
@@ -458,8 +543,21 @@ def run_gemini_chat(
             "The 'google-generativeai' package is required for Gemini providers."
         ) from exc
 
-    config = settings.get(provider_name, {})
-    api_key = config.get("api_key")
+    provider_key = str(provider_name or "gemini").strip().lower()
+    config = dict(settings.get(provider_key, {}) or {})
+    api_key = str(config.get("api_key") or "").strip()
+    if not api_key:
+        defs = provider_definitions(settings)
+        spec = defs.get(provider_key, {})
+        env_candidates = list(spec.get("api_key_env") or spec.get("env_keys") or [])
+        for fallback_env in ("GEMINI_API_KEY", "GOOGLE_API_KEY"):
+            if fallback_env not in env_candidates:
+                env_candidates.append(fallback_env)
+        for env_name in env_candidates:
+            val = str(os.getenv(str(env_name).strip()) or "").strip()
+            if val:
+                api_key = val
+                break
     if not api_key:
         raise ValueError("Gemini API key is missing. Configure it in settings.")
 
@@ -468,13 +566,28 @@ def run_gemini_chat(
     gm = genai.GenerativeModel(model_name)
 
     user_prompt = str(prompt or "")
-    if image_path and os.path.exists(image_path):
-        user_prompt += (
-            f"\n\n[Note: Image context available at {image_path}. "
-            "Use this visual context in your response.]"
-        )
+    content_input: Any = user_prompt
+    path = str(image_path or "").strip()
+    if path and os.path.exists(path):
+        mime, _ = mimetypes.guess_type(path)
+        mime = str(mime or "").strip().lower()
+        if mime.startswith("image/"):
+            with open(path, "rb") as image_file:
+                raw = image_file.read(MAX_INLINE_MODEL_IMAGE_BYTES + 1)
+            if len(raw) > MAX_INLINE_MODEL_IMAGE_BYTES:
+                limit_mib = MAX_INLINE_MODEL_IMAGE_BYTES // (1024 * 1024)
+                raise ValueError(
+                    f"Image attachment exceeds the {limit_mib} MiB model-call limit."
+                )
+            content_input = [user_prompt, {"mime_type": mime, "data": raw}]
+        else:
+            user_prompt += (
+                f"\n\n[Note: Image context available at {path}. "
+                "Use this visual context in your response.]"
+            )
+            content_input = user_prompt
 
-    result = gm.generate_content(user_prompt)
+    result = gm.generate_content(content_input)
     text = str(getattr(result, "text", "") or "")
     return user_prompt, text
 

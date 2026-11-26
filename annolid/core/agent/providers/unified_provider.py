@@ -141,6 +141,14 @@ class UnifiedLLMProvider(LLMProvider):
         return {"_raw": raw_args}
 
     def _resolved_provider_name(self, model: Optional[str] = None) -> str:
+        # Respect explicit non-Anthropic gateways/providers (e.g. OpenRouter serving
+        # `anthropic/claude-3.5-sonnet`) so gateway keys are never misrouted to the
+        # native Anthropic SDK.
+        if self._gateway is not None:
+            return str(self._gateway.name)
+        if self.provider_name and self.provider_name not in {"anthropic", "claude"}:
+            spec = find_by_name(self.provider_name)
+            return str(getattr(spec, "name", "") or self.provider_name)
         model_name = str(model or self.default_model or "")
         explicit = model_name.split("/", 1)[0].lower() if "/" in model_name else ""
         if explicit in {

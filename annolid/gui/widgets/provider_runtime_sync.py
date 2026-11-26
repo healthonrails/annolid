@@ -65,7 +65,13 @@ def refresh_runtime_llm_settings(
         update_model_selector()
     selector = getattr(owner, "model_selector", None)
     if selector is not None and str(owner.selected_model or "").strip():
-        selector.setCurrentText(owner.selected_model)
+        setattr(owner, "_suppress_model_updates", True)
+        try:
+            selector.blockSignals(True)
+            selector.setCurrentText(owner.selected_model)
+        finally:
+            selector.blockSignals(False)
+            setattr(owner, "_suppress_model_updates", False)
 
     if callable(after_refresh):
         after_refresh()

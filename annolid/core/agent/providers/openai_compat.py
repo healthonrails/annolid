@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
+from annolid.utils.llm_provider_catalog import is_loopback_base_url
 from annolid.utils.llm_settings import LLMConfig
 from annolid.utils.logger import logger
 
@@ -163,6 +164,21 @@ def resolve_openai_compat(config: LLMConfig) -> OpenAICompatResolved:
     if spec is None:
         if provider_name in {"openai", "ollama"}:
             spec = find_by_name(provider_name)
+        elif base_url:
+            # Support custom user-configured OpenAI-compatible providers.
+            resolved_key = api_key or (
+                "local" if is_loopback_base_url(base_url) else ""
+            )
+            if not resolved_key:
+                raise ValueError(
+                    f"{provider_name or 'Custom OpenAI-compatible provider'} requires API key."
+                )
+            return OpenAICompatResolved(
+                provider=provider_name or "openai_compat",
+                model=model,
+                api_key=resolved_key,
+                base_url=base_url,
+            )
         else:
             raise ValueError(
                 f"Unsupported provider/model for agent loop: {provider_name}:{model}"
@@ -175,7 +191,7 @@ def resolve_openai_compat(config: LLMConfig) -> OpenAICompatResolved:
             base_url = base_url.rstrip("/") + "/v1"
         if not api_key:
             api_key = "ollama"
-    elif spec.name == "vllm":
+    elif spec.name in {"vllm", "lmstudio"}:
         if not base_url:
             base_url = spec.default_api_base
         if not base_url:
@@ -190,13 +206,21 @@ def resolve_openai_compat(config: LLMConfig) -> OpenAICompatResolved:
         if not base_url:
             base_url = spec.default_api_base
         if not api_key:
-            raise ValueError("OpenAI provider requires API key for tool-calling chat.")
+            if is_loopback_base_url(base_url):
+                api_key = "local"
+            else:
+                raise ValueError(
+                    "OpenAI provider requires API key for tool-calling chat."
+                )
     else:
         # OpenRouter/other OpenAI-compatible gateways.
         if not base_url:
             base_url = spec.default_api_base
         if not api_key:
-            raise ValueError(f"{spec.name} requires API key.")
+            if is_loopback_base_url(base_url):
+                api_key = "local"
+            else:
+                raise ValueError(f"{spec.name} requires API key.")
 
     return OpenAICompatResolved(
         provider=spec.name,

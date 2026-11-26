@@ -25,6 +25,7 @@ from annolid.gui.widgets.provider_runtime_sync import (
 )
 from annolid.gui.widgets.rich_text_renderer import RichTextRenderer
 from annolid.gui.widgets.ai_chat_backend import StreamingChatTask
+from annolid.utils.llm_provider_catalog import is_loopback_base_url
 from annolid.utils.llm_settings import (
     has_provider_api_key,
     load_llm_settings,
@@ -189,9 +190,23 @@ class CaptionWidget(QtWidgets.QWidget):
     def _ensure_provider_ready(self) -> bool:
         """Validate that required credentials are present for the provider."""
         kind = provider_kind(self.llm_settings, self.selected_provider)
-        if kind in {"openai_compat", "gemini"} and not has_provider_api_key(
-            self.llm_settings, self.selected_provider
-        ):
+        if kind in {
+            "openai_compat",
+            "anthropic",
+            "gemini",
+        } and not has_provider_api_key(self.llm_settings, self.selected_provider):
+            if kind == "openai_compat":
+                provider_cfg = self.llm_settings.get(self.selected_provider, {}) or {}
+                provider_def = (
+                    self.llm_settings.get("provider_definitions", {}) or {}
+                ).get(self.selected_provider, {}) or {}
+                base_url = str(
+                    provider_cfg.get("base_url")
+                    or provider_def.get("base_url_default")
+                    or ""
+                ).strip()
+                if is_loopback_base_url(base_url):
+                    return True
             label = self.provider_labels.get(
                 self.selected_provider, self.selected_provider
             )
@@ -567,6 +582,7 @@ class CaptionWidget(QtWidgets.QWidget):
                     settings=self.llm_settings,
                 )
             else:
+                self.chat_button.setEnabled(True)
                 QtWidgets.QMessageBox.information(
                     self,
                     "Image generation unavailable",

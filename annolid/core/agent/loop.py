@@ -26,7 +26,12 @@ from typing import (
     Sequence,
 )
 
-from annolid.utils.llm_settings import resolve_agent_runtime_config, resolve_llm_config
+from annolid.utils.llm_settings import (
+    load_llm_settings,
+    provider_kind,
+    resolve_agent_runtime_config,
+    resolve_llm_config,
+)
 
 from .context import AgentContextBuilder
 from .eval.telemetry import RunTraceStore
@@ -3243,19 +3248,28 @@ class AgentLoop:
             )
             provider_name = str(cfg.provider or "").strip().lower()
             model_name = str(cfg.model)
-            if provider_name == "openai_codex":
+            resolved_kind = provider_kind(load_llm_settings(), provider_name)
+            if provider_name == "openai_codex" or resolved_kind == "openai_codex":
                 resolved = resolve_openai_codex(cfg)
                 model_name = resolved.model
                 provider_impl = OpenAICodexProvider(resolved=resolved)
-            elif provider_name == "codex_cli":
+            elif provider_name == "codex_cli" or resolved_kind == "codex_cli":
                 resolved = resolve_codex_cli(cfg)
                 model_name = resolved.model
                 provider_impl = CodexCLIProvider(resolved=resolved)
-            elif provider_name == "anthropic":
+            elif provider_name == "anthropic" or resolved_kind == "anthropic":
+                api_key = str(cfg.params.get("api_key") or "").strip()
+                if not api_key:
+                    raise ValueError(
+                        "Anthropic provider requires API key for tool-calling chat."
+                    )
+                base_url = str(cfg.params.get("base_url") or "").strip()
+                if base_url.rstrip("/") == "https://api.anthropic.com":
+                    base_url = ""
                 provider_impl = UnifiedLLMProvider(
-                    provider_name=provider_name or None,
-                    api_key=cfg.params.get("api_key"),
-                    api_base=cfg.params.get("base_url") or cfg.params.get("host"),
+                    provider_name="anthropic",
+                    api_key=api_key,
+                    api_base=base_url or None,
                     default_model=model_name,
                     extra_headers=cfg.params.get("extra_headers"),
                 )

@@ -91,6 +91,7 @@ def run_provider_fallback(
             "openai_compat",
             "openai_codex",
             "codex_cli",
+            "anthropic",
         } and is_provider_timeout_error(original_error):
             retry_timeout_s = fallback_timeout_retry_seconds()
             emit_progress("Provider timeout detected; running one bounded retry")
@@ -104,7 +105,7 @@ def run_provider_fallback(
             return
         if kind == "ollama":
             run_ollama()
-        elif kind in {"openai_compat", "openai_codex", "codex_cli"}:
+        elif kind in {"openai_compat", "openai_codex", "codex_cli", "anthropic"}:
             run_openai(provider, fallback_retry_timeout_seconds(), 512)
         elif kind == "gemini":
             run_gemini()

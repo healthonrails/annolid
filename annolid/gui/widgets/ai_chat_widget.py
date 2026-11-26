@@ -84,6 +84,10 @@ from annolid.gui.widgets.track_slash_dialog import (
     build_track_slash_command,
 )
 from annolid.gui.workers import FlexibleWorker
+from annolid.utils.llm_provider_catalog import (
+    inspect_provider_credential_status,
+    is_loopback_base_url,
+)
 from annolid.utils.llm_settings import (
     has_provider_api_key,
     load_llm_settings,
@@ -281,8 +285,27 @@ class AIChatWidget(
         )
         title_col.addWidget(self.capability_summary_label)
 
-        # Model Selector (Compact)
+        # Provider & Model Selectors (Compact row)
+        provider_model_row = QtWidgets.QHBoxLayout()
+        provider_model_row.setContentsMargins(0, 0, 0, 0)
+        provider_model_row.setSpacing(6)
+
+        self.provider_selector = QtWidgets.QComboBox(self)
+        self.provider_selector.setObjectName("chatProviderSelector")
+        self.provider_selector.setMinimumWidth(84)
+        configure_compact_combo(
+            self.provider_selector,
+            min_chars=8,
+            popup_min_width=210,
+        )
+        self._populate_provider_selector()
+        provider_index = self.provider_selector.findData(self.selected_provider)
+        if provider_index != -1:
+            self.provider_selector.setCurrentIndex(provider_index)
+        provider_model_row.addWidget(self.provider_selector, 0)
+
         self.model_selector = QtWidgets.QComboBox(self)
+        self.model_selector.setObjectName("chatModelSelector")
         self.model_selector.setEditable(True)
         self.model_selector.setInsertPolicy(QtWidgets.QComboBox.InsertAtTop)
         self.model_selector.setMinimumWidth(90)
@@ -291,8 +314,8 @@ class AIChatWidget(
             min_chars=12,
             popup_min_width=280,
         )
-        # We need to populate this later, but for now add to layout
-        title_col.addWidget(self.model_selector)
+        provider_model_row.addWidget(self.model_selector, 1)
+        title_col.addLayout(provider_model_row)
 
         header_layout.addLayout(title_col, 1)
 
@@ -316,14 +339,6 @@ class AIChatWidget(
             "preferences-system", "Settings", QtWidgets.QStyle.SP_FileDialogInfoView
         )
         header_layout.addWidget(self.configure_button)
-
-        # Hidden provider selector (we keep it for logic compatibility but hide it or effectively replace it)
-        # Actually, let's keep it but maybe invisible if we only care about model?
-        # For now, let's add it to the header but compact.
-        self.provider_selector = QtWidgets.QComboBox(self)
-        self.provider_selector.setFixedWidth(0)  # Hide visually but keep object
-        self.provider_selector.setVisible(False)
-        self._populate_provider_selector()
 
         return header_widget
 
@@ -1776,9 +1791,23 @@ class AIChatWidget(
 
     def _ensure_provider_ready(self) -> bool:
         kind = provider_kind(self.llm_settings, self.selected_provider)
-        if kind in {"openai_compat", "gemini"} and not has_provider_api_key(
-            self.llm_settings, self.selected_provider
-        ):
+        if kind in {
+            "openai_compat",
+            "anthropic",
+            "gemini",
+        } and not has_provider_api_key(self.llm_settings, self.selected_provider):
+            if kind == "openai_compat":
+                provider_cfg = self.llm_settings.get(self.selected_provider, {}) or {}
+                provider_def = (
+                    self.llm_settings.get("provider_definitions", {}) or {}
+                ).get(self.selected_provider, {}) or {}
+                base_url = str(
+                    provider_cfg.get("base_url")
+                    or provider_def.get("base_url_default")
+                    or ""
+                ).strip()
+                if is_loopback_base_url(base_url):
+                    return True
             label = self.provider_labels.get(
                 self.selected_provider, self.selected_provider
             )
@@ -1928,6 +1957,18 @@ class AIChatWidget(
         session_text = str(self.session_id or "default")
         self.chat_title_label.setText(model_text)
         self.session_chip_label.setText(f"{provider_text} · {session_text}")
+        if hasattr(self, "provider_selector"):
+            try:
+                status = inspect_provider_credential_status(
+                    self.llm_settings,
+                    self.selected_provider,
+                    dotenv_values={},
+                )
+                self.provider_selector.setToolTip(
+                    f"AI Provider: {provider_text}\n{status.summary}"
+                )
+            except Exception:
+                self.provider_selector.setToolTip(f"AI Provider: {provider_text}")
 
     def clear_chat_conversation(self) -> None:
         if self.is_streaming_chat:

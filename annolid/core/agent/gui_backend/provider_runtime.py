@@ -4,6 +4,7 @@ import os
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from annolid.core.agent.providers import (
+    run_anthropic_chat,
     run_codex_cli_chat,
     run_gemini_chat,
     run_openai_codex_chat,
@@ -108,6 +109,20 @@ def run_fast_provider_chat(
         persist_turn(user_prompt, text)
         emit_final(text, False)
         return
+    if kind == "anthropic":
+        user_prompt, text = run_anthropic_chat(
+            prompt=prompt,
+            image_path=image,
+            model=model,
+            provider_name=provider,
+            settings=settings,
+            load_history_messages=load_history,
+            max_tokens=320 if include_image else 640,
+            timeout_s=timeout_s,
+        )
+        persist_turn(user_prompt, text)
+        emit_final(text, False)
+        return
     if kind == "gemini":
         user_prompt, text = run_gemini_chat(
             prompt=prompt,
@@ -174,6 +189,17 @@ def run_openai_chat(
         )
     if kind == "openai_codex":
         return run_openai_codex_chat(
+            prompt=prompt,
+            image_path=str(image_path or ""),
+            model=model,
+            provider_name=provider_name,
+            settings=settings,
+            load_history_messages=load_history_messages,
+            timeout_s=timeout_s,
+            max_tokens=max_tokens,
+        )
+    if kind == "anthropic":
+        return run_anthropic_chat(
             prompt=prompt,
             image_path=str(image_path or ""),
             model=model,
