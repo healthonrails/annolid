@@ -30,6 +30,11 @@ from annolid.annotation.pose_schema import (
     list_pose_schema_presets,
 )
 from annolid.gui.widgets.keypoint_sequencer import _SkeletonPreviewWidget
+from annolid.gui.services.project_service import ProjectService
+from annolid.services.project_workspace import (
+    PROJECT_CONFIG_FILENAME,
+    validate_project_name,
+)
 
 
 class ProjectInfoPage(QtWidgets.QWizardPage):
@@ -71,6 +76,13 @@ class ProjectInfoPage(QtWidgets.QWizardPage):
         self.description_edit.setMaximumHeight(80)
         layout.addRow("Description:", self.description_edit)
 
+        self.path_preview_label = QtWidgets.QLabel("")
+        self.path_preview_label.setWordWrap(True)
+        layout.addRow("Destination:", self.path_preview_label)
+
+        self.name_edit.textChanged.connect(self._update_path_preview)
+        self.location_edit.textChanged.connect(self._update_path_preview)
+
         # Register fields for wizard access
         self.registerField("projectName*", self.name_edit)
         self.registerField("projectLocation*", self.location_edit)
@@ -83,14 +95,38 @@ class ProjectInfoPage(QtWidgets.QWizardPage):
         if folder:
             self.location_edit.setText(folder)
 
+    def _update_path_preview(self) -> None:
+        name = self.name_edit.text().strip()
+        location = self.location_edit.text().strip()
+        if not name:
+            self.path_preview_label.setText("Enter a project name.")
+            return
+        ok, reason = validate_project_name(name)
+        if not ok:
+            self.path_preview_label.setText(f"Invalid name: {reason}")
+            return
+        if not location:
+            self.path_preview_label.setText("Select a parent folder.")
+            return
+        loc_path = Path(location).expanduser()
+        if not loc_path.is_dir():
+            self.path_preview_label.setText(f"Parent folder does not exist: {loc_path}")
+            return
+        self.path_preview_label.setText(str(loc_path / name))
+
     def isComplete(self) -> bool:
         name = self.name_edit.text().strip()
         location = self.location_edit.text().strip()
-        return bool(name and location and Path(location).is_dir())
+        ok, _reason = validate_project_name(name)
+        return bool(ok and location and Path(location).expanduser().is_dir())
 
     def validatePage(self) -> bool:
         name = self.name_edit.text().strip()
-        location = Path(self.location_edit.text().strip())
+        ok, reason = validate_project_name(name)
+        if not ok:
+            QtWidgets.QMessageBox.warning(self, "Invalid Project Name", reason)
+            return False
+        location = Path(self.location_edit.text().strip()).expanduser()
         project_dir = location / name
 
         if project_dir.exists():
@@ -105,7 +141,13 @@ class ProjectInfoPage(QtWidgets.QWizardPage):
         return True
 
     def project_path(self) -> Path:
-        return Path(self.location_edit.text().strip()) / self.name_edit.text().strip()
+        return (
+            Path(self.location_edit.text().strip()).expanduser()
+            / self.name_edit.text().strip()
+        )
+
+    def project_description(self) -> str:
+        return self.description_edit.toPlainText().strip()
 
 
 class VideoImportPage(QtWidgets.QWizardPage):
@@ -141,11 +183,18 @@ class VideoImportPage(QtWidgets.QWizardPage):
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
 
+        # Copy vs link option
+        self.copy_videos_check = QtWidgets.QCheckBox(
+            "Copy videos into the project's videos/ folder (leave unchecked to reference originals)"
+        )
+        self.copy_videos_check.setChecked(False)
+        layout.addWidget(self.copy_videos_check)
+
         # Tip
         tip_label = QtWidgets.QLabel(
             "<i>Tip: You can skip this step and import videos later.</i>"
         )
-        tip_label.setStyleSheet("color: gray;")
+        tip_label.setEnabled(False)
         layout.addWidget(tip_label)
 
     def _add_videos(self) -> None:
@@ -181,6 +230,9 @@ class VideoImportPage(QtWidgets.QWizardPage):
 
     def get_videos(self) -> List[str]:
         return [self.video_list.item(i).text() for i in range(self.video_list.count())]
+
+    def should_copy_videos(self) -> bool:
+        return bool(self.copy_videos_check.isChecked())
 
 
 class SubjectBehaviorPage(QtWidgets.QWizardPage):
@@ -954,15 +1006,25 @@ class ProjectWizard(QtWidgets.QWizard):
             pass
 
     def accept(self) -> None:
-        """Create the project when Finish is clicked."""
+        """Create the project workspace, schema, and video manifest when Finish is clicked."""
         try:
             project_path = self.project_info_page.project_path()
-            project_path.mkdir(parents=True, exist_ok=True)
+            project_name = project_path.name
+            description = self.project_info_page.project_description()
 
-            # Save project schema
+            service = ProjectService()
+            project_cfg = {"description": description} if description else None
+            created, message = service.create_project(
+                project_path.parent,
+                project_name,
+                project_cfg,
+            )
+            if not created:
+                raise RuntimeError(message)
+
+            # Save project behavior & pose schemas into the same project.annolid.json envelope.
             schema = self.subject_behavior_page.get_schema()
 
-            # Integrate pose schema if enabled
             if self.pose_schema_page.is_pose_enabled():
                 pose_schema = self.pose_schema_page.get_pose_schema()
                 pose_schema_path = project_path / "pose_schema.json"
@@ -970,12 +1032,24 @@ class ProjectWizard(QtWidgets.QWizard):
                 schema.pose_schema_path = pose_schema_path.name
                 schema.pose_schema = pose_schema.to_dict()
 
-            # Save project schema
-            schema_path = project_path / "project.annolid.json"
+            schema_path = project_path / PROJECT_CONFIG_FILENAME
             save_behavior_spec(schema, schema_path)
 
-            # Copy/link videos (optional - just track paths for now)
-            videos = self.video_import_page.get_videos()
+            # Register imported videos (optionally copying into videos/).
+            raw_videos = self.video_import_page.get_videos()
+            videos = list(raw_videos)
+            if raw_videos:
+                ok_vid, msg_vid, registered = service.register_videos(
+                    raw_videos,
+                    copy_into_project=self.video_import_page.should_copy_videos(),
+                )
+                if not ok_vid:
+                    raise RuntimeError(msg_vid or "Failed to register project videos.")
+                if registered:
+                    videos = registered
+
+            self.created_project_path = project_path
+            self.created_videos = list(videos)
 
             # Emit signal for main window to handle
             self.project_created.emit(project_path, schema, videos)

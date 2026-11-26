@@ -12,6 +12,7 @@ from annolid.gui.widgets.training_dashboard import TrainingDashboardDialog
 from annolid.gui.widgets.convert_coco_dialog import ConvertCOODialog
 from annolid.gui.widgets.convert_coco2labelme_dialog import ConvertCOCO2LabelMeDialog
 from annolid.gui.widgets.glitter2_dialog import Glitter2Dialog
+from annolid.utils.logger import logger
 
 
 class WorkflowActionsMixin:
@@ -40,28 +41,35 @@ class WorkflowActionsMixin:
             QtWidgets.QMessageBox.about(
                 self,
                 "No input file or directory",
-                "Please check and open the                                          files or directories.",
+                "Please select an annotation file or directory first.",
             )
             return
 
         if output_dir is None:
-            self.output_dir = Path(input_anno_dir).parent / (
+            export_dir = Path(input_anno_dir).parent / (
                 Path(input_anno_dir).name + "_coco_dataset"
             )
         else:
-            self.output_dir = output_dir
+            export_dir = Path(output_dir)
+        self.output_dir = str(export_dir)
 
         label_gen = labelme2coco.convert(
             str(input_anno_dir),
-            output_annotated_dir=str(self.output_dir),
+            output_annotated_dir=str(export_dir),
             labels_file=labels_file,
             train_valid_split=num_train_frames,
             output_mode=output_mode,
             pose_schema_path=pose_schema_path,
         )
         pw = ProgressingWindow(label_gen)
-        if pw.exec_():
-            pw.runner_thread.terminate()
+        pw.exec_()
+        if (
+            getattr(pw, "runner_thread", None) is not None
+            and pw.runner_thread.isRunning()
+        ):
+            pw.runner_thread.requestInterruption()
+            pw.runner_thread.quit()
+            pw.runner_thread.wait(2000)
 
         self.statusBar().showMessage(self.tr("%s ...") % "converting")
         QtWidgets.QMessageBox.about(
@@ -69,7 +77,7 @@ class WorkflowActionsMixin:
             "Finished",
             (
                 f"COCO export finished.\n\n"
-                f"Output: {str(self.output_dir)}\n"
+                f"Output: {str(export_dir)}\n"
                 f"Train split: {int(round(float(num_train_frames) * 100))}%\n"
                 f"Mode: {output_mode}"
             ),
@@ -77,13 +85,15 @@ class WorkflowActionsMixin:
         self.statusBar().showMessage(self.tr("%s Done.") % "converting")
         try:
             shutil.make_archive(
-                str(self.output_dir),
+                str(export_dir),
                 "zip",
-                self.output_dir.parent,
-                self.output_dir.stem,
+                str(export_dir.parent),
+                export_dir.name,
             )
-        except Exception:
-            print("Failed to create the zip file")
+        except Exception as exc:
+            logger.warning(
+                "Failed to create COCO zip archive for %s: %s", export_dir, exc
+            )
 
     def coco_to_labelme(self):
         """Convert a COCO annotations directory into a LabelMe dataset."""
@@ -326,7 +336,7 @@ class WorkflowActionsMixin:
             QtWidgets.QMessageBox.about(
                 self,
                 "No input video or tracking results",
-                "Please check and open the                                          files.",
+                "Please select both a video file and tracking results first.",
             )
             return
         out_dir = (
@@ -340,13 +350,18 @@ class WorkflowActionsMixin:
         try:
             if label_json_gen is not None:
                 pwj = ProgressingWindow(label_json_gen)
-                if pwj.exec_():
+                pwj.exec_()
+                if (
+                    getattr(pwj, "runner_thread", None) is not None
+                    and pwj.runner_thread.isRunning()
+                ):
                     trs._is_running = False
                     pwj.running_submitted.emit("stopped")
-                    pwj.runner_thread.terminate()
+                    pwj.runner_thread.requestInterruption()
                     pwj.runner_thread.quit()
+                    pwj.runner_thread.wait(2000)
         except Exception:
-            pass
+            logger.debug("Quality control runner cleanup failed", exc_info=True)
         finally:
             self.importDirImages(str(out_dir))
 
@@ -383,7 +398,7 @@ class WorkflowActionsMixin:
             QtWidgets.QMessageBox.about(
                 self,
                 "No input video or tracking results",
-                "Please check and open the                                          files.",
+                "Please select both a video file and tracking results first.",
             )
             return
 

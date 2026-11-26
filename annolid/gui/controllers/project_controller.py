@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from qtpy import QtCore
 
@@ -38,6 +38,7 @@ class ProjectController(QtCore.QObject):
     project_updated = QtCore.Signal(
         dict
     )  # Emitted when project config is updated (project_info)
+    project_closed = QtCore.Signal()  # Emitted when active project is closed
     progress_updated = QtCore.Signal(int, str)  # Progress updates
 
     def __init__(
@@ -80,8 +81,11 @@ class ProjectController(QtCore.QObject):
 
             if success:
                 # Load the newly created project
-                project_full_path = Path(project_path) / project_name
-                return self.load_project(project_full_path)
+                project_full_path = Path(project_path) / str(project_name).strip()
+                loaded = self.load_project(project_full_path)
+                if loaded and self._current_project_info:
+                    self.project_created.emit(self._current_project_info)
+                return loaded
             else:
                 self.project_error.emit(message)
                 return False
@@ -270,6 +274,10 @@ class ProjectController(QtCore.QObject):
         export_path: Union[str, Path],
         include_data: bool = True,
         include_models: bool = False,
+        *,
+        as_zip: bool = False,
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        cancel_check: Optional[Callable[[], bool]] = None,
     ) -> bool:
         """
         Export the current project.
@@ -278,14 +286,30 @@ class ProjectController(QtCore.QObject):
             export_path: Path to export the project
             include_data: Whether to include image and annotation data
             include_models: Whether to include trained models
+            as_zip: Export as a portable `.zip` archive instead of a folder
+            progress_callback: Optional callback ``(done, total, current_label)``
+            cancel_check: Optional callable returning True when export should cancel
 
         Returns:
             True if exported successfully, False otherwise
         """
         try:
-            success, message = self._project_service.export_project(
-                export_path, include_data, include_models
-            )
+            extra_kwargs: Dict[str, Any] = {}
+            if as_zip:
+                extra_kwargs["as_zip"] = True
+            if progress_callback is not None:
+                extra_kwargs["progress_callback"] = progress_callback
+            if cancel_check is not None:
+                extra_kwargs["cancel_check"] = cancel_check
+
+            if extra_kwargs:
+                success, message = self._project_service.export_project(
+                    export_path, include_data, include_models, **extra_kwargs
+                )
+            else:
+                success, message = self._project_service.export_project(
+                    export_path, include_data, include_models
+                )
 
             if success:
                 logger.info(f"Project exported to: {export_path}")
@@ -313,12 +337,14 @@ class ProjectController(QtCore.QObject):
             Tuple of (is_valid, error_messages)
         """
         try:
-            # Get project config to validate against
             project_info = self.get_project_info()
             if not project_info:
                 return False, ["No project loaded"]
 
-            config = {"directories": project_info.get("directories", {})}
+            config = {
+                "name": project_info.get("name", ""),
+                "directories": project_info.get("directories", {}),
+            }
             is_valid, errors = self._project_service.validate_project_structure(
                 Path(project_path), config
             )
@@ -328,6 +354,65 @@ class ProjectController(QtCore.QObject):
         except Exception as e:
             error_msg = f"Failed to validate project structure: {str(e)}"
             return False, [error_msg]
+
+    def get_workflow_status(self) -> Dict[str, Any]:
+        """Return computed 6-step workflow progress for the active project."""
+        try:
+            if hasattr(self._project_service, "get_workflow_status"):
+                return dict(self._project_service.get_workflow_status() or {})
+            info = self.get_project_info() or {}
+            return dict(info.get("workflow_status") or {})
+        except Exception as e:
+            logger.error(f"Failed to compute workflow status: {e}")
+            return {}
+
+    def get_project_videos(self) -> List[str]:
+        """Return resolved paths of videos registered in the active project."""
+        try:
+            if hasattr(self._project_service, "get_project_videos"):
+                return list(self._project_service.get_project_videos() or [])
+            info = self.get_project_info() or {}
+            return list(info.get("videos") or [])
+        except Exception as e:
+            logger.error(f"Failed to get project videos: {e}")
+            return []
+
+    def register_project_videos(
+        self,
+        video_paths: List[Union[str, Path]],
+        *,
+        copy_into_project: bool = False,
+    ) -> Tuple[bool, List[str]]:
+        """Register video files into the active project and emit project_updated."""
+        try:
+            if not hasattr(self._project_service, "register_videos"):
+                self.project_error.emit(
+                    "Project service does not support video registration"
+                )
+                return False, []
+            ok, message, registered = self._project_service.register_videos(
+                video_paths, copy_into_project=copy_into_project
+            )
+            if ok:
+                info = self._project_service.get_project_info()
+                if info:
+                    self._current_project_info = info
+                    self.project_updated.emit(info)
+                return True, registered
+            self.project_error.emit(message)
+            return False, []
+        except Exception as e:
+            error_msg = f"Failed to register project videos: {e}"
+            self.project_error.emit(error_msg)
+            logger.error(error_msg)
+            return False, []
+
+    def close_project(self) -> None:
+        """Close the active project cleanly."""
+        if hasattr(self._project_service, "close_project"):
+            self._project_service.close_project()
+        self._current_project_info = None
+        self.project_closed.emit()
 
     def get_project_directory(self, dir_type: str) -> Optional[Path]:
         """

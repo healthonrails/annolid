@@ -13,6 +13,10 @@ from typing import Any, Dict
 from qtpy import QtCore
 
 from annolid.infrastructure import atomic_write_json
+from annolid.services.project_workspace import (
+    prune_missing_recent_entries,
+    upsert_recent_project_entries,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +40,7 @@ class SettingsManager:
         self._qt_settings = QtCore.QSettings(organization, application)
         self._defaults: Dict[str, Any] = {
             "recentFiles": [],
+            "recentProjects": [],
             "window/position": QtCore.QPoint(0, 0),
             "window/size": QtCore.QSize(1600, 900),
             "ui/agent_mode": True,
@@ -145,6 +150,63 @@ class SettingsManager:
         recent_files = recent_files[:10]
 
         self.set_setting("recentFiles", recent_files)
+
+    def clear_recent_files(self) -> None:
+        """Clear persisted recent files list."""
+        self.set_setting("recentFiles", [])
+
+    def get_recent_projects(
+        self, *, prune_missing: bool = False
+    ) -> list[dict[str, str]]:
+        """Return persisted recent projects as normalized dicts."""
+        raw = self.get_setting("recentProjects", "[]")
+        entries: list[Any] = []
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    entries = parsed
+            except json.JSONDecodeError:
+                entries = []
+        elif isinstance(raw, list):
+            entries = raw
+        if prune_missing:
+            cleaned = prune_missing_recent_entries(entries)
+            if len(cleaned) != len(entries):
+                self.set_setting("recentProjects", json.dumps(cleaned))
+            return cleaned
+        out: list[dict[str, str]] = []
+        for item in entries:
+            if isinstance(item, dict) and item.get("path"):
+                out.append(
+                    {
+                        "name": str(item.get("name") or ""),
+                        "path": str(item.get("path") or ""),
+                        "last_opened": str(item.get("last_opened") or ""),
+                    }
+                )
+            elif isinstance(item, str) and item.strip():
+                out.append({"name": "", "path": item.strip(), "last_opened": ""})
+        return out
+
+    def add_recent_project(
+        self, project_path: str, name: str = ""
+    ) -> list[dict[str, str]]:
+        """Record or bump a project in recent projects and persist it."""
+        if not project_path:
+            return self.get_recent_projects()
+        updated = upsert_recent_project_entries(
+            self.get_recent_projects(),
+            project_path,
+            name=name,
+            max_entries=12,
+        )
+        self.set_setting("recentProjects", json.dumps(updated))
+        return updated
+
+    def clear_recent_projects(self) -> None:
+        """Clear persisted recent projects list."""
+        self.set_setting("recentProjects", "[]")
 
     def get_window_geometry(self) -> Dict[str, Any]:
         """Get window position and size."""

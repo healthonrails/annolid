@@ -16,7 +16,11 @@ from annolid.annotation.shape_io import serialize_shape
 from annolid.annotation.timestamps import convert_frame_number_to_time
 from annolid.gui.label_file import LabelFile, LabelFileError
 from annolid.gui.window_base import utils
-from annolid.infrastructure import AnnotationStore
+from annolid.infrastructure import (
+    AnnotationStore,
+    atomic_write_json,
+    atomic_write_text,
+)
 from annolid.infrastructure.filesystem import (
     get_frame_number_from_json,
 )
@@ -1173,8 +1177,7 @@ class PersistenceLifecycleMixin:
             QtCore.Qt.ISODate
         )
         try:
-            with stats_path.open("w", encoding="utf-8") as fh:
-                json.dump(payload, fh, indent=2, sort_keys=True)
+            atomic_write_json(stats_path, payload, indent=2, sort_keys=True)
         except Exception:
             logger.debug(
                 "Failed to persist pruned tracking stats: %s",
@@ -1382,6 +1385,8 @@ class PersistenceLifecycleMixin:
                 label_name = self.uniqLabelList.item(i).data(QtCore.Qt.UserRole)
                 labels_text_list.append(label_name)
 
-            with open(file_name, "w") as lt:
-                for ltl in labels_text_list:
-                    lt.writelines(str(ltl) + "\n")
+            atomic_write_text(
+                Path(file_name),
+                "".join(f"{ltl}\n" for ltl in labels_text_list),
+                encoding="utf-8",
+            )

@@ -92,6 +92,12 @@ class ToolingDialogsMixin:
         from annolid.gui.widgets.label_collection_dialog import LabelCollectionDialog
 
         dlg = LabelCollectionDialog(settings=self.settings, parent=self)
+        if hasattr(dlg, "file_open_requested"):
+            open_handler = getattr(self, "_open_audited_file", None) or getattr(
+                self, "loadFile", None
+            )
+            if callable(open_handler):
+                dlg.file_open_requested.connect(open_handler)
         dlg.exec_()
 
     def _open_log_manager_dialog(self) -> None:

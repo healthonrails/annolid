@@ -8,6 +8,7 @@ import weakref
 from qtpy import QtCore, QtGui, QtWidgets
 
 from annolid.gui.qt_compat import configure_compact_combo
+from annolid.services.project_workspace import rename_annotation_file_pair
 
 
 class FileDockMixin:
@@ -51,6 +52,19 @@ class FileDockMixin:
         configure_compact_combo(self.fileSortCombo, min_chars=5, popup_min_width=110)
         self.fileSortCombo.setToolTip(self.tr("Sort files by selected field"))
         self.fileSortCombo.currentIndexChanged.connect(self._on_file_sort_mode_changed)
+        self.fileStatusFilterCombo = QtWidgets.QComboBox()
+        self.fileStatusFilterCombo.addItem(self.tr("All"), "all")
+        self.fileStatusFilterCombo.addItem(self.tr("Labeled"), "labeled")
+        self.fileStatusFilterCombo.addItem(self.tr("Unlabeled"), "unlabeled")
+        configure_compact_combo(
+            self.fileStatusFilterCombo, min_chars=6, popup_min_width=120
+        )
+        self.fileStatusFilterCombo.setToolTip(
+            self.tr("Filter files by annotation status")
+        )
+        self.fileStatusFilterCombo.currentIndexChanged.connect(
+            lambda _idx: self._apply_file_search_filter()
+        )
         self.fileSortOrderButton = QtWidgets.QToolButton()
         self.fileSortOrderButton.setCheckable(True)
         self.fileSortOrderButton.setChecked(False)
@@ -75,6 +89,7 @@ class FileDockMixin:
         search_row.setContentsMargins(0, 0, 0, 0)
         search_row.setSpacing(4)
         search_row.addWidget(self.fileSearchWidget, 1)
+        search_row.addWidget(self.fileStatusFilterCombo, 0)
         search_row.addWidget(self.fileSortCombo, 0)
         search_row.addWidget(self.fileSortOrderButton, 0)
         search_row.addWidget(self.fileSelectionLabel, 0)
@@ -148,6 +163,21 @@ class FileDockMixin:
         except RuntimeError:
             return
 
+    def _file_status_filter_mode(self) -> str:
+        combo = getattr(self, "fileStatusFilterCombo", None)
+        if combo is None:
+            return "all"
+        mode = str(combo.currentData() or "all").strip().lower()
+        return mode if mode in {"all", "labeled", "unlabeled"} else "all"
+
+    def _item_has_annotation(self, item) -> bool:
+        if item is None:
+            return False
+        raw = item.data(QtCore.Qt.UserRole)
+        if isinstance(raw, bool):
+            return raw
+        return False
+
     def _apply_search_visibility_to_item(self, item) -> None:
         if item is None:
             return
@@ -155,14 +185,19 @@ class FileDockMixin:
             query = str(self.fileSearchWidget.text() or "").strip().lower()
         except Exception:
             query = ""
-        if not query:
-            item.setHidden(False)
-            return
-        try:
-            hay = str(item.text() or "").lower()
-        except Exception:
-            hay = ""
-        item.setHidden(query not in hay)
+        status_mode = self._file_status_filter_mode()
+        hide = False
+        if status_mode == "labeled" and not self._item_has_annotation(item):
+            hide = True
+        elif status_mode == "unlabeled" and self._item_has_annotation(item):
+            hide = True
+        if not hide and query:
+            try:
+                hay = str(item.text() or "").lower()
+            except Exception:
+                hay = ""
+            hide = query not in hay
+        item.setHidden(hide)
 
     def _set_file_scan_idle(
         self, *, count: Optional[int] = None, hide: bool = False
@@ -217,23 +252,13 @@ class FileDockMixin:
         self._file_dock_shortcuts = [rename_shortcut, delete_shortcut]
 
     def _apply_file_search_filter(self) -> None:
-        """Filter file dock list items based on the current search text."""
-        try:
-            query = str(self.fileSearchWidget.text() or "").strip().lower()
-        except Exception:
-            query = ""
+        """Filter file dock list items based on search text and annotation status."""
         for idx in range(self.fileListWidget.count()):
             item = self.fileListWidget.item(idx)
             if item is None:
                 continue
-            if not query:
-                item.setHidden(False)
-                continue
-            try:
-                hay = str(item.text() or "").lower()
-            except Exception:
-                hay = ""
-            item.setHidden(query not in hay)
+            self._apply_search_visibility_to_item(item)
+        self._update_file_selection_counter()
 
     def _on_file_sort_mode_changed(self, _idx: int) -> None:
         self._file_dock_sort_enabled = True
@@ -493,6 +518,7 @@ class FileDockMixin:
         open_action = menu.addAction(self.tr("Open"))
         rename_action = menu.addAction(self.tr("Rename..."))
         delete_action = menu.addAction(self.tr("Delete..."))
+        copy_path_action = menu.addAction(self.tr("Copy Path"))
         reveal_action = menu.addAction(self.tr("Reveal in Folder"))
         menu.addSeparator()
         sort_by_name = menu.addAction(self.tr("Sort by Name"))
@@ -510,6 +536,7 @@ class FileDockMixin:
             open_action.setEnabled(False)
             rename_action.setEnabled(False)
             delete_action.setEnabled(False)
+            copy_path_action.setEnabled(False)
             reveal_action.setEnabled(False)
         action = menu.exec_(self.fileListWidget.mapToGlobal(pos))
         if action is None:
@@ -520,6 +547,8 @@ class FileDockMixin:
             self._rename_selected_file_from_dock(item)
         elif action is delete_action:
             self._delete_selected_file_from_dock(item)
+        elif action is copy_path_action:
+            self._copy_selected_file_path(item)
         elif action is reveal_action:
             self._reveal_selected_file_in_folder(item)
         elif action is sort_by_name:
@@ -583,21 +612,27 @@ class FileDockMixin:
         new_name = str(new_name or "").strip()
         if not new_name or new_name == current_name:
             return
-        if Path(new_name).name != new_name:
-            self.errorMessage(
-                self.tr("Rename Error"),
-                self.tr("Please provide a file name without path separators."),
-            )
-            return
-        target = path.with_name(new_name)
-        if target.exists():
-            self.errorMessage(
-                self.tr("Rename Error"),
-                self.tr("Target already exists: %s") % str(target),
-            )
-            return
+        label_resolver = getattr(self, "_getLabelFile", None)
+        sidecar_hint = None
+        if callable(label_resolver) and path.suffix.lower() != ".json":
+            try:
+                sidecar_hint = label_resolver(str(path))
+            except Exception:
+                sidecar_hint = None
         try:
-            path.rename(target)
+            rename_result = rename_annotation_file_pair(
+                path,
+                new_name,
+                label_path=sidecar_hint,
+                sync_sidecar=True,
+            )
+            target = Path(rename_result["target"])
+        except ValueError as exc:
+            self.errorMessage(self.tr("Rename Error"), str(exc))
+            return
+        except FileExistsError as exc:
+            self.errorMessage(self.tr("Rename Error"), str(exc))
+            return
         except Exception as exc:
             self.errorMessage(self.tr("Rename Error"), str(exc))
             return
@@ -619,11 +654,22 @@ class FileDockMixin:
         if isinstance(known_paths, set):
             known_paths.discard(old_text)
             known_paths.add(new_text)
+        recent = getattr(self, "recentFiles", None)
+        if isinstance(recent, list) and old_text in recent:
+            self.recentFiles = [new_text if p == old_text else p for p in recent]
         if self.filename == old_text:
             self.filename = new_text
+            if getattr(self, "imagePath", None) == old_text:
+                self.imagePath = new_text
             self.setWindowTitle(f"Annolid - {Path(self.filename).name}")
+        elif getattr(self, "imagePath", None) == old_text:
+            self.imagePath = new_text
+        suffix_note = (
+            " (+ paired .json)" if rename_result.get("renamed_sidecar") else ""
+        )
         self.statusBar().showMessage(
-            self.tr("Renamed %s -> %s") % (current_name, target.name), 3000
+            self.tr("Renamed %s -> %s%s") % (current_name, target.name, suffix_note),
+            3000,
         )
 
     def _delete_selected_file_from_dock(self, item=None) -> None:
@@ -675,6 +721,19 @@ class FileDockMixin:
         self._apply_file_search_filter()
         self.statusBar().showMessage(self.tr("Deleted: %s") % path.name, 3000)
 
+    def _copy_selected_file_path(self, item=None) -> None:
+        selected = item or self._selected_file_dock_item()
+        path = self._item_path_from_file_dock(selected)
+        if path is None:
+            return
+        clipboard = QtWidgets.QApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(str(path))
+        self.statusBar().showMessage(
+            self.tr("Copied path: %s") % path.name,
+            2000,
+        )
+
     def _reveal_selected_file_in_folder(self, item=None) -> None:
         selected = item or self._selected_file_dock_item()
         path = self._item_path_from_file_dock(selected)
@@ -688,10 +747,14 @@ class FileDockMixin:
     def _refresh_file_dock_listing(self) -> None:
         if not self.lastOpenDir or not hasattr(self, "importDirImages"):
             return
-        current = self.filename
+        current_item = self._selected_file_dock_item()
+        current_path = self._item_path_from_file_dock(current_item)
+        current = str(current_path) if current_path is not None else self.filename
+        self._dir_scan_pending_select = str(current or "")
         self.importDirImages(self.lastOpenDir, load=False)
         if current:
             matches = self.fileListWidget.findItems(current, QtCore.Qt.MatchExactly)
             if matches:
                 self.fileListWidget.setCurrentItem(matches[0])
+                self._dir_scan_pending_select = ""
         self.statusBar().showMessage(self.tr("File list refreshed"), 2000)

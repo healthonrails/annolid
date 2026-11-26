@@ -1,23 +1,76 @@
 """Workflow Dashboard - Home screen with project overview and quick actions.
 
-A modern dashboard widget showing project status, recent activity,
-quick-action buttons, and workflow guidance for new users.
+A theme-aware dashboard widget showing project status, recent activity,
+quick-action buttons, and live 6-step workflow guidance.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import List, Optional
 from dataclasses import dataclass
 from datetime import datetime
+import json
+from pathlib import Path
+from typing import Dict, List, Mapping, Optional
 
 from qtpy import QtCore, QtGui, QtWidgets
 from qtpy.QtCore import Qt, Signal
 
+from annolid.gui.qt_compat import palette_color_role
+from annolid.services.project_workspace import PROJECT_CONFIG_FILENAME
+
+
+def _is_dark_palette(widget: QtWidgets.QWidget) -> bool:
+    try:
+        return bool(
+            widget.palette().color(palette_color_role("Window")).lightness() < 128
+        )
+    except Exception:
+        return False
+
+
+def _dashboard_colors(is_dark: bool) -> Dict[str, str]:
+    if is_dark:
+        return {
+            "card_bg": "#1e222a",
+            "card_hover": "#262b35",
+            "card_pressed": "#303643",
+            "card_border": "#333945",
+            "card_hover_border": "#4c8bf5",
+            "fg": "#e8eaed",
+            "muted": "#9aa0a6",
+            "accent": "#4c8bf5",
+            "success": "#34a853",
+            "pending_bg": "#2e3440",
+            "pending_fg": "#cbd5e1",
+        }
+    return {
+        "card_bg": "#ffffff",
+        "card_hover": "#f4f6f8",
+        "card_pressed": "#e8ecf0",
+        "card_border": "#dadce0",
+        "card_hover_border": "#1a73e8",
+        "fg": "#202124",
+        "muted": "#5f6368",
+        "accent": "#1a73e8",
+        "success": "#2e7d32",
+        "pending_bg": "#e8eaed",
+        "pending_fg": "#3c4043",
+    }
+
+
+def _parse_iso_datetime(raw: object) -> datetime:
+    text = str(raw or "").strip()
+    if text:
+        try:
+            return datetime.fromisoformat(text)
+        except ValueError:
+            pass
+    return datetime.now()
+
 
 @dataclass
 class RecentProject:
-    """Represents a recently opened project or video."""
+    """Represents a recently opened project, video, or file."""
 
     name: str
     path: str
@@ -25,10 +78,11 @@ class RecentProject:
     thumbnail: Optional[str] = None
     annotations_count: int = 0
     frames_labeled: int = 0
+    kind: str = "file"  # "project", "video", "file"
 
 
 class QuickActionButton(QtWidgets.QPushButton):
-    """A styled button for quick actions on the dashboard."""
+    """A theme-aware card button for quick actions on the dashboard."""
 
     def __init__(
         self,
@@ -38,49 +92,55 @@ class QuickActionButton(QtWidgets.QPushButton):
         parent: Optional[QtWidgets.QWidget] = None,
     ) -> None:
         super().__init__(parent)
-        self.setMinimumSize(180, 100)
+        del icon_name
+        self.setMinimumSize(156, 92)
         self.setCursor(Qt.PointingHandCursor)
 
-        # Create layout for multi-line content
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(4)
 
-        # Title
-        title_label = QtWidgets.QLabel(title)
-        title_label.setStyleSheet("font-weight: bold; font-size: 14px;")
-        title_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(title_label)
+        self._title_label = QtWidgets.QLabel(title, self)
+        self._title_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self._title_label)
 
-        # Description
-        desc_label = QtWidgets.QLabel(description)
-        desc_label.setStyleSheet("color: gray; font-size: 11px;")
-        desc_label.setAlignment(Qt.AlignCenter)
-        desc_label.setWordWrap(True)
-        layout.addWidget(desc_label)
+        self._desc_label = QtWidgets.QLabel(description, self)
+        self._desc_label.setAlignment(Qt.AlignCenter)
+        self._desc_label.setWordWrap(True)
+        layout.addWidget(self._desc_label)
 
-        # Store for hover effects
         self._title = title
         self._description = description
+        self.apply_theme(_is_dark_palette(self))
 
-        self.setStyleSheet("""
-            QPushButton {
-                background-color: #f5f5f5;
-                border: 1px solid #ddd;
+    def apply_theme(self, is_dark: bool) -> None:
+        c = _dashboard_colors(is_dark)
+        self._title_label.setStyleSheet(
+            f"font-weight: 700; font-size: 13px; color: {c['fg']}; background: transparent;"
+        )
+        self._desc_label.setStyleSheet(
+            f"color: {c['muted']}; font-size: 11px; background: transparent;"
+        )
+        self.setStyleSheet(
+            f"""
+            QPushButton {{
+                background-color: {c["card_bg"]};
+                border: 1px solid {c["card_border"]};
                 border-radius: 8px;
-            }
-            QPushButton:hover {
-                background-color: #e8e8e8;
-                border-color: #ccc;
-            }
-            QPushButton:pressed {
-                background-color: #d8d8d8;
-            }
-        """)
+            }}
+            QPushButton:hover {{
+                background-color: {c["card_hover"]};
+                border-color: {c["card_hover_border"]};
+            }}
+            QPushButton:pressed {{
+                background-color: {c["card_pressed"]};
+            }}
+            """
+        )
 
 
 class RecentItemWidget(QtWidgets.QFrame):
-    """Widget displaying a recent project or video item."""
+    """Widget displaying a recent project, video, or annotation item."""
 
     clicked = Signal(str)  # Emits the path when clicked
 
@@ -91,68 +151,87 @@ class RecentItemWidget(QtWidgets.QFrame):
     ) -> None:
         super().__init__(parent)
         self._path = item.path
+        self._kind = item.kind
         self.setCursor(Qt.PointingHandCursor)
         self.setFrameStyle(QtWidgets.QFrame.StyledPanel)
-        self.setStyleSheet("""
-            QFrame {
-                background-color: white;
-                border: 1px solid #e0e0e0;
-                border-radius: 6px;
-                padding: 8px;
-            }
-            QFrame:hover {
-                background-color: #f8f8f8;
-                border-color: #ccc;
-            }
-        """)
+        self.setToolTip(str(item.path))
 
         layout = QtWidgets.QHBoxLayout(self)
-        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setContentsMargins(10, 8, 10, 8)
 
-        # Icon/thumbnail placeholder
-        icon_label = QtWidgets.QLabel("🎬")
-        icon_label.setStyleSheet("font-size: 24px;")
-        layout.addWidget(icon_label)
+        icon_glyph = {"project": "📁", "video": "🎬"}.get(item.kind, "📄")
+        self._icon_label = QtWidgets.QLabel(icon_glyph, self)
+        self._icon_label.setStyleSheet("font-size: 20px; background: transparent;")
+        layout.addWidget(self._icon_label)
 
-        # Info
         info_layout = QtWidgets.QVBoxLayout()
         info_layout.setSpacing(2)
 
-        name_label = QtWidgets.QLabel(item.name)
-        name_label.setStyleSheet("font-weight: bold;")
-        info_layout.addWidget(name_label)
+        self._name_label = QtWidgets.QLabel(item.name, self)
+        info_layout.addWidget(self._name_label)
 
-        path_label = QtWidgets.QLabel(str(Path(item.path).parent))
-        path_label.setStyleSheet("color: gray; font-size: 11px;")
-        info_layout.addWidget(path_label)
+        self._path_label = QtWidgets.QLabel(str(Path(item.path).parent), self)
+        info_layout.addWidget(self._path_label)
 
+        self._stats_label: Optional[QtWidgets.QLabel] = None
         if item.annotations_count > 0:
-            stats_label = QtWidgets.QLabel(
-                f"{item.annotations_count} annotations • {item.frames_labeled} frames"
+            self._stats_label = QtWidgets.QLabel(
+                f"{item.annotations_count} annotations • {item.frames_labeled} frames",
+                self,
             )
-            stats_label.setStyleSheet("color: #666; font-size: 10px;")
-            info_layout.addWidget(stats_label)
+            info_layout.addWidget(self._stats_label)
 
         layout.addLayout(info_layout, 1)
 
-        # Time ago
-        time_label = QtWidgets.QLabel(self._format_time_ago(item.last_opened))
-        time_label.setStyleSheet("color: gray; font-size: 10px;")
-        layout.addWidget(time_label)
+        self._time_label = QtWidgets.QLabel(
+            self._format_time_ago(item.last_opened), self
+        )
+        layout.addWidget(self._time_label)
+        self.apply_theme(_is_dark_palette(self))
+
+    def apply_theme(self, is_dark: bool) -> None:
+        c = _dashboard_colors(is_dark)
+        self.setStyleSheet(
+            f"""
+            QFrame {{
+                background-color: {c["card_bg"]};
+                border: 1px solid {c["card_border"]};
+                border-radius: 6px;
+            }}
+            QFrame:hover {{
+                background-color: {c["card_hover"]};
+                border-color: {c["card_hover_border"]};
+            }}
+            """
+        )
+        self._name_label.setStyleSheet(
+            f"font-weight: 700; color: {c['fg']}; background: transparent;"
+        )
+        self._path_label.setStyleSheet(
+            f"color: {c['muted']}; font-size: 11px; background: transparent;"
+        )
+        if self._stats_label is not None:
+            self._stats_label.setStyleSheet(
+                f"color: {c['muted']}; font-size: 10px; background: transparent;"
+            )
+        self._time_label.setStyleSheet(
+            f"color: {c['muted']}; font-size: 10px; background: transparent;"
+        )
 
     def _format_time_ago(self, dt: datetime) -> str:
-        now = datetime.now()
+        now = datetime.now(tz=dt.tzinfo) if dt.tzinfo is not None else datetime.now()
         diff = now - dt
+        if diff.total_seconds() < 0:
+            return "Just now"
         if diff.days > 7:
             return dt.strftime("%b %d")
-        elif diff.days > 0:
+        if diff.days > 0:
             return f"{diff.days}d ago"
-        elif diff.seconds > 3600:
+        if diff.seconds > 3600:
             return f"{diff.seconds // 3600}h ago"
-        elif diff.seconds > 60:
+        if diff.seconds > 60:
             return f"{diff.seconds // 60}m ago"
-        else:
-            return "Just now"
+        return "Just now"
 
     def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
         if event.button() == Qt.LeftButton:
@@ -161,7 +240,7 @@ class RecentItemWidget(QtWidgets.QFrame):
 
 
 class WorkflowStepWidget(QtWidgets.QFrame):
-    """Widget showing a workflow step with progress indicator."""
+    """Widget showing a workflow step with live progress indicator."""
 
     step_clicked = Signal(str)  # Emits step id when clicked
 
@@ -176,87 +255,92 @@ class WorkflowStepWidget(QtWidgets.QFrame):
     ) -> None:
         super().__init__(parent)
         self._step_id = step_id
+        self._number = int(number)
+        self._status = str(status or "pending")
+        self._is_dark = _is_dark_palette(self)
         self.setCursor(Qt.PointingHandCursor)
 
-        self.setStyleSheet("""
-            QFrame {
-                background-color: white;
-                border: 1px solid #e0e0e0;
-                border-radius: 8px;
-                padding: 4px;
-            }
-            QFrame:hover {
-                border-color: #2196F3;
-            }
-        """)
-
         layout = QtWidgets.QHBoxLayout(self)
-        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setContentsMargins(12, 8, 12, 8)
 
-        # Step number indicator
-        number_label = QtWidgets.QLabel(str(number))
-        if status == "completed":
-            number_label.setText("✓")
-            number_label.setStyleSheet("""
-                background-color: #4CAF50;
-                color: white;
-                border-radius: 14px;
-                font-weight: bold;
-                font-size: 12px;
-                padding: 4px 8px;
-                min-width: 28px;
-                max-width: 28px;
-                min-height: 28px;
-                max-height: 28px;
-            """)
-        elif status == "active":
-            number_label.setStyleSheet("""
-                background-color: #2196F3;
-                color: white;
-                border-radius: 14px;
-                font-weight: bold;
-                font-size: 12px;
-                padding: 4px 8px;
-                min-width: 28px;
-                max-width: 28px;
-                min-height: 28px;
-                max-height: 28px;
-            """)
-        else:
-            number_label.setStyleSheet("""
-                background-color: #e0e0e0;
-                color: #666;
-                border-radius: 14px;
-                font-weight: bold;
-                font-size: 12px;
-                padding: 4px 8px;
-                min-width: 28px;
-                max-width: 28px;
-                min-height: 28px;
-                max-height: 28px;
-            """)
-        number_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(number_label)
+        self._number_label = QtWidgets.QLabel(str(self._number), self)
+        self._number_label.setAlignment(Qt.AlignCenter)
+        self._number_label.setFixedSize(28, 28)
+        layout.addWidget(self._number_label)
 
-        # Text content
         text_layout = QtWidgets.QVBoxLayout()
         text_layout.setSpacing(2)
 
-        title_label = QtWidgets.QLabel(title)
-        title_label.setStyleSheet("font-weight: bold; font-size: 13px;")
-        text_layout.addWidget(title_label)
+        self._title_label = QtWidgets.QLabel(title, self)
+        text_layout.addWidget(self._title_label)
 
-        desc_label = QtWidgets.QLabel(description)
-        desc_label.setStyleSheet("color: gray; font-size: 11px;")
-        desc_label.setWordWrap(True)
-        text_layout.addWidget(desc_label)
+        self._desc_label = QtWidgets.QLabel(description, self)
+        self._desc_label.setWordWrap(True)
+        text_layout.addWidget(self._desc_label)
 
         layout.addLayout(text_layout, 1)
 
-        # Arrow indicator
-        arrow = QtWidgets.QLabel("→")
-        arrow.setStyleSheet("color: #ccc; font-size: 18px;")
-        layout.addWidget(arrow)
+        self._arrow_label = QtWidgets.QLabel("→", self)
+        layout.addWidget(self._arrow_label)
+
+        self.set_status(self._status)
+
+    @property
+    def status(self) -> str:
+        return self._status
+
+    def set_status(self, status: str) -> None:
+        norm = str(status or "pending").strip().lower()
+        if norm not in {"pending", "active", "completed"}:
+            norm = "pending"
+        self._status = norm
+        self.apply_theme(self._is_dark)
+
+    def apply_theme(self, is_dark: bool) -> None:
+        self._is_dark = bool(is_dark)
+        c = _dashboard_colors(self._is_dark)
+        border_color = c["accent"] if self._status == "active" else c["card_border"]
+        self.setStyleSheet(
+            f"""
+            QFrame {{
+                background-color: {c["card_bg"]};
+                border: 1px solid {border_color};
+                border-radius: 8px;
+            }}
+            QFrame:hover {{
+                background-color: {c["card_hover"]};
+                border-color: {c["card_hover_border"]};
+            }}
+            """
+        )
+        if self._status == "completed":
+            self._number_label.setText("✓")
+            badge_bg, badge_fg = c["success"], "#ffffff"
+        elif self._status == "active":
+            self._number_label.setText(str(self._number))
+            badge_bg, badge_fg = c["accent"], "#ffffff"
+        else:
+            self._number_label.setText(str(self._number))
+            badge_bg, badge_fg = c["pending_bg"], c["pending_fg"]
+
+        self._number_label.setStyleSheet(
+            f"""
+            background-color: {badge_bg};
+            color: {badge_fg};
+            border-radius: 14px;
+            font-weight: 700;
+            font-size: 12px;
+            """
+        )
+        self._title_label.setStyleSheet(
+            f"font-weight: 700; font-size: 13px; color: {c['fg']}; background: transparent;"
+        )
+        self._desc_label.setStyleSheet(
+            f"color: {c['muted']}; font-size: 11px; background: transparent;"
+        )
+        self._arrow_label.setStyleSheet(
+            f"color: {c['muted']}; font-size: 16px; background: transparent;"
+        )
 
     def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
         if event.button() == Qt.LeftButton:
@@ -265,10 +349,10 @@ class WorkflowStepWidget(QtWidgets.QFrame):
 
 
 class DashboardWidget(QtWidgets.QWidget):
-    """Main dashboard widget showing project overview and quick actions."""
+    """Main dashboard widget showing project overview, workflow progress, and quick actions."""
 
-    # Signals for main window to handle
     new_project_requested = Signal()
+    open_project_requested = Signal()
     open_video_requested = Signal()
     open_recent_requested = Signal(str)  # path
     import_videos_requested = Signal()
@@ -281,18 +365,20 @@ class DashboardWidget(QtWidgets.QWidget):
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
         super().__init__(parent)
         self._recent_items: List[RecentProject] = []
+        self._quick_action_buttons: List[QuickActionButton] = []
+        self._recent_widgets: List[RecentItemWidget] = []
+        self._step_widgets: Dict[str, WorkflowStepWidget] = {}
         self._setup_ui()
+        self._apply_theme_styles()
 
     def _setup_ui(self) -> None:
         main_layout = QtWidgets.QVBoxLayout(self)
-        main_layout.setContentsMargins(40, 30, 40, 30)
-        main_layout.setSpacing(24)
+        main_layout.setContentsMargins(24, 20, 24, 20)
+        main_layout.setSpacing(18)
 
-        # Header
         header = self._create_header()
         main_layout.addWidget(header)
 
-        # Content area with scroll
         scroll = QtWidgets.QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
@@ -300,21 +386,17 @@ class DashboardWidget(QtWidgets.QWidget):
         content = QtWidgets.QWidget()
         content_layout = QtWidgets.QVBoxLayout(content)
         content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(24)
+        content_layout.setSpacing(18)
 
-        # Quick actions section
         actions_section = self._create_quick_actions_section()
         content_layout.addWidget(actions_section)
 
-        # Two-column layout for workflow and recent
         columns = QtWidgets.QHBoxLayout()
-        columns.setSpacing(24)
+        columns.setSpacing(18)
 
-        # Workflow guide
         workflow_section = self._create_workflow_section()
         columns.addWidget(workflow_section, 1)
 
-        # Recent projects
         recent_section = self._create_recent_section()
         columns.addWidget(recent_section, 1)
 
@@ -329,23 +411,19 @@ class DashboardWidget(QtWidgets.QWidget):
         layout = QtWidgets.QHBoxLayout(header)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # Logo and title
         title_layout = QtWidgets.QVBoxLayout()
+        self._title_label = QtWidgets.QLabel("Welcome to Annolid")
+        self._title_label.setStyleSheet("font-size: 24px; font-weight: bold;")
+        title_layout.addWidget(self._title_label)
 
-        title = QtWidgets.QLabel("Welcome to Annolid")
-        title.setStyleSheet("font-size: 28px; font-weight: bold;")
-        title_layout.addWidget(title)
-
-        subtitle = QtWidgets.QLabel(
-            "AI-assisted annotation and tracking for behavior analysis"
+        self._subtitle_label = QtWidgets.QLabel(
+            "AI-assisted annotation, tracking, and project workflow hub"
         )
-        subtitle.setStyleSheet("color: gray; font-size: 14px;")
-        title_layout.addWidget(subtitle)
+        title_layout.addWidget(self._subtitle_label)
 
         layout.addLayout(title_layout)
         layout.addStretch()
 
-        # Help button
         help_btn = QtWidgets.QPushButton("📖 Documentation")
         help_btn.setCursor(Qt.PointingHandCursor)
         help_btn.clicked.connect(self.open_documentation_requested.emit)
@@ -357,47 +435,46 @@ class DashboardWidget(QtWidgets.QWidget):
         section = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(section)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
 
-        # Section title
-        title = QtWidgets.QLabel("Quick Actions")
-        title.setStyleSheet("font-size: 16px; font-weight: bold; color: #333;")
-        layout.addWidget(title)
+        self._quick_actions_title = QtWidgets.QLabel("Quick Actions")
+        layout.addWidget(self._quick_actions_title)
 
-        # Action buttons grid
         actions_layout = QtWidgets.QHBoxLayout()
-        actions_layout.setSpacing(16)
+        actions_layout.setSpacing(12)
 
-        # New Project
-        new_project_btn = QuickActionButton(
-            "🆕 New Project",
-            "Create a new annotation project",
-        )
-        new_project_btn.clicked.connect(self.new_project_requested.emit)
-        actions_layout.addWidget(new_project_btn)
-
-        # Open Video
-        open_video_btn = QuickActionButton(
-            "🎬 Open Video",
-            "Open a video file for annotation",
-        )
-        open_video_btn.clicked.connect(self.open_video_requested.emit)
-        actions_layout.addWidget(open_video_btn)
-
-        # Import Videos
-        import_btn = QuickActionButton(
-            "📥 Import Videos",
-            "Batch import multiple videos",
-        )
-        import_btn.clicked.connect(self.import_videos_requested.emit)
-        actions_layout.addWidget(import_btn)
-
-        # Train Model
-        train_btn = QuickActionButton(
-            "🧠 Train Model",
-            "Train detection or pose models",
-        )
-        train_btn.clicked.connect(self.train_model_requested.emit)
-        actions_layout.addWidget(train_btn)
+        button_specs = [
+            (
+                "🆕 New Project",
+                "Create a new annotation project",
+                self.new_project_requested.emit,
+            ),
+            (
+                "📂 Open Project",
+                "Open an existing Annolid project",
+                self.open_project_requested.emit,
+            ),
+            (
+                "🎬 Open Video",
+                "Open a video file for annotation",
+                self.open_video_requested.emit,
+            ),
+            (
+                "📥 Import Videos",
+                "Batch import multiple videos",
+                self.import_videos_requested.emit,
+            ),
+            (
+                "🧠 Train Model",
+                "Train detection or pose models",
+                self.train_model_requested.emit,
+            ),
+        ]
+        for title, desc, slot in button_specs:
+            btn = QuickActionButton(title, desc, parent=section)
+            btn.clicked.connect(slot)
+            self._quick_action_buttons.append(btn)
+            actions_layout.addWidget(btn)
 
         actions_layout.addStretch()
         layout.addLayout(actions_layout)
@@ -406,26 +483,18 @@ class DashboardWidget(QtWidgets.QWidget):
 
     def _create_workflow_section(self) -> QtWidgets.QWidget:
         section = QtWidgets.QGroupBox("Workflow Guide")
-        section.setStyleSheet("""
-            QGroupBox {
-                font-size: 14px;
-                font-weight: bold;
-                border: 1px solid #e0e0e0;
-                border-radius: 8px;
-                margin-top: 12px;
-                padding-top: 12px;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 12px;
-                padding: 0 8px;
-            }
-        """)
+        self._workflow_group = section
 
         layout = QtWidgets.QVBoxLayout(section)
         layout.setSpacing(8)
 
-        # Workflow steps
+        self.workflow_summary_label = QtWidgets.QLabel(
+            "Create or open a project to track progress across stages.",
+            section,
+        )
+        self.workflow_summary_label.setWordWrap(True)
+        layout.addWidget(self.workflow_summary_label)
+
         steps = [
             (
                 "project",
@@ -441,30 +510,17 @@ class DashboardWidget(QtWidgets.QWidget):
         ]
 
         for step_id, num, title, desc in steps:
-            step_widget = WorkflowStepWidget(step_id, num, title, desc)
+            step_widget = WorkflowStepWidget(step_id, num, title, desc, parent=section)
             step_widget.step_clicked.connect(self.workflow_step_requested.emit)
+            self._step_widgets[step_id] = step_widget
             layout.addWidget(step_widget)
 
         layout.addStretch()
         return section
 
     def _create_recent_section(self) -> QtWidgets.QWidget:
-        section = QtWidgets.QGroupBox("Recent")
-        section.setStyleSheet("""
-            QGroupBox {
-                font-size: 14px;
-                font-weight: bold;
-                border: 1px solid #e0e0e0;
-                border-radius: 8px;
-                margin-top: 12px;
-                padding-top: 12px;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 12px;
-                padding: 0 8px;
-            }
-        """)
+        section = QtWidgets.QGroupBox("Recent Projects & Files")
+        self._recent_group = section
 
         layout = QtWidgets.QVBoxLayout(section)
         layout.setSpacing(8)
@@ -474,11 +530,9 @@ class DashboardWidget(QtWidgets.QWidget):
         self._recent_layout.setContentsMargins(0, 0, 0, 0)
         self._recent_layout.setSpacing(8)
 
-        # Placeholder if no recent items
         self._empty_label = QtWidgets.QLabel(
-            "No recent projects.\nCreate a new project or open a video to get started."
+            "No recent projects or files.\nCreate a new project or open a video to get started."
         )
-        self._empty_label.setStyleSheet("color: gray; padding: 20px;")
         self._empty_label.setAlignment(Qt.AlignCenter)
         self._recent_layout.addWidget(self._empty_label)
 
@@ -487,50 +541,171 @@ class DashboardWidget(QtWidgets.QWidget):
 
         return section
 
-    def set_recent_items(self, items: List[RecentProject]) -> None:
-        """Update the list of recent projects/videos."""
-        self._recent_items = items
+    def _apply_theme_styles(self) -> None:
+        is_dark = _is_dark_palette(self)
+        c = _dashboard_colors(is_dark)
+        group_qss = f"""
+            QGroupBox {{
+                font-size: 14px;
+                font-weight: bold;
+                color: {c["fg"]};
+                border: 1px solid {c["card_border"]};
+                border-radius: 8px;
+                margin-top: 12px;
+                padding-top: 12px;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: 12px;
+                padding: 0 8px;
+            }}
+        """
+        self._workflow_group.setStyleSheet(group_qss)
+        self._recent_group.setStyleSheet(group_qss)
+        self._subtitle_label.setStyleSheet(f"color: {c['muted']}; font-size: 13px;")
+        self._quick_actions_title.setStyleSheet(
+            f"font-size: 15px; font-weight: bold; color: {c['fg']};"
+        )
+        self.workflow_summary_label.setStyleSheet(
+            f"color: {c['muted']}; font-size: 12px;"
+        )
+        if getattr(self, "_empty_label", None) is not None:
+            try:
+                self._empty_label.setStyleSheet(f"color: {c['muted']}; padding: 20px;")
+            except RuntimeError:
+                pass
+        for btn in self._quick_action_buttons:
+            btn.apply_theme(is_dark)
+        for step_widget in self._step_widgets.values():
+            step_widget.apply_theme(is_dark)
+        for item_widget in self._recent_widgets:
+            try:
+                item_widget.apply_theme(is_dark)
+            except RuntimeError:
+                pass
 
-        # Clear existing items
+    def changeEvent(self, event: QtCore.QEvent) -> None:
+        if event.type() in (
+            QtCore.QEvent.PaletteChange,
+            QtCore.QEvent.ApplicationPaletteChange,
+            QtCore.QEvent.StyleChange,
+        ):
+            self._apply_theme_styles()
+        super().changeEvent(event)
+
+    def set_recent_items(self, items: List[RecentProject]) -> None:
+        """Update the list of recent projects/videos/files."""
+        self._recent_items = list(items or [])
+        self._recent_widgets = []
+
         while self._recent_layout.count():
             child = self._recent_layout.takeAt(0)
             if child.widget():
                 child.widget().deleteLater()
 
-        if not items:
+        is_dark = _is_dark_palette(self)
+        c = _dashboard_colors(is_dark)
+        if not self._recent_items:
             self._empty_label = QtWidgets.QLabel(
-                "No recent projects.\nCreate a new project or open a video to get started."
+                "No recent projects or files.\nCreate a new project or open a video to get started."
             )
-            self._empty_label.setStyleSheet("color: gray; padding: 20px;")
+            self._empty_label.setStyleSheet(f"color: {c['muted']}; padding: 20px;")
             self._empty_label.setAlignment(Qt.AlignCenter)
             self._recent_layout.addWidget(self._empty_label)
         else:
-            for item in items[:8]:  # Show max 8 recent items
-                widget = RecentItemWidget(item)
+            self._empty_label = None
+            for item in self._recent_items[:10]:
+                widget = RecentItemWidget(item, parent=self._recent_container)
+                widget.apply_theme(is_dark)
                 widget.clicked.connect(self.open_recent_requested.emit)
+                self._recent_widgets.append(widget)
                 self._recent_layout.addWidget(widget)
 
-    def update_workflow_status(self, step_statuses: dict) -> None:
+    def update_workflow_status(
+        self,
+        step_statuses: Mapping[str, str],
+        *,
+        summary: str = "",
+    ) -> None:
         """Update the visual status of workflow steps.
 
         Args:
             step_statuses: Dict mapping step_id to status ('pending', 'active', 'completed')
+            summary: Optional workflow summary line displayed above steps.
         """
-        # This would require storing references to WorkflowStepWidgets
-        # For now, the initial creation sets all to pending
-        pass
+        for step_id, widget in self._step_widgets.items():
+            if step_id in step_statuses:
+                widget.set_status(str(step_statuses[step_id]))
+        if summary:
+            self.workflow_summary_label.setText(str(summary))
 
     def add_recent_from_settings(self, settings: QtCore.QSettings) -> None:
-        """Load recent files from QSettings and populate the list."""
-        recent_files = settings.value("recentFiles", [], type=list) or []
-        items = []
-        for path in recent_files[:8]:
-            if Path(path).exists():
-                items.append(
-                    RecentProject(
-                        name=Path(path).name,
-                        path=path,
-                        last_opened=datetime.now(),  # Ideally track actual times
-                    )
+        """Load recent projects and recent files from QSettings and populate the list."""
+        items: List[RecentProject] = []
+        seen: set[str] = set()
+
+        raw_projects = settings.value("recentProjects", "[]")
+        parsed_projects: list = []
+        if isinstance(raw_projects, str):
+            try:
+                loaded = json.loads(raw_projects)
+                if isinstance(loaded, list):
+                    parsed_projects = loaded
+            except json.JSONDecodeError:
+                parsed_projects = []
+        elif isinstance(raw_projects, list):
+            parsed_projects = raw_projects
+
+        for entry in parsed_projects:
+            if isinstance(entry, dict):
+                raw_path = str(entry.get("path") or "").strip()
+                raw_name = str(entry.get("name") or "").strip()
+                raw_ts = entry.get("last_opened")
+            else:
+                raw_path = str(entry or "").strip()
+                raw_name = ""
+                raw_ts = None
+            if not raw_path or raw_path in seen:
+                continue
+            p = Path(raw_path)
+            if not p.exists():
+                continue
+            seen.add(raw_path)
+            items.append(
+                RecentProject(
+                    name=raw_name or p.name,
+                    path=raw_path,
+                    last_opened=_parse_iso_datetime(raw_ts),
+                    kind="project",
                 )
+            )
+
+        recent_files = settings.value("recentFiles", [], type=list) or []
+        video_suffixes = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v"}
+        for path in recent_files[:10]:
+            text = str(path or "").strip()
+            if not text or text in seen:
+                continue
+            p = Path(text)
+            if not p.exists():
+                continue
+            seen.add(text)
+            if p.is_dir() and (p / PROJECT_CONFIG_FILENAME).is_file():
+                kind = "project"
+            elif p.suffix.lower() in video_suffixes:
+                kind = "video"
+            else:
+                kind = "file"
+            try:
+                mtime = datetime.fromtimestamp(p.stat().st_mtime)
+            except OSError:
+                mtime = datetime.now()
+            items.append(
+                RecentProject(
+                    name=p.name,
+                    path=text,
+                    last_opened=mtime,
+                    kind=kind,
+                )
+            )
         self.set_recent_items(items)

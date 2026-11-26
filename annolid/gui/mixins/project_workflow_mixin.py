@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+import threading
 from typing import Any, Dict, List, Optional
 
 from qtpy import QtCore, QtWidgets
@@ -8,6 +10,7 @@ from qtpy import QtCore, QtWidgets
 from annolid.domain import (
     DEFAULT_SCHEMA_FILENAME,
     default_behavior_spec,
+    load_behavior_spec,
     save_behavior_spec,
 )
 from annolid.core.behavior.catalog import (
@@ -18,7 +21,99 @@ from annolid.core.behavior.catalog import (
     update_behavior_definition,
     upsert_behavior_definition,
 )
+from annolid.services.project_workspace import (
+    DEFAULT_VIDEO_EXTENSIONS,
+    export_project_bundle,
+    prune_missing_recent_entries,
+    resolve_project_dir,
+    upsert_recent_project_entries,
+)
 from annolid.utils.logger import logger
+
+
+class _ProjectExportWorker(QtCore.QObject):
+    """Background worker exporting an Annolid project folder or atomic ZIP archive."""
+
+    progressChanged = QtCore.Signal(int, int, str)  # done, total, rel_path
+    finished = QtCore.Signal(bool, str)  # ok, message
+
+    def __init__(
+        self,
+        *,
+        project_dir: Path,
+        export_path: Path,
+        config: Optional[Dict[str, Any]] = None,
+        include_data: bool = True,
+        include_models: bool = False,
+        as_zip: bool = False,
+    ) -> None:
+        super().__init__()
+        self._project_dir = Path(project_dir)
+        self._export_path = Path(export_path)
+        self._config = dict(config) if config else None
+        self._include_data = bool(include_data)
+        self._include_models = bool(include_models)
+        self._as_zip = bool(as_zip)
+        self._cancel_event = threading.Event()
+
+    @QtCore.Slot()
+    def cancel(self) -> None:
+        self._cancel_event.set()
+
+    def is_cancelled(self) -> bool:
+        return self._cancel_event.is_set()
+
+    @QtCore.Slot()
+    def run(self) -> None:
+        ok = False
+        message = "Export failed."
+        try:
+            ok, message = export_project_bundle(
+                self._project_dir,
+                self._export_path,
+                config=self._config,
+                include_data=self._include_data,
+                include_models=self._include_models,
+                as_zip=self._as_zip,
+                progress_callback=lambda done, total, rel: self.progressChanged.emit(
+                    int(done), int(total), str(rel)
+                ),
+                cancel_check=self._cancel_event.is_set,
+            )
+        except Exception as exc:
+            ok = False
+            message = f"Failed to export project: {exc}"
+        finally:
+            self.finished.emit(bool(ok), str(message))
+            app = QtCore.QCoreApplication.instance()
+            if app is not None and self.thread() != app.thread():
+                try:
+                    self.moveToThread(app.thread())
+                except Exception:
+                    pass
+
+
+class _ProjectExportBridge(QtCore.QObject):
+    """GUI-thread QObject receiver ensuring worker signals never run on the worker thread."""
+
+    def __init__(
+        self,
+        *,
+        on_progress,
+        on_finished,
+        parent: Optional[QtCore.QObject] = None,
+    ) -> None:
+        super().__init__(parent)
+        self._on_progress = on_progress
+        self._on_finished = on_finished
+
+    @QtCore.Slot(int, int, str)
+    def handle_progress(self, done: int, total: int, label: str) -> None:
+        self._on_progress(done, total, label)
+
+    @QtCore.Slot(bool, str)
+    def handle_finished(self, ok: bool, message: str) -> None:
+        self._on_finished(ok, message)
 
 
 class ProjectWorkflowMixin:
@@ -419,27 +514,745 @@ class ProjectWorkflowMixin:
         from annolid.gui.widgets.project_wizard import ProjectWizard
 
         wizard = ProjectWizard(parent=self)
-        wizard.project_created.connect(self._on_project_created)
+        wizard.project_created.connect(
+            lambda path, schema, videos, _w=wizard: self._on_project_created(
+                path,
+                schema,
+                videos,
+                open_first_video=bool(_w.should_open_video()),
+            )
+        )
         wizard.exec_()
 
-    def _on_project_created(self, project_path: Path, schema, videos: list) -> None:
+    def _register_videos_in_manager(self, videos: List[str]) -> None:
+        video_mgr = getattr(self, "video_manager_widget", None)
+        if video_mgr is None:
+            return
+        add_fn = getattr(video_mgr, "add_video", None)
+        if not callable(add_fn):
+            return
+        for video in videos or []:
+            path_str = str(video or "").strip()
+            if path_str and Path(path_str).exists():
+                try:
+                    add_fn(path_str)
+                except Exception:
+                    logger.debug("Failed adding video %s to manager", path_str)
+
+    def get_recent_projects(
+        self, *, prune_missing: bool = True
+    ) -> List[Dict[str, str]]:
+        """Return persisted recent projects as normalized dicts."""
+        settings = getattr(self, "settings", None)
+        if settings is None:
+            return []
+        raw = settings.value("recentProjects", "[]")
+        entries: list[Any] = []
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    entries = parsed
+            except json.JSONDecodeError:
+                entries = []
+        elif isinstance(raw, list):
+            entries = raw
+        if prune_missing:
+            cleaned = prune_missing_recent_entries(entries)
+            if len(cleaned) != len(entries):
+                try:
+                    settings.setValue("recentProjects", json.dumps(cleaned))
+                except Exception:
+                    pass
+            return cleaned
+        return [
+            {
+                "name": str(e.get("name") or "") if isinstance(e, dict) else "",
+                "path": str(e.get("path") or e or ""),
+                "last_opened": str(e.get("last_opened") or "")
+                if isinstance(e, dict)
+                else "",
+            }
+            for e in entries
+            if (isinstance(e, dict) and e.get("path"))
+            or (isinstance(e, str) and e.strip())
+        ]
+
+    def _record_recent_project(self, project_path: Path | str, name: str = "") -> None:
+        settings = getattr(self, "settings", None)
+        if settings is None:
+            return
+        updated = upsert_recent_project_entries(
+            self.get_recent_projects(prune_missing=False),
+            project_path,
+            name=name,
+            max_entries=12,
+        )
+        try:
+            settings.setValue("recentProjects", json.dumps(updated))
+        except Exception:
+            logger.debug("Failed persisting recentProjects", exc_info=True)
+
+    def clear_recent_history(self) -> None:
+        """Clear both recent projects and recent files from memory and QSettings."""
+        if hasattr(self, "recentFiles"):
+            self.recentFiles = []
+        settings = getattr(self, "settings", None)
+        if settings is not None:
+            try:
+                settings.setValue("recentFiles", [])
+                settings.setValue("recentProjects", "[]")
+            except Exception:
+                pass
+        hub = getattr(self, "_project_hub_dialog", None)
+        if hub is not None:
+            try:
+                hub.refresh()
+            except Exception:
+                pass
+        status_bar = self.statusBar() if hasattr(self, "statusBar") else None
+        if status_bar is not None:
+            status_bar.showMessage(self.tr("Cleared recent projects and files"), 2500)
+
+    def _on_project_created(
+        self,
+        project_path: Path,
+        schema,
+        videos: list,
+        *,
+        open_first_video: bool = True,
+    ) -> None:
         """Handle project creation from the wizard."""
+        project_dir = resolve_project_dir(project_path)
+        controller = getattr(self, "project_controller", None)
+        if controller is not None:
+            try:
+                controller.load_project(project_dir)
+            except Exception:
+                logger.debug(
+                    "ProjectController failed to load newly created project %s",
+                    project_dir,
+                    exc_info=True,
+                )
+
         self.project_schema = schema
-        self.project_schema_path = project_path / "project.annolid.json"
-        self.behavior_controller.configure_from_schema(schema)
-        self._populate_behavior_controls_from_schema(schema)
-        self._sync_behavior_flags_from_schema(schema)
+        self.project_schema_path = project_dir / DEFAULT_SCHEMA_FILENAME
+        self._refresh_behavior_catalog_views()
         configure_pose = getattr(self, "_configure_pose_schema_from_project", None)
         if callable(configure_pose):
-            configure_pose(schema, project_dir=project_path)
+            configure_pose(schema, project_dir=project_dir)
 
-        if videos:
-            self.openVideo(from_video_list=True, video_path=videos[0])
+        self._record_recent_project(project_dir, name=project_dir.name)
+        video_list = [str(v) for v in (videos or []) if str(v or "").strip()]
+        self._register_videos_in_manager(video_list)
+
+        if video_list and open_first_video and hasattr(self, "openVideo"):
+            self.openVideo(from_video_list=True, video_path=video_list[0])
+
+        hub = getattr(self, "_project_hub_dialog", None)
+        if hub is not None:
+            try:
+                hub.refresh()
+            except Exception:
+                pass
 
         self.statusBar().showMessage(
-            self.tr("Project '%s' created successfully") % project_path.name,
+            self.tr("Project '%s' created successfully") % project_dir.name,
             5000,
         )
+
+    def open_project(
+        self,
+        project_path: Optional[str | Path] = None,
+        *,
+        open_first_video: bool = True,
+    ) -> bool:
+        """Open an existing Annolid project folder (or `project.annolid.json`)."""
+        target = project_path
+        if not target:
+            start_dir = str(getattr(self, "lastOpenDir", None) or Path.home())
+            chosen = QtWidgets.QFileDialog.getExistingDirectory(
+                self,
+                self.tr("Open Annolid Project Folder"),
+                start_dir,
+            )
+            if not chosen:
+                return False
+            target = chosen
+
+        project_dir = resolve_project_dir(target)
+        controller = getattr(self, "project_controller", None)
+        if controller is None:
+            return False
+
+        loaded = controller.load_project(project_dir)
+        if not loaded:
+            QtWidgets.QMessageBox.warning(
+                self,
+                self.tr("Open Project"),
+                self.tr("Could not open Annolid project at:\n%s") % str(project_dir),
+            )
+            return False
+
+        info = controller.get_project_info() or {}
+        schema_file = project_dir / DEFAULT_SCHEMA_FILENAME
+        if schema_file.is_file():
+            try:
+                schema, resolved_schema_path = load_behavior_spec(path=schema_file)
+                self.project_schema = schema
+                self.project_schema_path = resolved_schema_path or schema_file
+                self._refresh_behavior_catalog_views()
+                configure_pose = getattr(
+                    self, "_configure_pose_schema_from_project", None
+                )
+                if callable(configure_pose):
+                    configure_pose(schema, project_dir=project_dir)
+            except Exception as exc:
+                logger.debug("Failed loading behavior schema from project: %s", exc)
+
+        self.lastOpenDir = str(project_dir)
+        project_name = str(info.get("name") or project_dir.name)
+        self._record_recent_project(project_dir, name=project_name)
+
+        project_videos = [
+            v for v in controller.get_project_videos() if Path(v).is_file()
+        ]
+        self._register_videos_in_manager(project_videos)
+        if open_first_video and project_videos and hasattr(self, "openVideo"):
+            self.openVideo(from_video_list=True, video_path=project_videos[0])
+        elif not project_videos and hasattr(self, "importDirImages"):
+            images_dir = controller.get_project_directory("images")
+            annotations_dir = controller.get_project_directory("annotations")
+            browse_dir = None
+            if (
+                images_dir is not None
+                and images_dir.is_dir()
+                and any(images_dir.iterdir())
+            ):
+                browse_dir = images_dir
+            elif (
+                annotations_dir is not None
+                and annotations_dir.is_dir()
+                and any(annotations_dir.iterdir())
+            ):
+                browse_dir = annotations_dir
+            if browse_dir is not None:
+                self.importDirImages(str(browse_dir), load=False)
+
+        hub = getattr(self, "_project_hub_dialog", None)
+        if hub is not None:
+            try:
+                hub.refresh()
+            except Exception:
+                pass
+
+        status_bar = self.statusBar() if hasattr(self, "statusBar") else None
+        if status_bar is not None:
+            status_bar.showMessage(
+                self.tr("Opened project '%s'") % project_name,
+                4000,
+            )
+        return True
+
+    def add_videos_to_active_project(
+        self,
+        video_paths: Optional[List[str]] = None,
+        *,
+        copy_into_project: bool = False,
+    ) -> List[str]:
+        """Add video files to the active project and Video Manager."""
+        controller = getattr(self, "project_controller", None)
+        if controller is None or not controller.is_project_loaded():
+            QtWidgets.QMessageBox.information(
+                self,
+                self.tr("Add Videos"),
+                self.tr("Open or create an Annolid project first."),
+            )
+            return []
+
+        selected = list(video_paths or [])
+        if not selected:
+            files, _ = QtWidgets.QFileDialog.getOpenFileNames(
+                self,
+                self.tr("Add Videos to Project"),
+                str(controller.get_current_project_path() or Path.home()),
+                "Video Files (*.mp4 *.avi *.mov *.mkv *.webm);;All Files (*)",
+            )
+            selected = list(files or [])
+        if not selected:
+            return []
+
+        ok, registered = controller.register_project_videos(
+            selected, copy_into_project=copy_into_project
+        )
+        if not ok:
+            return []
+
+        self._register_videos_in_manager(registered)
+        hub = getattr(self, "_project_hub_dialog", None)
+        if hub is not None:
+            try:
+                hub.refresh()
+            except Exception:
+                pass
+        status_bar = self.statusBar() if hasattr(self, "statusBar") else None
+        if status_bar is not None:
+            status_bar.showMessage(
+                self.tr("Added %d video(s) to project") % len(registered),
+                3500,
+            )
+        return registered
+
+    def close_active_project(self) -> None:
+        """Close the currently loaded project and refresh Project Hub views."""
+        controller = getattr(self, "project_controller", None)
+        if controller is None:
+            return
+        active_path = controller.get_current_project_path()
+        controller.close_project()
+        schema_path = getattr(self, "project_schema_path", None)
+        if active_path is not None and schema_path is not None:
+            try:
+                Path(schema_path).resolve().relative_to(Path(active_path).resolve())
+            except ValueError:
+                pass
+            else:
+                self.project_schema_path = None
+        hub = getattr(self, "_project_hub_dialog", None)
+        if hub is not None:
+            try:
+                hub.refresh()
+            except Exception:
+                pass
+        status_bar = self.statusBar() if hasattr(self, "statusBar") else None
+        if status_bar is not None:
+            status_bar.showMessage(self.tr("Closed active project"), 3000)
+
+    def _cancel_active_project_export(self, *, wait_ms: int = 2000) -> None:
+        """Cooperatively cancel and join any running project export worker."""
+        worker = getattr(self, "_project_export_worker", None)
+        thread = getattr(self, "_project_export_thread", None)
+        progress = getattr(self, "_project_export_progress", None)
+        if worker is not None:
+            try:
+                worker.cancel()
+            except RuntimeError:
+                pass
+        if progress is not None:
+            try:
+                progress.canceled.disconnect()
+            except Exception:
+                pass
+            try:
+                progress.close()
+                progress.deleteLater()
+            except RuntimeError:
+                pass
+            self._project_export_progress = None
+        if thread is not None:
+            try:
+                if thread.isRunning() and wait_ms > 0:
+                    thread.quit()
+                    thread.wait(wait_ms)
+            except RuntimeError:
+                pass
+            if wait_ms > 0:
+                try:
+                    thread.deleteLater()
+                except RuntimeError:
+                    pass
+                self._project_export_thread = None
+        if worker is not None and wait_ms > 0:
+            try:
+                worker.deleteLater()
+            except RuntimeError:
+                pass
+            self._project_export_worker = None
+        bridge = getattr(self, "_project_export_bridge", None)
+        if bridge is not None and wait_ms > 0:
+            try:
+                bridge.deleteLater()
+            except RuntimeError:
+                pass
+            self._project_export_bridge = None
+
+    def export_current_project(
+        self,
+        *,
+        target_path: Optional[str | Path] = None,
+        include_data: bool = True,
+        include_models: bool = False,
+        async_export: bool = True,
+    ) -> bool:
+        """Export the active Annolid project to a `.zip` archive or folder.
+
+        Runs on a cancellable background `QThread` with a progress dialog by default
+        so multi-GB video exports never block the UI thread.
+        """
+        controller = getattr(self, "project_controller", None)
+        if controller is None or not controller.is_project_loaded():
+            QtWidgets.QMessageBox.information(
+                self,
+                self.tr("Export Project"),
+                self.tr("Open or create an Annolid project first."),
+            )
+            return False
+
+        existing_thread = getattr(self, "_project_export_thread", None)
+        if existing_thread is not None:
+            try:
+                if existing_thread.isRunning():
+                    QtWidgets.QMessageBox.information(
+                        self,
+                        self.tr("Export Project"),
+                        self.tr("A project export is already in progress."),
+                    )
+                    return False
+            except RuntimeError:
+                self._project_export_thread = None
+
+        info = controller.get_project_info() or {}
+        project_dir = controller.get_current_project_path()
+        if project_dir is None:
+            return False
+
+        if target_path is None:
+            project_name = str(info.get("name") or "annolid_project")
+            default_zip = str(Path.home() / f"{project_name}_bundle.zip")
+            chosen, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self,
+                self.tr("Export Project Bundle"),
+                default_zip,
+                "ZIP Archive (*.zip);;Folder (*)",
+            )
+            if not chosen:
+                return False
+            target = Path(chosen)
+        else:
+            target = Path(target_path)
+
+        as_zip = target.suffix.lower() == ".zip"
+        if not async_export:
+            ok = controller.export_project(
+                target,
+                include_data=include_data,
+                include_models=include_models,
+                as_zip=as_zip,
+            )
+            if ok:
+                status_bar = self.statusBar() if hasattr(self, "statusBar") else None
+                if status_bar is not None:
+                    status_bar.showMessage(
+                        self.tr("Exported project to %s") % target.name,
+                        4000,
+                    )
+            return bool(ok)
+
+        config_snapshot: Dict[str, Any] = {
+            "directories": dict(info.get("directories") or {})
+        }
+        worker = _ProjectExportWorker(
+            project_dir=Path(project_dir),
+            export_path=target,
+            config=config_snapshot,
+            include_data=include_data,
+            include_models=include_models,
+            as_zip=as_zip,
+        )
+        thread = QtCore.QThread(self)
+        worker.moveToThread(thread)
+
+        progress = QtWidgets.QProgressDialog(
+            self.tr("Preparing project export…"),
+            self.tr("Cancel"),
+            0,
+            0,
+            self,
+        )
+        progress.setWindowTitle(self.tr("Export Project Bundle"))
+        progress.setWindowModality(QtCore.Qt.WindowModal)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        progress.setMinimumDuration(0)
+        progress.canceled.connect(worker.cancel, QtCore.Qt.DirectConnection)
+
+        def _on_progress(done: int, total: int, label: str) -> None:
+            if getattr(self, "_project_export_progress", None) is not progress:
+                return
+            try:
+                if total > 0:
+                    if progress.maximum() != total:
+                        progress.setRange(0, total)
+                    progress.setValue(min(done, total))
+                    progress.setLabelText(
+                        self.tr("Exporting (%d/%d): %s") % (done, total, label)
+                    )
+                else:
+                    progress.setLabelText(label or self.tr("Exporting project…"))
+            except RuntimeError:
+                pass
+
+        def _on_finished(ok: bool, message: str) -> None:
+            cancelled = worker.is_cancelled()
+            if getattr(self, "_project_export_progress", None) is progress:
+                self._project_export_progress = None
+            try:
+                progress.canceled.disconnect()
+            except Exception:
+                pass
+            try:
+                progress.close()
+                progress.deleteLater()
+            except RuntimeError:
+                pass
+
+            if getattr(self, "_project_export_thread", None) is thread:
+                self._project_export_thread = None
+            if getattr(self, "_project_export_worker", None) is worker:
+                self._project_export_worker = None
+            if getattr(self, "_project_export_bridge", None) is bridge:
+                self._project_export_bridge = None
+            try:
+                thread.quit()
+                thread.wait(2000)
+                thread.deleteLater()
+            except RuntimeError:
+                pass
+            try:
+                worker.deleteLater()
+            except RuntimeError:
+                pass
+            try:
+                bridge.deleteLater()
+            except RuntimeError:
+                pass
+
+            status_bar = self.statusBar() if hasattr(self, "statusBar") else None
+            if ok:
+                if status_bar is not None:
+                    status_bar.showMessage(
+                        self.tr("Exported project to %s") % target.name,
+                        4000,
+                    )
+            elif cancelled:
+                if status_bar is not None:
+                    status_bar.showMessage(self.tr("Project export cancelled"), 3500)
+            else:
+                if status_bar is not None:
+                    status_bar.showMessage(
+                        self.tr("Project export failed: %s") % message, 5000
+                    )
+                if controller is not None and hasattr(controller, "project_error"):
+                    try:
+                        controller.project_error.emit(message)
+                    except Exception:
+                        pass
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    self.tr("Export Project"),
+                    message,
+                )
+
+            hub = getattr(self, "_project_hub_dialog", None)
+            if hub is not None:
+                try:
+                    hub.refresh()
+                except Exception:
+                    pass
+
+        bridge = _ProjectExportBridge(
+            on_progress=_on_progress,
+            on_finished=_on_finished,
+            parent=self,
+        )
+        worker.progressChanged.connect(
+            bridge.handle_progress, QtCore.Qt.QueuedConnection
+        )
+        worker.finished.connect(bridge.handle_finished, QtCore.Qt.QueuedConnection)
+        thread.started.connect(worker.run)
+
+        self._project_export_bridge = bridge
+        self._project_export_worker = worker
+        self._project_export_thread = thread
+        self._project_export_progress = progress
+        progress.show()
+        thread.start()
+        return True
+
+    def _open_audited_file(self, path_str: str) -> bool:
+        """Open a file selected from FileAuditWidget, FileAuditDialog, or recent history."""
+        raw = str(path_str or "").strip()
+        if not raw:
+            return False
+        target = Path(raw).expanduser()
+        if not target.exists():
+            status_bar = self.statusBar() if hasattr(self, "statusBar") else None
+            if status_bar is not None:
+                status_bar.showMessage(self.tr("Missing file: %s") % str(target), 4000)
+            return False
+
+        opened = False
+        if target.suffix.lower() in DEFAULT_VIDEO_EXTENSIONS and hasattr(
+            self, "openVideo"
+        ):
+            self.openVideo(from_video_list=True, video_path=str(target))
+            opened = True
+        elif hasattr(self, "loadFile"):
+            result = self.loadFile(str(target))
+            opened = True if result is None else bool(result)
+
+        if opened:
+            try:
+                self.raise_()
+                self.activateWindow()
+            except Exception:
+                pass
+        return opened
+
+    def open_annotation_audit_dialog(
+        self,
+        initial_dir: Optional[str | Path] = None,
+        *,
+        auto_scan: bool = True,
+    ):
+        """Open (or raise) the project-scoped Annotation Audit dialog."""
+        from annolid.gui.widgets.file_audit_widget import FileAuditDialog
+
+        controller = getattr(self, "project_controller", None)
+        project_info = (
+            controller.get_project_info()
+            if controller is not None and controller.is_project_loaded()
+            else None
+        )
+        project_config = (
+            {"directories": dict(project_info.get("directories") or {})}
+            if project_info
+            else None
+        )
+
+        resolved_dir: Optional[Path] = None
+        if initial_dir:
+            resolved_dir = Path(initial_dir).expanduser()
+        elif project_info and project_info.get("path"):
+            resolved_dir = Path(str(project_info["path"]))
+        elif getattr(self, "video_results_folder", None):
+            resolved_dir = Path(str(self.video_results_folder))
+        elif getattr(self, "annotation_dir", None):
+            resolved_dir = Path(str(self.annotation_dir))
+        elif getattr(self, "lastOpenDir", None):
+            resolved_dir = Path(str(self.lastOpenDir))
+
+        dialog = getattr(self, "_file_audit_dialog", None)
+        if dialog is None:
+            dialog = FileAuditDialog(
+                initial_dir=resolved_dir,
+                project_config=project_config,
+                auto_scan=auto_scan,
+                parent=self,
+            )
+            dialog.fileOpenRequested.connect(self._open_audited_file)
+            dialog.finished.connect(
+                lambda *_: setattr(self, "_file_audit_dialog", None)
+            )
+            dialog.destroyed.connect(
+                lambda *_: setattr(self, "_file_audit_dialog", None)
+            )
+            self._file_audit_dialog = dialog
+        elif resolved_dir is not None and resolved_dir.is_dir() and auto_scan:
+            dialog.scan_directory(
+                resolved_dir,
+                project_config=project_config,
+            )
+
+        dialog.show()
+        dialog.setWindowState(dialog.windowState() & ~QtCore.Qt.WindowMinimized)
+        dialog.raise_()
+        dialog.activateWindow()
+        return dialog
+
+    def _dispatch_workflow_step(self, step_id: str) -> None:
+        step = str(step_id or "").strip().lower()
+        controller = getattr(self, "project_controller", None)
+        has_project = bool(controller is not None and controller.is_project_loaded())
+        if step == "project":
+            if has_project:
+                self.open_project_schema_dialog()
+            else:
+                self.open_new_project_wizard()
+            return
+        if step == "collect":
+            if has_project:
+                self.add_videos_to_active_project()
+            elif hasattr(self, "openDirDialog"):
+                self.openDirDialog()
+            return
+        if step == "annotate":
+            videos = controller.get_project_videos() if has_project else []
+            existing = [v for v in videos if Path(v).is_file()]
+            if existing and hasattr(self, "openVideo"):
+                self.openVideo(from_video_list=True, video_path=existing[0])
+            elif hasattr(self, "openVideo"):
+                self.openVideo()
+            return
+        if step == "train":
+            self.open_training_wizard()
+            return
+        if step == "inference":
+            self.open_inference_wizard()
+            return
+        if step == "analyze":
+            if hasattr(self, "open_analysis_studio"):
+                self.open_analysis_studio()
+            else:
+                self.open_export_dataset_wizard()
+
+    def open_project_hub(self):
+        """Open (or raise) the Project & Workflow Hub dialog."""
+        from annolid.gui.widgets.project_hub_dialog import ProjectHubDialog
+
+        dialog = getattr(self, "_project_hub_dialog", None)
+        if dialog is None:
+            dialog = ProjectHubDialog(
+                project_controller=getattr(self, "project_controller", None),
+                recent_projects_getter=lambda: self.get_recent_projects(
+                    prune_missing=True
+                ),
+                recent_files_getter=lambda: list(
+                    getattr(self, "recentFiles", []) or []
+                ),
+                parent=self,
+            )
+            dialog.newProjectRequested.connect(self.open_new_project_wizard)
+            dialog.openProjectRequested.connect(
+                lambda path: self.open_project(path or None)
+            )
+            dialog.closeProjectRequested.connect(self.close_active_project)
+            dialog.exportProjectRequested.connect(self.export_current_project)
+            dialog.addVideosRequested.connect(
+                lambda: self.add_videos_to_active_project()
+            )
+            dialog.editSchemaRequested.connect(self.open_project_schema_dialog)
+            dialog.auditAnnotationsRequested.connect(self.open_annotation_audit_dialog)
+            dialog.openVideoRequested.connect(
+                lambda path: self._open_audited_file(path)
+                if path
+                else (self.openVideo() if hasattr(self, "openVideo") else None)
+            )
+            dialog.workflowStepRequested.connect(self._dispatch_workflow_step)
+            dialog.finished.connect(
+                lambda *_: setattr(self, "_project_hub_dialog", None)
+            )
+            dialog.destroyed.connect(
+                lambda *_: setattr(self, "_project_hub_dialog", None)
+            )
+            self._project_hub_dialog = dialog
+
+        dialog.refresh()
+        dialog.show()
+        dialog.setWindowState(dialog.windowState() & ~QtCore.Qt.WindowMinimized)
+        dialog.raise_()
+        dialog.activateWindow()
+        return dialog
 
     def open_export_dataset_wizard(self) -> None:
         """Open the dataset export wizard."""
@@ -453,6 +1266,8 @@ class ProjectWorkflowMixin:
 
         wizard = DatasetExportWizard(source_dir=source_dir, parent=self)
         wizard.export_complete.connect(self._on_dataset_exported)
+        if hasattr(wizard, "file_open_requested"):
+            wizard.file_open_requested.connect(self._open_audited_file)
         wizard.exec_()
 
     def _on_dataset_exported(self, output_path: Path, format_type: str) -> None:

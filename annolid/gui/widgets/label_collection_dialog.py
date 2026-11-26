@@ -22,6 +22,7 @@ from annolid.datasets.labelme_collection import (
 from annolid.gui.workers import FlexibleWorker
 from annolid.datasets.builders.label_index_yolo import build_yolo_from_label_index
 from annolid.gui.widgets.file_audit_widget import FileAuditWidget
+from annolid.services.project_workspace import is_non_annotation_json
 
 
 def _resolve_agent_workspace_root() -> Path:
@@ -153,6 +154,8 @@ def _run_index_job(job: LabelIndexJob, *, pred_worker=None, stop_event=None) -> 
 
 class LabelCollectionDialog(QtWidgets.QDialog):
     """GUI for indexing LabelMe PNG/JSON pairs into a JSONL dataset index."""
+
+    file_open_requested = QtCore.Signal(str)
 
     def __init__(self, *, settings: Optional[QtCore.QSettings] = None, parent=None):
         super().__init__(parent)
@@ -370,6 +373,7 @@ class LabelCollectionDialog(QtWidgets.QDialog):
         self.audit_layout.addWidget(self.scan_btn)
 
         self.audit_widget = FileAuditWidget()
+        self.audit_widget.fileOpenRequested.connect(self.file_open_requested.emit)
         self.audit_layout.addWidget(self.audit_widget)
 
         layout.addLayout(self.audit_layout)
@@ -1195,8 +1199,12 @@ class LabelCollectionDialog(QtWidgets.QDialog):
 
         recursive = self.recursive_cb.isChecked()
 
-        # Use existing helper to find files
-        json_files = _build_json_list(source_paths, recursive=recursive)
+        # Use existing helper to find files (excluding project/schema/tracking metadata JSONs)
+        json_files = [
+            jf
+            for jf in _build_json_list(source_paths, recursive=recursive)
+            if not is_non_annotation_json(jf)
+        ]
 
         audit_items = []
         import json

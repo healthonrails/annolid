@@ -1,7 +1,7 @@
 """
 Project Service for Annolid GUI Application.
 
-Handles project management, configuration, and file organization.
+Handles project management, configuration, workflow status, and file organization.
 """
 
 from __future__ import annotations
@@ -9,9 +9,26 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple, Union
 
-from annolid.infrastructure import atomic_write_json, atomic_write_text
+from annolid.infrastructure import atomic_write_json
+from annolid.services.project_workspace import (
+    PROJECT_CONFIG_FILENAME,
+    compute_project_workflow_status,
+    current_iso_timestamp,
+    deep_merge_dict,
+    default_project_config,
+    ensure_project_directories,
+    export_project_bundle,
+    is_schema_only_project_config,
+    normalize_project_config,
+    register_project_videos,
+    resolve_project_dir,
+    resolve_project_video_paths,
+    scan_project_statistics,
+    validate_project_name,
+    write_project_ignore_file,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +47,7 @@ class ProjectService:
     """
     Domain service for project management operations.
 
-    Provides business logic for creating, loading, and managing
+    Provides business logic for creating, loading, validating, and exporting
     Annolid annotation projects.
     """
 
@@ -46,120 +63,50 @@ class ProjectService:
         project_name: str,
         project_config: Optional[Dict[str, Any]] = None,
     ) -> Tuple[bool, str]:
-        """
-        Create a new Annolid project.
-
-        Args:
-            project_path: Path where project should be created
-            project_name: Name of the project
-            project_config: Optional project configuration
-
-        Returns:
-            Tuple of (success, message)
-        """
+        """Create a new Annolid project."""
         try:
-            project_path = Path(project_path)
-            project_dir = project_path / project_name
+            valid_name, reason = validate_project_name(project_name)
+            if not valid_name:
+                return False, f"Invalid project name: {reason}"
 
-            # Create project directory structure
-            directories = [
-                project_dir,
-                project_dir / "images",
-                project_dir / "annotations",
-                project_dir / "models",
-                project_dir / "videos",
-                project_dir / "exports",
-            ]
+            clean_name = str(project_name).strip()
+            project_root_parent = Path(project_path).expanduser()
+            project_dir = project_root_parent / clean_name
 
-            for directory in directories:
-                directory.mkdir(parents=True, exist_ok=True)
-
-            # Create default project configuration
-            default_config = {
-                "name": project_name,
-                "version": "1.0.0",
-                "description": f"Annolid project: {project_name}",
-                "created": self._get_current_timestamp(),
-                "modified": self._get_current_timestamp(),
-                "directories": {
-                    "images": "images",
-                    "annotations": "annotations",
-                    "models": "models",
-                    "videos": "videos",
-                    "exports": "exports",
-                },
-                "settings": {
-                    "annotation_format": "labelme",
-                    "image_extensions": [".jpg", ".jpeg", ".png", ".bmp", ".tiff"],
-                    "video_extensions": [".mp4", ".avi", ".mov", ".mkv"],
-                    "auto_save": True,
-                    "backup_interval": 300,  # seconds
-                },
-                "classes": [],
-                "models": [],
-            }
-
-            # Merge with provided config
+            config = default_project_config(clean_name)
             if project_config:
-                self._deep_merge(default_config, project_config)
+                deep_merge_dict(config, project_config)
 
-            # Save project configuration while preserving any existing behavior schema keys
-            config_path = project_dir / "project.annolid.json"
+            ensure_project_directories(project_dir, config.get("directories"))
+
+            # Preserve any existing behavior/pose schema keys if project.annolid.json already exists.
+            config_path = project_dir / PROJECT_CONFIG_FILENAME
             if config_path.exists():
                 with open(config_path, "r", encoding="utf-8") as f:
                     existing_disk_config = json.load(f)
                 if isinstance(existing_disk_config, dict):
                     for key, value in existing_disk_config.items():
-                        if key not in default_config:
-                            default_config[key] = value
+                        if key not in config:
+                            config[key] = value
             atomic_write_json(
                 config_path,
-                default_config,
+                config,
                 indent=2,
                 ensure_ascii=False,
             )
 
-            # Create .annolidignore file
-            ignore_path = project_dir / ".annolidignore"
-            ignore_content = """# Annolid ignore file
-# Files and directories to ignore during project operations
-
-# Temporary files
-*.tmp
-*.temp
-*~
-
-# System files
-.DS_Store
-Thumbs.db
-
-# Cache directories
-__pycache__/
-*.pyc
-*.pyo
-
-# Log files
-*.log
-
-# Backup files
-*.bak
-*.backup
-
-# Export directories (can be large)
-exports/
-"""
-            atomic_write_text(ignore_path, ignore_content, encoding="utf-8")
+            write_project_ignore_file(project_dir, overwrite=False)
 
             self._current_project = {
                 "path": str(project_dir),
-                "config": default_config,
+                "config": config,
             }
-            self._project_config = default_config
+            self._project_config = config
             self._explicitly_updated_schema_keys.clear()
 
             return (
                 True,
-                f"Project '{project_name}' created successfully at {project_dir}",
+                f"Project '{clean_name}' created successfully at {project_dir}",
             )
 
         except Exception as e:
@@ -167,36 +114,39 @@ exports/
             return False, f"Failed to create project: {str(e)}"
 
     def load_project(self, project_path: Union[str, Path]) -> Tuple[bool, str]:
-        """
-        Load an existing Annolid project.
-
-        Args:
-            project_path: Path to the project directory
-
-        Returns:
-            Tuple of (success, message)
-        """
+        """Load an existing Annolid project (directory or `project.annolid.json`)."""
         try:
-            project_path = Path(project_path)
+            resolved_dir = resolve_project_dir(project_path)
 
-            if not project_path.exists():
-                return False, f"Project path does not exist: {project_path}"
+            if not resolved_dir.exists():
+                return False, f"Project path does not exist: {resolved_dir}"
 
-            config_path = project_path / "project.annolid.json"
+            config_path = resolved_dir / PROJECT_CONFIG_FILENAME
             if not config_path.exists():
                 return False, f"Project configuration file not found: {config_path}"
 
-            # Load project configuration
             with open(config_path, "r", encoding="utf-8") as f:
-                config = json.load(f)
+                raw_config = json.load(f)
+            if not isinstance(raw_config, dict):
+                return (
+                    False,
+                    f"Invalid project configuration file: expected JSON object in {config_path}",
+                )
 
-            # Validate project structure
-            is_valid, errors = self.validate_project_structure(project_path, config)
+            schema_only = is_schema_only_project_config(raw_config)
+            if schema_only:
+                config, _upgraded = normalize_project_config(resolved_dir, raw_config)
+                ensure_project_directories(resolved_dir, config.get("directories"))
+                write_project_ignore_file(resolved_dir, overwrite=False)
+            else:
+                config = raw_config
+
+            is_valid, errors = self.validate_project_structure(resolved_dir, config)
             if not is_valid:
                 return False, f"Invalid project structure: {'; '.join(errors)}"
 
             self._current_project = {
-                "path": str(project_path),
+                "path": str(resolved_dir),
                 "config": config,
             }
             self._project_config = config
@@ -210,61 +160,64 @@ exports/
             logger.error(f"Failed to load project: {e}")
             return False, f"Failed to load project: {str(e)}"
 
+    def close_project(self) -> None:
+        """Clear the currently loaded project state."""
+        self._current_project = None
+        self._project_config = None
+        self._explicitly_updated_schema_keys.clear()
+
     def validate_project_structure(
         self, project_path: Path, config: Dict[str, Any]
     ) -> Tuple[bool, List[str]]:
-        """
-        Validate project directory structure and configuration.
+        """Validate project directory structure and configuration."""
+        errors: List[str] = []
+        root = resolve_project_dir(project_path).resolve()
 
-        Args:
-            project_path: Path to the project
-            config: Project configuration
-
-        Returns:
-            Tuple of (is_valid, error_messages)
-        """
-        errors = []
-
-        # Check required directories
-        required_dirs = ["images", "annotations"]
-        for dir_name in required_dirs:
-            dir_path = project_path / dir_name
-            if not dir_path.exists():
-                errors.append(f"Required directory missing: {dir_name}")
-
-        # Check configuration requirements
         required_config_keys = ["name", "directories"]
         for key in required_config_keys:
             if key not in config:
                 errors.append(f"Required configuration key missing: {key}")
 
-        # Validate directory mappings
-        if "directories" in config:
-            dirs_config = config["directories"]
+        dirs_config = config.get("directories")
+        if isinstance(dirs_config, dict):
+            for required_key in ("images", "annotations"):
+                rel_dir = str(dirs_config.get(required_key) or required_key)
+                if not (root / rel_dir).exists():
+                    errors.append(f"Required directory missing: {rel_dir}")
             for dir_key, dir_name in dirs_config.items():
-                dir_path = project_path / dir_name
+                rel_name = str(dir_name or "").strip()
+                if not rel_name:
+                    errors.append(f"Empty directory mapping for: {dir_key}")
+                    continue
+                dir_path = (root / rel_name).resolve()
+                try:
+                    dir_path.relative_to(root)
+                except ValueError:
+                    errors.append(
+                        f"Configured directory escapes project root: {rel_name} ({dir_key})"
+                    )
+                    continue
                 if not dir_path.exists():
                     errors.append(
-                        f"Configured directory does not exist: {dir_name} ({dir_key})"
+                        f"Configured directory does not exist: {rel_name} ({dir_key})"
                     )
+        else:
+            for dir_name in ("images", "annotations"):
+                if not (root / dir_name).exists():
+                    errors.append(f"Required directory missing: {dir_name}")
 
-        return len(errors) == 0, errors
+        # Deduplicate error messages while preserving order.
+        deduped = list(dict.fromkeys(errors))
+        return len(deduped) == 0, deduped
 
     def save_project_config(self) -> Tuple[bool, str]:
-        """
-        Save the current project configuration.
-
-        Returns:
-            Tuple of (success, message)
-        """
+        """Save the current project configuration atomically, preserving schema keys."""
         if not self._current_project:
             return False, "No project loaded"
 
         try:
-            config_path = Path(self._current_project["path"]) / "project.annolid.json"
+            config_path = Path(self._current_project["path"]) / PROJECT_CONFIG_FILENAME
             config = self._current_project["config"]
-
-            # Update modification timestamp
             config["modified"] = self._get_current_timestamp()
 
             merged_config: Dict[str, Any] = {}
@@ -304,112 +257,83 @@ exports/
             return False, f"Failed to save project configuration: {str(e)}"
 
     def get_project_info(self) -> Optional[Dict[str, Any]]:
-        """
-        Get information about the current project.
-
-        Returns:
-            Project information dictionary or None if no project loaded
-        """
+        """Get rich metadata, directory mappings, settings, stats, and workflow status."""
         if not self._current_project:
             return None
 
         config = self._current_project["config"]
         project_path = Path(self._current_project["path"])
+        statistics = self._get_project_statistics(project_path, config)
+        workflow_status = compute_project_workflow_status(
+            project_path, config, statistics
+        )
+        videos = [str(p) for p in resolve_project_video_paths(project_path, config)]
 
-        # Gather project statistics
-        info = {
+        return {
             "name": config.get("name", "Unknown"),
             "path": str(project_path),
             "version": config.get("version", "Unknown"),
             "description": config.get("description", ""),
             "created": config.get("created", "Unknown"),
             "modified": config.get("modified", "Unknown"),
-            "statistics": self._get_project_statistics(project_path, config),
+            "directories": dict(config.get("directories") or {}),
+            "settings": dict(config.get("settings") or {}),
+            "videos": videos,
+            "statistics": statistics,
+            "workflow_status": workflow_status,
         }
 
-        return info
+    def get_workflow_status(self) -> Dict[str, Any]:
+        """Return live 6-step workflow status for the currently loaded project."""
+        if not self._current_project:
+            return compute_project_workflow_status(None)
+        project_path = Path(self._current_project["path"])
+        config = self._current_project["config"]
+        stats = self._get_project_statistics(project_path, config)
+        return compute_project_workflow_status(project_path, config, stats)
+
+    def get_project_videos(self) -> List[str]:
+        """Return resolved paths of all videos registered or stored in the project."""
+        if not self._current_project:
+            return []
+        project_path = Path(self._current_project["path"])
+        config = self._current_project["config"]
+        return [str(p) for p in resolve_project_video_paths(project_path, config)]
+
+    def register_videos(
+        self,
+        video_paths: Sequence[Union[str, Path]],
+        *,
+        copy_into_project: bool = False,
+    ) -> Tuple[bool, str, List[str]]:
+        """Register video files in the active project and persist `project.annolid.json`."""
+        if not self._current_project:
+            return False, "No project loaded", []
+        try:
+            project_path = Path(self._current_project["path"])
+            config = self._current_project["config"]
+            registered = register_project_videos(
+                project_path,
+                config,
+                video_paths,
+                copy_into_project=copy_into_project,
+            )
+            ok, message = self.save_project_config()
+            if not ok:
+                return False, message, []
+            return True, f"Registered {len(registered)} video(s)", registered
+        except Exception as exc:
+            logger.error("Failed to register project videos: %s", exc)
+            return False, f"Failed to register videos: {exc}", []
 
     def _get_project_statistics(
         self, project_path: Path, config: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Get project statistics."""
-        stats = {
-            "total_images": 0,
-            "total_annotations": 0,
-            "total_videos": 0,
-            "total_models": 0,
-        }
-
-        try:
-            # Count images
-            images_dir = project_path / config.get("directories", {}).get(
-                "images", "images"
-            )
-            if images_dir.exists():
-                image_extensions = config.get("settings", {}).get(
-                    "image_extensions", [".jpg", ".png"]
-                )
-                stats["total_images"] = len(
-                    [
-                        f
-                        for f in images_dir.iterdir()
-                        if f.is_file() and f.suffix.lower() in image_extensions
-                    ]
-                )
-
-            # Count annotations
-            annotations_dir = project_path / config.get("directories", {}).get(
-                "annotations", "annotations"
-            )
-            if annotations_dir.exists():
-                stats["total_annotations"] = len(
-                    [
-                        f
-                        for f in annotations_dir.iterdir()
-                        if f.is_file() and f.suffix.lower() == ".json"
-                    ]
-                )
-
-            # Count videos
-            videos_dir = project_path / config.get("directories", {}).get(
-                "videos", "videos"
-            )
-            if videos_dir.exists():
-                video_extensions = config.get("settings", {}).get(
-                    "video_extensions", [".mp4", ".avi"]
-                )
-                stats["total_videos"] = len(
-                    [
-                        f
-                        for f in videos_dir.iterdir()
-                        if f.is_file() and f.suffix.lower() in video_extensions
-                    ]
-                )
-
-            # Count models
-            models_dir = project_path / config.get("directories", {}).get(
-                "models", "models"
-            )
-            if models_dir.exists():
-                stats["total_models"] = len(
-                    [f for f in models_dir.iterdir() if f.is_file()]
-                )
-
-        except Exception as e:
-            logger.warning(f"Failed to gather project statistics: {e}")
-
-        return stats
+        """Get project statistics including nested folders and AnnotationStore files."""
+        return scan_project_statistics(project_path, config)
 
     def update_project_config(self, updates: Dict[str, Any]) -> Tuple[bool, str]:
-        """
-        Update project configuration with new values.
-
-        Args:
-            updates: Dictionary of configuration updates
-
-        Returns:
-            Tuple of (success, message)
-        """
+        """Update project configuration with new values."""
         if not self._current_project:
             return False, "No project loaded"
 
@@ -420,12 +344,10 @@ exports/
                     self._explicitly_updated_schema_keys.add(key)
             self._deep_merge(config, updates)
 
-            # Save updated configuration
             success, message = self.save_project_config()
             if success:
                 return True, "Project configuration updated successfully"
-            else:
-                return False, message
+            return False, message
 
         except Exception as e:
             logger.error(f"Failed to update project config: {e}")
@@ -434,16 +356,7 @@ exports/
     def add_project_class(
         self, class_name: str, class_config: Optional[Dict[str, Any]] = None
     ) -> Tuple[bool, str]:
-        """
-        Add a new class to the project.
-
-        Args:
-            class_name: Name of the class to add
-            class_config: Optional class configuration
-
-        Returns:
-            Tuple of (success, message)
-        """
+        """Add a new class to the project."""
         if not self._current_project:
             return False, "No project loaded"
 
@@ -452,36 +365,27 @@ exports/
             if "classes" not in config:
                 config["classes"] = []
 
-            # Check if class already exists
             existing_classes = [cls.get("name", "") for cls in config["classes"]]
             if class_name in existing_classes:
                 return False, f"Class '{class_name}' already exists"
 
-            # Add new class
             new_class = {"name": class_name}
             if class_config:
                 new_class.update(class_config)
 
             config["classes"].append(new_class)
 
-            # Save configuration
             success, message = self.save_project_config()
             if success:
                 return True, f"Class '{class_name}' added successfully"
-            else:
-                return False, message
+            return False, message
 
         except Exception as e:
             logger.error(f"Failed to add project class: {e}")
             return False, f"Failed to add class: {str(e)}"
 
     def get_project_classes(self) -> List[Dict[str, Any]]:
-        """
-        Get all classes defined in the project.
-
-        Returns:
-            List of class configurations
-        """
+        """Get all classes defined in the project."""
         if not self._current_project:
             return []
 
@@ -493,76 +397,32 @@ exports/
         export_path: Union[str, Path],
         include_data: bool = True,
         include_models: bool = False,
+        *,
+        as_zip: bool = False,
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        cancel_check: Optional[Callable[[], bool]] = None,
     ) -> Tuple[bool, str]:
-        """
-        Export project to a specified location.
-
-        Args:
-            export_path: Path to export the project
-            include_data: Whether to include image and annotation data
-            include_models: Whether to include trained models
-
-        Returns:
-            Tuple of (success, message)
-        """
+        """Export the current project to a directory or atomic `.zip` archive."""
         if not self._current_project:
             return False, "No project loaded"
 
-        try:
-            export_path = Path(export_path)
-            project_path = Path(self._current_project["path"])
-
-            # Create export directory
-            export_path.mkdir(parents=True, exist_ok=True)
-
-            # Copy project configuration
-            import shutil
-
-            config_src = project_path / "project.annolid.json"
-            config_dst = export_path / "project.annolid.json"
-            shutil.copy2(config_src, config_dst)
-
-            # Copy directories based on options
-            dirs_to_copy = ["annotations"]
-            if include_data:
-                dirs_to_copy.extend(["images", "videos"])
-            if include_models:
-                dirs_to_copy.append("models")
-
-            for dir_name in dirs_to_copy:
-                src_dir = project_path / dir_name
-                dst_dir = export_path / dir_name
-                if src_dir.exists():
-                    shutil.copytree(src_dir, dst_dir, dirs_exist_ok=True)
-
-            return True, f"Project exported successfully to {export_path}"
-
-        except Exception as e:
-            logger.error(f"Failed to export project: {e}")
-            return False, f"Failed to export project: {str(e)}"
+        return export_project_bundle(
+            Path(self._current_project["path"]),
+            Path(export_path),
+            config=self._current_project.get("config"),
+            include_data=include_data,
+            include_models=include_models,
+            as_zip=as_zip,
+            progress_callback=progress_callback,
+            cancel_check=cancel_check,
+        )
 
     def _get_current_timestamp(self) -> str:
         """Get current timestamp in ISO format."""
-        from datetime import datetime
-
-        return datetime.now().isoformat()
+        return current_iso_timestamp()
 
     def _deep_merge(
         self, base_dict: Dict[str, Any], update_dict: Dict[str, Any]
     ) -> None:
-        """
-        Deep merge update_dict into base_dict.
-
-        Args:
-            base_dict: Dictionary to update
-            update_dict: Dictionary with updates
-        """
-        for key, value in update_dict.items():
-            if (
-                key in base_dict
-                and isinstance(base_dict[key], dict)
-                and isinstance(value, dict)
-            ):
-                self._deep_merge(base_dict[key], value)
-            else:
-                base_dict[key] = value
+        """Deep merge update_dict into base_dict."""
+        deep_merge_dict(base_dict, update_dict)

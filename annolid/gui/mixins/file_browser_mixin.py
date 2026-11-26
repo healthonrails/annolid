@@ -312,6 +312,7 @@ class FileBrowserMixin:
         self._dir_scan_first_loaded = False
         self._dir_scan_pending_restore = ""
         self._dir_scan_wait_for_pending_restore = False
+        self._dir_scan_pending_select = ""
         self._dir_scan_running = False
         if had_active_scan and hasattr(self, "_set_file_scan_status"):
             self._set_file_scan_status(self.tr("Scan canceled"), visible=True)
@@ -515,6 +516,22 @@ class FileBrowserMixin:
         self._stop_import_dir_scan_worker()
         self._dir_scan_pending_restore = ""
         self._dir_scan_wait_for_pending_restore = False
+        pending_select = str(
+            getattr(self, "_dir_scan_pending_select", "") or ""
+        ).strip()
+        if pending_select:
+            self._dir_scan_pending_select = ""
+            if hasattr(self, "_flush_file_dock_pending"):
+                try:
+                    while getattr(self, "_file_dock_pending_entries", None):
+                        self._load_more_file_dock_items(batch_size=500)
+                except Exception:
+                    pass
+            matches = self.fileListWidget.findItems(
+                pending_select, QtCore.Qt.MatchExactly
+            )
+            if matches:
+                self.fileListWidget.setCurrentItem(matches[0])
         count = len(self.imageList)
         if hasattr(self, "_set_file_scan_idle"):
             self._set_file_scan_idle(count=count, hide=False)
@@ -544,6 +561,7 @@ class FileBrowserMixin:
         self._stop_import_dir_scan_worker()
         self._dir_scan_pending_restore = ""
         self._dir_scan_wait_for_pending_restore = False
+        self._dir_scan_pending_select = ""
         if hasattr(self, "_set_file_scan_status"):
             self._set_file_scan_status(
                 self.tr("Scan error: %1").replace("%1", str(error_text or "unknown")),

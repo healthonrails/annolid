@@ -591,6 +591,37 @@ class MenuController:
                 "tip": w.tr("Create a new annotation project with guided wizard"),
             },
             {
+                "name": "open_project",
+                "text": w.tr("Open &Project…"),
+                "slot": getattr(w, "open_project", lambda: None),
+                "shortcut": "Ctrl+Shift+O",
+                "tip": w.tr("Open an existing Annolid project folder"),
+            },
+            {
+                "name": "project_hub",
+                "text": w.tr("Project && &Workflow Hub…"),
+                "slot": getattr(w, "open_project_hub", lambda: None),
+                "tip": w.tr(
+                    "Inspect active project stats, live workflow progress, and recent projects"
+                ),
+            },
+            {
+                "name": "audit_annotations",
+                "text": w.tr("Audit &Annotations…"),
+                "slot": getattr(w, "open_annotation_audit_dialog", lambda: None),
+                "tip": w.tr(
+                    "Audit LabelMe JSON pairs and AnnotationStore NDJSON files in the active project or a folder"
+                ),
+            },
+            {
+                "name": "export_project",
+                "text": w.tr("Export &Project Bundle…"),
+                "slot": getattr(w, "export_current_project", lambda: None),
+                "tip": w.tr(
+                    "Export active project configuration, annotations, and media to a folder or ZIP archive"
+                ),
+            },
+            {
                 "name": "export_dataset_wizard",
                 "text": w.tr("&Export Dataset…"),
                 "slot": w.open_export_dataset_wizard,
@@ -1453,9 +1484,17 @@ class MenuController:
                 actions["clear_all_large_tiff_caches"],
             ),
         )
+        w.menus.recent = QtWidgets.QMenu(w.tr("Open &Recent"), w)
+        w.menus.recent.aboutToShow.connect(self._populate_recent_menu)
         file_sections = [
             (
                 actions["new_project_wizard"],
+                actions["open_project"],
+                actions["project_hub"],
+                actions["audit_annotations"],
+                w.menus.recent,
+            ),
+            (
                 w.actions.open,
                 w.actions.openDir,
                 w.actions.close,
@@ -1474,6 +1513,7 @@ class MenuController:
             (
                 actions["save_labels"],
                 actions["export_dataset_wizard"],
+                actions["export_project"],
             ),
         ]
         self._add_menu_sections(w.menus.file, file_sections)
@@ -2387,3 +2427,86 @@ class MenuController:
                     "%1", path.name
                 ),
             )
+
+    def _populate_recent_menu(self) -> None:
+        """Populate File -> Open Recent with recent projects and recent files."""
+        w = self._window
+        recent_menu = getattr(getattr(w, "menus", None), "recent", None)
+        if recent_menu is None:
+            return
+        recent_menu.clear()
+
+        recent_projects: list[dict[str, str]] = []
+        getter = getattr(w, "get_recent_projects", None)
+        if callable(getter):
+            try:
+                recent_projects = list(getter(prune_missing=True) or [])
+            except Exception:
+                recent_projects = []
+
+        added_any = False
+        if recent_projects:
+            header = recent_menu.addAction(w.tr("Recent Projects"))
+            header.setEnabled(False)
+            for entry in recent_projects[:8]:
+                path_str = str((entry or {}).get("path") or "").strip()
+                if not path_str:
+                    continue
+                name = str((entry or {}).get("name") or Path(path_str).name)
+                act = recent_menu.addAction(f"📁 {name}")
+                act.setToolTip(path_str)
+                act.triggered.connect(
+                    lambda _checked=False, p=path_str: (
+                        w.open_project(p) if hasattr(w, "open_project") else None
+                    )
+                )
+                added_any = True
+
+        raw_files = list(getattr(w, "recentFiles", []) or [])
+        existing_files = [
+            str(p) for p in raw_files if str(p or "").strip() and Path(str(p)).exists()
+        ]
+        if existing_files:
+            if added_any:
+                recent_menu.addSeparator()
+            header = recent_menu.addAction(w.tr("Recent Files"))
+            header.setEnabled(False)
+            for path_str in existing_files[:10]:
+                act = recent_menu.addAction(Path(path_str).name)
+                act.setToolTip(path_str)
+                act.triggered.connect(
+                    lambda _checked=False, p=path_str: self._open_recent_file_path(p)
+                )
+                added_any = True
+
+        if not added_any:
+            empty_act = recent_menu.addAction(w.tr("(No recent projects or files)"))
+            empty_act.setEnabled(False)
+            return
+
+        recent_menu.addSeparator()
+        clear_act = recent_menu.addAction(w.tr("Clear Recent History"))
+        clear_act.triggered.connect(
+            lambda _checked=False: (
+                w.clear_recent_history() if hasattr(w, "clear_recent_history") else None
+            )
+        )
+
+    def _open_recent_file_path(self, path_str: str) -> None:
+        w = self._window
+        path = Path(str(path_str or "")).expanduser()
+        if not path.exists():
+            status = w.statusBar() if hasattr(w, "statusBar") else None
+            if status is not None:
+                status.showMessage(w.tr("Missing recent file: %s") % str(path), 4000)
+            return
+        if path.is_dir() or path.name == "project.annolid.json":
+            if hasattr(w, "open_project"):
+                w.open_project(path)
+            return
+        video_suffixes = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v"}
+        if path.suffix.lower() in video_suffixes and hasattr(w, "openVideo"):
+            w.openVideo(from_video_list=True, video_path=str(path))
+            return
+        if hasattr(w, "loadFile"):
+            w.loadFile(str(path))

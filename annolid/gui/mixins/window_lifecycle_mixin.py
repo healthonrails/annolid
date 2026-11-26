@@ -338,6 +338,19 @@ class WindowLifecycleMixin:
         except Exception as exc:
             logger.debug("Failed stopping Florence-2 dock on close: %s", exc)
         try:
+            cancel_export = getattr(self, "_cancel_active_project_export", None)
+            if callable(cancel_export):
+                cancel_export(wait_ms=2000)
+        except Exception as exc:
+            logger.debug("Failed stopping active project export on close: %s", exc)
+        for dlg_attr in ("_file_audit_dialog", "_project_hub_dialog"):
+            dlg = getattr(self, dlg_attr, None)
+            if dlg is not None:
+                try:
+                    dlg.close()
+                except Exception:
+                    pass
+        try:
             self.clean_up()
         except Exception as exc:
             logger.debug("Failed during window cleanup on close: %s", exc)

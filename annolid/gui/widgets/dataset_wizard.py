@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from qtpy import QtCore, QtWidgets
 from qtpy.QtCore import Qt, Signal
 from annolid.gui.widgets.file_audit_widget import FileAuditWidget
+from annolid.services.project_workspace import is_non_annotation_json
 
 
 @dataclass
@@ -148,11 +149,19 @@ class SelectAnnotationsPage(QtWidgets.QWizardPage):
             source_path = Path(source)
             recursive = self.recursive_check.isChecked()
 
-            # Scan for JSON files
+            # Scan for JSON files (skip Annolid project/schema/tracking metadata JSONs)
             if recursive:
-                json_files = list(source_path.rglob("*.json"))
+                json_files = [
+                    jf
+                    for jf in source_path.rglob("*.json")
+                    if not is_non_annotation_json(jf)
+                ]
             else:
-                json_files = list(source_path.glob("*.json"))
+                json_files = [
+                    jf
+                    for jf in source_path.glob("*.json")
+                    if not is_non_annotation_json(jf)
+                ]
 
             # Filter out non-labelme files and detect labels
             self._annotation_files = []
@@ -1088,6 +1097,7 @@ class DatasetExportWizard(QtWidgets.QWizard):
 
     # Signal emitted when export is complete
     export_complete = Signal(Path, str)  # output_path, format
+    file_open_requested = Signal(str)  # path emitted from embedded FileAuditWidget
 
     def __init__(
         self,
@@ -1102,6 +1112,9 @@ class DatasetExportWizard(QtWidgets.QWizard):
 
         # Set up pages
         self.select_annotations_page = SelectAnnotationsPage()
+        self.select_annotations_page.audit_widget.fileOpenRequested.connect(
+            self.file_open_requested.emit
+        )
         self.select_format_page = SelectFormatPage()
         self.configure_split_page = ConfigureSplitPage()
         self.export_progress_page = ExportProgressPage()

@@ -80,6 +80,7 @@ def atomic_write_json(
     *,
     indent: Optional[int] = 2,
     ensure_ascii: bool = False,
+    sort_keys: bool = False,
     separators: Optional[Tuple[str, str]] = None,
     default: Optional[Callable[[Any], Any]] = None,
     encoding: str = "utf-8",
@@ -89,6 +90,7 @@ def atomic_write_json(
         payload,
         indent=indent,
         ensure_ascii=ensure_ascii,
+        sort_keys=sort_keys,
         separators=separators,
         default=_json_scalar_default if default is None else default,
     )

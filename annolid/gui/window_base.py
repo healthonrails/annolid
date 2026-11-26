@@ -1089,6 +1089,12 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
         recent = [p for p in self.recentFiles if p != path]
         recent.insert(0, path)
         self.recentFiles = recent[:20]
+        settings = getattr(self, "settings", None)
+        if settings is not None:
+            try:
+                settings.setValue("recentFiles", list(self.recentFiles))
+            except Exception:
+                pass
 
     def _shortcut(self, key: str):
         shortcuts = self._config.get("shortcuts", {}) or {}
