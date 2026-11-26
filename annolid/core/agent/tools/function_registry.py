@@ -218,7 +218,10 @@ class FunctionToolRegistry:
                 f"parameters must be a JSON object, got {type(params).__name__}"
             )
 
-        schema_props = (tool.parameters or {}).get("properties", {})
+        raw_schema = getattr(tool, "parameters", None)
+        schema_props = (
+            raw_schema.get("properties", {}) if isinstance(raw_schema, dict) else {}
+        )
         if (
             "_raw" in params
             and isinstance(schema_props, dict)
