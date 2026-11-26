@@ -186,7 +186,7 @@ def _build_rat_ncap_simulation_json(out: Path) -> Path:
 
     path = out / "rat_ncap_simulation.json"
     payload = build_live_rat_ncap_payload(
-        steps=120,
+        steps=360,
         behavior="gait_transition",
         interface="flexor_extensor",
         coat="black_hooded",

@@ -246,6 +246,10 @@ async function boot() {
     };
 
     const resetCamera = () => {
+      if (simulationRatModel) {
+        frameRatSimulationCamera(simulationRatModel);
+        return;
+      }
       if (!root) return;
       const box = new THREE.Box3().setFromObject(root);
       if (box.isEmpty()) return;
@@ -643,6 +647,7 @@ async function boot() {
     const simulationEnvironmentRoot = new THREE.Group();
     const simulationModelRoot = new THREE.Group();
     const simulationBodyPartsRoot = new THREE.Group();
+    const simulationRatRoot = new THREE.Group();
     const simulationVolumeRoot = new THREE.Group();
     const atlasMeshRoot = new THREE.Group();
     const simulationSlices = new THREE.Group();
@@ -653,6 +658,7 @@ async function boot() {
     simulationRoot.add(simulationEnvironmentRoot);
     simulationRoot.add(simulationModelRoot);
     simulationRoot.add(simulationBodyPartsRoot);
+    simulationRoot.add(simulationRatRoot);
     simulationRoot.add(simulationVolumeRoot);
     simulationRoot.add(atlasMeshRoot);
     simulationRoot.add(simulationSlices);
@@ -663,6 +669,13 @@ async function boot() {
     let simulationPayload = null;
     let simulationBodyPartMap = new Map();
     let simulationCategoryState = new Map();
+    let simulationRatModel = null;
+    let simulationRatLoadSeq = 0;
+    let simulationRatCoat = "black_hooded";
+    let simulationRatFollow = true;
+    let simulationRatPrevRootPos = null;
+    let simulationRatTrailCache = new Map();
+    let simulationDisplayOverrides = {};
     let simulationFrameIndex = 0;
     let simulationPlaying = false;
     let simulationTimer = null;
@@ -752,10 +765,164 @@ async function boot() {
       window.location.href = url.toString();
     };
 
+    const createRatStudioFloorTexture = () => {
+      const c = document.createElement("canvas");
+      c.width = 512;
+      c.height = 512;
+      const ctx = c.getContext("2d");
+      const tile = 128;
+      for (let y = 0; y < 512; y += tile) {
+        for (let x = 0; x < 512; x += tile) {
+          const even = ((x / tile) + (y / tile)) % 2 === 0;
+          ctx.fillStyle = even ? "#7f95ae" : "#a9bbd0";
+          ctx.fillRect(x, y, tile, tile);
+        }
+      }
+      ctx.strokeStyle = "rgba(30, 41, 59, 0.22)";
+      ctx.lineWidth = 2;
+      for (let p = 0; p <= 512; p += 128) {
+        ctx.beginPath(); ctx.moveTo(p, 0); ctx.lineTo(p, 512); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(0, p); ctx.lineTo(512, p); ctx.stroke();
+      }
+      const tex = new THREE.CanvasTexture(c);
+      if ("colorSpace" in tex) tex.colorSpace = THREE.SRGBColorSpace;
+      tex.wrapS = THREE.RepeatWrapping;
+      tex.wrapT = THREE.RepeatWrapping;
+      tex.repeat.set(36, 36);
+      return tex;
+    };
+
+    const frameRatSimulationCamera = (ratModel) => {
+      if (!ratModel || !ratModel.root) return;
+      const pos = ratModel.root.position;
+      const target = new THREE.Vector3(pos.x - 0.22, pos.y + 0.45, pos.z);
+      controls.target.copy(target);
+      camera.position.set(target.x + 2.65, target.y + 1.65, target.z + 3.95);
+      camera.near = 0.02;
+      camera.far = 200;
+      camera.updateProjectionMatrix();
+      controls.update();
+      simulationRatPrevRootPos = pos.clone();
+    };
+
     const rebuildFlybodyControls = () => {
       if (!flybodyControlsEl) return;
       flybodyControlsEl.innerHTML = "";
       const adapter = String((simulationPayload && simulationPayload.adapter) || "");
+      if (adapter === "rat_ncap") {
+        const titleEl = document.createElement("div");
+        titleEl.className = "three-toolbar-subtitle";
+        titleEl.textContent = "Rat v2";
+        titleEl.title = "Drag to move Rat v2 controls";
+        titleEl.addEventListener("pointerdown", (event) => {
+          if (!flybodyControlsEl) return;
+          const rect = flybodyControlsEl.getBoundingClientRect();
+          flybodyDragState = {
+            offsetX: event.clientX - rect.left,
+            offsetY: event.clientY - rect.top,
+          };
+          flybodyControlsEl.classList.add("dragging");
+          window.addEventListener("pointermove", onFlybodyDragMove);
+          window.addEventListener("pointerup", stopFlybodyDrag);
+          window.addEventListener("pointercancel", stopFlybodyDrag);
+        });
+        flybodyControlsEl.appendChild(titleEl);
+
+        const coatSpecs = [
+          ["black_hooded", "Hood", "Long-Evans Black-Hooded coat"],
+          ["cinnamon", "Cinn", "Long-Evans Cinnamon coat"],
+          ["gray", "Gray", "Long-Evans Gray coat"],
+        ];
+        coatSpecs.forEach(([coatId, shortLabel, tip]) => {
+          const btn = document.createElement("button");
+          btn.className = "tool-btn flybody-tool-btn";
+          btn.style.width = "auto";
+          btn.style.padding = "0 7px";
+          btn.style.fontSize = "11px";
+          btn.textContent = shortLabel;
+          btn.title = tip;
+          btn.setAttribute("data-rat-coat", coatId);
+          if (simulationRatCoat === coatId) btn.classList.add("active");
+          btn.addEventListener("click", () => {
+            simulationRatCoat = coatId;
+            if (simulationRatModel) simulationRatModel.setCoat(coatId);
+            rebuildFlybodyControls();
+          });
+          flybodyControlsEl.appendChild(btn);
+        });
+
+        const baseDisplay = (simulationPayload && simulationPayload.display) || {};
+        const effectiveBool = (key, fallback) => {
+          if (Object.prototype.hasOwnProperty.call(simulationDisplayOverrides, key)) {
+            return Boolean(simulationDisplayOverrides[key]);
+          }
+          return baseDisplay[key] !== undefined ? Boolean(baseDisplay[key]) : fallback;
+        };
+        const toggles = [
+          [
+            "follow",
+            "Follow",
+            "Follow rat camera",
+            () => simulationRatFollow,
+            () => {
+              simulationRatFollow = !simulationRatFollow;
+              if (simulationRatFollow && simulationRatModel) {
+                simulationRatPrevRootPos = simulationRatModel.root.position.clone();
+              }
+            },
+          ],
+          [
+            "show_points",
+            "KPs",
+            "Toggle 3D anatomical keypoints",
+            () => effectiveBool("show_points", false),
+            () => {
+              simulationDisplayOverrides.show_points = !effectiveBool("show_points", false);
+              renderSimulationFrame(simulationFrameIndex);
+            },
+          ],
+          [
+            "show_edges",
+            "Skel",
+            "Toggle skeleton edges",
+            () => effectiveBool("show_edges", false),
+            () => {
+              simulationDisplayOverrides.show_edges = !effectiveBool("show_edges", false);
+              renderSimulationFrame(simulationFrameIndex);
+            },
+          ],
+          [
+            "show_trails",
+            "Trail",
+            "Toggle paw and body motion trails",
+            () => effectiveBool("show_trails", true),
+            () => {
+              simulationDisplayOverrides.show_trails = !effectiveBool("show_trails", true);
+              renderSimulationFrame(simulationFrameIndex);
+            },
+          ],
+        ];
+        toggles.forEach(([key, shortLabel, tip, isActive, onToggle]) => {
+          const btn = document.createElement("button");
+          btn.className = "tool-btn flybody-tool-btn";
+          btn.style.width = "auto";
+          btn.style.padding = "0 7px";
+          btn.style.fontSize = "11px";
+          btn.textContent = shortLabel;
+          btn.title = tip;
+          btn.setAttribute("data-rat-toggle", key);
+          if (isActive()) btn.classList.add("active");
+          btn.addEventListener("click", () => {
+            onToggle();
+            rebuildFlybodyControls();
+          });
+          flybodyControlsEl.appendChild(btn);
+        });
+
+        flybodyControlsEl.hidden = false;
+        positionFlybodyControls();
+        return;
+      }
       if (!(adapter === "flybody" || adapter === "flybody-live")) {
         flybodyControlsEl.hidden = true;
         return;
@@ -1679,9 +1846,32 @@ async function boot() {
       if (Number.isFinite(frame.timestamp_sec)) {
         lines.push(`Time: ${Number(frame.timestamp_sec).toFixed(3)} s`);
       }
-      const brain = frame.diagnostics && typeof frame.diagnostics === "object"
-        ? frame.diagnostics.brain
+      const diag = frame.diagnostics && typeof frame.diagnostics === "object"
+        ? frame.diagnostics
         : null;
+      if (diag && (diag.gait || Number.isFinite(Number(diag.forward_speed_mps)))) {
+        if (diag.gait) {
+          lines.push(`Gait: ${String(diag.gait).toUpperCase()}`);
+        }
+        if (Number.isFinite(Number(diag.forward_speed_mps))) {
+          const targetPart = Number.isFinite(Number(diag.target_speed_mps))
+            ? ` (target ${Number(diag.target_speed_mps).toFixed(2)})`
+            : "";
+          lines.push(`Speed: ${Number(diag.forward_speed_mps).toFixed(2)} m/s${targetPart}`);
+        }
+        if (Number.isFinite(Number(diag.step_frequency_hz))) {
+          const dutyPart = Number.isFinite(Number(diag.duty_factor))
+            ? ` · Duty ${(Number(diag.duty_factor) * 100).toFixed(0)}%`
+            : "";
+          lines.push(`Step Freq: ${Number(diag.step_frequency_hz).toFixed(2)} Hz${dutyPart}`);
+        }
+        if (diag.mechanical_power && typeof diag.mechanical_power === "object") {
+          lines.push(
+            `Power: +${Number(diag.mechanical_power.positive_power_w || 0).toFixed(3)} / ${Number(diag.mechanical_power.negative_power_w || 0).toFixed(3)} W`
+          );
+        }
+      }
+      const brain = diag ? diag.brain : null;
       if (brain && typeof brain === "object") {
         if (brain.dominant_circuit) {
           lines.push(`Brain Circuit: ${String(brain.dominant_circuit)}`);
@@ -4330,10 +4520,15 @@ async function boot() {
         volumeRenderState || getVolumeRenderDefaults(metadata),
         metadata
       );
-      const showPoints = display.show_points !== false;
-      const showLabels = display.show_labels !== false;
-      const showEdges = display.show_edges !== false;
-      const showTrails = display.show_trails !== false;
+      const resolveDisplay = (key) => (
+        Object.prototype.hasOwnProperty.call(simulationDisplayOverrides, key)
+          ? Boolean(simulationDisplayOverrides[key])
+          : display[key] !== false
+      );
+      const showPoints = resolveDisplay("show_points");
+      const showLabels = resolveDisplay("show_labels");
+      const showEdges = resolveDisplay("show_edges");
+      const showTrails = resolveDisplay("show_trails");
 
       clearGroupAndDispose(simulationVolumeRoot);
       clearGroupAndDispose(simulationSlices);
@@ -4345,7 +4540,66 @@ async function boot() {
 
       const pointMap = new Map();
       const orderedPoints = Array.isArray(frame.points) ? frame.points : [];
-      if (useGaussianSplat) {
+      if (simulationRatModel) {
+        const ratMeta = (metadata && (metadata.rat_ncap || metadata.run_metadata)) || {};
+        const bumpCm = Number(ratMeta.terrain_bump_cm) || 0;
+        simulationRatModel.applyRolloutFrame(frame, {
+          bumpCm,
+          showKeypoints: showPoints,
+        });
+        const curPos = simulationRatModel.root.position;
+        if (simulationRatFollow && simulationRatPrevRootPos) {
+          const dx = curPos.x - simulationRatPrevRootPos.x;
+          const dy = curPos.y - simulationRatPrevRootPos.y;
+          const dz = curPos.z - simulationRatPrevRootPos.z;
+          if (Math.abs(dx) + Math.abs(dy) + Math.abs(dz) > 1e-6) {
+            camera.position.x += dx;
+            camera.position.y += dy;
+            camera.position.z += dz;
+            controls.target.x += dx;
+            controls.target.y += dy;
+            controls.target.z += dz;
+            controls.update();
+          }
+        }
+        simulationRatPrevRootPos = curPos.clone();
+
+        const ratKps = simulationRatModel.getWorldKeypoints();
+        Object.entries(ratKps).forEach(([kpName, wp]) => {
+          pointMap.set(kpName, wp);
+        });
+        simulationRatTrailCache.set(safeIndex, ratKps);
+        if (showTrails) {
+          const trailStart = Math.max(0, safeIndex - 32);
+          const trailSpecs = [
+            ["left_forepaw", 0x38bdf8],
+            ["right_forepaw", 0x34d399],
+            ["left_hindpaw", 0xf59e0b],
+            ["right_hindpaw", 0xf472b6],
+            ["tail_tip", 0xc084fc],
+          ];
+          trailSpecs.forEach(([kpName, hex]) => {
+            const pts = [];
+            for (let i = trailStart; i <= safeIndex; i += 1) {
+              const cached = simulationRatTrailCache.get(i);
+              if (cached && cached[kpName]) {
+                pts.push(cached[kpName]);
+              }
+            }
+            if (pts.length > 1) {
+              const trail = new THREE.Line(
+                new THREE.BufferGeometry().setFromPoints(pts),
+                new THREE.LineBasicMaterial({
+                  color: hex,
+                  transparent: true,
+                  opacity: 0.58,
+                })
+              );
+              simulationTrails.add(trail);
+            }
+          });
+        }
+      } else if (useGaussianSplat) {
         ensureVolumeLayerState(metadata);
         orderedPoints.forEach((pt, ptIdx) => {
           if (!pt || typeof pt !== "object") return;
@@ -4573,8 +4827,24 @@ async function boot() {
       if (timelineEl) timelineEl.hidden = false;
       if (metaEl) metaEl.hidden = false;
       simulationLoopEnabled = !payload.playback || payload.playback.loop !== false;
-      const nextMeshKey = JSON.stringify(payload.mesh || null);
-      const nextEnvironmentKey = JSON.stringify(payload.environment || null);
+      const isRatSkinnedMesh = Boolean(
+        (payload.mesh && payload.mesh.type === "rat_v2_skinned") || adapter === "rat_ncap"
+      );
+      const nextMeshKey = isRatSkinnedMesh
+        ? JSON.stringify({
+            type: "rat_v2_skinned",
+            coat: String(
+              (payload.mesh && payload.mesh.coat)
+                || ((metadata.rat_ncap || metadata.run_metadata || {}).coat)
+                || "black_hooded"
+            ),
+            world_scale: Number((payload.mesh && payload.mesh.world_scale) || 10.0),
+          })
+        : JSON.stringify(payload.mesh || null);
+      const nextEnvironmentKey = JSON.stringify({
+        adapter,
+        environment: payload.environment || null,
+      });
       const shouldReloadMesh = nextMeshKey !== simulationMeshKey;
       const shouldReloadEnvironment = nextEnvironmentKey !== simulationEnvironmentKey;
       if (shouldReloadEnvironment) {
@@ -4582,8 +4852,14 @@ async function boot() {
         simulationEnvironmentKey = nextEnvironmentKey;
       }
       if (shouldReloadMesh) {
+        simulationRatLoadSeq += 1;
+        simulationRatModel = null;
+        simulationRatPrevRootPos = null;
+        simulationRatTrailCache = new Map();
+        simulationDisplayOverrides = {};
         clearGroupAndDispose(simulationModelRoot);
         clearGroupAndDispose(simulationBodyPartsRoot);
+        clearGroupAndDispose(simulationRatRoot);
         simulationBodyPartMap = new Map();
         simulationCategoryState = new Map();
         simulationMeshKey = nextMeshKey;
@@ -4607,19 +4883,24 @@ async function boot() {
       if (shouldReloadEnvironment && floor && floor.type === "plane") {
         const floorSize = Array.isArray(floor.size) ? floor.size : [5, 5];
         const floorPos = Array.isArray(floor.position) ? floor.position : [0, 0, -0.132];
-        const width = Number(floorSize[0] || 5) * 2;
-        const depth = Number(floorSize[1] || 5) * 2;
-        const plane = new THREE.Mesh(
-          new THREE.PlaneGeometry(width, depth),
-          new THREE.MeshStandardMaterial({
-            color: new THREE.Color(String(floor.color || "#314759")),
-            roughness: 0.92,
-            metalness: 0.02,
-            side: THREE.DoubleSide,
-            transparent: true,
-            opacity: 0.5,
-          })
-        );
+        const width = isRatSkinnedMesh ? Math.max(96, Number(floorSize[0] || 14) * 4) : Number(floorSize[0] || 5) * 2;
+        const depth = isRatSkinnedMesh ? Math.max(96, Number(floorSize[1] || 14) * 4) : Number(floorSize[1] || 5) * 2;
+        const floorMat = isRatSkinnedMesh
+          ? new THREE.MeshStandardMaterial({
+              map: createRatStudioFloorTexture(),
+              roughness: 0.88,
+              metalness: 0.02,
+              side: THREE.DoubleSide,
+            })
+          : new THREE.MeshStandardMaterial({
+              color: new THREE.Color(String(floor.color || "#314759")),
+              roughness: 0.92,
+              metalness: 0.02,
+              side: THREE.DoubleSide,
+              transparent: true,
+              opacity: 0.5,
+            });
+        const plane = new THREE.Mesh(new THREE.PlaneGeometry(width, depth), floorMat);
         plane.rotation.x = -Math.PI / 2;
         // Floor height is a Y-coordinate in Three.js Y-up world space
         const floorY = Number(
@@ -4627,14 +4908,27 @@ async function boot() {
         );
         plane.position.set(0, floorY, 0);
         simulationEnvironmentRoot.add(plane);
-        const grid = new THREE.GridHelper(
-          Math.max(width, depth),
-          20,
-          new THREE.Color(String(floor.gridColor || "#3f5f73")),
-          new THREE.Color(String(floor.gridColor || "#3f5f73"))
+        if (isRatSkinnedMesh) {
+          // Neutral studio hemisphere fill so Long-Evans coats read true-to-life
+          const ratHemi = new THREE.HemisphereLight(0xf6f9ff, 0x6b7788, 0.82);
+          simulationEnvironmentRoot.add(ratHemi);
+        } else {
+          const grid = new THREE.GridHelper(
+            Math.max(width, depth),
+            20,
+            new THREE.Color(String(floor.gridColor || "#3f5f73")),
+            new THREE.Color(String(floor.gridColor || "#3f5f73"))
+          );
+          grid.position.set(0, floorY, 0);
+          simulationEnvironmentRoot.add(grid);
+        }
+      }
+      if (isRatSkinnedMesh && shouldReloadMesh) {
+        simulationRatCoat = String(
+          (payload.mesh && payload.mesh.coat)
+            || ((metadata.rat_ncap || metadata.run_metadata || {}).coat)
+            || "black_hooded"
         );
-        grid.position.set(0, floorY, 0);
-        simulationEnvironmentRoot.add(grid);
       }
       rebuildFlybodyControls();
       if (!shouldReloadMesh) {
@@ -4646,6 +4940,31 @@ async function boot() {
             categoryPanelEl.hidden = true;
           }
         }
+      } else if (isRatSkinnedMesh) {
+        const reqSeq = ++simulationRatLoadSeq;
+        const coatId = simulationRatCoat;
+        const worldScale = Number((payload.mesh && payload.mesh.world_scale) || 10.0);
+        document.body.removeAttribute("data-threejs-rat-ready");
+        import("./rat_ncap_model.js")
+          .then(({ loadRatV2SkinnedModel }) => loadRatV2SkinnedModel(THREE, null, {
+            coatId,
+            worldScale,
+          }))
+          .then((ratModel) => {
+            if (reqSeq !== simulationRatLoadSeq) return;
+            simulationRatModel = ratModel;
+            if (simulationRatCoat && ratModel.coatId !== simulationRatCoat) {
+              ratModel.setCoat(simulationRatCoat);
+            }
+            simulationRatRoot.add(ratModel.sceneGroup);
+            renderSimulationFrame(simulationFrameIndex);
+            frameRatSimulationCamera(ratModel);
+            document.body.setAttribute("data-threejs-rat-ready", "1");
+            setStatus(`Loaded ${title} (Rat v2 41-bone skinned model).`);
+          })
+          .catch((err) => {
+            console.warn("Failed to load Rat v2 skinned model in simulation viewer:", err);
+          });
       } else if (payload.mesh && payload.mesh.type === "flybody_parts" && Array.isArray(payload.mesh.parts)) {
         const loader = new OBJLoader();
         let pendingParts = payload.mesh.parts.length;
@@ -4800,7 +5119,11 @@ async function boot() {
       if (payload.playback && payload.playback.autoplay && timelinePlayBtn) {
         timelinePlayBtn.click();
       }
-      fitCameraToObject(simulationRoot);
+      if (simulationRatModel) {
+        frameRatSimulationCamera(simulationRatModel);
+      } else if (!isRatSkinnedMesh) {
+        fitCameraToObject(simulationRoot);
+      }
       setStatus(`Loaded ${title} (${(payload.adapter || "simulation").toUpperCase()}).`);
       document.body.setAttribute("data-threejs-ready", "1");
     };

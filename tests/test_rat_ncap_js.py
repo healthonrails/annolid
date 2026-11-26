@@ -61,6 +61,16 @@ def test_rat_ncap_js_assets_exist_and_expose_controls_and_dataset_api() -> None:
     ):
         assert token in scene
 
+    viewer_js = (THREEJS_DIR / "annolid_threejs_viewer.js").read_text(encoding="utf-8")
+    for token in (
+        "rat_v2_skinned",
+        'import("./rat_ncap_model.js")',
+        "applyRolloutFrame",
+        "frameRatSimulationCamera",
+        "data-threejs-rat-ready",
+    ):
+        assert token in viewer_js
+
 
 def test_rat_ncap_js_spring_muscle_and_gait_transitions_and_ablations() -> None:
     module_url = RAT_CIRCUIT_JS.as_uri()

@@ -116,8 +116,14 @@ def build_live_rat_ncap_payload(
                 "points": pts,
                 "qpos": frame["qpos"],
                 "body_poses": frame["body_poses"],
+                "model_pose": {
+                    "position": list(frame["root_pos"]),
+                    "rotation": list(frame["root_euler"]),
+                    "scale": scale,
+                },
                 "diagnostics": {
                     "gait": frame["gait"],
+                    "command": frame["command"],
                     "target_speed_mps": frame["target_speed_mps"],
                     "forward_speed_mps": frame["forward_speed_mps"],
                     "step_frequency_hz": frame["step_frequency_hz"],
@@ -139,6 +145,11 @@ def build_live_rat_ncap_payload(
         "adapter": "rat_ncap",
         "labels": list(RAT_V2_KEYPOINT_NAMES),
         "edges": [list(edge) for edge in RAT_V2_SKELETON_EDGES],
+        "mesh": {
+            "type": "rat_v2_skinned",
+            "coat": str(meta.get("coat") or "black_hooded"),
+            "world_scale": scale,
+        },
         "metadata": {
             "payload_version": LIVE_PAYLOAD_VERSION,
             "rat_ncap": meta,
@@ -160,15 +171,22 @@ def build_live_rat_ncap_payload(
         "environment": {
             "floor": {
                 "type": "plane",
-                "size": [12.0, 12.0],
+                "size": [14.0, 14.0],
                 "position": [0.0, 0.0, 0.0],
+                "color": "#90a4bc",
+                "gridColor": "#64748b",
             }
         },
         "display": {
-            "show_points": True,
-            "show_labels": True,
-            "show_edges": True,
+            "show_points": False,
+            "show_labels": False,
+            "show_edges": False,
             "show_trails": True,
+        },
+        "playback": {
+            "autoplay": True,
+            "loop": True,
+            "interval_ms": 40,
         },
         "frames": viewer_frames,
     }

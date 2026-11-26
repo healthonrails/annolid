@@ -272,6 +272,88 @@ def _attach_flybody_viewer_assets(
     return enriched
 
 
+def _attach_rat_ncap_viewer_assets(payload: Dict[str, Any]) -> Dict[str, Any]:
+    adapter = str(payload.get("adapter") or "").strip().lower()
+    if adapter != "rat_ncap":
+        return payload
+    frames = payload.get("frames") or []
+    if not frames:
+        return payload
+    enriched = dict(payload)
+    meta = dict(enriched.get("metadata") or {})
+    run_meta = dict(meta.get("run_metadata") or {})
+    rat_meta = dict(meta.get("rat_ncap") or {})
+    coat = (
+        str(rat_meta.get("coat") or run_meta.get("coat") or "black_hooded").strip()
+        or "black_hooded"
+    )
+    world_scale = 10.0
+
+    # Normalize MuJoCo Z-up meter points to Three.js Y-up decimeters if needed so
+    # points/trails align cleanly with the 41-bone skinned Rat v2 mesh.
+    coord = dict(meta.get("coordinate_system") or {})
+    if str(coord.get("up_axis") or "").upper() != "Y":
+        converted_frames: List[Dict[str, Any]] = []
+        for frame in frames:
+            if not isinstance(frame, dict):
+                continue
+            item = dict(frame)
+            raw_pts = item.get("points")
+            if isinstance(raw_pts, list):
+                item["points"] = [
+                    {
+                        "label": str(pt.get("label") or ""),
+                        "x": round(float(pt["x"]) * world_scale, 5),
+                        "y": round(float(pt["z"]) * world_scale, 5),
+                        "z": round(-float(pt["y"]) * world_scale, 5),
+                    }
+                    for pt in raw_pts
+                    if isinstance(pt, dict) and all(k in pt for k in ("x", "y", "z"))
+                ]
+            converted_frames.append(item)
+        enriched["frames"] = converted_frames
+        coord["units"] = "decimeters"
+        coord["up_axis"] = "Y"
+        meta["coordinate_system"] = coord
+        enriched["metadata"] = meta
+
+    enriched.setdefault(
+        "mesh",
+        {
+            "type": "rat_v2_skinned",
+            "coat": coat,
+            "world_scale": world_scale,
+        },
+    )
+    env = dict(enriched.get("environment") or {})
+    env.setdefault(
+        "floor",
+        {
+            "type": "plane",
+            "size": [14.0, 14.0],
+            "position": [0.0, 0.0, 0.0],
+            "color": "#90a4bc",
+            "gridColor": "#64748b",
+        },
+    )
+    enriched["environment"] = env
+    display = dict(enriched.get("display") or {})
+    display.setdefault("show_points", False)
+    display.setdefault("show_labels", False)
+    display.setdefault("show_edges", False)
+    display.setdefault("show_trails", True)
+    enriched["display"] = display
+    enriched.setdefault(
+        "playback",
+        {
+            "autoplay": True,
+            "loop": True,
+            "interval_ms": 40,
+        },
+    )
+    return enriched
+
+
 def export_simulation_view_payload(
     source_path: str | Path, *, out_dir: str | Path | None = None
 ) -> Path:
@@ -293,6 +375,7 @@ def export_simulation_view_payload(
     started = time.perf_counter()
     payload = build_simulation_view_payload(source)
     payload = _attach_flybody_viewer_assets(payload, target_dir)
+    payload = _attach_rat_ncap_viewer_assets(payload)
     out_path.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
     logger.info(
         "Exported simulation viewer payload to %s in %.1fms",

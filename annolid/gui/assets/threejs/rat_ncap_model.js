@@ -21,6 +21,17 @@ export const RAT_V2_COAT_TEXTURES = Object.freeze({
   gray: 'rat_gray.jpg',
 });
 
+// Exact 31-DOF locomotion rest midpoints matching RAT_V2_POS_MID in rat_ncap.py
+// Order: limbFL(8), limbFR(8), lumbarE(1), lumbarBT(2), limbHL(6), limbHR(6)
+const DEG = Math.PI / 180;
+const RAT_V2_LOCOMOTION_POS_MID = Object.freeze([
+  4.5 * DEG, 0, 0, -16.25 * DEG, 20 * DEG, -2 * DEG, 61.2 * DEG, -65 * DEG,
+  4.5 * DEG, 0, 0, -16.25 * DEG, 20 * DEG, -2 * DEG, 61.2 * DEG, -65 * DEG,
+  0.1, 0, 0,
+  -1.5 * DEG, 12.75 * DEG, -15 * DEG, -35.2 * DEG, 14 * DEG, 0,
+  -1.5 * DEG, 12.75 * DEG, -15 * DEG, -35.2 * DEG, 14 * DEG, 0,
+]);
+
 const COMPONENT_TYPED_ARRAY = Object.freeze({
   5120: Int8Array,
   5121: Uint8Array,
@@ -321,6 +332,7 @@ export class RatV2SkinnedModel {
     // so skinned vertices land directly in exact world coordinates with zero double-transform.
     this.skinnedMesh.bindMode = THREE.DetachedBindMode;
     this.skinnedMesh.matrixAutoUpdate = false;
+    this.skinnedMesh.matrixWorldAutoUpdate = false;
     this.skinnedMesh.matrix.identity();
     this.skinnedMesh.matrixWorld.identity();
     this.skeleton = new THREE.Skeleton(this.bones, boneInverses);
@@ -672,6 +684,180 @@ export class RatV2SkinnedModel {
         }
       }
     }
+  }
+
+  /**
+   * Drives all 41 bones and 55 hinge joints directly from a recorded
+   * `annolid-simulation-v1` Rat NCAP rollout frame (`qpos`, `model_pose`,
+   * `body_poses`, `diagnostics`).
+   */
+  applyRolloutFrame(frame, { bumpCm = 0, showKeypoints = false } = {}) {
+    if (!frame || typeof frame !== 'object') return;
+    const angles = this.jointAngles;
+    for (const j of this.rig.joints) {
+      angles[j.name] = j.init;
+    }
+
+    const qpos = Array.isArray(frame.qpos) ? frame.qpos : [];
+    const diag = frame.diagnostics && typeof frame.diagnostics === 'object' ? frame.diagnostics : {};
+    const t = Number(frame.timestamp_sec) || (Number(frame.frame_index) || 0) * 0.02;
+    const speedMps = Number(diag.forward_speed_mps) || 0;
+    const cmd = clamp(diag.command != null ? Number(diag.command) : speedMps, 0, 1);
+    const amp = cmd < 0.03 ? 0 : (0.30 + 0.70 * cmd);
+    const gait = String(diag.gait || 'stand').toLowerCase();
+
+    let lumBend = 0;
+    if (qpos.length >= 31) {
+      const dq = idx => (Number(qpos[idx]) || 0) - RAT_V2_LOCOMOTION_POS_MID[idx];
+      // Forelimbs (FL: 0..7, FR: 8..15) with verified MuJoCo/GLB Jacobian signs
+      for (const [side, base] of [['L', 0], ['R', 8]]) {
+        angles[`scapula_${side}_supinate`] = this.jointByName[`scapula_${side}_supinate`].init + 0.50 * dq(base + 0);
+        angles[`scapula_${side}_abduct`] = this.jointByName[`scapula_${side}_abduct`].init + 0.60 * dq(base + 1);
+        angles[`scapula_${side}_extend`] = this.jointByName[`scapula_${side}_extend`].init - 0.80 * dq(base + 2);
+        angles[`shoulder_${side}_supinate`] = this.jointByName[`shoulder_${side}_supinate`].init + 0.60 * dq(base + 3);
+        angles[`shoulder_${side}_extend`] = this.jointByName[`shoulder_${side}_extend`].init - 0.85 * dq(base + 4);
+        angles[`elbow_${side}`] = this.jointByName[`elbow_${side}`].init - 0.80 * dq(base + 5);
+        angles[`wrist_${side}`] = this.jointByName[`wrist_${side}`].init + 0.55 * dq(base + 6);
+        angles[`finger_${side}`] = this.jointByName[`finger_${side}`].init + 0.55 * dq(base + 7);
+      }
+      // Lumbar spine (16: extend, 17: bend, 18: twist)
+      const lumExt = dq(16) * 0.85;
+      lumBend = dq(17) * 0.90;
+      const lumTwist = dq(18) * 0.70;
+      angles.vertebra_1_extend = this.jointByName.vertebra_1_extend.init + 0.605 * lumExt;
+      angles.vertebra_4_extend = this.jointByName.vertebra_4_extend.init + 0.395 * lumExt;
+      angles.vertebra_2_bend = this.jointByName.vertebra_2_bend.init + 0.658 * lumBend;
+      angles.vertebra_5_bend = this.jointByName.vertebra_5_bend.init + 0.342 * lumBend;
+      angles.vertebra_3_twist = this.jointByName.vertebra_3_twist.init + 0.571 * lumTwist;
+      angles.vertebra_6_twist = this.jointByName.vertebra_6_twist.init + 0.429 * lumTwist;
+
+      // Hindlimbs (HL: 19..24, HR: 25..30) with verified MuJoCo/GLB Jacobian signs
+      for (const [side, base] of [['L', 19], ['R', 25]]) {
+        angles[`hip_${side}_supinate`] = this.jointByName[`hip_${side}_supinate`].init + 0.50 * dq(base + 0);
+        angles[`hip_${side}_abduct`] = this.jointByName[`hip_${side}_abduct`].init + 0.50 * dq(base + 1);
+        angles[`hip_${side}_extend`] = this.jointByName[`hip_${side}_extend`].init - 0.72 * dq(base + 2);
+        angles[`knee_${side}`] = this.jointByName[`knee_${side}`].init - 0.68 * dq(base + 3);
+        angles[`ankle_${side}`] = this.jointByName[`ankle_${side}`].init + 0.42 * dq(base + 4);
+        angles[`toe_${side}`] = this.jointByName[`toe_${side}`].init + 0.65 * dq(base + 5);
+      }
+    }
+
+    // World root pose from model_pose (MuJoCo Z-up meters) or body_poses.torso fallback
+    let wx = 0;
+    let wz = 0;
+    let yaw = 0;
+    let pitch = 0;
+    let roll = 0;
+    let bounceM = 0;
+    const mp = frame.model_pose && typeof frame.model_pose === 'object' ? frame.model_pose : null;
+    const torsoPose = frame.body_poses && frame.body_poses.torso ? frame.body_poses.torso : null;
+    if (mp && Array.isArray(mp.position) && mp.position.length >= 3) {
+      wx = (Number(mp.position[0]) || 0) * this.worldScale - this.rootPosInit.x;
+      wz = -(Number(mp.position[1]) || 0) * this.worldScale - this.rootPosInit.z;
+      bounceM = (Number(mp.position[2]) || 0) - this.rootPosInit.y / this.worldScale;
+      if (Array.isArray(mp.rotation) && mp.rotation.length >= 3) {
+        roll = Number(mp.rotation[0]) || 0;
+        pitch = Number(mp.rotation[1]) || 0;
+        yaw = Number(mp.rotation[2]) || 0;
+      }
+    } else if (torsoPose && Array.isArray(torsoPose.position) && torsoPose.position.length >= 3) {
+      wx = (Number(torsoPose.position[0]) || 0) * this.worldScale - this.rootPosInit.x;
+      wz = -(Number(torsoPose.position[1]) || 0) * this.worldScale - this.rootPosInit.z;
+      bounceM = (Number(torsoPose.position[2]) || 0) - this.rootPosInit.y / this.worldScale;
+      if (Array.isArray(torsoPose.quaternion) && torsoPose.quaternion.length >= 4) {
+        const [qw, qx, qy, qz] = torsoPose.quaternion.map(Number);
+        yaw = Math.atan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz));
+      }
+    }
+
+    // Neck stabilization + traveling 6-segment tail wave
+    const headPitchStab = -pitch * 0.45 + 0.025 * Math.sin(t * 7.5);
+    angles.vertebra_cervical_5_extend = this.jointByName.vertebra_cervical_5_extend.init + 0.34 * headPitchStab;
+    angles.vertebra_cervical_2_extend = this.jointByName.vertebra_cervical_2_extend.init + 0.33 * headPitchStab;
+    angles.vertebra_atlant_extend = this.jointByName.vertebra_atlant_extend.init + 0.33 * headPitchStab;
+    angles.vertebra_cervical_4_bend = this.jointByName.vertebra_cervical_4_bend.init - 0.25 * lumBend;
+    angles.vertebra_cervical_1_bend = this.jointByName.vertebra_cervical_1_bend.init - 0.25 * lumBend;
+    const tailSegs = [
+      'vertebrae_C1C3', 'vertebrae_C4C9', 'vertebrae_C10C15',
+      'vertebrae_C16C20', 'vertebrae_C21C25', 'vertebrae_C26C30',
+    ];
+    for (let i = 0; i < tailSegs.length; i++) {
+      const seg = tailSegs[i];
+      const lag = i * 0.55;
+      const sway = (0.04 + 0.032 * i) * Math.sin(t * (3.8 + 2.2 * cmd) - lag) * (0.20 + 0.80 * amp);
+      const lift = 0.022 * Math.cos(t * (4.0 + 2.0 * cmd) - lag) * amp;
+      angles[`${seg}_bend`] = this.jointByName[`${seg}_bend`].init + sway - 0.14 * lumBend;
+      angles[`${seg}_extend`] = this.jointByName[`${seg}_extend`].init + lift - 0.02 * cmd;
+    }
+
+    this.applyJointAnglesToSkeleton(angles, pitch * 0.55, roll * 0.55, clamp(bounceM, -0.02, 0.03));
+
+    const bumpM = Math.max(0, Number(bumpCm) || 0) * 0.01;
+    const groundY = bumpM > 0.0005
+      ? computeBumpyTerrainHeight(wx / this.worldScale, -wz / this.worldScale, bumpM) * this.worldScale
+      : 0.0;
+
+    this.root.position.set(wx, groundY, wz);
+    this.root.rotation.set(0, yaw, 0);
+    this.root.updateMatrixWorld(true);
+
+    // Per-paw ground-contact alignment
+    let maxRequiredLift = -Infinity;
+    let minGap = Infinity;
+    for (const kp of ['left_forepaw', 'right_forepaw', 'left_hindpaw', 'right_hindpaw']) {
+      const node = this.trackingNodes[kp];
+      if (!node) continue;
+      node.getWorldPosition(this._pawWorld);
+      const localTerrainY = bumpM > 0.0005
+        ? computeBumpyTerrainHeight(
+            this._pawWorld.x / this.worldScale,
+            -this._pawWorld.z / this.worldScale,
+            bumpM
+          ) * this.worldScale
+        : groundY;
+      const gap = this._pawWorld.y - (localTerrainY + 0.022);
+      if (gap < minGap) minGap = gap;
+      if (-gap > maxRequiredLift) maxRequiredLift = -gap;
+    }
+    if (Number.isFinite(minGap)) {
+      if (maxRequiredLift > 0) {
+        this.root.position.y += maxRequiredLift;
+      } else if (gait !== 'bound') {
+        this.root.position.y -= minGap * 0.65;
+      }
+      this.root.updateMatrixWorld(true);
+    }
+    if (this.contactShadow) {
+      this.contactShadow.visible = bumpM <= 0.002;
+      this.contactShadow.position.y = Math.max(0.008, groundY - this.root.position.y + 0.008);
+    }
+
+    this.keypointMarkers.visible = Boolean(showKeypoints);
+    if (showKeypoints) {
+      const wp = new this.THREE.Vector3();
+      for (const dot of this.keypointMarkers.children) {
+        const node = this.trackingNodes[dot.userData.kpName];
+        if (node) {
+          node.getWorldPosition(wp);
+          this.root.worldToLocal(wp);
+          dot.position.copy(wp);
+        }
+      }
+    }
+  }
+
+  /**
+   * Returns current world-space THREE.Vector3 positions for all 16 bone-attached keypoints.
+   */
+  getWorldKeypoints() {
+    this.root.updateMatrixWorld(true);
+    const out = {};
+    for (const [kpName, node] of Object.entries(this.trackingNodes)) {
+      const wp = new this.THREE.Vector3();
+      node.getWorldPosition(wp);
+      out[kpName] = wp;
+    }
+    return out;
   }
 }
 

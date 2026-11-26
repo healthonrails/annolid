@@ -204,6 +204,15 @@ def test_rat_ncap_workflow_fit_and_rollout_and_viewer_payload(tmp_path: Path) ->
     assert ["nose", "head"] in view_payload["edges"]
     assert ["thorax", "left_forepaw"] in view_payload["edges"]
 
+    from annolid.simulation.viewer import export_simulation_view_payload
+
+    exported_view_path = export_simulation_view_payload(written, out_dir=tmp_path)
+    exported_payload = json.loads(exported_view_path.read_text(encoding="utf-8"))
+    assert exported_payload["mesh"]["type"] == "rat_v2_skinned"
+    assert exported_payload["mesh"]["coat"] == "cinnamon"
+    assert exported_payload["metadata"]["coordinate_system"]["up_axis"] == "Y"
+    assert exported_payload["playback"]["autoplay"] is True
+
     # 4. Pose 2D fitting mode works
     pose_json = tmp_path / "rat_pose.json"
     pose_json.write_text(
@@ -249,6 +258,10 @@ def test_rat_ncap_live_probe_payload_support_and_threejs_examples(
     )
     assert live_payload["kind"] == "annolid-simulation-v1"
     assert live_payload["adapter"] == "rat_ncap"
+    assert live_payload["mesh"]["type"] == "rat_v2_skinned"
+    assert live_payload["mesh"]["coat"] == "gray"
+    assert live_payload["playback"]["autoplay"] is True
+    assert "model_pose" in live_payload["frames"][0]
     assert len(live_payload["frames"]) == 15
 
     # Repo discovery helper respects ANNOLID_RAT_NCAP_PATH
@@ -274,7 +287,10 @@ def test_rat_ncap_live_probe_payload_support_and_threejs_examples(
     json_path = generate_threejs_example("rat_ncap_simulation_json", tmp_path)
     parsed = json.loads(json_path.read_text(encoding="utf-8"))
     assert parsed["adapter"] == "rat_ncap"
-    assert len(parsed["frames"]) == 120
+    assert parsed["mesh"]["type"] == "rat_v2_skinned"
+    assert len(parsed["frames"]) == 360
+    gaits_seen = {f["diagnostics"]["gait"] for f in parsed["frames"]}
+    assert {"stand", "walk", "trot", "bound"}.issubset(gaits_seen)
 
 
 def test_build_simulation_adapter_accepts_rat_alias() -> None:

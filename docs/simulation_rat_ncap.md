@@ -13,7 +13,7 @@ The implementation runs **zero-dependency out of the box** (pure NumPy in Python
 Open from Annolid's main menu:
 
 - **Tools / View → 3D Examples → Rat NCAP 3D Simulation** (`rat_ncap_html`) — launches the interactive 3D Long-Evans Rat v2 biomechanical rig with live spinal circuit controls.
-- **Tools / View → 3D Examples → Rat NCAP Simulation Example** (`rat_ncap_simulation_json`) — opens a pre-generated 3D gait-transition rollout (`stand → walk → trot → bound`) in the Three.js simulation viewer.
+- **Tools / View → 3D Examples → Rat NCAP Simulation Example** (`rat_ncap_simulation_json`) — opens a pre-generated 3D gait-transition rollout (`stand → walk → trot → bound`) rendered with the 41-bone skinned Long-Evans Rat v2 model, timeline scrubbing, coat switcher, follow camera, and toggleable keypoints/skeleton/trails in the Three.js simulation viewer (the same skinned model also renders saved CLI/Python `rat_ncap` rollouts opened via **Open / Run Simulation in 3D Viewer…**).
 - **Tools / View → 3D Examples → Rat NCAP Status…** — inspects built-in Rat NCAP readiness and any optional local `rat-ncap` checkout (`ANNOLID_RAT_NCAP_PATH` or `~/Downloads/rat-ncap`).
 
 ### Bundled 3D Rat v2 Skinned Model & License Attribution
