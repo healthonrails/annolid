@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from qtpy import QtCore, QtWidgets
 
+from annolid.services.speech_highlighting import parse_keywords
+
 
 class PdfReaderControlsWidget(QtWidgets.QWidget):
-    """Controls for click-to-read paragraph playback."""
+    """Controls for click-to-read playback and keyword highlighting while speaking."""
 
     reader_enabled_changed = QtCore.Signal(bool)
     pdfjs_mode_requested = QtCore.Signal(bool)
@@ -12,6 +14,9 @@ class PdfReaderControlsWidget(QtWidgets.QWidget):
     stop_requested = QtCore.Signal()
     previous_requested = QtCore.Signal()
     next_requested = QtCore.Signal()
+    keywords_changed = QtCore.Signal(list)
+    keyword_highlighting_changed = QtCore.Signal(bool)
+    auto_keywords_changed = QtCore.Signal(bool)
 
     def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
         super().__init__(parent)
@@ -32,7 +37,8 @@ class PdfReaderControlsWidget(QtWidgets.QWidget):
         layout.addWidget(self.status_label)
 
         self.tip_label = QtWidgets.QLabel(
-            "Tip: click a paragraph to start reading from there.", self
+            "Tip: double-click a sentence to start reading from that word.",
+            self,
         )
         self.tip_label.setWordWrap(True)
         self.tip_label.setStyleSheet("color: #5f6368;")
@@ -76,8 +82,46 @@ class PdfReaderControlsWidget(QtWidgets.QWidget):
         controls_row.addStretch(1)
         layout.addLayout(controls_row)
 
-        self.progress_label = QtWidgets.QLabel("Paragraph - / -", self)
+        self.progress_label = QtWidgets.QLabel("Sentence - / -", self)
         layout.addWidget(self.progress_label)
+
+        # Keyword highlighting while speaking controls (works in both PDF.js & fallback)
+        separator = QtWidgets.QFrame(self)
+        separator.setFrameShape(QtWidgets.QFrame.HLine)
+        separator.setFrameShadow(QtWidgets.QFrame.Sunken)
+        layout.addWidget(separator)
+
+        kw_title = QtWidgets.QLabel("Keyword Highlighting", self)
+        kw_title.setStyleSheet("font-weight: 600;")
+        layout.addWidget(kw_title)
+
+        self.highlight_keywords_checkbox = QtWidgets.QCheckBox(
+            "Highlight keywords while speaking", self
+        )
+        self.highlight_keywords_checkbox.setChecked(True)
+        self.highlight_keywords_checkbox.toggled.connect(
+            self._on_keyword_highlighting_toggled
+        )
+        layout.addWidget(self.highlight_keywords_checkbox)
+
+        self.auto_keywords_checkbox = QtWidgets.QCheckBox(
+            "Auto-highlight key terms", self
+        )
+        self.auto_keywords_checkbox.setChecked(False)
+        self.auto_keywords_checkbox.setToolTip(
+            "Automatically emphasize technical terms and acronyms in each spoken sentence."
+        )
+        self.auto_keywords_checkbox.toggled.connect(self._on_auto_keywords_toggled)
+        layout.addWidget(self.auto_keywords_checkbox)
+
+        self.keywords_edit = QtWidgets.QLineEdit(self)
+        self.keywords_edit.setPlaceholderText("Keywords (comma-separated)…")
+        self.keywords_edit.setToolTip(
+            "Enter comma-separated keywords or phrases to highlight on the PDF and emphasize while speaking."
+        )
+        self.keywords_edit.setClearButtonEnabled(True)
+        self.keywords_edit.textChanged.connect(self._on_keywords_text_changed)
+        layout.addWidget(self.keywords_edit)
 
         layout.addStretch(1)
         self._set_controls_enabled(False, reason="PDF.js required")
@@ -92,14 +136,35 @@ class PdfReaderControlsWidget(QtWidgets.QWidget):
             return
         self.pdfjs_mode_requested.emit(bool(checked))
 
-    def set_reader_state(self, state: str, current: int, total: int) -> None:
+    def _on_keyword_highlighting_toggled(self, _checked: bool) -> None:
+        enabled = bool(self.highlight_keywords_checkbox.isChecked())
+        self.auto_keywords_checkbox.setEnabled(enabled)
+        self.keywords_edit.setEnabled(enabled)
+        if self._ignore_signals:
+            return
+        self.keyword_highlighting_changed.emit(enabled)
+
+    def _on_auto_keywords_toggled(self, _checked: bool) -> None:
+        if self._ignore_signals:
+            return
+        self.auto_keywords_changed.emit(bool(self.auto_keywords_checkbox.isChecked()))
+
+    def _on_keywords_text_changed(self, text: str) -> None:
+        if self._ignore_signals:
+            return
+        self.keywords_changed.emit(parse_keywords(text))
+
+    def set_reader_state(
+        self, state: str, current: int, total: int, *, unit_label: str = "Sentence"
+    ) -> None:
         state_label = state.capitalize() if state else "Idle"
         self.status_label.setText(state_label)
+        label_prefix = str(unit_label or "Sentence").strip() or "Sentence"
         if total > 0:
             current_display = max(1, min(current + 1, total))
-            self.progress_label.setText(f"Paragraph {current_display} / {total}")
+            self.progress_label.setText(f"{label_prefix} {current_display} / {total}")
         else:
-            self.progress_label.setText("Paragraph - / -")
+            self.progress_label.setText(f"{label_prefix} - / -")
 
         if state == "reading":
             self.pause_button.setText("Pause")
@@ -134,6 +199,33 @@ class PdfReaderControlsWidget(QtWidgets.QWidget):
         finally:
             self._ignore_signals = False
 
+    def set_keywords(self, keywords: list[str] | str) -> None:
+        terms = parse_keywords(keywords)
+        joined = ", ".join(terms)
+        self._ignore_signals = True
+        try:
+            if self.keywords_edit.text() != joined:
+                self.keywords_edit.setText(joined)
+        finally:
+            self._ignore_signals = False
+
+    def set_keyword_highlighting_enabled(self, enabled: bool) -> None:
+        flag = bool(enabled)
+        self._ignore_signals = True
+        try:
+            self.highlight_keywords_checkbox.setChecked(flag)
+            self.auto_keywords_checkbox.setEnabled(flag)
+            self.keywords_edit.setEnabled(flag)
+        finally:
+            self._ignore_signals = False
+
+    def set_auto_keywords_enabled(self, enabled: bool) -> None:
+        self._ignore_signals = True
+        try:
+            self.auto_keywords_checkbox.setChecked(bool(enabled))
+        finally:
+            self._ignore_signals = False
+
     def set_reader_available(self, available: bool, reason: str = "") -> None:
         self._set_controls_enabled(available, reason=reason)
 
@@ -153,7 +245,7 @@ class PdfReaderControlsWidget(QtWidgets.QWidget):
             self.status_label.setText(reason)
         elif enabled and self.status_label.text() == reason:
             self.status_label.setText("Idle")
-        # PDF.js toggle should always be available to let the user switch modes.
+        # PDF.js toggle and keyword highlighting remain usable across modes.
         self.pdfjs_checkbox.setEnabled(True)
         self.pdfjs_checkbox.setToolTip(
             "" if enabled else "Switch to PDF.js to enable click-to-read."

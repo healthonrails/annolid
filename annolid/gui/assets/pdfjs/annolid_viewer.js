@@ -25,221 +25,77 @@
       } catch (e) { }
       window.__annolidPdfjsReady = true;
 
+      const _speech = window.AnnolidPdfSpeech || {};
+
       window.__annolidSpans = [];
       window.__annolidSpanCounter = 0;
       window.__annolidSelectionSpans = [];
       window.__annolidSpanMeta = {};
       window.__annolidPages = {};
-      window.__annolidTts = { sentenceIndices: [], wordIndex: null, lastPages: [] };
+      window.__annolidTts = {
+        sentenceIndices: [],
+        sentenceSlices: null,
+        wordIndex: null,
+        wordRects: null,
+        keywordRects: null,
+        activeIsKeyword: false,
+        lastPages: [],
+        activeMeta: null,
+        rafId: 0,
+        timerId: null,
+        sessionId: 0,
+      };
+      window.__annolidKeywordConfig = {
+        keywords: [],
+        enabled: true,
+        autoKeywords: false,
+      };
       window.__annolidMarks = { tool: "select", color: "#ffb300", size: 10, undo: [], drawing: null };
       window.__annolidReaderEnabled = window.__annolidReaderEnabled || false;
       window.__annolidParagraphsByPage = {};
       window.__annolidParagraphs = [];
       window.__annolidParagraphOffsets = {};
       window.__annolidParagraphTotal = 0;
+
+      function _annolidOrderSpanIndicesForReading(indices) {
+        if (typeof _speech.orderSpanIndicesForReading === "function") {
+          return _speech.orderSpanIndicesForReading(indices, _annolidGetSpanMeta);
+        }
+        return Array.isArray(indices) ? Array.from(new Set(indices)) : [];
+      }
+
       window.__annolidSplitTextIntoSentenceRanges = function (text) {
-        const s = String(text || "");
-        if (!s) return [];
-        const END = new Set([".", "!", "?", "。", "！", "？"]);
-        const isCjkLead = (ch) => /[぀-ヿ㐀-䶿一-鿿豈-﫿]/.test(ch || "");
-        const isNarrationLead = (ch) => {
-          const c = String(ch || "");
-          return isCjkLead(c) || c === "（" || c === "【" || c === "“" || c === "‘";
-        };
-        const QUOTE_CLOSERS = new Set(["”", "’", "\"", "'"]);
-        const CLOSERS = new Set([
-          "”", "’", "\"", "'", ")", "]", "）", "】", "》", "」", "』", "〉",
-        ]);
-        const ranges = [];
-        let start = 0;
-        for (let i = 0; i < s.length; i++) {
-          const ch = s[i];
-          if (!END.has(ch)) continue;
-          let end = i + 1;
-          while (end < s.length && END.has(s[end])) end++;
-          const punctEnd = end;
-          // Attach trailing quotes/brackets, even if PDF extraction inserted whitespace
-          // between end punctuation and the closer (e.g. "。”" or "。 ”").
-          let probe = end;
-          for (let guard = 0; guard < 8; guard++) {
-            let ws = probe;
-            while (ws < s.length && /\s/.test(s[ws])) ws++;
-            if (ws < s.length && CLOSERS.has(s[ws])) {
-              probe = ws + 1;
-              while (probe < s.length && CLOSERS.has(s[probe])) probe++;
-              end = probe;
-              continue;
-            }
-            break;
-          }
-          // Fix skipped patterns around Chinese quote endings like:
-          //   "。”说完..." / "。”小鹊..."
-          // When a quoted sentence ends and narration continues immediately, some PDFs place the
-          // continuation spans slightly off-baseline; splitting here makes the next part prone
-          // to being reordered and "skipped". Treat these as a single sentence chunk.
-          try {
-            let hasQuoteCloser = false;
-            for (let j = punctEnd; j < end; j++) {
-              const c = s[j];
-              if (/\s/.test(c)) continue;
-              if (QUOTE_CLOSERS.has(c)) {
-                hasQuoteCloser = true;
-                break;
-              }
-            }
-            if (hasQuoteCloser) {
-              let k = end;
-              // PDFs may insert multiple spaces/newlines between the quote closer and narration.
-              // Skip a reasonable amount of whitespace and merge when narration continues.
-              while (k < s.length && /\s/.test(s[k]) && (k - end) < 48) k++;
-              if (k < s.length && isNarrationLead(s[k])) {
-                continue;
-              }
-            }
-          } catch (e) { }
-          ranges.push([start, end]);
-          start = end;
+        if (typeof _speech.splitTextIntoSentenceRanges === "function") {
+          return _speech.splitTextIntoSentenceRanges(text);
         }
-        if (start < s.length) ranges.push([start, s.length]);
-        // Trim whitespace around ranges.
-        const out = [];
-        for (const pair of ranges) {
-          let a = pair[0];
-          let b = pair[1];
-          while (a < b && /\s/.test(s[a])) a++;
-          while (b > a && /\s/.test(s[b - 1])) b--;
-          if (b > a) out.push([a, b]);
-        }
-        return out;
+        const s = String(text || "").trim();
+        return s ? [[0, s.length]] : [];
       };
 
       window.__annolidSplitParagraphIntoSentences = function (para) {
         try {
-          const spansRaw = (para && Array.isArray(para.spans)) ? para.spans.filter((n) => Number.isInteger(n)) : [];
-          if (!spansRaw.length) return [];
-          const spans = (typeof _annolidOrderSpanIndicesForReading === "function")
-            ? _annolidOrderSpanIndicesForReading(spansRaw)
-            : spansRaw.slice();
-          const nodes = window.__annolidSpans || [];
-          const isCjkLike = (ch) => /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af，。！？、；：“”‘’（）《》「」『』]/.test(ch || "");
-          const parts = [];
-          let combined = "";
-          spans.forEach((idx) => {
-            const node = nodes[idx];
-            if (!node) return;
-            const raw = String(node.textContent || "");
-            const cleaned = raw.replace(/\u00ad/g, "").replace(/\u00a0/g, " ");
-            const text = cleaned.replace(/\s+/g, " ").trim();
-            if (!text) return;
-            let sep = "";
-            if (combined) {
-              const prev = combined[combined.length - 1] || "";
-              const next = text[0] || "";
-              if (!/\s/.test(prev) && !(isCjkLike(prev) && isCjkLike(next))) {
-                sep = " ";
-              }
-            }
-            const start = combined.length + sep.length;
-            combined += sep + text;
-            const end = combined.length;
-            parts.push({ idx, start, end });
-          });
-          // Use the exact combined span text for range computation so indices
-          // align with span boundaries; normalize only per sentence output.
-          const paraText = combined;
-          const normalizedText = _annolidNormalizeText(paraText);
-          const resolvedPageNum = (parseInt(para.pageNum || para.page || 0, 10) || 0);
-          if (!normalizedText) return [];
-          const shortCharLimit = 120;
-          const shortSpanLimit = 4;
-          const shortParagraph = (normalizedText.length <= shortCharLimit || spans.length <= shortSpanLimit);
-          if (shortParagraph) {
-            return [{
-              text: normalizedText,
-              spans: spans.slice(),
-              pageNum: resolvedPageNum,
-            }];
-          }
-          const sentences = [];
-          const ranges = (typeof window.__annolidSplitTextIntoSentenceRanges === "function")
-            ? (window.__annolidSplitTextIntoSentenceRanges(paraText) || [])
+          const spansRaw = (para && Array.isArray(para.spans))
+            ? para.spans.filter((n) => Number.isInteger(n))
             : [];
-          if (!ranges.length) {
-            return [{
-              text: normalizedText,
-              spans: spans.slice(),
-              pageNum: resolvedPageNum,
-            }];
+          if (!spansRaw.length) return [];
+          const spans = _annolidOrderSpanIndicesForReading(spansRaw);
+          const nodes = window.__annolidSpans || [];
+          const resolvedPageNum = (parseInt(para.pageNum || para.page || 0, 10) || 0);
+          const entries = [];
+          for (let i = 0; i < spans.length; i++) {
+            const idx = spans[i];
+            const node = nodes[idx];
+            if (!node) continue;
+            entries.push({ idx, rawText: String(node.textContent || "") });
           }
-          for (const r of ranges) {
-            const start = r[0];
-            const end = r[1];
-            const outText = _annolidNormalizeText(paraText.slice(start, end));
-            if (!outText) continue;
-            const group = parts
-              .filter((p) => p.end > start && p.start < end)
-              .map((p) => p.idx);
-            sentences.push({
-              text: outText,
-              spans: group.length ? group : spans.slice(),
-              pageNum: resolvedPageNum,
-            });
+          if (!entries.length) return [];
+          if (typeof _speech.splitParagraphEntriesIntoSentences === "function") {
+            return _speech.splitParagraphEntriesIntoSentences(entries, resolvedPageNum);
           }
-          // Post-merge edge cases where a quoted sentence ends and narration continues immediately,
-          // e.g., "。”说完..." / "。”小鹊..." which otherwise may split and reorder.
-          if (sentences.length > 1) {
-            const merged = [];
-            const endQuoteRe = /[.!?。！？]+[”’"'][\)\]）】》」』〉]*$/;
-            const cjkLeadRe = /^[぀-ヿ㐀-䶿一-鿿豈-﫿（【“‘]/;
-            let i = 0;
-            while (i < sentences.length) {
-              let cur = sentences[i];
-              if (i + 1 < sentences.length && endQuoteRe.test(cur.text || "")) {
-                const next = sentences[i + 1];
-                if (cjkLeadRe.test((next.text || "").trim())) {
-                  const nextText = String(next.text || "");
-                  const joiner = cjkLeadRe.test(nextText) ? "" : " ";
-                  const mergedText = _annolidNormalizeText((cur.text || "") + joiner + nextText);
-                  const mergedSpansRaw = []
-                    .concat(Array.isArray(cur.spans) ? cur.spans : [])
-                    .concat(Array.isArray(next.spans) ? next.spans : []);
-                  const mergedSpans = (typeof _annolidOrderSpanIndicesForReading === "function")
-                    ? _annolidOrderSpanIndicesForReading(mergedSpansRaw)
-                    : mergedSpansRaw;
-                  merged.push({
-                    text: mergedText,
-                    spans: mergedSpans,
-                    pageNum: resolvedPageNum,
-                  });
-                  i += 2;
-                  continue;
-                }
-              }
-              merged.push(cur);
-              i += 1;
-            }
-            sentences.length = 0;
-            merged.forEach((m) => sentences.push(m));
-          }
-          if (sentences.length > 1) {
-            const totalLen = sentences.reduce((s, item) => s + (item.text || "").length, 0);
-            const avgLen = totalLen / Math.max(1, sentences.length);
-            if (avgLen < 45 && normalizedText.length <= 180) {
-              return [{
-                text: normalizedText,
-                spans: spans.slice(),
-                pageNum: resolvedPageNum,
-              }];
-            }
-          }
-          if (!sentences.length && paraText) {
-            sentences.push({
-              text: normalizedText,
-              spans: spans.slice(),
-              pageNum: resolvedPageNum,
-            });
-          }
-          return sentences;
+          const fallbackText = _annolidNormalizeText(entries.map((e) => e.rawText).join(" "));
+          return fallbackText
+            ? [{ text: fallbackText, spans: spans.slice(), pageNum: resolvedPageNum }]
+            : [];
         } catch (e) {
           return [];
         }
@@ -302,6 +158,13 @@
         try {
           new QWebChannel(window.qt.webChannelTransport, function (channel) {
             window.__annolidBridge = channel.objects.annolidBridge || null;
+            try {
+              const bridge = window.__annolidBridge;
+              if (bridge && typeof bridge.onPageChanged === "function" && window.__annolidTotalPages) {
+                const cur = (typeof _annolidGetCurrentPageNum === "function") ? _annolidGetCurrentPageNum() : 1;
+                bridge.onPageChanged(parseInt(cur, 10) || 1, parseInt(window.__annolidTotalPages, 10) || 1);
+              }
+            } catch (e) { }
           });
         } catch (e) {
           window.__annolidBridge = null;
@@ -521,21 +384,333 @@
         return meta;
       }
 
-      function _annolidRenderTts() {
-        const tts = window.__annolidTts || { sentenceIndices: [], wordIndex: null, lastPages: [] };
-        const sentence = tts.sentenceIndices || [];
-        const wordIndex = (tts.wordIndex === 0 || tts.wordIndex) ? tts.wordIndex : null;
-        const pagesToDraw = {};
-        function addMeta(kind, idx) {
-          const meta = _annolidGetSpanMeta(idx);
-          if (!meta) return;
-          const key = String(meta.pageNum);
-          if (!pagesToDraw[key]) pagesToDraw[key] = { sentence: [], word: null };
-          if (kind === "sentence") pagesToDraw[key].sentence.push(meta);
-          if (kind === "word") pagesToDraw[key].word = meta;
+      function _annolidEnsureTtsState() {
+        if (!window.__annolidTts || typeof window.__annolidTts !== "object") {
+          window.__annolidTts = {
+            sentenceIndices: [],
+            sentenceSlices: null,
+            wordIndex: null,
+            wordRects: null,
+            keywordRects: null,
+            activeIsKeyword: false,
+            lastPages: [],
+            activeMeta: null,
+            rafId: 0,
+            timerId: null,
+            sessionId: 0,
+          };
         }
-        for (const idx of sentence) addMeta("sentence", idx);
-        if (wordIndex !== null) addMeta("word", wordIndex);
+        return window.__annolidTts;
+      }
+
+      function _annolidCancelSpeechAnimation() {
+        const tts = _annolidEnsureTtsState();
+        if (tts.rafId) {
+          try { cancelAnimationFrame(tts.rafId); } catch (e) { }
+          tts.rafId = 0;
+        }
+        if (tts.timerId) {
+          try { clearTimeout(tts.timerId); } catch (e) { }
+          tts.timerId = null;
+        }
+      }
+
+      function _annolidFillRoundedRect(ctx, x, y, w, h, radius) {
+        if (!ctx || w <= 0 || h <= 0) return;
+        const r = Math.max(0, Math.min(radius || 0, w * 0.5, h * 0.5));
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.lineTo(x + w - r, y);
+        ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+        ctx.lineTo(x + w, y + h - r);
+        ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+        ctx.lineTo(x + r, y + h);
+        ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+        ctx.lineTo(x, y + r);
+        ctx.quadraticCurveTo(x, y, x + r, y);
+        ctx.closePath();
+        ctx.fill();
+      }
+
+      function _annolidStrokeRoundedRect(ctx, x, y, w, h, radius) {
+        if (!ctx || w <= 0 || h <= 0) return;
+        const r = Math.max(0, Math.min(radius || 0, w * 0.5, h * 0.5));
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.lineTo(x + w - r, y);
+        ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+        ctx.lineTo(x + w, y + h - r);
+        ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+        ctx.lineTo(x + r, y + h);
+        ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+        ctx.lineTo(x, y + r);
+        ctx.quadraticCurveTo(x, y, x + r, y);
+        ctx.closePath();
+        ctx.stroke();
+      }
+
+      function _annolidGetSpanSubRangeRects(spanIdx, charStart, charEnd) {
+        const spans = window.__annolidSpans || [];
+        const span = spans[spanIdx];
+        if (!span) return [];
+        const pageDiv = span.closest ? span.closest(".page") : null;
+        if (!pageDiv) return [];
+        const pageNum = parseInt(pageDiv.getAttribute("data-page-number") || "0", 10) || 0;
+        if (!pageNum) return [];
+        const text = String(span.textContent || "");
+        const len = text.length;
+        const s0 = Math.max(0, Math.min(len, parseInt(charStart || 0, 10) || 0));
+        const e0 = (charEnd == null) ? len : Math.max(s0, Math.min(len, parseInt(charEnd, 10) || 0));
+        if (e0 <= s0) return [];
+
+        const pageRect = pageDiv.getBoundingClientRect();
+        // Fast path for exact full-span highlight
+        if (s0 === 0 && e0 >= len) {
+          const fullMeta = _annolidGetSpanMeta(spanIdx);
+          return fullMeta ? [fullMeta] : [];
+        }
+
+        // Exact DOM Range measurement across text nodes inside the span.
+        try {
+          const walker = document.createTreeWalker(span, NodeFilter.SHOW_TEXT, null);
+          let curNode = null;
+          let pos = 0;
+          let startNode = null, startOff = 0;
+          let endNode = null, endOff = 0;
+          while ((curNode = walker.nextNode())) {
+            const val = curNode.nodeValue || "";
+            const nextPos = pos + val.length;
+            if (!startNode && s0 >= pos && s0 <= nextPos) {
+              startNode = curNode;
+              startOff = s0 - pos;
+            }
+            if (e0 >= pos && e0 <= nextPos) {
+              endNode = curNode;
+              endOff = e0 - pos;
+              break;
+            }
+            pos = nextPos;
+          }
+          if (startNode && endNode) {
+            const range = document.createRange();
+            range.setStart(startNode, startOff);
+            range.setEnd(endNode, endOff);
+            const rawRects = range.getClientRects ? range.getClientRects() : [];
+            const out = [];
+            for (let i = 0; i < rawRects.length; i++) {
+              const r = rawRects[i];
+              if (!r || !isFinite(r.width) || !isFinite(r.height) || r.width <= 0.5 || r.height <= 0.5) continue;
+              out.push({
+                pageNum,
+                x: r.left - pageRect.left,
+                y: r.top - pageRect.top,
+                w: r.width,
+                h: r.height,
+              });
+            }
+            if (out.length) return out;
+          }
+        } catch (e) { }
+
+        // Proportional fallback if Range.getClientRects is unavailable or empty.
+        const meta = _annolidGetSpanMeta(spanIdx);
+        if (!meta || len <= 0) return [];
+        const xStart = meta.x + (meta.w * (s0 / len));
+        const width = Math.max(2, meta.w * ((e0 - s0) / len));
+        return [{
+          pageNum: meta.pageNum,
+          x: xStart,
+          y: meta.y,
+          w: width,
+          h: meta.h,
+        }];
+      }
+
+      function _annolidCollectPageKeywordRects(pageNum, keywords) {
+        if (!keywords || !keywords.length || typeof _speech.findKeywordRanges !== "function") return [];
+        const state = window.__annolidPages && window.__annolidPages[String(pageNum)];
+        if (!state || !state.pageDiv) return [];
+        const spanEls = state.pageDiv.querySelectorAll(".textLayer span");
+        if (!spanEls || !spanEls.length) return [];
+        const rects = [];
+        for (let i = 0; i < spanEls.length; i++) {
+          const el = spanEls[i];
+          const text = String(el.textContent || "");
+          if (!text.trim()) continue;
+          const idx = parseInt(el.dataset && el.dataset.annolidIndex ? el.dataset.annolidIndex : "-1", 10);
+          if (idx < 0) continue;
+          const matches = _speech.findKeywordRanges(text, keywords);
+          for (let m = 0; m < matches.length; m++) {
+            const subRects = _annolidGetSpanSubRangeRects(idx, matches[m].start, matches[m].end);
+            for (let r = 0; r < subRects.length; r++) rects.push(subRects[r]);
+          }
+        }
+        return rects;
+      }
+
+      function _annolidBuildSentenceWordModel(spanSlices, sentenceText, keywords, autoKeywords) {
+        const nodes = window.__annolidSpans || [];
+        const slices = Array.isArray(spanSlices) ? spanSlices : [];
+        const segments = [];
+        let combined = "";
+        for (let i = 0; i < slices.length; i++) {
+          const sl = slices[i];
+          if (!sl || !Number.isInteger(sl.idx)) continue;
+          const node = nodes[sl.idx];
+          if (!node) continue;
+          const raw = String(node.textContent || "");
+          const s0 = Math.max(0, Math.min(raw.length, parseInt(sl.startOffset || 0, 10) || 0));
+          const e0 = (sl.endOffset == null)
+            ? raw.length
+            : Math.max(s0, Math.min(raw.length, parseInt(sl.endOffset, 10) || 0));
+          const sub = raw.slice(s0, e0);
+          if (!sub.trim()) continue;
+          let sep = "";
+          if (combined) {
+            const prev = combined[combined.length - 1] || "";
+            const next = sub[0] || "";
+            const isCjkLikeFn = _speech.isCjkLike || (() => false);
+            if (!/\s/.test(prev) && !/\s/.test(next) && !(isCjkLikeFn(prev) && isCjkLikeFn(next))) {
+              sep = " ";
+            }
+          }
+          const cStart = combined.length + sep.length;
+          combined += sep + sub;
+          const cEnd = combined.length;
+          segments.push({ idx: sl.idx, rawStart: s0, rawEnd: e0, cStart, cEnd });
+        }
+
+        const effectiveKeywords = (typeof _speech.parseKeywords === "function")
+          ? _speech.parseKeywords(keywords || [])
+          : [];
+        if (autoKeywords && typeof _speech.extractAutoKeywords === "function") {
+          const autoTerms = _speech.extractAutoKeywords(combined || sentenceText || "", 4);
+          for (let i = 0; i < autoTerms.length; i++) {
+            const term = autoTerms[i];
+            if (!effectiveKeywords.some((k) => k.toLowerCase() === term.toLowerCase())) {
+              effectiveKeywords.push(term);
+            }
+          }
+        }
+
+        function mapCombinedRangeToRects(rangeStart, rangeEnd) {
+          const rects = [];
+          for (let i = 0; i < segments.length; i++) {
+            const seg = segments[i];
+            if (seg.cEnd <= rangeStart || seg.cStart >= rangeEnd) continue;
+            const localS = Math.max(0, rangeStart - seg.cStart);
+            const localE = Math.min(seg.cEnd - seg.cStart, rangeEnd - seg.cStart);
+            const subRects = _annolidGetSpanSubRangeRects(
+              seg.idx,
+              seg.rawStart + localS,
+              seg.rawStart + localE,
+            );
+            for (let r = 0; r < subRects.length; r++) rects.push(subRects[r]);
+          }
+          return rects;
+        }
+
+        const kwRanges = (effectiveKeywords.length && typeof _speech.findKeywordRanges === "function")
+          ? _speech.findKeywordRanges(combined, effectiveKeywords)
+          : [];
+        const keywordRects = [];
+        for (let i = 0; i < kwRanges.length; i++) {
+          const rList = mapCombinedRangeToRects(kwRanges[i].start, kwRanges[i].end);
+          for (let r = 0; r < rList.length; r++) keywordRects.push(rList[r]);
+        }
+
+        const rawTokens = (typeof _speech.tokenizeWords === "function")
+          ? _speech.tokenizeWords(combined, effectiveKeywords)
+          : [];
+        const wordTokens = [];
+        for (let i = 0; i < rawTokens.length; i++) {
+          const tok = rawTokens[i];
+          const rects = mapCombinedRangeToRects(tok.start, tok.end);
+          if (!rects.length) continue;
+          wordTokens.push({
+            text: tok.text,
+            weight: tok.weight,
+            isKeyword: !!tok.isKeyword,
+            pauseStrength: Number(tok.pauseStrength) || 0,
+            rects,
+          });
+        }
+        return { keywordRects, wordTokens, effectiveKeywords };
+      }
+
+      function _annolidRenderTts() {
+        const tts = _annolidEnsureTtsState();
+        const sentence = tts.sentenceIndices || [];
+        const sentenceSlices = Array.isArray(tts.sentenceSlices) ? tts.sentenceSlices : null;
+        const wordIndex = (tts.wordIndex === 0 || tts.wordIndex) ? tts.wordIndex : null;
+        const wordRects = Array.isArray(tts.wordRects) ? tts.wordRects : null;
+        const keywordRects = Array.isArray(tts.keywordRects) ? tts.keywordRects : null;
+        const activeIsKeyword = !!tts.activeIsKeyword;
+        const kwCfg = window.__annolidKeywordConfig || { keywords: [], enabled: true, autoKeywords: false };
+        const persistentKeywords = (kwCfg.enabled && Array.isArray(kwCfg.keywords) && kwCfg.keywords.length)
+          ? kwCfg.keywords
+          : [];
+
+        const pagesToDraw = {};
+        function ensurePageEntry(pageNum) {
+          const key = String(pageNum);
+          if (!pagesToDraw[key]) {
+            pagesToDraw[key] = { pageKeywords: [], sentence: [], keywords: [], word: [] };
+          }
+          return pagesToDraw[key];
+        }
+
+        // Persistent user keyword highlights across rendered pages
+        if (persistentKeywords.length) {
+          const allPages = window.__annolidPages || {};
+          const renderedKeys = Object.keys(allPages);
+          for (let i = 0; i < renderedKeys.length; i++) {
+            const pNum = parseInt(renderedKeys[i], 10) || 0;
+            if (!pNum) continue;
+            const st = allPages[renderedKeys[i]];
+            if (!st || !st.ttsCanvas || !st.pageDiv) continue;
+            const pRects = _annolidCollectPageKeywordRects(pNum, persistentKeywords);
+            if (pRects.length) {
+              const entry = ensurePageEntry(pNum);
+              for (let r = 0; r < pRects.length; r++) entry.pageKeywords.push(pRects[r]);
+            }
+          }
+        }
+
+        // Sentence highlight rects (prefer exact sub-span slices when available)
+        if (sentenceSlices && sentenceSlices.length) {
+          for (let i = 0; i < sentenceSlices.length; i++) {
+            const sl = sentenceSlices[i];
+            const rects = _annolidGetSpanSubRangeRects(sl.idx, sl.startOffset, sl.endOffset);
+            for (let r = 0; r < rects.length; r++) {
+              ensurePageEntry(rects[r].pageNum).sentence.push(rects[r]);
+            }
+          }
+        } else {
+          for (let i = 0; i < sentence.length; i++) {
+            const meta = _annolidGetSpanMeta(sentence[i]);
+            if (meta) ensurePageEntry(meta.pageNum).sentence.push(meta);
+          }
+        }
+
+        // Sentence-level keyword highlights (user keywords + optional auto key terms)
+        if (keywordRects && keywordRects.length) {
+          for (let i = 0; i < keywordRects.length; i++) {
+            const r = keywordRects[i];
+            if (r && r.pageNum) ensurePageEntry(r.pageNum).keywords.push(r);
+          }
+        }
+
+        // Active spoken word rects (exact sub-span rects preferred; legacy span index fallback)
+        if (wordRects && wordRects.length) {
+          for (let i = 0; i < wordRects.length; i++) {
+            const r = wordRects[i];
+            if (r && r.pageNum) ensurePageEntry(r.pageNum).word.push(r);
+          }
+        } else if (wordIndex !== null) {
+          const meta = _annolidGetSpanMeta(wordIndex);
+          if (meta) ensurePageEntry(meta.pageNum).word.push(meta);
+        }
 
         const pageKeys = new Set([...(tts.lastPages || []), ...Object.keys(pagesToDraw)]);
         for (const key of pageKeys) {
@@ -543,68 +718,363 @@
           if (!state || !state.ttsCanvas || !state.ttsCtx) continue;
           _annolidClearCanvas(state.ttsCanvas, state.ttsCtx, state.dpr || 1);
         }
+
         for (const key of Object.keys(pagesToDraw)) {
           const state = window.__annolidPages[key];
           if (!state || !state.ttsCanvas || !state.ttsCtx) continue;
+          const ctx = state.ttsCtx;
           const entry = pagesToDraw[key];
-          // Sentence highlight (soft)
-          state.ttsCtx.save();
-          state.ttsCtx.fillStyle = "rgba(255, 210, 80, 0.30)";
-          for (const meta of (entry.sentence || [])) {
-            const pad = 1.0;
-            state.ttsCtx.fillRect(
-              Math.max(0, meta.x - pad),
-              Math.max(0, meta.y - pad),
-              Math.max(0, meta.w + pad * 2),
-              Math.max(0, meta.h + pad * 2),
-            );
+
+          // 0) Page-wide user keyword pins (subtle teal wash + underline)
+          if (entry.pageKeywords.length) {
+            ctx.save();
+            ctx.fillStyle = "rgba(0, 188, 212, 0.18)";
+            ctx.strokeStyle = "rgba(0, 151, 167, 0.70)";
+            ctx.lineWidth = 1.5;
+            for (let i = 0; i < entry.pageKeywords.length; i++) {
+              const r = entry.pageKeywords[i];
+              const pad = 1.0;
+              _annolidFillRoundedRect(ctx, Math.max(0, r.x - pad), Math.max(0, r.y - pad), r.w + pad * 2, r.h + pad * 2, 3);
+              ctx.beginPath();
+              ctx.moveTo(Math.max(0, r.x), r.y + r.h + 0.5);
+              ctx.lineTo(r.x + r.w, r.y + r.h + 0.5);
+              ctx.stroke();
+            }
+            ctx.restore();
           }
-          state.ttsCtx.restore();
-          // Word highlight (strong)
-          if (entry.word) {
-            const meta = entry.word;
-            state.ttsCtx.save();
-            state.ttsCtx.fillStyle = "rgba(255, 140, 0, 0.55)";
-            const pad = 1.6;
-            state.ttsCtx.fillRect(
-              Math.max(0, meta.x - pad),
-              Math.max(0, meta.y - pad),
-              Math.max(0, meta.w + pad * 2),
-              Math.max(0, meta.h + pad * 2),
-            );
-            state.ttsCtx.restore();
+
+          // 1) Active spoken sentence (soft warm yellow)
+          if (entry.sentence.length) {
+            ctx.save();
+            ctx.fillStyle = "rgba(255, 214, 79, 0.24)";
+            for (let i = 0; i < entry.sentence.length; i++) {
+              const r = entry.sentence[i];
+              const pad = 1.2;
+              _annolidFillRoundedRect(
+                ctx,
+                Math.max(0, r.x - pad),
+                Math.max(0, r.y - pad),
+                Math.max(0, r.w + pad * 2),
+                Math.max(0, r.h + pad * 2),
+                3,
+              );
+            }
+            ctx.restore();
+          }
+
+          // 2) Matched keywords in active sentence (crisp cyan/teal highlight + underline)
+          if (entry.keywords.length) {
+            ctx.save();
+            ctx.fillStyle = "rgba(38, 198, 218, 0.34)";
+            ctx.strokeStyle = "rgba(0, 131, 143, 0.88)";
+            ctx.lineWidth = 1.8;
+            for (let i = 0; i < entry.keywords.length; i++) {
+              const r = entry.keywords[i];
+              const pad = 1.4;
+              _annolidFillRoundedRect(
+                ctx,
+                Math.max(0, r.x - pad),
+                Math.max(0, r.y - pad),
+                Math.max(0, r.w + pad * 2),
+                Math.max(0, r.h + pad * 2),
+                3,
+              );
+              ctx.beginPath();
+              ctx.moveTo(Math.max(0, r.x - 0.5), r.y + r.h + 1.0);
+              ctx.lineTo(r.x + r.w + 0.5, r.y + r.h + 1.0);
+              ctx.stroke();
+            }
+            ctx.restore();
+          }
+
+          // 3) Currently spoken word (vivid amber, or high-contrast spotlight if it is a keyword!)
+          if (entry.word.length) {
+            ctx.save();
+            ctx.fillStyle = activeIsKeyword ? "rgba(255, 87, 34, 0.56)" : "rgba(255, 145, 0, 0.50)";
+            ctx.strokeStyle = activeIsKeyword ? "rgba(230, 57, 0, 0.95)" : "rgba(230, 110, 0, 0.72)";
+            ctx.lineWidth = activeIsKeyword ? 2.0 : 1.2;
+            const pad = activeIsKeyword ? 2.2 : 1.6;
+            for (let i = 0; i < entry.word.length; i++) {
+              const r = entry.word[i];
+              const x = Math.max(0, r.x - pad);
+              const y = Math.max(0, r.y - pad);
+              const w = Math.max(0, r.w + pad * 2);
+              const h = Math.max(0, r.h + pad * 2);
+              _annolidFillRoundedRect(ctx, x, y, w, h, 4);
+              _annolidStrokeRoundedRect(ctx, x, y, w, h, 4);
+            }
+            ctx.restore();
           }
         }
         tts.lastPages = Object.keys(pagesToDraw);
         window.__annolidTts = tts;
       }
 
+      function _annolidRunWordScheduleAnimation(schedule, sessionId, initialElapsedMs) {
+        _annolidCancelSpeechAnimation();
+        const tts = _annolidEnsureTtsState();
+        if (!Array.isArray(schedule) || !schedule.length) {
+          tts.wordRects = null;
+          tts.activeIsKeyword = false;
+          _annolidRenderTts();
+          return;
+        }
+        const now0 = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+        const offsetMs = Math.max(0, Number(initialElapsedMs) || 0);
+        const startedAt = now0 - offsetMs;
+        let lastIndex = -1;
+
+        function applyStep(idx) {
+          const item = schedule[idx];
+          if (!item || !item.token) return;
+          tts.wordIndex = null;
+          tts.wordRects = item.token.rects || null;
+          tts.activeIsKeyword = !!item.isKeyword;
+          _annolidRenderTts();
+        }
+
+        function resolveIndex(elapsed) {
+          const firstStart = Number(schedule[0].startMs) || 0;
+          if (firstStart > 40 && elapsed < firstStart) {
+            return -2; // waiting in leading audio silence
+          }
+          const totalEnd = Number(schedule[schedule.length - 1].endMs) || 0;
+          if (elapsed >= totalEnd) {
+            return -1; // completed
+          }
+          // Hold cleanly on the previous word during internal silence pauses
+          // instead of jumping ahead into the next clause before voice resumes.
+          let activeIdx = 0;
+          for (let i = 0; i < schedule.length; i++) {
+            const s = Number(schedule[i].startMs) || 0;
+            const e = Number(schedule[i].endMs) || 0;
+            if (elapsed < s) {
+              break;
+            }
+            activeIdx = i;
+            if (elapsed < e) {
+              break;
+            }
+          }
+          return activeIdx;
+        }
+
+        function tick() {
+          if (tts.sessionId !== sessionId) return;
+          const now = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+          const elapsed = now - startedAt;
+          const activeIdx = resolveIndex(elapsed);
+          if (activeIdx === -1) {
+            tts.rafId = 0;
+            return;
+          }
+          if (activeIdx >= 0 && activeIdx !== lastIndex) {
+            lastIndex = activeIdx;
+            applyStep(activeIdx);
+          }
+          tts.rafId = requestAnimationFrame(tick);
+        }
+
+        const initialIdx = resolveIndex(offsetMs);
+        if (initialIdx === -1) {
+          tts.wordRects = null;
+          tts.activeIsKeyword = false;
+          _annolidRenderTts();
+          return;
+        }
+        if (initialIdx >= 0) {
+          applyStep(initialIdx);
+          lastIndex = initialIdx;
+        }
+        if (schedule.length > 1 || initialIdx === -2) {
+          tts.rafId = requestAnimationFrame(tick);
+        }
+      }
+
+      function _annolidApplySpeechHighlightWithSlices(slices, sentenceText, durationMs, opts) {
+        const tts = _annolidEnsureTtsState();
+        const cfg = window.__annolidKeywordConfig || { keywords: [], enabled: true, autoKeywords: false };
+        const options = opts || {};
+        const kwEnabled = (options.highlightKeywords != null) ? !!options.highlightKeywords : !!cfg.enabled;
+        const autoKw = kwEnabled && ((options.autoKeywords != null) ? !!options.autoKeywords : !!cfg.autoKeywords);
+        const keywords = kwEnabled
+          ? (Array.isArray(options.keywords) ? options.keywords : (cfg.keywords || []))
+          : [];
+        const sessionId = (options.sessionId != null) ? Number(options.sessionId) : ((tts.sessionId || 0) + 1);
+        tts.sessionId = sessionId;
+        tts.sentenceSlices = slices;
+        tts.sentenceIndices = slices.map((s) => s.idx);
+        tts.wordIndex = null;
+        tts.wordRects = null;
+        tts.activeIsKeyword = false;
+
+        const model = _annolidBuildSentenceWordModel(slices, sentenceText, keywords, autoKw);
+        tts.keywordRects = kwEnabled ? model.keywordRects : null;
+        _annolidRenderTts();
+
+        const dur = Math.round(Number(durationMs) || 0);
+        const speechSegments = Array.isArray(options.speechSegments) ? options.speechSegments : null;
+        const initialElapsedMs = Math.max(0, Number(options.initialElapsedMs) || 0);
+        if (dur > 0 && model.wordTokens.length && typeof _speech.buildWordTimingSchedule === "function") {
+          const schedule = _speech.buildWordTimingSchedule(model.wordTokens, dur, 45, speechSegments);
+          _annolidRunWordScheduleAnimation(schedule, sessionId, initialElapsedMs);
+        }
+      }
+
       window.__annolidRenderTts = _annolidRenderTts;
+      window.__annolidSetKeywordHighlightConfig = function (config) {
+        const cfg = (config && typeof config === "object") ? config : {};
+        const parsed = (typeof _speech.parseKeywords === "function")
+          ? _speech.parseKeywords(cfg.keywords || [])
+          : (Array.isArray(cfg.keywords) ? cfg.keywords : []);
+        window.__annolidKeywordConfig = {
+          keywords: parsed,
+          enabled: cfg.enabled !== false,
+          autoKeywords: !!cfg.autoKeywords,
+        };
+        const tts = _annolidEnsureTtsState();
+        if (tts.sentenceSlices && tts.sentenceSlices.length) {
+          const meta = tts.activeMeta || {};
+          const model = _annolidBuildSentenceWordModel(
+            tts.sentenceSlices,
+            meta.sentenceText || "",
+            window.__annolidKeywordConfig.enabled ? window.__annolidKeywordConfig.keywords : [],
+            window.__annolidKeywordConfig.enabled && window.__annolidKeywordConfig.autoKeywords,
+          );
+          tts.keywordRects = window.__annolidKeywordConfig.enabled ? model.keywordRects : null;
+        }
+        _annolidRenderTts();
+      };
+
+      window.__annolidStartSpeechHighlight = async function (payload) {
+        try {
+          const data = (payload && typeof payload === "object") ? payload : {};
+          const tts = _annolidEnsureTtsState();
+          const sessionId = (data.sessionId != null) ? Number(data.sessionId) : ((tts.sessionId || 0) + 1);
+          tts.sessionId = sessionId;
+          _annolidCancelSpeechAnimation();
+
+          const pageNum = parseInt(data.pageNum || 0, 10) || 0;
+          const sentenceText = String(data.sentenceText || "");
+          const durationMs = Math.round(Number(data.durationMs) || 0);
+          const speechSegments = Array.isArray(data.speechSegments) ? data.speechSegments : null;
+          const rawSlices = Array.isArray(data.spanSlices) ? data.spanSlices : null;
+          const rawIndices = Array.isArray(data.spanIndices) ? data.spanIndices : [];
+          const startedAt = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+
+          tts.activeMeta = {
+            pageNum,
+            sentenceText,
+            durationMs,
+            speechSegments,
+            startedAt,
+            keywords: Array.isArray(data.keywords) ? data.keywords : null,
+            highlightKeywords: data.highlightKeywords,
+            autoKeywords: data.autoKeywords,
+          };
+
+          // Validate that supplied span indices still exist in DOM and match target page.
+          const nodes = window.__annolidSpans || [];
+          let validSlices = null;
+          if (rawSlices && rawSlices.length) {
+            const ok = rawSlices.filter((sl) => {
+              if (!sl || !Number.isInteger(sl.idx) || !nodes[sl.idx]) return false;
+              const m = _annolidGetSpanMeta(sl.idx);
+              return !!(m && (!pageNum || m.pageNum === pageNum));
+            });
+            if (ok.length) validSlices = ok;
+          } else if (rawIndices.length) {
+            const ok = rawIndices.filter((idx) => {
+              if (!Number.isInteger(idx) || !nodes[idx]) return false;
+              const m = _annolidGetSpanMeta(idx);
+              return !!(m && (!pageNum || m.pageNum === pageNum));
+            });
+            if (ok.length) {
+              validSlices = ok.map((idx) => ({
+                idx,
+                startOffset: 0,
+                endOffset: String((nodes[idx] && nodes[idx].textContent) || "").length,
+              }));
+            }
+          }
+
+          if (validSlices && validSlices.length) {
+            _annolidApplySpeechHighlightWithSlices(validSlices, sentenceText, durationMs, {
+              keywords: data.keywords,
+              highlightKeywords: data.highlightKeywords,
+              autoKeywords: data.autoKeywords,
+              speechSegments,
+              sessionId,
+            });
+            if (window.__annolidScrollToSentence) {
+              window.__annolidScrollToSentence(validSlices.map((s) => s.idx), pageNum);
+            }
+            return true;
+          }
+
+          // Fallback for unrendered future pages or after zoom/rotation invalidation.
+          if (pageNum > 0 && typeof window.__annolidHighlightSentenceByText === "function") {
+            await window.__annolidHighlightSentenceByText(pageNum, sentenceText, {
+              durationMs,
+              speechSegments,
+              keywords: data.keywords,
+              highlightKeywords: data.highlightKeywords,
+              autoKeywords: data.autoKeywords,
+              sessionId,
+            });
+            return true;
+          }
+          return false;
+        } catch (e) {
+          return false;
+        }
+      };
+
       window.__annolidClearSentenceHighlight = function () {
-        if (!window.__annolidTts) window.__annolidTts = { sentenceIndices: [], wordIndex: null, lastPages: [] };
-        window.__annolidTts.sentenceIndices = [];
+        _annolidCancelSpeechAnimation();
+        const tts = _annolidEnsureTtsState();
+        tts.sentenceIndices = [];
+        tts.sentenceSlices = null;
+        tts.keywordRects = null;
+        tts.activeMeta = null;
         _annolidRenderTts();
       };
       window.__annolidClearWordHighlight = function () {
-        if (!window.__annolidTts) window.__annolidTts = { sentenceIndices: [], wordIndex: null, lastPages: [] };
-        window.__annolidTts.wordIndex = null;
+        _annolidCancelSpeechAnimation();
+        const tts = _annolidEnsureTtsState();
+        tts.wordIndex = null;
+        tts.wordRects = null;
+        tts.activeIsKeyword = false;
         _annolidRenderTts();
       };
       window.__annolidClearHighlight = function () {
-        if (!window.__annolidTts) window.__annolidTts = { sentenceIndices: [], wordIndex: null, lastPages: [] };
-        window.__annolidTts.sentenceIndices = [];
-        window.__annolidTts.wordIndex = null;
+        _annolidCancelSpeechAnimation();
+        const tts = _annolidEnsureTtsState();
+        tts.sentenceIndices = [];
+        tts.sentenceSlices = null;
+        tts.wordIndex = null;
+        tts.wordRects = null;
+        tts.keywordRects = null;
+        tts.activeIsKeyword = false;
+        tts.activeMeta = null;
         _annolidRenderTts();
       };
       window.__annolidHighlightSentenceIndices = function (indices) {
-        if (!window.__annolidTts) window.__annolidTts = { sentenceIndices: [], wordIndex: null, lastPages: [] };
-        window.__annolidTts.sentenceIndices = (indices && indices.length) ? indices : [];
-        window.__annolidTts.wordIndex = null;
+        _annolidCancelSpeechAnimation();
+        const tts = _annolidEnsureTtsState();
+        tts.sentenceIndices = (indices && indices.length) ? indices : [];
+        tts.sentenceSlices = null;
+        tts.wordIndex = null;
+        tts.wordRects = null;
+        tts.keywordRects = null;
+        tts.activeIsKeyword = false;
         _annolidRenderTts();
       };
       window.__annolidHighlightWordIndex = function (idx) {
-        if (!window.__annolidTts) window.__annolidTts = { sentenceIndices: [], wordIndex: null, lastPages: [] };
-        window.__annolidTts.wordIndex = idx;
+        const tts = _annolidEnsureTtsState();
+        tts.wordIndex = idx;
+        tts.wordRects = null;
+        tts.activeIsKeyword = false;
         _annolidRenderTts();
       };
       window.__annolidHighlightSelection = function () {
@@ -1163,7 +1633,8 @@
               const btn = document.createElement("button");
               btn.className = "annolid-notes-item";
               const pageNum = parseInt(b.pageNum, 10) || 1;
-              btn.innerHTML = `<div style="min-width:0"><div class="annolid-notes-item-title">★ ${_annolidNormalizeText(b.title || ("Page " + pageNum))}</div></div><div class="annolid-notes-item-meta">p${pageNum}</div>`;
+              const safeTitle = _annolidEscapeHtml(_annolidNormalizeText(b.title || ("Page " + pageNum)));
+              btn.innerHTML = `<div style="min-width:0"><div class="annolid-notes-item-title">★ ${safeTitle}</div></div><div class="annolid-notes-item-meta">p${pageNum}</div>`;
               btn.addEventListener("click", () => _annolidJumpToPage(pageNum));
               bookmarksList.appendChild(btn);
             });
@@ -1184,8 +1655,8 @@
               const active = _annolidActiveNoteId && String(n.id || "") === String(_annolidActiveNoteId);
               btn.className = "annolid-notes-item" + (active ? " annolid-active" : "");
               const pageNum = parseInt(n.pageNum, 10) || 1;
-              const title = _annolidNormalizeText((n.text || n.snippet || "").toString()).slice(0, 70) || "Note";
-              const sub = _annolidNormalizeText((n.snippet || "").toString()).slice(0, 90);
+              const title = _annolidEscapeHtml(_annolidNormalizeText((n.text || n.snippet || "").toString()).slice(0, 70) || "Note");
+              const sub = _annolidEscapeHtml(_annolidNormalizeText((n.snippet || "").toString()).slice(0, 90));
               btn.innerHTML = `<div style="min-width:0"><div class="annolid-notes-item-title">${title}</div><div class="annolid-notes-item-sub">${sub}</div></div><div class="annolid-notes-item-meta">p${pageNum}</div>`;
               btn.addEventListener("click", () => {
                 _annolidSetActiveNote(n.id);
@@ -1385,675 +1856,41 @@
       _annolidUpdateBookmarkButton();
 
       function _annolidNormalizeText(text) {
-        // Normalize whitespace and drop discretionary (soft) hyphens.
+        if (typeof _speech.normalizeText === "function") return _speech.normalizeText(text);
         return String(text || "").replace(/\u00ad/g, "").replace(/\s+/g, " ").trim();
       }
 
       function _annolidMergeHyphenated(prevText, nextText) {
-        const prev = String(prevText || "");
-        const next = String(nextText || "");
-        const nextTrim = next.trimStart();
-        if (!nextTrim) return _annolidNormalizeText(prev);
-        const m = /([A-Za-z]{1,})[-\u2010\u2011\u2012\u2013]$/.exec(prev.trimEnd());
-        if (!m) {
-          return _annolidNormalizeText(prev + " " + nextTrim);
-        }
-        // Only treat as line-wrap continuation when the next token starts with lowercase.
-        if (!/^[a-z]/.test(nextTrim)) {
-          return _annolidNormalizeText(prev + " " + nextTrim);
-        }
-        // Prefer removing the hyphen when it is used only for line wrapping:
-        // "pri-" + "marily" -> "primarily", "eluci-" + "date" -> "elucidate".
-        // This may also turn "non-" + "linear" into "nonlinear", which is better for TTS.
-        return _annolidNormalizeText(
-          prev.trimEnd().replace(/[-\u2010\u2011\u2012\u2013]$/, "") + nextTrim
-        );
+        if (typeof _speech.mergeHyphenated === "function") return _speech.mergeHyphenated(prevText, nextText);
+        return _annolidNormalizeText(String(prevText || "") + " " + String(nextText || ""));
       }
 
       function _annolidMedian(values) {
+        if (typeof _speech.median === "function") return _speech.median(values);
         if (!values || !values.length) return 0;
         const sorted = values.slice().sort((a, b) => a - b);
         return sorted[Math.floor(sorted.length / 2)];
       }
 
-      function _annolidGroupIntoColumns(entries, pageWidth) {
-        if (!entries || !entries.length) return [entries];
-        const pw = isFinite(pageWidth) ? Math.max(1, pageWidth) : 1;
-        // Use left edges for column clustering; centers can be noisy for long spans.
-        const centers = entries.map((e) => e.x).filter((x) => isFinite(x));
-        const sorted = centers.slice().sort((a, b) => a - b);
-        if (sorted.length < 12) return [entries];
-
-        const quantile = (arr, q) => {
-          if (!arr.length) return 0;
-          const pos = Math.max(0, Math.min(arr.length - 1, Math.round(q * (arr.length - 1))));
-          return arr[pos];
-        };
-        const mean = (arr) => {
-          if (!arr.length) return 0;
-          let s = 0;
-          for (let i = 0; i < arr.length; i++) s += arr[i];
-          return s / arr.length;
-        };
-        const std = (arr, m) => {
-          if (!arr.length) return 0;
-          let s = 0;
-          for (let i = 0; i < arr.length; i++) {
-            const d = arr[i] - m;
-            s += d * d;
-          }
-          return Math.sqrt(s / arr.length);
-        };
-
-        // Fast gap-based split (more robust than sepScore when indent noise is high).
-        const q10 = quantile(sorted, 0.10);
-        const q90 = quantile(sorted, 0.90);
-        let bestGap = 0;
-        let bestCut = null;
-        for (let i = 0; i < sorted.length - 1; i++) {
-          const a0 = sorted[i];
-          const b0 = sorted[i + 1];
-          if (a0 < q10 || b0 > q90) continue;
-          const gap = b0 - a0;
-          if (gap <= bestGap) continue;
-          const cut = (a0 + b0) * 0.5;
-          if (cut < pw * 0.30 || cut > pw * 0.70) continue;
-          bestGap = gap;
-          bestCut = cut;
-        }
-        const minGap = Math.max(24, pw * 0.06);
-        if (bestCut != null && bestGap >= minGap) {
-          const left = [];
-          const right = [];
-          entries.forEach((e) => {
-            const x = e.x;
-            if (!isFinite(x)) return;
-            if (x <= bestCut) left.push(e);
-            else right.push(e);
-          });
-          const minCount = Math.max(6, Math.floor(entries.length * 0.12));
-          if (left.length >= minCount && right.length >= minCount) {
-            return [left, right];
-          }
-        }
-
-        // 1D k-means (k=2) to detect a stable two-column split.
-        let m1 = quantile(sorted, 0.2);
-        let m2 = quantile(sorted, 0.8);
-        if (Math.abs(m2 - m1) < 1) return [entries];
-        let a = [];
-        let b = [];
-        for (let iter = 0; iter < 10; iter++) {
-          a = [];
-          b = [];
-          for (let i = 0; i < centers.length; i++) {
-            const c = centers[i];
-            if (Math.abs(c - m1) <= Math.abs(c - m2)) a.push(c);
-            else b.push(c);
-          }
-          const next1 = mean(a);
-          const next2 = mean(b);
-          if (Math.abs(next1 - m1) < 0.5 && Math.abs(next2 - m2) < 0.5) break;
-          m1 = next1;
-          m2 = next2;
-        }
-        if (!a.length || !b.length) return [entries];
-        const leftMean = Math.min(m1, m2);
-        const rightMean = Math.max(m1, m2);
-        const leftStd = std(a, m1);
-        const rightStd = std(b, m2);
-        const separation = rightMean - leftMean;
-
-        const minSeparation = Math.max(24, pw * 0.08);
-        const denom = Math.max(1e-6, leftStd + rightStd);
-        const sepScore = separation / denom;
-        if (separation < minSeparation) return [entries];
-        if (sepScore < 1.6) return [entries];
-        const cut = (leftMean + rightMean) * 0.5;
-        if (cut < pw * 0.30 || cut > pw * 0.70) return [entries];
-
-        const left = [];
-        const right = [];
-        entries.forEach((e) => {
-          const c = e.x;
-          if (Math.abs(c - leftMean) <= Math.abs(c - rightMean)) left.push(e);
-          else right.push(e);
-        });
-        const minCount = Math.max(6, Math.floor(entries.length * 0.12));
-        if (left.length < minCount || right.length < minCount) return [entries];
-        return [left, right];
-      }
-
       function _annolidGroupLinesIntoColumns(lines, pageWidth) {
-        const list = Array.isArray(lines)
-          ? lines.filter((l) => l && isFinite(l.xMin) && (isFinite(l.yCenter) || isFinite(l.yMin)))
-          : [];
-        if (!list.length) return [lines || []];
-        const pw = isFinite(pageWidth) ? Math.max(1, pageWidth) : 1;
-
-        const widthOf = (l) => {
-          if (!l || !isFinite(l.xMin) || !isFinite(l.xMax)) return 0;
-          return Math.max(0, l.xMax - l.xMin);
-        };
-        const heightOf = (l) => {
-          if (!l) return 0;
-          if (isFinite(l.h) && l.h > 0) return l.h;
-          if (isFinite(l.yMax) && isFinite(l.yMin)) return Math.max(1, l.yMax - l.yMin);
-          return 0;
-        };
-        const yCenterOf = (l) => {
-          if (!l) return 0;
-          if (isFinite(l.yCenter)) return l.yCenter;
-          if (isFinite(l.yMin) && isFinite(l.yMax)) return (l.yMin + l.yMax) * 0.5;
-          return 0;
-        };
-        const xCenterOf = (l) => {
-          if (!l || !isFinite(l.xMin)) return 0;
-          const w = widthOf(l);
-          return l.xMin + w * 0.5;
-        };
-
-        const sortLines = (arr) => {
-          const out = (arr || []).slice();
-          const hs = out.map((l) => heightOf(l)).filter((h) => isFinite(h) && h > 0);
-          const medH = _annolidMedian(hs);
-          const sameRowTol = Math.max(2, (medH || 0) * 0.35);
-          out.sort((a, b) => {
-            const ay = yCenterOf(a);
-            const by = yCenterOf(b);
-            const dy = ay - by;
-            if (Math.abs(dy) <= sameRowTol) {
-              const ax = (a && isFinite(a.xMin)) ? a.xMin : 0;
-              const bx = (b && isFinite(b.xMin)) ? b.xMin : 0;
-              if (Math.abs(ax - bx) > 0.5) return ax - bx;
-              return dy;
-            }
-            return dy;
-          });
-          return out;
-        };
-
-        // Exclude very wide lines (titles, centered headers) from column detection.
-        const usable = list.filter((l) => {
-          const w = widthOf(l);
-          return w > 0 && w <= pw * 0.78;
-        });
-        const xsSource = (usable.length >= 6) ? usable : ((usable.length >= 4) ? usable : list);
-        const xs = xsSource.map((l) => xCenterOf(l)).filter((x) => isFinite(x));
-        if (xs.length < 6) return [sortLines(list)];
-        xs.sort((a, b) => a - b);
-
-        const q = (arr, t) => arr[Math.max(0, Math.min(arr.length - 1, Math.round(t * (arr.length - 1))))];
-        const mean = (arr) => {
-          if (!arr.length) return 0;
-          let s = 0;
-          for (let i = 0; i < arr.length; i++) s += arr[i];
-          return s / arr.length;
-        };
-        const std = (arr, m) => {
-          if (!arr.length) return 0;
-          let s = 0;
-          for (let i = 0; i < arr.length; i++) {
-            const d = arr[i] - m;
-            s += d * d;
-          }
-          return Math.sqrt(s / arr.length);
-        };
-
-        const minCount = Math.max(3, Math.min(8, Math.floor(xsSource.length * 0.22)));
-
-        function classifyByCut(cut, leftMean, rightMean) {
-          const left = [];
-          const right = [];
-          const wide = [];
-          list.forEach((l) => {
-            if (!l) return;
-            const w = widthOf(l);
-            // Keep wide lines with the left column so headings stay before body text.
-            if (w > pw * 0.85) {
-              wide.push(l);
-              return;
-            }
-            const cx = xCenterOf(l);
-            if (!isFinite(cx)) return;
-            if (leftMean != null && rightMean != null) {
-              if (Math.abs(cx - leftMean) <= Math.abs(cx - rightMean)) left.push(l);
-              else right.push(l);
-              return;
-            }
-            if (cx <= cut) left.push(l);
-            else right.push(l);
-          });
-          if (left.length >= minCount && right.length >= minCount) {
-            // Guard against false "two columns" caused by centered/indented short lines
-            // (common in novels/poetry), which makes reading appear to skip rows.
-            const robustBoundsOf = (arr) => {
-              const xMins = [];
-              const xMaxs = [];
-              const yMins = [];
-              const yMaxs = [];
-              for (const it of (arr || [])) {
-                if (!it) continue;
-                if (isFinite(it.xMin)) xMins.push(it.xMin);
-                if (isFinite(it.xMax)) xMaxs.push(it.xMax);
-                if (isFinite(it.yMin)) yMins.push(it.yMin);
-                if (isFinite(it.yMax)) yMaxs.push(it.yMax);
-              }
-              const pick = (xs, t, fallback) => {
-                if (!xs.length) return fallback;
-                xs.sort((a, b) => a - b);
-                return xs[Math.max(0, Math.min(xs.length - 1, Math.round(t * (xs.length - 1))))];
-              };
-              let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
-              if (xMins.length && xMaxs.length) {
-                x0 = pick(xMins, 0.10, x0);
-                x1 = pick(xMaxs, 0.90, x1);
-              }
-              if (yMins.length && yMaxs.length) {
-                y0 = pick(yMins, 0.10, y0);
-                y1 = pick(yMaxs, 0.90, y1);
-              }
-              return { x0, x1, y0, y1 };
-            };
-            const allB = robustBoundsOf(list);
-            // Ignore full-width lines when estimating column overlap/coverage.
-            const lB = robustBoundsOf(left);
-            const rB = robustBoundsOf(right);
-            const totalY = Math.max(1, (allB.y1 - allB.y0) || 0);
-            const coverL = ((lB.y1 - lB.y0) || 0) / totalY;
-            const coverR = ((rB.y1 - rB.y0) || 0) / totalY;
-            const overlapX = Math.min(lB.x1, rB.x1) - Math.max(lB.x0, rB.x0);
-            const wL = Math.max(1, (lB.x1 - lB.x0) || 0);
-            const wR = Math.max(1, (rB.x1 - rB.x0) || 0);
-            const overlapFrac = (overlapX > 0) ? (overlapX / Math.max(1, Math.min(wL, wR))) : 0;
-            // If x ranges overlap substantially, or one side covers only a small vertical slice,
-            // treat as single-column.
-            if (overlapFrac > 0.30 || Math.min(coverL, coverR) < 0.55) {
-              return null;
-            }
-            // Put full-width headings into the left column so they are read first,
-            // but don't let them break column detection.
-            wide.forEach((l) => left.push(l));
-            return [sortLines(left), sortLines(right)];
-          }
-          return null;
+        if (typeof _speech.groupLinesIntoColumns === "function") {
+          return _speech.groupLinesIntoColumns(lines, pageWidth, true);
         }
-
-        // Fast gap-based split on x centers.
-        const q10 = q(xs, 0.10);
-        const q90 = q(xs, 0.90);
-        let bestGap = 0;
-        let bestCut = null;
-        for (let i = 0; i < xs.length - 1; i++) {
-          const a0 = xs[i];
-          const b0 = xs[i + 1];
-          if (a0 < q10 || b0 > q90) continue;
-          const gap = b0 - a0;
-          if (gap <= bestGap) continue;
-          const cut = (a0 + b0) * 0.5;
-          if (cut < pw * 0.35 || cut > pw * 0.65) continue;
-          bestGap = gap;
-          bestCut = cut;
-        }
-        const minGap = Math.max(28, pw * 0.10);
-        if (bestCut != null && bestGap >= minGap) {
-          const res = classifyByCut(bestCut, null, null);
-          if (res) return res;
-        }
-
-        // 1D k-means (k=2) fallback for indented/variable line starts.
-        let m1 = q(xs, 0.25);
-        let m2 = q(xs, 0.75);
-        if (Math.abs(m2 - m1) < 1) return [sortLines(list)];
-        let a = [];
-        let b = [];
-        for (let iter = 0; iter < 10; iter++) {
-          a = [];
-          b = [];
-          for (let i = 0; i < xs.length; i++) {
-            const x = xs[i];
-            if (Math.abs(x - m1) <= Math.abs(x - m2)) a.push(x);
-            else b.push(x);
-          }
-          const nm1 = mean(a);
-          const nm2 = mean(b);
-          if (Math.abs(nm1 - m1) < 0.5 && Math.abs(nm2 - m2) < 0.5) break;
-          m1 = nm1;
-          m2 = nm2;
-        }
-        if (!a.length || !b.length) return [sortLines(list)];
-        const leftMean = Math.min(m1, m2);
-        const rightMean = Math.max(m1, m2);
-        const separation = rightMean - leftMean;
-        const minSeparation = Math.max(48, pw * 0.18);
-        if (separation < minSeparation) return [sortLines(list)];
-        const score = separation / Math.max(1e-6, std(a, m1) + std(b, m2));
-        if (score < 1.25) return [sortLines(list)];
-        const cut = (leftMean + rightMean) * 0.5;
-        if (cut < pw * 0.35 || cut > pw * 0.65) return [sortLines(list)];
-        const res = classifyByCut(cut, leftMean, rightMean);
-        if (res) return res;
-        return [sortLines(list)];
+        return [lines || []];
       }
 
       function _annolidBuildLinesFromEntries(entries) {
-        const list = Array.isArray(entries) ? entries.filter((e) => e && isFinite(e.x) && isFinite(e.y)) : [];
-        if (!list.length) return [];
-        const typicalH = _annolidMedian(list.map((e) => e.h).filter((h) => isFinite(h) && h > 0));
-        // Use a slightly larger tolerance than the raw bbox height since some PDFs
-        // jitter punctuation/quotes vertically (e.g. around "。”), which can split lines.
-        const yTol = Math.max(2, (typicalH || 0) * 1.05);
-        // Prevent merging different columns into the same "line" when y matches.
-        // This is essential for correct two-column reading/highlighting.
-        let minX = Infinity;
-        let maxX = -Infinity;
-        for (const e of list) {
-          const x0 = e.x;
-          const x1 = e.x + (e.w || 0);
-          if (isFinite(x0)) minX = Math.min(minX, x0);
-          if (isFinite(x1)) maxX = Math.max(maxX, x1);
+        if (typeof _speech.buildLinesFromDomEntries === "function") {
+          return _speech.buildLinesFromDomEntries(entries);
         }
-        const spanWidth = (isFinite(minX) && isFinite(maxX) && maxX > minX) ? (maxX - minX) : 0;
-        // Use a conservative horizontal gap threshold so left/right columns never merge.
-        // (~2% of page text width, clamped)
-        let joinGapX = Math.max(10, Math.min(28, spanWidth * 0.02));
-        // Optional column cut hint from a max-gap in x positions (helps when some spans have
-        // oversized bounding boxes that reduce the apparent inter-column gap).
-        let columnCut = null;
-        try {
-          const xs = list.map((e) => e.x).filter((x) => isFinite(x)).sort((a, b) => a - b);
-          if (xs.length >= 32 && spanWidth > 0) {
-            const q = (arr, t) => arr[Math.max(0, Math.min(arr.length - 1, Math.round(t * (arr.length - 1))))];
-            const q10 = q(xs, 0.10);
-            const q90 = q(xs, 0.90);
-            let bestGap = 0;
-            let bestCut = null;
-            for (let i = 0; i < xs.length - 1; i++) {
-              const a0 = xs[i];
-              const b0 = xs[i + 1];
-              if (a0 < q10 || b0 > q90) continue;
-              const gap = b0 - a0;
-              if (gap <= bestGap) continue;
-              const cut = (a0 + b0) * 0.5;
-              const frac = (cut - minX) / spanWidth;
-              if (!isFinite(frac) || frac < 0.30 || frac > 0.70) continue;
-              bestGap = gap;
-              bestCut = cut;
-            }
-            const minGap = Math.max(14, spanWidth * 0.025);
-            if (bestCut != null && bestGap >= minGap) {
-              columnCut = bestCut;
-              // Ensure our join threshold is comfortably smaller than the inferred column gap.
-              joinGapX = Math.min(joinGapX, Math.max(8, bestGap * 0.45));
-            }
-          }
-        } catch (e) {
-          columnCut = null;
-        }
-        const withCenter = list.map((e) => {
-          const h = isFinite(e.h) ? e.h : 0;
-          const yCenter = e.y + h * 0.5;
-          return Object.assign({}, e, { yCenter });
-        });
-        withCenter.sort((a, b) => {
-          const dy = a.yCenter - b.yCenter;
-          if (Math.abs(dy) < Math.max(0.5, yTol * 0.15)) return a.x - b.x;
-          return dy;
-        });
-
-        const lines = [];
-        for (const entry of withCenter) {
-          const y = entry.yCenter;
-          let best = null;
-          let bestOverlap = 0;
-          let bestDist = Infinity;
-          const scanStart = Math.max(0, lines.length - 6);
-          for (let i = lines.length - 1; i >= scanStart; i--) {
-            const cand = lines[i];
-            if (!cand) continue;
-            const dist = Math.abs(y - cand.yCenter);
-            const overlap = Math.min(entry.y + entry.h, cand.yMax) - Math.max(entry.y, cand.yMin);
-            const candH = Math.max(1, cand.yMax - cand.yMin);
-            const minH = Math.max(1, Math.min(entry.h || candH, candH));
-            const overlapRatio = (overlap > 0) ? (overlap / minH) : 0;
-            const gapX = (() => {
-              const eLeft = entry.x;
-              const eRight = entry.x + (entry.w || 0);
-              const cLeft = cand.xMin;
-              const cRight = cand.xMax;
-              if (eRight < cLeft) return cLeft - eRight;
-              if (eLeft > cRight) return eLeft - cRight;
-              return 0;
-            })();
-            // Hard guard against cross-column merges when a column split is detected.
-            if (columnCut != null) {
-              const margin = Math.max(4, (typicalH || 0) * 0.35);
-              const candIsLeft = (cand.xMax <= (columnCut - margin));
-              const candIsRight = (cand.xMin >= (columnCut + margin));
-              if (candIsLeft || candIsRight) {
-                const entryIsLeft = entry.x <= columnCut;
-                if ((candIsLeft && !entryIsLeft) || (candIsRight && entryIsLeft)) {
-                  continue;
-                }
-              }
-            }
-            if ((dist <= yTol || overlapRatio >= 0.65) && gapX <= joinGapX) {
-              if (
-                overlapRatio > bestOverlap + 0.05 ||
-                (Math.abs(overlapRatio - bestOverlap) <= 0.05 && dist < bestDist)
-              ) {
-                best = cand;
-                bestOverlap = overlapRatio;
-                bestDist = dist;
-              }
-            }
-          }
-          let line = best;
-          if (!line) {
-            line = {
-              yCenter: y,
-              items: [],
-              spans: [],
-              texts: [],
-              yMin: entry.y,
-              yMax: entry.y + entry.h,
-              xMin: entry.x,
-              xMax: entry.x + entry.w,
-            };
-            lines.push(line);
-          }
-          line.items.push(entry);
-          const n = line.items.length;
-          line.yCenter = (line.yCenter * (n - 1) + y) / n;
-          line.yMin = Math.min(line.yMin, entry.y);
-          line.yMax = Math.max(line.yMax, entry.y + entry.h);
-          line.xMin = Math.min(line.xMin, entry.x);
-          line.xMax = Math.max(line.xMax, entry.x + entry.w);
-        }
-
-        function _annolidLineFromItems(items) {
-          const out = {
-            yCenter: 0,
-            spans: [],
-            texts: [],
-            yMin: Infinity,
-            yMax: -Infinity,
-            xMin: Infinity,
-            xMax: -Infinity,
-            h: 1,
-          };
-          let n = 0;
-          for (const it of items) {
-            if (!it) continue;
-            out.spans.push(it.idx);
-            out.texts.push(it.text);
-            out.yMin = Math.min(out.yMin, it.y);
-            out.yMax = Math.max(out.yMax, it.y + (it.h || 0));
-            out.xMin = Math.min(out.xMin, it.x);
-            out.xMax = Math.max(out.xMax, it.x + (it.w || 0));
-            out.yCenter += (it.yCenter || (it.y + (it.h || 0) * 0.5));
-            n += 1;
-          }
-          if (!n) {
-            out.yCenter = 0;
-            out.yMin = 0;
-            out.yMax = 1;
-            out.xMin = 0;
-            out.xMax = 1;
-            out.h = 1;
-            return out;
-          }
-          out.yCenter = out.yCenter / n;
-          out.h = Math.max(1, out.yMax - out.yMin);
-          return out;
-        }
-
-        const outLines = [];
-        const splitGapX = Math.max(joinGapX * 1.6, Math.max(24, spanWidth * 0.04));
-        for (const line of lines) {
-          const items = Array.isArray(line.items) ? line.items.slice() : [];
-          items.sort((a, b) => a.x - b.x);
-          let bestSplit = -1;
-          let bestGap = 0;
-          for (let i = 0; i < items.length - 1; i++) {
-            const a0 = items[i];
-            const b0 = items[i + 1];
-            const gap = (b0.x - (a0.x + (a0.w || 0)));
-            if (gap > bestGap) {
-              bestGap = gap;
-              bestSplit = i;
-            }
-          }
-          if (bestSplit >= 0 && bestGap >= splitGapX) {
-            const leftItems = items.slice(0, bestSplit + 1);
-            const rightItems = items.slice(bestSplit + 1);
-            outLines.push(_annolidLineFromItems(leftItems));
-            outLines.push(_annolidLineFromItems(rightItems));
-            continue;
-          }
-          const out = _annolidLineFromItems(items);
-          outLines.push(out);
-        }
-
-        const outHeights = outLines
-          .map((l) => (l && isFinite(l.h)) ? l.h : 0)
-          .filter((h) => isFinite(h) && h > 0);
-        const outMedianH = _annolidMedian(outHeights);
-        const sameRowTol = Math.max(2, (outMedianH || typicalH || 0) * 0.35);
-        outLines.sort((a, b) => {
-          const ay = (a && isFinite(a.yCenter)) ? a.yCenter : ((a && isFinite(a.yMin) && isFinite(a.yMax)) ? (a.yMin + a.yMax) * 0.5 : 0);
-          const by = (b && isFinite(b.yCenter)) ? b.yCenter : ((b && isFinite(b.yMin) && isFinite(b.yMax)) ? (b.yMin + b.yMax) * 0.5 : 0);
-          const dy = ay - by;
-          if (Math.abs(dy) <= sameRowTol) {
-            const ax = (a && isFinite(a.xMin)) ? a.xMin : 0;
-            const bx = (b && isFinite(b.xMin)) ? b.xMin : 0;
-            if (Math.abs(ax - bx) > 0.5) return ax - bx;
-            return dy;
-          }
-          return dy;
-        });
-        return outLines;
+        return [];
       }
 
       function _annolidLinesToParagraphs(lines, pageNum) {
-        const paragraphs = [];
-        let current = null;
-        lines.forEach((line) => {
-          const lineText = _annolidNormalizeText(line.texts.join(" "));
-          if (!lineText) return;
-          if (!current) {
-            current = {
-              pageNum,
-              text: lineText,
-              spans: [].concat(line.spans),
-              yMin: line.yMin,
-              yMax: line.yMax,
-              xMin: line.xMin,
-              xMax: line.xMax,
-              _lastXMin: line.xMin,
-              _lastXMax: line.xMax,
-              _lastYMin: line.yMin,
-              _lastYMax: line.yMax,
-            };
-            return;
-          }
-          const gap = line.yMin - current.yMax;
-          const gapLimit = Math.max(8, (current.yMax - current.yMin) * 0.9);
-          // If two lines share the same row baseline but have disjoint x ranges,
-          // avoid merging them into one paragraph (common when column detection fails).
-          try {
-            const lastXMin = current._lastXMin;
-            const lastXMax = current._lastXMax;
-            const lastYMin = current._lastYMin;
-            const lastYMax = current._lastYMax;
-            if (
-              isFinite(lastXMin) && isFinite(lastXMax) &&
-              isFinite(lastYMin) && isFinite(lastYMax) &&
-              isFinite(line.xMin) && isFinite(line.xMax) &&
-              isFinite(line.yMin) && isFinite(line.yMax)
-            ) {
-              const overlapY = Math.min(line.yMax, lastYMax) - Math.max(line.yMin, lastYMin);
-              const h1 = Math.max(1, lastYMax - lastYMin);
-              const h2 = Math.max(1, line.yMax - line.yMin);
-              const overlapYFrac = (overlapY > 0) ? (overlapY / Math.min(h1, h2)) : 0;
-              const overlapX = Math.min(line.xMax, lastXMax) - Math.max(line.xMin, lastXMin);
-              if (overlapYFrac >= 0.70 && overlapX <= 0 && gap <= gapLimit) {
-                paragraphs.push(current);
-                current = {
-                  pageNum,
-                  text: lineText,
-                  spans: [].concat(line.spans),
-                  yMin: line.yMin,
-                  yMax: line.yMax,
-                  xMin: line.xMin,
-                  xMax: line.xMax,
-                  _lastXMin: line.xMin,
-                  _lastXMax: line.xMax,
-                  _lastYMin: line.yMin,
-                  _lastYMax: line.yMax,
-                };
-                return;
-              }
-            }
-          } catch (e) { }
-          if (gap > gapLimit) {
-            paragraphs.push(current);
-            current = {
-              pageNum,
-              text: lineText,
-              spans: [].concat(line.spans),
-              yMin: line.yMin,
-              yMax: line.yMax,
-              xMin: line.xMin,
-              xMax: line.xMax,
-              _lastXMin: line.xMin,
-              _lastXMax: line.xMax,
-              _lastYMin: line.yMin,
-              _lastYMax: line.yMax,
-            };
-          } else {
-            current.text = _annolidMergeHyphenated(current.text, lineText);
-            current.spans = current.spans.concat(line.spans);
-            current.yMax = Math.max(current.yMax, line.yMax);
-            current.xMin = Math.min(current.xMin, line.xMin);
-            current.xMax = Math.max(current.xMax, line.xMax);
-            current._lastXMin = line.xMin;
-            current._lastXMax = line.xMax;
-            current._lastYMin = line.yMin;
-            current._lastYMax = line.yMax;
-          }
-        });
-        if (current) paragraphs.push(current);
-        // Remove internal tracking fields.
-        paragraphs.forEach((p) => {
-          try {
-            delete p._lastXMin;
-            delete p._lastXMax;
-            delete p._lastYMin;
-            delete p._lastYMax;
-          } catch (e) { }
-        });
-        return paragraphs;
+        if (typeof _speech.linesToParagraphs === "function") {
+          return _speech.linesToParagraphs(lines, pageNum, true);
+        }
+        return [];
       }
 
       function _annolidBuildParagraphsForPage(pageNum) {
@@ -2080,17 +1917,9 @@
         });
         if (!entries.length) return [];
         const pageWidth = Math.max(1, pageRect.width || 1);
-        // Build lines first, then detect columns using line starts (xMin).
-        // Detecting columns from *per-span* x positions can wrongly split within a line,
-        // which is a common root cause of "skipping" right after punctuation like "。”.
+        // Build lines first, then partition into top wide band, columns, and bottom wide band.
         const rawLines = _annolidBuildLinesFromEntries(entries);
         const colLines = _annolidGroupLinesIntoColumns(rawLines, pageWidth);
-        // Ensure columns are ordered left->right (median xMin).
-        colLines.sort((a, b) => {
-          const ax = _annolidMedian((a || []).map((l) => l.xMin).filter((x) => isFinite(x)));
-          const bx = _annolidMedian((b || []).map((l) => l.xMin).filter((x) => isFinite(x)));
-          return ax - bx;
-        });
 
         const paragraphs = [];
         colLines.forEach((lines) => {
@@ -2231,53 +2060,16 @@
         const textContent = await page.getTextContent();
         const viewport1 = page.getViewport({ scale: 1, rotation: 0 });
         const linesRaw = _annolidExtractLinesFromTextContent(textContent);
-        const ordered = _annolidOrderLinesForReading(linesRaw, viewport1.width || 1);
+        const colGroups = (typeof _speech.groupLinesIntoColumns === "function")
+          ? _speech.groupLinesIntoColumns(linesRaw, viewport1.width || 1, false)
+          : [_annolidOrderLinesForReading(linesRaw, viewport1.width || 1)];
         const paragraphs = [];
-        let current = null;
-        let lastYMin = null;
-        let lastYMax = null;
-        for (const line of ordered) {
-          const lineText = _annolidNormalizeText(line.text || "");
-          if (!lineText) continue;
-          if (!current) {
-            current = {
-              pageNum,
-              text: lineText,
-              spans: [],
-              yMin: line.yMin,
-              yMax: line.yMax,
-              xMin: line.xMin,
-              xMax: line.xMax,
-            };
-            lastYMin = line.yMin;
-            lastYMax = line.yMax;
-            continue;
-          }
-          const gap = (lastYMin != null) ? (lastYMin - line.yMax) : 0;
-          const lastH = (lastYMax != null && lastYMin != null) ? Math.abs(lastYMax - lastYMin) : 0;
-          const gapLimit = Math.max(4, lastH * 1.15);
-          if (gap > gapLimit) {
-            paragraphs.push(current);
-            current = {
-              pageNum,
-              text: lineText,
-              spans: [],
-              yMin: line.yMin,
-              yMax: line.yMax,
-              xMin: line.xMin,
-              xMax: line.xMax,
-            };
-          } else {
-            current.text = _annolidMergeHyphenated(current.text, lineText);
-            current.yMin = Math.min(current.yMin, line.yMin);
-            current.yMax = Math.max(current.yMax, line.yMax);
-            current.xMin = Math.min(current.xMin, line.xMin);
-            current.xMax = Math.max(current.xMax, line.xMax);
-          }
-          lastYMin = line.yMin;
-          lastYMax = line.yMax;
+        for (let g = 0; g < colGroups.length; g++) {
+          const groupParas = (typeof _speech.linesToParagraphs === "function")
+            ? _speech.linesToParagraphs(colGroups[g], pageNum, false)
+            : [];
+          for (let k = 0; k < groupParas.length; k++) paragraphs.push(groupParas[k]);
         }
-        if (current) paragraphs.push(current);
         window.__annolidParagraphsByPage[String(pageNum)] = paragraphs;
       }
 
@@ -3257,164 +3049,17 @@
       }
 
       function _annolidExtractLinesFromTextContent(textContent) {
-        const items = (textContent && textContent.items) ? textContent.items : [];
-        const rows = [];
-        for (const it of items) {
-          try {
-            const str = _annolidNormalizeText(it.str || "");
-            if (!str) continue;
-            const tr = it.transform || [];
-            const x = isFinite(tr[4]) ? tr[4] : 0;
-            const y = isFinite(tr[5]) ? tr[5] : 0;
-            const w = isFinite(it.width) ? it.width : 0;
-            const h = isFinite(it.height) ? Math.abs(it.height) : 0;
-            rows.push({ str, x, y, w, h });
-          } catch (e) { }
+        if (typeof _speech.extractLinesFromTextContent === "function") {
+          return _speech.extractLinesFromTextContent(textContent);
         }
-        if (!rows.length) return [];
-        const typicalH = _annolidMedian(rows.map((r) => r.h).filter((h) => isFinite(h) && h > 0));
-        const yTol = Math.max(1.5, (typicalH || 0) * 0.85);
-        rows.forEach((r) => {
-          r.yCenter = r.y + (isFinite(r.h) ? r.h * 0.5 : 0);
-        });
-        rows.sort((a, b) => {
-          const dy = b.yCenter - a.yCenter;
-          if (Math.abs(dy) > 0.01) return dy;
-          return a.x - b.x;
-        });
-
-        const lines = [];
-        for (const r of rows) {
-          const y = r.yCenter;
-          let line = lines.length ? lines[lines.length - 1] : null;
-          if (line && Math.abs(y - line.yCenter) > yTol) {
-            const prev = (lines.length >= 2) ? lines[lines.length - 2] : null;
-            if (prev && Math.abs(y - prev.yCenter) <= yTol) {
-              line = prev;
-            } else {
-              line = null;
-            }
-          }
-          if (!line || Math.abs(y - line.yCenter) > yTol) {
-            line = {
-              yCenter: y,
-              y: r.y,
-              items: [],
-              xMin: r.x,
-              xMax: r.x + r.w,
-              yMin: r.y,
-              yMax: r.y + r.h,
-              text: "",
-            };
-            lines.push(line);
-          }
-          line.items.push(r);
-          const n = line.items.length;
-          line.yCenter = (line.yCenter * (n - 1) + y) / n;
-          line.xMin = Math.min(line.xMin, r.x);
-          line.xMax = Math.max(line.xMax, r.x + r.w);
-          line.yMin = Math.min(line.yMin, r.y);
-          line.yMax = Math.max(line.yMax, r.y + r.h);
-        }
-
-        for (const line of lines) {
-          const items = Array.isArray(line.items) ? line.items : [];
-          items.sort((a, b) => a.x - b.x);
-          const parts = [];
-          let lastX = null;
-          for (const it of items) {
-            if (lastX != null && it.x - lastX > 8) parts.push(" ");
-            parts.push(it.str);
-            lastX = it.x + (it.w || 0);
-          }
-          line.text = _annolidNormalizeText(parts.join(" "));
-          line.y = line.yCenter;
-          delete line.items;
-        }
-        return lines.filter((l) => l.text && l.text.length);
+        return [];
       }
 
       function _annolidOrderLinesForReading(lines, pageWidth) {
-        const pw = isFinite(pageWidth) ? Math.max(1, pageWidth) : 1;
-        const list = Array.isArray(lines)
-          ? lines.filter((l) => l && isFinite(l.xMin) && isFinite(l.xMax) && isFinite(l.y))
-          : [];
-        if (!list.length) return Array.isArray(lines) ? lines.slice() : [];
-
-        const xCenterOf = (l) => (l.xMin + l.xMax) * 0.5;
-        const xs = list.map((l) => xCenterOf(l)).filter((x) => isFinite(x));
-        if (xs.length < 8) {
-          return list.slice().sort((a, b) => b.y - a.y);
+        if (typeof _speech.orderLinesForReading === "function") {
+          return _speech.orderLinesForReading(lines, pageWidth);
         }
-        xs.sort((a, b) => a - b);
-        const q = (arr, t) => arr[Math.max(0, Math.min(arr.length - 1, Math.round(t * (arr.length - 1))))];
-        const mean = (arr) => {
-          if (!arr.length) return 0;
-          let s = 0;
-          for (let i = 0; i < arr.length; i++) s += arr[i];
-          return s / arr.length;
-        };
-        const std = (arr, m) => {
-          if (!arr.length) return 0;
-          let s = 0;
-          for (let i = 0; i < arr.length; i++) {
-            const d = arr[i] - m;
-            s += d * d;
-          }
-          return Math.sqrt(s / arr.length);
-        };
-
-        let m1 = q(xs, 0.25);
-        let m2 = q(xs, 0.75);
-        if (Math.abs(m2 - m1) < pw * 0.10) {
-          return list.slice().sort((a, b) => b.y - a.y);
-        }
-        let a = [];
-        let b = [];
-        for (let iter = 0; iter < 10; iter++) {
-          a = [];
-          b = [];
-          for (let i = 0; i < xs.length; i++) {
-            const x = xs[i];
-            if (Math.abs(x - m1) <= Math.abs(x - m2)) a.push(x);
-            else b.push(x);
-          }
-          const nm1 = mean(a);
-          const nm2 = mean(b);
-          if (Math.abs(nm1 - m1) < 0.5 && Math.abs(nm2 - m2) < 0.5) break;
-          m1 = nm1;
-          m2 = nm2;
-        }
-        if (!a.length || !b.length) {
-          return list.slice().sort((a0, b0) => b0.y - a0.y);
-        }
-        const leftMean = Math.min(m1, m2);
-        const rightMean = Math.max(m1, m2);
-        const separation = rightMean - leftMean;
-        const minSeparation = Math.max(36, pw * 0.16);
-        if (separation < minSeparation) {
-          return list.slice().sort((a0, b0) => b0.y - a0.y);
-        }
-        const score = separation / Math.max(1e-6, std(a, m1) + std(b, m2));
-        if (score < 1.15) {
-          return list.slice().sort((a0, b0) => b0.y - a0.y);
-        }
-
-        const minCount = Math.max(3, Math.floor(xs.length * 0.18));
-        const left = [];
-        const right = [];
-        for (const l of list) {
-          const x = xCenterOf(l);
-          if (!isFinite(x)) continue;
-          if (Math.abs(x - leftMean) <= Math.abs(x - rightMean)) left.push(l);
-          else right.push(l);
-        }
-        if (left.length < minCount || right.length < minCount) {
-          return list.slice().sort((a0, b0) => b0.y - a0.y);
-        }
-        left.sort((a0, b0) => b0.y - a0.y);
-        right.sort((a0, b0) => b0.y - a0.y);
-        return left.concat(right);
+        return Array.isArray(lines) ? lines.slice() : [];
       }
 
       async function _annolidFindReferencesStartPage() {
@@ -4389,6 +4034,18 @@
         try { el.disabled = !!disabled; } catch (e) { }
       }
 
+      let _annolidLastReportedPage = -1;
+      function _annolidNotifyBridgePage(currentPage) {
+        try {
+          if (currentPage === _annolidLastReportedPage) return;
+          const bridge = window.__annolidBridge;
+          if (bridge && typeof bridge.onPageChanged === "function") {
+            _annolidLastReportedPage = currentPage;
+            bridge.onPageChanged(parseInt(currentPage, 10) || 1, parseInt(total, 10) || 1);
+          }
+        } catch (e) { }
+      }
+
       function _annolidUpdateNavState() {
         const current = _annolidGetCurrentPageNum();
         if (pageInput && document.activeElement !== pageInput) {
@@ -4397,6 +4054,7 @@
         _annolidSetDisabled(prevPageBtn, current <= 1);
         _annolidSetDisabled(nextPageBtn, current >= total);
         _annolidUpdateZoomLabel();
+        _annolidNotifyBridgePage(current);
         try {
           if (typeof _annolidUpdateBookmarkButton === "function") _annolidUpdateBookmarkButton();
         } catch (e) { }
@@ -4596,30 +4254,15 @@
       window.__annolidHighlightParagraphByText = async function (pageNum, text) {
         try {
           const p = Math.max(1, Math.min(total, parseInt(pageNum, 10) || 1));
-          const wanted = _annolidNormalizeText(text || "").toLowerCase();
+          const wanted = _annolidNormalizeText(text || "");
           if (!wanted) return;
           await _annolidEnsureRenderedThrough(p);
           const paras = _annolidBuildParagraphsForPage(p) || [];
           if (!paras.length) return;
 
-          function scoreCandidate(candidate) {
-            const cand = _annolidNormalizeText(candidate || "").toLowerCase();
-            if (!cand) return 0;
-            if (cand === wanted) return 1.0;
-            if (cand.includes(wanted) || wanted.includes(cand)) {
-              return Math.min(cand.length, wanted.length) / Math.max(1, Math.max(cand.length, wanted.length));
-            }
-            const a = wanted.split(" ").filter(Boolean);
-            const b = cand.split(" ").filter(Boolean);
-            if (!a.length || !b.length) return 0;
-            const limit = 60;
-            const setA = new Set(a.slice(0, limit));
-            const setB = new Set(b.slice(0, limit));
-            let inter = 0;
-            setA.forEach((t) => { if (setB.has(t)) inter += 1; });
-            const denom = Math.max(1, setA.size + setB.size - inter);
-            return inter / denom;
-          }
+          const scoreCandidate = (cand) => (typeof _speech.scoreTextSimilarity === "function")
+            ? _speech.scoreTextSimilarity(wanted, cand)
+            : 0;
 
           let best = null;
           let bestScore = 0;
@@ -4639,10 +4282,11 @@
         }
       };
 
-      window.__annolidHighlightSentenceByText = async function (pageNum, text) {
+      window.__annolidHighlightSentenceByText = async function (pageNum, text, options) {
         try {
           const p = Math.max(1, Math.min(total, parseInt(pageNum, 10) || 1));
-          const wanted = _annolidNormalizeText(text || "").toLowerCase();
+          const wanted = _annolidNormalizeText(text || "");
+          const opts = (options && typeof options === "object") ? options : {};
           const scrollPageFallback = () => {
             try {
               const container = document.getElementById("viewerContainer");
@@ -4667,24 +4311,9 @@
             return;
           }
 
-          function scoreCandidate(candidate) {
-            const cand = _annolidNormalizeText(candidate || "").toLowerCase();
-            if (!cand) return 0;
-            if (cand === wanted) return 1.0;
-            if (cand.includes(wanted) || wanted.includes(cand)) {
-              return Math.min(cand.length, wanted.length) / Math.max(1, Math.max(cand.length, wanted.length));
-            }
-            const a = wanted.split(" ").filter(Boolean);
-            const b = cand.split(" ").filter(Boolean);
-            if (!a.length || !b.length) return 0;
-            const limit = 80;
-            const setA = new Set(a.slice(0, limit));
-            const setB = new Set(b.slice(0, limit));
-            let inter = 0;
-            setA.forEach((t) => { if (setB.has(t)) inter += 1; });
-            const denom = Math.max(1, setA.size + setB.size - inter);
-            return inter / denom;
-          }
+          const scoreCandidate = (cand) => (typeof _speech.scoreTextSimilarity === "function")
+            ? _speech.scoreTextSimilarity(wanted, cand)
+            : 0;
 
           let best = null;
           let bestScore = 0;
@@ -4718,7 +4347,15 @@
             if (currentPage !== p) scrollPageFallback();
             return;
           }
-          window.__annolidHighlightSentenceIndices && window.__annolidHighlightSentenceIndices(spans);
+          const nodes = window.__annolidSpans || [];
+          const slices = (Array.isArray(best.spanSlices) && best.spanSlices.length)
+            ? best.spanSlices
+            : spans.map((idx) => ({
+                idx,
+                startOffset: 0,
+                endOffset: String((nodes[idx] && nodes[idx].textContent) || "").length,
+              }));
+          _annolidApplySpeechHighlightWithSlices(slices, best.text || wanted, opts.durationMs || 0, opts);
           window.__annolidScrollToSentence && window.__annolidScrollToSentence(spans, p);
         } catch (e) {
           try {
@@ -4784,6 +4421,24 @@
           await _annolidEnsureRenderedThrough(anchor.pageNum);
           _annolidScrollToPage(anchor.pageNum, anchor.offsetFrac);
           _annolidUpdateNavState();
+          // Restore active spoken highlight after zoom/rotation re-rendered spans.
+          try {
+            const tts = _annolidEnsureTtsState();
+            const activeMeta = tts.activeMeta;
+            if (activeMeta && activeMeta.pageNum > 0 && activeMeta.sentenceText) {
+              const nowMs = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+              const elapsedSinceStart = activeMeta.startedAt ? Math.max(0, nowMs - activeMeta.startedAt) : 0;
+              window.__annolidHighlightSentenceByText(activeMeta.pageNum, activeMeta.sentenceText, {
+                durationMs: activeMeta.durationMs || 0,
+                speechSegments: activeMeta.speechSegments || null,
+                initialElapsedMs: elapsedSinceStart,
+                keywords: activeMeta.keywords,
+                highlightKeywords: activeMeta.highlightKeywords,
+                autoKeywords: activeMeta.autoKeywords,
+                sessionId: tts.sessionId,
+              });
+            }
+          } catch (e) { }
         } finally {
           zoomBusy = false;
           if (pendingZoom) {
@@ -5053,31 +4708,48 @@
               if (pos >= 0) {
                 const nodes = window.__annolidSpans || [];
                 const trimmedSpans = spans.slice(pos);
+                const origSlices = Array.isArray(startSentence.spanSlices)
+                  ? startSentence.spanSlices.slice(pos)
+                  : null;
+                const trimmedSlices = [];
                 const parts = [];
                 for (let i = 0; i < trimmedSpans.length; i++) {
                   const spanIndex = trimmedSpans[i];
                   const node = nodes[spanIndex];
                   if (!node) continue;
-                  let raw = String(node.textContent || "");
+                  const fullRaw = String(node.textContent || "");
+                  const baseSlice = (origSlices && origSlices[i]) ? origSlices[i] : null;
+                  let sliceStart = baseSlice ? (parseInt(baseSlice.startOffset || 0, 10) || 0) : 0;
+                  const sliceEnd = baseSlice && baseSlice.endOffset != null
+                    ? Math.min(fullRaw.length, parseInt(baseSlice.endOffset, 10) || fullRaw.length)
+                    : fullRaw.length;
                   if (i === 0) {
-                    // Prefer the exact char offset from DOM selection, otherwise best-effort locate the selected word.
+                    // Prefer exact char offset from DOM selection, otherwise locate clicked word.
                     let cut = (selSpanIdx === targetSpanIdx && selOffsetIsChar)
                       ? (parseInt(selCharOffset, 10) || 0)
-                      : 0;
-                    if ((!selOffsetIsChar || cut >= raw.length) && selectedText) {
-                      const idx2 = raw.toLowerCase().indexOf(String(selectedText).toLowerCase());
-                      if (idx2 >= 0) cut = idx2;
+                      : sliceStart;
+                    if ((!selOffsetIsChar || cut >= sliceEnd) && selectedText) {
+                      const idx2 = fullRaw.toLowerCase().indexOf(String(selectedText).toLowerCase(), sliceStart);
+                      if (idx2 >= 0 && idx2 < sliceEnd) cut = idx2;
                     }
-                    cut = Math.max(0, Math.min(raw.length, cut));
-                    raw = raw.slice(cut);
+                    sliceStart = Math.max(sliceStart, Math.min(sliceEnd, cut));
                   }
+                  const raw = fullRaw.slice(sliceStart, sliceEnd);
                   const t = _annolidNormalizeText(raw);
-                  if (t) parts.push(t);
+                  if (t) {
+                    parts.push(t);
+                    trimmedSlices.push({
+                      idx: spanIndex,
+                      startOffset: sliceStart,
+                      endOffset: sliceEnd,
+                    });
+                  }
                 }
                 const rebuilt = _annolidNormalizeText(parts.join(" "));
                 if (rebuilt) {
                   startSentence.text = rebuilt;
-                  startSentence.spans = trimmedSpans;
+                  startSentence.spans = trimmedSlices.length ? trimmedSlices.map((s) => s.idx) : trimmedSpans;
+                  startSentence.spanSlices = trimmedSlices.length ? trimmedSlices : null;
                 }
               }
             } catch (e) { }

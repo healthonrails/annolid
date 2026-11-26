@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import time
 from pathlib import Path
 from typing import Any, Dict
 
 from qtpy import QtCore
 
+from annolid.utils.atomic_io import atomic_write_json
 from annolid.utils.logger import logger
 
 
@@ -82,11 +82,7 @@ def save_pdf_state(pdf_path: Path, state: Dict[str, Any]) -> None:
         pass
 
     try:
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        os.replace(str(tmp), str(path))
+        atomic_write_json(path, payload, indent=2, ensure_ascii=False)
     except Exception as exc:
         logger.debug("Failed to save PDF state %s: %s", path, exc)
 

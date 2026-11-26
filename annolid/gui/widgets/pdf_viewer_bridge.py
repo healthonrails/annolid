@@ -9,7 +9,8 @@ if TYPE_CHECKING:  # pragma: no cover
 
 
 class _SpeakToken:
-    def __init__(self) -> None:
+    def __init__(self, session_id: int = 0) -> None:
+        self.session_id = int(session_id)
         self.cancelled = False
 
 
@@ -22,6 +23,12 @@ class _PdfReaderBridge(QtCore.QObject):
     @QtCore.Slot("QVariant")
     def onParagraphClicked(self, payload: object) -> None:
         self._viewer._handle_reader_click(payload)
+
+    @QtCore.Slot(int, int)
+    def onPageChanged(self, currentPage: int, totalPages: int) -> None:  # noqa: N802
+        handler = getattr(self._viewer, "_handle_web_page_changed", None)
+        if callable(handler):
+            handler(int(currentPage), int(totalPages))
 
     @QtCore.Slot(str, result="QVariant")
     def getUserState(self, pdfKey: str) -> object:  # noqa: N802 - Qt slot name

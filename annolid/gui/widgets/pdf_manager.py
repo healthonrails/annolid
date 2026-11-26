@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-import re
 from typing import Optional, TYPE_CHECKING
 
 from qtpy import QtCore, QtWidgets
@@ -12,6 +11,12 @@ from annolid.gui.widgets.pdf_controls import PdfControlsWidget
 from annolid.gui.widgets.pdf_reader_controls import PdfReaderControlsWidget
 from annolid.gui.widgets.pdf_reading_log import PdfReadingLogWidget
 from annolid.gui.widgets.tts_controls import TtsControlsWidget
+from annolid.services.pdf_parsing import (
+    detect_document_language,
+    extract_pdf_sections,
+    extract_pdf_text,
+    extract_pdf_text_sample,
+)
 from annolid.utils.logger import logger
 
 if TYPE_CHECKING:
@@ -148,6 +153,7 @@ class PdfManager(QtCore.QObject):
                 self._on_reader_availability_changed
             )
             viewer.reading_log_event.connect(self._on_reading_log_event)
+            viewer.keyword_config_changed.connect(self._on_keyword_config_changed)
             self.viewer_stack.addWidget(viewer)
             self.pdf_viewer = viewer
         return self.pdf_viewer
@@ -245,6 +251,13 @@ class PdfManager(QtCore.QObject):
             controls.stop_requested.connect(self._stop_reader)
             controls.previous_requested.connect(self._reader_prev_sentence)
             controls.next_requested.connect(self._reader_next_sentence)
+            controls.keywords_changed.connect(self._set_highlight_keywords)
+            controls.keyword_highlighting_changed.connect(
+                self._set_keyword_highlighting_enabled
+            )
+            controls.auto_keywords_changed.connect(
+                self._set_auto_keyword_highlighting_enabled
+            )
 
         if self.pdf_reader_dock is not None:
             self.pdf_reader_dock.show()
@@ -375,6 +388,7 @@ class PdfManager(QtCore.QObject):
         """Close PDF view, restore docks, and return to canvas."""
         try:
             if self.pdf_viewer is not None:
+                self.pdf_viewer.stop_reader()
                 self.pdf_viewer.record_stop_event()
         except Exception:
             pass
@@ -555,6 +569,14 @@ class PdfManager(QtCore.QObject):
         lang = self._detect_kokoro_language(sample)
         if not lang:
             return
+        # Preserve the user's chosen voice when already in the same language family.
+        try:
+            current = controls.current_settings()
+            cur_lang = str(current.get("lang") or "").strip().lower()
+            if cur_lang and cur_lang.split("-")[0] == lang.split("-")[0]:
+                return
+        except Exception:
+            pass
         voice = self._suggest_default_voice(lang)
         try:
             controls.set_language_and_voice(lang=lang, voice=voice, persist=True)
@@ -564,140 +586,12 @@ class PdfManager(QtCore.QObject):
     @staticmethod
     def _extract_pdf_text_sample(pdf_path: str) -> str:
         """Extract a small text sample to infer document language."""
-        parts: list[str] = []
-        try:
-            path = Path(pdf_path)
-            parts.append(path.stem)
-        except Exception:
-            pass
-        try:
-            import fitz  # type: ignore[import]
-
-            path = Path(pdf_path)
-            with fitz.open(str(path)) as doc:
-                meta = getattr(doc, "metadata", None) or {}
-                if isinstance(meta, dict):
-                    for key in ("title", "subject", "keywords"):
-                        try:
-                            v = str(meta.get(key) or "").strip()
-                            if v:
-                                parts.append(v)
-                        except Exception:
-                            continue
-                pages = min(3, int(getattr(doc, "page_count", 0) or 0))
-                for i in range(pages):
-                    try:
-                        page = doc.load_page(i)
-                    except Exception:
-                        continue
-                    chunk = ""
-                    try:
-                        chunk = str(page.get_text("text") or "")
-                    except Exception:
-                        chunk = ""
-                    chunk = chunk.replace("\u2029", "\n").strip()
-
-                    # Some PDFs return empty/fragmented results for "text" but have usable
-                    # strings in blocks/words.
-                    if len(chunk) < 60:
-                        try:
-                            blocks = page.get_text("blocks") or []
-                            block_texts: list[str] = []
-                            for b in blocks:
-                                if not isinstance(b, (list, tuple)) or len(b) < 5:
-                                    continue
-                                t = str(b[4] or "").strip()
-                                if t:
-                                    block_texts.append(t)
-                            if block_texts:
-                                chunk = (chunk + "\n" + "\n".join(block_texts)).strip()
-                        except Exception:
-                            pass
-                    if len(chunk) < 60:
-                        try:
-                            words = page.get_text("words") or []
-                            ws: list[str] = []
-                            for w in words:
-                                if not isinstance(w, (list, tuple)) or len(w) < 5:
-                                    continue
-                                t = str(w[4] or "").strip()
-                                if t:
-                                    ws.append(t)
-                            if ws:
-                                chunk = (chunk + "\n" + " ".join(ws)).strip()
-                        except Exception:
-                            pass
-                    if chunk:
-                        parts.append(chunk)
-                    if sum(len(p) for p in parts) >= 12000:
-                        break
-        except Exception:
-            pass
-        # Keep sample bounded to stay fast.
-        sample = "\n".join([p for p in parts if p]).strip()
-        return sample[:12000]
+        return extract_pdf_text_sample(pdf_path, max_pages=3, max_chars=12000)
 
     @staticmethod
     def _detect_kokoro_language(text: str) -> str:
         """Return a Kokoro language code best-effort (e.g. zh, ja, en-us)."""
-        s = (text or "").strip()
-        if not s:
-            return ""
-        # Consider only a prefix to stay fast.
-        s = s[:8000]
-        counts = {
-            "hiragana": 0,
-            "katakana": 0,
-            "han": 0,
-            "hangul": 0,
-            "cyrillic": 0,
-            "devanagari": 0,
-            "latin": 0,
-        }
-        for ch in s:
-            o = ord(ch)
-            if 0x3040 <= o <= 0x309F:
-                counts["hiragana"] += 1
-            elif 0x30A0 <= o <= 0x30FF:
-                counts["katakana"] += 1
-            elif 0x4E00 <= o <= 0x9FFF or 0x3400 <= o <= 0x4DBF:
-                counts["han"] += 1
-            elif 0xAC00 <= o <= 0xD7AF:
-                counts["hangul"] += 1
-            elif 0x0400 <= o <= 0x04FF:
-                counts["cyrillic"] += 1
-            elif 0x0900 <= o <= 0x097F:
-                counts["devanagari"] += 1
-            elif (0x0041 <= o <= 0x007A) or (0x00C0 <= o <= 0x024F):
-                counts["latin"] += 1
-
-        kana = counts["hiragana"] + counts["katakana"]
-        han = counts["han"]
-        total = (
-            kana
-            + han
-            + counts["hangul"]
-            + counts["cyrillic"]
-            + counts["devanagari"]
-            + counts["latin"]
-        )
-        total = max(1, int(total))
-
-        if kana >= 8 and kana / total >= 0.06:
-            return "ja"
-        if counts["hangul"] >= 8 and counts["hangul"] / total >= 0.06:
-            return "ko"
-        # Chinese: require enough Han chars and meaningful dominance.
-        if han >= 5 and kana < 6 and (han / total >= 0.12 or han >= 30):
-            return "zh"
-        if counts["cyrillic"] >= 10 and counts["cyrillic"] / total >= 0.08:
-            return "ru"
-        if counts["devanagari"] >= 10 and counts["devanagari"] / total >= 0.08:
-            return "hi"
-        if counts["latin"] >= 24 and counts["latin"] / total >= 0.20:
-            # Conservative: most papers are English; keep a stable default.
-            return "en-us"
-        return ""
+        return detect_document_language(text)
 
     @staticmethod
     def _suggest_default_voice(lang: str) -> str:
@@ -844,6 +738,9 @@ class PdfManager(QtCore.QObject):
         controls.set_pdfjs_checked(viewer.force_pdfjs_enabled())
         state, current, total = viewer.reader_state()
         controls.set_reader_state(state, current, total)
+        controls.set_keywords(viewer.highlight_keywords())
+        controls.set_keyword_highlighting_enabled(viewer.keyword_highlighting_enabled())
+        controls.set_auto_keywords_enabled(viewer.auto_keyword_highlighting_enabled())
 
     def _sync_pdf_log_entries(self) -> None:
         widget = self.pdf_log_widget
@@ -916,6 +813,28 @@ class PdfManager(QtCore.QObject):
         if self.pdf_viewer is not None:
             self.pdf_viewer.reader_next_sentence()
 
+    def _set_highlight_keywords(self, keywords: list[str]) -> None:
+        if self.pdf_viewer is not None:
+            self.pdf_viewer.set_highlight_keywords(keywords)
+
+    def _set_keyword_highlighting_enabled(self, enabled: bool) -> None:
+        if self.pdf_viewer is not None:
+            self.pdf_viewer.set_keyword_highlighting_enabled(enabled)
+
+    def _set_auto_keyword_highlighting_enabled(self, enabled: bool) -> None:
+        if self.pdf_viewer is not None:
+            self.pdf_viewer.set_auto_keyword_highlighting_enabled(enabled)
+
+    def _on_keyword_config_changed(
+        self, keywords: list[str], enabled: bool, auto_enabled: bool
+    ) -> None:
+        controls = self.pdf_reader_controls
+        if controls is None:
+            return
+        controls.set_keywords(keywords)
+        controls.set_keyword_highlighting_enabled(enabled)
+        controls.set_auto_keywords_enabled(auto_enabled)
+
     # ------------------------------------------------------------------ helpers
     def pdf_widget(self) -> Optional[PdfViewerWidget]:
         return self.pdf_viewer
@@ -966,10 +885,6 @@ class PdfManager(QtCore.QObject):
         path_text = str(state.get("path") or "").strip()
         if not path_text:
             return {"ok": False, "error": "Active PDF path is unavailable."}
-        try:
-            import fitz  # type: ignore
-        except Exception:
-            return {"ok": False, "error": "PyMuPDF (pymupdf) is required."}
         path = Path(path_text)
         if not path.exists():
             return {"ok": False, "error": f"Active PDF is missing on disk: {path_text}"}
@@ -985,25 +900,24 @@ class PdfManager(QtCore.QObject):
         if total_pages > 0:
             start_index = min(start_index, total_pages - 1)
 
-        text_parts: list[str] = []
-        pages_read = 0
         try:
-            with fitz.open(str(path)) as doc:
-                total_pages = int(getattr(doc, "page_count", 0) or 0)
-                if total_pages <= 0:
-                    return {"ok": False, "error": "PDF has no pages."}
-                start_index = min(start_index, total_pages - 1)
-                end_index = min(start_index + pages_limit, total_pages)
-                for idx in range(start_index, end_index):
-                    page = doc.load_page(idx)
-                    chunk = str(page.get_text("text") or "").strip()
-                    if chunk:
-                        text_parts.append(chunk)
-                    pages_read += 1
+            raw_text, pages_read, total_pages, _backend = extract_pdf_text(
+                path,
+                start_index=start_index,
+                pages_limit=pages_limit,
+                dehyphenate=True,
+                fallback_blocks_words=True,
+            )
+        except RuntimeError as exc:
+            return {"ok": False, "error": str(exc)}
         except Exception as exc:
             return {"ok": False, "error": f"Failed to read active PDF text: {exc}"}
 
-        text = "\n\n".join(text_parts).strip()
+        if total_pages <= 0:
+            return {"ok": False, "error": "PDF has no pages."}
+
+        start_index = min(start_index, total_pages - 1)
+        text = raw_text.strip()
         truncated = len(text) > limit
         if truncated:
             text = text[:limit]
@@ -1026,102 +940,15 @@ class PdfManager(QtCore.QObject):
         path_text = str(state.get("path") or "").strip()
         if not path_text:
             return {"ok": False, "error": "Active PDF path is unavailable."}
-        try:
-            import fitz  # type: ignore
-        except Exception:
-            return {"ok": False, "error": "PyMuPDF (pymupdf) is required."}
         path = Path(path_text)
         if not path.exists():
             return {"ok": False, "error": f"Active PDF is missing on disk: {path_text}"}
-
-        section_limit = max(1, min(int(max_sections or 20), 200))
-        page_limit = max(1, min(int(max_pages or 12), 100))
-        found: list[dict[str, object]] = []
-        seen: set[str] = set()
-        total_pages = 0
-        scanned_pages = 0
-        common_titles = {
-            "abstract",
-            "introduction",
-            "background",
-            "related work",
-            "methods",
-            "materials and methods",
-            "results",
-            "discussion",
-            "conclusion",
-            "conclusions",
-            "references",
-            "acknowledgments",
-            "acknowledgements",
-            "supplementary materials",
-        }
-
-        def _is_section_candidate(line: str) -> bool:
-            text = " ".join(str(line or "").split()).strip()
-            if len(text) < 3 or len(text) > 140:
-                return False
-            if text.endswith(".") and len(text.split()) > 5:
-                return False
-            lowered = text.lower()
-            if lowered in common_titles:
-                return True
-            if re.match(
-                r"^(?:\d+(?:\.\d+){0,4}|[ivxlcdm]+)\s+[a-z0-9].*$",
-                lowered,
-                flags=re.IGNORECASE,
-            ):
-                return True
-            words = text.split()
-            if len(words) > 14:
-                return False
-            alpha = [c for c in text if c.isalpha()]
-            if not alpha:
-                return False
-            upper_ratio = sum(1 for c in alpha if c.isupper()) / max(len(alpha), 1)
-            title_ratio = sum(1 for w in words if w[:1].isupper()) / max(len(words), 1)
-            starts_cap = bool(text[:1].isupper())
-            return starts_cap and (upper_ratio >= 0.65 or title_ratio >= 0.75)
-
         try:
-            with fitz.open(str(path)) as doc:
-                total_pages = int(getattr(doc, "page_count", 0) or 0)
-                if total_pages <= 0:
-                    return {"ok": False, "error": "PDF has no pages."}
-                end_page = min(page_limit, total_pages)
-                for page_index in range(end_page):
-                    scanned_pages += 1
-                    page = doc.load_page(page_index)
-                    lines = str(page.get_text("text") or "").splitlines()
-                    for line_idx, line in enumerate(lines):
-                        title = " ".join(str(line or "").split()).strip()
-                        if not _is_section_candidate(title):
-                            continue
-                        key = re.sub(r"\s+", " ", title.lower()).strip()
-                        if not key or key in seen:
-                            continue
-                        seen.add(key)
-                        found.append(
-                            {
-                                "title": title,
-                                "page": page_index + 1,
-                                "line": line_idx + 1,
-                            }
-                        )
-                        if len(found) >= section_limit:
-                            break
-                    if len(found) >= section_limit:
-                        break
+            result = extract_pdf_sections(
+                path, max_sections=max_sections, max_pages=max_pages
+            )
+            if result.get("ok"):
+                result["path"] = path_text
+            return result
         except Exception as exc:
             return {"ok": False, "error": f"Failed to detect PDF sections: {exc}"}
-
-        return {
-            "ok": True,
-            "path": path_text,
-            "title": path.name,
-            "sections": found,
-            "count": len(found),
-            "max_sections": section_limit,
-            "scanned_pages": scanned_pages,
-            "total_pages": total_pages,
-        }

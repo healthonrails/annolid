@@ -9,11 +9,10 @@ from __future__ import annotations
 import importlib
 import json
 import sys
-import tempfile
 import time
 import uuid
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Sequence
 
 from qtpy import QtCore, QtGui, QtWidgets
 from annolid.gui.qt_compat import palette_color_role
@@ -34,9 +33,11 @@ except Exception:
     QtWebChannel = None  # type: ignore
     _WEBCHANNEL_AVAILABLE = False
 
-from annolid.utils.tts_settings import default_tts_settings, load_tts_settings
-from annolid.utils.audio_playback import play_audio_buffer
 from annolid.utils.logger import logger
+from annolid.gui.widgets.pdf_speech_controller import (
+    _SpeakTextTask,
+    build_tts_settings_snapshot,
+)
 from annolid.gui.widgets.pdf_viewer_bridge import _PdfReaderBridge, _SpeakToken
 from annolid.gui.widgets.pdf_viewer_server import (
     _ensure_pdfjs_http_server,
@@ -51,6 +52,25 @@ from annolid.gui.widgets.pdf_user_state import (
     load_pdf_state,
     pdf_state_key,
     save_pdf_state,
+)
+from annolid.services.pdf_parsing import (
+    extract_pdf_outline,
+    pdf_needs_repair_hint,
+    repair_pdf,
+)
+from annolid.services.speech_highlighting import (
+    TimedHighlightUnit,
+    active_schedule_index_at_ms,
+    allocate_weighted_durations_ms,
+    build_word_timing_schedule,
+    downsample_weighted_units,
+    extract_auto_keywords,
+    extract_word_tokens,
+    find_keyword_spans,
+    group_web_spans_into_sentences,
+    normalize_speech_text,
+    parse_keywords,
+    split_text_into_sentence_ranges,
 )
 
 _AnnolidWebEnginePage = None
@@ -79,6 +99,7 @@ def _build_pdfjs_viewer_html(
     css_url = f"{asset_base}/pdfjs/annolid_viewer.css"
     polyfills_url = f"{asset_base}/pdfjs/annolid_viewer_polyfills.js"
     pdfjs_url = f"{asset_base}/pdfjs/pdf.min.js"
+    speech_url = f"{asset_base}/pdfjs/annolid_pdf_speech.js"
     viewer_url = f"{asset_base}/pdfjs/annolid_viewer.js"
     try:
         bootstrap_js = _js_literal(
@@ -113,6 +134,7 @@ def _build_pdfjs_viewer_html(
   </script>
   <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
   <script src="{pdfjs_url}"></script>
+  <script src="{speech_url}"></script>
   <script src="{viewer_url}"></script>
 </head>
 <body>
@@ -456,6 +478,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
     reader_state_changed = QtCore.Signal(str, int, int)
     reader_availability_changed = QtCore.Signal(bool, str)
     reading_log_event = QtCore.Signal(dict)
+    keyword_config_changed = QtCore.Signal(list, bool, bool)
 
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None) -> None:
         super().__init__(parent)
@@ -469,6 +492,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
         self._pdf_user_state_timer.timeout.connect(self._flush_pdf_user_state_to_disk)
         self._reading_log: list[dict[str, object]] = []
         self._current_page = 0
+        self._web_total_pages = 0
         self._zoom = 1.5
         self._rotation = 0
         self._thread_pool = QtCore.QThreadPool(self)
@@ -482,6 +506,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
         self._pdfjs_active = False
         self._web_mode_active = False
         self._speaking = False
+        self._speak_session_id = 0
         self._selection_cache = ""
         self._selection_cache_time = 0.0
         self._dictionary_lookup_id = ""
@@ -504,12 +529,20 @@ class PdfViewerWidget(QtWidgets.QWidget):
         self._selection_anchor_end: Optional[int] = None
         self._text_sentence_spans: list[tuple[int, int]] = []
         self._web_sentence_span_groups: list[list[int]] = []
+        self._web_sentence_span_slices: list[list[dict[str, int]]] = []
         self._web_selected_span_text: Dict[int, str] = {}
         self._word_highlight_timer: Optional[QtCore.QTimer] = None
         self._word_highlight_units: list[object] = []
         self._word_highlight_durations_ms: list[int] = []
         self._word_highlight_index = 0
+        self._word_highlight_schedule: list[TimedHighlightUnit] = []
+        self._word_highlight_started_at = 0.0
+        self._word_highlight_active_idx = -1
         self._active_text_sentence_span: Optional[tuple[int, int]] = None
+        self._active_text_keyword_spans: list[tuple[int, int]] = []
+        self._highlight_keywords: list[str] = []
+        self._keyword_highlighting_enabled = True
+        self._auto_keyword_highlighting_enabled = False
         # Prefer PDF.js by default (Chromium <embed> is not scriptable).
         self._force_pdfjs = True
         self._bookmarks: list[dict[str, object]] = []
@@ -674,9 +707,13 @@ class PdfViewerWidget(QtWidgets.QWidget):
         source_path = Path(pdf_path)
         if not source_path.exists():
             raise FileNotFoundError(f"PDF not found: {pdf_path}")
+        # Stop any active TTS reading / highlight session before switching documents.
+        self._stop_speech_for_transition()
         path = self._maybe_repair_pdf(source_path, reason="load")
 
         self._rotation = 0
+        self._current_page = 0
+        self._web_total_pages = 0
         self._pdf_path = source_path
         try:
             self._pdf_key = pdf_state_key(source_path)
@@ -686,6 +723,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
             self._pdf_user_state = load_pdf_state(source_path)
         except Exception:
             self._pdf_user_state = {}
+        self._restore_keyword_highlight_state()
         self._reading_log = []
         try:
             existing_log = (
@@ -748,48 +786,14 @@ class PdfViewerWidget(QtWidgets.QWidget):
         self._open_with_pymupdf(path, source_path=source_path)
 
     def _pdf_needs_repair_hint(self, path: Path) -> bool:
-        try:
-            with path.open("rb") as fh:
-                head = fh.read(8)
-                if b"%PDF-" not in head:
-                    return True
-                try:
-                    fh.seek(-4096, 2)
-                except OSError:
-                    fh.seek(0)
-                tail = fh.read()
-            return b"%%EOF" not in tail
-        except Exception:
-            return False
+        return pdf_needs_repair_hint(path)
 
     def _attempt_repair_pdf(self, path: Path, *, reason: str) -> Optional[Path]:
         key = str(path.resolve())
         if key in self._pdf_repair_attempted:
             return None
         self._pdf_repair_attempted.add(key)
-        try:
-            from pypdf import PdfReader, PdfWriter  # type: ignore[import]
-        except Exception:
-            return None
-        try:
-            reader = PdfReader(str(path), strict=False)
-            if len(reader.pages) <= 0:
-                return None
-            writer = PdfWriter()
-            for page in reader.pages:
-                writer.add_page(page)
-            tmp_dir = Path(tempfile.gettempdir()) / "annolid_pdf_repair"
-            tmp_dir.mkdir(parents=True, exist_ok=True)
-            repaired = (
-                tmp_dir / f"{path.stem}.{int(path.stat().st_mtime_ns)}.repaired.pdf"
-            )
-            with repaired.open("wb") as out:
-                writer.write(out)
-            logger.warning("Repaired PDF via pypdf: %s (reason=%s)", repaired, reason)
-            return repaired
-        except Exception as exc:
-            logger.warning("PDF repair failed for %s (%s): %s", path, reason, exc)
-            return None
+        return repair_pdf(path, reason=reason)
 
     def _maybe_repair_pdf(self, path: Path, *, reason: str) -> Path:
         if not self._pdf_needs_repair_hint(path):
@@ -1030,6 +1034,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
                     self._web_loading_source_path = None
                     logger.info(f"QtWebEngine PDF.js viewer active for {path}")
                     self._apply_reader_enabled_to_web()
+                    self._apply_keyword_config_to_web()
                     self.fit_to_width()
                     self._emit_reader_availability()
 
@@ -1199,6 +1204,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
         text = (page.get_text("text") or "").strip()
         self.text_view.setPlainText(text)
         self.text_view.moveCursor(QtGui.QTextCursor.Start)
+        self._apply_idle_text_keyword_highlights()
         self.page_changed.emit(self._current_page, self._doc.page_count)
         self._schedule_pdf_user_state_save(
             {
@@ -1373,24 +1379,31 @@ class PdfViewerWidget(QtWidgets.QWidget):
             return
 
         def start_with_chunks(payload: object) -> None:
-            texts: list[str] = []
-            indices: list[int] = []
+            raw_texts: list[str] = []
+            raw_indices: list[int] = []
             if isinstance(payload, dict):
-                raw_texts = payload.get("texts") or []
-                raw_indices = payload.get("indices") or []
+                maybe_texts = payload.get("texts") or []
+                maybe_indices = payload.get("indices") or []
                 try:
-                    texts = [str(t).strip() for t in raw_texts if str(t).strip()]
-                    indices = [int(i) for i in raw_indices]
+                    raw_texts = [str(t) for t in maybe_texts]
+                    raw_indices = [int(i) for i in maybe_indices]
                 except Exception:
-                    texts = []
-                    indices = []
-            if texts and indices and len(texts) == len(indices):
-                self._web_selected_span_text = {
-                    idx: text for text, idx in zip(texts, indices)
-                }
-                groups, sentences = self._group_web_spans_into_sentences(texts, indices)
+                    raw_texts = []
+                    raw_indices = []
+            if raw_texts and raw_indices and len(raw_texts) == len(raw_indices):
+                groups, sentences, span_text_map = group_web_spans_into_sentences(
+                    raw_texts, raw_indices
+                )
                 if groups and sentences and len(groups) == len(sentences):
+                    # Reset click-to-read offsets so selection speech always starts at index 0.
+                    self._reader_chunk_base = 0
+                    self._reader_queue_offset = 0
+                    self._reader_queue = list(sentences)
+                    self._reader_pages = [int(self._current_page) + 1] * len(sentences)
+                    self._reader_spans = [list(g) for g in groups]
+                    self._web_selected_span_text = span_text_map
                     self._web_sentence_span_groups = groups
+                    self._web_sentence_span_slices = []
                     self._highlight_mode = "web-sentence"
                     self._speak_text(" ".join(sentences), chunks=sentences)
                     return
@@ -1597,6 +1610,201 @@ class PdfViewerWidget(QtWidgets.QWidget):
         except Exception:
             pass
 
+    def _stop_speech_for_transition(self) -> None:
+        """Cancel active speech and clear highlights before switching or closing PDFs."""
+        self._speak_session_id = int(getattr(self, "_speak_session_id", 0) or 0) + 1
+        self._reader_pending_restart = None
+        self._reader_stop_requested = True
+        self._reader_pause_requested = False
+        self._cancel_speaking()
+        self._speaking = False
+        self._active_speak_token = None
+        self._clear_highlight()
+        self._reset_reader_state()
+
+    def _handle_web_page_changed(self, current_page: int, total_pages: int) -> None:
+        """Sync page state reported from the PDF.js viewer back to Python."""
+        total = max(0, int(total_pages or 0))
+        page_idx = max(0, int(current_page or 1) - 1)
+        if total > 0:
+            page_idx = min(page_idx, total - 1)
+        changed = (page_idx != self._current_page) or (total != self._web_total_pages)
+        self._current_page = page_idx
+        self._web_total_pages = total
+        if changed and total > 0:
+            try:
+                self.page_changed.emit(self._current_page, self._web_total_pages)
+            except Exception:
+                pass
+
+    # ---- Keyword highlighting controls ------------------------------------
+    def highlight_keywords(self) -> list[str]:
+        return list(getattr(self, "_highlight_keywords", []) or [])
+
+    def keyword_highlighting_enabled(self) -> bool:
+        return bool(getattr(self, "_keyword_highlighting_enabled", True))
+
+    def auto_keyword_highlighting_enabled(self) -> bool:
+        return bool(getattr(self, "_auto_keyword_highlighting_enabled", False))
+
+    def set_highlight_keywords(
+        self, keywords: Sequence[str] | str, *, persist: bool = True
+    ) -> None:
+        parsed = parse_keywords(keywords)
+        self._highlight_keywords = parsed
+        self._apply_keyword_config_to_web()
+        self._refresh_text_keyword_highlights()
+        if persist and self._pdf_path is not None:
+            self._persist_keyword_highlight_state()
+        self._emit_keyword_config_changed()
+
+    def set_keyword_highlighting_enabled(
+        self, enabled: bool, *, persist: bool = True
+    ) -> None:
+        self._keyword_highlighting_enabled = bool(enabled)
+        self._apply_keyword_config_to_web()
+        self._refresh_text_keyword_highlights()
+        if persist and self._pdf_path is not None:
+            self._persist_keyword_highlight_state()
+        self._emit_keyword_config_changed()
+
+    def set_auto_keyword_highlighting_enabled(
+        self, enabled: bool, *, persist: bool = True
+    ) -> None:
+        self._auto_keyword_highlighting_enabled = bool(enabled)
+        self._apply_keyword_config_to_web()
+        self._refresh_text_keyword_highlights()
+        if persist and self._pdf_path is not None:
+            self._persist_keyword_highlight_state()
+        self._emit_keyword_config_changed()
+
+    def _emit_keyword_config_changed(self) -> None:
+        try:
+            self.keyword_config_changed.emit(
+                list(self._highlight_keywords),
+                bool(self._keyword_highlighting_enabled),
+                bool(self._auto_keyword_highlighting_enabled),
+            )
+        except Exception:
+            pass
+
+    def _persist_keyword_highlight_state(self) -> None:
+        self._schedule_pdf_user_state_save(
+            {
+                "speechKeywords": {
+                    "keywords": list(self._highlight_keywords),
+                    "enabled": bool(self._keyword_highlighting_enabled),
+                    "autoKeywords": bool(self._auto_keyword_highlighting_enabled),
+                }
+            }
+        )
+
+    def _restore_keyword_highlight_state(self) -> None:
+        state = self._pdf_user_state if isinstance(self._pdf_user_state, dict) else {}
+        kw_state = state.get("speechKeywords")
+        if isinstance(kw_state, dict):
+            self._highlight_keywords = parse_keywords(kw_state.get("keywords") or [])
+            if "enabled" in kw_state:
+                self._keyword_highlighting_enabled = bool(kw_state.get("enabled"))
+            if "autoKeywords" in kw_state:
+                self._auto_keyword_highlighting_enabled = bool(
+                    kw_state.get("autoKeywords")
+                )
+        self._emit_keyword_config_changed()
+
+    def _apply_keyword_config_to_web(self) -> None:
+        if self._web_view is None or not self._pdfjs_active:
+            return
+        payload = _js_literal(
+            {
+                "keywords": list(getattr(self, "_highlight_keywords", []) or []),
+                "enabled": bool(getattr(self, "_keyword_highlighting_enabled", True)),
+                "autoKeywords": bool(
+                    getattr(self, "_auto_keyword_highlighting_enabled", False)
+                ),
+            }
+        )
+        try:
+            self._web_view.page().runJavaScript(
+                "window.__annolidSetKeywordHighlightConfig && "
+                f"window.__annolidSetKeywordHighlightConfig({payload});"
+            )
+        except Exception:
+            pass
+
+    def _effective_keywords_for_text(self, text: str) -> list[str]:
+        if not bool(getattr(self, "_keyword_highlighting_enabled", True)):
+            return []
+        terms = list(getattr(self, "_highlight_keywords", []) or [])
+        if bool(getattr(self, "_auto_keyword_highlighting_enabled", False)):
+            seen = {t.casefold() for t in terms}
+            for auto_term in extract_auto_keywords(text, max_keywords=4):
+                if auto_term.casefold() not in seen:
+                    seen.add(auto_term.casefold())
+                    terms.append(auto_term)
+        return terms
+
+    def _apply_idle_text_keyword_highlights(self) -> None:
+        """Render persistent user keyword highlights in fallback text_view when idle."""
+        if self._speaking and self._highlight_mode == "text-sentence":
+            return
+        if not hasattr(self, "text_view") or self.text_view is None:
+            return
+        try:
+            if not bool(getattr(self, "_keyword_highlighting_enabled", True)):
+                self.text_view.setExtraSelections([])
+                return
+            keywords = list(getattr(self, "_highlight_keywords", []) or [])
+            if not keywords:
+                self.text_view.setExtraSelections([])
+                return
+            plain = self.text_view.toPlainText() or ""
+            matches = find_keyword_spans(plain, keywords)
+            doc = self.text_view.document()
+            selections = [
+                self._make_text_extra_selection(
+                    doc,
+                    m.start,
+                    m.end,
+                    QtGui.QColor(0, 188, 212, 65),
+                    underline_color=QtGui.QColor(0, 131, 143),
+                )
+                for m in matches
+            ]
+            self.text_view.setExtraSelections(selections)
+        except Exception:
+            pass
+
+    def _refresh_text_keyword_highlights(self) -> None:
+        if self._speaking and self._highlight_mode == "text-sentence":
+            sentence = self._active_text_sentence_span
+            if sentence is not None:
+                self._recompute_active_text_keywords(sentence)
+                active_word: Optional[tuple[int, int]] = None
+                is_kw = False
+                if (
+                    0
+                    <= self._word_highlight_active_idx
+                    < len(self._word_highlight_schedule)
+                ):
+                    item = self._word_highlight_schedule[
+                        self._word_highlight_active_idx
+                    ]
+                    if isinstance(item.unit, tuple) and len(item.unit) == 2:
+                        active_word = item.unit
+                        is_kw = any(
+                            ks < active_word[1] and ke > active_word[0]
+                            for ks, ke in self._active_text_keyword_spans
+                        )
+                self._set_text_tts_highlight(
+                    sentence,
+                    active_word,
+                    keyword_spans=self._active_text_keyword_spans,
+                    active_word_is_keyword=is_kw,
+                )
+            return
+        self._apply_idle_text_keyword_highlights()
+
     def _reset_reader_state(self) -> None:
         self._reader_state = "idle"
         self._reader_queue = []
@@ -1610,6 +1818,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
         self._reader_stop_requested = False
         self._reader_pending_restart = None
         self._web_sentence_span_groups = []
+        self._web_sentence_span_slices = []
         try:
             self.reader_state_changed.emit(
                 self._reader_state, self._reader_current_index, self._reader_total
@@ -1636,11 +1845,12 @@ class PdfViewerWidget(QtWidgets.QWidget):
             return
         texts: list[str] = []
         spans_list: list[list[int]] = []
+        slices_list: list[list[dict[str, int]]] = []
         pages: list[int] = []
         for entry in items:
             if not isinstance(entry, dict):
                 continue
-            text = str(entry.get("text", "")).strip()
+            text = normalize_speech_text(str(entry.get("text", "")))
             if not text:
                 continue
             texts.append(text)
@@ -1653,6 +1863,27 @@ class PdfViewerWidget(QtWidgets.QWidget):
                     except Exception:
                         continue
             spans_list.append(spans)
+            raw_slices = entry.get("spanSlices") or []
+            slices: list[dict[str, int]] = []
+            if isinstance(raw_slices, list):
+                for sl in raw_slices:
+                    if not isinstance(sl, dict):
+                        continue
+                    try:
+                        slice_entry: dict[str, int] = {
+                            "idx": int(sl.get("idx", -1)),
+                            "startOffset": max(0, int(sl.get("startOffset", 0) or 0)),
+                        }
+                        if sl.get("endOffset") is not None:
+                            slice_entry["endOffset"] = max(
+                                slice_entry["startOffset"],
+                                int(sl.get("endOffset", 0) or 0),
+                            )
+                        if slice_entry["idx"] >= 0:
+                            slices.append(slice_entry)
+                    except Exception:
+                        continue
+            slices_list.append(slices)
             try:
                 pages.append(int(entry.get("pageNum", 0)))
             except Exception:
@@ -1693,6 +1924,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
         self._reader_stop_requested = False
         self._reader_pending_restart = None
         self._web_sentence_span_groups = spans_list if use_sentences else []
+        self._web_sentence_span_slices = slices_list if use_sentences else []
         self._reader_state = "reading"
         try:
             self.reader_state_changed.emit(
@@ -1719,61 +1951,25 @@ class PdfViewerWidget(QtWidgets.QWidget):
         self._reader_state = "reading"
         self._reader_pause_requested = False
         self._reader_stop_requested = False
-        # Pre-scroll to the target sentence/page so manual navigation does not jump back.
+        # Pre-scroll and highlight target sentence/page immediately while TTS synthesizes.
         if self._web_view is not None and self._pdfjs_active:
-            try:
-                queue_idx = local_index
-                spans: list[int] = []
-                if 0 <= queue_idx < len(self._web_sentence_span_groups):
-                    spans = self._web_sentence_span_groups[queue_idx] or []
-                page_num = (
-                    self._reader_pages[queue_idx]
-                    if 0 <= queue_idx < len(self._reader_pages)
-                    else 0
-                )
-                next_page = (
-                    self._reader_pages[queue_idx + 1]
-                    if 0 <= queue_idx + 1 < len(self._reader_pages)
-                    else 0
-                )
-                sentence_text = (
-                    self._reader_queue[queue_idx]
-                    if 0 <= queue_idx < len(self._reader_queue)
-                    else ""
-                )
-                if spans:
+            if self._web_sentence_span_groups:
+                self._highlight_web_sentence_chunk(0, duration_ms=0)
+            else:
+                try:
+                    page_num = (
+                        self._reader_pages[local_index]
+                        if 0 <= local_index < len(self._reader_pages)
+                        else 0
+                    )
                     if page_num > 0:
                         self._web_view.page().runJavaScript(
                             "window.__annolidEnsureRenderedThrough && "
                             f"window.__annolidEnsureRenderedThrough({int(page_num)});"
                         )
-                    self._web_view.page().runJavaScript(
-                        "window.__annolidHighlightSentenceIndices && "
-                        f"window.__annolidHighlightSentenceIndices({spans})"
-                    )
-                    self._web_view.page().runJavaScript(
-                        "window.__annolidScrollToSentence && "
-                        f"window.__annolidScrollToSentence({spans}, {int(page_num)})"
-                    )
-                elif page_num > 0:
-                    self._web_view.page().runJavaScript(
-                        "window.__annolidEnsureRenderedThrough && "
-                        f"window.__annolidEnsureRenderedThrough({int(page_num)});"
-                    )
-                    self._web_view.page().runJavaScript(
-                        "window.__annolidHighlightSentenceByText && "
-                        f"window.__annolidHighlightSentenceByText({int(page_num)}, {json.dumps(sentence_text)})"
-                    )
-                if next_page and next_page != page_num:
-                    try:
-                        self._web_view.page().runJavaScript(
-                            "window.__annolidEnsureRenderedThrough && "
-                            f"window.__annolidEnsureRenderedThrough({int(next_page)});"
-                        )
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+                        self._scroll_pdfjs_to_page(page_num)
+                except Exception:
+                    pass
         try:
             self.reader_state_changed.emit(
                 self._reader_state, self._reader_current_index, self._reader_total
@@ -1808,26 +2004,20 @@ class PdfViewerWidget(QtWidgets.QWidget):
     def _extract_text_sentence_spans(
         self, cursor: QtGui.QTextCursor
     ) -> tuple[list[tuple[int, int]], list[str]]:
-        import re
-
         selected_raw = cursor.selectedText()
         if not selected_raw:
             return [], []
         base = cursor.selectionStart()
+        normalized_for_split = selected_raw.replace("\u2029", "\n")
+        ranges = split_text_into_sentence_ranges(normalized_for_split)
         spans: list[tuple[int, int]] = []
         chunks: list[str] = []
-        pattern = re.compile(r".+?(?:[.!?。！？]+|$)", re.DOTALL)
-        for match in pattern.finditer(selected_raw):
-            segment = match.group(0)
-            if not segment or not segment.strip():
-                continue
-            leading = len(segment) - len(segment.lstrip())
-            trailing = len(segment) - len(segment.rstrip())
-            start = base + match.start() + leading
-            end = base + match.end() - trailing
+        for rel_start, rel_end in ranges:
+            start = base + rel_start
+            end = base + rel_end
             if start >= end:
                 continue
-            cleaned = re.sub(r"\s+", " ", segment.replace("\u2029", " ")).strip()
+            cleaned = normalize_speech_text(normalized_for_split[rel_start:rel_end])
             if not cleaned:
                 continue
             spans.append((start, end))
@@ -1837,31 +2027,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
     def _group_web_spans_into_sentences(
         self, texts: list[str], indices: list[int]
     ) -> tuple[list[list[int]], list[str]]:
-        import re
-
-        groups: list[list[int]] = []
-        sentences: list[str] = []
-        current_text: list[str] = []
-        current_indices: list[int] = []
-        end_punct = re.compile(r"[.!?。！？]")
-        for text, idx in zip(texts, indices):
-            cleaned = str(text).strip()
-            if not cleaned:
-                continue
-            current_text.append(cleaned)
-            current_indices.append(idx)
-            if end_punct.search(cleaned):
-                sentence = re.sub(r"\s+", " ", " ".join(current_text)).strip()
-                if sentence:
-                    groups.append(list(current_indices))
-                    sentences.append(sentence)
-                current_text = []
-                current_indices = []
-        if current_indices:
-            sentence = re.sub(r"\s+", " ", " ".join(current_text)).strip()
-            if sentence:
-                groups.append(list(current_indices))
-                sentences.append(sentence)
+        groups, sentences, _ = group_web_spans_into_sentences(texts, indices)
         return groups, sentences
 
     def _has_selection(self) -> bool:
@@ -2436,70 +2602,100 @@ class PdfViewerWidget(QtWidgets.QWidget):
 
     def _speak_text(self, text: str, *, chunks: Optional[list[str]] = None) -> None:
         """Kick off background speech for the provided text."""
-        cleaned = (text or "").replace("\u2029", "\n").strip()
-        # Fix common PDF hyphenation artifacts (e.g., "synergis- tic" -> "synergistic")
-        # while preserving likely intentional hyphens for short prefixes (e.g., "non- linear" -> "non-linear").
-        cleaned = cleaned.replace("\u00ad", "")
-        try:
-            import re
-
-            # Merge line-wrapped words that left a hyphen plus whitespace between letters.
-            cleaned = re.sub(
-                r"([A-Za-z]{2,})[-\u2010\u2011\u2012\u2013]\s+([A-Za-z]{2,})",
-                r"\1\2",
-                cleaned,
-            )
-        except Exception:
-            pass
+        cleaned = normalize_speech_text(text)
         if not cleaned:
             return
         if self._speaking:
             return
         self._speaking = True
-        token = _SpeakToken()
+        self._speak_session_id = int(getattr(self, "_speak_session_id", 0) or 0) + 1
+        token = _SpeakToken(session_id=self._speak_session_id)
         self._active_speak_token = token
         if self._highlight_mode in {"text", "web"}:
             self._start_highlight()
         # Keep the public signal for downstream integrations if needed.
         self.selection_ready.emit(cleaned)
-        settings = load_tts_settings()
-        defaults = default_tts_settings()
-        merged = {
-            "engine": settings.get("engine", defaults.get("engine", "auto")),
-            "voice": settings.get("voice", defaults["voice"]),
-            "pocket_voice": settings.get(
-                "pocket_voice", defaults.get("pocket_voice", "alba")
-            ),
-            "pocket_prompt_path": settings.get(
-                "pocket_prompt_path", defaults.get("pocket_prompt_path", "")
-            ),
-            "pocket_speed": settings.get(
-                "pocket_speed", defaults.get("pocket_speed", 1.0)
-            ),
-            "lang": settings.get("lang", defaults["lang"]),
-            "speed": settings.get("speed", defaults["speed"]),
-            "chatterbox_voice_path": settings.get(
-                "chatterbox_voice_path", defaults.get("chatterbox_voice_path", "")
-            ),
-            "chatterbox_dtype": settings.get(
-                "chatterbox_dtype", defaults.get("chatterbox_dtype", "fp32")
-            ),
-            "chatterbox_max_new_tokens": settings.get(
-                "chatterbox_max_new_tokens",
-                defaults.get("chatterbox_max_new_tokens", 1024),
-            ),
-            "chatterbox_repetition_penalty": settings.get(
-                "chatterbox_repetition_penalty",
-                defaults.get("chatterbox_repetition_penalty", 1.2),
-            ),
-            "chatterbox_apply_watermark": settings.get(
-                "chatterbox_apply_watermark",
-                defaults.get("chatterbox_apply_watermark", False),
-            ),
-        }
-        self._thread_pool.start(
-            _SpeakTextTask(self, cleaned, merged, chunks=chunks, token=token)
+        merged = build_tts_settings_snapshot()
+        normalized_chunks = (
+            [normalize_speech_text(c) for c in chunks] if chunks is not None else None
         )
+        self._thread_pool.start(
+            _SpeakTextTask(self, cleaned, merged, chunks=normalized_chunks, token=token)
+        )
+
+    @staticmethod
+    def _parse_speech_segments_json(raw: str) -> list[tuple[int, int]]:
+        if not raw:
+            return []
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            return []
+        if not isinstance(parsed, list):
+            return []
+        segments: list[tuple[int, int]] = []
+        for entry in parsed:
+            if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                try:
+                    s = int(entry[0])
+                    e = int(entry[1])
+                except Exception:
+                    continue
+                if e > s >= 0:
+                    segments.append((s, e))
+        return segments
+
+    @QtCore.Slot(int, int, int, str)
+    def _on_speak_chunk_aligned(
+        self,
+        session_id: int,
+        index: int,
+        duration_ms: int,
+        speech_segments_json: str,
+    ) -> None:
+        if session_id != int(getattr(self, "_speak_session_id", 0) or 0):
+            return
+        if not self._speaking:
+            return
+        speech_segments = self._parse_speech_segments_json(speech_segments_json)
+        if self._highlight_mode == "web-sentence":
+            self._highlight_web_sentence_chunk(
+                index, duration_ms=duration_ms, speech_segments=speech_segments
+            )
+            return
+        self._on_speak_chunk(index)
+        if duration_ms > 0:
+            self._on_speak_chunk_timing(
+                index, duration_ms, speech_segments=speech_segments
+            )
+
+    @QtCore.Slot(int, int, int)
+    def _on_speak_chunk_for_session(
+        self, session_id: int, index: int, duration_ms: int
+    ) -> None:
+        self._on_speak_chunk_aligned(session_id, index, duration_ms, "")
+
+    @QtCore.Slot(int, str)
+    def _on_speak_error(self, session_id: int, message: str) -> None:
+        if session_id != int(getattr(self, "_speak_session_id", 0) or 0):
+            return
+        detail = str(message or "").strip()
+        if not detail:
+            return
+        try:
+            QtWidgets.QToolTip.showText(
+                QtGui.QCursor.pos(),
+                f"Speech playback error: {detail}",
+                self,
+            )
+        except Exception:
+            pass
+
+    @QtCore.Slot(int)
+    def _on_speak_finished_for_session(self, session_id: int) -> None:
+        if session_id != int(getattr(self, "_speak_session_id", 0) or 0):
+            return
+        self._on_speak_finished()
 
     @QtCore.Slot()
     def _on_speak_finished(self) -> None:
@@ -2529,65 +2725,78 @@ class PdfViewerWidget(QtWidgets.QWidget):
                 return
             self._reset_reader_state()
 
-    @QtCore.Slot(int)
-    def _on_speak_chunk(self, index: int) -> None:
-        if self._highlight_mode == "text-sentence":
-            self._stop_word_highlight()
-            if 0 <= index < len(self._text_sentence_spans):
-                start, end = self._text_sentence_spans[index]
-                self._active_text_sentence_span = (start, end)
-                self._set_text_tts_highlight((start, end), None)
-                self._scroll_text_to_position(start)
-            return
-        if self._highlight_mode == "web-sentence":
-            self._stop_word_highlight()
-            global_idx = self._reader_chunk_base + index
-            span_indices: list[int] = []
-            if 0 <= global_idx < len(self._web_sentence_span_groups):
-                span_indices = self._web_sentence_span_groups[global_idx] or []
-            page_num = (
-                self._reader_pages[global_idx]
-                if 0 <= global_idx < len(self._reader_pages)
-                else 0
-            )
-            next_page = (
-                self._reader_pages[global_idx + 1]
-                if 0 <= global_idx + 1 < len(self._reader_pages)
-                else 0
-            )
-            sentence_text = (
-                self._reader_queue[global_idx]
-                if 0 <= global_idx < len(self._reader_queue)
-                else ""
-            )
-            if self._web_view is not None:
-                try:
-                    if page_num > 0:
-                        self._web_view.page().runJavaScript(
-                            "window.__annolidEnsureRenderedThrough && "
-                            f"window.__annolidEnsureRenderedThrough({int(page_num)});"
-                        )
-                    if span_indices:
-                        self._web_view.page().runJavaScript(
-                            "window.__annolidHighlightSentenceIndices && "
-                            f"window.__annolidHighlightSentenceIndices({span_indices})"
-                        )
-                        self._web_view.page().runJavaScript(
-                            "window.__annolidScrollToSentence && "
-                            f"window.__annolidScrollToSentence({span_indices}, {int(page_num)})"
-                        )
-                    elif page_num > 0:
-                        self._web_view.page().runJavaScript(
-                            "window.__annolidHighlightSentenceByText && "
-                            f"window.__annolidHighlightSentenceByText({int(page_num)}, {json.dumps(sentence_text)})"
-                        )
-                    if next_page and next_page != page_num:
-                        self._web_view.page().runJavaScript(
-                            "window.__annolidEnsureRenderedThrough && "
-                            f"window.__annolidEnsureRenderedThrough({int(next_page)});"
-                        )
-                except Exception:
-                    pass
+    def _highlight_web_sentence_chunk(
+        self,
+        index: int,
+        *,
+        duration_ms: int = 0,
+        speech_segments: Optional[Sequence[tuple[int, int]]] = None,
+    ) -> None:
+        self._stop_word_highlight()
+        global_idx = self._reader_chunk_base + index
+        span_indices: list[int] = []
+        if 0 <= global_idx < len(self._web_sentence_span_groups):
+            span_indices = self._web_sentence_span_groups[global_idx] or []
+        span_slices: list[dict[str, int]] = []
+        if 0 <= global_idx < len(self._web_sentence_span_slices):
+            span_slices = self._web_sentence_span_slices[global_idx] or []
+        page_num = (
+            self._reader_pages[global_idx]
+            if 0 <= global_idx < len(self._reader_pages)
+            else 0
+        )
+        next_page = (
+            self._reader_pages[global_idx + 1]
+            if 0 <= global_idx + 1 < len(self._reader_pages)
+            else 0
+        )
+        sentence_text = (
+            self._reader_queue[global_idx]
+            if 0 <= global_idx < len(self._reader_queue)
+            else ""
+        )
+        serialized_segments = [
+            [int(s), int(e)] for s, e in (speech_segments or ()) if int(e) > int(s) >= 0
+        ]
+        if self._web_view is not None:
+            try:
+                if page_num > 0:
+                    self._web_view.page().runJavaScript(
+                        "window.__annolidEnsureRenderedThrough && "
+                        f"window.__annolidEnsureRenderedThrough({int(page_num)});"
+                    )
+                payload = _js_literal(
+                    {
+                        "spanIndices": span_indices,
+                        "spanSlices": span_slices,
+                        "pageNum": int(page_num),
+                        "sentenceText": sentence_text,
+                        "durationMs": max(0, int(duration_ms)),
+                        "speechSegments": serialized_segments,
+                        "keywords": list(
+                            getattr(self, "_highlight_keywords", []) or []
+                        ),
+                        "highlightKeywords": bool(
+                            getattr(self, "_keyword_highlighting_enabled", True)
+                        ),
+                        "autoKeywords": bool(
+                            getattr(self, "_auto_keyword_highlighting_enabled", False)
+                        ),
+                        "sessionId": int(getattr(self, "_speak_session_id", 0) or 0),
+                    }
+                )
+                self._web_view.page().runJavaScript(
+                    "window.__annolidStartSpeechHighlight && "
+                    f"window.__annolidStartSpeechHighlight({payload});"
+                )
+                if next_page and next_page != page_num:
+                    self._web_view.page().runJavaScript(
+                        "window.__annolidEnsureRenderedThrough && "
+                        f"window.__annolidEnsureRenderedThrough({int(next_page)});"
+                    )
+            except Exception:
+                pass
+        if self._reader_total > 0:
             self._reader_current_index = self._reader_queue_offset + global_idx
             try:
                 self.reader_state_changed.emit(
@@ -2597,6 +2806,24 @@ class PdfViewerWidget(QtWidgets.QWidget):
                 )
             except Exception:
                 pass
+
+    @QtCore.Slot(int)
+    def _on_speak_chunk(self, index: int) -> None:
+        if self._highlight_mode == "text-sentence":
+            self._stop_word_highlight()
+            if 0 <= index < len(self._text_sentence_spans):
+                start, end = self._text_sentence_spans[index]
+                self._active_text_sentence_span = (start, end)
+                self._recompute_active_text_keywords((start, end))
+                self._set_text_tts_highlight(
+                    (start, end),
+                    None,
+                    keyword_spans=self._active_text_keyword_spans,
+                )
+                self._scroll_text_to_position(start)
+            return
+        if self._highlight_mode == "web-sentence":
+            self._highlight_web_sentence_chunk(index, duration_ms=0)
             return
         if self._highlight_mode == "web-paragraph":
             self._stop_word_highlight()
@@ -2638,67 +2865,103 @@ class PdfViewerWidget(QtWidgets.QWidget):
                             text = self._reader_queue[local_index]
                             self._web_view.page().runJavaScript(
                                 "window.__annolidHighlightParagraphByText && "
-                                f"window.__annolidHighlightParagraphByText({int(page_num)}, {json.dumps(text)})"
+                                f"window.__annolidHighlightParagraphByText({int(page_num)}, {_js_literal(text)})"
                             )
                     except Exception:
                         pass
             return
 
+    def _recompute_active_text_keywords(self, sentence_span: tuple[int, int]) -> None:
+        start, end = sentence_span
+        if start >= end or not hasattr(self, "text_view") or self.text_view is None:
+            self._active_text_keyword_spans = []
+            return
+        try:
+            doc = self.text_view.document()
+            cursor = QtGui.QTextCursor(doc)
+            cursor.setPosition(start)
+            cursor.setPosition(end, QtGui.QTextCursor.KeepAnchor)
+            segment = cursor.selectedText().replace("\u2029", "\n")
+        except Exception:
+            self._active_text_keyword_spans = []
+            return
+        keywords = self._effective_keywords_for_text(segment)
+        if not keywords:
+            self._active_text_keyword_spans = []
+            return
+        matches = find_keyword_spans(segment, keywords)
+        self._active_text_keyword_spans = [
+            (start + m.start, start + m.end) for m in matches
+        ]
+
     @QtCore.Slot(int, int)
-    def _on_speak_chunk_timing(self, index: int, duration_ms: int) -> None:
+    def _on_speak_chunk_timing(
+        self,
+        index: int,
+        duration_ms: int,
+        *,
+        speech_segments: Optional[Sequence[tuple[int, int]]] = None,
+    ) -> None:
         if duration_ms <= 0:
             return
         if self._highlight_mode == "text-sentence":
             if not (0 <= index < len(self._text_sentence_spans)):
                 return
+            self._stop_word_highlight(clear_text_selections=False)
             start, end = self._text_sentence_spans[index]
             self._active_text_sentence_span = (start, end)
-            word_spans = self._split_text_range_into_words(start, end)
-            if not word_spans:
+            self._recompute_active_text_keywords((start, end))
+            doc = self.text_view.document()
+            cursor = QtGui.QTextCursor(doc)
+            cursor.setPosition(start)
+            cursor.setPosition(end, QtGui.QTextCursor.KeepAnchor)
+            segment = cursor.selectedText().replace("\u2029", "\n")
+            keywords = self._effective_keywords_for_text(segment)
+            tokens = extract_word_tokens(segment, base_offset=start, keywords=keywords)
+            if not tokens:
                 return
-            weights = [
-                max(1, word_end - word_start) for word_start, word_end in word_spans
-            ]
-            units, durations = self._build_weighted_timing(
-                word_spans, weights, duration_ms
+            schedule = build_word_timing_schedule(
+                [(tok.start, tok.end) for tok in tokens],
+                [tok.weight for tok in tokens],
+                duration_ms,
+                keyword_flags=[tok.is_keyword for tok in tokens],
+                min_interval_ms=45,
+                speech_segments=speech_segments,
+                pause_strengths=[tok.pause_strength for tok in tokens],
             )
-            if not units or not durations:
+            if not schedule:
                 return
-            self._word_highlight_units = list(units)
-            self._word_highlight_durations_ms = list(durations)
+            self._word_highlight_schedule = schedule
+            self._word_highlight_units = [item.unit for item in schedule]
+            self._word_highlight_durations_ms = [item.duration_ms for item in schedule]
             self._word_highlight_index = 0
-            timer = QtCore.QTimer(self)
-            timer.setSingleShot(False)
-            timer.timeout.connect(self._advance_word_highlight)
-            self._word_highlight_timer = timer
-            self._apply_word_highlight_unit(self._word_highlight_units[0])
-            timer.start(self._word_highlight_durations_ms[0])
+            self._word_highlight_started_at = time.monotonic()
+            # If audio starts with meaningful leading silence (>40ms), keep the sentence
+            # and keywords highlighted and defer active-word spotlight until voice onset.
+            if schedule[0].start_ms > 40:
+                self._word_highlight_active_idx = -1
+                self._set_text_tts_highlight(
+                    (start, end),
+                    None,
+                    keyword_spans=self._active_text_keyword_spans,
+                )
+            else:
+                self._word_highlight_active_idx = 0
+                self._apply_word_highlight_unit(
+                    schedule[0].unit, is_keyword=schedule[0].is_keyword
+                )
+            if len(schedule) > 1 or schedule[0].start_ms > 40:
+                timer = QtCore.QTimer(self)
+                timer.setSingleShot(False)
+                timer.setInterval(30)
+                timer.timeout.connect(self._advance_word_highlight)
+                self._word_highlight_timer = timer
+                timer.start()
             return
         if self._highlight_mode == "web-sentence":
-            global_idx = self._reader_chunk_base + index
-            if not (0 <= global_idx < len(self._web_sentence_span_groups)):
-                return
-            span_indices = self._web_sentence_span_groups[global_idx]
-            if not span_indices:
-                return
-            weights = [
-                max(1, len(self._web_selected_span_text.get(idx, "").strip()))
-                for idx in span_indices
-            ]
-            units, durations = self._build_weighted_timing(
-                span_indices, weights, duration_ms
+            self._highlight_web_sentence_chunk(
+                index, duration_ms=duration_ms, speech_segments=speech_segments
             )
-            if not units or not durations:
-                return
-            self._word_highlight_units = list(units)
-            self._word_highlight_durations_ms = list(durations)
-            self._word_highlight_index = 0
-            timer = QtCore.QTimer(self)
-            timer.setSingleShot(False)
-            timer.timeout.connect(self._advance_word_highlight)
-            self._word_highlight_timer = timer
-            self._apply_word_highlight_unit(self._word_highlight_units[0])
-            timer.start(self._word_highlight_durations_ms[0])
             return
         if self._highlight_mode == "web-paragraph":
             return
@@ -2743,24 +3006,32 @@ class PdfViewerWidget(QtWidgets.QWidget):
         self._highlight_mode = None
         self._text_sentence_spans = []
         self._web_sentence_span_groups = []
+        self._web_sentence_span_slices = []
         self._web_selected_span_text = {}
         self._active_text_sentence_span = None
+        self._active_text_keyword_spans = []
+        self._apply_idle_text_keyword_highlights()
 
-    def _stop_word_highlight(self) -> None:
+    def _stop_word_highlight(self, *, clear_text_selections: bool = True) -> None:
         timer = self._word_highlight_timer
         if timer is not None:
             try:
                 timer.stop()
+                timer.deleteLater()
             except Exception:
                 pass
         self._word_highlight_timer = None
         self._word_highlight_units = []
         self._word_highlight_durations_ms = []
+        self._word_highlight_schedule = []
         self._word_highlight_index = 0
-        try:
-            self.text_view.setExtraSelections([])
-        except Exception:
-            pass
+        self._word_highlight_active_idx = -1
+        self._word_highlight_started_at = 0.0
+        if clear_text_selections:
+            try:
+                self.text_view.setExtraSelections([])
+            except Exception:
+                pass
         if self._web_view is not None and self._highlight_mode in {
             "web",
             "web-sentence",
@@ -2777,10 +3048,33 @@ class PdfViewerWidget(QtWidgets.QWidget):
         timer = self._word_highlight_timer
         if timer is None:
             return
+        if self._word_highlight_schedule:
+            elapsed_ms = (time.monotonic() - self._word_highlight_started_at) * 1000.0
+            first_start = self._word_highlight_schedule[0].start_ms
+            if first_start > 40 and elapsed_ms < first_start:
+                return
+            active_idx = active_schedule_index_at_ms(
+                self._word_highlight_schedule, elapsed_ms
+            )
+            if active_idx < 0:
+                try:
+                    timer.stop()
+                    timer.deleteLater()
+                except Exception:
+                    pass
+                self._word_highlight_timer = None
+                return
+            if active_idx != self._word_highlight_active_idx:
+                self._word_highlight_active_idx = active_idx
+                self._word_highlight_index = active_idx
+                item = self._word_highlight_schedule[active_idx]
+                self._apply_word_highlight_unit(item.unit, is_keyword=item.is_keyword)
+            return
         self._word_highlight_index += 1
         if self._word_highlight_index >= len(self._word_highlight_units):
             try:
                 timer.stop()
+                timer.deleteLater()
             except Exception:
                 pass
             self._word_highlight_timer = None
@@ -2795,7 +3089,9 @@ class PdfViewerWidget(QtWidgets.QWidget):
                 )
             )
 
-    def _apply_word_highlight_unit(self, unit: object) -> None:
+    def _apply_word_highlight_unit(
+        self, unit: object, *, is_keyword: bool = False
+    ) -> None:
         if self._highlight_mode == "text-sentence":
             sentence = self._active_text_sentence_span
             if sentence is None:
@@ -2803,7 +3099,12 @@ class PdfViewerWidget(QtWidgets.QWidget):
             if not (isinstance(unit, tuple) and len(unit) == 2):
                 return
             word_start, word_end = unit
-            self._set_text_tts_highlight(sentence, (word_start, word_end))
+            self._set_text_tts_highlight(
+                sentence,
+                (word_start, word_end),
+                keyword_spans=self._active_text_keyword_spans,
+                active_word_is_keyword=is_keyword,
+            )
             self._scroll_text_to_position(word_start)
             return
         if self._highlight_mode == "web-sentence":
@@ -2832,32 +3133,84 @@ class PdfViewerWidget(QtWidgets.QWidget):
         self,
         sentence_span: Optional[tuple[int, int]],
         word_span: Optional[tuple[int, int]],
+        *,
+        keyword_spans: Sequence[tuple[int, int]] = (),
+        active_word_is_keyword: bool = False,
     ) -> None:
         try:
             doc = self.text_view.document()
             selections: list[QtWidgets.QTextEdit.ExtraSelection] = []
+            # 0) Page-level persistent user keyword highlights
+            if bool(getattr(self, "_keyword_highlighting_enabled", True)):
+                user_keywords = list(getattr(self, "_highlight_keywords", []) or [])
+                if user_keywords:
+                    plain = self.text_view.toPlainText() or ""
+                    for m in find_keyword_spans(plain, user_keywords):
+                        selections.append(
+                            self._make_text_extra_selection(
+                                doc,
+                                m.start,
+                                m.end,
+                                QtGui.QColor(0, 188, 212, 55),
+                                underline_color=QtGui.QColor(0, 131, 143),
+                            )
+                        )
+            # 1) Active spoken sentence (soft yellow)
             if sentence_span is not None:
                 selections.append(
                     self._make_text_extra_selection(
                         doc,
                         sentence_span[0],
                         sentence_span[1],
-                        QtGui.QColor(255, 210, 80, 90),
+                        QtGui.QColor(255, 214, 79, 80),
                     )
                 )
-            if word_span is not None:
+            # 2) Matched keywords in active sentence (vivid teal + underline)
+            for kw_start, kw_end in keyword_spans or ():
                 selections.append(
                     self._make_text_extra_selection(
-                        doc, word_span[0], word_span[1], QtGui.QColor(255, 160, 0, 160)
+                        doc,
+                        kw_start,
+                        kw_end,
+                        QtGui.QColor(38, 198, 218, 115),
+                        underline_color=QtGui.QColor(0, 131, 143),
                     )
                 )
+            # 3) Currently spoken word (amber, or high-contrast coral spotlight on keywords)
+            if word_span is not None:
+                if active_word_is_keyword:
+                    selections.append(
+                        self._make_text_extra_selection(
+                            doc,
+                            word_span[0],
+                            word_span[1],
+                            QtGui.QColor(255, 87, 34, 185),
+                            underline_color=QtGui.QColor(216, 48, 0),
+                            bold=True,
+                        )
+                    )
+                else:
+                    selections.append(
+                        self._make_text_extra_selection(
+                            doc,
+                            word_span[0],
+                            word_span[1],
+                            QtGui.QColor(255, 145, 0, 155),
+                        )
+                    )
             self.text_view.setExtraSelections(selections)
         except Exception:
             pass
 
     @staticmethod
     def _make_text_extra_selection(
-        document: QtGui.QTextDocument, start: int, end: int, color: QtGui.QColor
+        document: QtGui.QTextDocument,
+        start: int,
+        end: int,
+        color: QtGui.QColor,
+        *,
+        underline_color: Optional[QtGui.QColor] = None,
+        bold: bool = False,
     ) -> QtWidgets.QTextEdit.ExtraSelection:
         cursor = QtGui.QTextCursor(document)
         cursor.setPosition(start)
@@ -2866,14 +3219,17 @@ class PdfViewerWidget(QtWidgets.QWidget):
         selection.cursor = cursor
         fmt = QtGui.QTextCharFormat()
         fmt.setBackground(QtGui.QBrush(color))
+        if underline_color is not None:
+            fmt.setFontUnderline(True)
+            fmt.setUnderlineColor(underline_color)
+        if bold:
+            fmt.setFontWeight(QtGui.QFont.Bold)
         selection.format = fmt
         return selection
 
     def _split_text_range_into_words(
         self, start: int, end: int
     ) -> list[tuple[int, int]]:
-        import re
-
         if start >= end:
             return []
         doc = self.text_view.document()
@@ -2883,85 +3239,29 @@ class PdfViewerWidget(QtWidgets.QWidget):
         segment = cursor.selectedText()
         if not segment:
             return []
-        word_spans: list[tuple[int, int]] = []
-        punct = ".,!?;:\"'“”‘’()[]{}<>"
-        for match in re.finditer(r"\S+", segment):
-            token = match.group(0)
-            if not token:
-                continue
-            left_trim = len(token) - len(token.lstrip(punct))
-            right_trim = len(token) - len(token.rstrip(punct))
-            w_start = start + match.start() + left_trim
-            w_end = start + match.end() - right_trim
-            if w_start >= w_end:
-                continue
-            word_spans.append((w_start, w_end))
-        return word_spans
+        tokens = extract_word_tokens(segment, base_offset=start)
+        return [(tok.start, tok.end) for tok in tokens]
 
     def _build_weighted_timing(
         self, units: list[object], weights: list[int], total_ms: int
     ) -> tuple[list[object], list[int]]:
-        if total_ms <= 0 or not units or len(units) != len(weights):
-            return [], []
-        weights = [max(1, int(w)) for w in weights]
-        min_interval_ms = 60
-        max_units = max(1, int(total_ms // min_interval_ms))
-        if len(units) > max_units:
-            units, weights = self._downsample_units(units, weights, max_units)
-        durations = self._allocate_weighted_durations_ms(total_ms, weights)
-        if len(durations) != len(units):
-            return [], []
-        return units, durations
+        schedule = build_word_timing_schedule(
+            units, [float(w) for w in weights], total_ms, min_interval_ms=60
+        )
+        return [s.unit for s in schedule], [s.duration_ms for s in schedule]
 
     @staticmethod
     def _downsample_units(
         units: list[object], weights: list[int], target_len: int
     ) -> tuple[list[object], list[int]]:
-        if target_len <= 0 or target_len >= len(units):
-            return units, weights
-        if target_len == 1:
-            return [units[0]], [weights[0]]
-        result_units: list[object] = []
-        result_weights: list[int] = []
-        last_index = len(units) - 1
-        for i in range(target_len):
-            pos = int(round(i * last_index / (target_len - 1)))
-            result_units.append(units[pos])
-            result_weights.append(weights[pos])
-        return result_units, result_weights
+        sampled_units, sampled_weights, _ = downsample_weighted_units(
+            units, [float(w) for w in weights], target_len
+        )
+        return sampled_units, [max(1, int(round(w))) for w in sampled_weights]
 
     @staticmethod
     def _allocate_weighted_durations_ms(total_ms: int, weights: list[int]) -> list[int]:
-        if total_ms <= 0 or not weights:
-            return []
-        weights = [max(1, int(w)) for w in weights]
-        total_weight = sum(weights)
-        if total_weight <= 0:
-            return [max(1, int(total_ms // len(weights))) for _ in weights]
-        raw = [total_ms * (w / total_weight) for w in weights]
-        durations = [max(1, int(x)) for x in raw]
-        remainder = int(total_ms) - sum(durations)
-        if remainder == 0:
-            return durations
-        fractional = [x - int(x) for x in raw]
-        order = sorted(
-            range(len(weights)),
-            key=lambda i: fractional[i],
-            reverse=remainder > 0,
-        )
-        remaining = abs(remainder)
-        idx = 0
-        while remaining > 0 and order:
-            i = order[idx % len(order)]
-            if remainder > 0:
-                durations[i] += 1
-                remaining -= 1
-            else:
-                if durations[i] > 1:
-                    durations[i] -= 1
-                    remaining -= 1
-            idx += 1
-        return durations
+        return allocate_weighted_durations_ms(total_ms, [float(w) for w in weights])
 
     # ---- Public helpers for external controls ---------------------------------
     def next_page(self) -> None:
@@ -2971,12 +3271,12 @@ class PdfViewerWidget(QtWidgets.QWidget):
         self._change_page(-1)
 
     def page_count(self) -> int:
-        if self._doc is None:
-            return 0
-        try:
-            return int(self._doc.page_count)
-        except Exception:
-            return 0
+        if self._doc is not None:
+            try:
+                return int(self._doc.page_count)
+            except Exception:
+                return 0
+        return max(0, int(getattr(self, "_web_total_pages", 0) or 0))
 
     def current_page_index(self) -> int:
         return int(self._current_page)
@@ -3039,6 +3339,16 @@ class PdfViewerWidget(QtWidgets.QWidget):
         self, event: QtGui.QCloseEvent
     ) -> None:  # pragma: no cover - GUI cleanup
         try:
+            self._stop_speech_for_transition()
+        except Exception:
+            pass
+        try:
+            timer = getattr(self, "_pdf_user_state_timer", None)
+            if timer is not None and timer.isActive():
+                timer.stop()
+        except Exception:
+            pass
+        try:
             self._record_stop_event()
         except Exception:
             pass
@@ -3046,12 +3356,13 @@ class PdfViewerWidget(QtWidgets.QWidget):
             self._flush_pdf_user_state_to_disk()
         except Exception:
             pass
-        if self._doc is not None:
-            self._doc.close()
+        doc = getattr(self, "_doc", None)
+        if doc is not None:
+            doc.close()
         self._doc = None
         try:
-            view = self._web_view
-            profile = self._web_profile
+            view = getattr(self, "_web_view", None)
+            profile = getattr(self, "_web_profile", None)
             release_webengine_view(
                 view,
                 profile,
@@ -3076,28 +3387,7 @@ class PdfViewerWidget(QtWidgets.QWidget):
     # ---- Bookmarks -----------------------------------------------------------
     def _load_bookmarks_from_path(self, path: Path) -> None:
         """Load outlines using PyMuPDF; only used for the embed plugin path."""
-        bookmarks: list[dict[str, object]] = []
-        try:
-            import fitz  # type: ignore[import]
-
-            with fitz.open(str(path)) as doc:
-                toc = doc.get_toc(simple=True) or []
-                for entry in toc:
-                    if not isinstance(entry, (list, tuple)) or len(entry) < 3:
-                        continue
-                    level, title, page = entry[0], entry[1], entry[2]
-                    try:
-                        bookmarks.append(
-                            {
-                                "level": int(level),
-                                "title": str(title),
-                                "page": max(0, int(page) - 1),
-                            }
-                        )
-                    except Exception:
-                        continue
-        except Exception:
-            bookmarks = []
+        bookmarks = extract_pdf_outline(path)
         self._bookmarks = bookmarks
         try:
             self.bookmarks_changed.emit(bookmarks)
@@ -3459,6 +3749,13 @@ class PdfViewerWidget(QtWidgets.QWidget):
         # Preserve any Python-side log entries if JS did not include them.
         if "log" not in merged and self._reading_log:
             merged["log"] = list(self._reading_log)
+        # Preserve speech keyword preferences if JS did not include them.
+        if (
+            "speechKeywords" not in merged
+            and isinstance(self._pdf_user_state, dict)
+            and "speechKeywords" in self._pdf_user_state
+        ):
+            merged["speechKeywords"] = self._pdf_user_state.get("speechKeywords")
         # Preserve reading-stopped anchor if JS did not include it.
         if (
             "readingStopped" not in merged
@@ -3617,178 +3914,9 @@ class PdfViewerWidget(QtWidgets.QWidget):
         )
 
 
-class _SpeakTextTask(QtCore.QRunnable):
-    """Background task to convert text to speech and play it."""
-
-    def __init__(
-        self,
-        widget: PdfViewerWidget,
-        text: str,
-        tts_settings: Dict[str, object],
-        chunks: Optional[list[str]] = None,
-        token: Optional[_SpeakToken] = None,
-    ) -> None:
-        super().__init__()
-        self.widget = widget
-        self.text = text
-        self.tts_settings = tts_settings
-        self.chunks = chunks
-        self.token = token
-
-    def run(self) -> None:  # pragma: no cover - involves audio
-        try:
-            text = (self.text or "").strip()
-            if not text:
-                return
-            engine = (
-                str(self.tts_settings.get("engine", "kokoro") or "kokoro")
-                .strip()
-                .lower()
-            )
-            max_chars = 800 if engine == "chatterbox" else 420
-            chunks = self.chunks or self._chunk_text(text, max_chars=max_chars)
-            if not chunks:
-                return
-
-            def cancelled() -> bool:
-                return bool(self.token is not None and self.token.cancelled)
-
-            def notify_chunk(index: int, duration_ms: int) -> None:
-                QtCore.QMetaObject.invokeMethod(
-                    self.widget,
-                    "_on_speak_chunk",
-                    QtCore.Qt.QueuedConnection,
-                    QtCore.Q_ARG(int, int(index)),
-                )
-                if duration_ms > 0:
-                    QtCore.QMetaObject.invokeMethod(
-                        self.widget,
-                        "_on_speak_chunk_timing",
-                        QtCore.Qt.QueuedConnection,
-                        QtCore.Q_ARG(int, int(index)),
-                        QtCore.Q_ARG(int, int(duration_ms)),
-                    )
-
-            try:
-                from concurrent.futures import ThreadPoolExecutor
-                from annolid.agents.tts_router import synthesize_tts
-
-                def synthesize(chunk: str) -> tuple[object, int, int]:
-                    audio_data = synthesize_tts(chunk, self.tts_settings)
-                    if not audio_data:
-                        raise RuntimeError("No audio returned by TTS engine")
-                    samples, sample_rate = audio_data
-                    duration_ms = 0
-                    try:
-                        duration_ms = int(
-                            round((len(samples) / float(sample_rate)) * 1000)
-                        )
-                    except Exception:
-                        duration_ms = 0
-                    return samples, int(sample_rate), int(duration_ms)
-
-                with ThreadPoolExecutor(max_workers=1) as executor:
-                    current_future = executor.submit(synthesize, chunks[0])
-                    for idx, chunk in enumerate(chunks):
-                        if cancelled():
-                            return
-                        samples, sample_rate, duration_ms = current_future.result()
-                        next_future = None
-                        if idx + 1 < len(chunks):
-                            next_future = executor.submit(synthesize, chunks[idx + 1])
-                        notify_chunk(idx, duration_ms)
-                        if cancelled():
-                            return
-                        play_audio_buffer(samples, sample_rate, blocking=True)
-                        if next_future is None:
-                            break
-                        current_future = next_future
-            except Exception:
-                return
-        finally:
-            QtCore.QMetaObject.invokeMethod(
-                self.widget,
-                "_on_speak_finished",
-                QtCore.Qt.QueuedConnection,
-            )
-
-    @staticmethod
-    def _chunk_text(text: str, max_chars: int = 420) -> list[str]:
-        import re
-
-        cleaned = re.sub(r"\s+", " ", (text or "").strip())
-        if not cleaned:
-            return []
-        # Merge line-wrapped words that left a hyphen plus whitespace between letters.
-        cleaned = re.sub(
-            r"([A-Za-z]{2,})[-\u2010\u2011\u2012\u2013]\s+([A-Za-z]{2,})",
-            r"\1\2",
-            cleaned,
-        )
-        # PDFs sometimes insert whitespace between end punctuation and closing quotes/brackets.
-        # Merge that whitespace so sentences don't start with a dangling closer like "”小鹊...".
-        cleaned = re.sub(
-            r"([.!?。！？])\s+([”’\"'\)\]\}）】》」』〉])",
-            r"\1\2",
-            cleaned,
-        )
-        # Split on sentence-ending punctuation, including common trailing closers like Chinese quotes.
-        end = r"[.!?。！？]"
-        closers = r"[”’\"'\)\]\}）】》」』〉]*"
-        pattern = re.compile(rf".+?{end}+{closers}")
-        sentences = []
-        last_end = 0
-        for m in pattern.finditer(cleaned):
-            seg = m.group(0)
-            if seg:
-                sentences.append(seg)
-            last_end = m.end()
-        tail = cleaned[last_end:].strip()
-        if tail:
-            sentences.append(tail)
-        if not sentences:
-            sentences = [cleaned]
-        # Fix common skipped patterns around Chinese quote endings like:
-        #   "。”说完..." / "。”小鹊..."
-        # Merge the quote-terminated sentence with the immediately-following narration so
-        # chunk boundaries don't land on unstable PDF text runs.
-        try:
-            end_quote = re.compile(r"[.!?。！？]+[”’\"']$")
-            cjk_lead = re.compile(
-                r"^[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]"
-            )
-            merged: list[str] = []
-            i = 0
-            while i < len(sentences):
-                current = str(sentences[i]).strip()
-                if not current:
-                    i += 1
-                    continue
-                if i + 1 < len(sentences):
-                    nxt = str(sentences[i + 1]).strip()
-                    if nxt and end_quote.search(current):
-                        lead = nxt[0]
-                        if cjk_lead.match(lead) or lead in {"（", "【", "“", "‘"}:
-                            current = current + nxt
-                            i += 2
-                            merged.append(current)
-                            continue
-                merged.append(current)
-                i += 1
-            if merged:
-                sentences = merged
-        except Exception:
-            pass
-        chunks: list[str] = []
-        for sentence in sentences:
-            sentence = sentence.strip()
-            if not sentence:
-                continue
-            if len(sentence) <= max_chars:
-                chunks.append(sentence)
-            else:
-                for i in range(0, len(sentence), max_chars):
-                    chunk = sentence[i : i + max_chars].strip()
-                    if chunk:
-                        chunks.append(chunk)
-        return chunks
+__all__ = [
+    "PdfViewerWidget",
+    "_SpeakTextTask",
+    "_build_pdfjs_viewer_html",
+    "_is_benign_pdfjs_console_message",
+]
