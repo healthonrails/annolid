@@ -6,6 +6,21 @@ import re
 import time
 from typing import Any, Callable, Dict
 
+from annolid.services.pdf_parsing import (
+    dehyphenate_pdf_text,
+    extract_pdf_pages,
+    normalize_pages_for_display,
+)
+from annolid.utils.atomic_io import atomic_write_text
+
+_ABSTRACT_HEADING_RE = re.compile(
+    r"(?im)^\s*(?:(?:\d+(?:\.\d+)*|[IVXLCDM]+)\.?\s+)?abstract\b(?:\s*[:.\-—]|\s*$)"
+)
+_AFFILIATION_LINE_RE = re.compile(
+    r"\b(?:university|institute|department|school|laboratory|corresponding\s+author)\b",
+    flags=re.IGNORECASE,
+)
+
 
 def looks_like_raw_pdf_extract_response(text: str) -> bool:
     value = str(text or "").strip()
@@ -21,7 +36,7 @@ def looks_like_raw_pdf_extract_response(text: str) -> bool:
         "institute",
         "department",
         "school",
-        "atlanta",
+        "laboratory",
         "corresponding author",
     )
     if sum(1 for token in noisy_affiliations if token in lowered) >= 3:
@@ -32,10 +47,13 @@ def looks_like_raw_pdf_extract_response(text: str) -> bool:
 
 
 def clean_pdf_text_for_summary(text: str) -> str:
-    value = str(text or "").replace("\u2029", "\n")
+    value = dehyphenate_pdf_text(str(text or ""))
     if not value.strip():
         return ""
-    abstract_match = re.search(r"\babstract\b[:\s]", value, flags=re.IGNORECASE)
+    # Only jump to an actual Abstract heading near the front of the paper so
+    # body-text mentions like "an abstract representation" never drop earlier pages.
+    leading_window = value[: max(8000, int(len(value) * 0.35))]
+    abstract_match = _ABSTRACT_HEADING_RE.search(leading_window)
     if abstract_match:
         value = value[abstract_match.start() :]
     lines: list[str] = []
@@ -45,16 +63,9 @@ def clean_pdf_text_for_summary(text: str) -> str:
             continue
         if "@" in line and len(line) < 160:
             continue
-        if (
-            re.search(
-                r"\b(university|institute|department|school|atlanta)\b",
-                line,
-                flags=re.IGNORECASE,
-            )
-            and len(line) < 140
-        ):
+        if _AFFILIATION_LINE_RE.search(line) and len(line) < 140:
             continue
-        if re.match(r"^page\s+\d+\b", line, flags=re.IGNORECASE):
+        if re.match(r"^(?:##\s*)?page\s+\d+\b", line, flags=re.IGNORECASE):
             continue
         lines.append(line)
     return "\n".join(lines).strip()
@@ -77,16 +88,21 @@ def _extract_section_slice(
     value = str(text or "")
     if not value:
         return ""
-    match = re.search(heading_pattern, value, flags=re.IGNORECASE)
+    match = re.search(heading_pattern, value, flags=re.IGNORECASE | re.MULTILINE)
     if not match:
         return ""
     start = match.start()
+    search_offset = match.end()
     end = len(value)
     for stop_pattern in stop_patterns:
-        stop_match = re.search(stop_pattern, value[start + 1 :], flags=re.IGNORECASE)
+        stop_match = re.search(
+            stop_pattern,
+            value[search_offset:],
+            flags=re.IGNORECASE | re.MULTILINE,
+        )
         if not stop_match:
             continue
-        end = min(end, start + 1 + stop_match.start())
+        end = min(end, search_offset + stop_match.start())
     return _slice_text(value[start:end], max_chars=max_chars)
 
 
@@ -97,11 +113,12 @@ def build_llm_summary_source_candidates(text: str) -> list[dict[str, str]]:
 
     candidates: list[dict[str, str]] = []
 
+    section_prefix = r"^\s*(?:(?:\d+(?:\.\d+)*|[IVXLCDM]+)\.?\s+)?"
     abstract_slice = _extract_section_slice(
         cleaned,
-        heading_pattern=r"\babstract\b[:\s]",
+        heading_pattern=rf"{section_prefix}abstract\b(?:\s*[:.\-—]|\s*$)",
         stop_patterns=(
-            r"\b(?:introduction|background|methods?|materials?|results?)\b[:\s]",
+            rf"{section_prefix}(?:introduction|background|methods?|methodology|materials?(?:\s+and\s+methods?)?|results?)\b(?:\s*[:.\-—]?\s*$|\s*[:\-—])",
         ),
         max_chars=3200,
     )
@@ -110,16 +127,18 @@ def build_llm_summary_source_candidates(text: str) -> list[dict[str, str]]:
 
     intro_slice = _extract_section_slice(
         cleaned,
-        heading_pattern=r"\b(?:introduction|background)\b[:\s]",
+        heading_pattern=rf"{section_prefix}(?:introduction|background)\b(?:\s*[:.\-—]|\s*$)",
         stop_patterns=(
-            r"\b(?:methods?|materials?|results?|discussion|conclusion[s]?)\b[:\s]",
+            rf"{section_prefix}(?:methods?|methodology|materials?(?:\s+and\s+methods?)?|results?|discussion|conclusion[s]?)\b(?:\s*[:.\-—]?\s*$|\s*[:\-—])",
         ),
         max_chars=2400,
     )
     ending_slice = _extract_section_slice(
         cleaned,
-        heading_pattern=r"\b(?:discussion|conclusion[s]?|limitations?)\b[:\s]",
-        stop_patterns=(),
+        heading_pattern=rf"{section_prefix}(?:discussion|conclusion[s]?|limitations?)\b(?:\s*[:.\-—]|\s*$)",
+        stop_patterns=(
+            rf"{section_prefix}(?:references|bibliography|acknowledgm?ents?)\b(?:\s*[:.\-—]?\s*$|\s*[:\-—])",
+        ),
         max_chars=1800,
     )
     combined_sections = "\n\n".join(
@@ -205,12 +224,6 @@ def summarize_active_pdf_with_cache(
         telemetry["reason"] = "pdf_not_found"
         _emit_telemetry()
         return ""
-    try:
-        import fitz  # type: ignore
-    except Exception:
-        telemetry["reason"] = "fitz_unavailable"
-        _emit_telemetry()
-        return ""
 
     try:
         stat = pdf_path.stat()
@@ -243,24 +256,23 @@ def summarize_active_pdf_with_cache(
             telemetry["reason"] = "cache_dir_unavailable"
             _emit_telemetry()
             return ""
-        parts: list[str] = []
         try:
-            with fitz.open(str(pdf_path)) as doc:
-                total_pages = int(getattr(doc, "page_count", 0) or 0)
-                for idx in range(min(total_pages, max_pages)):
-                    page = doc.load_page(idx)
-                    page_text = str(page.get_text("text") or "").strip()
-                    telemetry["pages_scanned"] = int(idx + 1)
-                    if not page_text:
-                        continue
-                    parts.append(f"\n\n## Page {idx + 1}\n{page_text}")
-                    if sum(len(item) for item in parts) >= max_extract_chars:
-                        break
+            pages, pages_scanned, _backend = extract_pdf_pages(
+                pdf_path,
+                max_pages=max_pages,
+                max_chars=max_extract_chars,
+                dehyphenate=True,
+            )
+            telemetry["pages_scanned"] = int(pages_scanned)
+        except RuntimeError:
+            telemetry["reason"] = "fitz_unavailable"
+            _emit_telemetry()
+            return ""
         except Exception:
             telemetry["reason"] = "pdf_extract_failed"
             _emit_telemetry()
             return ""
-        body = "".join(parts).strip()
+        body = normalize_pages_for_display(pages)
         if not body:
             telemetry["reason"] = "pdf_text_empty"
             telemetry["extract_ms"] = round(
@@ -270,7 +282,7 @@ def summarize_active_pdf_with_cache(
             return ""
         extracted_text = f"# Extracted PDF Text\n\nSource: {pdf_path}\n\n{body}\n"
         try:
-            cache_path.write_text(extracted_text, encoding="utf-8")
+            atomic_write_text(cache_path, extracted_text, encoding="utf-8")
         except Exception:
             pass
     telemetry["extract_ms"] = round((time.perf_counter() - extract_started) * 1000.0, 1)

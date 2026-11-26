@@ -14,7 +14,10 @@ from annolid.core.agent.security_network import (
     public_httpx_client_kwargs,
     validate_http_url_shape,
 )
-from annolid.utils.logger import logger
+from annolid.services.pdf_parsing import (
+    extract_pdf_text as service_extract_pdf_text,
+    extract_pdf_title as service_extract_pdf_title,
+)
 
 from .common import _normalize, _resolve_read_path, _resolve_write_path
 from .function_base import FunctionTool
@@ -119,43 +122,12 @@ class ExtractPdfTextTool(FunctionTool):
     def _read_pdf_text(
         self, *, pdf_path: Path, start_index: int, pages_limit: int
     ) -> tuple[str, int, int, str]:
-        try:
-            import fitz  # type: ignore
-
-            with fitz.open(str(pdf_path)) as doc:
-                total_pages = len(doc)
-                if start_index >= total_pages:
-                    return "", 0, total_pages, "pymupdf"
-                end_index = min(total_pages, start_index + pages_limit)
-                parts: list[str] = []
-                for index in range(start_index, end_index):
-                    page = doc[index]
-                    parts.append(page.get_text("text") or "")
-                return (
-                    "\n\n".join(parts),
-                    end_index - start_index,
-                    total_pages,
-                    "pymupdf",
-                )
-        except ImportError:
-            pass
-
-        try:
-            from pypdf import PdfReader  # type: ignore
-
-            reader = PdfReader(str(pdf_path))
-            total_pages = len(reader.pages)
-            if start_index >= total_pages:
-                return "", 0, total_pages, "pypdf"
-            end_index = min(total_pages, start_index + pages_limit)
-            parts = []
-            for index in range(start_index, end_index):
-                parts.append(reader.pages[index].extract_text() or "")
-            return "\n\n".join(parts), end_index - start_index, total_pages, "pypdf"
-        except ImportError as exc:
-            raise RuntimeError(
-                "PDF extraction backend is not available. Install pymupdf or pypdf."
-            ) from exc
+        return service_extract_pdf_text(
+            pdf_path,
+            start_index=start_index,
+            pages_limit=pages_limit,
+            dehyphenate=True,
+        )
 
 
 class OpenPdfTool(ExtractPdfTextTool):
@@ -675,42 +647,7 @@ class DownloadPdfTool(FunctionTool):
         return candidates
 
     def _extract_pdf_title(self, pdf_path: Path) -> str | None:
-        try:
-            import fitz  # type: ignore
-
-            with fitz.open(str(pdf_path)) as doc:
-                metadata = getattr(doc, "metadata", None) or {}
-                if isinstance(metadata, dict):
-                    title = str(metadata.get("title") or "").strip()
-                    if title:
-                        return title
-                if len(doc) > 0:
-                    text = str(doc[0].get_text("text") or "")
-                    for line in text.splitlines():
-                        candidate = str(line or "").strip()
-                        if len(candidate) >= 8:
-                            return candidate
-        except Exception:
-            logger.debug("PyMuPDF could not extract a PDF title", exc_info=True)
-
-        try:
-            from pypdf import PdfReader  # type: ignore
-
-            reader = PdfReader(str(pdf_path))
-            title = str(
-                getattr(getattr(reader, "metadata", None), "title", "") or ""
-            ).strip()
-            if title:
-                return title
-            if reader.pages:
-                text = str(reader.pages[0].extract_text() or "")
-                for line in text.splitlines():
-                    candidate = str(line or "").strip()
-                    if len(candidate) >= 8:
-                        return candidate
-        except Exception:
-            logger.debug("pypdf could not extract a PDF title", exc_info=True)
-        return None
+        return service_extract_pdf_title(pdf_path)
 
     @staticmethod
     def _unique_path(path: Path) -> Path:
