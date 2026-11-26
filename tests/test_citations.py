@@ -196,3 +196,60 @@ def test_crossref_candidate_includes_all_authors() -> None:
     assert (
         candidate["author"] == "Lovell, Peter V. and Wirthlin, Morgan and Kaser, Taylor"
     )
+
+
+def test_parse_bibtex_skips_comment_preamble_and_string_directives(tmp_path) -> None:
+    from annolid.utils.citations import parse_bibtex
+
+    raw = """
+@comment{This is a file header comment}
+@preamble{"\\newcommand{\\noop}[1]{}"}
+@string{CVPR = "IEEE CVPR"}
+@article{smith2024,
+  title = {Behavior Tracking},
+  author = {Smith, Alice},
+  year = {2024},
+}
+"""
+    entries = parse_bibtex(raw)
+    assert [e.key for e in entries] == ["smith2024"]
+
+    bib_path = tmp_path / "atomic.bib"
+    save_bibtex(bib_path, entries)
+    assert bib_path.exists()
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_google_scholar_lookup_rejects_untrusted_redirect_hosts_and_caps_bytes(
+    monkeypatch,
+) -> None:
+    import pytest
+    import annolid.utils.citations as citations
+
+    # Untrusted host in extracted scholar.bib link must be rejected (no SSRF).
+    fetched_urls: list[str] = []
+    responses = [
+        '<a href="/scholar?q=info:abc:scholar.google.com/&output=cite">Cite</a>',
+        '<a href="https://evil.example.org/scholar.bib?id=1">BibTeX</a>',
+    ]
+
+    def _fake_http_text(url: str, *, timeout_s: float) -> str:
+        fetched_urls.append(url)
+        return responses.pop(0)
+
+    monkeypatch.setattr(citations, "_http_text", _fake_http_text)
+    result = citations._google_scholar_lookup_query(query="Test", timeout_s=1.0)
+    assert result["ok"] is False
+    assert not any("evil.example.org" in u for u in fetched_urls)
+
+    # Unsupported URL scheme rejected directly
+    with pytest.raises(ValueError, match="Unsupported URL scheme"):
+        citations._validate_http_url("file:///etc/passwd")
+
+    # Bounded HTTP read rejects oversized responses
+    class _OversizedResponse:
+        def read(self, n: int = -1) -> bytes:
+            return b"x" * (n if n > 0 else 1024)
+
+    with pytest.raises(ValueError, match="exceeded"):
+        citations._read_bounded_http(_OversizedResponse(), max_bytes=32)

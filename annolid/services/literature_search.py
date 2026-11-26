@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import html
 import logging
 from pathlib import Path
+import re
 import threading
 import time
 from typing import Iterable, Mapping, Sequence
@@ -15,6 +17,8 @@ import urllib.request
 import xml.etree.ElementTree as ET
 import json
 
+from annolid.utils.atomic_io import atomic_write_text
+
 _LOGGER = logging.getLogger(__name__)
 
 _ARXIV_API_URL = "https://export.arxiv.org/api/query"
@@ -22,6 +26,11 @@ _OPENALEX_WORKS_URL = "https://api.openalex.org/works"
 _CROSSREF_WORKS_URL = "https://api.crossref.org/works"
 _ARXIV_NS = {"atom": "http://www.w3.org/2005/Atom"}
 _DEFAULT_TIMEOUT_S = 10.0
+_MAX_HTTP_RESPONSE_BYTES = 5 * 1024 * 1024
+_ALLOWED_URL_SCHEMES = frozenset({"http", "https"})
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_ARXIV_VERSION_SUFFIX_RE = re.compile(r"v\d+$", re.IGNORECASE)
+_XML_UNSAFE_DECL_RE = re.compile(rb"<!(?:DOCTYPE|ENTITY)\b", re.IGNORECASE)
 _CACHE_TTL_S = 24.0 * 60.0 * 60.0
 _CACHE_TTL_NON_ARXIV_S = 72.0 * 60.0 * 60.0
 _DEFAULT_SOURCES = ("openalex", "crossref", "arxiv")
@@ -44,6 +53,29 @@ _SOURCE_RETRYABLE_EXC = (
 )
 
 
+def _coerce_authors(raw: object) -> tuple[str, ...]:
+    if not raw:
+        return ()
+    if isinstance(raw, str):
+        parts = re.split(r"\s+and\s+|;", raw)
+        return tuple(p.strip() for p in parts if p.strip())
+    if isinstance(raw, Sequence) and not isinstance(raw, (bytes, bytearray)):
+        out: list[str] = []
+        for item in raw:
+            if isinstance(item, Mapping):
+                name = str(item.get("display_name") or item.get("name") or "").strip()
+                if not name:
+                    given = str(item.get("given") or "").strip()
+                    family = str(item.get("family") or "").strip()
+                    name = f"{given} {family}".strip()
+            else:
+                name = str(item or "").strip()
+            if name:
+                out.append(name)
+        return tuple(out)
+    return ()
+
+
 @dataclass(frozen=True)
 class LiteratureResult:
     source: str
@@ -55,6 +87,8 @@ class LiteratureResult:
     arxiv_id: str = ""
     doi: str = ""
     year: int | None = None
+    authors: tuple[str, ...] = ()
+    venue: str = ""
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, object]) -> "LiteratureResult":
@@ -68,16 +102,22 @@ class LiteratureResult:
         except Exception:
             year = None
 
+        summary = _text("summary") or _text("abstract")
+        venue = _text("venue") or _text("journal") or _text("booktitle")
+        authors = _coerce_authors(payload.get("authors") or payload.get("author"))
+
         return cls(
             source=_text("source"),
             title=_text("title"),
-            summary=_text("summary"),
+            summary=summary,
             id_url=_text("id_url"),
             abs_url=_text("abs_url"),
             pdf_url=_text("pdf_url"),
             arxiv_id=_text("arxiv_id"),
             doi=_text("doi"),
             year=year,
+            authors=authors,
+            venue=venue,
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -91,6 +131,8 @@ class LiteratureResult:
             "arxiv_id": self.arxiv_id,
             "doi": self.doi,
             "year": self.year,
+            "authors": list(self.authors),
+            "venue": self.venue,
         }
 
 
@@ -159,7 +201,7 @@ def _write_disk_cache(
         "created_at_epoch": time.time(),
         "payload": payload,
     }
-    path.write_text(json.dumps(wrapped, ensure_ascii=False), encoding="utf-8")
+    atomic_write_text(path, json.dumps(wrapped, ensure_ascii=False))
 
 
 def _pace_source(source: str) -> None:
@@ -201,6 +243,10 @@ def _run_source_with_retry(
             }
         except _SOURCE_RETRYABLE_EXC as exc:
             last_error = str(exc)
+            if isinstance(exc, urllib.error.HTTPError):
+                code = int(getattr(exc, "code", 0) or 0)
+                if 400 <= code < 500 and code not in {408, 429}:
+                    break
             if attempt >= attempts:
                 break
             time.sleep(backoff)
@@ -217,38 +263,102 @@ def _run_source_with_retry(
     }
 
 
+def _validate_http_url(url: str) -> str:
+    parsed = urllib.parse.urlparse(str(url or "").strip())
+    if parsed.scheme.lower() not in _ALLOWED_URL_SCHEMES or not parsed.netloc:
+        raise ValueError(f"Unsupported URL scheme or host: {url!r}")
+    return str(url).strip()
+
+
+def _read_bounded_response(
+    response: object, *, max_bytes: int = _MAX_HTTP_RESPONSE_BYTES
+) -> bytes:
+    reader = getattr(response, "read")
+    chunk = reader(max_bytes + 1)
+    if len(chunk) > max_bytes:
+        raise ValueError(f"HTTP response exceeded {max_bytes} byte limit.")
+    return chunk
+
+
 def _http_json(url: str, *, timeout_s: float = _DEFAULT_TIMEOUT_S) -> dict[str, object]:
+    safe_url = _validate_http_url(url)
     req = urllib.request.Request(
-        url=url,
+        url=safe_url,
         headers={
             "User-Agent": "annolid-literature-search/1.0",
             "Accept": "application/json",
         },
     )
     with urllib.request.urlopen(req, timeout=max(1.0, float(timeout_s))) as response:
-        raw = response.read()
+        raw = _read_bounded_response(response)
     payload = json.loads(raw.decode("utf-8", errors="replace"))
     return payload if isinstance(payload, dict) else {}
 
 
 def _http_bytes(url: str, *, timeout_s: float = _DEFAULT_TIMEOUT_S) -> bytes:
+    safe_url = _validate_http_url(url)
     req = urllib.request.Request(
-        url=url,
+        url=safe_url,
         headers={"User-Agent": "annolid-literature-search/1.0"},
     )
     with urllib.request.urlopen(req, timeout=max(1.0, float(timeout_s))) as response:
-        return response.read()
+        return _read_bounded_response(response)
 
 
 def _extract_arxiv_id(text: str) -> str:
     value = str(text or "").strip().rstrip("/")
     if not value:
         return ""
+    match = re.search(r"/(?:abs|pdf)/(.+?)(?:\.pdf)?$", value, flags=re.IGNORECASE)
+    if match:
+        return match.group(1).strip("/")
     token = value.rsplit("/", 1)[-1]
-    token = token.replace("abs/", "").replace("pdf/", "")
     if token.endswith(".pdf"):
         token = token[:-4]
     return token
+
+
+def _reconstruct_openalex_abstract(inverted_index: object) -> str:
+    """Reconstruct plain abstract text from OpenAlex ``abstract_inverted_index``."""
+    if not isinstance(inverted_index, Mapping):
+        return ""
+    positions: dict[int, str] = {}
+    for word, idx_list in inverted_index.items():
+        token = str(word or "").strip()
+        if (
+            not token
+            or not isinstance(idx_list, Sequence)
+            or isinstance(idx_list, (str, bytes))
+        ):
+            continue
+        for pos in idx_list:
+            try:
+                idx = int(pos)
+            except Exception:
+                continue
+            if idx >= 0:
+                positions[idx] = token
+    if not positions:
+        return ""
+    raw = " ".join(positions[idx] for idx in sorted(positions)).strip()
+    return _strip_xml_tags(raw)
+
+
+def _strip_xml_tags(text: str) -> str:
+    stripped = _HTML_TAG_RE.sub(" ", str(text or ""))
+    cleaned = html.unescape(stripped)
+    return " ".join(cleaned.split()).strip()
+
+
+def _parse_iso_year(value: str) -> int | None:
+    match = re.match(r"^\s*(\d{4})\b", str(value or ""))
+    if not match:
+        return None
+    try:
+        year = int(match.group(1))
+    except Exception:
+        return None
+    return year if 1800 <= year <= 2100 else None
 
 
 def _search_arxiv(
@@ -258,6 +368,10 @@ def _search_arxiv(
     safe_query = urllib.parse.quote(final_query)
     url = f"{_ARXIV_API_URL}?search_query={safe_query}&start=0&max_results={max(1, int(max_results))}"
     xml_bytes = _http_bytes(url, timeout_s=timeout_s)
+    if _XML_UNSAFE_DECL_RE.search(xml_bytes):
+        raise ValueError(
+            "Refusing to parse arXiv XML containing DOCTYPE/ENTITY declarations."
+        )
     root = ET.fromstring(xml_bytes)
     out: list[LiteratureResult] = []
     for entry in root.findall("atom:entry", _ARXIV_NS):
@@ -272,6 +386,17 @@ def _search_arxiv(
         summary = (
             entry.findtext("atom:summary", default="", namespaces=_ARXIV_NS) or ""
         ).strip()
+        published = (
+            entry.findtext("atom:published", default="", namespaces=_ARXIV_NS) or ""
+        ).strip()
+        year = _parse_iso_year(published)
+        authors: list[str] = []
+        for author_el in entry.findall("atom:author", _ARXIV_NS):
+            name = (
+                author_el.findtext("atom:name", default="", namespaces=_ARXIV_NS) or ""
+            ).strip()
+            if name:
+                authors.append(name)
         pdf_url = ""
         for link in entry.findall("atom:link", _ARXIV_NS):
             if str(link.attrib.get("title") or "").strip().lower() == "pdf":
@@ -287,12 +412,15 @@ def _search_arxiv(
         out.append(
             LiteratureResult(
                 source="arxiv",
-                title=title.replace("\n", " "),
-                summary=summary.replace("\n", " "),
+                title=" ".join(title.split()),
+                summary=" ".join(summary.split()),
                 id_url=abs_url,
                 abs_url=abs_url,
                 pdf_url=pdf_url,
                 arxiv_id=arxiv_id,
+                year=year,
+                authors=tuple(authors),
+                venue="arXiv",
             )
         )
     return out
@@ -322,11 +450,42 @@ def _search_openalex(
         arxiv_id = _extract_arxiv_id(arxiv_abs)
         doi_url = str(row.get("doi") or "").strip()
         doi = doi_url.split("doi.org/")[-1] if "doi.org/" in doi_url else doi_url
-        pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf" if arxiv_id else ""
+        primary_loc = row.get("primary_location")
+        loc_map = primary_loc if isinstance(primary_loc, dict) else {}
+        source_obj = loc_map.get("source")
+        venue = (
+            str(source_obj.get("display_name") or "").strip()
+            if isinstance(source_obj, dict)
+            else ""
+        )
+        pdf_url = str(loc_map.get("pdf_url") or "").strip()
+        if not pdf_url:
+            best_oa = row.get("best_oa_location")
+            if isinstance(best_oa, dict):
+                pdf_url = str(best_oa.get("pdf_url") or "").strip()
+        if not pdf_url:
+            oa_block = row.get("open_access")
+            if isinstance(oa_block, dict):
+                oa_url = str(oa_block.get("oa_url") or "").strip()
+                if oa_url.lower().endswith(".pdf"):
+                    pdf_url = oa_url
+        if not pdf_url and arxiv_id:
+            pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
+        authors: list[str] = []
+        for authorship in row.get("authorships") or []:
+            if not isinstance(authorship, dict):
+                continue
+            author_obj = authorship.get("author")
+            if isinstance(author_obj, dict):
+                display = str(author_obj.get("display_name") or "").strip()
+                if display:
+                    authors.append(display)
+        summary = _reconstruct_openalex_abstract(row.get("abstract_inverted_index"))
         out.append(
             LiteratureResult(
                 source="openalex",
                 title=title,
+                summary=summary,
                 id_url=str(row.get("id") or "").strip(),
                 abs_url=(f"https://arxiv.org/abs/{arxiv_id}" if arxiv_id else ""),
                 pdf_url=pdf_url,
@@ -337,6 +496,8 @@ def _search_openalex(
                     if isinstance(row.get("publication_year"), int)
                     else None
                 ),
+                authors=tuple(authors),
+                venue=venue,
             )
         )
     return out
@@ -364,13 +525,33 @@ def _search_crossref(
         if not title:
             continue
         doi = str(row.get("DOI") or "").strip()
+        authors: list[str] = []
+        for person in row.get("author") or []:
+            if not isinstance(person, dict):
+                continue
+            given = str(person.get("given") or "").strip()
+            family = str(person.get("family") or "").strip()
+            literal = str(person.get("name") or "").strip()
+            full_name = f"{given} {family}".strip() if (given or family) else literal
+            if full_name:
+                authors.append(full_name)
+        container = row.get("container-title")
+        venue = (
+            str(container[0] or "").strip()
+            if isinstance(container, list) and container
+            else ""
+        )
+        summary = _strip_xml_tags(str(row.get("abstract") or ""))
         out.append(
             LiteratureResult(
                 source="crossref",
                 title=title,
+                summary=summary,
                 id_url=str(row.get("URL") or "").strip(),
                 doi=doi,
                 year=_crossref_year(row),
+                authors=tuple(authors),
+                venue=venue,
             )
         )
     return out
@@ -389,21 +570,59 @@ def _crossref_year(row: dict[str, object]) -> int | None:
     return int(value) if isinstance(value, int) else None
 
 
+def _merge_literature_results(
+    base: LiteratureResult, incoming: LiteratureResult
+) -> LiteratureResult:
+    """Combine complementary metadata when two sources describe the same paper."""
+    return LiteratureResult(
+        source=base.source or incoming.source,
+        title=base.title or incoming.title,
+        summary=base.summary
+        if len(base.summary) >= len(incoming.summary)
+        else incoming.summary,
+        id_url=base.id_url or incoming.id_url,
+        abs_url=base.abs_url or incoming.abs_url,
+        pdf_url=base.pdf_url or incoming.pdf_url,
+        arxiv_id=base.arxiv_id or incoming.arxiv_id,
+        doi=base.doi or incoming.doi,
+        year=base.year if base.year is not None else incoming.year,
+        authors=base.authors
+        if len(base.authors) >= len(incoming.authors)
+        else incoming.authors,
+        venue=base.venue
+        if (base.venue and base.venue.lower() != "arxiv")
+        else (incoming.venue or base.venue),
+    )
+
+
 def _deduplicate(results: Iterable[LiteratureResult]) -> list[LiteratureResult]:
     out: list[LiteratureResult] = []
-    seen: set[str] = set()
+    key_to_idx: dict[str, int] = {}
     for row in results:
-        title_key = " ".join(str(row.title).lower().split())
+        title_norm = " ".join(re.findall(r"[a-z0-9]+", str(row.title).lower()))
+        keys: list[str] = []
         if row.doi:
-            key = f"doi:{row.doi.lower()}"
-        elif row.arxiv_id:
-            key = f"arxiv:{row.arxiv_id.lower()}"
-        else:
-            key = f"title:{title_key}"
-        if key in seen:
+            keys.append(f"doi:{row.doi.strip().lower()}")
+        if row.arxiv_id:
+            base_arxiv = _ARXIV_VERSION_SUFFIX_RE.sub("", row.arxiv_id.strip().lower())
+            keys.append(f"arxiv:{base_arxiv}")
+        if title_norm:
+            keys.append(f"title:{title_norm}")
+        existing_idx: int | None = None
+        for k in keys:
+            if k in key_to_idx:
+                existing_idx = key_to_idx[k]
+                break
+        if existing_idx is not None:
+            merged = _merge_literature_results(out[existing_idx], row)
+            out[existing_idx] = merged
+            for k in keys:
+                key_to_idx[k] = existing_idx
             continue
-        seen.add(key)
+        new_idx = len(out)
         out.append(row)
+        for k in keys:
+            key_to_idx[k] = new_idx
     return out
 
 

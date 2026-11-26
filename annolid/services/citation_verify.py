@@ -8,6 +8,8 @@ from pathlib import Path
 import re
 from typing import Any
 
+from annolid.utils.atomic_io import atomic_write_text
+
 _VERIFY_STATUSES = ("verified", "suspicious", "hallucinated", "skipped")
 
 
@@ -103,7 +105,7 @@ def write_citation_verification_report(
     target_dir = Path(reports_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
     output = target_dir / f"{_safe_name(report_stem)}.json"
-    output.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
+    atomic_write_text(output, json.dumps(report, indent=2, sort_keys=True))
     return output
 
 

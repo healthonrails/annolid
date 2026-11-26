@@ -30,9 +30,24 @@ _STOPWORDS = {
 }
 
 
+_CJK_RUN_RE = re.compile(
+    r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]+"
+)
+
+
 def _tokenize(text: str) -> list[str]:
-    tokens = re.findall(r"[a-z0-9]+", str(text or "").lower())
-    return [tok for tok in tokens if tok and tok not in _STOPWORDS]
+    source = str(text or "").lower()
+    tokens = [
+        tok for tok in re.findall(r"[a-z0-9]+", source) if tok and tok not in _STOPWORDS
+    ]
+    for match in _CJK_RUN_RE.finditer(source):
+        run = match.group(0)
+        if len(run) == 1:
+            tokens.append(run)
+        else:
+            for idx in range(len(run) - 1):
+                tokens.append(run[idx : idx + 2])
+    return tokens
 
 
 def _to_reference_text(item: object) -> tuple[str, str]:
@@ -47,6 +62,13 @@ def _to_reference_text(item: object) -> tuple[str, str]:
             )
         text = " ".join(part for part in [title, abstract, kw_text] if part)
         return (title, text)
+    title_attr = getattr(item, "title", None)
+    if isinstance(title_attr, str) and title_attr.strip():
+        summary_attr = str(
+            getattr(item, "summary", "") or getattr(item, "abstract", "") or ""
+        ).strip()
+        text = " ".join(part for part in [title_attr.strip(), summary_attr] if part)
+        return (title_attr.strip(), text)
     text = str(item or "").strip()
     return (text[:120], text)
 

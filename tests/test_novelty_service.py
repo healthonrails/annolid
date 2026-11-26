@@ -69,3 +69,22 @@ def test_novelty_preflight_check_scores_and_ranking() -> None:
         >= payload["top_overlaps"][1]["overlap_score"]
     )
     assert payload["scores"]["max_overlap"] >= payload["scores"]["mean_top3_overlap"]
+
+
+def test_novelty_preflight_supports_cjk_and_literature_result_objects() -> None:
+    from annolid.services.literature_search import LiteratureResult
+
+    ref = LiteratureResult(
+        source="arxiv",
+        title="小鼠社交行为姿态分割与追踪方法",
+        summary="基于图神经网络的小鼠社交行为分割与多目标姿态追踪框架。",
+    )
+    payload = novelty_preflight_check(
+        idea_title="小鼠社交行为姿态分割",
+        idea_summary="基于图神经网络的小鼠社交行为分割与多目标追踪方法。",
+        related_work=[ref],
+    )
+    assert payload["ok"] is True
+    assert payload["scores"]["related_work_count"] == 1
+    assert payload["scores"]["max_overlap"] > 0.5
+    assert payload["top_overlaps"][0]["title"] == ref.title

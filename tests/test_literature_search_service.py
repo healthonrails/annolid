@@ -238,3 +238,203 @@ def test_search_literature_rate_limit_degrades_to_other_sources(monkeypatch) -> 
     assert payload["source_metrics"]["openalex"]["success"] is False
     assert payload["source_counts"] == {"crossref": 1}
     assert payload["results"][0]["source"] == "crossref"
+
+
+def test_search_backends_parse_authors_venue_abstract_and_block_xxe(
+    monkeypatch,
+) -> None:
+    import pytest
+
+    # 1) OpenAlex abstract_inverted_index + authors + venue
+    monkeypatch.setattr(
+        literature,
+        "_http_json",
+        lambda url, timeout_s=10.0: (
+            {
+                "results": [
+                    {
+                        "id": "https://openalex.org/W1",
+                        "title": "Pose Tracking in Rodents",
+                        "publication_year": 2024,
+                        "doi": "https://doi.org/10.1000/rodent",
+                        "ids": {"arxiv": "https://arxiv.org/abs/2401.12345"},
+                        "primary_location": {
+                            "source": {"display_name": "Nature Methods"},
+                            "pdf_url": "https://example.org/rodent.pdf",
+                        },
+                        "authorships": [
+                            {"author": {"display_name": "Alice Smith"}},
+                            {"author": {"display_name": "Bob Chen"}},
+                        ],
+                        "abstract_inverted_index": {
+                            "Accurate": [0],
+                            "rodent": [1],
+                            "tracking.": [2],
+                        },
+                    }
+                ]
+            }
+            if "openalex" in url
+            else {
+                "message": {
+                    "items": [
+                        {
+                            "title": ["CrossRef Behavior Study"],
+                            "DOI": "10.2000/cr",
+                            "URL": "https://doi.org/10.2000/cr",
+                            "issued": {"date-parts": [[2023]]},
+                            "author": [{"given": "Jane", "family": "Doe"}],
+                            "container-title": ["eLife"],
+                            "abstract": "<jats:p>Measured social bouts.</jats:p>",
+                        }
+                    ]
+                }
+            }
+        ),
+    )
+    oa_rows = literature._search_openalex("rodent", max_results=2, timeout_s=5.0)
+    assert len(oa_rows) == 1
+    assert oa_rows[0].authors == ("Alice Smith", "Bob Chen")
+    assert oa_rows[0].venue == "Nature Methods"
+    assert oa_rows[0].summary == "Accurate rodent tracking."
+    assert oa_rows[0].pdf_url == "https://example.org/rodent.pdf"
+
+    cr_rows = literature._search_crossref("behavior", max_results=2, timeout_s=5.0)
+    assert len(cr_rows) == 1
+    assert cr_rows[0].authors == ("Jane Doe",)
+    assert cr_rows[0].venue == "eLife"
+    assert cr_rows[0].summary == "Measured social bouts."
+
+    # 2) arXiv parses authors + published year
+    valid_atom = b"""<?xml version="1.0" encoding="UTF-8"?>
+    <feed xmlns="http://www.w3.org/2005/Atom">
+      <entry>
+        <id>http://arxiv.org/abs/2401.12345v2</id>
+        <published>2024-01-19T10:00:00Z</published>
+        <title>Pose Tracking in Rodents</title>
+        <summary>Detailed arXiv abstract for rodent tracking.</summary>
+        <author><name>Alice Smith</name></author>
+        <author><name>Bob Chen</name></author>
+      </entry>
+    </feed>"""
+    monkeypatch.setattr(
+        literature, "_http_bytes", lambda _u, timeout_s=10.0: valid_atom
+    )
+    ax_rows = literature._search_arxiv("rodent", max_results=2, timeout_s=5.0)
+    assert len(ax_rows) == 1
+    assert ax_rows[0].year == 2024
+    assert ax_rows[0].authors == ("Alice Smith", "Bob Chen")
+    assert ax_rows[0].venue == "arXiv"
+
+    # 3) arXiv rejects DOCTYPE/ENTITY declarations
+    xxe_atom = b'<!DOCTYPE feed [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><feed/>'
+    monkeypatch.setattr(literature, "_http_bytes", lambda _u, timeout_s=10.0: xxe_atom)
+    with pytest.raises(ValueError, match="DOCTYPE/ENTITY"):
+        literature._search_arxiv("rodent", max_results=1, timeout_s=5.0)
+
+
+def test_deduplicate_merges_complementary_metadata_across_sources() -> None:
+    oa = literature.LiteratureResult(
+        source="openalex",
+        title="Pose Tracking in Rodents",
+        doi="10.1000/rodent",
+        year=2024,
+        venue="Nature Methods",
+    )
+    ax = literature.LiteratureResult(
+        source="arxiv",
+        title="Pose Tracking in Rodents",
+        summary="Full abstract from arXiv.",
+        arxiv_id="2401.12345v1",
+        pdf_url="https://arxiv.org/pdf/2401.12345v1.pdf",
+        authors=("Alice Smith", "Bob Chen"),
+        venue="arXiv",
+    )
+    merged = literature._deduplicate([oa, ax])
+    assert len(merged) == 1
+    item = merged[0]
+    assert item.doi == "10.1000/rodent"
+    assert item.arxiv_id == "2401.12345v1"
+    assert item.summary == "Full abstract from arXiv."
+    assert item.authors == ("Alice Smith", "Bob Chen")
+    assert item.venue == "Nature Methods"
+    assert item.pdf_url == "https://arxiv.org/pdf/2401.12345v1.pdf"
+
+
+def test_literature_search_handles_legacy_arxiv_best_oa_entities_and_404_fail_fast(
+    monkeypatch,
+) -> None:
+    import pytest
+
+    # Legacy category/number arXiv ID preserved
+    assert (
+        literature._extract_arxiv_id("https://arxiv.org/abs/cs/0112017v1")
+        == "cs/0112017v1"
+    )
+    assert (
+        literature._extract_arxiv_id("https://arxiv.org/pdf/2401.12345v2.pdf")
+        == "2401.12345v2"
+    )
+
+    # URL scheme check blocks file://
+    with pytest.raises(ValueError, match="Unsupported URL scheme"):
+        literature._validate_http_url("file:///etc/passwd")
+
+    # OpenAlex falls back to best_oa_location.pdf_url and unescapes HTML entities
+    monkeypatch.setattr(
+        literature,
+        "_http_json",
+        lambda url, timeout_s=10.0: (
+            {
+                "results": [
+                    {
+                        "id": "https://openalex.org/W2",
+                        "title": "OA Best Location",
+                        "publication_year": 2024,
+                        "primary_location": {"source": {"display_name": "PLOS ONE"}},
+                        "best_oa_location": {"pdf_url": "https://oa.example.org/p.pdf"},
+                        "abstract_inverted_index": {"A": [0], "&amp;": [1], "B": [2]},
+                    }
+                ]
+            }
+            if "openalex" in url
+            else {
+                "message": {
+                    "items": [
+                        {
+                            "title": ["Entity Study"],
+                            "DOI": "10.3000/ent",
+                            "abstract": "<jats:p>Cats &amp; mice &lt; 0.05</jats:p>",
+                        }
+                    ]
+                }
+            }
+        ),
+    )
+    oa = literature._search_openalex("oa", max_results=1, timeout_s=5.0)
+    assert oa[0].pdf_url == "https://oa.example.org/p.pdf"
+    assert oa[0].summary == "A & B"
+
+    cr = literature._search_crossref("ent", max_results=1, timeout_s=5.0)
+    assert cr[0].summary == "Cats & mice < 0.05"
+
+    # Permanent 404 fails fast in 1 attempt instead of sleeping through 3 retries
+    attempts = {"n": 0}
+
+    def _fail_404():
+        attempts["n"] += 1
+        raise urllib.error.HTTPError(
+            url="https://api.openalex.org/works",
+            code=404,
+            msg="Not Found",
+            hdrs=None,
+            fp=None,
+        )
+
+    rows, metrics = literature._run_source_with_retry(
+        source="openalex", run_once=_fail_404
+    )
+    assert rows == []
+    assert attempts["n"] == 1
+    assert metrics["attempts"] == 1
+    assert metrics["success"] is False

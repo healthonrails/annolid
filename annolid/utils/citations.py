@@ -6,10 +6,19 @@ import difflib
 import html
 import re
 from pathlib import Path
-from urllib.parse import quote, urljoin
+from urllib.parse import quote, urljoin, urlparse
 import urllib.request
 import json
 from typing import Iterable
+
+from annolid.utils.atomic_io import atomic_write_text
+
+_NON_ENTRY_DIRECTIVES = frozenset({"comment", "preamble", "string"})
+_MAX_HTTP_RESPONSE_BYTES = 2 * 1024 * 1024
+_ALLOWED_HTTP_SCHEMES = frozenset({"http", "https"})
+_ALLOWED_SCHOLAR_HOSTS = frozenset(
+    {"scholar.google.com", "scholar.googleusercontent.com"}
+)
 
 
 @dataclass
@@ -45,12 +54,13 @@ def parse_bibtex(text: str) -> list[BibEntry]:
         close_idx = _find_matching(text, i, open_char, close_char)
         if close_idx < 0:
             break
-        payload = text[i + 1 : close_idx].strip()
-        key, fields_text = _split_top_level_once(payload, ",")
-        key = (key or "").strip()
-        if key:
-            fields = _parse_fields(fields_text or "")
-            entries.append(BibEntry(entry_type=entry_type, key=key, fields=fields))
+        if entry_type not in _NON_ENTRY_DIRECTIVES:
+            payload = text[i + 1 : close_idx].strip()
+            key, fields_text = _split_top_level_once(payload, ",")
+            key = (key or "").strip()
+            if key:
+                fields = _parse_fields(fields_text or "")
+                entries.append(BibEntry(entry_type=entry_type, key=key, fields=fields))
         i = close_idx + 1
     return entries
 
@@ -77,10 +87,7 @@ def save_bibtex(
     path: str | Path, entries: Iterable[BibEntry], *, sort_keys: bool = True
 ) -> None:
     bib_path = Path(path)
-    bib_path.parent.mkdir(parents=True, exist_ok=True)
-    bib_path.write_text(
-        serialize_bibtex(entries, sort_keys=sort_keys), encoding="utf-8"
-    )
+    atomic_write_text(bib_path, serialize_bibtex(entries, sort_keys=sort_keys))
 
 
 def upsert_entry(
@@ -301,14 +308,10 @@ def _looks_like_doi(value: str) -> bool:
     text = str(value or "").strip()
     if not text:
         return False
-    import re
-
     return re.fullmatch(r"10\.\d{4,9}/[-._;()/:A-Za-z0-9]+", text) is not None
 
 
 def _normalize_text(value: str) -> str:
-    import re
-
     return " ".join(re.findall(r"[a-z0-9]+", str(value or "").lower()))
 
 
@@ -355,9 +358,30 @@ def _score_candidate(
     )
 
 
+def _validate_http_url(url: str, *, allowed_hosts: frozenset[str] | None = None) -> str:
+    parsed = urlparse(str(url or "").strip())
+    if parsed.scheme.lower() not in _ALLOWED_HTTP_SCHEMES or not parsed.netloc:
+        raise ValueError(f"Unsupported URL scheme or host: {url!r}")
+    host = (parsed.hostname or "").strip().lower()
+    if allowed_hosts is not None and host not in allowed_hosts:
+        raise ValueError(f"Untrusted host for citation lookup: {host!r}")
+    return str(url).strip()
+
+
+def _read_bounded_http(
+    response: object, *, max_bytes: int = _MAX_HTTP_RESPONSE_BYTES
+) -> bytes:
+    reader = getattr(response, "read")
+    payload = reader(max_bytes + 1)
+    if len(payload) > max_bytes:
+        raise ValueError(f"Citation HTTP response exceeded {max_bytes} byte limit.")
+    return payload
+
+
 def _http_json(
     url: str, *, timeout_s: float, email: str | None = None
 ) -> dict[str, object]:
+    safe_url = _validate_http_url(url)
     headers = {
         "User-Agent": "annolid-citation-validator/1.0 (https://github.com/annolid)",
         "Accept": "application/json",
@@ -366,19 +390,25 @@ def _http_json(
         headers["User-Agent"] = f"annolid-citation-validator/1.0 (mailto:{email})"
 
     req = urllib.request.Request(
-        url=url,
+        url=safe_url,
         headers=headers,
     )
     with urllib.request.urlopen(req, timeout=max(0.5, float(timeout_s))) as response:
-        payload = response.read()
+        payload = _read_bounded_http(response)
     decoded = payload.decode("utf-8", errors="replace")
     data = json.loads(decoded)
     return data if isinstance(data, dict) else {}
 
 
-def _http_text(url: str, *, timeout_s: float) -> str:
+def _http_text(
+    url: str,
+    *,
+    timeout_s: float,
+    allowed_hosts: frozenset[str] | None = None,
+) -> str:
+    safe_url = _validate_http_url(url, allowed_hosts=allowed_hosts)
     req = urllib.request.Request(
-        url=url,
+        url=safe_url,
         headers={
             "User-Agent": (
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -388,7 +418,7 @@ def _http_text(url: str, *, timeout_s: float) -> str:
         },
     )
     with urllib.request.urlopen(req, timeout=max(0.5, float(timeout_s))) as response:
-        payload = response.read()
+        payload = _read_bounded_http(response)
     return payload.decode("utf-8", errors="replace")
 
 
@@ -414,12 +444,16 @@ def _google_scholar_lookup_query(*, query: str, timeout_s: float) -> dict[str, o
         cite_rel = _extract_google_scholar_cite_link(search_html)
         if not cite_rel:
             return {"ok": False, "candidate": {}}
-        cite_url = urljoin(base, cite_rel)
+        cite_url = _validate_http_url(
+            urljoin(base, cite_rel), allowed_hosts=_ALLOWED_SCHOLAR_HOSTS
+        )
         cite_html = _http_text(cite_url, timeout_s=max(0.5, timeout_s))
         bib_rel = _extract_google_scholar_bib_link(cite_html)
         if not bib_rel:
             return {"ok": False, "candidate": {}}
-        bib_url = urljoin(base, bib_rel)
+        bib_url = _validate_http_url(
+            urljoin(base, bib_rel), allowed_hosts=_ALLOWED_SCHOLAR_HOSTS
+        )
         bib_text = _http_text(bib_url, timeout_s=max(0.5, timeout_s))
         candidate = _candidate_from_bibtex(bib_text)
         return {"ok": bool(candidate), "candidate": candidate}
