@@ -297,7 +297,7 @@ RAT_V2_KEYPOINT_TO_SITE: Dict[str, str] = {
     "right_hindpaw": "toe_sensor_R",
 }
 
-RAT_V2_SKELETON_EDGES: Tuple[Tuple[str, str], ...] = (
+RAT_V2_RIGID_BONE_EDGES: Tuple[Tuple[str, str], ...] = (
     ("nose", "head"),
     ("head", "left_ear"),
     ("head", "right_ear"),
@@ -309,6 +309,10 @@ RAT_V2_SKELETON_EDGES: Tuple[Tuple[str, str], ...] = (
     ("pelvis", "tail_base"),
     ("tail_base", "tail_mid"),
     ("tail_mid", "tail_tip"),
+)
+
+RAT_V2_SKELETON_EDGES: Tuple[Tuple[str, str], ...] = (
+    *RAT_V2_RIGID_BONE_EDGES,
     ("thorax", "left_forepaw"),
     ("thorax", "right_forepaw"),
     ("pelvis", "left_hindpaw"),
@@ -1092,8 +1096,9 @@ def classify_quadruped_gait(
       - `stand`: speed < 0.05 m/s
       - `bound`: left-right pairs nearly in phase (|phase_FL| < 0.22 or > 0.78)
         and fore-hind out of phase (~0.3-0.7)
-      - `trot`: diagonal pair (HL with FR) nearly in phase (|phase_HL| < 0.24 or > 0.76)
-        and contralateral FL near anti-phase (0.28..0.72)
+      - `trot`: diagonal pair (HL with FR) nearly in phase (diag_sync < 0.18)
+        and contralateral FL near anti-phase (0.26..0.74), clearly separated from
+        4-beat lateral-sequence walk (diag_sync ~ 0.25)
       - `walk`: lateral sequence with high duty factor or staggered 4-beat phases
     """
     if speed_mps < 0.05:
@@ -1114,8 +1119,10 @@ def classify_quadruped_gait(
         return "bound"
 
     # Diagonal synchrony (HL ~ FR and HR ~ FL) with left-right alternation -> trot.
+    # Midpoint threshold (0.18) cleanly separates diagonal trot (~0.00-0.12) from
+    # 4-beat lateral-sequence walk (~0.23-0.25) even when tracking noise depresses duty factor.
     diag_sync = 0.5 * (circ_dist(p_hl, 0.0) + circ_dist(p_hr, p_fl))
-    if lr_fore_sync >= 0.26 and diag_sync < 0.24 and stance_fraction < 0.72:
+    if lr_fore_sync >= 0.26 and diag_sync < 0.18 and stance_fraction < 0.72:
         return "trot"
 
     return "walk"

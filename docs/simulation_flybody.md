@@ -512,9 +512,10 @@ annolid-run predict flybody \
 
 - A clean Python 3.13 FlyBody install is still weaker than Python 3.10 to 3.12
   because upstream `labmaze` packaging may require a local workaround.
-- Depth lifting currently uses nearest-pixel sampling.
-- Multi-view lifting and camera extrinsics are not implemented yet.
 - The current simulation frame model assumes one point per normalized label.
+- For multi-view triangulation, camera extrinsics, bilinear/median depth sampling,
+  and rigid-bone anatomical projection, see
+  [Digital Animal 3D Twins & Neural Control](digital_animal_neurocontrol.md).
 
 ## Related Pages
 

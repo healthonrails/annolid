@@ -5,6 +5,9 @@ from typing import Any, Dict, Mapping, Sequence
 
 import numpy as np
 
+from annolid.simulation.biomechanics import (
+    solve_rat_v2_ik_sequence,
+)
 from annolid.simulation.rat_ncap import (
     RAT_NCAP_METADATA,
     RAT_V2_KEYPOINT_TO_SITE,
@@ -158,19 +161,69 @@ class RatNCAPAdapter(SimulationAdapter):
         }
         return state, diagnostics, root
 
-    def fit_2d(self, observations: Sequence[Pose2DFrame]) -> SimulationRunResult:
+    def _fit_observations(
+        self,
+        observations: Sequence[Pose2DFrame] | Sequence[Pose3DFrame],
+        *,
+        mode: str,
+        default_z: float,
+    ) -> SimulationRunResult:
         if not self._initialized:
             self.initialize()
-        default_z = float(self._config.get("default_z", 0.0))
         fps = max(1.0, float(self._config.get("fps", 30.0)))
         dt = 1.0 / fps
+        interface = normalize_rat_interface(
+            self._config.get("interface", "flexor_extensor")
+        )
+        coat = normalize_rat_coat(self._config.get("coat", "black_hooded"))
+
+        mapped_per_frame: list[Dict[str, list[float]]] = []
+        for obs in observations:
+            mapped_per_frame.append(
+                self._map_points_to_sites(obs.points, default_z=default_z)
+            )
+
+        ik_result = solve_rat_v2_ik_sequence(
+            mapped_per_frame,
+            dt=dt,
+            interface_type=interface,
+        )
+        ik_frames = ik_result["frames"]
+        spinal_info = ik_result["spinal_circuit_inference"]
+
         frames: list[SimulationFrameResult] = []
         prev_root: np.ndarray | None = None
-        for obs in observations:
-            site_targets = self._map_points_to_sites(obs.points, default_z=default_z)
+        for idx, obs in enumerate(observations):
+            site_targets = mapped_per_frame[idx]
             state, diagnostics, prev_root = self._estimate_kinematic_state_from_sites(
                 site_targets, prev_root=prev_root, dt=dt
             )
+            if idx < len(ik_frames):
+                ik_f = ik_frames[idx]
+                state.update(
+                    {
+                        "qpos": list(ik_f["qpos"]),
+                        "qvel": list(ik_f["qvel"]),
+                        "torque": list(ik_f["torque"]),
+                        "flx_activation": list(ik_f["flx_activation"]),
+                        "ext_activation": list(ik_f["ext_activation"]),
+                        "stiffness": list(ik_f["stiffness"]),
+                        "root_euler": list(ik_f["root_euler"]),
+                        "reconstructed_keypoints_3d": dict(
+                            ik_f["reconstructed_keypoints_3d"]
+                        ),
+                        "gait": str(spinal_info.get("dominant_gait", "stand")),
+                        "coat": coat,
+                    }
+                )
+                diagnostics.update(
+                    {
+                        "ik_rmse_m": float(ik_f["ik_rmse_m"]),
+                        "joint_limit_violations": int(ik_f["joint_limit_violations"]),
+                        "mechanical_power": dict(ik_f["mechanical_power"]),
+                        "paw_clearance_m": dict(ik_f["paw_clearance_m"]),
+                    }
+                )
             frames.append(
                 SimulationFrameResult(
                     frame_index=int(obs.frame_index),
@@ -183,43 +236,24 @@ class RatNCAPAdapter(SimulationAdapter):
             frames=frames,
             metadata={
                 "backend": self.name,
-                "mode": "fit_2d",
+                "mode": mode,
                 "model": RAT_NCAP_METADATA,
+                "interface": interface,
+                "coat": coat,
+                "ik_summary": ik_result["summary"],
+                "inverse_dynamics": ik_result["inverse_dynamics"],
+                "spinal_circuit_inference": spinal_info,
                 "viewer_edges": [list(edge) for edge in RAT_V2_SKELETON_EDGES],
                 "mujoco_xml": self._rat_xml_path,
             },
         )
 
+    def fit_2d(self, observations: Sequence[Pose2DFrame]) -> SimulationRunResult:
+        default_z = float(self._config.get("default_z", 0.0))
+        return self._fit_observations(observations, mode="fit_2d", default_z=default_z)
+
     def fit_3d(self, observations: Sequence[Pose3DFrame]) -> SimulationRunResult:
-        if not self._initialized:
-            self.initialize()
-        fps = max(1.0, float(self._config.get("fps", 30.0)))
-        dt = 1.0 / fps
-        frames: list[SimulationFrameResult] = []
-        prev_root: np.ndarray | None = None
-        for obs in observations:
-            site_targets = self._map_points_to_sites(obs.points, default_z=0.0)
-            state, diagnostics, prev_root = self._estimate_kinematic_state_from_sites(
-                site_targets, prev_root=prev_root, dt=dt
-            )
-            frames.append(
-                SimulationFrameResult(
-                    frame_index=int(obs.frame_index),
-                    timestamp_sec=obs.timestamp_sec,
-                    state=state,
-                    diagnostics=diagnostics,
-                )
-            )
-        return SimulationRunResult(
-            frames=frames,
-            metadata={
-                "backend": self.name,
-                "mode": "fit_3d",
-                "model": RAT_NCAP_METADATA,
-                "viewer_edges": [list(edge) for edge in RAT_V2_SKELETON_EDGES],
-                "mujoco_xml": self._rat_xml_path,
-            },
-        )
+        return self._fit_observations(observations, mode="fit_3d", default_z=0.0)
 
     def rollout(
         self, initial_state: Mapping[str, Any], steps: int

@@ -35,6 +35,7 @@ class SimulationRunRequest:
     out_ndjson: str = ""
     pose_schema: str | None = None
     depth_ndjson: str | None = None
+    depth_sample_mode: str = "nearest"
     video_name: str | None = None
     default_z: float = 0.0
     dry_run: bool = False
@@ -162,6 +163,7 @@ def run_simulation_workflow(request: SimulationRunRequest) -> Path:
                         pose_frames[:1],
                         depth_records=depth_records,
                         coordinate_system=coordinate_system,
+                        sample_mode=str(request.depth_sample_mode or "nearest"),
                     )
                     seed_fit = adapter.fit_3d(pose_frames_3d)
                 else:
@@ -177,6 +179,7 @@ def run_simulation_workflow(request: SimulationRunRequest) -> Path:
                     pose_frames,
                     depth_records=depth_records,
                     coordinate_system=coordinate_system,
+                    sample_mode=str(request.depth_sample_mode or "nearest"),
                 )
                 result = adapter.fit_3d(pose_frames_3d)
             else:

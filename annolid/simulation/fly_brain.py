@@ -223,6 +223,27 @@ class SparseSynapticWeights:
             np.add.at(dense, (self._post, self._pre), self._values)
         return dense
 
+    def with_multiplicative_noise(
+        self, sigma: float, rng: np.random.Generator
+    ) -> SparseSynapticWeights:
+        """Return a copy with Dale's-law sign-preserving multiplicative Gaussian noise."""
+        noise_std = max(0.0, float(sigma))
+        if noise_std <= 0.0 or self._values.size == 0:
+            return SparseSynapticWeights(
+                shape=self.shape,
+                post_indices=self._post.copy(),
+                pre_indices=self._pre.copy(),
+                values=self._values.copy(),
+            )
+        eps = rng.normal(0.0, 1.0, size=self._values.size)
+        scale = np.maximum(0.05, 1.0 + noise_std * eps)
+        return SparseSynapticWeights(
+            shape=self.shape,
+            post_indices=self._post.copy(),
+            pre_indices=self._pre.copy(),
+            values=self._values * scale,
+        )
+
 
 @dataclass(frozen=True)
 class NeuronPopulation:
@@ -651,6 +672,86 @@ def build_spiking_fly_connectome(
     )
 
 
+def build_plastic_fly_connectome(
+    *,
+    spiking: bool = False,
+    seed: int = 7,
+    connection_probability: float = 0.38,
+) -> ConnectomeGraph:
+    """Build a Drosophila connectome augmented with a Mushroom Body associative learning circuit.
+
+    Adds Kenyon cells (`KC_Odor_A`, `KC_Odor_B`), Mushroom Body Output Neurons
+    (`MBON_Approach`, `MBON_Avoid`), and dopaminergic teaching neurons (`PAM` reward,
+    `PPL1` aversive) wired into Central Complex forward pursuit (`CX_Forward_Goal`),
+    Moonwalker retreat (`MDN`), and braking (`PFL2_Brake`).
+    """
+    base = (
+        build_spiking_fly_connectome(
+            seed=seed, connection_probability=connection_probability
+        )
+        if spiking
+        else build_canonical_fly_connectome()
+    )
+    mb_pops = (
+        NeuronPopulation(
+            "KC_Odor_A", "mushroom_body", "ach", "bilateral", 0.018, 0.0, 16
+        ),
+        NeuronPopulation(
+            "KC_Odor_B", "mushroom_body", "ach", "bilateral", 0.018, 0.0, 16
+        ),
+        NeuronPopulation(
+            "MBON_Approach", "mushroom_body", "ach", "bilateral", 0.016, 0.0, 8
+        ),
+        NeuronPopulation(
+            "MBON_Avoid", "mushroom_body", "ach", "bilateral", 0.016, 0.0, 8
+        ),
+        NeuronPopulation("PAM", "dopamine", "da", "bilateral", 0.020, 0.0, 8),
+        NeuronPopulation("PPL1", "dopamine", "da", "bilateral", 0.020, 0.0, 8),
+    )
+    # Note: plastic KC -> MBON drive is modulated online by FlyBrainController's 3-factor rule,
+    # while MBON -> downstream valence pathways are fixed connectome projections.
+    mb_edges = (
+        SynapticConnection("MBON_Approach", "CX_Forward_Goal", 210),
+        SynapticConnection("MBON_Approach", "PFL3_L", 90),
+        SynapticConnection("MBON_Avoid", "MDN", 240),
+        SynapticConnection("MBON_Avoid", "PFL2_Brake", 140),
+    )
+
+    if not spiking:
+        meta = dict(base.metadata)
+        meta["mushroom_body_plasticity"] = True
+        return ConnectomeGraph(
+            populations=base.populations + mb_pops,
+            connections=base.connections + mb_edges,
+            metadata=meta,
+        )
+
+    rng = np.random.default_rng(int(seed) + 101)
+    expanded_mb_pops: list[NeuronPopulation] = []
+    for pop in mb_pops:
+        for k in range(max(1, int(pop.neuron_count))):
+            tau_jitter = float(pop.tau_sec) * float(rng.uniform(0.90, 1.10))
+            expanded_mb_pops.append(
+                NeuronPopulation(
+                    cell_type=pop.cell_type,
+                    region=pop.region,
+                    neurotransmitter=pop.neurotransmitter,
+                    hemisphere=pop.hemisphere,
+                    tau_sec=max(0.003, tau_jitter),
+                    bias=pop.bias,
+                    neuron_count=1,
+                    neuron_id=f"{pop.cell_type}#{k}",
+                )
+            )
+    meta = dict(base.metadata)
+    meta["mushroom_body_plasticity"] = True
+    return ConnectomeGraph(
+        populations=base.populations + tuple(expanded_mb_pops),
+        connections=base.connections + mb_edges,
+        metadata=meta,
+    )
+
+
 def _first_present(
     row: Mapping[str, Any], keys: Sequence[str], default: Any = None
 ) -> Any:
@@ -920,6 +1021,124 @@ def _merge_or_replace_edges(
     return list(by_pair.values())
 
 
+class SparseMushroomBodyMemory:
+    """High-dimensional Drosophila Mushroom Body associative memory (e.g. 2,000 KCs).
+
+    Models antennal-lobe Projection Neuron (PN) -> Kenyon Cell (KC) random sparse
+    expansion (~6 PN claws per KC), global APL GABAergic winner-take-all sparsification
+    (~5% active KCs per odor), presynaptic eligibility traces, and three-factor
+    PAM/PPL1 dopaminergic plasticity across all `2 * n_kcs` KC -> MBON synapses.
+    Pure NumPy, zero optional ML dependencies.
+    """
+
+    def __init__(
+        self,
+        *,
+        n_pns: int = 50,
+        n_kcs: int = 2000,
+        claws_per_kc: int = 6,
+        active_fraction: float = 0.05,
+        learning_rate: float = 2.6,
+        eligibility_tau_sec: float = 0.09,
+        seed: int = 7,
+    ) -> None:
+        self.n_pns = max(4, int(n_pns))
+        self.n_kcs = max(32, int(n_kcs))
+        self.claws_per_kc = min(max(2, int(claws_per_kc)), self.n_pns)
+        self.active_fraction = float(np.clip(active_fraction, 0.01, 0.5))
+        self.k_active = max(2, int(round(self.n_kcs * self.active_fraction)))
+        self.learning_rate = float(learning_rate)
+        self.eligibility_tau_sec = max(1e-3, float(eligibility_tau_sec))
+        self.seed = int(seed)
+
+        rng = np.random.default_rng(self.seed + 31337)
+        # Random PN -> KC claw connectivity (each KC samples `claws_per_kc` distinct PNs)
+        claw_idx = np.empty((self.n_kcs, self.claws_per_kc), dtype=np.int32)
+        for kc in range(self.n_kcs):
+            claw_idx[kc] = rng.choice(self.n_pns, size=self.claws_per_kc, replace=False)
+        self._claw_idx = claw_idx
+        self._claw_weights = rng.uniform(
+            0.85, 1.15, size=(self.n_kcs, self.claws_per_kc)
+        ).astype(np.float64)
+
+        self.w_approach = np.ones(self.n_kcs, dtype=np.float64)
+        self.w_avoid = np.ones(self.n_kcs, dtype=np.float64)
+        self.eligibility = np.zeros(self.n_kcs, dtype=np.float64)
+        self.last_kc_activity = np.zeros(self.n_kcs, dtype=np.float64)
+
+    def reset(self) -> None:
+        self.w_approach.fill(1.0)
+        self.w_avoid.fill(1.0)
+        self.eligibility.fill(0.0)
+        self.last_kc_activity.fill(0.0)
+
+    def encode_odor(self, pn_pattern: Sequence[float] | np.ndarray) -> np.ndarray:
+        """Project a PN odor vector into APL-sparsified KC activity (top-k active)."""
+        pn = np.asarray(pn_pattern, dtype=np.float64).reshape(-1)
+        if pn.size < self.n_pns:
+            pn = np.pad(pn, (0, self.n_pns - pn.size))
+        elif pn.size > self.n_pns:
+            pn = pn[: self.n_pns]
+        pn = np.maximum(0.0, pn)
+        if float(np.max(pn)) <= 1e-8:
+            self.last_kc_activity.fill(0.0)
+            return self.last_kc_activity
+
+        raw = np.sum(pn[self._claw_idx] * self._claw_weights, axis=1)
+        # Global APL GABAergic inhibition: keep top `k_active` Kenyon cells
+        thresh = float(
+            np.partition(raw, self.n_kcs - self.k_active)[self.n_kcs - self.k_active]
+        )
+        sparse_act = np.where(raw >= thresh, np.maximum(0.0, raw - 0.82 * thresh), 0.0)
+        # Enforce exact <= k_active sparsity when ties occur
+        nz = np.flatnonzero(sparse_act > 0.0)
+        if nz.size > self.k_active:
+            order = np.argsort(sparse_act[nz])[::-1][: self.k_active]
+            keep = nz[order]
+            masked = np.zeros(self.n_kcs, dtype=np.float64)
+            masked[keep] = sparse_act[keep]
+            sparse_act = masked
+        norm = float(np.sum(sparse_act))
+        if norm > 1e-9:
+            # Normalize L1 sum to ~1.0 so downstream MBON drive is scale-invariant in n_kcs
+            sparse_act = sparse_act / norm
+        self.last_kc_activity = sparse_act
+        return sparse_act
+
+    def compute_mbon_drives(self, kc_activity: np.ndarray) -> tuple[float, float]:
+        app = float(np.dot(kc_activity, self.w_approach))
+        avd = float(np.dot(kc_activity, self.w_avoid))
+        return app, avd
+
+    def update(
+        self, kc_activity: np.ndarray, pam: float, ppl1: float, step_dt: float
+    ) -> None:
+        """Three-factor PAM/PPL1 dopaminergic plasticity across all `2 * n_kcs` synapses."""
+        decay = math.exp(-max(1e-5, float(step_dt)) / self.eligibility_tau_sec)
+        # Peak-normalized per-KC eligibility so sparse active KCs receive strong synaptic updates
+        peak = float(np.max(kc_activity))
+        kc_norm = (kc_activity / peak) if peak > 1e-9 else kc_activity
+        self.eligibility = self.eligibility * decay + (1.0 - decay) * kc_norm
+        if pam <= 0.05 and ppl1 <= 0.05:
+            return
+        da_diff = float(pam) - float(ppl1)
+        delta = self.learning_rate * self.eligibility * da_diff * float(step_dt)
+        self.w_approach = np.clip(self.w_approach + delta, 0.05, 2.50)
+        self.w_avoid = np.clip(self.w_avoid - delta, 0.05, 2.50)
+
+    def diagnostics(self) -> Dict[str, Any]:
+        active_n = int(np.sum(self.last_kc_activity > 0.0))
+        return {
+            "n_pns": self.n_pns,
+            "n_kcs": self.n_kcs,
+            "plastic_synapses": 2 * self.n_kcs,
+            "active_kcs": active_n,
+            "active_fraction": round(active_n / float(self.n_kcs), 4),
+            "mean_w_approach": round(float(np.mean(self.w_approach)), 4),
+            "mean_w_avoid": round(float(np.mean(self.w_avoid)), 4),
+        }
+
+
 class FlyBrainController:
     """Embodied Drosophila connectome controller supporting both Rate and LIF Spiking dynamics.
 
@@ -948,6 +1167,11 @@ class FlyBrainController:
         dynamics: str = "rate",
         seed: int = 7,
         control_timestep: float = 0.002,
+        enable_plasticity: bool = False,
+        synaptic_noise_std: float = 0.0,
+        suppress_behavior_drive: bool = False,
+        sparse_mb_kcs: int = 0,
+        sparse_mb_pns: int = 50,
     ) -> None:
         if behavior not in SUPPORTED_FLYBODY_BEHAVIORS:
             raise ValueError(
@@ -960,15 +1184,53 @@ class FlyBrainController:
             )
         self.behavior = str(behavior)
         self.dynamics = dyn_mode
-        self.connectome = connectome or build_canonical_fly_connectome()
+        self.enable_plasticity = bool(enable_plasticity or int(sparse_mb_kcs) > 0)
+        self.suppress_behavior_drive = bool(suppress_behavior_drive)
+        self.synaptic_noise_std = max(0.0, float(synaptic_noise_std))
+        self.sparse_mb: SparseMushroomBodyMemory | None = (
+            SparseMushroomBodyMemory(
+                n_pns=int(sparse_mb_pns),
+                n_kcs=int(sparse_mb_kcs),
+                seed=int(seed),
+            )
+            if int(sparse_mb_kcs) > 0
+            else None
+        )
+        if connectome is not None:
+            self.connectome = connectome
+        elif self.enable_plasticity:
+            self.connectome = build_plastic_fly_connectome(
+                spiking=(dyn_mode == "spiking"), seed=seed
+            )
+        else:
+            self.connectome = build_canonical_fly_connectome()
         self.seed = int(seed)
         self.default_dt = max(1e-5, float(control_timestep))
 
-        self._weights, self._tau, self._bias, self._idx = (
+        self._base_weights, self._tau, self._bias, self._idx = (
             self.connectome.compile_sparse()
         )
+        self._weights = self._base_weights
         self._cell_groups = self.connectome.cell_type_groups()
         self._num_nodes = len(self.connectome.populations)
+
+        self._node_activity_scale = np.ones(self._num_nodes, dtype=np.float64)
+        self._ablations: Dict[str, float] = {}
+        self._stimulations: list[Dict[str, Any]] = []
+
+        # Three-factor Mushroom Body associative plasticity (KC_Odor_A/B -> MBON_Approach/Avoid)
+        self._plastic_weights: Dict[str, float] = {
+            "odor_a_approach": 1.0,
+            "odor_a_avoid": 1.0,
+            "odor_b_approach": 1.0,
+            "odor_b_avoid": 1.0,
+        }
+        self._plastic_eligibility: Dict[str, float] = {
+            "KC_Odor_A": 0.0,
+            "KC_Odor_B": 0.0,
+        }
+        self._plasticity_lr = 1.85
+        self._eligibility_tau_sec = 0.09
 
         self._voltage = np.zeros(self._num_nodes, dtype=np.float64)
         self._rates = np.zeros(self._num_nodes, dtype=np.float64)
@@ -1008,7 +1270,92 @@ class FlyBrainController:
         self._world_z_lp = np.asarray([0.737, 0.0, 0.676], dtype=np.float64)
         self._altitude_integral = 0.0
         self._last_sensory_summary: Dict[str, float] = {}
+        if self.synaptic_noise_std > 0.0:
+            self.apply_synaptic_noise(self.synaptic_noise_std, seed=self.seed)
         self.reset()
+
+    def apply_synaptic_noise(self, sigma: float, *, seed: int | None = None) -> None:
+        """Apply Dale's-law sign-preserving multiplicative synaptic noise to connectome weights."""
+        self.synaptic_noise_std = max(0.0, float(sigma))
+        if self.synaptic_noise_std <= 0.0:
+            self._weights = self._base_weights
+            return
+        noise_rng = np.random.default_rng(
+            int(self.seed if seed is None else seed) + 7919
+        )
+        self._weights = self._base_weights.with_multiplicative_noise(
+            self.synaptic_noise_std, noise_rng
+        )
+
+    def stimulate_cell_type(
+        self,
+        cell_type: str,
+        current: float,
+        *,
+        duration_sec: float = 0.2,
+    ) -> None:
+        """Inject a timed depolarizing/hyperpolarizing optogenetic current (e.g. Chrimson)."""
+        name = str(cell_type or "").strip()
+        if not name:
+            return
+        self._stimulations.append(
+            {
+                "cell_type": name,
+                "current": float(current),
+                "end_time": float(self._sim_time + max(0.0, float(duration_sec))),
+            }
+        )
+
+    def clear_stimulations(self) -> None:
+        self._stimulations.clear()
+
+    def set_ablation(self, cell_type: str, scale: float = 0.0) -> None:
+        """Scale activity of a cell type in `[0, 1]` (`0.0` = full Kir2.1/TNT silencing)."""
+        name = str(cell_type or "").strip()
+        if not name:
+            return
+        k = float(np.clip(scale, 0.0, 1.0))
+        self._ablations[name] = k
+        self._rebuild_ablation_mask()
+
+    def set_ablations(self, scales: Mapping[str, float]) -> None:
+        self._ablations = {
+            str(k).strip(): float(np.clip(v, 0.0, 1.0))
+            for k, v in scales.items()
+            if str(k).strip()
+        }
+        self._rebuild_ablation_mask()
+
+    def clear_ablations(self) -> None:
+        self._ablations.clear()
+        self._node_activity_scale.fill(1.0)
+
+    def _rebuild_ablation_mask(self) -> None:
+        self._node_activity_scale.fill(1.0)
+        for name, scale in self._ablations.items():
+            # Allow bilateral prefix shortcuts like "DNp09", "LAL_Inh", "DNa02"
+            targets = []
+            if name in self._cell_groups:
+                targets.append(name)
+            else:
+                for suffix in ("_L", "_R"):
+                    if f"{name}{suffix}" in self._cell_groups:
+                        targets.append(f"{name}{suffix}")
+            for target in targets:
+                self._node_activity_scale[self._cell_groups[target]] = scale
+            if not targets and name in self._idx:
+                self._node_activity_scale[self._idx[name]] = scale
+
+    def plasticity_weights(self) -> Dict[str, float]:
+        return {k: round(float(v), 4) for k, v in self._plastic_weights.items()}
+
+    def reset_plasticity(self) -> None:
+        for k in self._plastic_weights:
+            self._plastic_weights[k] = 1.0
+        for k in self._plastic_eligibility:
+            self._plastic_eligibility[k] = 0.0
+        if self.sparse_mb is not None:
+            self.sparse_mb.reset()
 
     def reset(self) -> None:
         self._rng = np.random.default_rng(self.seed)
@@ -1039,8 +1386,11 @@ class FlyBrainController:
         self._world_z_lp = np.asarray([0.737, 0.0, 0.676], dtype=np.float64)
         self._altitude_integral = 0.0
         self._last_sensory_summary = {}
+        self._stimulations.clear()
+        self.reset_plasticity()
 
     def _integrate_neural_state(self, ext_drive: np.ndarray, total_dt: float) -> int:
+        has_ablation = bool(self._ablations)
         if self.dynamics == "spiking":
             sub_dt = 0.0002  # 0.2 ms biophysical LIF integration step
             substeps = max(1, int(round(total_dt / sub_dt)))
@@ -1056,6 +1406,8 @@ class FlyBrainController:
                 self._syn_conductance *= syn_decay
                 self._refractory_rem = np.maximum(0.0, self._refractory_rem - dt)
                 active = self._refractory_rem <= 0.0
+                if has_ablation:
+                    active = active & (self._node_activity_scale > 0.0)
                 dv = (
                     (self._LIF_V_REST_MV - self._voltage)
                     + self._syn_conductance
@@ -1068,6 +1420,14 @@ class FlyBrainController:
                 )
                 spiked_idx = np.flatnonzero(self._voltage >= self._LIF_V_THRESH_MV)
                 self._rates *= rate_decay
+                if spiked_idx.size > 0:
+                    if has_ablation:
+                        # Partial knockdown attenuates effective spike transmission
+                        scales = self._node_activity_scale[spiked_idx]
+                        keep = (scales >= 0.999) | (
+                            self._rng.random(spiked_idx.size) < scales
+                        )
+                        spiked_idx = spiked_idx[keep]
                 if spiked_idx.size > 0:
                     step_spikes += int(spiked_idx.size)
                     self._voltage[spiked_idx] = self._LIF_V_RESET_MV
@@ -1082,6 +1442,8 @@ class FlyBrainController:
                     self._syn_conductance = np.clip(
                         self._syn_conductance + postsyn_mv, -35.0, 45.0
                     )
+            if has_ablation:
+                self._rates *= self._node_activity_scale
             self._last_step_spikes = step_spikes
             self._total_spikes += step_spikes
             return step_spikes
@@ -1093,6 +1455,8 @@ class FlyBrainController:
             dv = (-self._voltage + synaptic_input) / self._tau
             self._voltage = np.clip(self._voltage + sub_dt * dv, -4.0, 6.0)
             self._rates = np.tanh(np.maximum(0.0, self._voltage))
+            if has_ablation:
+                self._rates *= self._node_activity_scale
         self._last_step_spikes = 0
         return 0
 
@@ -1130,6 +1494,8 @@ class FlyBrainController:
         obs = observation if isinstance(observation, Mapping) else {}
         ext_drive = self._encode_sensory_drive(obs, step_dt)
         self._integrate_neural_state(ext_drive, step_dt)
+        if self.enable_plasticity:
+            self._update_mushroom_body_plasticity(step_dt)
         self._advance_vnc_oscillators(obs, step_dt)
         self._sim_time += step_dt
 
@@ -1145,6 +1511,41 @@ class FlyBrainController:
         clipped = np.clip(command, self._action_min, self._action_max)
         return clipped.reshape(self._action_shape).astype(self._action_dtype)
 
+    def _update_mushroom_body_plasticity(self, step_dt: float) -> None:
+        """Three-factor PAM/PPL1 dopaminergic eligibility-trace update on KC -> MBON synapses."""
+        decay = math.exp(-step_dt / self._eligibility_tau_sec)
+        for kc_name in ("KC_Odor_A", "KC_Odor_B"):
+            r_kc = self.rate(kc_name)
+            self._plastic_eligibility[kc_name] = (
+                self._plastic_eligibility[kc_name] * decay + (1.0 - decay) * r_kc
+            )
+        pam = self.rate("PAM")
+        ppl1 = self.rate("PPL1")
+        if self.sparse_mb is not None:
+            self.sparse_mb.update(
+                self.sparse_mb.last_kc_activity, pam=pam, ppl1=ppl1, step_dt=step_dt
+            )
+        if pam <= 0.05 and ppl1 <= 0.05:
+            return
+        for prefix, kc_name in (("odor_a", "KC_Odor_A"), ("odor_b", "KC_Odor_B")):
+            elig = self._plastic_eligibility[kc_name]
+            if elig <= 0.02:
+                continue
+            # PAM reward dopamine strengthens approach & depresses avoidance;
+            # PPL1 aversive dopamine strengthens avoidance & depresses approach.
+            delta_app = self._plasticity_lr * elig * (pam - ppl1) * step_dt
+            delta_avd = self._plasticity_lr * elig * (ppl1 - pam) * step_dt
+            self._plastic_weights[f"{prefix}_approach"] = float(
+                np.clip(
+                    self._plastic_weights[f"{prefix}_approach"] + delta_app, 0.15, 2.50
+                )
+            )
+            self._plastic_weights[f"{prefix}_avoid"] = float(
+                np.clip(
+                    self._plastic_weights[f"{prefix}_avoid"] + delta_avd, 0.15, 2.50
+                )
+            )
+
     def _set_drive(self, vec: np.ndarray, cell_type: str, value: float) -> None:
         group = self._cell_groups.get(cell_type)
         if group is not None and group.size > 0:
@@ -1153,6 +1554,12 @@ class FlyBrainController:
         idx = self._idx.get(cell_type)
         if idx is not None:
             vec[idx] += float(value)
+            return
+        # Allow bilateral prefix shortcuts like "DNp09" -> DNp09_L + DNp09_R
+        for suffix in ("_L", "_R"):
+            g = self._cell_groups.get(f"{cell_type}{suffix}")
+            if g is not None and g.size > 0:
+                vec[g] += float(value)
 
     def _encode_sensory_drive(
         self, obs: Mapping[str, Any], step_dt: float
@@ -1260,31 +1667,35 @@ class FlyBrainController:
         odor_r = 0.0
         antennal_dust = 0.0
         anterior_touch = 0.0
+        suppress_ctx = self.suppress_behavior_drive or bool(
+            obs.get("suppress_behavior_drive", False)
+        )
 
-        if self.behavior in ("walk_imitation", "walk_on_ball", "template_task"):
-            self._set_drive(drive, "CX_Forward_Goal", 1.35)
-            if self.behavior == "template_task":
-                odor_l = 0.35 + 0.18 * max(0.0, math.sin(self._sim_time * 3.5))
-                odor_r = 0.35 + 0.18 * max(0.0, -math.sin(self._sim_time * 3.5))
-        elif self.behavior == "forage_walk":
-            self._set_drive(drive, "CX_Forward_Goal", 1.20)
-            wave = math.sin(self._sim_time * math.tau * 0.9)
-            odor_l = 0.25 + 0.95 * max(0.0, wave)
-            odor_r = 0.25 + 0.95 * max(0.0, -wave)
-        elif self.behavior == "backward_walk":
-            anterior_touch = 1.55
-        elif self.behavior == "grooming":
-            antennal_dust = 1.65
-        elif self.behavior == "escape_takeoff":
-            if self._sim_time < 0.14:
-                self._set_drive(drive, "CX_Forward_Goal", 0.85)
-            elif self._sim_time < 0.34:
-                looming = 1.85
-                self._set_drive(drive, "CX_Forward_Goal", 1.45)
-            else:
-                self._set_drive(drive, "CX_Forward_Goal", 1.65)
-        elif self.behavior in ("flight_imitation", "vision_guided_flight"):
-            self._set_drive(drive, "Flight_Command", 1.65)
+        if not suppress_ctx:
+            if self.behavior in ("walk_imitation", "walk_on_ball", "template_task"):
+                self._set_drive(drive, "CX_Forward_Goal", 1.35)
+                if self.behavior == "template_task":
+                    odor_l = 0.35 + 0.18 * max(0.0, math.sin(self._sim_time * 3.5))
+                    odor_r = 0.35 + 0.18 * max(0.0, -math.sin(self._sim_time * 3.5))
+            elif self.behavior == "forage_walk":
+                self._set_drive(drive, "CX_Forward_Goal", 1.20)
+                wave = math.sin(self._sim_time * math.tau * 0.9)
+                odor_l = 0.25 + 0.95 * max(0.0, wave)
+                odor_r = 0.25 + 0.95 * max(0.0, -wave)
+            elif self.behavior == "backward_walk":
+                anterior_touch = 1.55
+            elif self.behavior == "grooming":
+                antennal_dust = 1.65
+            elif self.behavior == "escape_takeoff":
+                if self._sim_time < 0.14:
+                    self._set_drive(drive, "CX_Forward_Goal", 0.85)
+                elif self._sim_time < 0.34:
+                    looming = 1.85
+                    self._set_drive(drive, "CX_Forward_Goal", 1.45)
+                else:
+                    self._set_drive(drive, "CX_Forward_Goal", 1.65)
+            elif self.behavior in ("flight_imitation", "vision_guided_flight"):
+                self._set_drive(drive, "Flight_Command", 1.65)
 
         self._set_drive(drive, "Visual_Target_L", vis_left)
         self._set_drive(drive, "Visual_Target_R", vis_right)
@@ -1293,6 +1704,60 @@ class FlyBrainController:
         self._set_drive(drive, "JO_Mech", antennal_dust)
         self._set_drive(drive, "Tactile_Ant", anterior_touch)
         self._set_drive(drive, "LC4_Looming", looming)
+
+        # 5. Optional Mushroom Body olfactory conditioning & dopamine inputs
+        if self.enable_plasticity:
+            odor_a = float(obs.get("odor_a", 0.0) or 0.0)
+            odor_b = float(obs.get("odor_b", 0.0) or 0.0)
+            reward_da = float(obs.get("reward_da", 0.0) or 0.0)
+            punish_da = float(obs.get("punish_da", 0.0) or 0.0)
+            if odor_a > 0.0:
+                self._set_drive(drive, "KC_Odor_A", 1.55 * odor_a)
+            if odor_b > 0.0:
+                self._set_drive(drive, "KC_Odor_B", 1.55 * odor_b)
+            if reward_da > 0.0:
+                self._set_drive(drive, "PAM", 1.65 * reward_da)
+            if punish_da > 0.0:
+                self._set_drive(drive, "PPL1", 1.65 * punish_da)
+            kc_a = self.rate("KC_Odor_A")
+            kc_b = self.rate("KC_Odor_B")
+            mbon_app_drive = (
+                kc_a * self._plastic_weights["odor_a_approach"]
+                + kc_b * self._plastic_weights["odor_b_approach"]
+            )
+            mbon_avd_drive = (
+                kc_a * self._plastic_weights["odor_a_avoid"]
+                + kc_b * self._plastic_weights["odor_b_avoid"]
+            )
+            if self.sparse_mb is not None:
+                odor_pat = obs.get("odor_pattern")
+                if odor_pat is not None:
+                    kc_act = self.sparse_mb.encode_odor(odor_pat)
+                    s_app, s_avd = self.sparse_mb.compute_mbon_drives(kc_act)
+                    mbon_app_drive += s_app
+                    mbon_avd_drive += s_avd
+                else:
+                    self.sparse_mb.last_kc_activity.fill(0.0)
+            # Mutual valence competition between MBON_Approach and MBON_Avoid
+            self._set_drive(
+                drive,
+                "MBON_Approach",
+                max(0.0, 1.35 * mbon_app_drive - 0.75 * mbon_avd_drive),
+            )
+            self._set_drive(
+                drive,
+                "MBON_Avoid",
+                max(0.0, 1.35 * mbon_avd_drive - 0.75 * mbon_app_drive),
+            )
+
+        # 6. Timed optogenetic current injections (Chrimson / Halorhodopsin)
+        if self._stimulations:
+            still_active: list[Dict[str, Any]] = []
+            for stim in self._stimulations:
+                if self._sim_time <= float(stim["end_time"]):
+                    self._set_drive(drive, stim["cell_type"], float(stim["current"]))
+                    still_active.append(stim)
+            self._stimulations = still_active
 
         self._last_sensory_summary = {
             "tarsal_load_left": round(float(left_load), 4),
@@ -1653,5 +2118,23 @@ class FlyBrainController:
                 "step_spikes": int(self._last_step_spikes),
                 "total_spikes": int(self._total_spikes),
                 "mean_firing_rate_hz": round(float(mean_hz), 2),
+            }
+        if self._ablations:
+            diag["ablations"] = dict(self._ablations)
+        if self._stimulations:
+            diag["active_stimulations"] = [
+                {
+                    "cell_type": str(s["cell_type"]),
+                    "current": round(float(s["current"]), 3),
+                }
+                for s in self._stimulations
+            ]
+        if self.enable_plasticity:
+            diag["plasticity"] = {
+                "weights": self.plasticity_weights(),
+                "mbon_approach": round(self.rate("MBON_Approach"), 4),
+                "mbon_avoid": round(self.rate("MBON_Avoid"), 4),
+                "pam": round(self.rate("PAM"), 4),
+                "ppl1": round(self.rate("PPL1"), 4),
             }
         return diag

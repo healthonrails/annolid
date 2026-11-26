@@ -95,6 +95,12 @@ class SimulationRunnerPlugin(ModelPluginBase):
             help="Optional Annolid depth sidecar NDJSON used to lift 2D keypoints into 3D.",
         )
         parser.add_argument(
+            "--depth-sample-mode",
+            choices=("nearest", "bilinear", "median_patch"),
+            default="nearest",
+            help="Depth sampling mode when lifting 2D keypoints from --depth-ndjson.",
+        )
+        parser.add_argument(
             "--video-name",
             default=None,
             help="Optional video name override when the input file is LabelMe JSON.",
@@ -311,6 +317,9 @@ class SimulationRunnerPlugin(ModelPluginBase):
             ),
             pose_schema=args.pose_schema,
             depth_ndjson=args.depth_ndjson,
+            depth_sample_mode=str(
+                getattr(args, "depth_sample_mode", "nearest") or "nearest"
+            ),
             video_name=args.video_name,
             default_z=float(args.default_z),
             dry_run=bool(args.dry_run),
