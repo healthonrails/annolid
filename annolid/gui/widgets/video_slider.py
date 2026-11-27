@@ -61,6 +61,7 @@ class VideoSliderMark:
             event_start="green",
             event_end="red",
             manual_seed=(255, 179, 0),  # amber
+            label_queue=(0, 188, 212),  # vibrant cyan/teal
         )
 
         if self.mark_type in colors:
@@ -116,7 +117,14 @@ class VideoSliderMark:
     def visual_width(self):
         if self.mark_type == "event_point":
             return 3
-        if self.mark_type in ("open", "filled", "tick", "event_start", "event_end"):
+        if self.mark_type in (
+            "open",
+            "filled",
+            "tick",
+            "event_start",
+            "event_end",
+            "label_queue",
+        ):
             return 2
         if self.mark_type in (
             "tick_column",

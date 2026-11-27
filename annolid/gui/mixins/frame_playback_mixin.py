@@ -237,6 +237,12 @@ class FramePlaybackMixin:
             should_refresh_embedding = (int(frame_number) % stride) == 0
         if should_refresh_embedding:
             self._update_embedding_query_frame()
+        queue_widget = getattr(self, "frame_selection_queue_widget", None)
+        if queue_widget is not None and not bool(getattr(self, "isPlaying", False)):
+            try:
+                queue_widget.set_current_frame(frame_number)
+            except Exception:
+                pass
         if self.frame_loader is not None:
             self.frame_loader.request(frame_number)
 

@@ -136,6 +136,12 @@ class WindowLifecycleMixin:
                 self.embedding_search_widget.set_query_frame_index(None)
         except (AttributeError, RuntimeError, TypeError) as exc:
             logger.debug("Failed clearing embedding search state: %s", exc)
+        try:
+            queue_widget = getattr(self, "frame_selection_queue_widget", None)
+            if queue_widget is not None:
+                queue_widget.set_video_context(None, autoload_queue=False)
+        except (AttributeError, RuntimeError, TypeError) as exc:
+            logger.debug("Failed clearing label queue state: %s", exc)
         if self.caption_widget is not None:
             self.caption_widget.set_video_context(None, None, None)
             self.caption_widget.set_video_segments([])
@@ -228,6 +234,7 @@ class WindowLifecycleMixin:
             self.seekbar.removeMarksByType("predicted")
             self.seekbar.removeMarksByType("predicted_existing")
             self.seekbar.removeMarksByType("missing_instance")
+            self.seekbar.removeMarksByType("label_queue")
 
     def _closefile_handle_tracking_stop_prompt(
         self, *, suppress_tracking_prompt: bool
@@ -343,6 +350,19 @@ class WindowLifecycleMixin:
                 cancel_export(wait_ms=2000)
         except Exception as exc:
             logger.debug("Failed stopping active project export on close: %s", exc)
+        try:
+            fs_worker = getattr(self, "_frame_selection_worker", None)
+            if fs_worker is not None and fs_worker.isRunning():
+                fs_worker.stop()
+                fs_worker.wait(2000)
+        except Exception as exc:
+            logger.debug("Failed stopping frame selection worker on close: %s", exc)
+        try:
+            queue_widget = getattr(self, "frame_selection_queue_widget", None)
+            if queue_widget is not None:
+                queue_widget.shutdown_workers()
+        except Exception as exc:
+            logger.debug("Failed shutting down label queue workers on close: %s", exc)
         for dlg_attr in ("_file_audit_dialog", "_project_hub_dialog"):
             dlg = getattr(self, dlg_attr, None)
             if dlg is not None:

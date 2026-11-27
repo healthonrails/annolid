@@ -92,6 +92,14 @@ class NavigationWorkflowMixin:
             and self.frame_number == val
         ):
             return f"Frame:{val},Time:{convert_frame_number_to_time(val)}"
+        queue_widget = getattr(self, "frame_selection_queue_widget", None)
+        if queue_widget is not None:
+            try:
+                tip = queue_widget.tooltip_for_frame(int(val))
+                if tip:
+                    return tip
+            except Exception:
+                pass
         return ""
 
     def openNextImg(self, _value=False, load=True):

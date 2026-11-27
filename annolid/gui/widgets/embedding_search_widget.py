@@ -18,6 +18,7 @@ class EmbeddingSearchWidget(QtWidgets.QWidget):
     jumpToFrame = QtCore.Signal(int)
     statusMessage = QtCore.Signal(str)
     labelFramesRequested = QtCore.Signal(list)
+    queueFramesRequested = QtCore.Signal(list)
     markFramesRequested = QtCore.Signal(list)
     clearMarkedFramesRequested = QtCore.Signal()
 
@@ -232,6 +233,12 @@ class EmbeddingSearchWidget(QtWidgets.QWidget):
         self._label_button.setToolTip("Auto-label selected match frames")
         self._label_button.clicked.connect(self._label_selected_frames)
         action_layout.addWidget(self._label_button, 1)
+        self._queue_button = QtWidgets.QPushButton("To Queue")
+        self._queue_button.setToolTip(
+            "Send selected match frames (or all matches if none selected) to the Label Queue without extracting PNGs"
+        )
+        self._queue_button.clicked.connect(self._queue_selected_frames)
+        action_layout.addWidget(self._queue_button, 1)
         layout.addLayout(action_layout)
 
         self._on_backend_changed()
@@ -521,6 +528,7 @@ class EmbeddingSearchWidget(QtWidgets.QWidget):
         self._query_input.setEnabled(not running)
         self._text_button.setEnabled(not running)
         self._label_button.setEnabled(not running)
+        self._queue_button.setEnabled(not running)
         self._clear_marks_btn.setEnabled(not running)
         self._mark_chk.setEnabled(not running)
         self._overlay_chk.setEnabled(not running)
@@ -689,6 +697,32 @@ class EmbeddingSearchWidget(QtWidgets.QWidget):
             self.statusMessage.emit("No valid frame indices in selection.")
             return
         self.labelFramesRequested.emit(sorted(set(frames)))
+
+    def _queue_selected_frames(self) -> None:
+        items = self._results_list.selectedItems()
+        if not items:
+            items = [
+                self._results_list.item(i)
+                for i in range(self._results_list.count())
+                if self._results_list.item(i) is not None
+            ]
+        if not items:
+            self.statusMessage.emit("Run a search first to queue matching frames.")
+            return
+        frames: list[int] = []
+        for item in items:
+            idx = item.data(QtCore.Qt.UserRole + 1)
+            if idx is None:
+                uri = item.data(QtCore.Qt.UserRole)
+                idx = AnnotationStore.frame_number_from_path(
+                    _resolve_uri_to_path(str(uri)) if uri else None
+                )
+            if idx is not None:
+                frames.append(int(idx))
+        if not frames:
+            self.statusMessage.emit("No valid frame indices to queue.")
+            return
+        self.queueFramesRequested.emit(sorted(set(frames)))
 
     # type: ignore[override]
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:

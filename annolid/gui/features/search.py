@@ -28,6 +28,19 @@ def setup_search_feature(deps: GuiFeatureDeps) -> SearchFeatureState:
     window.embedding_search_widget.labelFramesRequested.connect(
         window._label_frames_from_search
     )
+    if hasattr(window, "_queue_frames_for_labeling"):
+        window.embedding_search_widget.queueFramesRequested.connect(
+            lambda frames: window._queue_frames_for_labeling(
+                frames,
+                task="general",
+                algo="embedding_search",
+                feature_backend=str(
+                    window.embedding_search_widget._backend_combo.currentData()
+                    or "embeddinggemma2_onnx"
+                ),
+                role="search_match",
+            )
+        )
     window.embedding_search_widget.markFramesRequested.connect(
         window._mark_similar_frames_from_search
     )

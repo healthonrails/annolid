@@ -12,17 +12,26 @@ from dataclasses import dataclass, field
 import math
 from pathlib import Path
 from statistics import median
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 import cv2
 import numpy as np
 
-from annolid.annotation.pose_interop.converters import read_pose_dataset
-from annolid.annotation.pose_interop.labelme import write_pose_to_labelme_dir
-from annolid.annotation.pose_interop.model import PoseDataset, PoseFrame
 from annolid.annotation.pose_schema import PoseSchema, find_pose_schema_in_dir
 from annolid.core.media.video import CV2Video, read_capture_frame_bgr
 from annolid.utils.atomic_io import atomic_write_json
+
+if TYPE_CHECKING:
+    from annolid.annotation.pose_interop.model import PoseDataset, PoseFrame
 
 __all__ = [
     "FrameExtractionResult",
@@ -30,6 +39,11 @@ __all__ = [
     "OutlierExtractionResult",
     "select_uniform_frame_indices",
     "select_kmeans_frame_indices",
+    "select_farthest_point_indices",
+    "select_hybrid_frame_indices",
+    "select_flow_frame_indices",
+    "select_keyframe_indices",
+    "discover_labeled_frame_indices",
     "extract_frames_smart",
     "score_pose_outlier_frames",
     "select_diverse_outlier_frames",
@@ -178,44 +192,152 @@ def _frame_visual_descriptor(
     return feat
 
 
-def _kmeans_medoid_indices(
+def _frame_quality_metrics(frame_bgr: np.ndarray) -> Tuple[float, float]:
+    """Return ``(sharpness_laplacian_var, mean_luma_0_255)`` on a downsampled thumbnail."""
+    h, w = frame_bgr.shape[:2]
+    scale_w = min(w, 160)
+    if scale_w < w and w > 0:
+        scale_h = max(16, int(round(h * (scale_w / float(w)))))
+        thumb = cv2.resize(frame_bgr, (scale_w, scale_h), interpolation=cv2.INTER_AREA)
+    else:
+        thumb = frame_bgr
+    gray = cv2.cvtColor(thumb, cv2.COLOR_BGR2GRAY)
+    lap = cv2.Laplacian(gray, cv2.CV_32F)
+    sharpness = float(lap.var())
+    mean_luma = float(np.mean(gray))
+    return sharpness, mean_luma
+
+
+def _compute_foreground_visual_features(
+    thumbnails_bgr: Sequence[np.ndarray],
+    *,
+    foreground_weight: float = 1.5,
+    appearance_weight: float = 0.85,
+    edge_weight: float = 1.05,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Compute foreground-aware spatial LAB + edge descriptors and motion scores.
+
+    Estimates a static median background across up to 40 evenly-spaced thumbnails
+    so fixed-camera arena setups focus diversity on the moving animal(s) rather
+    than static background pixels.
+    """
+    n = len(thumbnails_bgr)
+    if n == 0:
+        return np.zeros((0, 0), dtype=np.float32), np.zeros((0,), dtype=np.float32)
+
+    labs: List[np.ndarray] = []
+    grays: List[np.ndarray] = []
+    for thumb in thumbnails_bgr:
+        labs.append(cv2.cvtColor(thumb, cv2.COLOR_BGR2LAB).astype(np.float32) / 255.0)
+        grays.append(cv2.cvtColor(thumb, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0)
+
+    # Estimate static background from up to 40 evenly-spaced samples.
+    bg_indices = select_uniform_frame_indices(n, min(n, 40))
+    bg_stack = np.stack([labs[i] for i in bg_indices], axis=0)
+    bg_lab = np.median(bg_stack, axis=0).astype(np.float32, copy=False)
+
+    motion_scores = np.zeros((n,), dtype=np.float32)
+    descriptors: List[np.ndarray] = []
+    w_fg = max(0.0, float(foreground_weight))
+    w_app = max(0.0, float(appearance_weight))
+    w_edge = max(0.0, float(edge_weight))
+
+    for i in range(n):
+        lab = labs[i]
+        gray = grays[i]
+        if i > 0:
+            motion_scores[i] = float(np.mean(np.abs(gray - grays[i - 1])))
+
+        fg_diff = np.linalg.norm(lab - bg_lab, axis=2).reshape(-1)
+        fg_norm = float(np.linalg.norm(fg_diff))
+        if fg_norm > 1e-6:
+            fg_diff = (fg_diff / fg_norm) * w_fg
+        else:
+            fg_diff = np.zeros_like(fg_diff)
+
+        app_vec = lab.reshape(-1)
+        app_norm = float(np.linalg.norm(app_vec))
+        if app_norm > 1e-6:
+            app_vec = (app_vec / app_norm) * w_app
+
+        gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+        grad_vec = np.sqrt(gx * gx + gy * gy).reshape(-1)
+        grad_norm = float(np.linalg.norm(grad_vec))
+        if grad_norm > 1e-6:
+            grad_vec = (grad_vec / grad_norm) * w_edge
+
+        feat = np.concatenate([fg_diff, app_vec, grad_vec], axis=0).astype(
+            np.float32, copy=False
+        )
+        total_norm = float(np.linalg.norm(feat))
+        if total_norm > 1e-8:
+            feat = feat / total_norm
+        descriptors.append(feat)
+
+    if n > 1:
+        motion_scores[0] = motion_scores[1]
+    return np.stack(descriptors, axis=0), motion_scores
+
+
+def _normalize_feature_matrix(features: np.ndarray) -> np.ndarray:
+    mat = np.asarray(features, dtype=np.float32)
+    if mat.ndim == 1:
+        mat = mat.reshape(1, -1) if mat.size > 0 else mat.reshape(0, 0)
+    if mat.shape[0] == 0 or mat.shape[1] == 0:
+        return mat
+    norms = np.linalg.norm(mat, axis=1, keepdims=True)
+    safe_norms = np.where(norms > 1e-8, norms, 1.0)
+    return (mat / safe_norms).astype(np.float32, copy=False)
+
+
+def _kmeans_cluster_medoids(
     features: np.ndarray,
     k: int,
     *,
+    frame_indices: Optional[Sequence[int]] = None,
+    min_frame_gap: int = 0,
     max_iter: int = 25,
     seed: int = 42,
-) -> List[int]:
-    """Deterministic pure-NumPy k-means++ clustering returning closest-to-centroid medoid rows."""
+) -> Tuple[List[int], np.ndarray, np.ndarray]:
+    """Deterministic k-means++ returning ``(medoid_rows, labels, centroids)``."""
     n_samples = int(features.shape[0])
     if n_samples == 0 or k <= 0:
-        return []
-    if k >= n_samples:
-        return list(range(n_samples))
+        return [], np.zeros((0,), dtype=np.int32), np.zeros((0, 0), dtype=np.float32)
+    k_eff = min(int(k), n_samples)
+    if k_eff >= n_samples:
+        return (
+            list(range(n_samples)),
+            np.arange(n_samples, dtype=np.int32),
+            features.astype(np.float32, copy=True),
+        )
 
     rng = np.random.default_rng(int(seed))
-    # k-means++ initialization (deterministic via rng).
-    centroids = np.empty((k, features.shape[1]), dtype=np.float32)
+    centroids = np.empty((k_eff, features.shape[1]), dtype=np.float32)
     first_idx = int(rng.integers(0, n_samples))
     centroids[0] = features[first_idx]
     min_sq_dist = np.sum((features - centroids[0]) ** 2, axis=1)
 
-    for c_idx in range(1, k):
+    for c_idx in range(1, k_eff):
         total = float(np.sum(min_sq_dist))
         if not math.isfinite(total) or total <= 1e-12:
             next_idx = int(rng.integers(0, n_samples))
         else:
-            probs = min_sq_dist / total
-            next_idx = int(rng.choice(n_samples, p=probs))
+            probs = np.clip(min_sq_dist, 0.0, None)
+            psum = float(np.sum(probs))
+            if not math.isfinite(psum) or psum <= 1e-12:
+                next_idx = int(rng.integers(0, n_samples))
+            else:
+                next_idx = int(rng.choice(n_samples, p=probs / psum))
         centroids[c_idx] = features[next_idx]
         d_new = np.sum((features - centroids[c_idx]) ** 2, axis=1)
         min_sq_dist = np.minimum(min_sq_dist, d_new)
 
     labels = np.zeros(n_samples, dtype=np.int32)
     for _ in range(max(1, int(max_iter))):
-        # Compute squared Euclidean distances in chunks to cap peak memory.
         new_labels = np.empty(n_samples, dtype=np.int32)
         chunk = 256
-        c_sq = np.sum(centroids * centroids, axis=1, keepdims=True).T  # (1, k)
+        c_sq = np.sum(centroids * centroids, axis=1, keepdims=True).T
         for start in range(0, n_samples, chunk):
             end = min(start + chunk, n_samples)
             f_chunk = features[start:end]
@@ -225,39 +347,577 @@ def _kmeans_medoid_indices(
         if np.array_equal(new_labels, labels):
             break
         labels = new_labels
-        for c_idx in range(k):
+        for c_idx in range(k_eff):
             members = np.where(labels == c_idx)[0]
             if members.size > 0:
                 centroids[c_idx] = np.mean(features[members], axis=0)
             else:
-                # Re-seed empty cluster to farthest point from its current centroid.
                 assigned_centroids = centroids[labels]
                 err = np.sum((features - assigned_centroids) ** 2, axis=1)
                 farthest = int(np.argmax(err))
                 centroids[c_idx] = features[farthest]
                 labels[farthest] = c_idx
 
+    gap = max(0, int(min_frame_gap))
+    fidx_arr = (
+        np.asarray(frame_indices, dtype=np.int64)
+        if frame_indices is not None
+        else np.arange(n_samples, dtype=np.int64)
+    )
+
     chosen: List[int] = []
     chosen_set: set[int] = set()
-    for c_idx in range(k):
+    chosen_frames: List[int] = []
+
+    # Process larger clusters first so major modes claim their best medoids.
+    cluster_order = sorted(
+        range(k_eff),
+        key=lambda c: -int(np.sum(labels == c)),
+    )
+    for c_idx in cluster_order:
         members = np.where(labels == c_idx)[0]
         if members.size == 0:
             continue
         dists = np.sum((features[members] - centroids[c_idx]) ** 2, axis=1)
-        best_local = int(members[int(np.argmin(dists))])
-        if best_local not in chosen_set:
-            chosen.append(best_local)
-            chosen_set.add(best_local)
+        ranked = members[np.argsort(dists)]
+        picked: Optional[int] = None
+        for row in ranked.tolist():
+            if row in chosen_set:
+                continue
+            if gap > 0 and any(
+                abs(int(fidx_arr[row]) - prev_f) < gap for prev_f in chosen_frames
+            ):
+                continue
+            picked = int(row)
+            break
+        if picked is None:
+            for row in ranked.tolist():
+                if row not in chosen_set:
+                    picked = int(row)
+                    break
+        if picked is not None:
+            chosen.append(picked)
+            chosen_set.add(picked)
+            chosen_frames.append(int(fidx_arr[picked]))
 
-    # Top up with farthest remaining candidates if any cluster collapsed.
-    if len(chosen) < k:
+    if len(chosen) < k_eff:
+        for idx in range(n_samples):
+            if idx in chosen_set:
+                continue
+            if gap > 0 and any(
+                abs(int(fidx_arr[idx]) - prev_f) < gap for prev_f in chosen_frames
+            ):
+                continue
+            chosen.append(idx)
+            chosen_set.add(idx)
+            chosen_frames.append(int(fidx_arr[idx]))
+            if len(chosen) >= k_eff:
+                break
+
+    if len(chosen) < k_eff:
         for idx in range(n_samples):
             if idx not in chosen_set:
                 chosen.append(idx)
                 chosen_set.add(idx)
-                if len(chosen) >= k:
+                if len(chosen) >= k_eff:
                     break
-    return sorted(chosen)
+
+    return sorted(chosen), labels, centroids
+
+
+def _kmeans_medoid_indices(
+    features: np.ndarray,
+    k: int,
+    *,
+    max_iter: int = 25,
+    seed: int = 42,
+) -> List[int]:
+    """Deterministic pure-NumPy k-means++ clustering returning closest-to-centroid medoid rows."""
+    chosen, _labels, _centroids = _kmeans_cluster_medoids(
+        features, k, max_iter=max_iter, seed=seed
+    )
+    return chosen
+
+
+def select_farthest_point_indices(
+    features: np.ndarray,
+    k: int,
+    *,
+    frame_indices: Optional[Sequence[int]] = None,
+    seed_features: Optional[np.ndarray] = None,
+    already_selected_rows: Sequence[int] = (),
+    min_frame_gap: int = 0,
+    relevance_scores: Optional[np.ndarray] = None,
+    relevance_weight: float = 0.0,
+) -> List[int]:
+    """Select ``k`` rows via deterministic cosine Farthest-Point (k-center greedy) coreset.
+
+    When ``seed_features`` (e.g., embeddings of already-labeled frames) or
+    ``already_selected_rows`` are provided, each next pick maximizes minimum
+    cosine distance to the already-covered set while respecting ``min_frame_gap``.
+    """
+    feat = _normalize_feature_matrix(features)
+    n_samples = int(feat.shape[0])
+    target = max(0, int(k))
+    if n_samples == 0 or target == 0:
+        return []
+
+    gap = max(0, int(min_frame_gap))
+    fidx_arr = (
+        np.asarray(frame_indices, dtype=np.int64)
+        if frame_indices is not None
+        else np.arange(n_samples, dtype=np.int64)
+    )
+    excluded_rows = {int(r) for r in already_selected_rows if 0 <= int(r) < n_samples}
+    covered_frames: List[int] = [int(fidx_arr[r]) for r in excluded_rows]
+
+    rel_norm: Optional[np.ndarray] = None
+    rel_w = float(np.clip(relevance_weight, 0.0, 0.85))
+    if relevance_scores is not None and rel_w > 0.0:
+        raw_rel = np.asarray(relevance_scores, dtype=np.float32).reshape(-1)
+        if raw_rel.shape[0] == n_samples:
+            rmin = float(np.min(raw_rel))
+            rmax = float(np.max(raw_rel))
+            if rmax - rmin > 1e-6:
+                rel_norm = (raw_rel - rmin) / (rmax - rmin)
+            else:
+                rel_norm = np.zeros((n_samples,), dtype=np.float32)
+
+    # Initialize minimum cosine distance to already-covered embeddings.
+    min_dist = np.full((n_samples,), np.inf, dtype=np.float32)
+    seed_blocks: List[np.ndarray] = []
+    if seed_features is not None:
+        sf = _normalize_feature_matrix(seed_features)
+        if sf.shape[0] > 0 and sf.shape[1] == feat.shape[1]:
+            seed_blocks.append(sf)
+    if excluded_rows:
+        seed_blocks.append(feat[sorted(excluded_rows)])
+
+    if seed_blocks:
+        all_seeds = np.concatenate(seed_blocks, axis=0)
+        chunk = 512
+        for start in range(0, all_seeds.shape[0], chunk):
+            s_chunk = all_seeds[start : start + chunk]
+            dists = 1.0 - (feat @ s_chunk.T)
+            min_dist = np.minimum(min_dist, np.min(dists, axis=1))
+    else:
+        # Pick a clean initial anchor closest to the global centroid (or highest relevance).
+        if rel_norm is not None:
+            first_row = int(np.argmax(rel_norm))
+        else:
+            centroid = np.mean(feat, axis=0)
+            c_norm = float(np.linalg.norm(centroid))
+            if c_norm > 1e-8:
+                centroid = centroid / c_norm
+                first_row = int(np.argmax(feat @ centroid))
+            else:
+                first_row = 0
+        min_dist = (1.0 - (feat @ feat[first_row])).astype(np.float32, copy=False)
+        chosen: List[int] = [first_row]
+        excluded_rows.add(first_row)
+        covered_frames.append(int(fidx_arr[first_row]))
+        if len(chosen) >= target:
+            return chosen
+        return chosen + _continue_farthest_greedy(
+            feat=feat,
+            fidx_arr=fidx_arr,
+            min_dist=min_dist,
+            excluded_rows=excluded_rows,
+            covered_frames=covered_frames,
+            remaining=target - len(chosen),
+            gap=gap,
+            rel_norm=rel_norm,
+            rel_w=rel_w,
+        )
+
+    return _continue_farthest_greedy(
+        feat=feat,
+        fidx_arr=fidx_arr,
+        min_dist=min_dist,
+        excluded_rows=excluded_rows,
+        covered_frames=covered_frames,
+        remaining=target,
+        gap=gap,
+        rel_norm=rel_norm,
+        rel_w=rel_w,
+    )
+
+
+def _continue_farthest_greedy(
+    *,
+    feat: np.ndarray,
+    fidx_arr: np.ndarray,
+    min_dist: np.ndarray,
+    excluded_rows: set[int],
+    covered_frames: List[int],
+    remaining: int,
+    gap: int,
+    rel_norm: Optional[np.ndarray],
+    rel_w: float,
+) -> List[int]:
+    n_samples = int(feat.shape[0])
+    chosen: List[int] = []
+    # Track temporal-gap mask dynamically.
+    gap_blocked = np.zeros((n_samples,), dtype=bool)
+    if gap > 0 and covered_frames:
+        for cf in covered_frames:
+            gap_blocked |= np.abs(fidx_arr - int(cf)) < gap
+
+    taken = np.zeros((n_samples,), dtype=bool)
+    for r in excluded_rows:
+        taken[r] = True
+
+    for _ in range(max(0, int(remaining))):
+        eligible = (~taken) & (~gap_blocked)
+        if not np.any(eligible):
+            eligible = ~taken
+        if not np.any(eligible):
+            break
+
+        cand_dists = np.where(eligible, min_dist, -np.inf)
+        if rel_norm is not None and rel_w > 0.0:
+            elig_vals = min_dist[eligible]
+            d_max = float(np.max(elig_vals)) if elig_vals.size > 0 else 1.0
+            d_scale = d_max if d_max > 1e-6 else 1.0
+            combined = (1.0 - rel_w) * (min_dist / d_scale) + rel_w * rel_norm
+            scores = np.where(eligible, combined, -np.inf)
+            best_row = int(np.argmax(scores))
+        else:
+            best_row = int(np.argmax(cand_dists))
+
+        chosen.append(best_row)
+        taken[best_row] = True
+        if gap > 0:
+            gap_blocked |= np.abs(fidx_arr - int(fidx_arr[best_row])) < gap
+        new_dists = 1.0 - (feat @ feat[best_row])
+        min_dist = np.minimum(min_dist, new_dists)
+
+    return chosen
+
+
+def select_hybrid_frame_indices(
+    features: np.ndarray,
+    k: int,
+    *,
+    frame_indices: Optional[Sequence[int]] = None,
+    seed_features: Optional[np.ndarray] = None,
+    min_frame_gap: int = 0,
+    representative_ratio: float = 0.65,
+    include_start_boundary: bool = False,
+    relevance_scores: Optional[np.ndarray] = None,
+    relevance_weight: float = 0.0,
+    max_iter: int = 25,
+    seed: int = 42,
+) -> Tuple[List[int], Dict[int, str], np.ndarray]:
+    """Combine K-Means++ medoids (representative coverage) + Farthest-Point coreset (rare states).
+
+    Returns ``(chosen_rows_sorted, role_by_row, cluster_labels)``.
+    """
+    feat = _normalize_feature_matrix(features)
+    n_samples = int(feat.shape[0])
+    target = max(0, int(k))
+    if n_samples == 0 or target == 0:
+        return [], {}, np.zeros((0,), dtype=np.int32)
+
+    if target >= n_samples:
+        roles = {i: "representative" for i in range(n_samples)}
+        return list(range(n_samples)), roles, np.arange(n_samples, dtype=np.int32)
+
+    role_by_row: Dict[int, str] = {}
+    chosen: List[int] = []
+    chosen_set: set[int] = set()
+
+    if include_start_boundary and n_samples > 0:
+        chosen.append(0)
+        chosen_set.add(0)
+        role_by_row[0] = "boundary"
+
+    remaining_total = max(0, target - len(chosen))
+    ratio = float(np.clip(representative_ratio, 0.0, 1.0))
+    k_rep = int(round(remaining_total * ratio))
+    if remaining_total >= 2 and ratio > 0.0:
+        k_rep = max(1, min(k_rep, remaining_total))
+    k_div = max(0, remaining_total - k_rep)
+
+    cluster_labels = np.zeros((n_samples,), dtype=np.int32)
+    if k_rep > 0:
+        medoid_rows, cluster_labels, _centroids = _kmeans_cluster_medoids(
+            feat,
+            k_rep,
+            frame_indices=frame_indices,
+            min_frame_gap=min_frame_gap,
+            max_iter=max_iter,
+            seed=seed,
+        )
+        for row in medoid_rows:
+            if row not in chosen_set:
+                chosen.append(row)
+                chosen_set.add(row)
+                role_by_row[row] = "representative"
+
+    still_needed = max(0, target - len(chosen))
+    if still_needed > 0 or k_div > 0:
+        extra_rows = select_farthest_point_indices(
+            feat,
+            max(still_needed, k_div),
+            frame_indices=frame_indices,
+            seed_features=seed_features,
+            already_selected_rows=chosen,
+            min_frame_gap=min_frame_gap,
+            relevance_scores=relevance_scores,
+            relevance_weight=relevance_weight,
+        )
+        for row in extra_rows:
+            if len(chosen) >= target:
+                break
+            if row not in chosen_set:
+                chosen.append(row)
+                chosen_set.add(row)
+                role_by_row[row] = "diverse_extreme"
+
+    return sorted(chosen), role_by_row, cluster_labels
+
+
+def select_flow_frame_indices(
+    video_path: str | Path,
+    num_frames: int,
+    *,
+    start_frame: int = 0,
+    end_frame: Optional[int] = None,
+    max_candidates: int = 1200,
+    min_frame_gap: int = 5,
+    resize_width: int = 160,
+    progress_callback: Optional[Callable[[float, str], None]] = None,
+    is_stopped: Optional[Callable[[], bool]] = None,
+) -> Tuple[List[int], Dict[int, float]]:
+    """Select top motion-energy frames via bounded-memory Farneback optical flow.
+
+    Returns ``(selected_frame_indices, motion_score_by_frame)`` without holding
+    full-resolution video frames in RAM.
+    """
+    vpath = Path(video_path).expanduser().resolve()
+    if not vpath.is_file():
+        raise FileNotFoundError(f"Video file not found: {vpath}")
+
+    cap = cv2.VideoCapture(str(vpath))
+    if not cap.isOpened():
+        raise RuntimeError(f"Unable to open video: {vpath}")
+
+    try:
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+        if total_frames <= 0:
+            return [], {}
+        lo = max(0, min(int(start_frame), total_frames - 1))
+        hi = (
+            total_frames - 1
+            if end_frame is None
+            else max(lo, min(int(end_frame), total_frames - 1))
+        )
+        span = hi - lo + 1
+        if num_frames == -1 or num_frames >= span:
+            return list(range(lo, hi + 1)), {}
+        k = max(0, int(num_frames))
+        if k == 0:
+            return [], {}
+
+        cand_count = min(span, max(int(max_candidates), k * 4))
+        candidate_indices = select_uniform_frame_indices(
+            total_frames, cand_count, start_frame=lo, end_frame=hi
+        )
+
+        scored: List[Tuple[float, int]] = []
+        motion_by_frame: Dict[int, float] = {}
+        prev_gray: Optional[np.ndarray] = None
+        next_expected: Optional[int] = 0
+        grab_skip_disabled = False
+        total_cand = max(1, len(candidate_indices))
+        target_w = max(48, int(resize_width))
+
+        for i, fidx in enumerate(candidate_indices):
+            if is_stopped is not None and is_stopped():
+                break
+            ret, frame, next_expected, grab_skip_disabled = read_capture_frame_bgr(
+                cap,
+                fidx,
+                expected_next=next_expected,
+                max_forward_grab_skip=CV2Video._MAX_FORWARD_GRAB_SKIP,
+                grab_skip_disabled=grab_skip_disabled,
+            )
+            if not ret or frame is None:
+                continue
+            h, w = frame.shape[:2]
+            target_h = max(32, int(round(h * (target_w / float(max(w, 1))))))
+            small = cv2.resize(
+                frame, (target_w, target_h), interpolation=cv2.INTER_AREA
+            )
+            gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+            if prev_gray is not None:
+                flow = cv2.calcOpticalFlowFarneback(
+                    prev_gray, gray, None, 0.5, 3, 13, 2, 5, 1.1, 0
+                )
+                mag = np.sqrt(flow[..., 0] ** 2 + flow[..., 1] ** 2)
+                score = float(np.mean(mag))
+            else:
+                score = 0.0
+            prev_gray = gray
+            scored.append((score, int(fidx)))
+            motion_by_frame[int(fidx)] = score
+            if progress_callback is not None and (i % 20 == 0 or i == total_cand - 1):
+                pct = 80.0 * (i + 1) / float(total_cand)
+                progress_callback(
+                    pct,
+                    f"Computing optical flow motion ({i + 1}/{total_cand} frames)...",
+                )
+
+        if not scored:
+            return [], {}
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        gap = max(0, int(min_frame_gap))
+        selected: List[int] = []
+        for _score, fidx in scored:
+            if gap > 0 and any(abs(fidx - prev) < gap for prev in selected):
+                continue
+            selected.append(fidx)
+            if len(selected) >= k:
+                break
+        if len(selected) < k:
+            selected_set = set(selected)
+            for _score, fidx in scored:
+                if fidx not in selected_set:
+                    selected.append(fidx)
+                    selected_set.add(fidx)
+                    if len(selected) >= k:
+                        break
+        return sorted(selected), motion_by_frame
+    finally:
+        cap.release()
+
+
+def select_keyframe_indices(
+    video_path: str | Path,
+    *,
+    start_frame: int = 0,
+    end_frame: Optional[int] = None,
+    max_frames: Optional[int] = None,
+) -> List[int]:
+    """Return video I-frame (keyframe) indices within ``[start_frame, end_frame]``."""
+    from annolid.core.media.video import get_keyframe_timestamps
+
+    vpath = Path(video_path).expanduser().resolve()
+    if not vpath.is_file():
+        raise FileNotFoundError(f"Video file not found: {vpath}")
+
+    cap = cv2.VideoCapture(str(vpath))
+    if not cap.isOpened():
+        raise RuntimeError(f"Unable to open video: {vpath}")
+    try:
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+        fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+    finally:
+        cap.release()
+
+    if total_frames <= 0:
+        return []
+    lo = max(0, min(int(start_frame), total_frames - 1))
+    hi = (
+        total_frames - 1
+        if end_frame is None
+        else max(lo, min(int(end_frame), total_frames - 1))
+    )
+
+    indices: List[int] = []
+    try:
+        times = get_keyframe_timestamps(str(vpath))
+    except Exception:
+        times = []
+
+    if times and fps > 0.0:
+        seen: set[int] = set()
+        for ts in times:
+            fidx = int(round(float(ts) * fps))
+            if lo <= fidx <= hi and fidx not in seen:
+                seen.add(fidx)
+                indices.append(fidx)
+        indices.sort()
+    else:
+        step = max(int(round(fps)) if fps > 0.0 else 30, 1)
+        indices = list(range(lo, hi + 1, step))
+        if indices and indices[-1] != hi:
+            indices.append(hi)
+
+    if (
+        max_frames is not None
+        and int(max_frames) > 0
+        and len(indices) > int(max_frames)
+    ):
+        sub_pos = select_uniform_frame_indices(len(indices), int(max_frames))
+        indices = [indices[p] for p in sub_pos]
+    return indices
+
+
+_IGNORED_JSON_NAMES = frozenset(
+    {
+        "pose_schema.json",
+        "project_schema.json",
+        "frame_selection_queue.json",
+        "frame_selection_manifest.json",
+        "outlier_frames_manifest.json",
+    }
+)
+
+
+def discover_labeled_frame_indices(
+    annotation_dir: Optional[str | Path],
+    *,
+    require_shapes: bool = True,
+) -> set[int]:
+    """Discover already-labeled frame indices across both per-frame JSONs and AnnotationStore."""
+    if annotation_dir is None:
+        return set()
+    folder = Path(annotation_dir).expanduser()
+    if not folder.is_dir():
+        return set()
+
+    from annolid.infrastructure import AnnotationStore, load_labelme_json
+
+    labeled: set[int] = set()
+
+    # 1. Per-frame disk LabelMe JSONs.
+    for json_path in folder.glob("*.json"):
+        name_lower = json_path.name.lower()
+        if name_lower in _IGNORED_JSON_NAMES or name_lower.endswith(
+            "_tracking_stats.json"
+        ):
+            continue
+        fidx = AnnotationStore.frame_number_from_path(json_path)
+        if fidx is None:
+            continue
+        if not require_shapes:
+            labeled.add(int(fidx))
+            continue
+        try:
+            payload = load_labelme_json(json_path)
+            if isinstance(payload, dict) and payload.get("shapes"):
+                labeled.add(int(fidx))
+        except Exception:
+            continue
+
+    # 2. NDJSON AnnotationStore (`*_annotations.ndjson`).
+    try:
+        stub = folder / f"{folder.name}_000000000.json"
+        store = AnnotationStore.for_frame_path(stub)
+        if store.store_path.is_file():
+            for fidx in store.iter_frames():
+                if not require_shapes:
+                    labeled.add(int(fidx))
+                    continue
+                record = store.get_frame(int(fidx))
+                if isinstance(record, dict) and record.get("shapes"):
+                    labeled.add(int(fidx))
+    except Exception:
+        pass
+
+    return labeled
 
 
 def select_kmeans_frame_indices(
@@ -430,13 +1090,21 @@ def extract_frames_smart(
     seed: int = 42,
     progress_callback: Optional[Callable[[float, str], None]] = None,
 ) -> FrameExtractionResult:
-    """Extract training frames using ``uniform``, ``kmeans``, ``random``, ``flow``, or ``keyframes``."""
+    """Extract training frames using ``hybrid``, ``kmeans``, ``farthest``, ``uniform``, ``random``, ``flow``, or ``keyframes``."""
     vpath = Path(video_path).expanduser().resolve()
     if not vpath.is_file():
         raise FileNotFoundError(f"Video file not found: {vpath}")
 
     algo_norm = str(algo or "kmeans").strip().lower()
-    supported = {"uniform", "kmeans", "random", "flow", "keyframes"}
+    supported = {
+        "hybrid",
+        "kmeans",
+        "farthest",
+        "uniform",
+        "random",
+        "flow",
+        "keyframes",
+    }
     if algo_norm not in supported:
         raise ValueError(
             f"Unsupported frame extraction algorithm {algo!r}. "
@@ -448,6 +1116,42 @@ def extract_frames_smart(
         if output_dir is not None
         else vpath.parent / f"{vpath.stem.replace(' ', '_')}_{algo_norm}"
     )
+
+    if algo_norm in {"hybrid", "farthest"}:
+        from annolid.services.frame_selection import (
+            FrameSelectionConfig,
+            select_frames_for_labeling,
+        )
+
+        sel = select_frames_for_labeling(
+            vpath,
+            config=FrameSelectionConfig(
+                task="general",
+                algo=algo_norm,
+                num_frames=int(num_frames),
+                feature_backend="visual_fg",
+                extract_images=True,
+                output_dir=str(out_root),
+                image_format=str(image_format or "png"),
+                start_seconds=start_seconds,
+                end_seconds=end_seconds,
+                max_candidates=int(max_candidates),
+                exclude_labeled=False,
+                seed_from_labeled=False,
+                filter_blur=False,
+                include_boundaries=False,
+                seed=int(seed),
+            ),
+            progress_callback=progress_callback,
+        )
+        return FrameExtractionResult(
+            video_path=sel.video_path,
+            output_dir=str(sel.output_dir or out_root),
+            algo=algo_norm,
+            total_video_frames=sel.total_video_frames,
+            selected_indices=sel.selected_indices,
+            saved_paths=sel.saved_paths,
+        )
 
     cap = cv2.VideoCapture(str(vpath))
     if not cap.isOpened():
@@ -546,36 +1250,52 @@ def extract_frames_smart(
             saved_paths=tuple(saved_paths),
         )
 
-    # Delegate legacy "flow" and "keyframes" to annolid.data.videos.extract_frames.
-    from annolid.data.videos import extract_frames as _legacy_extract_frames
+    if algo_norm == "flow":
+        indices, _motion = select_flow_frame_indices(
+            vpath,
+            num_frames,
+            start_frame=lo,
+            end_frame=hi,
+            max_candidates=max_candidates,
+            progress_callback=progress_callback,
+        )
+        saved_idx, saved_paths = _write_selected_frames(
+            vpath,
+            out_root,
+            indices,
+            image_format=image_format,
+            progress_callback=progress_callback,
+            progress_start=85.0,
+        )
+        return FrameExtractionResult(
+            video_path=str(vpath),
+            output_dir=str(out_root),
+            algo=algo_norm,
+            total_video_frames=total_frames,
+            selected_indices=tuple(saved_idx),
+            saved_paths=tuple(saved_paths),
+        )
 
-    out_root.mkdir(parents=True, exist_ok=True)
-    sub_clip = start_seconds is not None and end_seconds is not None
-    # Legacy extract_frames appends _{algo} to out_dir/video_name; invoke directly when
-    # out_dir was not explicitly customized, or collect its saved files cleanly.
-    gen = _legacy_extract_frames(
-        video_file=str(vpath),
-        num_frames=num_frames,
-        out_dir=str(out_root.parent),
-        algo=algo_norm,
-        sub_clip=sub_clip,
-        start_seconds=start_seconds,
-        end_seconds=end_seconds,
-        prediction=False,
+    # keyframes
+    max_kf = None if int(num_frames) == -1 else max(0, int(num_frames))
+    indices = select_keyframe_indices(
+        vpath, start_frame=lo, end_frame=hi, max_frames=max_kf
     )
-    for pct, msg in gen:
-        if progress_callback is not None:
-            progress_callback(float(pct), str(msg))
-    legacy_dir = out_root.parent / f"{vpath.stem.replace(' ', '_')}_{algo_norm}"
-    actual_dir = legacy_dir if legacy_dir.is_dir() else out_root
-    saved_files = sorted(str(p) for p in actual_dir.glob("*.png"))
+    saved_idx, saved_paths = _write_selected_frames(
+        vpath,
+        out_root,
+        indices,
+        image_format=image_format,
+        progress_callback=progress_callback,
+        progress_start=20.0,
+    )
     return FrameExtractionResult(
         video_path=str(vpath),
-        output_dir=str(actual_dir),
+        output_dir=str(out_root),
         algo=algo_norm,
         total_video_frames=total_frames,
-        selected_indices=(),
-        saved_paths=tuple(saved_files),
+        selected_indices=tuple(saved_idx),
+        saved_paths=tuple(saved_paths),
     )
 
 
@@ -833,7 +1553,7 @@ def select_diverse_outlier_frames(
 def extract_pose_outlier_frames(
     source: str | Path | PoseDataset,
     video_path: str | Path,
-    output_dir: str | Path,
+    output_dir: Optional[str | Path] = None,
     *,
     source_format: str = "auto",
     pose_schema: Optional[PoseSchema | str | Path] = None,
@@ -847,13 +1567,28 @@ def extract_pose_outlier_frames(
     expected_instances: Optional[int] = None,
     include_predictions: bool = True,
     overwrite: bool = True,
+    extract_images: bool = True,
 ) -> OutlierExtractionResult:
-    """Extract highest-risk pose outlier frames + editable LabelMe JSONs for active learning."""
+    """Select (and optionally extract) highest-risk pose outlier frames for active learning.
+
+    When ``extract_images=False``, scores and selects the diverse outlier frames
+    without writing PNG or LabelMe JSON copies to disk (for direct in-video
+    labeling via the Label Queue).
+    """
     vpath = Path(video_path).expanduser().resolve()
     if not vpath.is_file():
         raise FileNotFoundError(f"Video file not found: {vpath}")
-    out_root = Path(output_dir).expanduser().resolve()
-    out_root.mkdir(parents=True, exist_ok=True)
+    out_root = (
+        Path(output_dir).expanduser().resolve()
+        if output_dir is not None and str(output_dir).strip()
+        else vpath.with_suffix("")
+    )
+    if extract_images:
+        out_root.mkdir(parents=True, exist_ok=True)
+
+    from annolid.annotation.pose_interop.converters import read_pose_dataset
+    from annolid.annotation.pose_interop.labelme import write_pose_to_labelme_dir
+    from annolid.annotation.pose_interop.model import PoseDataset, PoseFrame
 
     if isinstance(source, PoseDataset):
         dataset = source
@@ -889,6 +1624,20 @@ def extract_pose_outlier_frames(
     if not selected and scored:
         selected = select_diverse_outlier_frames(
             scored, num_frames=num_frames, min_frame_gap=min_frame_gap, min_score=0.0
+        )
+
+    if not extract_images:
+        return OutlierExtractionResult(
+            source_path=src_str,
+            video_path=str(vpath),
+            output_dir=str(out_root),
+            frames_evaluated=len(scored),
+            outliers_found=outliers_found,
+            frames_extracted=0,
+            selected_frames=tuple(selected),
+            saved_images=(),
+            manifest_path="",
+            pose_schema_path=None,
         )
 
     selected_keys = {(item.video_index, item.frame_index) for item in selected}

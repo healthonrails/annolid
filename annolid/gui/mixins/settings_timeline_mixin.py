@@ -137,6 +137,7 @@ class SettingsTimelineMixin:
             getattr(self, "behavior_log_dock", None),
             getattr(self, "behavior_controls_dock", None),
             getattr(self, "embedding_search_dock", None),
+            getattr(self, "label_queue_dock", None),
         ]
         bottom_docks = [
             getattr(self, "timeline_dock", None),

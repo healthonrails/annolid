@@ -55,6 +55,7 @@ from annolid.gui.features import (
     ensure_threejs_manager,
     ensure_web_manager,
     setup_annotation_feature,
+    setup_frame_selection_feature,
     setup_search_feature,
     setup_timeline_feature,
     setup_zone_feature,
@@ -365,6 +366,9 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
 
         self._behavior_event_detail_dialog = None
         self.feature_states["search"] = setup_search_feature(feature_deps)
+        self.feature_states["frame_selection"] = setup_frame_selection_feature(
+            feature_deps
+        )
         self._apply_agent_mode(self._agent_mode_enabled)
         self.feature_states["timeline"] = setup_timeline_feature(feature_deps)
         self.setCentralWidget(self._main_scroll_area)

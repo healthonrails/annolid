@@ -573,7 +573,15 @@ def extract_frames(
 
     """
 
-    if sub_clip and start_seconds is not None and end_seconds is not None:
+    uses_direct_smart = algo in ("uniform", "kmeans", "hybrid", "farthest") or (
+        algo == "flow" and not show_flow and not prediction
+    )
+    if (
+        not uses_direct_smart
+        and sub_clip
+        and start_seconds is not None
+        and end_seconds is not None
+    ):
         video_file = extract_subclip(video_file, start_seconds, end_seconds)
 
     video_name = os.path.splitext(os.path.basename(video_file))[0]
@@ -582,6 +590,14 @@ def extract_frames(
         out_dir = os.path.splitext(video_file)[0]
     else:
         out_dir = os.path.join(out_dir, video_name)
+
+    if (
+        uses_direct_smart
+        and sub_clip
+        and start_seconds is not None
+        and end_seconds is not None
+    ):
+        out_dir = f"{out_dir}_{start_seconds}_{end_seconds}"
 
     # add extracting methods to folder name
     out_dir = f"{out_dir}_{algo}"
@@ -598,49 +614,45 @@ def extract_frames(
         yield 100, f"Done. Frames located at {out_dir}."
         return
 
-    if algo in ("uniform", "kmeans"):
-        from annolid.data.frame_sampling import (
-            _write_selected_frames,
-            select_kmeans_frame_indices,
-            select_uniform_frame_indices,
-        )
+    if algo in ("uniform", "kmeans", "hybrid", "farthest"):
+        from annolid.data.frame_sampling import extract_frames_smart
 
         progress_events: List[tuple[float, str]] = []
-        cap_probe = cv2.VideoCapture(video_file)
-        if not cap_probe.isOpened():
-            raise RuntimeError(f"Unable to open video file: {video_file}")
-        try:
-            total_frames = int(cap_probe.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
-        finally:
-            cap_probe.release()
-
-        if total_frames <= 0:
-            yield 100, f"No readable frames found in {video_file}."
-            return
-
-        if algo == "uniform":
-            yield 10, f"Selecting {num_frames} uniformly spaced frames..."
-            indices = select_uniform_frame_indices(total_frames, num_frames)
-        else:
-            yield (
-                10,
-                f"Clustering frames for visual diversity (k-means, k={num_frames})...",
-            )
-            indices = select_kmeans_frame_indices(
-                video_file,
-                num_frames,
-                progress_callback=lambda pct, msg: progress_events.append((pct, msg)),
-            )
-            for pct, msg in progress_events:
-                yield pct, msg
-
-        saved_idx, _saved_paths = _write_selected_frames(
-            Path(video_file),
-            Path(out_dir),
-            indices,
-            filename_prefix=video_name,
+        yield (
+            10,
+            f"Selecting {num_frames} frames with {algo}...",
         )
-        yield 100, f"Done. Extracted {len(saved_idx)} frames to {out_dir}"
+        res = extract_frames_smart(
+            video_file,
+            output_dir=out_dir,
+            algo=algo,
+            num_frames=num_frames,
+            start_seconds=start_seconds if sub_clip else None,
+            end_seconds=end_seconds if sub_clip else None,
+            progress_callback=lambda pct, msg: progress_events.append((pct, msg)),
+        )
+        for pct, msg in progress_events:
+            yield pct, msg
+        yield 100, f"Done. Extracted {len(res.saved_paths)} frames to {res.output_dir}"
+        return
+
+    if algo == "flow" and not show_flow and not prediction:
+        from annolid.data.frame_sampling import extract_frames_smart
+
+        progress_events = []
+        yield 10, f"Selecting {num_frames} motion-peak frames (optical flow)..."
+        res = extract_frames_smart(
+            video_file,
+            output_dir=out_dir,
+            algo="flow",
+            num_frames=num_frames,
+            start_seconds=start_seconds if sub_clip else None,
+            end_seconds=end_seconds if sub_clip else None,
+            progress_callback=lambda pct, msg: progress_events.append((pct, msg)),
+        )
+        for pct, msg in progress_events:
+            yield pct, msg
+        yield 100, f"Done. Extracted {len(res.saved_paths)} frames to {res.output_dir}"
         return
 
     cap = cv2.VideoCapture(video_file)

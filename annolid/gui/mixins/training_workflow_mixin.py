@@ -5,70 +5,301 @@ import shlex
 import subprocess
 import threading
 from pathlib import Path
+from typing import Mapping, Optional, Sequence
 
-from qtpy import QtWidgets
-
-from annolid.data import videos
+from qtpy import QtCore, QtWidgets
 
 from annolid.utils.runs import allocate_run_dir, shared_runs_root
 
 
 class TrainingWorkflowMixin:
-    """Frame extraction and training workflow dialogs."""
+    """Frame selection/extraction and training workflow dialogs."""
+
+    def _sync_label_queue_slider_marks(self, frames: Sequence[int]) -> None:
+        """Render ``label_queue`` marks on the active video seekbar."""
+        seekbar = getattr(self, "seekbar", None)
+        if seekbar is None:
+            return
+        from annolid.gui.widgets.video_slider import VideoSliderMark
+
+        total_frames = getattr(self, "num_frames", None)
+        valid = sorted(
+            {
+                int(f)
+                for f in (frames or ())
+                if int(f) >= 0 and (total_frames is None or int(f) < int(total_frames))
+            }
+        )
+        seekbar.blockSignals(True)
+        try:
+            seekbar.removeMarksByType("label_queue")
+            for fidx in valid:
+                seekbar.addMark(
+                    VideoSliderMark(mark_type="label_queue", val=fidx), update=False
+                )
+        finally:
+            seekbar.blockSignals(False)
+        seekbar._update_visual_positions()
+        seekbar.update()
+
+    def _show_label_queue_dock(self) -> None:
+        dock = getattr(self, "label_queue_dock", None)
+        if dock is not None:
+            dock.setVisible(True)
+            dock.show()
+            dock.raise_()
+
+    def _queue_frames_for_labeling(
+        self,
+        frame_indices: Sequence[int],
+        *,
+        video_path: Optional[str | Path] = None,
+        task: str = "general",
+        algo: str = "custom",
+        feature_backend: str = "none",
+        reasons_by_frame: Optional[Mapping[int, str]] = None,
+        scores_by_frame: Optional[Mapping[int, float]] = None,
+        role: str = "custom",
+        jump_to_first: bool = True,
+    ) -> None:
+        """Populate the interactive Label Queue dock with an explicit set of video frames."""
+        target_video = video_path or getattr(self, "video_file", None)
+        if not target_video:
+            self.statusBar().showMessage(
+                self.tr("Open a video to queue frames for labeling."), 4000
+            )
+            return
+        from annolid.services.frame_selection import (
+            build_selection_result_from_indices,
+        )
+
+        ann_dir = getattr(self, "video_results_folder", None) or getattr(
+            self, "annotation_dir", None
+        )
+        result = build_selection_result_from_indices(
+            target_video,
+            frame_indices,
+            task=task,
+            algo=algo,
+            feature_backend=feature_backend,
+            annotation_dir=ann_dir,
+            reasons_by_frame=reasons_by_frame,
+            scores_by_frame=scores_by_frame,
+            role=role,
+            persist_queue_manifest=True,
+        )
+        self._activate_frame_selection_result(
+            result, open_output_in_files=False, jump_to_first=jump_to_first
+        )
+
+    def _activate_frame_selection_result(
+        self,
+        result,
+        *,
+        open_output_in_files: bool = True,
+        jump_to_first: bool = True,
+    ) -> None:
+        """Apply a completed ``FrameSelectionResult`` to the main window UI."""
+        if not result.selected_items:
+            QtWidgets.QMessageBox.information(
+                self,
+                self.tr("No Frames Selected"),
+                self.tr("No matching frames were selected with the current settings."),
+            )
+            return
+
+        if result.extract_images and result.output_dir:
+            out_dir = str(result.output_dir)
+            self.annotation_dir = out_dir
+            self.statusBar().showMessage(
+                self.tr("Extracted %s frames (%s · %s) to %s")
+                % (
+                    len(result.saved_paths),
+                    result.algo,
+                    result.feature_backend,
+                    out_dir,
+                ),
+                6000,
+            )
+            QtWidgets.QMessageBox.information(
+                self,
+                self.tr("Frames Extracted"),
+                self.tr("Extracted %s frame(s) (%s, %s) to:\n%s")
+                % (
+                    len(result.saved_paths),
+                    result.algo,
+                    result.feature_backend,
+                    out_dir,
+                ),
+            )
+            if open_output_in_files and hasattr(self, "importDirImages"):
+                self.importDirImages(out_dir)
+            return
+
+        # Zero-extraction workflow: queue selected frames directly inside the video!
+        current_video = getattr(self, "video_file", None)
+        target_video = Path(result.video_path).expanduser().resolve()
+        if (
+            not current_video
+            or Path(str(current_video)).expanduser().resolve() != target_video
+        ):
+            if hasattr(self, "openVideo"):
+                self.openVideo(
+                    from_video_list=True,
+                    video_path=str(target_video),
+                    programmatic_call=True,
+                )
+
+        queue_widget = getattr(self, "frame_selection_queue_widget", None)
+        if queue_widget is not None:
+            queue_widget.set_selection_result(result, persist=True)
+            self._show_label_queue_dock()
+            if jump_to_first:
+                queue_widget.jump_to_next_unlabeled()
+        else:
+            self._sync_label_queue_slider_marks(result.selected_indices)
+            if (
+                jump_to_first
+                and result.selected_indices
+                and hasattr(self, "set_frame_number")
+            ):
+                self.set_frame_number(int(result.selected_indices[0]))
+
+        cache_note = " (cached embeddings)" if result.embedding_cache_hit else ""
+        self.statusBar().showMessage(
+            self.tr(
+                "Queued %s %s frames (%s · %s%s) — label directly in video without extracting PNGs."
+            )
+            % (
+                len(result.selected_items),
+                result.task,
+                result.algo,
+                result.feature_backend,
+                cache_note,
+            ),
+            6000,
+        )
 
     def frames(self):
-        """Extract frames based on the selected algos."""
-        from annolid.gui.widgets.extract_frame_dialog import ExtractFrameDialog
-        from annolid.gui.widgets.progressing_dialog import ProgressingWindow
+        """Select or extract diverse frames for pose/segmentation labeling."""
+        from annolid.gui.widgets.extract_frame_dialog import (
+            ExtractFrameDialog,
+            FrameSelectionWorker,
+        )
 
-        dlg = ExtractFrameDialog(self.video_file)
-        video_file = None
-        out_dir = None
-
-        if dlg.exec_():
-            video_file = dlg.video_file
-            num_frames = dlg.num_frames
-            algo = dlg.algo
-            out_dir = dlg.out_dir
-            start_seconds = dlg.start_sconds
-            end_seconds = dlg.end_seconds
-            sub_clip = isinstance(start_seconds, int) and isinstance(end_seconds, int)
-
-        if video_file is None:
+        active_worker = getattr(self, "_frame_selection_worker", None)
+        if active_worker is not None and active_worker.isRunning():
+            QtWidgets.QMessageBox.information(
+                self,
+                self.tr("Frame Selection Running"),
+                self.tr(
+                    "A frame selection job is already running. Please wait or cancel it."
+                ),
+            )
             return
-        out_frames_gen = videos.extract_frames(
-            video_file,
-            num_frames=num_frames,
-            algo=algo,
-            out_dir=out_dir,
-            sub_clip=sub_clip,
-            start_seconds=start_seconds,
-            end_seconds=end_seconds,
+
+        slider_sel = None
+        seekbar = getattr(self, "seekbar", None)
+        if seekbar is not None and hasattr(seekbar, "hasSelection"):
+            try:
+                if seekbar.hasSelection():
+                    slider_sel = seekbar.getSelection()
+            except Exception:
+                slider_sel = None
+
+        ann_dir = getattr(self, "video_results_folder", None) or getattr(
+            self, "annotation_dir", None
         )
-
-        pw = ProgressingWindow(out_frames_gen)
-        if pw.exec_():
-            pw.runner_thread.terminate()
-
-        if out_dir is None:
-            out_frames_dir = str(Path(video_file).resolve().with_suffix(""))
-        else:
-            out_frames_dir = str(Path(out_dir) / Path(video_file).name)
-
-        if start_seconds is not None and end_seconds is not None:
-            out_frames_dir = f"{out_frames_dir}_{start_seconds}_{end_seconds}"
-        out_frames_dir = f"{out_frames_dir}_{algo}"
-
-        self.annotation_dir = out_frames_dir
-
-        QtWidgets.QMessageBox.about(
+        dlg = ExtractFrameDialog(
+            self.video_file,
             self,
-            "Finished",
-            f"Done! Results are in folder: \
-                                         {out_frames_dir}",
+            annotation_dir=ann_dir,
+            owner_window=self,
+            total_frames=getattr(self, "num_frames", None),
+            fps=getattr(self, "fps", None),
+            slider_selection=slider_sel,
         )
-        self.statusBar().showMessage(self.tr("Finished extracting frames."))
-        self.importDirImages(out_frames_dir)
+        if dlg.exec_() != QtWidgets.QDialog.Accepted:
+            return
+
+        video_file = dlg.video_file
+        if not video_file:
+            return
+        config = dlg.build_config()
+
+        progress_dlg = QtWidgets.QProgressDialog(
+            self.tr("Selecting frames…"),
+            self.tr("Cancel"),
+            0,
+            100,
+            self,
+        )
+        progress_dlg.setWindowTitle(
+            self.tr("Extracting Frames")
+            if config.extract_images
+            else self.tr("Selecting Frames for Label Queue")
+        )
+        progress_dlg.setWindowModality(QtCore.Qt.WindowModal)
+        progress_dlg.setMinimumDuration(0)
+        progress_dlg.setAutoClose(False)
+        progress_dlg.setAutoReset(False)
+        progress_dlg.setValue(0)
+        progress_dlg.show()
+
+        worker = FrameSelectionWorker(video_file, config, parent=self)
+        self._frame_selection_worker = worker
+        self._frame_selection_progress_dlg = progress_dlg
+
+        def _cleanup() -> None:
+            dlg_ref = getattr(self, "_frame_selection_progress_dlg", None)
+            if dlg_ref is progress_dlg:
+                self._frame_selection_progress_dlg = None
+            with contextlib.suppress(Exception):
+                progress_dlg.close()
+                progress_dlg.deleteLater()
+            if getattr(self, "_frame_selection_worker", None) is worker:
+                self._frame_selection_worker = None
+            worker.deleteLater()
+
+        def _on_progress(pct: int, msg: str) -> None:
+            with contextlib.suppress(RuntimeError):
+                progress_dlg.setValue(int(pct))
+                progress_dlg.setLabelText(str(msg))
+
+        def _on_finished(result) -> None:
+            _cleanup()
+            self._activate_frame_selection_result(
+                result,
+                open_output_in_files=bool(config.open_output_in_files),
+                jump_to_first=True,
+            )
+
+        def _on_failed(err_msg: str) -> None:
+            _cleanup()
+            QtWidgets.QMessageBox.warning(
+                self,
+                self.tr("Frame Selection Failed"),
+                str(err_msg),
+            )
+            self.statusBar().showMessage(
+                self.tr("Frame selection failed: %s") % err_msg, 5000
+            )
+
+        def _on_cancelled() -> None:
+            _cleanup()
+            self.statusBar().showMessage(self.tr("Frame selection cancelled."), 4000)
+
+        def _on_cancel_clicked() -> None:
+            worker.stop()
+            with contextlib.suppress(RuntimeError):
+                progress_dlg.setLabelText(self.tr("Cancelling…"))
+
+        progress_dlg.canceled.connect(_on_cancel_clicked)
+        worker.progress.connect(_on_progress)
+        worker.finishedResult.connect(_on_finished)
+        worker.failed.connect(_on_failed)
+        worker.cancelled.connect(_on_cancelled)
+        worker.start()
 
     def tracks(self):
         """Open the inference wizard for tracking and batch inference."""

@@ -2676,6 +2676,7 @@ class AnnolidWindowBase(FileDockMixin, QtWidgets.QMainWindow):
             "audio_dock",
             "caption_dock",
             "embedding_search_dock",
+            "label_queue_dock",
             "florence_dock",
             # Keep the keypoint sequencer out of the default large-image/overlay
             # workflow. Users can still open it manually when needed.

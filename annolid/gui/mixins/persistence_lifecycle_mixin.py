@@ -409,6 +409,7 @@ class PersistenceLifecycleMixin:
             if self.caption_widget is not None:
                 self.caption_widget.set_image_path(image_filename)
 
+            auto_advance_queue = False
             if self.video_results_folder:
                 try:
                     frame_number = AnnotationStore.frame_number_from_path(filename)
@@ -419,6 +420,17 @@ class PersistenceLifecycleMixin:
                     )
                     if frame_number is not None and callable(add_seed_mark):
                         add_seed_mark(frame_number)
+                    queue_widget = getattr(self, "frame_selection_queue_widget", None)
+                    if frame_number is not None and queue_widget is not None:
+                        canvas_shapes = getattr(
+                            getattr(self, "canvas", None), "shapes", None
+                        )
+                        has_shapes = bool(canvas_shapes)
+                        auto_advance_queue = bool(
+                            queue_widget.mark_frame_labeled(
+                                int(frame_number), labeled=has_shapes
+                            )
+                        )
                 except Exception:
                     logger.debug(
                         "Failed to add manual seed mark after save.",
@@ -426,6 +438,10 @@ class PersistenceLifecycleMixin:
                     )
 
             self.setClean()
+            if auto_advance_queue:
+                queue_widget = getattr(self, "frame_selection_queue_widget", None)
+                if queue_widget is not None:
+                    QtCore.QTimer.singleShot(0, queue_widget.jump_to_next_unlabeled)
             stage_times["ui"] = time.perf_counter() - stage_started
 
         total_elapsed = time.perf_counter() - save_started

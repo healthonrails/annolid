@@ -553,12 +553,19 @@ class VideoManagerWidget(QWidget):
             )
 
     def on_extraction_complete(self, output_folder):
-        QMessageBox.information(
-            self, "Extraction Complete", "Frame extraction finished successfully!"
-        )
+        if output_folder:
+            QMessageBox.information(
+                self, "Extraction Complete", "Frame extraction finished successfully!"
+            )
+            self.output_folder_ready.emit(output_folder)
+        else:
+            QMessageBox.information(
+                self,
+                "Selection Complete",
+                "Saved frame selection queues beside each video (no PNGs extracted). "
+                "Open any video to start labeling from its Label Queue.",
+            )
         self.progress_bar.setValue(100)
-        # Emit signal to notify the main window
-        self.output_folder_ready.emit(output_folder)
         self.progress_bar.setVisible(False)
 
     def on_processing_complete(self, message):
@@ -576,13 +583,51 @@ class VideoManagerWidget(QWidget):
             )
             return
 
-        # Select output folder
-        output_folder = QFileDialog.getExistingDirectory(self, "Select Output Folder")
-        if not output_folder:
+        existing_worker = getattr(self, "worker", None)
+        if existing_worker is not None and existing_worker.isRunning():
+            QMessageBox.information(
+                self,
+                "Extraction Running",
+                "Batch frame selection/extraction is already running. Please wait for it to finish.",
+            )
             return
-        self.progress_bar.setVisible(True)
 
-        self.worker = FrameExtractorWorker(self.imported_videos, output_folder)
+        from annolid.gui.widgets.extract_frame_dialog import ExtractFrameDialog
+
+        sample_video = next(iter(sorted(self.imported_videos)), None)
+        dlg = ExtractFrameDialog(
+            sample_video,
+            self,
+            default_extract_images=True,
+        )
+        dlg.setWindowTitle(
+            f"Batch Select / Extract Frames ({len(self.imported_videos)} video(s))"
+        )
+        dlg._set_frame_count(20)
+        if dlg.exec_() != dlg.Accepted:
+            return
+        cfg = dlg.build_config()
+
+        output_folder = ""
+        if cfg.extract_images:
+            output_folder = dlg.out_dir or QFileDialog.getExistingDirectory(
+                self, "Select Output Folder"
+            )
+            if not output_folder:
+                return
+
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.worker = FrameExtractorWorker(
+            sorted(self.imported_videos),
+            output_folder,
+            num_frames=cfg.num_frames,
+            algo=cfg.algo,
+            task=cfg.task,
+            feature_backend=cfg.feature_backend,
+            extract_images=cfg.extract_images,
+            selection_config=cfg,
+        )
         self.worker.progress.connect(self.update_progress)
         self.worker.finished.connect(self.on_extraction_complete)
         self.worker.error.connect(self.show_error)

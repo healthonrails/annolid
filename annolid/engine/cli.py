@@ -1237,24 +1237,54 @@ def _parse_float_csv(
 
 
 def _cmd_extract_frames(args: argparse.Namespace) -> int:
-    from annolid.data.frame_sampling import extract_frames_smart
+    from annolid.services.frame_selection import (
+        FrameSelectionConfig,
+        select_frames_for_labeling,
+    )
 
-    res = extract_frames_smart(
-        args.video,
-        output_dir=args.output,
+    backend_params: dict[str, object] = {}
+    model_name = getattr(args, "model_name", None)
+    if model_name:
+        backend_params["model_name"] = str(model_name)
+
+    extract_images = not bool(getattr(args, "no_extract", False))
+    min_gap = getattr(args, "min_gap", None)
+    cfg = FrameSelectionConfig(
+        task=str(getattr(args, "task", None) or "general"),
         algo=str(args.algo or "kmeans"),
         num_frames=int(args.num_frames),
+        feature_backend=str(getattr(args, "features", None) or "auto"),
+        backend_params=backend_params,
+        extract_images=extract_images,
+        output_dir=args.output,
+        annotation_dir=getattr(args, "annotation_dir", None),
+        image_format=str(args.image_format or "png"),
         start_seconds=args.start_seconds,
         end_seconds=args.end_seconds,
-        image_format=str(args.image_format or "png"),
+        max_candidates=int(getattr(args, "max_candidates", 600) or 600),
+        min_frame_gap=int(min_gap) if min_gap is not None else None,
+        exclude_labeled=bool(getattr(args, "exclude_labeled", False)),
+        seed_from_labeled=bool(getattr(args, "exclude_labeled", False)),
+        filter_blur=not bool(getattr(args, "no_filter_blur", False)),
+        include_boundaries=(
+            True if bool(getattr(args, "include_boundaries", False)) else None
+        ),
+        query_text=getattr(args, "query_text", None),
+        embedding_index_path=getattr(args, "embedding_index", None),
         seed=int(args.seed),
     )
+    res = select_frames_for_labeling(args.video, config=cfg)
     if bool(getattr(args, "json", False)):
         print(json.dumps(res.to_dict(), indent=2))
+    elif res.extract_images:
+        print(
+            f"Extracted {len(res.saved_paths)} frame(s) ({res.task}/{res.algo}/{res.feature_backend}) from "
+            f"{res.video_path} -> {res.output_dir}"
+        )
     else:
         print(
-            f"Extracted {len(res.saved_paths)} frame(s) ({res.algo}) from "
-            f"{res.video_path} -> {res.output_dir}"
+            f"Selected {len(res.selected_items)} frame(s) ({res.task}/{res.algo}/{res.feature_backend}) "
+            f"without extracting images -> queue manifest: {res.manifest_path}"
         )
     return 0
 
@@ -5053,26 +5083,108 @@ def _build_root_parser() -> argparse.ArgumentParser:
 
     extract_frames_p = sub.add_parser(
         "extract-frames",
-        help="Extract training frames from a video using k-means visual diversity, uniform, random, optical flow, or keyframes.",
+        help="Select or extract diverse training frames for pose or segmentation using visual or embedding features.",
     )
     extract_frames_p.add_argument("video", help="Source video path.")
     extract_frames_p.add_argument(
         "--output",
         "-o",
         default=None,
-        help="Output directory for extracted frames.",
+        help=(
+            "Output directory for extracted frames, or queue manifest JSON/directory "
+            "when --no-extract is set."
+        ),
+    )
+    extract_frames_p.add_argument(
+        "--task",
+        choices=("pose", "segmentation", "general"),
+        default="general",
+        help="Target labeling task profile (default: general).",
     )
     extract_frames_p.add_argument(
         "--algo",
-        choices=("kmeans", "uniform", "random", "flow", "keyframes"),
+        choices=(
+            "hybrid",
+            "kmeans",
+            "farthest",
+            "uniform",
+            "random",
+            "flow",
+            "keyframes",
+        ),
         default="kmeans",
         help="Frame selection algorithm (default: kmeans).",
+    )
+    extract_frames_p.add_argument(
+        "--features",
+        choices=(
+            "auto",
+            "visual_fg",
+            "visual",
+            "embeddinggemma2_onnx",
+            "dinov3",
+            "cached_index",
+        ),
+        default="auto",
+        help="Frame feature/embedding backend for diversity selection (default: auto).",
+    )
+    extract_frames_p.add_argument(
+        "--model-name",
+        default=None,
+        help="Optional model id for DINOv3 / vision embedding backend.",
+    )
+    extract_frames_p.add_argument(
+        "--query-text",
+        default=None,
+        help="Optional behavior/visual focus prompt for multimodal backends (e.g. embeddinggemma2_onnx).",
+    )
+    extract_frames_p.add_argument(
+        "--embedding-index",
+        default=None,
+        help="Optional precomputed VideoFrameEmbeddingIndex .npz file to reuse.",
     )
     extract_frames_p.add_argument(
         "--num-frames",
         type=int,
         default=50,
-        help="Number of frames to extract (-1 for all frames; default: 50).",
+        help="Number of frames to select/extract (-1 for all frames; default: 50).",
+    )
+    extract_frames_p.add_argument(
+        "--min-gap",
+        type=int,
+        default=None,
+        help="Minimum frame gap between selected frames (default: auto).",
+    )
+    extract_frames_p.add_argument(
+        "--max-candidates",
+        type=int,
+        default=600,
+        help="Maximum candidate frames evaluated during feature clustering (default: 600).",
+    )
+    extract_frames_p.add_argument(
+        "--exclude-labeled",
+        action="store_true",
+        help="Exclude already-labeled frames (JSON + AnnotationStore) and seed diversity from them.",
+    )
+    extract_frames_p.add_argument(
+        "--annotation-dir",
+        default=None,
+        help="Optional annotation directory for --exclude-labeled / queue persistence.",
+    )
+    extract_frames_p.add_argument(
+        "--no-filter-blur",
+        action="store_true",
+        help="Disable blur/dark-frame quality filtering.",
+    )
+    extract_frames_p.add_argument(
+        "--include-boundaries",
+        action="store_true",
+        help="Pin a sharp start anchor frame (recommended for VOS/segmentation).",
+    )
+    extract_frames_p.add_argument(
+        "--no-extract",
+        action="store_true",
+        help="Select frames and write queue manifest JSON without extracting PNG/JPG images.",
     )
     extract_frames_p.add_argument(
         "--start-seconds",
@@ -5095,7 +5207,7 @@ def _build_root_parser() -> argparse.ArgumentParser:
         "--seed",
         type=int,
         default=42,
-        help="Deterministic random seed for kmeans/random sampling.",
+        help="Deterministic random seed for hybrid/kmeans/random sampling.",
     )
     extract_frames_p.add_argument(
         "--json",

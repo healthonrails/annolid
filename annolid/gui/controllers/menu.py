@@ -800,10 +800,12 @@ class MenuController:
             },
             {
                 "name": "frames",
-                "text": w.tr("&Extract frames"),
+                "text": w.tr("&Select / Extract frames"),
                 "slot": w.frames,
                 "shortcut": "Ctrl+Shift+E",
-                "tip": w.tr("Extract frames from a video"),
+                "tip": w.tr(
+                    "Select diverse frames for pose or segmentation (queue in video or extract images)"
+                ),
                 "icon_path": here / "icons/extract_frames.png",
             },
             {

@@ -1443,11 +1443,27 @@ class FrameExtractorWorker(QThread):
     finished = Signal(str)
     error = Signal(str)
 
-    def __init__(self, videos, output_folder, num_frames=5):
+    def __init__(
+        self,
+        videos,
+        output_folder,
+        num_frames=5,
+        *,
+        algo: str = "uniform",
+        task: str = "general",
+        feature_backend: str = "auto",
+        extract_images: bool = True,
+        selection_config: Optional[object] = None,
+    ):
         super().__init__()
         self.videos = list(videos or [])
         self.output_folder = output_folder
-        self.num_frames = num_frames
+        self.num_frames = int(num_frames)
+        self.algo = str(algo or "uniform")
+        self.task = str(task or "general")
+        self.feature_backend = str(feature_backend or "auto")
+        self.extract_images = bool(extract_images)
+        self.selection_config = selection_config
         self.is_running = True
 
     def stop(self):
@@ -1455,19 +1471,68 @@ class FrameExtractorWorker(QThread):
 
     def run(self):
         try:
-            os.makedirs(self.output_folder, exist_ok=True)
+            if self.extract_images and self.output_folder:
+                os.makedirs(self.output_folder, exist_ok=True)
             total = len(self.videos)
+            use_smart = (
+                self.selection_config is not None
+                or self.algo != "uniform"
+                or self.feature_backend != "auto"
+                or not self.extract_images
+            )
             for idx, video in enumerate(self.videos, 1):
                 if not self.is_running:
                     break
-                extract_frames_from_video(
-                    str(video),
-                    self.output_folder,
-                    num_frames=self.num_frames,
-                )
+                if use_smart:
+                    from dataclasses import replace as _dc_replace
+
+                    from annolid.services.frame_selection import (
+                        FrameSelectionConfig,
+                        select_frames_for_labeling,
+                    )
+
+                    per_video_out: Optional[str] = None
+                    if self.extract_images and self.output_folder:
+                        if total > 1:
+                            vstem = Path(str(video)).stem.replace(" ", "_")
+                            per_video_out = str(
+                                Path(self.output_folder) / f"{vstem}_{self.algo}"
+                            )
+                        else:
+                            per_video_out = str(self.output_folder)
+
+                    if isinstance(self.selection_config, FrameSelectionConfig):
+                        cfg = _dc_replace(
+                            self.selection_config,
+                            extract_images=self.extract_images,
+                            output_dir=per_video_out,
+                            annotation_dir=None,
+                        )
+                    else:
+                        cfg = FrameSelectionConfig(
+                            task=self.task,
+                            algo=self.algo,
+                            num_frames=self.num_frames,
+                            feature_backend=self.feature_backend,
+                            extract_images=self.extract_images,
+                            output_dir=per_video_out,
+                            exclude_labeled=False,
+                            seed_from_labeled=False,
+                        )
+                    select_frames_for_labeling(
+                        str(video),
+                        config=cfg,
+                        is_stopped=lambda: not self.is_running,
+                    )
+                else:
+                    extract_frames_from_video(
+                        str(video),
+                        self.output_folder,
+                        num_frames=self.num_frames,
+                    )
                 progress_value = int((idx / max(total, 1)) * 100)
                 self.progress.emit(progress_value)
-            self.finished.emit(self.output_folder)
+            self.finished.emit(str(self.output_folder or ""))
         except Exception as e:
             self.error.emit(str(e))
 

@@ -330,6 +330,25 @@ class VideoWorkflowMixin:
 
         def _refresh_seed_marks() -> None:
             self._refresh_manual_seed_slider_marks(self.video_results_folder)
+            queue_widget = getattr(self, "frame_selection_queue_widget", None)
+            if queue_widget is not None:
+                try:
+                    restored = queue_widget.set_video_context(
+                        video_filename,
+                        annotation_dir=self.video_results_folder,
+                        fps=getattr(self, "fps", None),
+                        autoload_queue=True,
+                    )
+                    if restored:
+                        queue_widget.set_current_frame(
+                            int(getattr(self, "frame_number", 0) or 0)
+                        )
+                except Exception:
+                    logger.debug(
+                        "Failed restoring label queue for %s.",
+                        video_filename,
+                        exc_info=True,
+                    )
 
         def _refresh_missing_marks() -> None:
             self._refresh_missing_instance_slider_marks_from_tracking_stats(

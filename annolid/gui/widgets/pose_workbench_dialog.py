@@ -50,6 +50,7 @@ class PoseWorkbenchWidget(QtWidgets.QWidget):
 
     jumpToFrameRequested = QtCore.Signal(int)
     openDirectoryRequested = QtCore.Signal(str)
+    queueFramesRequested = QtCore.Signal(list, str, dict)
 
     _TAB_KEYS = ("eval", "filter", "outliers", "kinematics", "video")
 
@@ -407,6 +408,13 @@ class PoseWorkbenchWidget(QtWidgets.QWidget):
         self.out_conf_spin.setSingleStep(0.05)
         self.out_conf_spin.setValue(0.60)
         opts.addWidget(self.out_conf_spin)
+
+        self.out_queue_only_cb = QtWidgets.QCheckBox("Queue in video (no extraction)")
+        self.out_queue_only_cb.setToolTip(
+            "Send selected outlier frames directly to the Label Queue without writing PNG/JSON copies"
+        )
+        self.out_queue_only_cb.toggled.connect(self._on_outlier_queue_mode_toggled)
+        opts.addWidget(self.out_queue_only_cb)
 
         self.out_run_btn = QtWidgets.QPushButton("Extract Outlier Frames")
         self.out_run_btn.clicked.connect(self._run_outliers)
@@ -942,15 +950,27 @@ class PoseWorkbenchWidget(QtWidgets.QWidget):
         self.filter_log_text.appendPlainText(msg)
         self.status_label.setText(f"Filtered pose saved to {report.output_path}")
 
+    def _on_outlier_queue_mode_toggled(self, _checked: bool) -> None:
+        queue_only = bool(self.out_queue_only_cb.isChecked())
+        self.out_dst_edit.setEnabled(not queue_only)
+        self.out_run_btn.setText(
+            "Queue Outlier Frames" if queue_only else "Extract Outlier Frames"
+        )
+
     def _run_outliers(self) -> None:
         src = self.out_src_edit.text().strip()
         vid = self.out_vid_edit.text().strip()
         dst = self.out_dst_edit.text().strip()
-        if not src or not vid or not dst:
+        queue_only = bool(self.out_queue_only_cb.isChecked())
+        if not src or not vid or (not queue_only and not dst):
             QtWidgets.QMessageBox.warning(
                 self,
                 "Missing Inputs",
-                "Please specify Pose Predictions, Source Video, and Output Folder.",
+                (
+                    "Please specify Pose Predictions and Source Video."
+                    if queue_only
+                    else "Please specify Pose Predictions, Source Video, and Output Folder."
+                ),
             )
             return
         ps = self._pose_schema_arg()
@@ -964,33 +984,50 @@ class PoseWorkbenchWidget(QtWidgets.QWidget):
             return extract_pose_outlier_frames(
                 src,
                 vid,
-                dst,
+                dst if not queue_only else None,
                 pose_schema=ps,
                 num_frames=n_frames,
                 min_frame_gap=min_gap,
                 min_confidence=min_conf,
+                extract_images=not queue_only,
             )
 
         self._start_job("outliers", _job)
 
     def _populate_outliers_result(self, res) -> None:
-        self._last_outlier_output_dir = res.output_dir
-        self.out_open_btn.setEnabled(True)
+        extracted = bool(res.frames_extracted > 0 and res.saved_images)
+        self._last_outlier_output_dir = res.output_dir if extracted else None
+        self.out_open_btn.setEnabled(extracted)
         self.out_table.setRowCount(len(res.selected_frames))
+        reasons_map = {}
         for r_i, item in enumerate(res.selected_frames):
+            reason_text = (
+                "; ".join(item.reasons) or f"outlier score={item.total_score:.2f}"
+            )
+            reasons_map[int(item.frame_index)] = reason_text
             vals = [
                 str(item.frame_index),
                 f"{item.total_score:.2f}",
                 str(item.low_conf_count),
                 str(item.jump_count),
                 str(item.bone_outlier_count),
-                "; ".join(item.reasons),
+                reason_text,
             ]
             for c_i, txt in enumerate(vals):
                 self.out_table.setItem(r_i, c_i, QtWidgets.QTableWidgetItem(txt))
-        self.status_label.setText(
-            f"Extracted {res.frames_extracted} outlier frame(s) -> {res.output_dir}"
-        )
+        if extracted:
+            self.status_label.setText(
+                f"Extracted {res.frames_extracted} outlier frame(s) -> {res.output_dir}"
+            )
+        else:
+            indices = [int(item.frame_index) for item in res.selected_frames]
+            self.status_label.setText(
+                f"Queued {len(indices)} pose outlier frame(s) directly in video (no PNGs extracted)."
+            )
+            if indices:
+                self.queueFramesRequested.emit(
+                    indices, str(res.video_path), reasons_map
+                )
 
     def _open_outlier_output(self) -> None:
         if self._last_outlier_output_dir:
@@ -1176,6 +1213,7 @@ class PoseWorkbenchDialog(QtWidgets.QDialog):
 
     jumpToFrameRequested = QtCore.Signal(int)
     openDirectoryRequested = QtCore.Signal(str)
+    queueFramesRequested = QtCore.Signal(list, str, dict)
 
     def __init__(
         self,
@@ -1198,6 +1236,7 @@ class PoseWorkbenchDialog(QtWidgets.QDialog):
         )
         self.workbench.jumpToFrameRequested.connect(self.jumpToFrameRequested.emit)
         self.workbench.openDirectoryRequested.connect(self.openDirectoryRequested.emit)
+        self.workbench.queueFramesRequested.connect(self.queueFramesRequested.emit)
         layout.addWidget(self.workbench)
 
     def closeEvent(self, event) -> None:  # noqa: N802

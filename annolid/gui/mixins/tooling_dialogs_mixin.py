@@ -432,6 +432,19 @@ class ToolingDialogsMixin:
                 open_dir_fn = getattr(self, "importDirImages", None)
                 if callable(open_dir_fn):
                     dialog.openDirectoryRequested.connect(open_dir_fn)
+                queue_fn = getattr(self, "_queue_frames_for_labeling", None)
+                if callable(queue_fn) and hasattr(dialog, "queueFramesRequested"):
+                    dialog.queueFramesRequested.connect(
+                        lambda indices, vpath, reasons: queue_fn(
+                            indices,
+                            video_path=vpath,
+                            task="pose",
+                            algo="pose_outliers",
+                            feature_backend="pose_metrics",
+                            reasons_by_frame=reasons,
+                            role="pose_outlier",
+                        )
+                    )
                 dialog.finished.connect(
                     lambda *_: setattr(self, "_pose_workbench_dialog", None)
                 )

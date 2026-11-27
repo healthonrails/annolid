@@ -2,6 +2,7 @@
 
 from .container import GuiFeatureDeps
 from .annotation import setup_annotation_feature
+from .frame_selection import setup_frame_selection_feature
 from .zones import setup_zone_feature
 from .search import setup_search_feature
 from .timeline import setup_timeline_feature
@@ -20,6 +21,7 @@ from .viewers import (
 __all__ = [
     "GuiFeatureDeps",
     "setup_annotation_feature",
+    "setup_frame_selection_feature",
     "setup_zone_feature",
     "setup_search_feature",
     "setup_timeline_feature",
