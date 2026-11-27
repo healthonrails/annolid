@@ -1,77 +1,57 @@
 ---
 name: dataset-create
-description: Build Annolid dataset indexes/specs and generate YOLO-ready datasets from labeled data sources.
-metadata: '{"annolid":{"requires":{"bins":[]}}}'
+description: Inspect dataset folders, build Annolid label indexes and specs, import DeepLabCut or SLEAP data, and export YOLO-ready training datasets.
+metadata: '{"annolid":{"always":false,"tags":["dataset","labelme","yolo","coco","deeplabcut","dlc","sleap","index","spec","splits","prepare"]}}'
 ---
 
-# Dataset Create
+# Dataset Create & Prepare
 
-Use this skill when the user asks to create or prepare a training dataset.
+Use this skill when the user asks to inspect, index, split, import, or prepare a training dataset for YOLO, DinoKPSEG, Mask R-CNN, or Keypoint R-CNN.
 
-## Preferred workflow
+## Preferred Typed Tools (First Choice)
 
-1. Confirm source layout and output location.
-2. Build/update an Annolid index JSONL from LabelMe pairs.
-3. Optionally write a LabelMe spec with train/val/test splits.
-4. Convert index -> YOLO dataset when requested.
-5. Report exact output paths and counts.
+Prefer Annolid's typed dataset tools over raw shell commands:
 
-## Commands
+1. **`annolid_dataset_inspect(dataset_folder)`** (read-only)
+   - Detects existing specs (`labelme_spec.yaml`, `coco_spec.yaml`, `data.yaml`), raw LabelMe pairs, shape counts, inferred splits, and external formats (`deeplabcut`, `sleap`, `coco_instances`, `coco_keypoints`).
+   - Returns `ready_for_training`, `recommended_models`, and concrete `next_actions`.
 
-### 1) Index LabelMe pairs (+ optional spec)
+2. **`annolid_dataset_prepare(dataset_folder, mode, allow_mutation=true, ...)`**
+   - Supported `mode` values:
+     - `labelme_spec`: build `labelme_spec.yaml` + train/val/test splits (`val_size`, `test_size`, `seed`, `keypoint_names`, `kpt_dims`, `include_empty`).
+     - `yolo_from_labelme`: index LabelMe pairs and export YOLO `images/`, `labels/`, `data.yaml` (`task`: `"auto"|"pose"|"segmentation"`, `dataset_name`, `output_dir`, `val_size`, `test_size`).
+     - `coco_spec`: infer and write `coco_spec.yaml`.
+     - `coco_to_yolo`: materialize COCO pose/seg/detect dataset into YOLO format.
+     - `deeplabcut_import`: import DeepLabCut `labeled-data` CSV/H5 into LabelMe + optional `pose_schema.json` and Annolid index (`instance_label`, `write_pose_schema`, `pose_schema_preset`, `write_index`).
+     - `sleap_import`: import `.slp`/`.pkg.slp`/`.analysis.h5` into LabelMe + PoseSchema + optional index.
+   - Always pass `allow_mutation=true` only when the user intends to write/prepare dataset files.
+
+## CLI Equivalents (via `annolid_run` or Terminal)
+
+When multi-source collection or pose export is needed beyond `annolid_dataset_prepare`:
 
 ```bash
-python -m annolid.engine.cli collect-labels \
-  --source /path/to/source_a \
-  --source /path/to/source_b \
+# Collect multiple LabelMe sources into an index JSONL + spec YAML
+annolid-run collect-labels \
+  --source /path/to/source_a --source /path/to/source_b \
   --dataset-root /path/to/dataset_root \
   --index-file logs/label_index/annolid_dataset.jsonl \
-  --recursive \
-  --write-spec \
+  --recursive --write-spec \
   --spec-path /path/to/dataset_root/labelme_spec.yaml \
-  --val-size 0.1 \
-  --test-size 0.1 \
-  --infer-flip-idx
-```
+  --val-size 0.1 --test-size 0.1 --infer-flip-idx
 
-### 2) Convert index JSONL -> YOLO dataset
-
-```bash
-python -m annolid.engine.cli index-to-yolo \
+# Convert an index JSONL to a YOLO dataset
+annolid-run index-to-yolo \
   --index-file /path/to/dataset_root/logs/label_index/annolid_dataset.jsonl \
-  --output-dir /path/to/output \
-  --dataset-name YOLO_dataset \
-  --val-size 0.1 \
-  --test-size 0.1 \
-  --task pose
+  --output-dir /path/to/output --dataset-name YOLO_dataset \
+  --val-size 0.1 --test-size 0.1 --task pose
+
+# Import / export pose formats (SLEAP, DeepLabCut, Lightning Pose)
+annolid-run import-pose /path/to/labels.pkg.slp --output-dir /path/to/sleap_labelme --write-index
+annolid-run export-pose /path/to/labelme_dir --format deeplabcut-csv --output /path/to/exported_dlc.csv
 ```
 
-### 3) Import DeepLabCut / SLEAP / Lightning Pose data into LabelMe + optional indexing
+## Completion Checklist
 
-```bash
-python -m annolid.engine.cli import-deeplabcut-training-data \
-  --source-dir /path/to/deeplabcut_project \
-  --labeled-data labeled-data \
-  --instance-label mouse \
-  --write-pose-schema
-
-python -m annolid.engine.cli import-pose \
-  /path/to/labels.pkg.slp \
-  --output-dir /path/to/sleap_labelme \
-  --write-index
-
-python -m annolid.engine.cli export-pose \
-  /path/to/labelme_dir \
-  --format deeplabcut-csv \
-  --output /path/to/exported_dlc.csv
-```
-
-## Completion checklist
-
-Before finishing, verify:
-
-- Index file exists (`annolid_dataset.jsonl`).
-- If YOLO conversion was requested: `images/`, `labels/`, and `data.yaml` exist.
-- If spec was requested: YAML has `kpt_shape` (pose datasets) and split entries.
-
-In the final response, always include output file paths.
+- Report exact output paths (`data.yaml`, `labelme_spec.yaml`, `coco_spec.yaml`, index JSONL, `pose_schema.json`) and image/label split counts.
+- Verify `kpt_shape` is present for pose datasets before handing off to `annolid_train_start`.

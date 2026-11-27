@@ -1,77 +1,46 @@
 ---
-name: GUI Automation
-description: Use Annolid GUI tools for robust automation across web, PDF, video, and chat controls.
+name: gui
+description: Automate the live Annolid desktop GUI across canvas state, video tracking, shapes, PDFs, embedded web views, realtime streams, logs, and tutorials.
+metadata: '{"annolid":{"always":false,"tags":["gui","ui","canvas","desktop","pdf","video","web","viewer","tutorial","chat"]}}'
 ---
 
 # GUI Automation
 
-Use Annolid GUI tools when tasks depend on current app state (opened video, PDF, or embedded web page).
+Use Annolid GUI tools when a task depends on live desktop app state (currently opened video, annotations, PDF, embedded web view, 3D view, or chat panel).
 
-## Core State
+## Core App & Chat State
 
-- `gui_context`: Always call this first to understand active mode, paths, frame, and model.
-- `gui_shared_image_path`: Check whether image context is currently shared to the bot.
-- `gui_set_chat_prompt`, `gui_send_chat_prompt`, `gui_set_chat_model`: Use these for deterministic bot UI control.
+- `gui_context`: Call first to inspect active mode, opened video/PDF/URL, current frame, and selected model.
+- `gui_shared_image_path`: Check whether an image is currently shared to Annolid Bot.
+- `gui_select_annotation_model`: Switch the main annotation/tracking model dropdown.
+- `gui_set_chat_prompt`, `gui_send_chat_prompt`, `gui_set_chat_model`: Deterministic chat controls.
+- `gui_generate_annolid_tutorial`: Build a grounded tutorial from local code/docs.
+- `gui_self_update`: Check for Annolid updates (`execute=false` by default; `execute=true` only with explicit operator consent).
 
-## Web Workflows
+## Embedded Web Workflows
 
-- `gui_open_url` / `gui_open_in_browser`: Open URL in embedded viewer or system browser.
-- `gui_web_run_steps`: Preferred for multi-step web automation.
-- `gui_web_get_dom_text`, `gui_web_click`, `gui_web_type`, `gui_web_scroll`, `gui_web_find_forms`: Use directly for targeted actions.
+- `gui_open_url`, `gui_open_in_browser`, `gui_web_save_current`
+- `gui_web_run_steps`: Preferred for multi-step web sequences (`open_url`, `wait`, `get_text`, `click`, `type`, `scroll`, `find_forms`, `capture_screenshot`, `describe_view`).
+- Targeted actions: `gui_web_get_dom_text`, `gui_web_extract_structured`, `gui_web_click`, `gui_web_type`, `gui_web_scroll`, `gui_web_find_forms`, `gui_web_capture_screenshot`, `gui_web_describe_view`.
+- Prefer indexed element selectors (`[12: ...]`) from `get_text` over guessed CSS selectors, and re-read text after state-changing actions.
 
-Best practices:
-1. Start with `gui_web_run_steps` including `open_url`, `wait`, then `get_text`.
-2. Prefer element index selectors from page text (`[12: ...]`) over guessed CSS selectors.
-3. Add explicit `wait` after navigation/click on dynamic sites.
-4. Re-run `get_text` after each state-changing action before next click/type.
+## PDF & Citation Workflows
 
-## PDF Workflows
+- `gui_open_pdf`, `gui_list_pdfs`, `gui_arxiv_search`
+- `gui_pdf_get_state`, `gui_pdf_find_sections`, `gui_pdf_get_text`, `gui_pdf_summarize` (preferred for cached full-document summaries)
+- `gui_save_citation` (supports `validate_before_save`, `verify_after_save`), `gui_verify_citations`
+- Confirm a PDF is loaded via `gui_pdf_get_state` before extracting text; start with small `max_chars`/`pages`.
 
-- `gui_open_pdf`: Open local path or URL-resolved PDF in Annolid viewer.
-- `gui_pdf_get_state`: Check loaded PDF metadata and page position.
-- `gui_pdf_get_text`: Extract current-page-centered content.
-- `gui_pdf_find_sections`: Locate headings and page anchors.
-- `gui_arxiv_search`: Resolve and open arXiv papers quickly.
-- `gui_list_pdfs`: Discover available downloaded PDFs.
-- `gui_save_citation`: Persist citation metadata to BibTeX (supports optional `verify_after_save` citation integrity report).
-- `gui_verify_citations`: Verify existing BibTeX entries and emit an integrity report artifact.
+## Video, Tracking, Shapes & Behavior Workflows
 
-Best practices:
-1. Call `gui_pdf_get_state` before extraction to confirm a PDF is loaded.
-2. Use smaller `max_chars`/`pages` first, then widen if needed.
-3. When opening by URL fails, call `gui_list_pdfs` and retry with explicit local path.
-
-## Video and Model Workflows
-
-- `gui_open_video`, `gui_set_frame`, `gui_track_next_frames`
-- `gui_set_ai_text_prompt`, `gui_run_ai_text_segmentation`
-- `gui_segment_track_video`, `gui_correct_tracking_ndjson`, `gui_label_behavior_segments`
-- `gui_start_realtime_stream`, `gui_stop_realtime_stream`
-- `gui_get_realtime_status`, `gui_list_realtime_models`, `gui_list_realtime_logs`
-- `gui_list_logs`, `gui_open_log_folder`, `gui_remove_log_folder`
-- `gui_check_stream_source`
-
-Best practices:
-1. Open video and set frame explicitly before segmentation/tracking.
-2. Keep prompts short and object-specific for segmentation.
-3. Use `gui_segment_track_video` for integrated open+segment(+track) flows.
-4. Use `gui_correct_tracking_ndjson` when a tracking NDJSON needs frame-level correction from SAM3-agent artifacts or temporal repair after occlusion.
-5. Stop realtime stream explicitly when finished.
-
-### Behavior Annotation and Labeling
-
-When using `gui_label_behavior_segments`, prefer behavior-observer style criteria:
-1. Describe only observable animal facts (pose, locomotion, grooming/rearing/sniffing, tail and paw contact).
-2. Avoid environmental commentary and avoid intent/emotion speculation.
-3. Keep the observation concise (about 2–4 sentences) and then classify to exactly one label from the defined behavior list.
-4. Return structured JSON-compatible outputs whenever the model/provider supports it, so downstream timeline/log writing remains robust.
+- Video & tracking: `gui_open_video`, `gui_set_frame`, `gui_track_next_frames`, `gui_set_ai_text_prompt`, `gui_run_ai_text_segmentation`, `gui_segment_track_video`, `gui_correct_tracking_ndjson`, `gui_analyze_tracking_stats`.
+  - Note: when `model_name="SAM3"` and `mode="track"`, `gui_segment_track_video` routes to `sam3_agent_video_track`.
+- Shapes: `gui_list_shapes`, `gui_select_shapes`, `gui_set_selected_shape_label`, `gui_delete_selected_shapes` (live canvas) and `gui_list_shapes_in_annotation`, `gui_relabel_shapes_in_annotation`, `gui_delete_shapes_in_annotation` (JSON/NDJSON files).
+- Behavior: `gui_behavior_catalog`, `gui_label_behavior_segments`, `gui_process_video_behaviors`, `gui_score_aggression_bouts`.
+- Realtime & logs: `gui_list_realtime_models`, `gui_check_stream_source`, `gui_start_realtime_stream`, `gui_get_realtime_status`, `gui_stop_realtime_stream`, `gui_list_realtime_logs`, `gui_list_logs`, `gui_open_log_folder`, `gui_list_log_files`, `gui_read_log_file`, `gui_search_logs`, `gui_remove_log_folder`.
 
 ## Reliability Pattern
 
-For robust execution:
-1. Read state (`gui_context`, PDF/web state tools).
-2. Execute one focused action.
-3. Validate result from returned JSON.
-4. Retry with a narrower fallback action if needed.
-
-Do not assume the UI state; verify it before every multi-step automation sequence.
+1. Inspect state first (`gui_context`, `gui_pdf_get_state`, etc.)—never assume UI state.
+2. Execute one focused action and verify the returned JSON payload.
+3. Retry with a narrower fallback if needed, and stop realtime streams explicitly when finished.

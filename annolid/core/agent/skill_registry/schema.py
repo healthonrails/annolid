@@ -235,6 +235,45 @@ def validate_skill_manifest(
     if requires is not None and not isinstance(requires, dict):
         errors.append("requires must be an object when provided")
 
+    def _validate_tag_fields(container: Dict[str, Any]) -> None:
+        for tag_key in ("tags", "keywords"):
+            if tag_key not in container:
+                continue
+            raw_tags = container.get(tag_key)
+            if isinstance(raw_tags, str):
+                if not raw_tags.strip():
+                    errors.append(f"{tag_key} entries must be non-empty strings")
+            elif isinstance(raw_tags, list):
+                if not all(
+                    isinstance(item, str) and str(item).strip() for item in raw_tags
+                ):
+                    errors.append(f"{tag_key} entries must be non-empty strings")
+            else:
+                errors.append(f"{tag_key} must be a string or list of strings")
+
+    _validate_tag_fields(payload)
+
+    parsed_metadata: Dict[str, Any] = {}
+    if isinstance(metadata, dict):
+        parsed_metadata = metadata
+    elif isinstance(metadata, str) and metadata.strip():
+        try:
+            loaded = json.loads(metadata)
+            if isinstance(loaded, dict):
+                parsed_metadata = loaded
+        except json.JSONDecodeError:
+            pass
+    if parsed_metadata:
+        scoped_meta = (
+            parsed_metadata.get("annolid")
+            if isinstance(parsed_metadata.get("annolid"), dict)
+            else parsed_metadata.get("openclaw")
+            if isinstance(parsed_metadata.get("openclaw"), dict)
+            else parsed_metadata
+        )
+        if isinstance(scoped_meta, dict):
+            _validate_tag_fields(scoped_meta)
+
     errors.extend(
         _verify_skill_signature(
             frontmatter=payload,

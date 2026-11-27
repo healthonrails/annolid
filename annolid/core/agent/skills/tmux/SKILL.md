@@ -1,19 +1,26 @@
 ---
 name: tmux
-description: Interact with tmux sessions for multi-process workflows.
-metadata: '{"annolid":{"requires":{"bins":["tmux"]}}}'
+description: Interact with tmux sessions for persistent multi-process terminal workflows and interactive CLIs.
+metadata: '{"annolid":{"always":false,"tags":["tmux","terminal","multiplexer","pane","background process","interactive shell","long running"],"requires":{"bins":["tmux"]}}}'
 ---
 
-Use this skill when the task involves long-running terminal jobs or session multiplexing.
+# tmux Session Control
 
-Suggested steps:
+Use this skill when the task involves persistent interactive terminal sessions or multi-pane terminal workflows that must outlive a single command.
 
-1. Discover sessions and windows before attaching.
-2. Send non-destructive commands first.
-3. Capture pane output for debugging/status updates.
-4. Keep session names explicit and task-specific.
+## Prefer Simpler Tools First
 
-Scripts:
+- For ordinary background commands (training, evaluation, scripts) where `exec_start` and `exec_process` are available, prefer `exec_start(..., background=true)` + `exec_process(action="poll"|"log"|"kill")` (or GUI `/session list|poll|logs`) before launching tmux.
+- Use `tmux` when you need named persistent sessions, interactive TUIs, or multi-window multiplexing.
 
-- `scripts/find-sessions.sh`: list sessions
-- `scripts/wait-for-text.sh`: poll pane output for a token
+## Suggested Steps
+
+1. Discover existing sessions and windows before creating or attaching (`scripts/find-sessions.sh`).
+2. Keep session names explicit and task-specific (avoid colliding with user sessions).
+3. Send non-destructive inspection commands first.
+4. Capture pane output or poll for a completion token (`scripts/wait-for-text.sh`) for status updates and debugging.
+
+## Bundled Scripts
+
+- `scripts/find-sessions.sh`: list active tmux sessions across sockets
+- `scripts/wait-for-text.sh`: poll a tmux pane until expected output appears or timeout expires

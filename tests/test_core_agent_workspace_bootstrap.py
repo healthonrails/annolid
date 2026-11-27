@@ -95,3 +95,71 @@ def test_prune_bootstrap_workspace_dry_run_keeps_files(tmp_path: Path) -> None:
     out = prune_bootstrap_workspace(tmp_path, dry_run=True)
     assert out[stale_rel] == "would_removed"
     assert stale_path.exists()
+
+
+def test_bootstrap_workspace_upgrades_unmodified_managed_template_and_preserves_custom(
+    tmp_path: Path,
+) -> None:
+    _ = bootstrap_workspace(tmp_path)
+    tools_path = tmp_path / "TOOLS.md"
+    agents_path = tmp_path / "AGENTS.md"
+    manifest_path = tmp_path / ".annolid" / "bootstrap-manifest.json"
+
+    # Simulate an older untouched bundled TOOLS.md recorded in managed_hashes,
+    # alongside a user-customized AGENTS.md that does NOT match managed_hashes.
+    old_tools_bytes = b"# Old Bundled TOOLS\n- legacy_tool()\n"
+    tools_path.write_bytes(old_tools_bytes)
+    agents_path.write_text("user customized agents instructions", encoding="utf-8")
+
+    import hashlib
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.setdefault("managed_hashes", {})["TOOLS.md"] = hashlib.sha256(
+        old_tools_bytes
+    ).hexdigest()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    dry = bootstrap_workspace(tmp_path, overwrite=False, dry_run=True)
+    assert dry["TOOLS.md"] == "would_updated"
+    assert dry["AGENTS.md"] == "would_skipped"
+    assert tools_path.read_bytes() == old_tools_bytes
+
+    backup_root = tmp_path / "backup"
+    applied = bootstrap_workspace(tmp_path, overwrite=False, backup_root=backup_root)
+    assert applied["TOOLS.md"] == "updated"
+    assert applied["AGENTS.md"] == "skipped"
+    assert "google_colab" in tools_path.read_text(encoding="utf-8")
+    assert (backup_root / "TOOLS.md").read_bytes() == old_tools_bytes
+    assert (
+        agents_path.read_text(encoding="utf-8") == "user customized agents instructions"
+    )
+
+
+def test_context_builder_upgrades_unmodified_managed_tools_without_touching_custom(
+    tmp_path: Path,
+) -> None:
+    import hashlib
+
+    from annolid.core.agent.context import AgentContextBuilder
+
+    _ = bootstrap_workspace(tmp_path)
+    tools_path = tmp_path / "TOOLS.md"
+    manifest_path = tmp_path / ".annolid" / "bootstrap-manifest.json"
+
+    old_tools_bytes = b"# Legacy Bundled TOOLS\nvideo_ffmpeg_process(operation?)\n"
+    tools_path.write_bytes(old_tools_bytes)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.setdefault("managed_hashes", {})["TOOLS.md"] = hashlib.sha256(
+        old_tools_bytes
+    ).hexdigest()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    prompt = AgentContextBuilder(tmp_path).build_system_prompt()
+    assert "google_colab" in prompt
+    assert "google_colab" in tools_path.read_text(encoding="utf-8")
+
+    # Now customize TOOLS.md — AgentContextBuilder must preserve custom text verbatim.
+    tools_path.write_text("Custom lab TOOLS instructions", encoding="utf-8")
+    prompt2 = AgentContextBuilder(tmp_path).build_system_prompt()
+    assert "Custom lab TOOLS instructions" in prompt2
+    assert tools_path.read_text(encoding="utf-8") == "Custom lab TOOLS instructions"

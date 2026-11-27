@@ -317,7 +317,7 @@ a = Analysis(
         ("annolid/annotation/labels.txt", "annolid/annotation"),
         ("annolid/annotation/labels_interaction", "annolid/annotation"),
         ("annolid/core/output/schema/*.json", "annolid/core/output/schema"),
-        *_collect_tree_datas(ROOT, "annolid/core/agent/skills", {".md", ".sh"}),
+        *_collect_tree_datas(ROOT, "annolid/core/agent/skills", {".md", ".py", ".sh"}),
         *_collect_tree_datas(ROOT, "annolid/core/agent/workspace", {".md", ".sh"}),
         ("annolid/icons/*", "annolid/icons"),
         ("annolid/gui/icons/*", "annolid/gui/icons"),

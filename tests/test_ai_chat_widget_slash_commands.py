@@ -3122,3 +3122,43 @@ def test_load_resumable_behavior_segment_predictions_canonicalizes_saved_labels(
     assert result["predictions"][0]["classification"] == "unsupported rearing"
     assert result["skipped_predictions"][0]["label"] == "no_behavior"
     assert result["skipped_predictions"][0]["classification"] == "no_behavior"
+
+
+def test_slash_completion_filters_skills_and_tools_before_slicing() -> None:
+    widget = AIChatWidget.__new__(AIChatWidget)
+    skill_preview = [
+        {"name": f"alpha-skill-{idx:02d}", "description": f"Skill {idx}"}
+        for idx in range(35)
+    ] + [{"name": "weather", "description": "Check weather forecasts"}]
+    tool_names = [f"alpha_tool_{idx:02d}" for idx in range(50)] + [
+        "video_ffmpeg_process"
+    ]
+    widget._load_slash_capabilities_payload = (  # type: ignore[method-assign]
+        lambda **kwargs: {
+            "skill_pool": {
+                "skill_pool": {"preview": skill_preview},
+                "suggested_skills": [],
+            },
+            "tool_pool": {"allowed_tools": tool_names},
+        }
+    )
+
+    skill_entries = widget._build_slash_completion_entries(
+        {"mode": "skill", "search_prefix": "skill weather"}
+    )
+    assert [row["display"] for row in skill_entries] == ["Skill: weather"]
+
+    tool_entries = widget._build_slash_completion_entries(
+        {"mode": "tool", "search_prefix": "tool video_ffmpeg"}
+    )
+    assert [row["display"] for row in tool_entries] == ["Tool: video_ffmpeg_process"]
+
+    unfiltered_skills = widget._build_slash_completion_entries(
+        {"mode": "skill", "search_prefix": ""}
+    )
+    assert len(unfiltered_skills) == 25
+
+    unfiltered_tools = widget._build_slash_completion_entries(
+        {"mode": "tool", "search_prefix": ""}
+    )
+    assert len(unfiltered_tools) == 40

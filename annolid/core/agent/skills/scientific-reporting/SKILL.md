@@ -1,7 +1,7 @@
 ---
 name: scientific-reporting
-description: Write behavior-analysis summaries in a concise scientific style with methods, findings, caveats, and artifact-backed conclusions.
-metadata: '{"annolid":{"always":false}}'
+description: Write behavior-analysis summaries and publication-grade reports in a concise scientific style with methods, findings, QC caveats, and artifact-backed conclusions.
+metadata: '{"annolid":{"always":false,"tags":["scientific report","report","analysis report","findings","methods","caveats","qc","track qc","behavior qc","cohort","irr","publication","manifest"]}}'
 ---
 
 # Scientific Reporting
@@ -10,13 +10,15 @@ Use this skill when the user wants an interpretable, publication-grade analysis 
 
 ## Built-In Annolid Reporting & QC Tools
 
-Prefer calling Annolid's deterministic tools before drafting narrative text:
+Prefer calling Annolid's deterministic tools (or GUI `/report`, `/qc`, `/stats` slash commands) before drafting narrative text:
 
 - `annolid_generate_report` (`annolid-run report <source> [--events-csv ...] [--zone-file ...] [--px-per-cm ...]`): builds a self-contained `analysis_report.html` (with inline SVG trajectory, freezing budget, zone occupancy, and ethogram raster charts), `analysis_report.md`, and `analysis_report.json` (`unified_analysis_report/v1`).
+- `annolid_tracking_stats` / `gui_analyze_tracking_stats`: summarizes tracking datasets, frame coverage, instance counts, and trajectory metrics.
 - `annolid_track_qc` (`annolid-run track-qc <input>`): audits tracking coverage, velocity spikes, identity swaps, and prioritized manual review bouts (`track_qc/v1`).
 - `annolid_behavior_qc` (`annolid-run behavior-qc <events_csv>`): checks unpaired state intervals and mutual-exclusion violations (`behavior_qc_report/v1`).
 - `annolid_behavior_cohort` (`annolid-run behavior-cohort --manifest ... --unit recording|subject`): computes group summaries, Welch/ANOVA & Mann-Whitney/Kruskal-Wallis tests, Hedges' $g$, Cliff's $\delta$, Kaplan-Meier censored latency + log-rank $p$, and Benjamini-Hochberg FDR $q$-values (`behavior_cohort/v1`).
 - `annolid_behavior_irr` (`annolid-run behavior-irr rater1.csv rater2.csv`): computes Cohen's $\kappa$ (with bootstrap 95% CI), Fleiss' $\kappa$, Krippendorff's $\alpha$, bout F1, and disagreement windows (`behavior_irr_report/v1`).
+- `annolid_eval_report` & `annolid_paper_run_report`: package model evaluation metrics, citation integrity, and paper-readiness gates for manuscript drafts.
 
 ## Structure
 

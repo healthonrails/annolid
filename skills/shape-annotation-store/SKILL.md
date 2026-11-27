@@ -1,34 +1,37 @@
 ---
 name: shape-annotation-store
-description: Use this skill when the user asks to work with shapes in annotation-store NDJSON files or JSON stubs that reference annotation stores.
+description: Read, relabel, or delete shapes stored in Annolid annotation-store NDJSON files (*_annotations.ndjson) or LabelMe JSON stubs referencing a store.
+metadata: '{"annolid":{"always":false,"tags":["annotation store","ndjson","annotations.ndjson","json stub","relabel ndjson","delete ndjson","shapes","frame records"]}}'
 ---
 
 # Shape Annotation Store
 
-## Scope
-This skill is for annotation-store workflows:
-- `*_annotations.ndjson`
-- LabelMe JSON stubs containing `annotation_store`
+Use this skill when the user works with shapes persisted in Annolid's dual annotation storage:
+
+- `*_annotations.ndjson` (append/compacted frame records when `persist_json=False`)
+- LabelMe `.json` stubs containing an `annotation_store` reference and `frame` index
 
 ## Workflow
-1. Resolve target file.
-- Accept direct NDJSON path.
-- Accept JSON stub and resolve to store path + frame.
 
-2. Choose frame behavior.
-- If frame is provided, use it.
-- If frame is not provided, use stub frame or latest available frame record.
+1. **Resolve Target File**:
+   - Accept either a direct `*_annotations.ndjson` path or a JSON stub pointing to the store.
+2. **Choose Frame Scope**:
+   - Single frame: pass explicit `frame=<int>` (or let a JSON stub supply its frame).
+   - Multi-frame batch edit: pass `apply_all_frames=true` only when the user explicitly wants all frames updated.
+3. **Run File-Backed Shape Tools**:
+   - Read/inspect: `gui_list_shapes_in_annotation(path, frame?, label_contains?, exact_label?, shape_type?, max_results?, include_points?)`
+   - Relabel: `gui_relabel_shapes_in_annotation(path, old_label, new_label, frame?, shape_type?, apply_all_frames?, dry_run?)`
+   - Delete: `gui_delete_shapes_in_annotation(path, frame?, label_contains?, exact_label?, shape_type?, max_delete?, apply_all_frames?, delete_all?, dry_run?)`
+4. **Respect Guardrails**:
+   - Keep all paths within workspace / allowed read roots.
+   - Preview broad or cross-frame mutations with `dry_run=true` before writing.
+   - Require explicit filters (`exact_label`, `label_contains`, `shape_type`) unless the user explicitly requests `delete_all=true`.
+   - Never delete standalone user source images when editing or clearing annotation shapes.
 
-3. Run operation.
-- Read: `gui_list_shapes_in_annotation`
-- Relabel: `gui_relabel_shapes_in_annotation`
-- Delete: `gui_delete_shapes_in_annotation`
+## Output Reporting
 
-4. Respect guardrails.
-- Keep paths under allowed roots.
-- Require filters unless user explicitly requests full delete (`delete_all=true`).
+Always report:
 
-## Practical Defaults
-- Start with list before mutating when request is ambiguous.
-- Use `dry_run=true` first for risky relabel/delete requests.
-- Report changed record count and shape count after mutation.
+- resolved store path and source type (`annotation_store` or `annotation_store_stub`),
+- affected frame(s) or `apply_all_frames` scope,
+- exact changed/deleted record and shape counts, and whether `dry_run` was active.

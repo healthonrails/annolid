@@ -1,19 +1,20 @@
 ---
 name: weather
-description: Get weather conditions and short forecasts.
-metadata: '{"annolid":{"requires":{"bins":["curl"]}}}'
+description: Look up current weather conditions, temperatures, precipitation, and short forecasts for any location.
+metadata: '{"annolid":{"always":false,"tags":["weather","forecast","temperature","rain","snow","wind","climate"]}}'
 ---
 
-Use this skill for weather lookup tasks.
+# Weather Lookup
 
-Guidelines:
+Use this skill for weather and forecast requests.
 
-1. Use explicit locations (city/state/country) when possible.
-2. Prefer concise forecast summaries (temperature, precipitation, wind).
-3. Include date/time context and units.
-4. Do not answer with a promise to check later. Use the lookup tools immediately, then return the weather result.
-5. Lookup order for reliability:
+## Guidelines
+
+1. Use explicit locations (city, state/region, country) when possible.
+2. Return concise forecast summaries (temperature with units, precipitation chance/type, wind, and local date/time context).
+3. Do not reply with a promise to check later—execute a lookup tool immediately and return the retrieved forecast.
+4. Lookup order for reliability:
    - First use `web_search` (DDGS with hardened DuckDuckGo HTML and optional Brave fallbacks).
-   - If search is unavailable, try the embedded browser workflow (`gui_web_run_steps`).
-   - If a direct weather URL is available, use `web_fetch` for extraction.
-6. If model output is empty or says it cannot browse, immediately run a web lookup tool instead of returning a refusal.
+   - If a direct weather URL is returned or known, use `web_fetch(url, extractMode="text")` to extract details.
+   - If search is unavailable in a GUI session, use the embedded browser workflow (`gui_web_run_steps`).
+5. If an initial lookup is sparse or ambiguous, refine the location query and retry once rather than refusing.

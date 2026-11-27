@@ -19,6 +19,10 @@ _BEHAVIOR_PRESETS: tuple[tuple[str, str], ...] = (
         "Segment aggression bouts from track artifacts using canonical sub-events and stable frame-gap merging.",
     ),
     (
+        "Polygon Classifier",
+        "Prepare polygon CSVs, train a TCN polygon classifier, evaluate held-out predictions, and report metrics.",
+    ),
+    (
         "Scientific Report",
         "Write a scientific behavior-analysis report with manifest provenance and key metrics.",
     ),

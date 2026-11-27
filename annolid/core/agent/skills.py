@@ -25,6 +25,144 @@ BUILTIN_SKILLS_DIR = Path(__file__).parent / "skills"
 _DEFAULT_MANAGED_SKILLS_DIR = Path.home() / ".annolid" / "skills"
 MANAGED_SKILLS_DIR = _DEFAULT_MANAGED_SKILLS_DIR
 
+_LEXICAL_STOPWORDS = frozenset(
+    {
+        "about",
+        "above",
+        "add",
+        "after",
+        "again",
+        "all",
+        "also",
+        "and",
+        "any",
+        "are",
+        "been",
+        "before",
+        "being",
+        "below",
+        "between",
+        "both",
+        "but",
+        "can",
+        "check",
+        "could",
+        "current",
+        "currently",
+        "during",
+        "each",
+        "etc",
+        "few",
+        "find",
+        "for",
+        "from",
+        "further",
+        "get",
+        "had",
+        "has",
+        "have",
+        "help",
+        "her",
+        "here",
+        "him",
+        "his",
+        "how",
+        "into",
+        "its",
+        "just",
+        "look",
+        "make",
+        "may",
+        "might",
+        "more",
+        "most",
+        "must",
+        "need",
+        "nor",
+        "not",
+        "now",
+        "off",
+        "once",
+        "only",
+        "onto",
+        "open",
+        "other",
+        "our",
+        "out",
+        "over",
+        "own",
+        "per",
+        "please",
+        "read",
+        "right",
+        "run",
+        "same",
+        "set",
+        "shall",
+        "she",
+        "should",
+        "show",
+        "some",
+        "such",
+        "take",
+        "than",
+        "that",
+        "the",
+        "their",
+        "them",
+        "then",
+        "there",
+        "these",
+        "they",
+        "this",
+        "those",
+        "through",
+        "too",
+        "under",
+        "use",
+        "used",
+        "using",
+        "very",
+        "via",
+        "want",
+        "was",
+        "were",
+        "what",
+        "when",
+        "where",
+        "which",
+        "while",
+        "who",
+        "whom",
+        "why",
+        "will",
+        "with",
+        "would",
+        "write",
+        "you",
+        "your",
+    }
+)
+
+_SHORT_DOMAIN_TOKENS = frozenset(
+    {
+        "3d",
+        "ai",
+        "ci",
+        "gh",
+        "id",
+        "io",
+        "ir",
+        "l4",
+        "ml",
+        "os",
+        "pr",
+        "qc",
+        "t4",
+        "ui",
+    }
+)
+
 
 def get_managed_skills_dir() -> Path:
     """Resolve managed skills directory lazily without import-time filesystem writes."""
@@ -141,22 +279,25 @@ class AgentSkillsLoader:
         for s in all_skills:
             name = esc(s["name"])
             desc = esc(s.get("description", self._get_skill_description(s["path"])))
-            path = s["path"]
+            path = esc(str(s["path"]))
             skill_meta = s.get("parsed_meta", self._get_skill_meta_by_path(s["path"]))
             if bool(skill_meta.get("disable_model_invocation")):
                 continue
             available = self._check_requirements(skill_meta)
-            lines.append(f'  <skill available="{str(available).lower()}">')
-            lines.append(f"    <name>{name}</name>")
-            lines.append(f"    <description>{desc}</description>")
-            lines.append(f"    <location>{path}</location>")
+            extras = ""
             if not bool(skill_meta.get("user_invocable", True)):
-                lines.append("    <user_invocable>false</user_invocable>")
+                extras += "<user_invocable>false</user_invocable>"
             if not available:
                 missing = self._get_missing_requirements(skill_meta)
                 if missing:
-                    lines.append(f"    <requires>{esc(missing)}</requires>")
-            lines.append("  </skill>")
+                    extras += f"<requires>{esc(missing)}</requires>"
+            lines.append(
+                f'<skill available="{str(available).lower()}">'
+                f"<name>{name}</name>"
+                f"<description>{desc}</description>"
+                f"<location>{path}</location>"
+                f"{extras}</skill>"
+            )
         lines.append("</skills>")
         return "\n".join(lines)
 
@@ -193,7 +334,17 @@ class AgentSkillsLoader:
         k = max(0, int(top_k))
         if k == 0:
             return []
-        skills = self.list_skills(filter_unavailable=True)
+        skills = [
+            s
+            for s in self.list_skills(filter_unavailable=True)
+            if not bool(
+                (
+                    s.get("parsed_meta")
+                    if isinstance(s.get("parsed_meta"), dict)
+                    else self._get_skill_meta_by_path(s["path"])
+                ).get("disable_model_invocation")
+            )
+        ]
         ranked, strategy = self._rank_skills_for_mode(text, skills)
         if not ranked:
             return []
@@ -217,7 +368,7 @@ class AgentSkillsLoader:
             )
         return out
 
-    def describe_skill_pool(self, *, preview_limit: int = 25) -> Dict[str, Any]:
+    def describe_skill_pool(self, *, preview_limit: int = 100) -> Dict[str, Any]:
         all_skills = self.list_skills(filter_unavailable=False)
         available_names = {
             str(row.get("name") or "")
@@ -298,14 +449,48 @@ class AgentSkillsLoader:
         ranked = self._rank_skills_lexical(text)
         return [name for name, _ in ranked[:k]]
 
+    @staticmethod
+    def _tokenize_lexical(text: str) -> set[str]:
+        lowered = str(text or "").lower()
+        tokens: set[str] = set()
+        for raw in re.findall(r"[a-z0-9]+", lowered):
+            if raw in _LEXICAL_STOPWORDS:
+                continue
+            if len(raw) >= 3 or raw in _SHORT_DOMAIN_TOKENS:
+                tokens.add(raw)
+                if (
+                    len(raw) >= 4
+                    and raw.endswith("s")
+                    and not raw.endswith(("ss", "us", "is"))
+                ):
+                    stem = raw[:-1]
+                    if stem not in _LEXICAL_STOPWORDS and (
+                        len(stem) >= 3 or stem in _SHORT_DOMAIN_TOKENS
+                    ):
+                        tokens.add(stem)
+        return tokens
+
+    @staticmethod
+    def _extract_skill_tags(skill: Dict[str, Any]) -> list[str]:
+        parsed = skill.get("parsed_meta")
+        if not isinstance(parsed, dict):
+            return []
+        raw_tags = parsed.get("tags")
+        if not isinstance(raw_tags, (list, tuple)):
+            return []
+        return [str(t).strip().lower() for t in raw_tags if str(t).strip()]
+
     def _rank_skills_lexical(
         self,
         text: str,
         skills: Optional[Sequence[Dict[str, Any]]] = None,
     ) -> List[tuple[str, float]]:
-        task_tokens = {
-            token for token in re.findall(r"[a-z0-9][a-z0-9_-]{2,}", text) if token
-        }
+        lowered_text = str(text or "").lower()
+        normalized_text = re.sub(r"[^a-z0-9]+", " ", lowered_text).strip()
+        padded_query = f" {normalized_text} " if normalized_text else ""
+        task_tokens = self._tokenize_lexical(lowered_text)
+        if "http://" in lowered_text or "https://" in lowered_text:
+            task_tokens.add("url")
         scored: List[tuple[str, float]] = []
         candidates = list(skills or self.list_skills(filter_unavailable=True))
         for skill in candidates:
@@ -313,18 +498,68 @@ class AgentSkillsLoader:
             if not name:
                 continue
             desc = str(skill.get("description") or "").strip()
-            haystack = f"{name} {desc}".lower()
-            score = 0
-            if name.lower() in text:
-                score += 4
-            if task_tokens:
-                haystack_tokens = {
-                    token
-                    for token in re.findall(r"[a-z0-9][a-z0-9_-]{2,}", haystack)
-                    if token
-                }
-                score += len(task_tokens & haystack_tokens)
-            if score > 0:
+            tags = self._extract_skill_tags(skill)
+            score = 0.0
+            name_lower = name.lower()
+            name_phrase = re.sub(r"[^a-z0-9]+", " ", name_lower).strip()
+            if (
+                name_lower
+                and re.search(
+                    rf"(?<![a-z0-9]){re.escape(name_lower)}(?![a-z0-9])", lowered_text
+                )
+            ) or (name_phrase and padded_query and f" {name_phrase} " in padded_query):
+                score += 6.0
+            if task_tokens or padded_query:
+                name_tokens = self._tokenize_lexical(name_lower)
+                name_hits = task_tokens & name_tokens
+                score += 2.5 * len(name_hits)
+
+                single_tag_tokens: set[str] = set()
+                matched_exact_phrases = 0
+                matched_bag_phrases = 0
+                for tag in tags:
+                    tag_phrase = re.sub(r"[^a-z0-9]+", " ", tag).strip()
+                    if not tag_phrase:
+                        continue
+                    if " " in tag_phrase:
+                        if padded_query and f" {tag_phrase} " in padded_query:
+                            matched_exact_phrases += 1
+                        else:
+                            # Match multi-word tags by unordered tokens only when
+                            # every non-stopword component appears in the query,
+                            # preventing generic words like "open" or "field" from
+                            # triggering unrelated skills on their own.
+                            raw_parts = [
+                                part
+                                for part in tag_phrase.split()
+                                if len(part) >= 3 or part in _SHORT_DOMAIN_TOKENS
+                            ]
+                            significant_parts = [
+                                part
+                                for part in raw_parts
+                                if part not in _LEXICAL_STOPWORDS
+                            ]
+                            if len(significant_parts) >= 2 and all(
+                                (part in task_tokens)
+                                or (
+                                    len(part) >= 4
+                                    and part.endswith("s")
+                                    and part[:-1] in task_tokens
+                                )
+                                for part in significant_parts
+                            ):
+                                matched_bag_phrases += 1
+                    else:
+                        single_tag_tokens.update(self._tokenize_lexical(tag))
+                score += 3.5 * matched_exact_phrases
+                score += 2.5 * matched_bag_phrases
+                tag_hits = (task_tokens & single_tag_tokens) - name_hits
+                score += 2.0 * len(tag_hits)
+
+                desc_tokens = self._tokenize_lexical(desc)
+                desc_hits = (task_tokens & desc_tokens) - name_hits - tag_hits
+                score += 1.0 * len(desc_hits)
+            if score > 0.0:
                 scored.append((name, float(score)))
         if not scored:
             return []
@@ -346,7 +581,7 @@ class AgentSkillsLoader:
         if not candidates:
             return []
         signature = tuple(
-            f"{str(s.get('name') or '').strip()}|{str(s.get('description') or '').strip()}"
+            f"{str(s.get('name') or '').strip()}|{str(s.get('description') or '').strip()}|{','.join(self._extract_skill_tags(s))}"
             for s in candidates
             if str(s.get("name") or "").strip()
         )
@@ -364,7 +599,9 @@ class AgentSkillsLoader:
                 if not name:
                     continue
                 desc = str(s.get("description") or "").strip()
-                texts.append(f"{name}. {desc}".strip())
+                tags = self._extract_skill_tags(s)
+                tag_suffix = f" ({', '.join(tags)})" if tags else ""
+                texts.append(f"{name}. {desc}{tag_suffix}".strip())
                 names.append(name)
             vectors = self._encode_texts(model, texts)
             if len(vectors) != len(names):
@@ -516,6 +753,8 @@ class AgentSkillsLoader:
             "always",
             "os",
             "requires",
+            "tags",
+            "keywords",
             "user-invocable",
             "user_invocable",
             "disable-model-invocation",
@@ -529,6 +768,24 @@ class AgentSkillsLoader:
         ):
             if key in frontmatter:
                 out[key] = frontmatter[key]
+        raw_tags: list[str] = []
+        for source in (metadata, frontmatter):
+            for tag_key in ("tags", "keywords"):
+                val = source.get(tag_key)
+                if isinstance(val, str):
+                    raw_tags.extend(p.strip() for p in val.split(",") if p.strip())
+                elif isinstance(val, (list, tuple)):
+                    raw_tags.extend(str(p).strip() for p in val if str(p).strip())
+        if raw_tags:
+            seen_tags: set[str] = set()
+            deduped_tags: list[str] = []
+            for tag in raw_tags:
+                key_t = tag.lower()
+                if key_t in seen_tags:
+                    continue
+                seen_tags.add(key_t)
+                deduped_tags.append(key_t)
+            out["tags"] = deduped_tags
         out["user_invocable"] = bool(
             out.get("user_invocable", out.get("user-invocable", True))
         )

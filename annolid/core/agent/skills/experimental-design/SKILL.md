@@ -1,7 +1,7 @@
 ---
 name: experimental-design
-description: Keep behavior analysis aligned with assay objectives, controls, reproducibility, and measurable outputs instead of ad hoc summaries.
-metadata: '{"annolid":{"always":false}}'
+description: Keep behavior analysis aligned with assay objectives, controls, blinding, pseudoreplication guards, and reproducible cohort statistics instead of ad hoc summaries.
+metadata: '{"annolid":{"always":false,"tags":["experimental design","experiment","cohort","blinding","pseudoreplication","irr","fdr","statistics","hypothesis","controls","survival","log-rank"]}}'
 ---
 
 # Experimental Design
@@ -22,6 +22,6 @@ Use this skill when connecting Annolid tracking and behavior outputs to rigorous
 
 ## Guidelines
 
-1. Prefer pre-specified primary endpoints (e.g. % time in open arms, social preference index, attack latency) over post-hoc fishing.
+1. Prefer pre-specified primary endpoints (e.g., % time in open arms, social preference index, attack latency) over post-hoc fishing.
 2. Require identical `fps`, `session_duration`, and `px_per_cm` calibration across treatment and control arms.
 3. Run `annolid_track_qc` and `annolid_behavior_qc` before running inferential group tests.

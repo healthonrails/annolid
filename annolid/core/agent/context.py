@@ -12,6 +12,7 @@ from typing import Any, List, Mapping, Optional, Sequence
 
 from .memory import AgentMemoryStore
 from .skills import AgentSkillsLoader
+from .workspace_bootstrap import maybe_upgrade_unmodified_template
 from annolid.utils.logger import logger
 
 
@@ -19,7 +20,7 @@ class AgentContextBuilder:
     """Build system prompts and LLM message payloads for conversational loops."""
 
     BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"]
-    DEFAULT_SYSTEM_PROMPT_MAX_CHARS = 24_000
+    DEFAULT_SYSTEM_PROMPT_MAX_CHARS = 32_000
     DEFAULT_AUTO_SKILL_TOP_K = 3
 
     def __init__(self, workspace: Path):
@@ -228,7 +229,10 @@ class AgentContextBuilder:
             p = self.workspace / filename
             if not p.exists():
                 continue
-            content = p.read_text(encoding="utf-8")
+            upgraded = maybe_upgrade_unmodified_template(self.workspace, filename)
+            content = (
+                upgraded if upgraded is not None else p.read_text(encoding="utf-8")
+            )
             parts.append(f"## {filename}\n\n{content}")
         self._bootstrap_cache = "\n\n".join(parts)
         return self._bootstrap_cache
@@ -328,16 +332,36 @@ class AgentContextBuilder:
         available = max_chars - overhead
         if available <= 0:
             return {key: "" for key in section_map.keys()}
-        weight_total = sum(weight for _, weight in present) or 1.0
+        # Water-fill budget allocation: sections shorter than their proportional
+        # share keep their exact length and donate unused capacity to longer ones.
         budgets: dict[str, int] = {}
-        consumed = 0
-        for idx, (name, weight) in enumerate(present):
-            if idx == len(present) - 1:
-                budget = max(0, available - consumed)
-            else:
-                budget = max(0, int((available * weight) / weight_total))
-                consumed += budget
-            budgets[name] = budget
+        remaining = available
+        pending: list[tuple[str, float, int]] = [
+            (name, weight, len(str(section_map.get(name) or "")))
+            for name, weight in present
+        ]
+        while pending:
+            pending_weight = sum(weight for _, weight, _ in pending) or 1.0
+            satisfied: list[tuple[str, float, int]] = []
+            for item in pending:
+                name, weight, raw_len = item
+                share = (remaining * weight) / pending_weight
+                if raw_len <= share:
+                    budgets[name] = raw_len
+                    remaining = max(0, remaining - raw_len)
+                    satisfied.append(item)
+            if not satisfied:
+                consumed = 0
+                for idx, (name, weight, _) in enumerate(pending):
+                    if idx == len(pending) - 1:
+                        budget = max(0, remaining - consumed)
+                    else:
+                        budget = max(0, int((remaining * weight) / pending_weight))
+                        consumed += budget
+                    budgets[name] = budget
+                break
+            satisfied_names = {name for name, _, _ in satisfied}
+            pending = [item for item in pending if item[0] not in satisfied_names]
         fitted: dict[str, str] = {}
         for name in section_map.keys():
             raw = section_map.get(name) or ""

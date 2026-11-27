@@ -149,5 +149,12 @@ def test_agent_capabilities_dialog_behavior_preset_updates_task_hint(
         assert (
             "Segment aggression bouts" in str(calls[-1].get("task_hint") or "").strip()
         )
+
+        polygon_preset = next(
+            btn for btn in buttons if btn.text().strip() == "Polygon Classifier"
+        )
+        polygon_preset.click()
+        assert "polygon classifier" in str(dialog.task_hint_edit.text() or "").lower()
+        assert "polygon classifier" in str(calls[-1].get("task_hint") or "").lower()
     finally:
         dialog.close()

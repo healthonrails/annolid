@@ -1,12 +1,19 @@
 ---
 name: vision-language-analysis
-description: Ground behavior analysis in visible evidence from frames, tracks, masks, and captions, and separate direct observation from interpretation.
-metadata: '{"annolid":{"always":false}}'
+description: Ground behavior analysis in visible evidence from frames, frame grids, tracks, masks, and captions, and separate direct observation from interpretation.
+metadata: '{"annolid":{"always":false,"tags":["vision","vlm","visual","frames","frame grid","caption","image","observation","visible evidence","multimodal"]}}'
 ---
 
 # Vision-Language Analysis
 
-Use this skill when behavior reasoning depends on image or video evidence.
+Use this skill when behavior reasoning depends on image, frame-grid, or video evidence.
+
+## Annolid Visual Evidence Tools
+
+- `video_segment_frame_grid(path, start_sec?, end_sec?, sample_count?, columns?, annotate?)`: build chronological annotated contact sheets for interval inspection.
+- `video_sample_frames(path, output_dir?, mode?, step?, target_fps?, indices?, max_frames?)`: extract individual frames for closer inspection.
+- `gui_shared_image_path()`: locate the current GUI frame image shared with the bot.
+- `caption(image_path, prompt?)`: generate grounded captions for a local frame or contact sheet when available.
 
 ## Rules
 
@@ -14,7 +21,7 @@ Use this skill when behavior reasoning depends on image or video evidence.
 2. Prefer tracked motion, pose, distance, overlap, and temporal change over
    vague scene description.
 3. Separate observations from inferences.
-4. When evidence is weak, report uncertainty explicitly.
+4. When evidence is weak, blurry, or occluded, report uncertainty explicitly.
 
 ## Good evidence types
 

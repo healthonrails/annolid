@@ -760,7 +760,7 @@ class AIChatSlashMixin:
                     if str(row.get("name") or "").strip().lower() in suggested
                 )
             ordered_rows.extend(row for row in preview_rows if row not in ordered_rows)
-            for row in ordered_rows[:25]:
+            for row in ordered_rows:
                 name = str(row.get("name") or "").strip()
                 if not name:
                     continue
@@ -781,7 +781,7 @@ class AIChatSlashMixin:
                 for name in list(tool_pool.get("allowed_tools") or [])
                 if str(name or "").strip()
             ]
-            for name in tool_names[:40]:
+            for name in tool_names:
                 insert = f"/tool {name} "
                 add_entry(
                     display=f"Tool: {name}",
@@ -798,6 +798,10 @@ class AIChatSlashMixin:
                 for row in entries
                 if matches_slash_completion_search(str(row.get("search") or ""), query)
             ]
+        if mode == "skill":
+            return entries[:25]
+        if mode == "tool":
+            return entries[:40]
         return entries
 
     def _ensure_slash_completion_ui(self) -> None:

@@ -1,33 +1,43 @@
 ---
 name: cron
-description: Schedule and manage recurring or one-shot agent tasks.
-metadata: '{"annolid":{"requires":{"bins":[]}}}'
+description: Schedule, inspect, pause, and manage recurring or one-shot agent tasks, reminders, scheduled emails, and periodic automations.
+metadata: '{"annolid":{"always":false,"tags":["cron","schedule","reminder","email","recurring","timer","automation","job","periodic"]}}'
 ---
 
-Use this skill to schedule **Headless Agent Workloads**.
+# Scheduling, Reminders & Cron Jobs
 
-When a cron job triggers, it simulates the user typing the assigned `message` into the chat. *This means your scheduled jobs can perform complex automation pipelines, including browsing the web, checking email, querying APIs, or writing files.*
+Use this skill for one-shot reminders, scheduled emails, recurring cron workloads, and lightweight periodic automations.
 
-Tool usage (Three Modes):
+## Tool Selection
 
-1. `cron` `add` with one of:
-   - `every_seconds` for fixed intervals
-   - `cron_expr` for cron-style expressions (optional `tz`, e.g. `America/New_York`)
-   - `at` for a one-time run using ISO datetime (e.g. `2026-02-13T09:30:00Z`)
-2. `cron` `list` to confirm schedule and identifiers.
-3. `cron` `disable`/`enable` for temporary control.
-4. `cron` `run` to trigger manually.
-5. `cron` `remove` to delete.
+1. **`cron`** — general persistent scheduler supporting one-shot (`at`), fixed-interval (`every_seconds`), and cron expressions (`cron_expr` + optional IANA `tz`), plus direct scheduled emails (`email_to`, `email_subject`, `email_content`, `attachment_paths`).
+2. **`automation_schedule`** — lightweight recurring bot task presets (`task_type`: `"camera_check"`, `"periodic_report"`, `"email_summary"` with `every_seconds`, `camera_source`, `email_to`, `notes`, `run_immediately`, `max_runs`).
 
-### Examples
+## `cron` Actions & Modes
 
-**Simple Reminder:**
-- `cron` action=`add`, message=`"Remind me to call John"`, at=`"2026-02-13T09:30:00Z"`
+- `action="add"` with one schedule mode:
+  - `at`: ISO-8601 datetime for one-shot runs (e.g. `"2026-06-15T09:00:00-04:00"` or UTC `"Z"`).
+  - `every_seconds`: integer interval (`> 0`).
+  - `cron_expr`: 5-field cron expression + optional IANA `tz` (e.g. `"America/New_York"`).
+- Management actions: `list`, `status`, `check` (with `job_id`), `enable`, `disable`, `run`, `remove` (or `cancel`).
+- Chat slash shortcuts: `/cron status`, `/cron list`, `/cron check <job_id>`, `/automation status`, `/automation list`.
 
-**Schedule an Email:**
-- `cron` action=`add`, message=`"Send an email to annolid@gmail.com saying: Attached are the PDF files."`, at=`"2026-02-20T17:56:00Z"`
+## Direct Scheduled Email (Preferred Over Agent-Turn Email)
 
-**Advanced Automation (Autonomous Background Agent):**
-- `cron` action=`add`, message=`"Check HackerNews and summarize the top 3 posts. Save the Markdown to ~/Desktop/hn-summary.md"`, every_seconds=`10800`
+When scheduling an email whose body is already known, pass direct email fields instead of embedding a prompt in `message`:
 
-Always include the resulting `job_id` in user-facing confirmations.
+- `cron(action="add", at="2026-06-15T09:00:00-04:00", message="Send lab report email", email_to="lab@example.org", email_subject="Weekly Report", email_content="Attached is the weekly summary.", attachment_paths=["/workspace/report.pdf"])`
+
+Only rely on an agent-turn `message` (without `email_to`/`email_content`) when the email content must be freshly gathered at trigger time (e.g. checking a website or recent detections first).
+
+## Examples
+
+- **One-shot reminder:** `cron(action="add", message="Remind me to check incubator temperature", at="2026-06-15T14:30:00-04:00", deliver=true)`
+- **Recurring autonomous workflow:** `cron(action="add", message="Summarize new tracking stats in the workspace and save summary.md", cron_expr="0 8 * * 1-5", tz="America/New_York")`
+- **Periodic camera check:** `automation_schedule(action="add", task_type="camera_check", every_seconds=300, camera_source="0", email_to="lab@example.org")`
+
+## Rules
+
+- Resolve relative dates ("tomorrow at 9am") using the system prompt's current local datetime and timezone.
+- Always confirm the resulting `job_id` (or `task_id`) and next schedule in the reply.
+- Verify attachment paths stay within allowed workspace/read roots.

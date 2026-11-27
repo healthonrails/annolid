@@ -415,6 +415,7 @@ annolid = [
     "configs/*.json",
     "core/output/schema/*.json",
     "core/agent/skills/**/*.md",
+    "core/agent/skills/**/*.py",
     "core/agent/skills/**/*.sh",
     "core/agent/workspace/**/*.md",
     "core/agent/workspace/**/*.sh",
