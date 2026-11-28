@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 from annolid import domain, infrastructure, interfaces, services
@@ -263,6 +264,15 @@ def test_infrastructure_layer_exports() -> None:
     assert callable(infrastructure.find_most_recent_file)
 
 
+def _imports_symbol_from(source: str, module: str, name: str) -> bool:
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == module:
+            if any(alias.name == name for alias in node.names):
+                return True
+    return False
+
+
 def test_execution_paths_use_layer_imports() -> None:
     repo_root = Path(__file__).resolve().parents[1]
 
@@ -445,8 +455,20 @@ def test_execution_paths_use_layer_imports() -> None:
     persistence_lifecycle = (
         repo_root / "annolid" / "gui" / "mixins" / "persistence_lifecycle_mixin.py"
     ).read_text(encoding="utf-8")
-    assert "from annolid.infrastructure import AnnotationStore" in persistence_lifecycle
-    assert "from annolid.infrastructure.filesystem import (" in persistence_lifecycle
+    assert _imports_symbol_from(
+        persistence_lifecycle, "annolid.infrastructure", "AnnotationStore"
+    )
+    assert _imports_symbol_from(
+        persistence_lifecycle, "annolid.infrastructure", "atomic_write_json"
+    )
+    assert _imports_symbol_from(
+        persistence_lifecycle, "annolid.infrastructure", "atomic_write_text"
+    )
+    assert _imports_symbol_from(
+        persistence_lifecycle,
+        "annolid.infrastructure.filesystem",
+        "get_frame_number_from_json",
+    )
 
     prediction_progress = (
         repo_root / "annolid" / "gui" / "mixins" / "prediction_progress_mixin.py"
@@ -685,18 +707,30 @@ def test_execution_paths_use_layer_imports() -> None:
     ai_chat_widget = (
         repo_root / "annolid" / "gui" / "widgets" / "ai_chat_widget.py"
     ).read_text(encoding="utf-8")
-    assert "from annolid.infrastructure.agent_config import (" in ai_chat_widget
     assert "from annolid.infrastructure.agent_workspace import (" in ai_chat_widget
     assert "from annolid.services.chat_bus import (" in ai_chat_widget
     assert "from annolid.services.chat_session import (" in ai_chat_widget
     assert "from annolid.services.chat_backend_support import (" in ai_chat_widget
     assert "from annolid.core.agent" not in ai_chat_widget
 
+    ai_chat_composer = (
+        repo_root / "annolid" / "gui" / "widgets" / "ai_chat_composer_mixin.py"
+    ).read_text(encoding="utf-8")
+    assert _imports_symbol_from(
+        ai_chat_composer, "annolid.infrastructure.agent_config", "get_agent_config_path"
+    )
+    assert _imports_symbol_from(
+        ai_chat_composer, "annolid.infrastructure.agent_config", "load_agent_config"
+    )
+
     for gui_chat_module in (
         "ai_chat_bubble.py",
+        "ai_chat_composer_mixin.py",
         "ai_chat_slash_mixin.py",
         "ai_chat_behavior_mixin.py",
         "ai_chat_actions_mixin.py",
+        "ai_chat_streaming_mixin.py",
+        "ai_chat_viewer_mixin.py",
         "ai_chat_backend_pdf_mixin.py",
         "ai_chat_backend_video_mixin.py",
     ):

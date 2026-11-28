@@ -9,6 +9,7 @@ import pickle
 import socket
 import ssl
 import stat
+import sys
 import urllib.error
 import urllib.request
 import zipfile
@@ -518,11 +519,13 @@ def test_owasp_a10_a04_ssrf_scheme_host_spoof_and_path_guards(
         download_url="https://pmc.ncbi.nlm.nih.gov.evil.com/pdf/PMC1",
         output_dir=tmp_path,
     )
-    ok_pmc, err_pmc = worker._download_with_pmc_pow(  # noqa: SLF001
-        candidate_url="https://pmc.ncbi.nlm.nih.gov.evil.com/pdf/PMC1",
-        source_url="https://pmc.ncbi.nlm.nih.gov.evil.com/",
-        output_path=tmp_path / "out.pdf",
-    )
+    with monkeypatch.context() as mp:
+        mp.setitem(sys.modules, "httpx", None)
+        ok_pmc, err_pmc = worker._download_with_pmc_pow(  # noqa: SLF001
+            candidate_url="https://pmc.ncbi.nlm.nih.gov.evil.com/pdf/PMC1",
+            source_url="https://pmc.ncbi.nlm.nih.gov.evil.com/",
+            output_path=tmp_path / "out.pdf",
+        )
     assert ok_pmc is False and "unsupported pmc host" in err_pmc.lower()
     with pytest.raises(RuntimeError, match="exceeded"):
         _SavePdfTask._solve_pmc_pow_nonce("test", 6, max_iterations=10)  # noqa: SLF001

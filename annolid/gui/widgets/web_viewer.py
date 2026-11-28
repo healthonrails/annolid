@@ -740,15 +740,15 @@ class _SavePdfTask(QtCore.QRunnable):
         source_url: str,
         output_path: Path,
     ) -> tuple[bool, str]:
-        try:
-            import httpx
-        except Exception as exc:
-            return False, f"Failed to save PDF: {exc}"
-
         parsed = urllib.parse.urlparse(candidate_url)
         if not self._is_pmc_host(parsed):
             return False, "Failed to save PDF: unsupported PMC host."
         host = str(parsed.hostname or "").strip().lower().rstrip(".")
+
+        try:
+            import httpx
+        except Exception as exc:
+            return False, f"Failed to save PDF: {exc}"
 
         headers = {
             "User-Agent": (

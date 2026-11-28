@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import re
 from pathlib import Path
 
 from qtpy import QtCore, QtWidgets
@@ -259,8 +261,18 @@ def test_load_pdfjs_viewer_escapes_bootstrap_values(
     assert 'src="http://127.0.0.1:9999/pdfjs/pdf.min.js"' in html
     assert 'src="http://127.0.0.1:9999/pdfjs/annolid_viewer.js"' in html
     assert 'href="http://127.0.0.1:9999/pdfjs/annolid_viewer.css"' in html
-    assert "<\\/script>" in html
+    assert "\\u003c/script\\u003e" in html
+    assert "\\u0026name=\\u003c/script\\u003e" in html
     assert 'http://127.0.0.1:9999/pdf?id="x"&name=</script>' not in html
+    bootstrap_match = re.search(r"const bootstrap = (\{.*?\});", html)
+    assert bootstrap_match is not None
+    bootstrap_raw = bootstrap_match.group(1)
+    assert "</script>" not in bootstrap_raw.lower()
+    bootstrap = json.loads(bootstrap_raw)
+    assert bootstrap["pdfKey"] == 'key "quoted" </script>'
+    assert bootstrap["initialUserState"] == {"note": 'line "one" </script>'}
+    assert bootstrap["pdfUrl"] == 'http://127.0.0.1:9999/pdf?id="x"&name=</script>'
+    assert bootstrap["pdfTitle"] == 'paper "draft".pdf'
 
 
 def test_build_pdfjs_viewer_html_uses_absolute_asset_urls() -> None:
