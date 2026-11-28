@@ -9,7 +9,7 @@ from typing import Any, Dict
 
 from annolid.version import get_version
 
-from .manifest import UpdateManifest
+from .manifest import UpdateManifest, _parse_version_obj
 
 
 @dataclass(frozen=True)
@@ -24,34 +24,6 @@ class VerificationResult:
             "reason": self.reason,
             "details": dict(self.details),
         }
-
-
-def _parse_version_obj(text: str):
-    raw = str(text or "").strip()
-    if not raw:
-        return None
-    try:  # pragma: no cover
-        from packaging.version import Version
-
-        return Version(raw)
-    except Exception:
-        nums = []
-        for p in raw.split("."):
-            n = "".join(ch for ch in p if ch.isdigit())
-            nums.append(int(n) if n else 0)
-
-        class _Fallback:
-            def __init__(self, s: str, parts: tuple[int, ...]):
-                self.s = s
-                self.parts = parts
-
-            def __lt__(self, other: "_Fallback") -> bool:
-                return self.parts < other.parts
-
-            def __str__(self) -> str:
-                return self.s
-
-        return _Fallback(raw, tuple(nums))
 
 
 def _verify_hmac_signature(manifest: UpdateManifest, secret: str) -> bool:

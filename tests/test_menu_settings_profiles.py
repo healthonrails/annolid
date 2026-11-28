@@ -224,59 +224,99 @@ def test_help_update_options_prefer_env_and_sanitize(monkeypatch) -> None:
     assert require_signature is True
 
 
-def test_help_check_updates_shows_result(monkeypatch) -> None:
+def test_help_update_options_loads_persisted_agent_config(monkeypatch) -> None:
     _ensure_qapp()
     window = _DummyWindow()
     controller = MenuController(window)
-    payload = {
-        "current_version": "1.0.0",
-        "target_version": "1.1.0",
-        "channel": "stable",
-        "update_available": True,
-        "verification_reason": "ok",
-    }
-    monkeypatch.setattr(
-        "annolid.gui.controllers.menu.check_gui_agent_update",
-        lambda **kwargs: payload,
+    persisted_cfg = SimpleNamespace(
+        update=SimpleNamespace(
+            auto=SimpleNamespace(
+                channel="beta",
+                timeout_s=11.0,
+                require_signature=True,
+            )
+        )
     )
-    shown: list[str] = []
+    monkeypatch.delenv("ANNOLID_AUTO_UPDATE_CHANNEL", raising=False)
+    monkeypatch.delenv("ANNOLID_AUTO_UPDATE_TIMEOUT_S", raising=False)
+    monkeypatch.delenv("ANNOLID_AUTO_UPDATE_REQUIRE_SIGNATURE", raising=False)
     monkeypatch.setattr(
-        QtWidgets.QMessageBox,
-        "information",
-        lambda _parent, _title, text: shown.append(str(text)),
+        "annolid.infrastructure.agent_config.load_agent_config",
+        lambda: persisted_cfg,
+    )
+
+    channel, timeout_s, require_signature = (
+        controller._resolve_auto_update_runtime_options()
+    )
+
+    assert channel == "beta"
+    assert timeout_s == 11.0
+    assert require_signature is True
+
+
+def test_help_check_updates_opens_update_dialog(monkeypatch) -> None:
+    _ensure_qapp()
+    window = _DummyWindow()
+    controller = MenuController(window)
+    opened: list[dict] = []
+
+    class _FakeDialog:
+        def __init__(self, parent, **kwargs) -> None:
+            opened.append({"parent": parent, **kwargs, "executed": False})
+
+        def exec_(self) -> int:
+            opened[-1]["executed"] = True
+            return 0
+
+    monkeypatch.setattr(
+        "annolid.gui.widgets.update_dialog.AnnolidUpdateDialog",
+        _FakeDialog,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_resolve_auto_update_runtime_options",
+        lambda: ("beta", 9.0, True),
     )
 
     controller._check_for_updates_from_help()
 
-    assert shown
-    assert "Update available: True" in shown[0]
-    assert "Target version: 1.1.0" in shown[0]
+    assert len(opened) == 1
+    assert opened[0]["parent"] is window
+    assert opened[0]["channel"] == "beta"
+    assert opened[0]["timeout_s"] == 9.0
+    assert opened[0]["require_signature"] is True
+    assert opened[0]["auto_check"] is True
+    assert opened[0]["auto_prompt_update"] is False
+    assert opened[0]["executed"] is True
 
 
-def test_help_update_now_runs_update(monkeypatch) -> None:
+def test_help_update_now_opens_update_dialog_with_prompt(monkeypatch) -> None:
     _ensure_qapp()
     window = _DummyWindow()
     controller = MenuController(window)
-    calls: list[dict] = []
+    opened: list[dict] = []
+
+    class _FakeDialog:
+        def __init__(self, parent, **kwargs) -> None:
+            opened.append({"parent": parent, **kwargs, "executed": False})
+
+        def exec_(self) -> int:
+            opened[-1]["executed"] = True
+            return 0
+
     monkeypatch.setattr(
-        QtWidgets.QMessageBox,
-        "question",
-        lambda *_args, **_kwargs: QtWidgets.QMessageBox.Yes,
+        "annolid.gui.widgets.update_dialog.AnnolidUpdateDialog",
+        _FakeDialog,
     )
     monkeypatch.setattr(
-        "annolid.gui.controllers.menu.run_agent_update",
-        lambda **kwargs: (calls.append(kwargs) or ({"status": "updated"}, 0)),
-    )
-    shown: list[str] = []
-    monkeypatch.setattr(
-        QtWidgets.QMessageBox,
-        "information",
-        lambda _parent, _title, text: shown.append(str(text)),
+        controller,
+        "_resolve_auto_update_runtime_options",
+        lambda: ("stable", 8.0, False),
     )
 
     controller._run_update_from_help()
 
-    assert calls
-    assert calls[0]["execute"] is True
-    assert calls[0]["skip_post_check"] is False
-    assert shown and "Update completed successfully." in shown[0]
+    assert len(opened) == 1
+    assert opened[0]["auto_check"] is True
+    assert opened[0]["auto_prompt_update"] is True
+    assert opened[0]["executed"] is True

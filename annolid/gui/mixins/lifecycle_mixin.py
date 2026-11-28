@@ -154,6 +154,13 @@ class LifecycleMixin:
                 )
         quit_and_wait(self.frame_worker, "Thank you!")
         quit_and_wait(self.seg_train_thread, "See you next time!")
+        startup_update_worker = getattr(self, "_startup_update_worker", None)
+        if startup_update_worker is not None:
+            try:
+                if startup_update_worker.isRunning():
+                    startup_update_worker.wait(2000)
+            except RuntimeError:
+                pass
         pred_worker = getattr(self, "pred_worker", None)
         if pred_worker is not None:
             stop_fn = getattr(pred_worker, "request_stop", None)

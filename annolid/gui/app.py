@@ -463,6 +463,14 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
             bot_timer.timeout.connect(self._startup_annolid_bot)
             bot_timer.start(2500)
             self._bot_autostart_timer = bot_timer
+        self._auto_update_timer: Optional[QtCore.QTimer] = None
+        self._startup_update_worker = None
+        if self._should_run_startup_auto_update_check():
+            update_timer = QtCore.QTimer(self)
+            update_timer.setSingleShot(True)
+            update_timer.timeout.connect(self._startup_auto_update_check)
+            update_timer.start(5000)
+            self._auto_update_timer = update_timer
         QtCore.QTimer.singleShot(0, _raise_initial_shape_dock)
 
     @QtCore.Slot(str, int)
@@ -706,6 +714,59 @@ class AnnolidWindow(AnnolidWindowMixinBundle, AnnolidWindowBase):
             return False
 
         return True
+
+    def _should_run_startup_auto_update_check(self) -> bool:
+        """Return whether startup may check the auto-update policy in background."""
+        if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("CI"):
+            return False
+        if os.environ.get("ANNOLID_DISABLE_AUTO_UPDATE_CHECK"):
+            return False
+        if str(os.environ.get("QT_QPA_PLATFORM") or "").strip().lower() == "offscreen":
+            return False
+        return True
+
+    def _startup_auto_update_check(self) -> None:
+        """Run a non-blocking update check on startup if enabled and due."""
+        if not self._should_run_startup_auto_update_check():
+            return
+        if bool(getattr(self, "_cleanup_done", False)):
+            return
+        if self._startup_update_worker is not None:
+            return
+        try:
+            from annolid.gui.widgets.update_dialog import StartupAutoUpdateWorker
+
+            worker = StartupAutoUpdateWorker(project="annolid", parent=self)
+            worker.update_found.connect(self._on_startup_update_found)
+            worker.finished.connect(self._on_startup_update_worker_finished)
+            self._startup_update_worker = worker
+            worker.start()
+        except Exception as exc:
+            logger.debug("Skipped startup auto-update check: %s", exc)
+
+    def _on_startup_update_found(self, payload: object) -> None:
+        if bool(getattr(self, "_cleanup_done", False)):
+            return
+        if not isinstance(payload, dict):
+            return
+        target = str(payload.get("target_version") or "").strip()
+        current = str(payload.get("current_version") or __version__).strip()
+        if not target:
+            return
+        self.post_status_message(
+            self.tr(
+                "Annolid v%s is available (installed: v%s). "
+                "Open Help → Check for Updates to update."
+            )
+            % (target, current),
+            12000,
+        )
+
+    def _on_startup_update_worker_finished(self) -> None:
+        worker = self._startup_update_worker
+        self._startup_update_worker = None
+        if worker is not None:
+            worker.deleteLater()
 
     def _restore_last_worked_file_if_available(self) -> None:
         """Cache last worked file from settings; restore only after opening its folder."""

@@ -145,7 +145,7 @@ def validate_agent_tools() -> tuple[dict[str, object], int]:
                 return payload + 1
 
         registry = ToolRegistry()
-        registry.register("dummy", _DummyTool)
+        registry.register("dummy", lambda cfg: _DummyTool(config=cfg))
         register_builtin_utility_tools(registry)
         fn_registry = FunctionToolRegistry()
         asyncio.run(register_nanobot_style_tools(fn_registry))

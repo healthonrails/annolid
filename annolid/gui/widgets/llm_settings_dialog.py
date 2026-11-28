@@ -17,9 +17,8 @@ from annolid.infrastructure.agent_config import (
     save_agent_config as save_config,
 )
 from annolid.services.agent_update import (
-    check_gui_agent_update,
-    execute_gui_agent_rollback,
-    run_agent_update,
+    get_update_history,
+    resolve_update_runtime_options,
 )
 from annolid.services.chat_runtime import get_chat_default_allowed_read_roots
 from annolid.utils.llm_provider_catalog import (
@@ -984,40 +983,40 @@ class LLMSettingsDialog(QtWidgets.QDialog):
         allowed_layout.addLayout(allowed_actions)
         layout.addRow("Extra allowed bot folders:", allowed_widget)
 
-        update_note = QtWidgets.QLabel(
-            "Update settings control automatic checks and release channel policy."
+        update_channel_default, update_timeout_default, update_require_sig_default = (
+            resolve_update_runtime_options(agent_config=self._agent_config)
         )
-        update_note.setWordWrap(True)
-        update_note.setStyleSheet("color: #6b7280;")
-        layout.addRow(update_note)
-
         update_auto_default = False
-        update_channel_default = "stable"
         update_interval_default = 24 * 3600
         update_jitter_default = 15 * 60
-        update_timeout_default = 4.0
-        update_require_sig_default = False
         if self._agent_config is not None:
             auto_cfg = getattr(
                 getattr(self._agent_config, "update", None), "auto", None
             )
             if auto_cfg is not None:
                 update_auto_default = bool(getattr(auto_cfg, "enabled", False))
-                update_channel_default = str(
-                    getattr(auto_cfg, "channel", "stable") or "stable"
-                ).strip()
                 update_interval_default = int(
                     getattr(auto_cfg, "interval_seconds", 24 * 3600) or 24 * 3600
                 )
                 update_jitter_default = int(
                     getattr(auto_cfg, "jitter_seconds", 15 * 60) or 15 * 60
                 )
-                update_timeout_default = float(
-                    getattr(auto_cfg, "timeout_s", 4.0) or 4.0
-                )
-                update_require_sig_default = bool(
-                    getattr(auto_cfg, "require_signature", False)
-                )
+
+        last_good = str(
+            (get_update_history(project="annolid", limit=1) or {}).get(
+                "last_known_good_version"
+            )
+            or ""
+        ).strip()
+        update_note_text = (
+            "Update settings control automatic checks and release channel policy."
+        )
+        if last_good:
+            update_note_text += f" Last known-good version for rollback: v{last_good}."
+        update_note = QtWidgets.QLabel(update_note_text)
+        update_note.setWordWrap(True)
+        update_note.setStyleSheet("color: #6b7280;")
+        layout.addRow(update_note)
 
         self.auto_update_enabled_checkbox = QtWidgets.QCheckBox(
             "Enable auto-update", content_widget
@@ -1085,155 +1084,37 @@ class LLMSettingsDialog(QtWidgets.QDialog):
 
         self._tabs.addTab(tab_widget, "Agent Runtime")
 
-    def _check_now_update(self) -> None:
+    def _open_update_dialog(
+        self,
+        *,
+        auto_prompt_update: bool = False,
+        open_rollback_on_ready: bool = False,
+    ) -> None:
+        from annolid.gui.widgets.update_dialog import AnnolidUpdateDialog
+
         channel = str(self.auto_update_channel_combo.currentData() or "stable")
         timeout_s = float(self.auto_update_timeout_spin.value())
         require_signature = bool(self.auto_update_require_sig_checkbox.isChecked())
-        try:
-            payload = check_gui_agent_update(
-                project="annolid",
-                channel=channel,
-                timeout_s=timeout_s,
-                require_signature=require_signature,
-            )
-            details = [
-                f"Current version: {payload.get('current_version')}",
-                f"Target version: {payload.get('target_version')}",
-                f"Channel: {payload.get('channel')}",
-                f"Update available: {payload.get('update_available')}",
-                f"Verification: {payload.get('verification_reason')}",
-            ]
-            QtWidgets.QMessageBox.information(
-                self,
-                "Update Check",
-                "\n".join(details),
-            )
-        except Exception as exc:
-            QtWidgets.QMessageBox.warning(
-                self,
-                "Update Check Failed",
-                f"Could not check updates.\n\n{exc}",
-            )
+        dialog = AnnolidUpdateDialog(
+            self,
+            project="annolid",
+            channel=channel,
+            timeout_s=timeout_s,
+            require_signature=require_signature,
+            auto_check=True,
+            auto_prompt_update=bool(auto_prompt_update),
+            open_rollback_on_ready=bool(open_rollback_on_ready),
+        )
+        dialog.exec_()
+
+    def _check_now_update(self) -> None:
+        self._open_update_dialog(auto_prompt_update=False)
 
     def _rollback_update(self) -> None:
-        previous_version, ok = QtWidgets.QInputDialog.getText(
-            self,
-            "Rollback",
-            "Previous known-good version:",
-        )
-        if not ok:
-            return
-        version = str(previous_version or "").strip()
-        if not version:
-            QtWidgets.QMessageBox.information(
-                self,
-                "Rollback",
-                "Rollback cancelled: previous version was empty.",
-            )
-            return
-
-        reply = QtWidgets.QMessageBox.question(
-            self,
-            "Confirm Rollback",
-            (
-                "Run rollback now?\n\n"
-                f"Target previous version: {version}\n"
-                "This may run package manager commands."
-            ),
-            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-            QtWidgets.QMessageBox.No,
-        )
-        if reply != QtWidgets.QMessageBox.Yes:
-            return
-
-        try:
-            payload = execute_gui_agent_rollback(
-                project="annolid",
-                previous_version=version,
-            )
-            if bool(payload.get("ok", False)):
-                QtWidgets.QMessageBox.information(
-                    self,
-                    "Rollback Complete",
-                    "Rollback completed successfully.",
-                )
-                return
-            QtWidgets.QMessageBox.warning(
-                self,
-                "Rollback Result",
-                str(payload.get("reason") or "Rollback failed."),
-            )
-        except Exception as exc:
-            QtWidgets.QMessageBox.warning(
-                self,
-                "Rollback Failed",
-                f"Could not execute rollback.\n\n{exc}",
-            )
+        self._open_update_dialog(open_rollback_on_ready=True)
 
     def _run_update_now(self) -> None:
-        channel = str(self.auto_update_channel_combo.currentData() or "stable")
-        timeout_s = float(self.auto_update_timeout_spin.value())
-        require_signature = bool(self.auto_update_require_sig_checkbox.isChecked())
-        reply = QtWidgets.QMessageBox.question(
-            self,
-            "Confirm Update",
-            (
-                "Run update now?\n\n"
-                f"Channel: {channel}\n"
-                "This may run package manager commands and may require an app restart."
-            ),
-            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-            QtWidgets.QMessageBox.No,
-        )
-        if reply != QtWidgets.QMessageBox.Yes:
-            return
-
-        buttons = [
-            self.update_check_now_button,
-            self.update_run_now_button,
-            self.update_rollback_button,
-        ]
-        try:
-            for btn in buttons:
-                btn.setEnabled(False)
-            QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
-            payload, exit_code = run_agent_update(
-                project="annolid",
-                channel=channel,
-                timeout_s=timeout_s,
-                require_signature=require_signature,
-                execute=True,
-                skip_post_check=False,
-            )
-        except Exception as exc:
-            QtWidgets.QMessageBox.warning(
-                self,
-                "Update Failed",
-                f"Could not execute update.\n\n{exc}",
-            )
-            return
-        finally:
-            QtWidgets.QApplication.restoreOverrideCursor()
-            for btn in buttons:
-                btn.setEnabled(True)
-
-        status = str((payload or {}).get("status") or "").strip().lower()
-        if int(exit_code) == 0 and status in {"updated", "staged"}:
-            restart_required = bool((payload or {}).get("restart_required", False))
-            msg = "Update completed successfully."
-            if restart_required:
-                msg += "\n\nRestart Annolid to finish applying the update."
-            QtWidgets.QMessageBox.information(self, "Update Complete", msg)
-            return
-
-        reason = str((payload or {}).get("reason") or "").strip()
-        if not reason:
-            reason = status or "unknown_error"
-        QtWidgets.QMessageBox.warning(
-            self,
-            "Update Result",
-            f"Update did not complete successfully.\n\nStatus: {status or 'unknown'}\nReason: {reason}",
-        )
+        self._open_update_dialog(auto_prompt_update=True)
 
     @QtCore.Slot()
     def _browse_chatterbox_voice_prompt(self) -> None:

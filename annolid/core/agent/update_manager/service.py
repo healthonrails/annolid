@@ -4,9 +4,10 @@ import hashlib
 import hmac
 import os
 import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 from urllib.parse import unquote, urlparse
 from urllib.request import urlopen
 
@@ -44,7 +45,6 @@ class UpdateManagerService:
         self.manager = manager or SignedUpdateManager(project=self.project)
         default_stage = Path.home() / ".annolid" / "updates" / "stage"
         self.stage_dir = Path(stage_dir or default_stage).expanduser().resolve()
-        self.stage_dir.mkdir(parents=True, exist_ok=True)
 
     def check(
         self,
@@ -119,6 +119,7 @@ class UpdateManagerService:
             return payload
         tmp_path: Optional[Path] = None
         try:
+            self.stage_dir.mkdir(parents=True, exist_ok=True)
             url = str(plan.manifest.artifact_url or "").strip()
             parsed_url = urlparse(url)
             if parsed_url.scheme.lower() not in {"https", "file"}:
@@ -191,18 +192,24 @@ class UpdateManagerService:
         require_signature: bool = False,
         execute: bool = False,
         run_post_check: bool = True,
+        on_output: Callable[[str], None] | None = None,
+        cancel_event: threading.Event | None = None,
+        force_source_sync: bool = False,
     ) -> Dict[str, Any]:
         plan = self.check(
             channel=channel,
             timeout_s=timeout_s,
             require_signature=require_signature,
         )
-        transaction = {
+        transaction: Dict[str, Any] = {
             "project": self.project,
             "channel": channel,
             "executed": bool(execute),
             "steps": [],
             "status": "ok",
+            "current_version": plan.current_version,
+            "target_version": plan.manifest.version,
+            "install_mode": plan.install_mode,
         }
         transaction["steps"].append(
             {"phase": "preflight", "ok": True, "executed": execute}
@@ -215,22 +222,45 @@ class UpdateManagerService:
                 "verification": plan.verification.to_dict(),
             }
         )
-        artifact_step = self.download_and_verify_artifact(plan, execute=execute)
-        transaction["steps"].append(artifact_step)
-        if execute and not bool(artifact_step.get("ok", False)):
-            transaction["status"] = "failed_stage_artifact"
-            return transaction
-
-        run_payload = self.manager.run(
-            plan,
-            execute=execute,
-            run_post_check=run_post_check,
+        should_stage_artifact = (not execute) or (
+            plan.update_available and plan.install_mode == "package"
         )
+        if should_stage_artifact:
+            artifact_step = self.download_and_verify_artifact(plan, execute=execute)
+            transaction["steps"].append(artifact_step)
+            if execute and not bool(artifact_step.get("ok", False)):
+                transaction["status"] = "failed_stage_artifact"
+                transaction["reason"] = str(
+                    artifact_step.get("reason") or "artifact_download_failed"
+                )
+                return transaction
+
+        run_kwargs: Dict[str, Any] = {
+            "execute": execute,
+            "run_post_check": run_post_check,
+        }
+        if on_output is not None:
+            run_kwargs["on_output"] = on_output
+        if cancel_event is not None:
+            run_kwargs["cancel_event"] = cancel_event
+        if force_source_sync:
+            run_kwargs["force_source_sync"] = True
+        run_payload = self.manager.run(plan, **run_kwargs)
         pipeline = run_payload.get("pipeline")
         if isinstance(pipeline, list):
             transaction["steps"].extend(list(pipeline))
         transaction["status"] = str(run_payload.get("status") or "ok")
-        for key in ("rollback", "rollback_plan", "verification", "canary"):
+        for key in (
+            "reason",
+            "message",
+            "rollback",
+            "rollback_plan",
+            "verification",
+            "canary",
+            "restart_required",
+            "release_url",
+            "failed_step",
+        ):
             if key in run_payload:
                 transaction[key] = run_payload.get(key)
         return transaction
