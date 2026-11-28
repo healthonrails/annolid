@@ -38,7 +38,7 @@ from annolid.services.literature_search import LiteratureResult
 from annolid.services.novelty import novelty_preflight_check
 from annolid.utils.atomic_io import atomic_write_text
 
-# Lazily populated only when run_paper_drafting_swarm() is invoked, keeping
+# Lazily resolved only when run_paper_drafting_swarm() is invoked, keeping
 # annolid.services.paper_writer decoupled from annolid.core.agent at import
 # time while preserving monkeypatch compatibility on SwarmManager/SwarmAgent.
 SwarmManager: Any = None
@@ -46,7 +46,6 @@ SwarmAgent: Any = None
 
 
 def _resolve_swarm_runtime() -> tuple[Any, Any, Callable[..., int]]:
-    global SwarmManager, SwarmAgent
     from annolid.core.agent.swarm import (
         SwarmAgent as _DefaultSwarmAgent,
         SwarmManager as _DefaultSwarmManager,
